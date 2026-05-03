@@ -1,0 +1,41 @@
+[
+  {
+    "kismet.device.base.macaddr": "a4:83:e7:11:22:33",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.first_time": 1699999100,
+    "kismet.device.base.last_time": 1700000100,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -45},
+    "kismet.device.base.manuf": "Apple",
+    "kismet.device.base.name": "HomeNet"
+  },
+  {
+    "kismet.device.base.macaddr": "02:11:22:33:44:55",
+    "kismet.device.base.type": "Wi-Fi Client",
+    "kismet.device.base.first_time": 1699999200,
+    "kismet.device.base.last_time": 1700000200,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -67},
+    "kismet.device.base.manuf": null
+  },
+  {
+    "kismet.device.base.macaddr": "06:aa:bb:cc:dd:ee",
+    "kismet.device.base.type": "BTLE",
+    "kismet.device.base.first_time": 1699999300,
+    "kismet.device.base.last_time": 1700000300,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -80},
+    "kismet.device.base.manuf": "Unknown"
+  },
+  {
+    "kismet.device.base.macaddr": "00:1a:7d:da:71:11",
+    "kismet.device.base.type": "Bluetooth",
+    "kismet.device.base.first_time": 1699999400,
+    "kismet.device.base.last_time": 1700000400,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -55},
+    "kismet.device.base.manuf": "Cambridge Silicon"
+  },
+  {
+    "kismet.device.base.macaddr": "11:22:33:44:55:66",
+    "kismet.device.base.type": "RTL433",
+    "kismet.device.base.first_time": 1699999500,
+    "kismet.device.base.last_time": 1700000500
+  }
+]
