@@ -1,0 +1,2 @@
+# Talos allowlist.
+# Known-good devices (by MAC, SSID, etc.) go here to suppress matching alerts.
