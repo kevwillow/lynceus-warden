@@ -10,8 +10,8 @@
 .topnav a.active { font-weight: 600; }
 .dim         { opacity: 0.55; }
 
-.sparkline       { display: flex; align-items: flex-end; gap: 1px; height: 40px; }
-.sparkline-bar   { background: #888; width: 4px; min-height: 1px; }
+.sparkline       { display: flex; align-items: flex-end; gap: 1px; height: 40px; width: 100%; }
+.sparkline-bar   { background: #888; flex: 1 1 0; min-width: 2px; min-height: 1px; }
 .stat-grid       { display: grid; grid-template-columns: 60px repeat(3, 1fr); gap: 0.5em 1em; align-items: center; }
 .stat-grid .stat-row-label { font-weight: 600; }
 .ack-button-inline { padding: 2px 8px; font-size: 0.85em; }
