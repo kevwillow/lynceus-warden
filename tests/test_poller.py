@@ -493,3 +493,234 @@ def test_poll_once_notifier_returning_false_logs_warning_but_continues(
         poll_once(fake_client, db, cfg, 1700001000, ruleset=rs, notifier=notifier)
     assert len(notifier.calls) == 2
     assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+# ----------------- multi-source filtering / per-source location -------------
+
+
+from talos.kismet import DeviceObservation  # noqa: E402
+
+
+def test_poll_once_no_source_allowlist_processes_all_supported(db, config, fake_client):
+    count = poll_once(fake_client, db, config, 1700001000, source_allowlist=None)
+    assert count == 5
+
+
+def test_poll_once_source_allowlist_filters_to_subset(db, config, fake_client):
+    count = poll_once(
+        fake_client,
+        db,
+        config,
+        1700001000,
+        source_allowlist=frozenset(["builtin-bt"]),
+    )
+    # Devices [2] (BTLE), [3] (Bluetooth), [5] (BTLE/AirTag) are seen by builtin-bt.
+    assert count == 3
+    types = [
+        r["device_type"] for r in db._conn.execute("SELECT device_type FROM devices").fetchall()
+    ]
+    assert set(types) == {"ble", "bt_classic"}
+
+
+def test_poll_once_source_allowlist_drops_obs_without_seenby(db, config, monkeypatch):
+    obs = DeviceObservation(
+        mac="aa:bb:cc:dd:ee:ff",
+        device_type="wifi",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-50,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+        seen_by_sources=(),
+    )
+
+    class _SingleObsClient:
+        def get_devices_since(self, since_ts):
+            return [obs]
+
+    count = poll_once(
+        _SingleObsClient(),
+        db,
+        config,
+        1700001000,
+        source_allowlist=frozenset(["alfa-2.4ghz"]),
+    )
+    assert count == 0
+    assert db._conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 0
+
+
+def test_poll_once_min_rssi_drops_weak_observations(db, config):
+    weak = DeviceObservation(
+        mac="aa:bb:cc:dd:ee:01",
+        device_type="wifi",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-90,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+    )
+    strong = DeviceObservation(
+        mac="aa:bb:cc:dd:ee:02",
+        device_type="wifi",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-50,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+    )
+
+    class _C:
+        def get_devices_since(self, since_ts):
+            return [weak, strong]
+
+    cfg = config.model_copy(update={"min_rssi": -80})
+    count = poll_once(_C(), db, cfg, 1700001000)
+    assert count == 1
+    macs = [r["mac"] for r in db._conn.execute("SELECT mac FROM devices").fetchall()]
+    assert macs == ["aa:bb:cc:dd:ee:02"]
+
+
+def test_poll_once_min_rssi_none_observation_kept_under_filter(db, config):
+    obs = DeviceObservation(
+        mac="aa:bb:cc:dd:ee:01",
+        device_type="wifi",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=None,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+    )
+
+    class _C:
+        def get_devices_since(self, since_ts):
+            return [obs]
+
+    cfg = config.model_copy(update={"min_rssi": -80})
+    count = poll_once(_C(), db, cfg, 1700001000)
+    assert count == 1
+
+
+def test_poll_once_per_source_location_override(db, config, fake_client):
+    poll_once(
+        fake_client,
+        db,
+        config,
+        1700001000,
+        source_locations={"builtin-bt": "indoor"},
+    )
+    # BTLE/Bluetooth devices: macs from fixture seenby builtin-bt.
+    bt_macs = ("06:aa:bb:cc:dd:ee", "00:1a:7d:da:71:11", "5a:11:22:33:44:55")
+    wifi_macs = ("a4:83:e7:11:22:33", "02:11:22:33:44:55")
+    rows = db._conn.execute("SELECT mac, location_id FROM sightings").fetchall()
+    by_mac = {r["mac"]: r["location_id"] for r in rows}
+    for m in bt_macs:
+        assert by_mac[m] == "indoor"
+    for m in wifi_macs:
+        assert by_mac[m] == "testloc"
+    loc_ids = {r["id"] for r in db._conn.execute("SELECT id FROM locations").fetchall()}
+    assert "indoor" in loc_ids
+    assert "testloc" in loc_ids
+
+
+def test_poll_once_per_source_location_falls_back_to_default(db, config, fake_client):
+    poll_once(
+        fake_client,
+        db,
+        config,
+        1700001000,
+        source_locations={"alfa-5ghz": "wifi-loft"},
+    )
+    rows = db._conn.execute("SELECT mac, location_id FROM sightings").fetchall()
+    for r in rows:
+        assert r["location_id"] == "testloc"
+
+
+def test_poll_once_combined_filters_apply_independently(db, config):
+    obs_strong_wrong_src = DeviceObservation(
+        mac="aa:bb:cc:dd:ee:01",
+        device_type="wifi",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-50,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+        seen_by_sources=("rtl-sdr",),
+    )
+    obs_weak_right_src = DeviceObservation(
+        mac="aa:bb:cc:dd:ee:02",
+        device_type="wifi",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-95,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+        seen_by_sources=("alfa",),
+    )
+    obs_good = DeviceObservation(
+        mac="aa:bb:cc:dd:ee:03",
+        device_type="wifi",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-50,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+        seen_by_sources=("alfa",),
+    )
+
+    class _C:
+        def get_devices_since(self, since_ts):
+            return [obs_strong_wrong_src, obs_weak_right_src, obs_good]
+
+    cfg = config.model_copy(update={"min_rssi": -80})
+    count = poll_once(_C(), db, cfg, 1700001000, source_allowlist=frozenset(["alfa"]))
+    assert count == 1
+    macs = [r["mac"] for r in db._conn.execute("SELECT mac FROM devices").fetchall()]
+    assert macs == ["aa:bb:cc:dd:ee:03"]
+
+
+def test_poller_init_health_check_passes_with_fake(config):
+    poller = Poller(config)
+    poller.db.close()
+
+
+def test_poller_init_health_check_fails_raises(tmp_path, monkeypatch):
+    import requests as _requests
+
+    cfg = Config(
+        db_path=str(tmp_path / "talos.db"),
+        kismet_url="http://127.0.0.1:1",
+    )
+
+    def boom(*args, **kwargs):
+        raise _requests.ConnectionError("connection refused: nobody home")
+
+    monkeypatch.setattr("talos.kismet.requests.get", boom)
+    with pytest.raises(RuntimeError) as exc_info:
+        Poller(cfg)
+    msg = str(exc_info.value)
+    assert "Kismet unreachable at startup" in msg
+    assert "kismet_health_check_on_startup=false" in msg
+
+
+def test_poller_init_health_check_skipped_when_disabled(tmp_path, monkeypatch):
+    import requests as _requests
+
+    cfg = Config(
+        db_path=str(tmp_path / "talos.db"),
+        kismet_url="http://127.0.0.1:1",
+        kismet_health_check_on_startup=False,
+    )
+
+    def boom(*args, **kwargs):
+        raise _requests.ConnectionError("would fail")
+
+    monkeypatch.setattr("talos.kismet.requests.get", boom)
+    poller = Poller(cfg)
+    poller.db.close()

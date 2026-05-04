@@ -6,7 +6,15 @@
     "kismet.device.base.last_time": 1700000100,
     "kismet.device.base.signal": {"kismet.common.signal.last_signal": -45},
     "kismet.device.base.manuf": "Apple",
-    "kismet.device.base.name": "HomeNet"
+    "kismet.device.base.name": "HomeNet",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "alfa-2.4ghz",
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-a1f240000000",
+        "kismet.common.seenby.first_time": 1700000000,
+        "kismet.common.seenby.last_time": 1700000100
+      }
+    ]
   },
   {
     "kismet.device.base.macaddr": "00:13:37:ab:cd:ef",
@@ -15,14 +23,30 @@
     "kismet.device.base.last_time": 1700000100,
     "kismet.device.base.signal": {"kismet.common.signal.last_signal": -50},
     "kismet.device.base.manuf": "Hak5",
-    "kismet.device.base.name": "definitely_not_a_pineapple"
+    "kismet.device.base.name": "definitely_not_a_pineapple",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "alfa-2.4ghz",
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-a1f240000000",
+        "kismet.common.seenby.first_time": 1700000000,
+        "kismet.common.seenby.last_time": 1700000100
+      }
+    ]
   },
   {
     "kismet.device.base.macaddr": "02:ff:ee:dd:cc:bb",
     "kismet.device.base.type": "Wi-Fi Client",
     "kismet.device.base.first_time": 1700000000,
     "kismet.device.base.last_time": 1700000100,
-    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -70}
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -70},
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "alfa-2.4ghz",
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-a1f240000000",
+        "kismet.common.seenby.first_time": 1700000000,
+        "kismet.common.seenby.last_time": 1700000100
+      }
+    ]
   },
   {
     "kismet.device.base.macaddr": "00:1a:7d:da:71:99",
@@ -30,7 +54,15 @@
     "kismet.device.base.first_time": 1700000000,
     "kismet.device.base.last_time": 1700000100,
     "kismet.device.base.signal": {"kismet.common.signal.last_signal": -85},
-    "kismet.device.base.manuf": "Cambridge Silicon"
+    "kismet.device.base.manuf": "Cambridge Silicon",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "builtin-bt",
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-b1ad7f000000",
+        "kismet.common.seenby.first_time": 1700000000,
+        "kismet.common.seenby.last_time": 1700000100
+      }
+    ]
   },
   {
     "kismet.device.base.macaddr": "7a:bb:cc:dd:ee:ff",
@@ -39,6 +71,14 @@
     "kismet.device.base.last_time": 1700000100,
     "kismet.device.base.signal": {"kismet.common.signal.last_signal": -90},
     "kismet.device.base.manuf": "Apple",
-    "kismet.device.base.service_uuids": ["0000fd5a-0000-1000-8000-00805f9b34fb"]
+    "kismet.device.base.service_uuids": ["0000fd5a-0000-1000-8000-00805f9b34fb"],
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "builtin-bt",
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-b1ad7f000000",
+        "kismet.common.seenby.first_time": 1700000000,
+        "kismet.common.seenby.last_time": 1700000100
+      }
+    ]
   }
 ]

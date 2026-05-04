@@ -1380,3 +1380,112 @@ def test_alerts_list_row_class_acked(tmp_path):
         assert "row-acked" in r.text
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Kismet status indicator on the index page (cached for 30s).
+# ---------------------------------------------------------------------------
+
+
+class _FakeStatusClient:
+    def __init__(self, status: dict):
+        self._status = status
+        self.calls = 0
+
+    def health_check(self):
+        self.calls += 1
+        return dict(self._status)
+
+
+@pytest.mark.webui
+def test_index_renders_kismet_status_reachable(tmp_path):
+    app, db = _make_app(tmp_path)
+    fake = _FakeStatusClient({"reachable": True, "version": "fake-fixture", "error": None})
+    app.state.kismet_client = fake
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "Kismet sources" in r.text
+        assert "reachable" in r.text
+        assert "fake-fixture" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_kismet_status_unreachable(tmp_path):
+    app, db = _make_app(tmp_path)
+    fake = _FakeStatusClient({"reachable": False, "version": None, "error": "connection refused"})
+    app.state.kismet_client = fake
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "unreachable" in r.text
+        assert "connection refused" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_kismet_status_caches_for_30_seconds(tmp_path, monkeypatch):
+    app, db = _make_app(tmp_path)
+    fake = _FakeStatusClient({"reachable": True, "version": "fake-fixture", "error": None})
+    app.state.kismet_client = fake
+
+    fake_now = {"t": 1_700_000_000.0}
+
+    def fake_time():
+        return fake_now["t"]
+
+    monkeypatch.setattr("talos.webui.app.time.time", fake_time)
+    try:
+        with TestClient(app) as client:
+            client.get("/")
+            fake_now["t"] += 25
+            client.get("/")
+        assert fake.calls == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_kismet_status_recheck_after_cache_expiry(tmp_path, monkeypatch):
+    app, db = _make_app(tmp_path)
+    fake = _FakeStatusClient({"reachable": True, "version": "fake-fixture", "error": None})
+    app.state.kismet_client = fake
+
+    fake_now = {"t": 1_700_000_000.0}
+
+    def fake_time():
+        return fake_now["t"]
+
+    monkeypatch.setattr("talos.webui.app.time.time", fake_time)
+    try:
+        with TestClient(app) as client:
+            client.get("/")
+            fake_now["t"] += 31
+            client.get("/")
+        assert fake.calls == 2
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_kismet_status_health_check_exception_degrades(tmp_path):
+    app, db = _make_app(tmp_path)
+
+    class _RaisingClient:
+        def health_check(self):
+            raise RuntimeError("kaboom")
+
+    app.state.kismet_client = _RaisingClient()
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "unreachable" in r.text
+        assert "kaboom" in r.text
+    finally:
+        db.close()

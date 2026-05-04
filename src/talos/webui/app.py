@@ -22,6 +22,8 @@ from talos.webui.csrf import CSRFMiddleware, get_csrf_token
 
 PACKAGE = "talos.webui"
 
+KISMET_STATUS_CACHE_TTL = 30
+
 
 def _resolve_templates_dir() -> Path:
     try:
@@ -122,6 +124,36 @@ def _safe_redirect_target(request: Request, default: str) -> str:
     return default
 
 
+def _build_ui_kismet_client(config: Config) -> kismet.KismetClient:
+    if config.kismet_fixture_path:
+        return kismet.FakeKismetClient(config.kismet_fixture_path)
+    return kismet.KismetClient(
+        config.kismet_url,
+        api_key=config.kismet_api_key,
+        timeout=config.kismet_timeout_seconds,
+    )
+
+
+def _get_kismet_status(app: FastAPI, now: float) -> dict:
+    cached = getattr(app.state, "_kismet_status_cache", None)
+    cached_ts = getattr(app.state, "_kismet_status_cache_ts", None)
+    if cached is not None and cached_ts is not None and (now - cached_ts) < KISMET_STATUS_CACHE_TTL:
+        return cached
+    client = getattr(app.state, "kismet_client", None)
+    if client is None:
+        client = _build_ui_kismet_client(app.state.config)
+        app.state.kismet_client = client
+    try:
+        status = client.health_check()
+    except Exception as e:
+        status = {"reachable": False, "version": None, "error": str(e)}
+    status = dict(status)
+    status["checked_at"] = int(now)
+    app.state._kismet_status_cache = status
+    app.state._kismet_status_cache_ts = now
+    return status
+
+
 def create_app(config: Config, db: Database) -> FastAPI:
     """App factory. Takes a live Config and Database. Used by both the production
     server entry point and the test client. Does NOT open the DB itself — that's the
@@ -161,7 +193,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
-        now = int(time.time())
+        now = time.time()
+        now_int = int(now)
+        kismet_status = _get_kismet_status(app, now)
         return app.state.templates.TemplateResponse(
             request=request,
             name="index.html",
@@ -169,14 +203,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "version": __version__,
                 "active": "home",
                 "health": db.healthcheck(),
-                "sev_24h": db.alert_severity_counts(since_ts=now - 86400),
-                "sev_7d": db.alert_severity_counts(since_ts=now - 7 * 86400),
-                "sev_30d": db.alert_severity_counts(since_ts=now - 30 * 86400),
-                "per_day": db.alerts_per_day(days=30, now_ts=now),
+                "sev_24h": db.alert_severity_counts(since_ts=now_int - 86400),
+                "sev_7d": db.alert_severity_counts(since_ts=now_int - 7 * 86400),
+                "sev_30d": db.alert_severity_counts(since_ts=now_int - 30 * 86400),
+                "per_day": db.alerts_per_day(days=30, now_ts=now_int),
                 "recent_alerts": db.list_alerts(limit=10, acknowledged=False),
                 "recent_devices": db.list_devices(limit=10),
-                "device_seen": db.device_seen_counts(now_ts=now),
+                "device_seen": db.device_seen_counts(now_ts=now_int),
                 "last_poll": db.latest_poll_ts(),
+                "kismet_status": kismet_status,
             },
         )
 

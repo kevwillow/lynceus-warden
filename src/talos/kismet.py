@@ -37,6 +37,7 @@ class DeviceObservation(BaseModel):
     oui_vendor: str | None
     is_randomized: bool
     ble_service_uuids: tuple[str, ...] = ()
+    seen_by_sources: tuple[str, ...] = ()
 
     @field_validator("mac")
     @classmethod
@@ -51,6 +52,16 @@ class DeviceObservation(BaseModel):
         for u in v:
             if not _UUID_RE.match(u):
                 raise ValueError(f"invalid ble service uuid: {u!r}")
+        return v
+
+    @field_validator("seen_by_sources")
+    @classmethod
+    def _validate_seen_by_sources(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if len(v) > 16:
+            raise ValueError(f"seen_by_sources may have at most 16 entries, got {len(v)}")
+        for s in v:
+            if not isinstance(s, str) or not s:
+                raise ValueError(f"seen_by_sources entries must be non-empty strings: {s!r}")
         return v
 
     @field_validator("first_seen")
@@ -138,6 +149,28 @@ def parse_kismet_device(raw: dict) -> DeviceObservation | None:
                     logger.debug("dropping malformed ble service uuid: %r", u)
             ble_service_uuids = tuple(normalized)
 
+    seen_by_sources: tuple[str, ...] = ()
+    raw_seenby = raw.get("kismet.device.base.seenby")
+    if isinstance(raw_seenby, list):
+        collected: list[str] = []
+        seen: set[str] = set()
+        for entry in raw_seenby:
+            if not isinstance(entry, dict):
+                continue
+            label: str | None = None
+            for key in ("kismet.common.seenby.source", "kismet.common.seenby.uuid"):
+                v = entry.get(key)
+                if isinstance(v, str) and v:
+                    label = v
+                    break
+            if label is None or label in seen:
+                continue
+            seen.add(label)
+            collected.append(label)
+            if len(collected) >= 16:
+                break
+        seen_by_sources = tuple(collected)
+
     return DeviceObservation(
         mac=mac,
         device_type=device_type,
@@ -148,6 +181,7 @@ def parse_kismet_device(raw: dict) -> DeviceObservation | None:
         oui_vendor=oui_vendor,
         is_randomized=is_locally_administered(mac),
         ble_service_uuids=ble_service_uuids,
+        seen_by_sources=seen_by_sources,
     )
 
 
@@ -174,6 +208,26 @@ class KismetClient:
                 results.append(obs)
         return results
 
+    def health_check(self) -> dict:
+        url = f"{self.base_url}/system/status.json"
+        kwargs: dict[str, Any] = {"timeout": self.timeout}
+        if self.api_key:
+            kwargs["cookies"] = {"KISMET": self.api_key}
+        try:
+            response = requests.get(url, **kwargs)
+            response.raise_for_status()
+            data = response.json()
+        except requests.RequestException as e:
+            return {"reachable": False, "version": None, "error": str(e)}
+        except ValueError as e:
+            return {"reachable": False, "version": None, "error": f"invalid json: {e}"}
+        version: str | None = None
+        if isinstance(data, dict):
+            v = data.get("kismet.system.version")
+            if isinstance(v, str) and v:
+                version = v
+        return {"reachable": True, "version": version, "error": None}
+
 
 class FakeKismetClient(KismetClient):
     def __init__(self, fixture_path: str) -> None:
@@ -193,3 +247,6 @@ class FakeKismetClient(KismetClient):
                 if obs is not None:
                     results.append(obs)
         return results
+
+    def health_check(self) -> dict:
+        return {"reachable": True, "version": "fake-fixture", "error": None}

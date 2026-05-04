@@ -6,7 +6,15 @@
     "kismet.device.base.last_time": 1700003700,
     "kismet.device.base.signal": {"kismet.common.signal.last_signal": -45},
     "kismet.device.base.manuf": "Apple",
-    "kismet.device.base.name": "HomeNet"
+    "kismet.device.base.name": "HomeNet",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "alfa-2.4ghz",
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-a1f240000000",
+        "kismet.common.seenby.first_time": 1700000000,
+        "kismet.common.seenby.last_time": 1700003700
+      }
+    ]
   },
   {
     "kismet.device.base.macaddr": "00:13:37:ab:cd:ef",
@@ -15,7 +23,15 @@
     "kismet.device.base.last_time": 1700003700,
     "kismet.device.base.signal": {"kismet.common.signal.last_signal": -50},
     "kismet.device.base.manuf": "Hak5",
-    "kismet.device.base.name": "definitely_not_a_pineapple"
+    "kismet.device.base.name": "definitely_not_a_pineapple",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "alfa-2.4ghz",
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-a1f240000000",
+        "kismet.common.seenby.first_time": 1700000000,
+        "kismet.common.seenby.last_time": 1700003700
+      }
+    ]
   },
   {
     "kismet.device.base.macaddr": "de:ad:be:ef:00:99",
@@ -24,6 +40,14 @@
     "kismet.device.base.last_time": 1700003700,
     "kismet.device.base.signal": {"kismet.common.signal.last_signal": -60},
     "kismet.device.base.manuf": "Unknown",
-    "kismet.device.base.name": "newcomer"
+    "kismet.device.base.name": "newcomer",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "alfa-5ghz",
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-a1f550000000",
+        "kismet.common.seenby.first_time": 1700003700,
+        "kismet.common.seenby.last_time": 1700003700
+      }
+    ]
   }
 ]

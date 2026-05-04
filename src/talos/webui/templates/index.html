@@ -106,6 +106,31 @@
   </article>
 
   <article>
+    <header><strong>Kismet sources</strong></header>
+    {% if kismet_status %}
+      <p class="last-poll">
+        {% if kismet_status.reachable %}
+          <span class="badge-low">reachable</span>
+          {% if kismet_status.version %}
+            &middot; <strong>version:</strong> <code>{{ kismet_status.version }}</code>
+          {% endif %}
+        {% else %}
+          <span class="badge-high">unreachable</span>
+          {% if kismet_status.error %}
+            &middot; <strong>error:</strong> <code>{{ kismet_status.error }}</code>
+          {% endif %}
+        {% endif %}
+        {% if kismet_status.checked_at %}
+          &middot; <strong>checked:</strong>
+          <time datetime="{{ kismet_status.checked_at | unix_to_iso }}">{{ kismet_status.checked_at | unix_to_iso }}</time>
+        {% endif %}
+      </p>
+    {% else %}
+      <p><em>Kismet status unavailable.</em></p>
+    {% endif %}
+  </article>
+
+  <article>
     <header><strong>recently seen devices</strong></header>
     {% if recent_devices %}
       <table>

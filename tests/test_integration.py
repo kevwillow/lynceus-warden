@@ -303,5 +303,69 @@ def test_e2e_airtag_detection(tmp_path):
         db.close()
 
 
+def test_e2e_source_allowlist_isolation(tmp_path):
+    config = _make_config(tmp_path, KISMET_T1, RULES, ALLOWLIST)
+    config = config.model_copy(update={"kismet_sources": ["builtin-bt"]})
+    db = Database(config.db_path)
+    client = build_kismet_client(config)
+    ruleset = load_ruleset(config.rules_path)
+    allowlist = load_allowlist(config.allowlist_path)
+    notifier = RecordingNotifier()
+    try:
+        processed = poll_once(
+            client,
+            db,
+            config,
+            1700000200,
+            ruleset=ruleset,
+            allowlist=allowlist,
+            notifier=notifier,
+            source_allowlist=frozenset(config.kismet_sources or ()),
+        )
+        # builtin-bt covers Cambridge BTLE + AirTag BLE only.
+        assert processed == 2
+        macs = {r["mac"] for r in db._conn.execute("SELECT mac FROM devices").fetchall()}
+        assert macs == {CAMBRIDGE_MAC, AIRTAG_MAC}
+        # Wi-Fi devices must be entirely absent.
+        assert APPLE_MAC not in macs
+        assert PINEAPPLE_MAC not in macs
+        assert RANDOM_CLIENT_MAC not in macs
+    finally:
+        db.close()
+
+
+def test_e2e_per_source_location_attribution(tmp_path):
+    config = _make_config(tmp_path, KISMET_T1, RULES, ALLOWLIST)
+    source_locations = {"alfa-2.4ghz": "wifi-corner", "builtin-bt": "bt-corner"}
+    config = config.model_copy(update={"kismet_source_locations": source_locations})
+    db = Database(config.db_path)
+    client = build_kismet_client(config)
+    ruleset = load_ruleset(config.rules_path)
+    allowlist = load_allowlist(config.allowlist_path)
+    notifier = RecordingNotifier()
+    try:
+        poll_once(
+            client,
+            db,
+            config,
+            1700000200,
+            ruleset=ruleset,
+            allowlist=allowlist,
+            notifier=notifier,
+            source_locations=source_locations,
+        )
+        rows = db._conn.execute("SELECT mac, location_id FROM sightings").fetchall()
+        by_mac = {r["mac"]: r["location_id"] for r in rows}
+        for m in (APPLE_MAC, PINEAPPLE_MAC, RANDOM_CLIENT_MAC):
+            assert by_mac[m] == "wifi-corner"
+        for m in (CAMBRIDGE_MAC, AIRTAG_MAC):
+            assert by_mac[m] == "bt-corner"
+        loc_ids = {r["id"] for r in db._conn.execute("SELECT id FROM locations").fetchall()}
+        assert "wifi-corner" in loc_ids
+        assert "bt-corner" in loc_ids
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

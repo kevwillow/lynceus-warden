@@ -64,3 +64,25 @@ Currently base.html uses literal /static/ paths. If we ever support
 deployment behind a reverse proxy at a non-root path, switch to
 url_for('static', path=...) and update tests to assert the resolved
 path rather than the literal substring.
+
+## Network capture features
+
+### Per-band filtering (2.4/5/6 GHz)
+Currently filtering is per-source (adapter), not per-band. If the same
+adapter captures multiple bands and we want to alert differently per band,
+we'd need to extract Kismet's frequency field per observation.
+Trigger: when one-source-per-band setup proves insufficient.
+
+### Retry policy on Kismet API failures
+Currently a single failed poll is silently logged and the next poll
+proceeds. If transient failures become noisy, add exponential backoff
+with a circuit breaker.
+
+### Kismet-died notification
+Talos can detect Kismet unreachability (via health_check) but doesn't
+currently alert via ntfy when this happens. Add a "talos infrastructure
+alert" tier that fires on kismet-down, db-locked, etc.
+
+### Per-channel filtering
+Same logic as per-band — wait until the simpler primitives prove
+insufficient.

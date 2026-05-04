@@ -131,3 +131,116 @@ def test_fixture_and_url_both_set_logs_warning(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="talos.config"):
         load_config(str(cfg_path))
     assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+# ------------------- multi-source / multi-adapter additions -----------------
+
+
+def test_kismet_sources_default_none(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "")
+    cfg = load_config(str(cfg_path))
+    assert cfg.kismet_sources is None
+
+
+def test_kismet_sources_empty_list_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "kismet_sources: []\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_kismet_sources_strips_whitespace(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "kismet_sources:\n  - '  alfa-2.4ghz  '\n  - builtin-bt\n")
+    cfg = load_config(str(cfg_path))
+    assert cfg.kismet_sources == ["alfa-2.4ghz", "builtin-bt"]
+
+
+def test_kismet_sources_blank_entry_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "kismet_sources:\n  - alfa\n  - '   '\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_kismet_source_locations_default_none(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "")
+    cfg = load_config(str(cfg_path))
+    assert cfg.kismet_source_locations is None
+
+
+def test_kismet_source_locations_empty_value_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "kismet_source_locations:\n  alfa-2.4ghz: ''\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_kismet_source_locations_strips_whitespace(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(
+        cfg_path,
+        "kismet_source_locations:\n  '  alfa-2.4ghz  ': '  wifi-corner  '\n",
+    )
+    cfg = load_config(str(cfg_path))
+    assert cfg.kismet_source_locations == {"alfa-2.4ghz": "wifi-corner"}
+
+
+def test_min_rssi_default_none(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "")
+    cfg = load_config(str(cfg_path))
+    assert cfg.min_rssi is None
+
+
+def test_min_rssi_in_valid_range_accepted(tmp_path):
+    for v in (-85, -1, -120, 0):
+        cfg_path = tmp_path / "talos.yaml"
+        _write(cfg_path, f"min_rssi: {v}\n")
+        cfg = load_config(str(cfg_path))
+        assert cfg.min_rssi == v
+
+
+def test_min_rssi_out_of_range_rejected(tmp_path):
+    for v in (-121, 1, 50):
+        cfg_path = tmp_path / "talos.yaml"
+        _write(cfg_path, f"min_rssi: {v}\n")
+        with pytest.raises(ValidationError):
+            load_config(str(cfg_path))
+
+
+def test_kismet_timeout_default_10(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "")
+    cfg = load_config(str(cfg_path))
+    assert cfg.kismet_timeout_seconds == 10.0
+
+
+def test_kismet_timeout_zero_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "kismet_timeout_seconds: 0\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_kismet_timeout_negative_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "kismet_timeout_seconds: -1\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_kismet_timeout_too_large_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "kismet_timeout_seconds: 121.0\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_kismet_health_check_on_startup_default_true(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "")
+    cfg = load_config(str(cfg_path))
+    assert cfg.kismet_health_check_on_startup is True

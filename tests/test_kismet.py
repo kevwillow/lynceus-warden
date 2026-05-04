@@ -440,3 +440,157 @@ def test_parse_ble_no_service_uuids_field_yields_empty_tuple():
     obs = parse_kismet_device(raw)
     assert obs is not None
     assert obs.ble_service_uuids == ()
+
+
+# -------------------------- seen_by_sources / seenby ------------------------
+
+
+def _seenby(source: str | None = None, uuid: str | None = None) -> dict:
+    entry: dict = {
+        "kismet.common.seenby.first_time": 1700000000,
+        "kismet.common.seenby.last_time": 1700000100,
+    }
+    if source is not None:
+        entry["kismet.common.seenby.source"] = source
+    if uuid is not None:
+        entry["kismet.common.seenby.uuid"] = uuid
+    return entry
+
+
+def test_observation_seen_by_sources_default_empty():
+    obs = DeviceObservation(**_valid_obs_kwargs())
+    assert obs.seen_by_sources == ()
+
+
+def test_observation_rejects_oversized_seen_by():
+    with pytest.raises(ValidationError):
+        DeviceObservation(**_valid_obs_kwargs(seen_by_sources=tuple(f"src-{i}" for i in range(17))))
+
+
+def test_observation_rejects_empty_string_source():
+    with pytest.raises(ValidationError):
+        DeviceObservation(**_valid_obs_kwargs(seen_by_sources=("", "real")))
+
+
+def test_observation_frozen_seen_by_immutable():
+    obs = DeviceObservation(**_valid_obs_kwargs(seen_by_sources=("a", "b")))
+    with pytest.raises(TypeError):
+        obs.seen_by_sources[0] = "c"
+
+
+def test_parse_extracts_seenby_source_field():
+    raw = _wifi_ap_raw()
+    raw["kismet.device.base.seenby"] = [_seenby(source="alfa-2.4ghz")]
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.seen_by_sources == ("alfa-2.4ghz",)
+
+
+def test_parse_falls_back_to_uuid_when_source_missing():
+    raw = _wifi_ap_raw()
+    raw["kismet.device.base.seenby"] = [_seenby(uuid="11111111-2222-3333-4444-555555555555")]
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.seen_by_sources == ("11111111-2222-3333-4444-555555555555",)
+
+
+def test_parse_skips_seenby_entries_with_neither_field():
+    raw = _wifi_ap_raw()
+    raw["kismet.device.base.seenby"] = [{}, _seenby(source="alfa")]
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.seen_by_sources == ("alfa",)
+
+
+def test_parse_dedups_seenby_preserving_order():
+    raw = _wifi_ap_raw()
+    raw["kismet.device.base.seenby"] = [
+        _seenby(source="alfa"),
+        _seenby(source="builtin"),
+        _seenby(source="alfa"),
+    ]
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.seen_by_sources == ("alfa", "builtin")
+
+
+def test_parse_caps_seenby_at_16():
+    raw = _wifi_ap_raw()
+    raw["kismet.device.base.seenby"] = [_seenby(source=f"src-{i}") for i in range(20)]
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert len(obs.seen_by_sources) == 16
+    assert obs.seen_by_sources[0] == "src-0"
+    assert obs.seen_by_sources[-1] == "src-15"
+
+
+def test_parse_no_seenby_field_yields_empty_tuple():
+    raw = _wifi_ap_raw()
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.seen_by_sources == ()
+
+
+def test_parse_seenby_not_a_list_yields_empty_tuple():
+    raw = _wifi_ap_raw()
+    raw["kismet.device.base.seenby"] = "malformed"
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.seen_by_sources == ()
+
+
+# ------------------------------- health_check ------------------------------
+
+
+def test_kismet_client_health_check_success(mocker):
+    mock_get = mocker.patch("talos.kismet.requests.get")
+    response = mock_get.return_value
+    response.json.return_value = {"kismet.system.version": "2024-01-R1"}
+    response.raise_for_status.return_value = None
+    client = KismetClient(base_url="http://x:2501")
+    result = client.health_check()
+    assert result == {"reachable": True, "version": "2024-01-R1", "error": None}
+    assert mock_get.call_args.args[0] == "http://x:2501/system/status.json"
+
+
+def test_kismet_client_health_check_http_error(mocker):
+    mock_get = mocker.patch("talos.kismet.requests.get")
+    response = mock_get.return_value
+    response.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
+    client = KismetClient(base_url="http://x:2501")
+    result = client.health_check()
+    assert result["reachable"] is False
+    assert result["version"] is None
+    assert result["error"]
+    assert "500" in result["error"]
+
+
+def test_kismet_client_health_check_transport_error(mocker):
+    mock_get = mocker.patch("talos.kismet.requests.get")
+    mock_get.side_effect = requests.ConnectionError("connection refused")
+    client = KismetClient(base_url="http://x:2501")
+    result = client.health_check()
+    assert result["reachable"] is False
+    assert result["version"] is None
+    assert "connection refused" in result["error"]
+
+
+def test_kismet_client_health_check_no_version_key(mocker):
+    mock_get = mocker.patch("talos.kismet.requests.get")
+    response = mock_get.return_value
+    response.json.return_value = {"some.other.key": "value"}
+    response.raise_for_status.return_value = None
+    client = KismetClient(base_url="http://x:2501")
+    result = client.health_check()
+    assert result["reachable"] is True
+    assert result["version"] is None
+
+
+def test_fake_kismet_client_health_check(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("http should not be called")
+
+    monkeypatch.setattr(requests, "get", boom)
+    client = FakeKismetClient(str(FIXTURE_PATH))
+    result = client.health_check()
+    assert result == {"reachable": True, "version": "fake-fixture", "error": None}

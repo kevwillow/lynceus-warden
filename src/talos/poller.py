@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 def build_kismet_client(config: Config) -> KismetClient:
     if config.kismet_fixture_path:
         return FakeKismetClient(config.kismet_fixture_path)
-    return KismetClient(config.kismet_url, api_key=config.kismet_api_key)
+    return KismetClient(
+        config.kismet_url,
+        api_key=config.kismet_api_key,
+        timeout=config.kismet_timeout_seconds,
+    )
 
 
 def poll_once(
@@ -35,6 +39,8 @@ def poll_once(
     ruleset: Ruleset | None = None,
     allowlist: Allowlist | None = None,
     notifier: Notifier | None = None,
+    source_allowlist: frozenset[str] | None = None,
+    source_locations: dict[str, str] | None = None,
 ) -> int:
     if ruleset is None:
         ruleset = Ruleset()
@@ -49,8 +55,42 @@ def poll_once(
     processed = 0
     for obs in observations:
         try:
+            if source_allowlist is not None:
+                if not obs.seen_by_sources:
+                    logger.debug(
+                        "obs %s has no source attribution, dropping under source_allowlist",
+                        obs.mac,
+                    )
+                    continue
+                if not any(s in source_allowlist for s in obs.seen_by_sources):
+                    logger.debug(
+                        "obs %s sources %r not in allowlist, dropping",
+                        obs.mac,
+                        obs.seen_by_sources,
+                    )
+                    continue
+            if config.min_rssi is not None and obs.rssi is not None and obs.rssi < config.min_rssi:
+                logger.debug(
+                    "obs %s rssi=%s below min_rssi=%s, dropping",
+                    obs.mac,
+                    obs.rssi,
+                    config.min_rssi,
+                )
+                continue
+
+            effective_location_id = config.location_id
+            effective_location_label = config.location_label
+            if source_locations is not None:
+                for src in obs.seen_by_sources:
+                    if src in source_locations:
+                        effective_location_id = source_locations[src]
+                        if effective_location_id != config.location_id:
+                            effective_location_label = effective_location_id
+                        break
+
             existing_device = db.get_device(obs.mac)
             is_new = existing_device is None
+            db.ensure_location(effective_location_id, effective_location_label)
             db.upsert_device(
                 mac=obs.mac,
                 device_type=obs.device_type,
@@ -63,7 +103,7 @@ def poll_once(
                 ts=obs.last_seen,
                 rssi=obs.rssi,
                 ssid=obs.ssid,
-                location_id=config.location_id,
+                location_id=effective_location_id,
             )
             processed += 1
             if allowlist.is_allowed(obs):
@@ -109,6 +149,18 @@ class Poller:
         self.config = config
         self.db = Database(config.db_path)
         self.client = build_kismet_client(config)
+        if config.kismet_health_check_on_startup:
+            health = self.client.health_check()
+            if not health.get("reachable"):
+                err = health.get("error") or "unknown error"
+                logger.error("Kismet health check failed at startup: %s", err)
+                raise RuntimeError(
+                    f"Kismet unreachable at startup: {err}. "
+                    "Set kismet_health_check_on_startup=false to skip this check."
+                )
+        self._source_allowlist: frozenset[str] | None = (
+            frozenset(config.kismet_sources) if config.kismet_sources else None
+        )
         self.ruleset = load_ruleset(config.rules_path) if config.rules_path else Ruleset()
         self.allowlist = (
             load_allowlist(config.allowlist_path) if config.allowlist_path else Allowlist()
@@ -141,6 +193,8 @@ class Poller:
                     ruleset=self.ruleset,
                     allowlist=self.allowlist,
                     notifier=self.notifier,
+                    source_allowlist=self._source_allowlist,
+                    source_locations=self.config.kismet_source_locations,
                 )
                 self._interruptible_sleep(self.config.poll_interval_seconds)
         except KeyboardInterrupt:
@@ -158,6 +212,8 @@ class Poller:
                 ruleset=self.ruleset,
                 allowlist=self.allowlist,
                 notifier=self.notifier,
+                source_allowlist=self._source_allowlist,
+                source_locations=self.config.kismet_source_locations,
             )
         finally:
             self.db.close()
