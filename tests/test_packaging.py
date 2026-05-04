@@ -83,3 +83,23 @@ def test_wheel_install_finds_migrations(tmp_path):
         "schema_migrations",
     }:
         assert required in tables, f"missing {required} after wheel install"
+
+    if sys.platform == "win32":
+        venv_talos = venv_dir / "Scripts" / "talos.exe"
+    else:
+        venv_talos = venv_dir / "bin" / "talos"
+    version_run = subprocess.run(
+        [str(venv_talos), "--version"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert version_run.returncode == 0, (
+        f"talos --version failed:\nstdout={version_run.stdout}\nstderr={version_run.stderr}"
+    )
+    combined = (version_run.stdout + version_run.stderr).strip()
+    assert combined, "talos --version produced no output"
+    import re as _re
+    assert _re.search(r"\d+\.\d+\.\d+", combined), (
+        f"no version string in talos --version output: {combined!r}"
+    )
