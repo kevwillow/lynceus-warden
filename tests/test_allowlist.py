@@ -104,16 +104,12 @@ def test_extra_field_rejected():
 
 
 def test_is_allowed_mac_match():
-    al = Allowlist(
-        entries=[AllowlistEntry(pattern="A4:83:E7:11:22:33", pattern_type="mac")]
-    )
+    al = Allowlist(entries=[AllowlistEntry(pattern="A4:83:E7:11:22:33", pattern_type="mac")])
     assert al.is_allowed(_obs("a4:83:e7:11:22:33")) is True
 
 
 def test_is_allowed_mac_no_match():
-    al = Allowlist(
-        entries=[AllowlistEntry(pattern="A4:83:E7:11:22:33", pattern_type="mac")]
-    )
+    al = Allowlist(entries=[AllowlistEntry(pattern="A4:83:E7:11:22:33", pattern_type="mac")])
     assert al.is_allowed(_obs("de:ad:be:ef:00:01")) is False
 
 

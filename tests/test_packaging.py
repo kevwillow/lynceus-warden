@@ -50,10 +50,7 @@ def test_wheel_install_finds_migrations(tmp_path):
     assert install.returncode == 0, f"pip install failed:\n{install.stderr}"
 
     db_path = tmp_path / "wheel-test.db"
-    driver = (
-        "from talos.db import Database; "
-        f"db = Database(r'{db_path}'); db.close()"
-    )
+    driver = f"from talos.db import Database; db = Database(r'{db_path}'); db.close()"
     drive = subprocess.run(
         [str(venv_python), "-c", driver],
         capture_output=True,
@@ -67,9 +64,7 @@ def test_wheel_install_finds_migrations(tmp_path):
     try:
         tables = {
             row[0]
-            for row in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
     finally:
         con.close()
@@ -100,6 +95,7 @@ def test_wheel_install_finds_migrations(tmp_path):
     combined = (version_run.stdout + version_run.stderr).strip()
     assert combined, "talos --version produced no output"
     import re as _re
+
     assert _re.search(r"\d+\.\d+\.\d+", combined), (
         f"no version string in talos --version output: {combined!r}"
     )

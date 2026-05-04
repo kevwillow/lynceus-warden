@@ -66,9 +66,7 @@ def _count(db, table):
 
 
 def _alerts(db):
-    rows = db._conn.execute(
-        "SELECT rule_name, mac, severity FROM alerts ORDER BY id"
-    ).fetchall()
+    rows = db._conn.execute("SELECT rule_name, mac, severity FROM alerts ORDER BY id").fetchall()
     return [(r["rule_name"], r["mac"], r["severity"]) for r in rows]
 
 
@@ -81,9 +79,7 @@ def test_e2e_first_poll_writes_devices_sightings_alerts_and_notifications(tmp_pa
 
         assert _count(db, "devices") == 4
 
-        sighting_rows = db._conn.execute(
-            "SELECT location_id FROM sightings"
-        ).fetchall()
+        sighting_rows = db._conn.execute("SELECT location_id FROM sightings").fetchall()
         assert len(sighting_rows) == 4
         assert all(r["location_id"] == "integration" for r in sighting_rows)
 
@@ -133,9 +129,7 @@ def test_e2e_second_poll_dedup_suppresses_repeat_alerts(tmp_path):
         client_t2 = build_kismet_client(config_t2)
         notifier_t2 = RecordingNotifier()
 
-        processed = _run_poll(
-            client_t2, db, config_t2, 1700000300, ruleset, allowlist, notifier_t2
-        )
+        processed = _run_poll(client_t2, db, config_t2, 1700000300, ruleset, allowlist, notifier_t2)
         assert processed == 3
 
         assert _count(db, "alerts") == 3
@@ -172,9 +166,7 @@ def test_e2e_dedup_window_expiry_re_fires_alert(tmp_path):
                         "kismet.device.base.type": "Wi-Fi AP",
                         "kismet.device.base.first_time": 1700000000,
                         "kismet.device.base.last_time": late_ts,
-                        "kismet.device.base.signal": {
-                            "kismet.common.signal.last_signal": -50
-                        },
+                        "kismet.device.base.signal": {"kismet.common.signal.last_signal": -50},
                         "kismet.device.base.manuf": "Hak5",
                         "kismet.device.base.name": "definitely_not_a_pineapple",
                     }
@@ -183,9 +175,7 @@ def test_e2e_dedup_window_expiry_re_fires_alert(tmp_path):
             encoding="utf-8",
         )
 
-        config_t2 = config_t1.model_copy(
-            update={"kismet_fixture_path": str(inline_fixture)}
-        )
+        config_t2 = config_t1.model_copy(update={"kismet_fixture_path": str(inline_fixture)})
         client_t2 = build_kismet_client(config_t2)
         notifier_t2 = RecordingNotifier()
 

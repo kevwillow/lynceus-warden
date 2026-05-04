@@ -88,23 +88,15 @@ def poll_once(
                         severity=hit.severity,
                     )
                 except Exception as e:
-                    logger.warning(
-                        "Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e
-                    )
+                    logger.warning("Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e)
                     continue
                 title = f"talos: {hit.severity.upper()} alert"
                 try:
-                    ok = notifier.send(
-                        severity=hit.severity, title=title, message=hit.message
-                    )
+                    ok = notifier.send(severity=hit.severity, title=title, message=hit.message)
                     if not ok:
-                        logger.warning(
-                            "Notifier returned False for %s/%s", hit.rule_name, hit.mac
-                        )
+                        logger.warning("Notifier returned False for %s/%s", hit.rule_name, hit.mac)
                 except Exception as e:
-                    logger.warning(
-                        "Notifier raised for %s/%s: %s", hit.rule_name, hit.mac, e
-                    )
+                    logger.warning("Notifier raised for %s/%s: %s", hit.rule_name, hit.mac, e)
         except Exception as e:
             logger.warning("Failed to persist observation %s: %s", obs.mac, e)
             continue

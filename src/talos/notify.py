@@ -29,8 +29,7 @@ class Notifier(ABC):
         severity: Literal["low", "med", "high"],
         title: str,
         message: str,
-    ) -> bool:
-        ...
+    ) -> bool: ...
 
 
 class NullNotifier(Notifier):

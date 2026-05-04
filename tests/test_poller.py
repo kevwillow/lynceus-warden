@@ -211,9 +211,7 @@ def test_poll_once_watchlist_oui_hit_creates_alert(db, config, fake_client):
         ]
     )
     poll_once(fake_client, db, config, 1700001000, ruleset=rs)
-    rows = db._conn.execute(
-        "SELECT rule_name, mac, severity, message FROM alerts"
-    ).fetchall()
+    rows = db._conn.execute("SELECT rule_name, mac, severity, message FROM alerts").fetchall()
     assert len(rows) == 1
     assert rows[0]["rule_name"] == "apple_oui"
     assert rows[0]["mac"] == "a4:83:e7:11:22:33"
@@ -250,9 +248,7 @@ def test_poll_once_allowlist_suppresses_alert(db, config, fake_client):
             )
         ]
     )
-    al = Allowlist(
-        entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")]
-    )
+    al = Allowlist(entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")])
     poll_once(fake_client, db, config, 1700001000, ruleset=rs, allowlist=al)
     assert _alerts_count(db) == 0
 
@@ -411,13 +407,9 @@ def test_poll_once_notifier_not_called_for_allowlisted(db, config, fake_client):
             )
         ]
     )
-    al = Allowlist(
-        entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")]
-    )
+    al = Allowlist(entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")])
     rec = RecordingNotifier()
-    poll_once(
-        fake_client, db, config, 1700001000, ruleset=rs, allowlist=al, notifier=rec
-    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs, allowlist=al, notifier=rec)
     assert rec.calls == []
 
 

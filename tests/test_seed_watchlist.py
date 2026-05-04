@@ -49,12 +49,24 @@ def test_seed_from_yaml_valid_entries(tmp_path):
         yaml.safe_dump(
             {
                 "entries": [
-                    {"pattern": "aa:bb:cc:dd:ee:ff", "pattern_type": "mac",
-                     "severity": "high", "description": "test mac"},
-                    {"pattern": "11:22:33", "pattern_type": "oui",
-                     "severity": "med", "description": "test oui"},
-                    {"pattern": "EvilSSID", "pattern_type": "ssid",
-                     "severity": "low", "description": "test ssid"},
+                    {
+                        "pattern": "aa:bb:cc:dd:ee:ff",
+                        "pattern_type": "mac",
+                        "severity": "high",
+                        "description": "test mac",
+                    },
+                    {
+                        "pattern": "11:22:33",
+                        "pattern_type": "oui",
+                        "severity": "med",
+                        "description": "test oui",
+                    },
+                    {
+                        "pattern": "EvilSSID",
+                        "pattern_type": "ssid",
+                        "severity": "low",
+                        "description": "test ssid",
+                    },
                 ]
             }
         )
@@ -75,10 +87,18 @@ def test_seed_from_yaml_invalid_pattern_type_skipped(tmp_path):
         yaml.safe_dump(
             {
                 "entries": [
-                    {"pattern": "aa:bb:cc", "pattern_type": "cellular",
-                     "severity": "high", "description": "bad type"},
-                    {"pattern": "11:22:33", "pattern_type": "oui",
-                     "severity": "low", "description": "good"},
+                    {
+                        "pattern": "aa:bb:cc",
+                        "pattern_type": "cellular",
+                        "severity": "high",
+                        "description": "bad type",
+                    },
+                    {
+                        "pattern": "11:22:33",
+                        "pattern_type": "oui",
+                        "severity": "low",
+                        "description": "good",
+                    },
                 ]
             }
         )
@@ -101,10 +121,18 @@ def test_seed_from_yaml_invalid_severity_skipped(tmp_path):
         yaml.safe_dump(
             {
                 "entries": [
-                    {"pattern": "aa:bb:cc", "pattern_type": "oui",
-                     "severity": "critical", "description": "bad sev"},
-                    {"pattern": "11:22:33", "pattern_type": "oui",
-                     "severity": "low", "description": "good"},
+                    {
+                        "pattern": "aa:bb:cc",
+                        "pattern_type": "oui",
+                        "severity": "critical",
+                        "description": "bad sev",
+                    },
+                    {
+                        "pattern": "11:22:33",
+                        "pattern_type": "oui",
+                        "severity": "low",
+                        "description": "good",
+                    },
                 ]
             }
         )
@@ -124,12 +152,24 @@ def test_seed_from_yaml_empty_pattern_skipped(tmp_path):
         yaml.safe_dump(
             {
                 "entries": [
-                    {"pattern": "", "pattern_type": "oui",
-                     "severity": "low", "description": "empty"},
-                    {"pattern": "   ", "pattern_type": "oui",
-                     "severity": "low", "description": "whitespace"},
-                    {"pattern": "11:22:33", "pattern_type": "oui",
-                     "severity": "low", "description": "good"},
+                    {
+                        "pattern": "",
+                        "pattern_type": "oui",
+                        "severity": "low",
+                        "description": "empty",
+                    },
+                    {
+                        "pattern": "   ",
+                        "pattern_type": "oui",
+                        "severity": "low",
+                        "description": "whitespace",
+                    },
+                    {
+                        "pattern": "11:22:33",
+                        "pattern_type": "oui",
+                        "severity": "low",
+                        "description": "good",
+                    },
                 ]
             }
         )
