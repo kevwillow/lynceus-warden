@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}health &mdash; talos{% endblock %}
 {% block content %}
+  {% include "_topnav.html" %}
   <h2>health</h2>
   <table>
     <tr><th>schema version</th><td>{{ health.schema_version }}</td></tr>
