@@ -90,6 +90,38 @@ def test_negative_dedup_window_rejected(tmp_path):
         load_config(str(cfg_path))
 
 
+def test_ntfy_defaults_all_none(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "")
+    cfg = load_config(str(cfg_path))
+    assert cfg.ntfy_url is None
+    assert cfg.ntfy_topic is None
+    assert cfg.ntfy_auth_token is None
+
+
+def test_ntfy_url_without_topic_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "ntfy_url: https://ntfy.sh\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_ntfy_topic_without_url_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "ntfy_topic: my-alerts\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_ntfy_auth_token_alone_no_error(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "ntfy_auth_token: secret\n")
+    cfg = load_config(str(cfg_path))
+    assert cfg.ntfy_url is None
+    assert cfg.ntfy_topic is None
+    assert cfg.ntfy_auth_token == "secret"
+
+
 def test_fixture_and_url_both_set_logs_warning(tmp_path, caplog):
     cfg_path = tmp_path / "talos.yaml"
     _write(

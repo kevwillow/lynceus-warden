@@ -6,7 +6,13 @@ from unittest.mock import Mock
 import pytest
 import requests
 
-from talos.notify import NtfyNotifier, NullNotifier, RecordingNotifier
+from talos.config import Config
+from talos.notify import (
+    NtfyNotifier,
+    NullNotifier,
+    RecordingNotifier,
+    build_notifier,
+)
 
 # ---------------------------------- helpers ----------------------------------
 
@@ -206,3 +212,32 @@ def test_ntfy_does_not_raise_for_status(mocker):
     mocker.patch("talos.notify.requests.post", return_value=resp)
     NtfyNotifier("https://ntfy.sh", "t").send("low", "t", "m")
     assert resp.raise_for_status.call_count == 0
+
+
+# --------------------------------- build_notifier ---------------------------
+
+
+def test_build_notifier_returns_null_when_no_ntfy_config():
+    cfg = Config()
+    n = build_notifier(cfg)
+    assert isinstance(n, NullNotifier)
+
+
+def test_build_notifier_returns_ntfy_when_url_and_topic_set():
+    cfg = Config(ntfy_url="https://ntfy.sh/", ntfy_topic="my-alerts")
+    n = build_notifier(cfg)
+    assert isinstance(n, NtfyNotifier)
+    assert n.base_url == "https://ntfy.sh"
+    assert n.topic == "my-alerts"
+    assert n.auth_token is None
+
+
+def test_build_notifier_passes_auth_token_through():
+    cfg = Config(
+        ntfy_url="https://ntfy.sh",
+        ntfy_topic="my-alerts",
+        ntfy_auth_token="secret-xyz",
+    )
+    n = build_notifier(cfg)
+    assert isinstance(n, NtfyNotifier)
+    assert n.auth_token == "secret-xyz"

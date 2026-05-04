@@ -1,5 +1,6 @@
 """Tests for the poller daemon."""
 
+import logging
 import threading
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from talos.allowlist import Allowlist, AllowlistEntry
 from talos.config import Config
 from talos.db import Database
 from talos.kismet import FakeKismetClient, KismetClient
+from talos.notify import Notifier, RecordingNotifier
 from talos.poller import (
     STATE_KEY_LAST_POLL,
     Poller,
@@ -347,3 +349,155 @@ def test_poll_once_alert_write_error_does_not_abort_poll(db, config, fake_client
     assert count == 4
     assert state["calls"] >= 2
     assert _alerts_count(db) >= 1
+
+
+# --------------------------- notifier integration ---------------------------
+
+
+class _RaisingNotifier(Notifier):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def send(self, severity, title, message):
+        self.calls += 1
+        raise RuntimeError("notifier blew up")
+
+
+class _FalseNotifier(Notifier):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    def send(self, severity, title, message):
+        self.calls.append((severity, title, message))
+        return False
+
+
+def test_poll_once_notifier_called_for_alert(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_oui",
+                rule_type="watchlist_oui",
+                severity="high",
+                patterns=["a4:83:e7"],
+                description="Apple OUI",
+            )
+        ]
+    )
+    rec = RecordingNotifier()
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs, notifier=rec)
+    assert len(rec.calls) == 1
+    severity, title, message = rec.calls[0]
+    assert severity == "high"
+    assert title == "talos: HIGH alert"
+    assert "a4:83:e7:11:22:33" in message
+    assert "Apple OUI" in message
+
+
+def test_poll_once_notifier_not_called_when_no_hits(db, config, fake_client):
+    rec = RecordingNotifier()
+    poll_once(fake_client, db, config, 1700001000, notifier=rec)
+    assert rec.calls == []
+
+
+def test_poll_once_notifier_not_called_for_allowlisted(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")]
+    )
+    rec = RecordingNotifier()
+    poll_once(
+        fake_client, db, config, 1700001000, ruleset=rs, allowlist=al, notifier=rec
+    )
+    assert rec.calls == []
+
+
+def test_poll_once_notifier_not_called_for_dedup_skip(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    db.upsert_device("a4:83:e7:11:22:33", "wifi", "Apple", 0, 1699000000)
+    db.add_alert(
+        ts=1700000900,
+        rule_name="apple_mac",
+        mac="a4:83:e7:11:22:33",
+        message="prior",
+        severity="high",
+    )
+    cfg = config.model_copy(update={"alert_dedup_window_seconds": 3600})
+    rec = RecordingNotifier()
+    poll_once(fake_client, db, cfg, 1700001000, ruleset=rs, notifier=rec)
+    assert rec.calls == []
+
+
+def test_poll_once_notifier_called_after_dedup_window(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    db.upsert_device("a4:83:e7:11:22:33", "wifi", "Apple", 0, 1699000000)
+    db.add_alert(
+        ts=1699993800,
+        rule_name="apple_mac",
+        mac="a4:83:e7:11:22:33",
+        message="ancient",
+        severity="high",
+    )
+    cfg = config.model_copy(update={"alert_dedup_window_seconds": 3600})
+    rec = RecordingNotifier()
+    poll_once(fake_client, db, cfg, 1700001000, ruleset=rs, notifier=rec)
+    assert len(rec.calls) == 1
+
+
+def test_poll_once_notifier_failure_does_not_prevent_alert_db_row(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    notifier = _RaisingNotifier()
+    count = poll_once(fake_client, db, config, 1700001000, ruleset=rs, notifier=notifier)
+    assert count == 4
+    assert _alerts_count(db) == 1
+    assert notifier.calls == 1
+
+
+def test_poll_once_notifier_returning_false_logs_warning_but_continues(
+    db, config, fake_client, caplog
+):
+    rs = Ruleset(
+        rules=[Rule(name="new_dev", rule_type="new_non_randomized_device", severity="low")]
+    )
+    cfg = config.model_copy(update={"alert_dedup_window_seconds": 0})
+    notifier = _FalseNotifier()
+    with caplog.at_level(logging.WARNING, logger="talos.poller"):
+        poll_once(fake_client, db, cfg, 1700001000, ruleset=rs, notifier=notifier)
+    assert len(notifier.calls) == 2
+    assert any(r.levelname == "WARNING" for r in caplog.records)
