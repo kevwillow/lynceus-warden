@@ -5,7 +5,7 @@ from talos import allowlist, db, kismet, main, notify, poller, rules
 
 
 def test_version():
-    assert talos.__version__ == "0.1.0"
+    assert talos.__version__ == "0.2.0"
 
 
 def test_modules_importable():

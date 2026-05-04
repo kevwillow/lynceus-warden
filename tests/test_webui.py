@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from contextlib import redirect_stdout
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1406,7 +1407,7 @@ def test_index_renders_kismet_status_reachable(tmp_path):
         with TestClient(app) as client:
             r = client.get("/")
         assert r.status_code == 200
-        assert "Kismet sources" in r.text
+        assert "Kismet status" in r.text
         assert "reachable" in r.text
         assert "fake-fixture" in r.text
     finally:
@@ -1560,3 +1561,45 @@ def test_topnav_present_on_every_page(tmp_path):
         assert 'href="/allowlist"' in resp.text, f"{path} missing /allowlist nav link"
 
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# v0.2 UI tweaks: header rename, sparkline section, JS time-format change.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_kismet_status_header_renamed(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "Kismet status" in r.text
+        assert "Kismet sources" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_alerts_per_day_section(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "alerts per day" in r.text
+        assert 'class="sparkline"' in r.text
+    finally:
+        db.close()
+
+
+def test_talos_js_contains_new_format_logic():
+    js_path = (
+        Path(__file__).resolve().parent.parent / "src" / "talos" / "webui" / "static" / "talos.js"
+    )
+    content = js_path.read_text(encoding="utf-8")
+    for needle in ("weeks ago", "months ago", "years ago", "just now"):
+        assert needle in content, f"talos.js missing expected phrase: {needle!r}"
+    for gone in ("minutes ago", "hours ago"):
+        assert gone not in content, f"talos.js still contains old relative-format phrase: {gone!r}"

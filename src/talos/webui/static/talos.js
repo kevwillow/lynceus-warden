@@ -1,25 +1,26 @@
 (function () {
   "use strict";
 
-  var MINUTE = 60;
-  var HOUR = 3600;
   var DAY = 86400;
   var WEEK = 7 * DAY;
+  var YEAR = 365 * DAY;
 
-  function pluralize(n, singular) {
-    return n === 1 ? "1 " + singular : n + " " + singular + "s";
+  function days(n) {
+    return n === 1 ? "1 day ago" : n + " days ago";
+  }
+  function weeks(n) {
+    return n === 1 ? "1 week ago" : n + " weeks ago";
+  }
+  function months(n) {
+    return n === 1 ? "1 month ago" : n + " months ago";
+  }
+  function years(n) {
+    return n === 1 ? "1 year ago" : n + " years ago";
   }
 
-  function formatRelative(then, now) {
-    var diff = Math.floor((now - then) / 1000);
-    if (diff < 0) diff = 0;
-    if (diff < MINUTE) return "just now";
-    if (diff < HOUR) return pluralize(Math.floor(diff / MINUTE), "minute") + " ago";
-    if (diff < DAY) return pluralize(Math.floor(diff / HOUR), "hour") + " ago";
-    if (diff < WEEK) return pluralize(Math.floor(diff / DAY), "day") + " ago";
-    return null;
-  }
-
+  // Locale-aware absolute formatters. Use Intl.DateTimeFormat so month/day
+  // ordering follows the user's locale (manual "May 4" strings break for
+  // locales that put day before month).
   var sameYearFmt = new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
@@ -51,16 +52,51 @@
     return fmt.format(then);
   }
 
+  // Threshold convention: comparisons use strict < on the upper bound, so
+  // delta exactly equal to a boundary (e.g. 60s, 7*86400s) falls into the
+  // *next* (coarser) bucket. delta == 60 → not "just now", delta == WEEK
+  // → coarse-relative not absolute.
+  function formatStamp(then, now) {
+    var delta = Math.floor((now.getTime() - then.getTime()) / 1000);
+
+    if (delta < 0) {
+      // Future timestamps: render as fully-qualified absolute (don't say
+      // "in 3 hours"). Always include the year for unambiguity.
+      return otherYearFmt.format(then);
+    }
+    if (delta < 60) {
+      return "just now";
+    }
+    if (delta < WEEK) {
+      return formatAbsolute(then, now);
+    }
+    if (delta < 14 * DAY) {
+      return days(Math.floor(delta / DAY));
+    }
+    if (delta < 60 * DAY) {
+      return weeks(Math.floor(delta / WEEK));
+    }
+    if (delta < 365 * DAY) {
+      return months(Math.floor(delta / (30 * DAY)));
+    }
+    if (delta < 730 * DAY) {
+      return "1 year ago";
+    }
+    return years(Math.floor(delta / YEAR));
+  }
+
   function formatOne(el, now) {
     var iso = el.getAttribute("datetime");
-    if (!iso) return;
-    var then = new Date(iso);
-    if (isNaN(then.getTime())) {
-      console.warn("talos.js: cannot parse datetime", iso);
+    if (!iso) {
+      console.warn("talos.js: missing datetime attribute", el);
       return;
     }
-    var rel = formatRelative(then, now.getTime());
-    el.textContent = rel !== null ? rel : formatAbsolute(then, now);
+    var then = new Date(iso);
+    if (isNaN(then.getTime())) {
+      console.warn("talos.js: cannot parse datetime", iso, el);
+      return;
+    }
+    el.textContent = formatStamp(then, now);
     el.setAttribute("title", titleFmt.format(then));
   }
 
