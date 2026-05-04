@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}devices &mdash; talos{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <h2>devices</h2>
+
+  <form method="get" action="/devices">
+    <fieldset class="grid">
+      <label>type
+        <select name="device_type">
+          <option value="" {% if not device_type %}selected{% endif %}>any</option>
+          <option value="wifi" {% if device_type == 'wifi' %}selected{% endif %}>wifi</option>
+          <option value="ble" {% if device_type == 'ble' %}selected{% endif %}>ble</option>
+          <option value="bt_classic" {% if device_type == 'bt_classic' %}selected{% endif %}>bt_classic</option>
+        </select>
+      </label>
+      <label>randomized
+        <select name="randomized">
+          <option value="" {% if randomized is none %}selected{% endif %}>any</option>
+          <option value="false" {% if randomized is sameas false %}selected{% endif %}>no</option>
+          <option value="true" {% if randomized is sameas true %}selected{% endif %}>yes</option>
+        </select>
+      </label>
+      <label>page size
+        <select name="page_size">
+          {% for n in [10, 25, 50, 100, 200] %}
+            <option value="{{ n }}" {% if n == page_size %}selected{% endif %}>{{ n }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">filter</button>
+    </fieldset>
+  </form>
+
+  <p><small>{{ total_count }} device(s) total &middot; page {{ page }} of {{ total_pages }}</small></p>
+
+  {% if devices %}
+    <table>
+      <thead>
+        <tr>
+          <th>mac</th>
+          <th>type</th>
+          <th>vendor</th>
+          <th>random</th>
+          <th>first seen</th>
+          <th>last seen</th>
+          <th>sightings</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in devices %}
+          <tr>
+            <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
+            <td>{{ d.device_type }}</td>
+            <td>{{ d.oui_vendor or "" }}</td>
+            <td>{% if d.is_randomized %}&check;{% endif %}</td>
+            <td>{{ d.first_seen }}</td>
+            <td>{{ d.last_seen }}</td>
+            <td>{{ d.sighting_count }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p><em>No devices match the current filter.</em></p>
+  {% endif %}
+
+  <nav>
+    {% set qs = [] %}
+    {% if device_type %}{% set _ = qs.append('device_type=' ~ device_type) %}{% endif %}
+    {% if randomized is sameas true %}{% set _ = qs.append('randomized=true') %}{% endif %}
+    {% if randomized is sameas false %}{% set _ = qs.append('randomized=false') %}{% endif %}
+    {% set _ = qs.append('page_size=' ~ page_size) %}
+    {% set base_qs = qs | join('&') %}
+    <ul>
+      <li>
+        {% if page > 1 %}
+          <a href="/devices?{{ base_qs }}&page={{ page - 1 }}">&larr; prev</a>
+        {% else %}
+          <span class="dim">&larr; prev</span>
+        {% endif %}
+      </li>
+    </ul>
+    <ul>
+      <li><small>page {{ page }} of {{ total_pages }}</small></li>
+    </ul>
+    <ul>
+      <li>
+        {% if page < total_pages %}
+          <a href="/devices?{{ base_qs }}&page={{ page + 1 }}">next &rarr;</a>
+        {% else %}
+          <span class="dim">next &rarr;</span>
+        {% endif %}
+      </li>
+    </ul>
+  </nav>
+{% endblock %}

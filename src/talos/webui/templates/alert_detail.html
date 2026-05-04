@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}alert #{{ alert.id }} &mdash; talos{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <p><a href="/alerts">&larr; back to alerts</a></p>
+  <h2>alert #{{ alert.id }}</h2>
+
+  <article>
+    <p>
+      <strong>severity:</strong> <span class="badge-{{ alert.severity }}">{{ alert.severity }}</span>
+      &middot; <strong>rule:</strong> <code>{{ alert.rule_name }}</code>
+      &middot; <strong>timestamp:</strong> {{ alert.ts }}
+      &middot; <strong>acknowledged:</strong> {% if alert.acknowledged %}yes{% else %}no{% endif %}
+    </p>
+    <p><strong>message:</strong></p>
+    <pre>{{ alert.message }}</pre>
+  </article>
+
+  {% if alert.device %}
+    <article>
+      <header><strong>device</strong></header>
+      <p>
+        <strong>mac:</strong> <a href="/devices/{{ alert.device.mac }}" class="mac-cell">{{ alert.device.mac }}</a><br>
+        <strong>type:</strong> {{ alert.device.device_type }}<br>
+        <strong>vendor:</strong> {{ alert.device.oui_vendor or "unknown" }}<br>
+        <strong>randomized:</strong> {% if alert.device.is_randomized %}yes{% else %}no{% endif %}<br>
+        <strong>first seen:</strong> {{ alert.device.first_seen }}<br>
+        <strong>last seen:</strong> {{ alert.device.last_seen }}<br>
+        <strong>sightings:</strong> {{ alert.device.sighting_count }}
+      </p>
+    </article>
+  {% elif alert.mac %}
+    <article>
+      <p><em>Alert MAC <code>{{ alert.mac }}</code> is not in the device table.</em></p>
+    </article>
+  {% endif %}
+{% endblock %}

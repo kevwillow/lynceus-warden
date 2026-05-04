@@ -1,1 +1,11 @@
-/* talos custom styles — overrides on top of Pico. Empty for now. */
+/* talos custom styles — overrides on top of Pico. */
+
+.badge-low   { background: #dde; color: #224; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-med   { background: #fec; color: #730; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-high  { background: #fcc; color: #700; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.mac-cell    { font-family: monospace; }
+.truncate    { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
+.topnav      { display: flex; gap: 0.75em; padding: 0.5em 0; border-bottom: 1px solid #ddd; margin-bottom: 1em; }
+.topnav a    { text-decoration: none; }
+.topnav a.active { font-weight: 600; }
+.dim         { opacity: 0.55; }

@@ -171,3 +171,188 @@ def test_healthcheck_counts_reflect_writes(db):
     assert health["device_count"] == 2
     assert health["alert_count"] == 2
     assert health["unacked_alert_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Read-only query methods used by the web UI.
+# ---------------------------------------------------------------------------
+
+
+def _ack(db: Database, alert_id: int) -> None:
+    with db._conn:
+        db._conn.execute("UPDATE alerts SET acknowledged = 1 WHERE id = ?", (alert_id,))
+
+
+def test_list_alerts_empty(db):
+    assert db.list_alerts() == []
+
+
+def test_list_alerts_orders_by_ts_desc(db):
+    db.add_alert(ts=100, rule_name="r1", mac=None, message="oldest", severity="low")
+    db.add_alert(ts=300, rule_name="r2", mac=None, message="newest", severity="low")
+    db.add_alert(ts=200, rule_name="r3", mac=None, message="middle", severity="low")
+    rows = db.list_alerts()
+    assert [r["message"] for r in rows] == ["newest", "middle", "oldest"]
+
+
+def test_list_alerts_filter_by_severity_validates(db):
+    with pytest.raises(ValueError):
+        db.list_alerts(severity="critical")
+
+
+def test_list_alerts_filter_by_acknowledged(db):
+    a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="acked", severity="low")
+    db.add_alert(ts=200, rule_name="r", mac=None, message="unacked", severity="low")
+    _ack(db, a1)
+    acked = db.list_alerts(acknowledged=True)
+    assert [r["message"] for r in acked] == ["acked"]
+    unacked = db.list_alerts(acknowledged=False)
+    assert [r["message"] for r in unacked] == ["unacked"]
+
+
+def test_list_alerts_pagination_offset(db):
+    for i in range(5):
+        db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"m{i}", severity="low")
+    page1 = db.list_alerts(limit=2, offset=0)
+    page2 = db.list_alerts(limit=2, offset=2)
+    page3 = db.list_alerts(limit=2, offset=4)
+    assert [r["message"] for r in page1] == ["m4", "m3"]
+    assert [r["message"] for r in page2] == ["m2", "m1"]
+    assert [r["message"] for r in page3] == ["m0"]
+
+
+def test_list_alerts_limit_out_of_bounds_raises(db):
+    with pytest.raises(ValueError):
+        db.list_alerts(limit=0)
+    with pytest.raises(ValueError):
+        db.list_alerts(limit=1001)
+    with pytest.raises(ValueError):
+        db.list_alerts(offset=-1)
+
+
+def test_count_alerts_matches_list(db):
+    for i in range(7):
+        db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"m{i}", severity="high")
+    db.add_alert(ts=200, rule_name="r", mac=None, message="low", severity="low")
+    assert db.count_alerts() == 8
+    assert db.count_alerts(severity="high") == 7
+    assert db.count_alerts(severity="low") == 1
+    with pytest.raises(ValueError):
+        db.count_alerts(severity="critical")
+
+
+def test_get_alert_returns_none_for_missing(db):
+    assert db.get_alert(99999) is None
+
+
+def test_get_alert_includes_device_sub_dict(db):
+    db.upsert_device(MAC, "wifi", "Acme", 0, 100)
+    aid = db.add_alert(ts=500, rule_name="r", mac=MAC, message="m", severity="med")
+    alert = db.get_alert(aid)
+    assert alert is not None
+    assert alert["mac"] == MAC
+    assert alert["device"] is not None
+    assert alert["device"]["mac"] == MAC
+    assert alert["device"]["oui_vendor"] == "Acme"
+
+
+def test_get_alert_with_null_mac_has_no_device(db):
+    aid = db.add_alert(ts=500, rule_name="r", mac=None, message="m", severity="med")
+    alert = db.get_alert(aid)
+    assert alert is not None
+    assert alert["mac"] is None
+    assert alert["device"] is None
+
+
+def test_list_devices_orders_by_last_seen_desc(db):
+    db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+    db.upsert_device("aa:bb:cc:dd:ee:02", "wifi", "Acme", 0, 300)
+    db.upsert_device("aa:bb:cc:dd:ee:03", "wifi", "Acme", 0, 200)
+    rows = db.list_devices()
+    assert [r["mac"] for r in rows] == [
+        "aa:bb:cc:dd:ee:02",
+        "aa:bb:cc:dd:ee:03",
+        "aa:bb:cc:dd:ee:01",
+    ]
+
+
+def test_list_devices_filter_by_type_validates(db):
+    with pytest.raises(ValueError):
+        db.list_devices(device_type="cellular")
+
+
+def test_list_devices_filter_by_randomized(db):
+    db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+    db.upsert_device("aa:bb:cc:dd:ee:02", "wifi", "Acme", 1, 100)
+    rand = db.list_devices(randomized=True)
+    not_rand = db.list_devices(randomized=False)
+    assert [r["mac"] for r in rand] == ["aa:bb:cc:dd:ee:02"]
+    assert [r["mac"] for r in not_rand] == ["aa:bb:cc:dd:ee:01"]
+
+
+def test_count_devices_matches_list(db):
+    db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+    db.upsert_device("aa:bb:cc:dd:ee:02", "ble", "Acme", 0, 100)
+    assert db.count_devices() == 2
+    assert db.count_devices(device_type="wifi") == 1
+    assert db.count_devices(device_type="ble") == 1
+    with pytest.raises(ValueError):
+        db.count_devices(device_type="cellular")
+
+
+def test_get_device_with_sightings_returns_none_for_missing(db):
+    assert db.get_device_with_sightings("aa:bb:cc:dd:ee:99") is None
+
+
+def test_get_device_with_sightings_orders_desc(db):
+    _seed(db)
+    for ts in (100, 300, 200):
+        db.insert_sighting(MAC, ts, None, None, LOC)
+    result = db.get_device_with_sightings(MAC)
+    assert result is not None
+    assert [s["ts"] for s in result["sightings"]] == [300, 200, 100]
+    assert result["device"]["mac"] == MAC
+
+
+def test_get_device_with_sightings_respects_limit(db):
+    _seed(db)
+    for i in range(10):
+        db.insert_sighting(MAC, 100 + i, None, None, LOC)
+    result = db.get_device_with_sightings(MAC, sighting_limit=3)
+    assert result is not None
+    assert len(result["sightings"]) == 3
+    with pytest.raises(ValueError):
+        db.get_device_with_sightings(MAC, sighting_limit=0)
+    with pytest.raises(ValueError):
+        db.get_device_with_sightings(MAC, sighting_limit=1001)
+
+
+def test_list_watchlist_orders_by_type_then_pattern(db):
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, ?, ?, ?)",
+            ("HomeNet", "ssid", "low", "trusted ssid"),
+        )
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, ?, ?, ?)",
+            ("aa:bb:cc:dd:ee:ff", "mac", "high", None),
+        )
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, ?, ?, ?)",
+            ("00:13:37", "oui", "high", "hak5"),
+        )
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, ?, ?, ?)",
+            ("11:22:33:44:55:66", "mac", "med", None),
+        )
+    rows = db.list_watchlist()
+    assert [(r["pattern_type"], r["pattern"]) for r in rows] == [
+        ("mac", "11:22:33:44:55:66"),
+        ("mac", "aa:bb:cc:dd:ee:ff"),
+        ("oui", "00:13:37"),
+        ("ssid", "HomeNet"),
+    ]
