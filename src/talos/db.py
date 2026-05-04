@@ -211,19 +211,21 @@ class Database:
         offset: int = 0,
         severity: str | None = None,
         acknowledged: bool | None = None,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+        search: str | None = None,
     ) -> list[dict]:
         self._validate_pagination(limit, offset)
         if severity is not None and severity not in self._ALERT_SEVERITIES:
             raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
 
-        clauses: list[str] = []
-        params: list = []
-        if severity is not None:
-            clauses.append("severity = ?")
-            params.append(severity)
-        if acknowledged is not None:
-            clauses.append("acknowledged = ?")
-            params.append(1 if acknowledged else 0)
+        clauses, params = self._alert_filter_clauses(
+            severity=severity,
+            acknowledged=acknowledged,
+            since_ts=since_ts,
+            until_ts=until_ts,
+            search=search,
+        )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = (
             "SELECT id, ts, rule_name, mac, message, severity, acknowledged "
@@ -238,9 +240,32 @@ class Database:
         *,
         severity: str | None = None,
         acknowledged: bool | None = None,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+        search: str | None = None,
     ) -> int:
         if severity is not None and severity not in self._ALERT_SEVERITIES:
             raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
+        clauses, params = self._alert_filter_clauses(
+            severity=severity,
+            acknowledged=acknowledged,
+            since_ts=since_ts,
+            until_ts=until_ts,
+            search=search,
+        )
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = f"SELECT COUNT(*) FROM alerts {where}"
+        return int(self._conn.execute(sql, params).fetchone()[0])
+
+    @staticmethod
+    def _alert_filter_clauses(
+        *,
+        severity: str | None,
+        acknowledged: bool | None,
+        since_ts: int | None,
+        until_ts: int | None,
+        search: str | None,
+    ) -> tuple[list[str], list]:
         clauses: list[str] = []
         params: list = []
         if severity is not None:
@@ -249,9 +274,17 @@ class Database:
         if acknowledged is not None:
             clauses.append("acknowledged = ?")
             params.append(1 if acknowledged else 0)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = f"SELECT COUNT(*) FROM alerts {where}"
-        return int(self._conn.execute(sql, params).fetchone()[0])
+        if since_ts is not None:
+            clauses.append("ts >= ?")
+            params.append(since_ts)
+        if until_ts is not None:
+            clauses.append("ts <= ?")
+            params.append(until_ts)
+        if search is not None and search != "":
+            like = f"%{search.lower()}%"
+            clauses.append("(LOWER(message) LIKE ? OR LOWER(rule_name) LIKE ?)")
+            params.extend([like, like])
+        return clauses, params
 
     def get_alert(self, alert_id: int) -> dict | None:
         row = self._conn.execute(
@@ -349,6 +382,222 @@ class Database:
             "FROM watchlist ORDER BY pattern_type, pattern"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- Alert acknowledgement actions and stats --------------------------
+
+    @staticmethod
+    def _validate_alert_id(alert_id: int) -> None:
+        if not isinstance(alert_id, int) or isinstance(alert_id, bool):
+            raise ValueError("alert_id must be a positive int")
+        if alert_id < 1:
+            raise ValueError("alert_id must be a positive int")
+
+    @staticmethod
+    def _validate_actor_and_note(actor: str, note: str | None) -> str:
+        if not isinstance(actor, str):
+            raise ValueError("actor must be a non-empty string")
+        cleaned = actor.strip()
+        if not cleaned:
+            raise ValueError("actor must be a non-empty string")
+        if note is not None:
+            if not isinstance(note, str):
+                raise ValueError("note must be a string")
+            if len(note) > 500:
+                raise ValueError("note must be <= 500 chars")
+        return cleaned
+
+    def _set_alert_ack(
+        self,
+        alert_id: int,
+        *,
+        action: str,
+        actor: str,
+        note: str | None,
+        ts: int,
+    ) -> bool:
+        self._validate_alert_id(alert_id)
+        actor_clean = self._validate_actor_and_note(actor, note)
+        target_flag = 1 if action == "ack" else 0
+        with self._conn:
+            row = self._conn.execute(
+                "SELECT acknowledged FROM alerts WHERE id = ?", (alert_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            self._conn.execute(
+                "UPDATE alerts SET acknowledged = ? WHERE id = ?",
+                (target_flag, alert_id),
+            )
+            self._conn.execute(
+                "INSERT INTO alert_actions(alert_id, action, ts, actor, note) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (alert_id, action, ts, actor_clean, note),
+            )
+            return True
+
+    def acknowledge_alert(
+        self,
+        alert_id: int,
+        *,
+        actor: str,
+        note: str | None = None,
+        ts: int,
+    ) -> bool:
+        return self._set_alert_ack(alert_id, action="ack", actor=actor, note=note, ts=ts)
+
+    def unacknowledge_alert(
+        self,
+        alert_id: int,
+        *,
+        actor: str,
+        note: str | None = None,
+        ts: int,
+    ) -> bool:
+        return self._set_alert_ack(alert_id, action="unack", actor=actor, note=note, ts=ts)
+
+    def bulk_acknowledge_alerts(
+        self,
+        alert_ids: list[int],
+        *,
+        actor: str,
+        note: str | None = None,
+        ts: int,
+    ) -> dict:
+        if not isinstance(alert_ids, list):
+            raise ValueError("alert_ids must be a list of ints")
+        if len(alert_ids) == 0:
+            raise ValueError("alert_ids must be non-empty")
+        if len(alert_ids) > 1000:
+            raise ValueError("alert_ids must contain at most 1000 ids")
+        for aid in alert_ids:
+            self._validate_alert_id(aid)
+        actor_clean = self._validate_actor_and_note(actor, note)
+
+        requested = len(alert_ids)
+        unique_ids = list(dict.fromkeys(alert_ids))
+        acknowledged = 0
+        already_acked = 0
+        missing = 0
+        action_rows = 0
+        with self._conn:
+            for aid in unique_ids:
+                row = self._conn.execute(
+                    "SELECT acknowledged FROM alerts WHERE id = ?", (aid,)
+                ).fetchone()
+                if row is None:
+                    missing += 1
+                    continue
+                if row["acknowledged"] == 1:
+                    already_acked += 1
+                else:
+                    self._conn.execute(
+                        "UPDATE alerts SET acknowledged = 1 WHERE id = ?",
+                        (aid,),
+                    )
+                    acknowledged += 1
+                self._conn.execute(
+                    "INSERT INTO alert_actions(alert_id, action, ts, actor, note) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (aid, "ack", ts, actor_clean, note),
+                )
+                action_rows += 1
+        return {
+            "requested": requested,
+            "acknowledged": acknowledged,
+            "already_acked": already_acked,
+            "missing": missing,
+            "action_rows_written": action_rows,
+        }
+
+    def list_alert_actions(self, alert_id: int, *, limit: int = 50) -> list[dict]:
+        self._validate_alert_id(alert_id)
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            raise ValueError("limit must be int")
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be in [1, 1000]")
+        rows = self._conn.execute(
+            "SELECT id, action, ts, actor, note FROM alert_actions "
+            "WHERE alert_id = ? ORDER BY ts DESC, id DESC LIMIT ?",
+            (alert_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def alert_severity_counts(self, *, since_ts: int | None = None) -> dict:
+        counts = {"low": 0, "med": 0, "high": 0}
+        if since_ts is None:
+            sql = "SELECT severity, COUNT(*) FROM alerts GROUP BY severity"
+            params: tuple = ()
+        else:
+            sql = "SELECT severity, COUNT(*) FROM alerts WHERE ts >= ? GROUP BY severity"
+            params = (since_ts,)
+        for sev, count in self._conn.execute(sql, params).fetchall():
+            if sev in counts:
+                counts[sev] = int(count)
+        return counts
+
+    def alerts_per_day(self, *, days: int = 30, now_ts: int) -> list[dict]:
+        if not isinstance(days, int) or isinstance(days, bool):
+            raise ValueError("days must be int")
+        if days < 1 or days > 365:
+            raise ValueError("days must be in [1, 365]")
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be int")
+
+        rows = self._conn.execute(
+            "SELECT date(ts, 'unixepoch') AS day, COUNT(*) AS c "
+            "FROM alerts WHERE ts >= ? AND ts <= ? GROUP BY day",
+            (now_ts - (days - 1) * 86400, now_ts + 86400),
+        ).fetchall()
+        counts: dict[str, int] = {row["day"]: int(row["c"]) for row in rows if row["day"]}
+
+        import datetime as _dt
+
+        end_day = _dt.datetime.fromtimestamp(now_ts, tz=_dt.UTC).date()
+        result: list[dict] = []
+        for i in range(days - 1, -1, -1):
+            day = end_day - _dt.timedelta(days=i)
+            key = day.isoformat()
+            result.append({"date": key, "count": counts.get(key, 0)})
+        return result
+
+    def device_seen_counts(self, *, now_ts: int) -> dict:
+        """Return distinct-device counts in three rolling windows ending at now_ts.
+
+        Returns ``{"day": int, "week": int, "month": int}``. A device counts
+        when at least one sighting has ``ts >= now_ts - window_seconds``
+        (inclusive lower bound; consistent across all three buckets).
+        """
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be int")
+        if now_ts <= 0:
+            raise ValueError("now_ts must be > 0")
+        windows = {
+            "day": now_ts - 86400,
+            "week": now_ts - 7 * 86400,
+            "month": now_ts - 30 * 86400,
+        }
+        out: dict = {}
+        for key, since in windows.items():
+            row = self._conn.execute(
+                "SELECT COUNT(DISTINCT mac) FROM sightings WHERE ts >= ?",
+                (since,),
+            ).fetchone()
+            out[key] = int(row[0])
+        return out
+
+    def latest_poll_ts(self) -> int | None:
+        """Return the int value of poller_state['last_poll_ts'] or None if unset.
+
+        Raises ``ValueError`` if the stored value is present but not an int —
+        silent fallback would mask DB corruption.
+        """
+        raw = self.get_state("last_poll_ts")
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"poller_state.last_poll_ts is not an int: {raw!r}") from exc
 
     def close(self) -> None:
         self._conn.close()

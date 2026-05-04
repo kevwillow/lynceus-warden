@@ -141,7 +141,11 @@ def test_migrations_dir_found_via_package_resources(db):
 
 def test_migrations_dir_lists_both_files(db):
     names = sorted(p.name for p in db._migrations_dir.glob("*.sql"))
-    assert names == ["001_initial.sql", "002_poller_state.sql"]
+    assert names == [
+        "001_initial.sql",
+        "002_poller_state.sql",
+        "003_alert_actions.sql",
+    ]
 
 
 def test_healthcheck_returns_expected_keys_and_types(db):
@@ -356,3 +360,333 @@ def test_list_watchlist_orders_by_type_then_pattern(db):
         ("oui", "00:13:37"),
         ("ssid", "HomeNet"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Migration 003: alert_actions, ack/unack mutations, stats, alert filters.
+# ---------------------------------------------------------------------------
+
+
+def test_migration_003_creates_alert_actions(db):
+    cols = db._conn.execute("PRAGMA table_info(alert_actions)").fetchall()
+    by_name = {row[1]: row for row in cols}
+    assert set(by_name) == {"id", "alert_id", "action", "ts", "actor", "note"}
+    assert by_name["alert_id"][3] == 1
+    assert by_name["action"][3] == 1
+    assert by_name["ts"][3] == 1
+    assert by_name["actor"][3] == 1
+    assert by_name["note"][3] == 0
+    with pytest.raises(sqlite3.IntegrityError):
+        with db._conn:
+            db._conn.execute(
+                "INSERT INTO alert_actions(alert_id, action, ts, actor) VALUES (?, ?, ?, ?)",
+                (1, "delete", 100, "tester"),
+            )
+
+
+def test_acknowledge_alert_flips_flag_and_logs_action(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    ok = db.acknowledge_alert(aid, actor="1.2.3.4", note="checked", ts=200)
+    assert ok is True
+    alert = db.get_alert(aid)
+    assert alert["acknowledged"] == 1
+    actions = db.list_alert_actions(aid)
+    assert len(actions) == 1
+    assert actions[0]["action"] == "ack"
+    assert actions[0]["actor"] == "1.2.3.4"
+    assert actions[0]["note"] == "checked"
+    assert actions[0]["ts"] == 200
+
+
+def test_acknowledge_alert_idempotent_writes_second_action(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    assert db.acknowledge_alert(aid, actor="ip", ts=200) is True
+    assert db.acknowledge_alert(aid, actor="ip", ts=300) is True
+    actions = db.list_alert_actions(aid)
+    assert len(actions) == 2
+    assert all(a["action"] == "ack" for a in actions)
+    assert db.get_alert(aid)["acknowledged"] == 1
+
+
+def test_acknowledge_alert_returns_false_for_missing_id(db):
+    assert db.acknowledge_alert(99999, actor="ip", ts=100) is False
+    rows = db._conn.execute("SELECT COUNT(*) FROM alert_actions").fetchone()[0]
+    assert rows == 0
+
+
+def test_acknowledge_alert_validates_actor_nonempty(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    with pytest.raises(ValueError):
+        db.acknowledge_alert(aid, actor="   ", ts=200)
+    with pytest.raises(ValueError):
+        db.acknowledge_alert(aid, actor="", ts=200)
+
+
+def test_acknowledge_alert_validates_note_length(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    with pytest.raises(ValueError):
+        db.acknowledge_alert(aid, actor="ip", note="x" * 501, ts=200)
+    assert db.acknowledge_alert(aid, actor="ip", note="x" * 500, ts=200) is True
+
+
+def test_acknowledge_alert_validates_alert_id(db):
+    with pytest.raises(ValueError):
+        db.acknowledge_alert(0, actor="ip", ts=100)
+    with pytest.raises(ValueError):
+        db.acknowledge_alert(-5, actor="ip", ts=100)
+
+
+def test_unacknowledge_alert_inverse_behavior(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    db.acknowledge_alert(aid, actor="ip", ts=200)
+    assert db.get_alert(aid)["acknowledged"] == 1
+    ok = db.unacknowledge_alert(aid, actor="ip", note="reopen", ts=300)
+    assert ok is True
+    assert db.get_alert(aid)["acknowledged"] == 0
+    actions = db.list_alert_actions(aid)
+    assert [a["action"] for a in actions] == ["unack", "ack"]
+    with pytest.raises(ValueError):
+        db.unacknowledge_alert(aid, actor="", ts=400)
+    with pytest.raises(ValueError):
+        db.unacknowledge_alert(aid, actor="ip", note="x" * 501, ts=400)
+    assert db.unacknowledge_alert(99999, actor="ip", ts=400) is False
+
+
+def test_bulk_acknowledge_returns_correct_counts(db):
+    a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="a", severity="low")
+    a2 = db.add_alert(ts=101, rule_name="r", mac=None, message="b", severity="low")
+    a3 = db.add_alert(ts=102, rule_name="r", mac=None, message="c", severity="low")
+    db.acknowledge_alert(a3, actor="ip", ts=150)
+    ids = [a1, a2, a3, 9001, 9002]
+    result = db.bulk_acknowledge_alerts(ids, actor="ip", ts=200)
+    assert result == {
+        "requested": 5,
+        "acknowledged": 2,
+        "already_acked": 1,
+        "missing": 2,
+        "action_rows_written": 3,
+    }
+    cnt = db._conn.execute("SELECT COUNT(*) FROM alert_actions WHERE ts = 200").fetchone()[0]
+    assert cnt == 3
+
+
+def test_bulk_acknowledge_atomic(db):
+    a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="a", severity="low")
+    a2 = db.add_alert(ts=101, rule_name="r", mac=None, message="b", severity="low")
+    real_conn = db._conn
+    call_counter = {"n": 0}
+
+    class BoomProxy:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args, **kwargs):
+            if "INSERT INTO alert_actions" in sql:
+                call_counter["n"] += 1
+                if call_counter["n"] == 2:
+                    raise sqlite3.OperationalError("simulated failure")
+            return self._inner.execute(sql, *args, **kwargs)
+
+        def __enter__(self):
+            return self._inner.__enter__()
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    db._conn = BoomProxy(real_conn)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            db.bulk_acknowledge_alerts([a1, a2], actor="ip", ts=300)
+    finally:
+        db._conn = real_conn
+    assert db.get_alert(a1)["acknowledged"] == 0
+    assert db.get_alert(a2)["acknowledged"] == 0
+    rows = db._conn.execute("SELECT COUNT(*) FROM alert_actions").fetchone()[0]
+    assert rows == 0
+
+
+def test_bulk_acknowledge_validates_size(db):
+    with pytest.raises(ValueError):
+        db.bulk_acknowledge_alerts([], actor="ip", ts=100)
+    with pytest.raises(ValueError):
+        db.bulk_acknowledge_alerts(list(range(1, 1002)), actor="ip", ts=100)
+    with pytest.raises(ValueError):
+        db.bulk_acknowledge_alerts([1, 0, 2], actor="ip", ts=100)
+    with pytest.raises(ValueError):
+        db.bulk_acknowledge_alerts([1, 2], actor=" ", ts=100)
+
+
+def test_list_alert_actions_orders_desc(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    db.acknowledge_alert(aid, actor="ip", ts=200)
+    db.unacknowledge_alert(aid, actor="ip", ts=300)
+    db.acknowledge_alert(aid, actor="ip", ts=400)
+    actions = db.list_alert_actions(aid)
+    assert [a["ts"] for a in actions] == [400, 300, 200]
+    with pytest.raises(ValueError):
+        db.list_alert_actions(aid, limit=0)
+    with pytest.raises(ValueError):
+        db.list_alert_actions(aid, limit=1001)
+
+
+def test_alert_severity_counts_all_time(db):
+    db.add_alert(ts=100, rule_name="r", mac=None, message="x", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac=None, message="x", severity="med")
+    db.add_alert(ts=102, rule_name="r", mac=None, message="x", severity="med")
+    db.add_alert(ts=103, rule_name="r", mac=None, message="x", severity="high")
+    counts = db.alert_severity_counts()
+    assert counts == {"low": 1, "med": 2, "high": 1}
+
+
+def test_alert_severity_counts_with_since_ts(db):
+    db.add_alert(ts=100, rule_name="r", mac=None, message="x", severity="low")
+    db.add_alert(ts=200, rule_name="r", mac=None, message="x", severity="med")
+    db.add_alert(ts=300, rule_name="r", mac=None, message="x", severity="high")
+    counts = db.alert_severity_counts(since_ts=200)
+    assert counts == {"low": 0, "med": 1, "high": 1}
+    aid = db.add_alert(ts=400, rule_name="r", mac=None, message="x", severity="low")
+    db.acknowledge_alert(aid, actor="ip", ts=500)
+    counts = db.alert_severity_counts(since_ts=200)
+    assert counts["low"] == 1
+
+
+def test_alerts_per_day_includes_zero_days(db):
+    now_ts = 1777809600
+    today_ts = now_ts
+    three_days_ago = today_ts - 3 * 86400
+    db.add_alert(ts=today_ts, rule_name="r", mac=None, message="x", severity="low")
+    db.add_alert(ts=three_days_ago, rule_name="r", mac=None, message="x", severity="low")
+    rows = db.alerts_per_day(days=5, now_ts=now_ts)
+    assert len(rows) == 5
+    for r in rows:
+        assert "date" in r
+        assert "count" in r
+        assert isinstance(r["count"], int)
+    zero_days = [r for r in rows if r["count"] == 0]
+    assert len(zero_days) >= 1
+    nonzero = [r for r in rows if r["count"] > 0]
+    assert sum(r["count"] for r in nonzero) == 2
+
+
+def test_alerts_per_day_validates_range(db):
+    with pytest.raises(ValueError):
+        db.alerts_per_day(days=0, now_ts=1000000)
+    with pytest.raises(ValueError):
+        db.alerts_per_day(days=366, now_ts=1000000)
+
+
+def test_list_alerts_with_since_until(db):
+    db.add_alert(ts=100, rule_name="r", mac=None, message="m1", severity="low")
+    db.add_alert(ts=200, rule_name="r", mac=None, message="m2", severity="low")
+    db.add_alert(ts=300, rule_name="r", mac=None, message="m3", severity="low")
+    rows = db.list_alerts(since_ts=200, until_ts=200)
+    assert [r["message"] for r in rows] == ["m2"]
+    rows = db.list_alerts(since_ts=200)
+    assert sorted(r["message"] for r in rows) == ["m2", "m3"]
+    rows = db.list_alerts(until_ts=200)
+    assert sorted(r["message"] for r in rows) == ["m1", "m2"]
+
+
+def test_list_alerts_search_matches_message_case_insensitive(db):
+    db.add_alert(
+        ts=100,
+        rule_name="rule1",
+        mac=None,
+        message="Beacon FROM rogue AP",
+        severity="low",
+    )
+    db.add_alert(ts=101, rule_name="rule2", mac=None, message="boring stuff", severity="low")
+    rows = db.list_alerts(search="rogue")
+    assert [r["message"] for r in rows] == ["Beacon FROM rogue AP"]
+    rows = db.list_alerts(search="ROGUE")
+    assert [r["message"] for r in rows] == ["Beacon FROM rogue AP"]
+
+
+def test_list_alerts_search_matches_rule_name(db):
+    db.add_alert(ts=100, rule_name="watchlist_mac", mac=None, message="boom", severity="low")
+    db.add_alert(ts=101, rule_name="rogue_ap", mac=None, message="boom", severity="low")
+    rows = db.list_alerts(search="watch")
+    assert [r["rule_name"] for r in rows] == ["watchlist_mac"]
+
+
+def test_count_alerts_search_matches_list(db):
+    db.add_alert(ts=100, rule_name="r", mac=None, message="hello world", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac=None, message="goodbye world", severity="low")
+    db.add_alert(ts=102, rule_name="r", mac=None, message="boom", severity="low")
+    assert db.count_alerts(search="world") == 2
+    assert db.count_alerts(search="hello") == 1
+    assert db.count_alerts(search="WORLD") == 2
+    assert db.count_alerts(since_ts=101, search="world") == 1
+
+
+# ---------------------------------------------------------------------------
+# device_seen_counts and latest_poll_ts (UI dashboard helpers).
+# ---------------------------------------------------------------------------
+
+
+def test_device_seen_counts_validates_now_ts(db):
+    with pytest.raises(ValueError):
+        db.device_seen_counts(now_ts=0)
+    with pytest.raises(ValueError):
+        db.device_seen_counts(now_ts=-5)
+
+
+def test_device_seen_counts_zero_devices(db):
+    assert db.device_seen_counts(now_ts=2_000_000_000) == {"day": 0, "week": 0, "month": 0}
+
+
+def test_device_seen_counts_dedups_per_window(db):
+    _seed(db)
+    now_ts = 2_000_000_000
+    for offset in range(5):
+        db.insert_sighting(MAC, now_ts - offset, None, None, LOC)
+    counts = db.device_seen_counts(now_ts=now_ts)
+    assert counts["day"] == 1
+    assert counts["week"] == 1
+    assert counts["month"] == 1
+
+
+def test_device_seen_counts_window_boundaries(db):
+    """Boundary semantics: ts >= now_ts - window_seconds counts (inclusive)."""
+    _seed(db)
+    db.upsert_device("aa:bb:cc:dd:ee:11", "wifi", "Acme", 0, 100)
+    db.upsert_device("aa:bb:cc:dd:ee:22", "wifi", "Acme", 0, 100)
+    now_ts = 2_000_000_000
+    db.insert_sighting(MAC, now_ts - 86400, None, None, LOC)
+    db.insert_sighting("aa:bb:cc:dd:ee:11", now_ts - 7 * 86400, None, None, LOC)
+    db.insert_sighting("aa:bb:cc:dd:ee:22", now_ts - 30 * 86400, None, None, LOC)
+    counts = db.device_seen_counts(now_ts=now_ts)
+    # Each device sits exactly on a boundary; inclusive means each is counted.
+    assert counts["day"] == 1
+    assert counts["week"] == 2
+    assert counts["month"] == 3
+
+
+def test_device_seen_counts_separates_devices(db):
+    _seed(db)
+    db.upsert_device("aa:bb:cc:dd:ee:11", "wifi", "Acme", 0, 100)
+    db.upsert_device("aa:bb:cc:dd:ee:22", "wifi", "Acme", 0, 100)
+    now_ts = 2_000_000_000
+    db.insert_sighting(MAC, now_ts - 3600, None, None, LOC)
+    db.insert_sighting("aa:bb:cc:dd:ee:11", now_ts - 3 * 86400, None, None, LOC)
+    db.insert_sighting("aa:bb:cc:dd:ee:22", now_ts - 20 * 86400, None, None, LOC)
+    counts = db.device_seen_counts(now_ts=now_ts)
+    assert counts == {"day": 1, "week": 2, "month": 3}
+
+
+def test_latest_poll_ts_returns_none_when_unset(db):
+    assert db.latest_poll_ts() is None
+
+
+def test_latest_poll_ts_returns_int_when_set(db):
+    db.set_state("last_poll_ts", "1700000000")
+    assert db.latest_poll_ts() == 1700000000
+
+
+def test_latest_poll_ts_invalid_value_raises(db):
+    db.set_state("last_poll_ts", "not-an-int")
+    with pytest.raises(ValueError):
+        db.latest_poll_ts()

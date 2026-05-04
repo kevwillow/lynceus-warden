@@ -621,3 +621,762 @@ def test_static_talos_css_served_with_view_classes(tmp_path):
         assert "badge-high" in r.text
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Prompt 003: ack/unack mutations, bulk ack, filter polish, stats, CSRF.
+# ---------------------------------------------------------------------------
+
+from talos.webui.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD  # noqa: E402
+
+
+def _csrf_setup(client) -> tuple[str, dict]:
+    resp = client.get("/alerts")
+    cookie = resp.cookies[CSRF_COOKIE_NAME]
+    return cookie, {CSRF_COOKIE_NAME: cookie}
+
+
+@pytest.mark.webui
+def test_index_renders_severity_grid_with_three_windows(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "stat-grid" in r.text
+        assert "24h" in r.text
+        assert "7d" in r.text
+        assert "30d" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_sparkline_with_30_bars(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert 'class="sparkline"' in r.text
+        assert r.text.count("sparkline-bar") == 30
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_sparkline_handles_zero_max_without_div_by_zero(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        # Page renders successfully even with no alerts (max_count=0).
+        assert "sparkline-bar" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_inline_ack_button_present_on_unacked_alerts(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="x", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert f"/alerts/{aid}/ack" in r.text
+        assert "ack-button-inline" in r.text
+        assert CSRF_FORM_FIELD in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_since_until(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        # 2026-04-01 ~ 1775347200, 2026-04-15, 2026-05-01.
+        ts_apr1 = 1775347200
+        ts_apr15 = ts_apr1 + 14 * 86400
+        ts_may1 = ts_apr1 + 30 * 86400
+        db.add_alert(ts=ts_apr1, rule_name="r", mac=None, message="apr1-msg", severity="low")
+        db.add_alert(ts=ts_apr15, rule_name="r", mac=None, message="apr15-msg", severity="low")
+        db.add_alert(ts=ts_may1, rule_name="r", mac=None, message="may1-msg", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?since=2026-04-10&until=2026-04-20")
+        assert r.status_code == 200
+        assert "apr15-msg" in r.text
+        assert "apr1-msg" not in r.text
+        assert "may1-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_search_message(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r1", mac=None, message="rogue beacon found", severity="low")
+        db.add_alert(ts=101, rule_name="r2", mac=None, message="ordinary boring", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?search=rogue")
+        assert r.status_code == 200
+        assert "rogue beacon found" in r.text
+        assert "ordinary boring" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_search_rule_name(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="watchlist_mac", mac=None, message="msg-a", severity="low")
+        db.add_alert(ts=101, rule_name="rogue_ap", mac=None, message="msg-b", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?search=watch")
+        assert r.status_code == 200
+        assert "msg-a" in r.text
+        assert "msg-b" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_search_too_long_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?search=" + "a" * 101)
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_invalid_date_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r1 = client.get("/alerts?since=not-a-date")
+            r2 = client.get("/alerts?until=2026-13-99")
+        assert r1.status_code == 400
+        assert r2.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_preserves_search_and_dates(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(
+                ts=1775347200 + i,
+                rule_name="r",
+                mac=None,
+                message=f"world {i}",
+                severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?search=world&since=2026-04-01&until=2026-05-01&page=1&page_size=25"
+            )
+        assert r.status_code == 200
+        assert "search=world" in r.text
+        assert "since=2026-04-01" in r.text
+        assert "until=2026-05-01" in r.text
+        assert "page=2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_bulk_ack_form_has_csrf_field(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'action="/alerts/bulk-ack"' in r.text
+        assert f'name="{CSRF_FORM_FIELD}"' in r.text
+        assert 'name="alert_ids"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_without_csrf_returns_403(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            client.cookies.clear()
+            r = client.post(f"/alerts/{aid}/ack")
+        assert r.status_code == 403
+        assert db.get_alert(aid)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_with_valid_csrf_succeeds(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token, "note": "looked at it"},
+            )
+        assert r.status_code == 303
+        alert = db.get_alert(aid)
+        assert alert["acknowledged"] == 1
+        actions = db.list_alert_actions(aid)
+        assert len(actions) == 1
+        assert actions[0]["note"] == "looked at it"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_for_missing_alert_returns_404(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/9999/ack",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 404
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_with_too_long_note_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token, "note": "x" * 501},
+            )
+        assert r.status_code == 400
+        assert db.get_alert(aid)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unack_post_with_valid_csrf_succeeds(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.acknowledge_alert(aid, actor="seed", ts=200)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/unack",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        assert db.get_alert(aid)["acknowledged"] == 0
+        actions = db.list_alert_actions(aid)
+        assert actions[0]["action"] == "unack"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_bulk_ack_post_renders_result_page(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="a", severity="low")
+        a2 = db.add_alert(ts=101, rule_name="r", mac=None, message="b", severity="low")
+        a3 = db.add_alert(ts=102, rule_name="r", mac=None, message="c", severity="low")
+        db.acknowledge_alert(a3, actor="seed", ts=150)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/bulk-ack",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "alert_ids": [str(a1), str(a2), str(a3)],
+                },
+            )
+        assert r.status_code == 200
+        assert "bulk acknowledge result" in r.text.lower()
+        # The result page surfaces the counts.
+        assert "acknowledged" in r.text.lower()
+        # Action rows: one per existing alert (3).
+        cnt = db._conn.execute("SELECT COUNT(*) FROM alert_actions").fetchone()[0]
+        assert cnt == 4  # 1 from seed + 3 from bulk
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_bulk_ack_post_without_alert_ids_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/bulk-ack",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_bulk_ack_post_with_too_many_ids_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/bulk-ack",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "alert_ids": [str(i) for i in range(1, 1002)],
+                },
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_renders_action_history(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.acknowledge_alert(aid, actor="ip-1", ts=200)
+        db.acknowledge_alert(aid, actor="ip-2", ts=300)
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "action history" in r.text.lower()
+        # Both action rows show.
+        assert "ip-1" in r.text
+        assert "ip-2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_unack_form_shown_when_acked(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r_unacked = client.get(f"/alerts/{aid}")
+            db.acknowledge_alert(aid, actor="ip", ts=200)
+            r_acked = client.get(f"/alerts/{aid}")
+        assert f'action="/alerts/{aid}/ack"' in r_unacked.text
+        assert f'action="/alerts/{aid}/unack"' not in r_unacked.text
+        assert f'action="/alerts/{aid}/unack"' in r_acked.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_csrf_token_in_template_matches_cookie(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        # Add an alert so an inline ack form (with CSRF field) is rendered.
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            client.cookies.clear()
+            r = client.get("/")
+        assert r.status_code == 200
+        cookie_val = r.cookies[CSRF_COOKIE_NAME]
+        assert f'value="{cookie_val}"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_redirect_to_referer_only_when_same_origin(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r_safe = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token},
+                headers={"Referer": "/alerts"},
+            )
+        assert r_safe.status_code == 303
+        assert r_safe.headers["location"] == "/alerts"
+        # Re-unack to test the evil-referer case.
+        db.unacknowledge_alert(aid, actor="reset", ts=400)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r_evil = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token},
+                headers={"Referer": "http://evil.com/alerts"},
+            )
+        assert r_evil.status_code == 303
+        assert r_evil.headers["location"] == "/alerts"
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# UX polish: device-seen tiles, last-poll, ack-all-visible, unix_to_iso filter,
+# severity row classes, inline ack note, reset-filters link, talos.js.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_index_renders_device_seen_tiles(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        import time as _time
+
+        now = int(_time.time())
+        db.ensure_location(LOC, "Lab")
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, now)
+        db.upsert_device(MAC_B, "ble", "Acme", 0, now)
+        db.insert_sighting(MAC_A, now - 60, None, None, LOC)
+        db.insert_sighting(MAC_B, now - 5 * 86400, None, None, LOC)
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "tile-row" in r.text
+        assert "last 24h" in r.text
+        assert "last 7d" in r.text
+        assert "last 30d" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_last_poll_when_set(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.set_state("last_poll_ts", "1700000000")
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "Last polled" in r.text
+        assert 'datetime="' in r.text
+        assert "<time" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_never_polled_when_unset(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "Never polled yet" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_reset_link_present_when_filters_active(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high")
+        assert r.status_code == 200
+        assert "reset-filters" in r.text
+        assert 'href="/alerts"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_reset_link_absent_when_no_filters(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "reset-filters" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_ack_all_visible_form_carries_filter_state(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high&acknowledged=false")
+        assert r.status_code == 200
+        assert 'action="/alerts/ack-all-visible"' in r.text
+        assert 'name="severity" value="high"' in r.text
+        assert 'name="acknowledged" value="false"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_acks_filtered_subset(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        high_ids = [
+            db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"h{i}", severity="high")
+            for i in range(3)
+        ]
+        low_ids = [
+            db.add_alert(ts=200 + i, rule_name="r", mac=None, message=f"l{i}", severity="low")
+            for i in range(2)
+        ]
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "severity": "high"},
+            )
+        assert r.status_code == 200
+        assert "bulk acknowledge result" in r.text.lower()
+        for aid in high_ids:
+            assert db.get_alert(aid)["acknowledged"] == 1
+        for aid in low_ids:
+            assert db.get_alert(aid)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_respects_acknowledged_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="a", severity="low")
+        a2 = db.add_alert(ts=101, rule_name="r", mac=None, message="b", severity="low")
+        a3 = db.add_alert(ts=102, rule_name="r", mac=None, message="c", severity="low")
+        db.acknowledge_alert(a3, actor="seed", ts=150)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "acknowledged": "false"},
+            )
+        assert r.status_code == 200
+        assert db.get_alert(a1)["acknowledged"] == 1
+        assert db.get_alert(a2)["acknowledged"] == 1
+        # a3 was already acked; the "acknowledged=false" filter excluded it
+        # from the candidate set, so no NEW action row was written for it
+        # (only the original seed acknowledgement remains).
+        assert db.get_alert(a3)["acknowledged"] == 1
+        actions_a3 = db.list_alert_actions(a3)
+        assert len(actions_a3) == 1
+        assert actions_a3[0]["actor"] == "seed"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_invalid_severity_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "severity": "critical"},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_invalid_date_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "since": "not-a-date"},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_overflow_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(1001):
+            db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"m{i}", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 400
+        assert "1000" in r.text
+        # Nothing should have been written.
+        assert db._conn.execute("SELECT COUNT(*) FROM alert_actions").fetchone()[0] == 0
+        assert (
+            db._conn.execute("SELECT COUNT(*) FROM alerts WHERE acknowledged = 1").fetchone()[0]
+            == 0
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_no_match_returns_zero_counts(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "severity": "high"},
+            )
+        assert r.status_code == 200
+        assert "bulk acknowledge result" in r.text.lower()
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_without_csrf_returns_403(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            client.cookies.clear()
+            r = client.post("/alerts/ack-all-visible")
+        assert r.status_code == 403
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unix_to_iso_filter_renders_z_suffix(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=1700000000, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert 'datetime="2023-11-14T22:13:20Z"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unix_to_iso_filter_handles_none():
+    from talos.webui.app import unix_to_iso
+
+    assert unix_to_iso(None) == ""
+    assert unix_to_iso("") == ""
+    assert unix_to_iso(0) == "1970-01-01T00:00:00Z"
+
+
+@pytest.mark.webui
+def test_static_talos_js_served(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/static/talos.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers["content-type"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_base_html_includes_talos_js_script(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert 'src="/static/talos.js"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_inline_ack_note_input_present_per_row(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(3):
+            db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"m{i}", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        # Each unacked row carries a note input. Bulk-ack form has its own
+        # textarea; the row inputs use class ack-row-note to disambiguate.
+        assert r.text.count("ack-row-note") >= 3
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_inline_ack_note_submitted(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token, "note": "manual"},
+            )
+        assert r.status_code == 303
+        actions = db.list_alert_actions(aid)
+        assert len(actions) == 1
+        assert actions[0]["note"] == "manual"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_row_class_reflects_severity(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="low-x", severity="low")
+        db.add_alert(ts=101, rule_name="r", mac=None, message="med-x", severity="med")
+        db.add_alert(ts=102, rule_name="r", mac=None, message="high-x", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "row-sev-low" in r.text
+        assert "row-sev-med" in r.text
+        assert "row-sev-high" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_row_class_acked(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        _ack(db, aid)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "row-acked" in r.text
+    finally:
+        db.close()
