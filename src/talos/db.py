@@ -112,6 +112,18 @@ class Database:
             )
             return cur.lastrowid
 
+    def get_state(self, key: str) -> str | None:
+        row = self._conn.execute("SELECT value FROM poller_state WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_state(self, key: str, value: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO poller_state(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+
     def close(self) -> None:
         self._conn.close()
 
