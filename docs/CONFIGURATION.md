@@ -22,11 +22,20 @@ The schema is defined in [src/talos/config.py](../src/talos/config.py) and rejec
 | `ntfy_url` | string \| null | `null` | Base URL of the ntfy server. When set, `ntfy_topic` is required. | `https://ntfy.sh` |
 | `ntfy_topic` | string \| null | `null` | ntfy topic to publish alerts to. When set, `ntfy_url` is required. | `my-talos-alerts` |
 | `ntfy_auth_token` | string \| null | `null` | Optional bearer token for protected topics. | `tk_...` |
+| `ui_bind_host` | string | `127.0.0.1` | Host interface for the web UI (`talos-ui`). Loopback by default. Non-loopback values require `ui_allow_remote: true`. | `0.0.0.0` |
+| `ui_bind_port` | integer | `8765` | TCP port the UI listens on. Range `[1, 65535]`. | `9000` |
+| `ui_allow_remote` | bool | `false` | Permit binding the UI to a non-loopback address. Required `true` to expose the UI off-host; talos has no auth layer, so this is gated explicitly. | `true` |
+| `kismet_sources` | list[string] \| null | `null` | Inclusive filter on Kismet source (adapter) names. When set, only observations seen by at least one listed source are processed; others are silently dropped (DEBUG-logged). Source names match exactly. Omit or unset to accept every source. | `[alfa-2.4ghz, builtin-bt]` |
+| `kismet_source_locations` | dict[string, string] \| null | `null` | Per-source location override. Maps Kismet source names to `location_id` values; sightings observed by a matching source are recorded under that override rather than the global `location_id`. Sources not listed fall back to `location_id`. | `{alfa-2.4ghz: wifi-corner, builtin-bt: bt-corner}` |
+| `min_rssi` | integer \| null | `null` | Drop observations weaker than this RSSI threshold (dBm). Range `[-120, 0]`. Observations with no RSSI report are kept regardless. Unset disables RSSI filtering. | `-85` |
+| `kismet_timeout_seconds` | float | `10.0` | HTTP timeout (seconds) for all Kismet REST calls. Range `(0, 120]`. | `15.0` |
+| `kismet_health_check_on_startup` | bool | `true` | Probe Kismet's `/system/status.json` once at poller startup; on failure, the daemon exits immediately. Set `false` to skip the check (e.g. when starting talos before Kismet is ready). | `false` |
 
 ### Cross-field validation
 
 - If `kismet_fixture_path` is set together with a non-default `kismet_url`, talos logs a warning and the fixture wins.
 - `ntfy_url` and `ntfy_topic` must be set as a pair. Setting only one fails validation.
+- Setting `ui_bind_host` to anything other than `127.0.0.1` / `localhost` requires `ui_allow_remote: true`. Talos has no built-in auth; this gate forces an explicit acknowledgement before exposing the UI off-host.
 - Unknown top-level keys cause a load-time error (`extra='forbid'`).
 
 ## Worked examples
@@ -126,12 +135,94 @@ ntfy_topic: kev-talos-travel
 
 The companion `rules.travel.yaml` should bump the `new_non_randomized_device` rule from `low` to `med` or `high`, and add aggressive `watchlist_oui` entries for known surveillance vendors. See [RULES.md](RULES.md) for the rule schema.
 
+## Multi-adapter deployments
+
+Two adapters on a single Pi — say a 2.4 GHz Wi-Fi monitor and an internal Bluetooth radio — let you label sightings by which adapter heard them. This is the right shape for a Pi placed in a corner of the room where you want to know whether a device was *seen on Wi-Fi* (so it's at LAN range) versus *seen on Bluetooth* (closer, weaker, more interesting).
+
+Configure Kismet with both `source=` lines first; talos doesn't drive Kismet's adapter selection. Then on the talos side, list the source names and (optionally) attach a location label per source:
+
+```yaml
+kismet_url: http://localhost:2501
+kismet_api_key: paste-from-kismet-ui
+
+db_path: /var/lib/talos/talos.db
+
+# Default location for sightings whose source isn't listed below.
+location_id: living-room
+location_label: Living Room
+
+# Only process observations seen by these adapters. Other Kismet sources
+# (e.g. an RTL-SDR running for 433 MHz traffic) are silently dropped.
+kismet_sources:
+  - alfa-2.4ghz
+  - builtin-bt
+
+# Per-source override: tag each observation with the adapter's location.
+# Useful when the two radios have meaningfully different ranges.
+kismet_source_locations:
+  alfa-2.4ghz: living-room-wifi
+  builtin-bt:  living-room-bt
+
+# Optional: drop weak observations early. -85 dBm is roughly the floor
+# below which RSSI is too noisy to be useful for proximity reasoning.
+min_rssi: -85
+
+# Tighter than the default 10s, since the local Kismet is on the same Pi.
+kismet_timeout_seconds: 5.0
+
+# Default; explicit here for visibility. With multi-adapter setups, a
+# misconfigured Kismet (e.g. one of the sources failed to attach) is a
+# common cause of "talos is silent" — fail fast at startup so you notice.
+kismet_health_check_on_startup: true
+
+rules_path: /etc/talos/rules.yaml
+allowlist_path: /etc/talos/allowlist.yaml
+```
+
+Verifying the per-source labelling once the daemon is running:
+
+```bash
+sudo -u talos sqlite3 /var/lib/talos/talos.db \
+  "SELECT location_id, COUNT(*) FROM sightings GROUP BY location_id;"
+```
+
+Both `living-room-wifi` and `living-room-bt` should appear with non-zero counts within an hour. If one is missing, the corresponding Kismet `source=` line is probably failing to attach — check `kismet -d` output for that adapter.
+
+## Web UI routes
+
+The `talos-ui` server (separate process from the daemon) serves these routes against the same SQLite database. All paths are mounted at the root.
+
+Read-only views:
+
+| Path | What it shows |
+| --- | --- |
+| `/` | Index: severity counts (24h / 7d / 30d), 30-day sparkline, recent unacknowledged alerts, recent devices, Kismet reachability. |
+| `/alerts` | Paginated alerts list with filters for severity, ack state, date range, and free-text search. |
+| `/alerts/{id}` | Alert detail with action history (ack/unack audit trail). |
+| `/devices` | Paginated devices list with filters for device type and randomization state. |
+| `/devices/{mac}` | Device detail with sighting history. |
+| `/rules` | Current ruleset (rendered from `rules_path`, read-only). |
+| `/allowlist` | Current allowlist (rendered from `allowlist_path`, read-only). |
+| `/healthz` | Schema version, table counts, last poll timestamp. |
+
+Mutation endpoints (POST, redirect on success):
+
+| Path | What it does |
+| --- | --- |
+| `/alerts/{id}/ack` | Acknowledge a single alert; records actor and optional note. |
+| `/alerts/{id}/unack` | Reverse a prior acknowledgement; records actor and optional note. |
+| `/alerts/bulk-ack` | Acknowledge a list of alert IDs (form field `alert_ids`, capped at 1000). |
+| `/alerts/ack-all-visible` | Acknowledge everything matching the current `/alerts` filter (capped at 1000; the cap is enforced via a count read before any write). |
+
+All POST routes require the CSRF token: a cookie set on the first GET, plus the matching token in a hidden form field. The token has an 8-hour TTL and rotates with the cookie. The included templates wire this up automatically; if you build your own forms, see [src/talos/webui/csrf.py](../src/talos/webui/csrf.py) for the protocol.
+
 ## Reload semantics
 
-In v0.1, the config is read **once at startup**. Changes to `talos.yaml`, `rules.yaml`, or `allowlist.yaml` require a service restart:
+The config is read **once at startup**. Changes to `talos.yaml`, `rules.yaml`, or `allowlist.yaml` require a service restart:
 
 ```bash
 sudo systemctl restart talos
+sudo systemctl restart talos-ui
 ```
 
-Live reload (SIGHUP, file-watch, or a control socket) is on the v0.2 roadmap. Until then, plan to bundle config edits and restart deliberately rather than tweaking and hoping.
+Live reload (SIGHUP, file-watch, or a control socket) is tracked in [BACKLOG.md](../BACKLOG.md) under web-UI editing — that work needs the validation/rollback machinery first. Until then, plan to bundle config edits and restart deliberately rather than tweaking and hoping.

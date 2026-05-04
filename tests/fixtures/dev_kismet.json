@@ -1,0 +1,118 @@
+[
+  {
+    "kismet.device.base.macaddr": "a4:83:e7:01:23:45",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.first_time": 1714820000,
+    "kismet.device.base.last_time": 1714823900,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -42},
+    "kismet.device.base.manuf": "Apple",
+    "kismet.device.base.name": "HomeNet",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "dev-builtin-wifi",
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-aaaaaaaaaaaa",
+        "kismet.common.seenby.first_time": 1714820000,
+        "kismet.common.seenby.last_time": 1714823900
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "00:13:37:de:ad:be",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.first_time": 1714821000,
+    "kismet.device.base.last_time": 1714823800,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -71},
+    "kismet.device.base.manuf": "Hak5",
+    "kismet.device.base.name": "MysteryAP",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "dev-alfa-wifi",
+        "kismet.common.seenby.uuid": "22222222-2222-2222-2222-bbbbbbbbbbbb",
+        "kismet.common.seenby.first_time": 1714821000,
+        "kismet.common.seenby.last_time": 1714823800
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "02:11:22:33:44:55",
+    "kismet.device.base.type": "Wi-Fi Client",
+    "kismet.device.base.first_time": 1714821500,
+    "kismet.device.base.last_time": 1714823700,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -65},
+    "kismet.device.base.manuf": null,
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "dev-builtin-wifi",
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-aaaaaaaaaaaa",
+        "kismet.common.seenby.first_time": 1714821500,
+        "kismet.common.seenby.last_time": 1714823700
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "06:aa:bb:cc:dd:ee",
+    "kismet.device.base.type": "BTLE",
+    "kismet.device.base.first_time": 1714822000,
+    "kismet.device.base.last_time": 1714823600,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -78},
+    "kismet.device.base.manuf": "Apple",
+    "kismet.device.base.service_uuids": ["0000FD5A-0000-1000-8000-00805F9B34FB"],
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "dev-builtin-bt",
+        "kismet.common.seenby.uuid": "33333333-3333-3333-3333-cccccccccccc",
+        "kismet.common.seenby.first_time": 1714822000,
+        "kismet.common.seenby.last_time": 1714823600
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "06:11:22:33:44:55",
+    "kismet.device.base.type": "BTLE",
+    "kismet.device.base.first_time": 1714822500,
+    "kismet.device.base.last_time": 1714823500,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -82},
+    "kismet.device.base.manuf": "Unknown",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "dev-builtin-bt",
+        "kismet.common.seenby.uuid": "33333333-3333-3333-3333-cccccccccccc",
+        "kismet.common.seenby.first_time": 1714822500,
+        "kismet.common.seenby.last_time": 1714823500
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "00:1a:7d:da:71:11",
+    "kismet.device.base.type": "Bluetooth",
+    "kismet.device.base.first_time": 1714822800,
+    "kismet.device.base.last_time": 1714823400,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -55},
+    "kismet.device.base.manuf": "Cambridge Silicon",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "dev-builtin-bt",
+        "kismet.common.seenby.uuid": "33333333-3333-3333-3333-cccccccccccc",
+        "kismet.common.seenby.first_time": 1714822800,
+        "kismet.common.seenby.last_time": 1714823400
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "b8:27:eb:01:02:03",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.first_time": 1714823000,
+    "kismet.device.base.last_time": 1714823300,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -58},
+    "kismet.device.base.manuf": "Raspberry Pi Foundation",
+    "kismet.device.base.name": "RaspberryPi-AP",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.source": "dev-alfa-wifi",
+        "kismet.common.seenby.uuid": "22222222-2222-2222-2222-bbbbbbbbbbbb",
+        "kismet.common.seenby.first_time": 1714823000,
+        "kismet.common.seenby.last_time": 1714823300
+      }
+    ]
+  }
+]

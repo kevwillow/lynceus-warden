@@ -59,6 +59,23 @@ alert_dedup_window_seconds: 3600
 # ntfy_topic: my-talos-alerts       # Required if ntfy_url is set
 # ntfy_auth_token: xxx              # Optional bearer token for protected topics
 
+# --- Web UI (talos-ui) ---
+
+# Host interface the UI binds to. Default 127.0.0.1 (loopback only). To
+# expose the UI to other machines on the LAN, change this AND set
+# ui_allow_remote: true (Talos has no auth layer, so binding non-loopback
+# without that flag is a footgun and is rejected at config load).
+ui_bind_host: 127.0.0.1
+
+# TCP port the UI listens on. Must be in [1, 65535].
+ui_bind_port: 8765
+
+# Permit binding to a non-loopback address. Leave false on a single-Pi
+# install. Required true for any setup where a separate machine will
+# fetch the UI; only set true when you have placed talos behind your
+# own auth layer (e.g. a reverse proxy with HTTP basic auth or VPN).
+ui_allow_remote: false
+
 # --- Multi-source / multi-adapter ---
 
 # Inclusive filter on Kismet source (adapter) names. When set, only
