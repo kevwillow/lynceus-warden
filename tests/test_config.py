@@ -68,6 +68,28 @@ def test_load_config_malformed_yaml_raises(tmp_path):
         load_config(str(cfg_path))
 
 
+def test_rules_path_default_none(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "")
+    cfg = load_config(str(cfg_path))
+    assert cfg.rules_path is None
+    assert cfg.allowlist_path is None
+
+
+def test_alert_dedup_window_default_3600(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "")
+    cfg = load_config(str(cfg_path))
+    assert cfg.alert_dedup_window_seconds == 3600
+
+
+def test_negative_dedup_window_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "alert_dedup_window_seconds: -1\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
 def test_fixture_and_url_both_set_logs_warning(tmp_path, caplog):
     cfg_path = tmp_path / "talos.yaml"
     _write(

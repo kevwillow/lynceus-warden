@@ -100,3 +100,34 @@ def test_context_manager_closes(db_path):
         d.ensure_location(LOC, "Lab")
     with pytest.raises(sqlite3.ProgrammingError):
         d.get_device(MAC)
+
+
+def test_get_recent_alert_no_match_returns_none(db):
+    _seed(db)
+    db.add_alert(ts=500, rule_name="rule_a", mac=MAC, message="boom", severity="high")
+    assert db.get_recent_alert_for_rule_and_mac("rule_b", MAC, 0) is None
+
+
+def test_get_recent_alert_match_within_window(db):
+    _seed(db)
+    db.add_alert(ts=500, rule_name="rule_a", mac=MAC, message="boom", severity="high")
+    row = db.get_recent_alert_for_rule_and_mac("rule_a", MAC, since_ts=400)
+    assert row is not None
+    assert row["rule_name"] == "rule_a"
+    assert row["mac"] == MAC
+    assert row["message"] == "boom"
+    assert row["severity"] == "high"
+
+
+def test_get_recent_alert_outside_window_returns_none(db):
+    _seed(db)
+    db.add_alert(ts=500, rule_name="rule_a", mac=MAC, message="boom", severity="high")
+    assert db.get_recent_alert_for_rule_and_mac("rule_a", MAC, since_ts=600) is None
+
+
+def test_get_recent_alert_null_mac(db):
+    db.add_alert(ts=500, rule_name="rule_a", mac=None, message="systemic", severity="med")
+    row = db.get_recent_alert_for_rule_and_mac("rule_a", None, since_ts=0)
+    assert row is not None
+    assert row["mac"] is None
+    assert row["rule_name"] == "rule_a"

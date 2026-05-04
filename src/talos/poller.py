@@ -8,9 +8,11 @@ import signal
 import time
 
 from . import __version__
+from .allowlist import Allowlist, load_allowlist
 from .config import Config, load_config
 from .db import Database
 from .kismet import FakeKismetClient, KismetClient
+from .rules import Ruleset, evaluate, load_ruleset
 
 STATE_KEY_LAST_POLL = "last_poll_ts"
 
@@ -23,7 +25,18 @@ def build_kismet_client(config: Config) -> KismetClient:
     return KismetClient(config.kismet_url, api_key=config.kismet_api_key)
 
 
-def poll_once(client: KismetClient, db: Database, config: Config, now_ts: int) -> int:
+def poll_once(
+    client: KismetClient,
+    db: Database,
+    config: Config,
+    now_ts: int,
+    ruleset: Ruleset | None = None,
+    allowlist: Allowlist | None = None,
+) -> int:
+    if ruleset is None:
+        ruleset = Ruleset()
+    if allowlist is None:
+        allowlist = Allowlist()
     last_poll_str = db.get_state(STATE_KEY_LAST_POLL)
     last_poll_ts = int(last_poll_str) if last_poll_str else 0
     db.ensure_location(config.location_id, config.location_label)
@@ -31,6 +44,8 @@ def poll_once(client: KismetClient, db: Database, config: Config, now_ts: int) -
     processed = 0
     for obs in observations:
         try:
+            existing_device = db.get_device(obs.mac)
+            is_new = existing_device is None
             db.upsert_device(
                 mac=obs.mac,
                 device_type=obs.device_type,
@@ -46,6 +61,31 @@ def poll_once(client: KismetClient, db: Database, config: Config, now_ts: int) -
                 location_id=config.location_id,
             )
             processed += 1
+            if allowlist.is_allowed(obs):
+                logger.debug("allowlisted, suppressing alerts: %s", obs.mac)
+                continue
+            hits = evaluate(ruleset, obs, is_new_device=is_new)
+            for hit in hits:
+                if config.alert_dedup_window_seconds > 0:
+                    since = now_ts - config.alert_dedup_window_seconds
+                    if (
+                        db.get_recent_alert_for_rule_and_mac(hit.rule_name, hit.mac, since)
+                        is not None
+                    ):
+                        logger.debug("dedup-skip %s/%s", hit.rule_name, hit.mac)
+                        continue
+                try:
+                    db.add_alert(
+                        ts=now_ts,
+                        rule_name=hit.rule_name,
+                        mac=hit.mac,
+                        message=hit.message,
+                        severity=hit.severity,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e
+                    )
         except Exception as e:
             logger.warning("Failed to persist observation %s: %s", obs.mac, e)
             continue
@@ -58,6 +98,10 @@ class Poller:
         self.config = config
         self.db = Database(config.db_path)
         self.client = build_kismet_client(config)
+        self.ruleset = load_ruleset(config.rules_path) if config.rules_path else Ruleset()
+        self.allowlist = (
+            load_allowlist(config.allowlist_path) if config.allowlist_path else Allowlist()
+        )
         self._stop_flag = False
 
     def _on_signal(self, signum: int, frame: object) -> None:
@@ -77,7 +121,14 @@ class Poller:
             pass
         try:
             while not self._stop_flag:
-                poll_once(self.client, self.db, self.config, int(time.time()))
+                poll_once(
+                    self.client,
+                    self.db,
+                    self.config,
+                    int(time.time()),
+                    ruleset=self.ruleset,
+                    allowlist=self.allowlist,
+                )
                 self._interruptible_sleep(self.config.poll_interval_seconds)
         except KeyboardInterrupt:
             self._stop_flag = True
@@ -86,7 +137,14 @@ class Poller:
 
     def run_once(self) -> int:
         try:
-            return poll_once(self.client, self.db, self.config, int(time.time()))
+            return poll_once(
+                self.client,
+                self.db,
+                self.config,
+                int(time.time()),
+                ruleset=self.ruleset,
+                allowlist=self.allowlist,
+            )
         finally:
             self.db.close()
 

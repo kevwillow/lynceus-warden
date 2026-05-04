@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from talos import __version__
+from talos.allowlist import Allowlist, AllowlistEntry
 from talos.config import Config
 from talos.db import Database
 from talos.kismet import FakeKismetClient, KismetClient
@@ -16,6 +17,7 @@ from talos.poller import (
     main,
     poll_once,
 )
+from talos.rules import Rule, Ruleset
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "kismet_devices.json"
 
@@ -180,3 +182,168 @@ def test_main_version_flag(capsys):
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
     assert __version__ in captured.out or __version__ in captured.err
+
+
+# --------------------- rules / allowlist integration ---------------------
+
+
+def _alerts_count(db: Database) -> int:
+    return db._conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+
+
+def test_poll_once_no_rules_writes_no_alerts(db, config, fake_client):
+    poll_once(fake_client, db, config, 1700001000)
+    assert _alerts_count(db) == 0
+
+
+def test_poll_once_watchlist_oui_hit_creates_alert(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_oui",
+                rule_type="watchlist_oui",
+                severity="high",
+                patterns=["a4:83:e7"],
+                description="Apple OUI",
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    rows = db._conn.execute(
+        "SELECT rule_name, mac, severity, message FROM alerts"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["rule_name"] == "apple_oui"
+    assert rows[0]["mac"] == "a4:83:e7:11:22:33"
+    assert rows[0]["severity"] == "high"
+    assert "a4:83:e7:11:22:33" in rows[0]["message"]
+    assert "Apple OUI" in rows[0]["message"]
+
+
+def test_poll_once_new_device_rule_fires_only_on_first_poll(db, config, fake_client):
+    rs = Ruleset(
+        rules=[Rule(name="new_dev", rule_type="new_non_randomized_device", severity="low")]
+    )
+    cfg_no_dedup = config.model_copy(update={"alert_dedup_window_seconds": 0})
+
+    poll_once(fake_client, db, cfg_no_dedup, 1700001000, ruleset=rs)
+    first_count = _alerts_count(db)
+    # Two non-randomized devices in the fixture: a4:83:e7:... and 00:1a:7d:...
+    assert first_count == 2
+
+    # Rewind state so FakeKismetClient returns the same devices again.
+    db.set_state(STATE_KEY_LAST_POLL, "0")
+    poll_once(fake_client, db, cfg_no_dedup, 1700002000, ruleset=rs)
+    assert _alerts_count(db) == first_count
+
+
+def test_poll_once_allowlist_suppresses_alert(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs, allowlist=al)
+    assert _alerts_count(db) == 0
+
+
+def test_poll_once_dedup_within_window_skips_duplicate(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    db.upsert_device("a4:83:e7:11:22:33", "wifi", "Apple", 0, 1699000000)
+    db.add_alert(
+        ts=1700000900,
+        rule_name="apple_mac",
+        mac="a4:83:e7:11:22:33",
+        message="prior",
+        severity="high",
+    )
+    cfg = config.model_copy(update={"alert_dedup_window_seconds": 3600})
+    poll_once(fake_client, db, cfg, 1700001000, ruleset=rs)
+    assert _alerts_count(db) == 1
+
+
+def test_poll_once_dedup_outside_window_creates_new_alert(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    db.upsert_device("a4:83:e7:11:22:33", "wifi", "Apple", 0, 1699000000)
+    db.add_alert(
+        ts=1699993800,
+        rule_name="apple_mac",
+        mac="a4:83:e7:11:22:33",
+        message="ancient",
+        severity="high",
+    )
+    cfg = config.model_copy(update={"alert_dedup_window_seconds": 3600})
+    poll_once(fake_client, db, cfg, 1700001000, ruleset=rs)
+    assert _alerts_count(db) == 2
+
+
+def test_poll_once_dedup_window_zero_disables_dedup(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    db.upsert_device("a4:83:e7:11:22:33", "wifi", "Apple", 0, 1699000000)
+    db.add_alert(
+        ts=1700000900,
+        rule_name="apple_mac",
+        mac="a4:83:e7:11:22:33",
+        message="prior",
+        severity="high",
+    )
+    cfg = config.model_copy(update={"alert_dedup_window_seconds": 0})
+    poll_once(fake_client, db, cfg, 1700001000, ruleset=rs)
+    assert _alerts_count(db) == 2
+
+
+def test_poll_once_alert_write_error_does_not_abort_poll(db, config, fake_client, monkeypatch):
+    rs = Ruleset(
+        rules=[Rule(name="new_dev", rule_type="new_non_randomized_device", severity="low")]
+    )
+    cfg = config.model_copy(update={"alert_dedup_window_seconds": 0})
+
+    orig_add = db.add_alert
+    state = {"calls": 0}
+
+    def flaky_add(**kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("simulated alert write failure")
+        return orig_add(**kwargs)
+
+    monkeypatch.setattr(db, "add_alert", flaky_add)
+    count = poll_once(fake_client, db, cfg, 1700001000, ruleset=rs)
+    assert count == 4
+    assert state["calls"] >= 2
+    assert _alerts_count(db) >= 1
