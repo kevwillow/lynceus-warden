@@ -13,6 +13,7 @@ import sys
 import yaml
 
 from ..db import Database
+from ..seeds.ble_uuids import TRACKER_UUIDS
 from ..seeds.threat_ouis import THREAT_OUIS
 
 VALID_PATTERN_TYPES = {"mac", "oui", "ssid", "ble_uuid"}
@@ -56,6 +57,22 @@ def seed_threat_ouis(db: Database) -> tuple[int, int]:
             continue
         _insert_entry(db, pattern, "oui", entry["severity"], entry["description"])
         logger.info("inserted threat OUI %s (%s)", pattern, entry["severity"])
+        inserted += 1
+    return inserted, skipped
+
+
+def seed_ble_uuids(db: Database) -> tuple[int, int]:
+    """Returns (inserted, skipped) counts. Idempotent."""
+    inserted = 0
+    skipped = 0
+    for entry in TRACKER_UUIDS:
+        pattern = entry["pattern"]
+        if _entry_already_present(db, pattern, "ble_uuid"):
+            logger.debug("skipping existing BLE UUID %s", pattern)
+            skipped += 1
+            continue
+        _insert_entry(db, pattern, "ble_uuid", entry["severity"], entry["description"])
+        logger.info("inserted BLE UUID %s (%s)", pattern, entry["severity"])
         inserted += 1
     return inserted, skipped
 
@@ -109,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="seed the built-in threat OUI list",
     )
+    parser.add_argument(
+        "--ble-uuids",
+        action="store_true",
+        help="seed the built-in BLE tracker UUID list",
+    )
     parser.add_argument("--yaml", help="path to a YAML file with watchlist entries")
     parser.add_argument(
         "--log-level",
@@ -117,9 +139,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.threat_ouis and not args.yaml:
+    if not args.threat_ouis and not args.ble_uuids and not args.yaml:
         print(
-            "error: at least one of --threat-ouis or --yaml is required",
+            "error: at least one of --threat-ouis, --ble-uuids, or --yaml is required",
             file=sys.stderr,
         )
         return 2
@@ -133,6 +155,10 @@ def main(argv: list[str] | None = None) -> int:
             total_skipped = 0
             if args.threat_ouis:
                 ins, skp = seed_threat_ouis(db)
+                total_inserted += ins
+                total_skipped += skp
+            if args.ble_uuids:
+                ins, skp = seed_ble_uuids(db)
                 total_inserted += ins
                 total_skipped += skp
             if args.yaml:

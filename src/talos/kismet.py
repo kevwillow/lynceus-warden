@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 logger = logging.getLogger(__name__)
 
 _MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 _TYPE_MAP: dict[str, Literal["wifi", "ble", "bt_classic"]] = {
     "Wi-Fi AP": "wifi",
@@ -35,12 +36,21 @@ class DeviceObservation(BaseModel):
     ssid: str | None
     oui_vendor: str | None
     is_randomized: bool
+    ble_service_uuids: tuple[str, ...] = ()
 
     @field_validator("mac")
     @classmethod
     def _validate_mac(cls, v: str) -> str:
         if not _MAC_RE.match(v):
             raise ValueError(f"invalid mac: {v!r}")
+        return v
+
+    @field_validator("ble_service_uuids")
+    @classmethod
+    def _validate_uuids(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        for u in v:
+            if not _UUID_RE.match(u):
+                raise ValueError(f"invalid ble service uuid: {u!r}")
         return v
 
     @field_validator("first_seen")
@@ -56,12 +66,25 @@ class DeviceObservation(BaseModel):
             raise ValueError("last_seen must be >= first_seen")
         return self
 
+    @model_validator(mode="after")
+    def _drop_uuids_for_non_ble(self) -> DeviceObservation:
+        if self.device_type != "ble" and self.ble_service_uuids:
+            object.__setattr__(self, "ble_service_uuids", ())
+        return self
+
 
 def normalize_mac(mac: str) -> str:
     s = mac.strip().lower().replace("-", ":")
     if not _MAC_RE.match(s):
         raise ValueError(f"invalid mac: {mac!r}")
     return s
+
+
+def normalize_uuid(s: str) -> str:
+    norm = s.strip().lower()
+    if not _UUID_RE.match(norm):
+        raise ValueError(f"invalid uuid: {s!r}")
+    return norm
 
 
 def is_locally_administered(mac: str) -> bool:
@@ -100,6 +123,21 @@ def parse_kismet_device(raw: dict) -> DeviceObservation | None:
     else:
         ssid = None
 
+    ble_service_uuids: tuple[str, ...] = ()
+    if device_type == "ble":
+        raw_uuids = raw.get("kismet.device.base.service_uuids") or []
+        if isinstance(raw_uuids, list):
+            normalized: list[str] = []
+            for u in raw_uuids:
+                if not isinstance(u, str):
+                    logger.debug("dropping non-string ble service uuid: %r", u)
+                    continue
+                try:
+                    normalized.append(normalize_uuid(u))
+                except ValueError:
+                    logger.debug("dropping malformed ble service uuid: %r", u)
+            ble_service_uuids = tuple(normalized)
+
     return DeviceObservation(
         mac=mac,
         device_type=device_type,
@@ -109,6 +147,7 @@ def parse_kismet_device(raw: dict) -> DeviceObservation | None:
         ssid=ssid,
         oui_vendor=oui_vendor,
         is_randomized=is_locally_administered(mac),
+        ble_service_uuids=ble_service_uuids,
     )
 
 

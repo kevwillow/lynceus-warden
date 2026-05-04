@@ -10,7 +10,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from talos.kismet import DeviceObservation, normalize_mac
+from talos.kismet import DeviceObservation, normalize_mac, normalize_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ RuleType = Literal[
     "watchlist_mac",
     "watchlist_oui",
     "watchlist_ssid",
+    "ble_uuid",
     "new_non_randomized_device",
 ]
 Severity = Literal["low", "med", "high"]
@@ -40,7 +41,7 @@ class Rule(BaseModel):
         if not self.name:
             raise ValueError("rule name must be non-empty")
 
-        if self.rule_type.startswith("watchlist_"):
+        if self.rule_type.startswith("watchlist_") or self.rule_type == "ble_uuid":
             if not self.patterns:
                 raise ValueError(f"rule {self.name!r}: watchlist rules require non-empty patterns")
         elif self.rule_type == "new_non_randomized_device":
@@ -59,6 +60,12 @@ class Rule(BaseModel):
                 if not _OUI_RE.match(s):
                     raise ValueError(f"rule {self.name!r}: invalid oui pattern: {p!r}")
                 normalized.append(s)
+            object.__setattr__(self, "patterns", normalized)
+        elif self.rule_type == "ble_uuid":
+            try:
+                normalized = [normalize_uuid(p) for p in self.patterns]
+            except ValueError as e:
+                raise ValueError(f"rule {self.name!r}: {e}") from e
             object.__setattr__(self, "patterns", normalized)
 
         return self
@@ -148,6 +155,22 @@ def evaluate(
                         mac=obs.mac,
                     )
                 )
+        elif rule.rule_type == "ble_uuid":
+            for p in rule.patterns:
+                if p in obs.ble_service_uuids:
+                    msg = (
+                        f"BLE service UUID {p} on watchlist: "
+                        f"{rule.description or rule.name} (mac {obs.mac})"
+                    )
+                    hits.append(
+                        RuleHit(
+                            rule_name=rule.name,
+                            severity=rule.severity,
+                            message=msg,
+                            mac=obs.mac,
+                        )
+                    )
+                    break
         elif rule.rule_type == "new_non_randomized_device":
             if is_new_device and not obs.is_randomized:
                 msg = (
