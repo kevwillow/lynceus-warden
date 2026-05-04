@@ -1,0 +1,79 @@
+"""Tests for the config layer."""
+
+import logging
+
+import pytest
+import yaml
+from pydantic import ValidationError
+
+from talos.config import load_config
+
+
+def _write(path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+
+
+def test_defaults_load_with_empty_yaml(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "")
+    cfg = load_config(str(cfg_path))
+    assert cfg.kismet_url == "http://localhost:2501"
+    assert cfg.kismet_api_key is None
+    assert cfg.kismet_fixture_path is None
+    assert cfg.db_path == "talos.db"
+    assert cfg.location_id == "default"
+    assert cfg.location_label == "Default Location"
+    assert cfg.poll_interval_seconds == 60
+    assert cfg.log_level == "INFO"
+
+
+def test_yaml_overrides_defaults(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "poll_interval_seconds: 30\n")
+    cfg = load_config(str(cfg_path))
+    assert cfg.poll_interval_seconds == 30
+
+
+def test_invalid_log_level_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "log_level: TRACE\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_poll_interval_too_low_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "poll_interval_seconds: 1\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_extra_field_rejected(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "unknown_key: 1\n")
+    with pytest.raises(ValidationError):
+        load_config(str(cfg_path))
+
+
+def test_load_config_missing_file_raises(tmp_path):
+    cfg_path = tmp_path / "nope.yaml"
+    with pytest.raises(FileNotFoundError):
+        load_config(str(cfg_path))
+
+
+def test_load_config_malformed_yaml_raises(tmp_path):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(cfg_path, "key: 'unterminated\n")
+    with pytest.raises(yaml.YAMLError):
+        load_config(str(cfg_path))
+
+
+def test_fixture_and_url_both_set_logs_warning(tmp_path, caplog):
+    cfg_path = tmp_path / "talos.yaml"
+    _write(
+        cfg_path,
+        "kismet_fixture_path: /tmp/x.json\nkismet_url: http://other:1234\n",
+    )
+    with caplog.at_level(logging.WARNING, logger="talos.config"):
+        load_config(str(cfg_path))
+    assert any(r.levelname == "WARNING" for r in caplog.records)

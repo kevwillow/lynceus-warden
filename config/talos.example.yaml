@@ -1,0 +1,39 @@
+# Talos configuration sample.
+# Copy this file to talos.yaml and customize. All fields have sensible
+# defaults — only override what you actually need.
+
+# --- Kismet source ---
+
+# URL of the Kismet REST API. Override per deployment.
+kismet_url: http://localhost:2501
+
+# Kismet API key (cookie). Typically set in production deployments where
+# Kismet is auth-protected. Leave null for unauthenticated local use.
+kismet_api_key: null
+
+# Optional: path to a JSON fixture matching the Kismet device-list shape.
+# When set, Talos uses FakeKismetClient and never makes HTTP calls — useful
+# for offline development and tests. Leave commented out in production.
+# kismet_fixture_path: tests/fixtures/kismet_devices.json
+
+# --- Storage ---
+
+# Path to the SQLite database file. Typically overridden to a stable
+# location (e.g. /var/lib/talos/talos.db) on the Pi.
+db_path: talos.db
+
+# --- Location ---
+# Identifier and human label for sightings recorded by this instance.
+# Typically overridden to identify the physical install (e.g. 'home', 'office').
+location_id: default
+location_label: Default Location
+
+# --- Polling ---
+
+# Seconds between Kismet polls. Minimum 5; values below are rejected.
+poll_interval_seconds: 60
+
+# --- Logging ---
+
+# One of DEBUG, INFO, WARNING, ERROR.
+log_level: INFO
