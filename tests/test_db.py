@@ -28,11 +28,14 @@ def _seed(db: Database) -> None:
 
 
 def test_migration_idempotent(db_path):
-    Database(db_path).close()
+    first = Database(db_path)
+    count_first = first._conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+    first.close()
     second = Database(db_path)
-    count = second._conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-    assert count == 1
+    count_second = second._conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
     second.close()
+    assert count_first >= 1
+    assert count_first == count_second
 
 
 def test_foreign_keys_enforced(db):
