@@ -23,6 +23,4 @@ A Linux host (Raspberry Pi OS or any systemd-based distro), Python 3.11+, and a 
 
 ## Web UI (optional)
 
-A read-only dashboard ships as a separate `talos-ui` process. Install with `deploy/talos-ui.service` (mirrors the talos hardening) and reach it on `http://127.0.0.1:8765`. To bind a non-loopback address, set both `ui_bind_host` and `ui_allow_remote: true` in `talos.yaml` — talos has no auth layer in v0.2, so this is a footgun.
-
-**TODO before first deployment:** replace the placeholders in `src/talos/webui/static/` with actual Pico CSS v2.x (https://picocss.com) and HTMX v2.x (https://htmx.org). Both are MIT licensed and small enough to commit. The current files are stubs so the static-file mounts and tests work without internet access.
+There is a separate `talos-ui` process that serves a small read-only dashboard. Install it with `deploy/talos-ui.service` (it uses the same systemd hardening as the main `talos` service) and visit `http://127.0.0.1:8765` from the Pi itself. By default it only listens on localhost, on purpose. If you want to reach it from another machine, set both `ui_bind_host` and `ui_allow_remote: true` in `talos.yaml` — but be careful: in v0.2 the UI has no login, so anyone who can reach the address can read everything in the database. Don't expose it to a network you don't trust.

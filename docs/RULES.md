@@ -17,15 +17,15 @@ Each `Rule`:
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `name` | string | (required) | Unique identifier. Used as the dedup key and recorded on every emitted alert. |
-| `rule_type` | string | (required) | One of `watchlist_mac`, `watchlist_oui`, `watchlist_ssid`, `new_non_randomized_device`. |
+| `rule_type` | string | (required) | One of `watchlist_mac`, `watchlist_oui`, `watchlist_ssid`, `ble_uuid`, `new_non_randomized_device`. |
 | `severity` | string | (required) | One of `low`, `med`, `high`. |
 | `enabled` | bool | `true` | When `false`, the rule is loaded but skipped during evaluation. Useful for keeping rules in the file without firing. |
-| `patterns` | list of string | `[]` | Required and non-empty for all `watchlist_*` types. Must be empty for `new_non_randomized_device`. |
+| `patterns` | list of string | `[]` | Required and non-empty for all `watchlist_*` and `ble_uuid` rules. Must be empty for `new_non_randomized_device`. |
 | `description` | string \| null | `null` | Free-form note. When set, it appears in the alert message body. |
 
 Pattern format depends on rule type — see the per-type sections below. Patterns are normalized at load time (e.g. MACs are lowercased and converted to colon-separated form), so `AA-BB-CC-DD-EE-FF` and `aa:bb:cc:dd:ee:ff` are equivalent.
 
-## The four rule types
+## The five rule types
 
 ### `watchlist_mac`
 
@@ -67,9 +67,24 @@ Fires when the device's `ssid` exactly matches any pattern. Only WiFi devices po
   description: SSIDs commonly used for evil-twin attacks
 ```
 
+### `ble_uuid`
+
+Fires when the device's advertised BLE GATT service UUIDs include any pattern. Patterns must be 128-bit UUIDs in the standard `8-4-4-4-12` hex form; they are normalized at load time (lowercased, dashes preserved). Only BLE devices populate `ble_service_uuids` — Wi-Fi and Bluetooth Classic sightings always miss.
+
+This is the AirTag-class detector: Apple's tracker advertises a known service UUID even when in lost mode, and the same shape works for a growing list of consumer trackers. Bring your own list; the seed file in `src/talos/seeds/` is a starting point, not exhaustive.
+
+```yaml
+- name: airtag_detected
+  rule_type: ble_uuid
+  severity: high
+  patterns:
+    - 0000FD5A-0000-1000-8000-00805F9B34FB   # Apple AirTag service UUID
+  description: AirTag-class BLE tracker observed
+```
+
 ### `new_non_randomized_device`
 
-Fires the **first** time a device is seen at this location, but only if its MAC is **not** locally administered (i.e. the second-least-significant bit of the first octet is 0). This catches IoT and older hardware that broadcasts a real OEM MAC. `patterns` must be empty.
+Fires the **first** time a device shows up at this location — but only if it looks like the device is broadcasting a real, factory-assigned MAC address rather than a randomized one. (Technically: the second bit of the first byte of the MAC must be 0. Devices that are deliberately randomizing flip this bit on; real-vendor MACs leave it off.) The intent is to catch things like IoT gear, older laptops, and hardware that doesn't try to hide its identity, while ignoring the constant churn of randomized phones walking past. `patterns` must be empty for this rule type.
 
 ```yaml
 - name: new_device_alert
@@ -121,19 +136,19 @@ Dedup is keyed on `(rule_name, mac)`, not on rule type or severity, so:
 
 Dedup state lives in the `alerts` table, so it survives restarts.
 
-## MAC randomization caveat
+## A note on MAC randomization
 
-Talos is **not** in the business of defeating MAC randomization. Modern iOS and Android randomize the WiFi MAC per-SSID (often per-association) and rotate BLE addresses on a timer measured in minutes. For those devices, neither `watchlist_mac` nor `new_non_randomized_device` will reliably catch a recurring presence — the MAC has changed by the next sighting.
+Talos does not try to defeat MAC randomization, and you should not expect it to. Modern iPhones and Android phones change their WiFi MAC for each network they connect to (sometimes for each individual connection), and they rotate their Bluetooth Low Energy address every few minutes regardless. So if the same phone walks past your Pi twice, it will most likely look like two completely different devices — neither `watchlist_mac` nor `new_non_randomized_device` can stitch those sightings together.
 
-What talos **is** useful for in v0.1:
+What talos **is** useful for:
 
 - IoT devices (smart bulbs, plugs, cameras) that ship with stable OEM MACs.
 - Fitness trackers, headphones, and other Bluetooth Classic gear.
 - Specialty hardware with recognizable OUI prefixes (Pineapples, certain SDR rigs).
 - Older or non-randomizing devices that don't bother hiding their real MAC.
-- AirTag-class BLE trackers — **planned for v0.2** via service-UUID extraction; not present in v0.1.
+- AirTag-class BLE trackers, via the `ble_uuid` rule type plus a list of known tracker service UUIDs.
 
-If your threat model is "is a specific person's iPhone in this room," talos v0.1 is the wrong tool. If it's "did a piece of unfamiliar hardware just appear," it's a good fit.
+If your threat model is "is a specific person's iPhone in this room," talos is the wrong tool. If it's "did a piece of unfamiliar hardware just appear," it's a good fit.
 
 ## Tuning playbook (first week)
 
@@ -146,7 +161,7 @@ A rough triage flow when an alert fires:
    - **Allowlist** when the device is yours or otherwise expected. Add an entry to `allowlist.yaml` keyed by MAC for one device or by OUI for a vendor block. This is the right answer for the bulk of first-week noise.
    - **Disable a rule** (`enabled: false`) when the rule itself doesn't fit your environment — for example, `new_non_randomized_device` set to `med` in a coffee shop is going to be useless. Drop its severity or turn it off.
    - **Raise the dedup window** when a single device legitimately matches but you don't need to be told every hour. Bump `alert_dedup_window_seconds` from `3600` to `86400` (one day) for a noisy persistent match.
-3. **Restart talos** so the changes take effect (v0.1 has no live reload — see [CONFIGURATION.md](CONFIGURATION.md)).
+3. **Restart talos** so the changes take effect (no live reload yet — see [CONFIGURATION.md](CONFIGURATION.md) and [BACKLOG.md](../BACKLOG.md)).
 4. **Keep notes.** A short comment on each allowlist entry (`note:`) is worth its weight three months later when you can't remember why a MAC is on the list.
 
 By the end of week one, you should be down to a handful of alerts per day, almost all of which are interesting. If you're still drowning, the next move is usually to drop `new_non_randomized_device` to `low` (or off) and rely on the `watchlist_*` rules for signal.
