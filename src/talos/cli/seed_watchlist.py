@@ -82,9 +82,7 @@ def seed_from_yaml(db: Database, yaml_path: str) -> tuple[int, int]:
             skipped += 1
             continue
         if pattern_type not in VALID_PATTERN_TYPES:
-            logger.warning(
-                "skipping entry with invalid pattern_type %r: %r", pattern_type, raw
-            )
+            logger.warning("skipping entry with invalid pattern_type %r: %r", pattern_type, raw)
             skipped += 1
             continue
         if severity not in VALID_SEVERITIES:

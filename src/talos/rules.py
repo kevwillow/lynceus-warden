@@ -42,9 +42,7 @@ class Rule(BaseModel):
 
         if self.rule_type.startswith("watchlist_"):
             if not self.patterns:
-                raise ValueError(
-                    f"rule {self.name!r}: watchlist rules require non-empty patterns"
-                )
+                raise ValueError(f"rule {self.name!r}: watchlist rules require non-empty patterns")
         elif self.rule_type == "new_non_randomized_device":
             if self.patterns:
                 raise ValueError(
@@ -153,8 +151,7 @@ def evaluate(
         elif rule.rule_type == "new_non_randomized_device":
             if is_new_device and not obs.is_randomized:
                 msg = (
-                    f"New non-randomized device: {obs.mac} "
-                    f"(vendor: {obs.oui_vendor or 'unknown'})"
+                    f"New non-randomized device: {obs.mac} (vendor: {obs.oui_vendor or 'unknown'})"
                 )
                 hits.append(
                     RuleHit(
