@@ -58,3 +58,35 @@ alert_dedup_window_seconds: 3600
 # ntfy_url: https://ntfy.sh         # Or your self-hosted instance
 # ntfy_topic: my-talos-alerts       # Required if ntfy_url is set
 # ntfy_auth_token: xxx              # Optional bearer token for protected topics
+
+# --- Multi-source / multi-adapter ---
+
+# Inclusive filter on Kismet source (adapter) names. When set, only
+# observations seen by at least one of the listed sources are processed;
+# all others are silently dropped (DEBUG-logged). Source names are matched
+# exactly against the "kismet.common.seenby.source" field reported by Kismet.
+# Leave unset to accept observations from every source.
+# kismet_sources:
+#   - alfa-2.4ghz
+#   - builtin-bt
+
+# Per-source location override. Maps Kismet source names to location_id
+# values; sightings observed by a matching source are recorded under that
+# location_id (rather than the global location_id above). Sources not
+# present here fall back to location_id. Source name matching is exact.
+# kismet_source_locations:
+#   alfa-2.4ghz: wifi-corner
+#   builtin-bt: bt-corner
+
+# Drop observations weaker than this RSSI threshold (in dBm; values must be
+# in [-120, 0]). Observations with no RSSI report (rssi=None) are kept
+# regardless. Leave unset to disable RSSI filtering.
+# min_rssi: -85
+
+# HTTP timeout (seconds) for all Kismet REST calls. Must be > 0 and <= 120.
+kismet_timeout_seconds: 10.0
+
+# Probe Kismet's /system/status.json once at poller startup; on failure,
+# Poller.__init__ raises and the daemon exits immediately. Set to false
+# to skip the check (e.g. when starting talos before kismet is ready).
+kismet_health_check_on_startup: true

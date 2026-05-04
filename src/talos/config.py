@@ -34,6 +34,11 @@ class Config(BaseModel):
     ui_bind_host: str = "127.0.0.1"
     ui_bind_port: int = 8765
     ui_allow_remote: bool = False
+    kismet_sources: list[str] | None = None
+    kismet_source_locations: dict[str, str] | None = None
+    min_rssi: int | None = None
+    kismet_timeout_seconds: float = 10.0
+    kismet_health_check_on_startup: bool = True
 
     @field_validator("poll_interval_seconds")
     @classmethod
@@ -56,6 +61,63 @@ class Config(BaseModel):
         if self.ntfy_topic and not self.ntfy_url:
             raise ValueError("ntfy_url required when ntfy_topic is set")
         return self
+
+    @field_validator("kismet_sources")
+    @classmethod
+    def _validate_kismet_sources(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if len(v) == 0:
+            raise ValueError(
+                "kismet_sources must be omitted or a non-empty list "
+                "(an empty list would filter out everything)"
+            )
+        cleaned: list[str] = []
+        for entry in v:
+            if not isinstance(entry, str):
+                raise ValueError(f"kismet_sources entries must be strings: {entry!r}")
+            stripped = entry.strip()
+            if not stripped:
+                raise ValueError("kismet_sources entries must be non-empty after strip")
+            cleaned.append(stripped)
+        return cleaned
+
+    @field_validator("kismet_source_locations")
+    @classmethod
+    def _validate_kismet_source_locations(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        if v is None:
+            return None
+        cleaned: dict[str, str] = {}
+        for key, val in v.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError(f"kismet_source_locations keys must be non-empty strings: {key!r}")
+            if not isinstance(val, str) or not val.strip():
+                raise ValueError(
+                    f"kismet_source_locations values must be non-empty strings: {val!r}"
+                )
+            cleaned[key.strip()] = val.strip()
+        return cleaned
+
+    @field_validator("min_rssi")
+    @classmethod
+    def _validate_min_rssi(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        if v < -120 or v > 0:
+            raise ValueError(
+                "min_rssi must be in [-120, 0] (dBm); -120 is below thermal noise, "
+                "0 is unphysically strong"
+            )
+        return v
+
+    @field_validator("kismet_timeout_seconds")
+    @classmethod
+    def _validate_kismet_timeout(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("kismet_timeout_seconds must be > 0")
+        if v > 120.0:
+            raise ValueError("kismet_timeout_seconds must be <= 120.0")
+        return v
 
     @model_validator(mode="after")
     def _validate_ui_bind(self) -> Config:
