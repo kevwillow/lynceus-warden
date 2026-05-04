@@ -25,6 +25,10 @@ dev = [
     "build>=1.2",
 ]
 
+[project.scripts]
+talos = "talos.poller:main"
+talos-seed-watchlist = "talos.cli.seed_watchlist:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["talos*"]
