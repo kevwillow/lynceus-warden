@@ -142,3 +142,32 @@ def test_migrations_dir_found_via_package_resources(db):
 def test_migrations_dir_lists_both_files(db):
     names = sorted(p.name for p in db._migrations_dir.glob("*.sql"))
     assert names == ["001_initial.sql", "002_poller_state.sql"]
+
+
+def test_healthcheck_returns_expected_keys_and_types(db):
+    health = db.healthcheck()
+    assert set(health.keys()) == {
+        "schema_version",
+        "device_count",
+        "alert_count",
+        "unacked_alert_count",
+    }
+    for value in health.values():
+        assert isinstance(value, int)
+    assert health["schema_version"] > 0
+
+
+def test_healthcheck_counts_reflect_writes(db):
+    db.ensure_location(LOC, "Lab")
+    db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+    db.upsert_device("aa:bb:cc:dd:ee:02", "wifi", "Acme", 0, 100)
+    db.insert_sighting("aa:bb:cc:dd:ee:01", 100, -50, "TestSSID", LOC)
+    acked_id = db.add_alert(ts=200, rule_name="rule_a", mac=None, message="acked", severity="high")
+    db.add_alert(ts=201, rule_name="rule_b", mac=None, message="unacked", severity="high")
+    with db._conn:
+        db._conn.execute("UPDATE alerts SET acknowledged = 1 WHERE id = ?", (acked_id,))
+
+    health = db.healthcheck()
+    assert health["device_count"] == 2
+    assert health["alert_count"] == 2
+    assert health["unacked_alert_count"] == 1

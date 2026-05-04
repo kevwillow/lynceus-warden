@@ -99,3 +99,23 @@ def test_wheel_install_finds_migrations(tmp_path):
     assert _re.search(r"\d+\.\d+\.\d+", combined), (
         f"no version string in talos --version output: {combined!r}"
     )
+
+    if sys.platform == "win32":
+        venv_talos_ui = venv_dir / "Scripts" / "talos-ui.exe"
+    else:
+        venv_talos_ui = venv_dir / "bin" / "talos-ui"
+    ui_version_run = subprocess.run(
+        [str(venv_talos_ui), "--version"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert ui_version_run.returncode == 0, (
+        f"talos-ui --version failed:\n"
+        f"stdout={ui_version_run.stdout}\nstderr={ui_version_run.stderr}"
+    )
+    ui_combined = (ui_version_run.stdout + ui_version_run.stderr).strip()
+    assert ui_combined, "talos-ui --version produced no output"
+    assert _re.search(r"\d+\.\d+\.\d+", ui_combined), (
+        f"no version string in talos-ui --version output: {ui_combined!r}"
+    )
