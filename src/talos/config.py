@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,9 @@ class Config(BaseModel):
     rules_path: str | None = None
     allowlist_path: str | None = None
     alert_dedup_window_seconds: int = 3600
+    ntfy_url: str | None = None
+    ntfy_topic: str | None = None
+    ntfy_auth_token: str | None = None
 
     @field_validator("poll_interval_seconds")
     @classmethod
@@ -42,6 +45,14 @@ class Config(BaseModel):
         if v < 0:
             raise ValueError("alert_dedup_window_seconds must be >= 0")
         return v
+
+    @model_validator(mode="after")
+    def _validate_ntfy_pair(self) -> Config:
+        if self.ntfy_url and not self.ntfy_topic:
+            raise ValueError("ntfy_topic required when ntfy_url is set")
+        if self.ntfy_topic and not self.ntfy_url:
+            raise ValueError("ntfy_url required when ntfy_topic is set")
+        return self
 
 
 def load_config(path: str) -> Config:

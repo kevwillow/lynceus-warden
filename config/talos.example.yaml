@@ -51,3 +51,10 @@ log_level: INFO
 # Suppress repeated alerts for the same (rule, mac) within this many seconds.
 # Set to 0 to disable dedup (every hit becomes an alert).
 alert_dedup_window_seconds: 3600
+
+# --- Notifications ---
+
+# ntfy notification settings (optional — leave unset to disable)
+# ntfy_url: https://ntfy.sh         # Or your self-hosted instance
+# ntfy_topic: my-talos-alerts       # Required if ntfy_url is set
+# ntfy_auth_token: xxx              # Optional bearer token for protected topics

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import requests
+
+if TYPE_CHECKING:
+    from .config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -102,3 +105,13 @@ class NtfyNotifier(Notifier):
             response.status_code,
         )
         return False
+
+
+def build_notifier(config: Config) -> Notifier:
+    if config.ntfy_url and config.ntfy_topic:
+        return NtfyNotifier(
+            base_url=config.ntfy_url,
+            topic=config.ntfy_topic,
+            auth_token=config.ntfy_auth_token,
+        )
+    return NullNotifier()

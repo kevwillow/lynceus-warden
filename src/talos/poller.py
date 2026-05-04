@@ -12,6 +12,7 @@ from .allowlist import Allowlist, load_allowlist
 from .config import Config, load_config
 from .db import Database
 from .kismet import FakeKismetClient, KismetClient
+from .notify import Notifier, NullNotifier, build_notifier
 from .rules import Ruleset, evaluate, load_ruleset
 
 STATE_KEY_LAST_POLL = "last_poll_ts"
@@ -30,13 +31,17 @@ def poll_once(
     db: Database,
     config: Config,
     now_ts: int,
+    *,
     ruleset: Ruleset | None = None,
     allowlist: Allowlist | None = None,
+    notifier: Notifier | None = None,
 ) -> int:
     if ruleset is None:
         ruleset = Ruleset()
     if allowlist is None:
         allowlist = Allowlist()
+    if notifier is None:
+        notifier = NullNotifier()
     last_poll_str = db.get_state(STATE_KEY_LAST_POLL)
     last_poll_ts = int(last_poll_str) if last_poll_str else 0
     db.ensure_location(config.location_id, config.location_label)
@@ -86,6 +91,20 @@ def poll_once(
                     logger.warning(
                         "Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e
                     )
+                    continue
+                title = f"talos: {hit.severity.upper()} alert"
+                try:
+                    ok = notifier.send(
+                        severity=hit.severity, title=title, message=hit.message
+                    )
+                    if not ok:
+                        logger.warning(
+                            "Notifier returned False for %s/%s", hit.rule_name, hit.mac
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Notifier raised for %s/%s: %s", hit.rule_name, hit.mac, e
+                    )
         except Exception as e:
             logger.warning("Failed to persist observation %s: %s", obs.mac, e)
             continue
@@ -102,6 +121,7 @@ class Poller:
         self.allowlist = (
             load_allowlist(config.allowlist_path) if config.allowlist_path else Allowlist()
         )
+        self.notifier: Notifier = build_notifier(config)
         self._stop_flag = False
 
     def _on_signal(self, signum: int, frame: object) -> None:
@@ -128,6 +148,7 @@ class Poller:
                     int(time.time()),
                     ruleset=self.ruleset,
                     allowlist=self.allowlist,
+                    notifier=self.notifier,
                 )
                 self._interruptible_sleep(self.config.poll_interval_seconds)
         except KeyboardInterrupt:
@@ -144,6 +165,7 @@ class Poller:
                 int(time.time()),
                 ruleset=self.ruleset,
                 allowlist=self.allowlist,
+                notifier=self.notifier,
             )
         finally:
             self.db.close()
