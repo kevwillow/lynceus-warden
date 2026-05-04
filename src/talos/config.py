@@ -25,12 +25,22 @@ class Config(BaseModel):
     location_label: str = "Default Location"
     poll_interval_seconds: int = 60
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    rules_path: str | None = None
+    allowlist_path: str | None = None
+    alert_dedup_window_seconds: int = 3600
 
     @field_validator("poll_interval_seconds")
     @classmethod
     def _validate_interval(cls, v: int) -> int:
         if v < 5:
             raise ValueError("poll_interval_seconds must be >= 5")
+        return v
+
+    @field_validator("alert_dedup_window_seconds")
+    @classmethod
+    def _validate_dedup_window(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("alert_dedup_window_seconds must be >= 0")
         return v
 
 

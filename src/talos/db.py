@@ -112,6 +112,26 @@ class Database:
             )
             return cur.lastrowid
 
+    def get_recent_alert_for_rule_and_mac(
+        self,
+        rule_name: str,
+        mac: str | None,
+        since_ts: int,
+    ) -> dict | None:
+        row = self._conn.execute(
+            """
+            SELECT id, ts, rule_name, mac, message, severity, acknowledged
+            FROM alerts
+            WHERE rule_name = ?
+              AND ts >= ?
+              AND ((? IS NOT NULL AND mac = ?) OR (? IS NULL AND mac IS NULL))
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (rule_name, since_ts, mac, mac, mac),
+        ).fetchone()
+        return dict(row) if row else None
+
     def get_state(self, key: str) -> str | None:
         row = self._conn.execute("SELECT value FROM poller_state WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None

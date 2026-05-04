@@ -37,3 +37,17 @@ poll_interval_seconds: 60
 
 # One of DEBUG, INFO, WARNING, ERROR.
 log_level: INFO
+
+# --- Detection rules and allowlist ---
+
+# Path to the rules YAML (see config/rules.yaml). When unset, no rules
+# are loaded and no alerts are generated.
+# rules_path: config/rules.yaml
+
+# Path to the allowlist YAML (see config/allowlist.yaml). Devices matched
+# here are exempted from alerting. When unset, nothing is allowlisted.
+# allowlist_path: config/allowlist.yaml
+
+# Suppress repeated alerts for the same (rule, mac) within this many seconds.
+# Set to 0 to disable dedup (every hit becomes an alert).
+alert_dedup_window_seconds: 3600
