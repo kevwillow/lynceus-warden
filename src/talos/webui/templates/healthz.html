@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}health &mdash; talos{% endblock %}
+{% block content %}
+  <h2>health</h2>
+  <table>
+    <tr><th>schema version</th><td>{{ health.schema_version }}</td></tr>
+    <tr><th>devices tracked</th><td>{{ health.device_count }}</td></tr>
+    <tr><th>alerts (total)</th><td>{{ health.alert_count }}</td></tr>
+    <tr><th>alerts (unacknowledged)</th><td>{{ health.unacked_alert_count }}</td></tr>
+  </table>
+{% endblock %}

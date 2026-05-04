@@ -31,6 +31,9 @@ class Config(BaseModel):
     ntfy_url: str | None = None
     ntfy_topic: str | None = None
     ntfy_auth_token: str | None = None
+    ui_bind_host: str = "127.0.0.1"
+    ui_bind_port: int = 8765
+    ui_allow_remote: bool = False
 
     @field_validator("poll_interval_seconds")
     @classmethod
@@ -52,6 +55,18 @@ class Config(BaseModel):
             raise ValueError("ntfy_topic required when ntfy_url is set")
         if self.ntfy_topic and not self.ntfy_url:
             raise ValueError("ntfy_url required when ntfy_topic is set")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_ui_bind(self) -> Config:
+        if self.ui_bind_port < 1 or self.ui_bind_port > 65535:
+            raise ValueError("ui_bind_port must be between 1 and 65535")
+        if self.ui_bind_host not in ("127.0.0.1", "localhost") and not self.ui_allow_remote:
+            raise ValueError(
+                "ui_bind_host is non-loopback but ui_allow_remote is False. "
+                "Set ui_allow_remote: true explicitly to bind to a non-loopback address. "
+                "This is a footgun — talos has no auth layer in v0.2."
+            )
         return self
 
 

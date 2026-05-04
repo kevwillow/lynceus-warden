@@ -14,6 +14,9 @@ dependencies = [
     "requests>=2.32",
     "pydantic>=2.7",
     "PyYAML>=6.0",
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "jinja2>=3.1,<4.0",
 ]
 
 [project.optional-dependencies]
@@ -28,13 +31,18 @@ dev = [
 [project.scripts]
 talos = "talos.poller:main"
 talos-seed-watchlist = "talos.cli.seed_watchlist:main"
+talos-ui = "talos.webui.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["talos*"]
 
 [tool.setuptools.package-data]
-talos = ["migrations/*.sql"]
+talos = [
+    "migrations/*.sql",
+    "webui/templates/*.html",
+    "webui/static/*",
+]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -43,6 +51,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "slow: tests that build a wheel or do other slow setup",
+    "webui: tests that exercise the FastAPI app",
 ]
 
 [tool.ruff]

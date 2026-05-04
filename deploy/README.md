@@ -20,3 +20,9 @@ A Linux host (Raspberry Pi OS or any systemd-based distro), Python 3.11+, and a 
 
 - `journalctl -u talos.service -f` — should show steady poll activity.
 - Trigger an ntfy test: `talos-seed-watchlist --db /var/lib/talos/talos.db --threat-ouis` and confirm an alert lands on your configured topic.
+
+## Web UI (optional)
+
+A read-only dashboard ships as a separate `talos-ui` process. Install with `deploy/talos-ui.service` (mirrors the talos hardening) and reach it on `http://127.0.0.1:8765`. To bind a non-loopback address, set both `ui_bind_host` and `ui_allow_remote: true` in `talos.yaml` — talos has no auth layer in v0.2, so this is a footgun.
+
+**TODO before first deployment:** replace the placeholders in `src/talos/webui/static/` with actual Pico CSS v2.x (https://picocss.com) and HTMX v2.x (https://htmx.org). Both are MIT licensed and small enough to commit. The current files are stubs so the static-file mounts and tests work without internet access.

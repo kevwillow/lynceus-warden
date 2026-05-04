@@ -34,6 +34,7 @@ class Database:
         self._conn = sqlite3.connect(
             path,
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+            check_same_thread=False,
         )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
@@ -163,6 +164,24 @@ class Database:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
+
+    def healthcheck(self) -> dict:
+        """Return a small dict useful for the /healthz endpoint."""
+        cur = self._conn.cursor()
+        cur.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")
+        schema_version = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM devices")
+        device_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM alerts")
+        alert_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM alerts WHERE acknowledged = 0")
+        unacked_alert_count = cur.fetchone()[0]
+        return {
+            "schema_version": int(schema_version),
+            "device_count": int(device_count),
+            "alert_count": int(alert_count),
+            "unacked_alert_count": int(unacked_alert_count),
+        }
 
     def close(self) -> None:
         self._conn.close()
