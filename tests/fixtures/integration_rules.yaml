@@ -1,0 +1,9 @@
+rules:
+  - name: pineapple_oui
+    rule_type: watchlist_oui
+    severity: high
+    patterns: ["00:13:37"]
+    description: Hak5 WiFi Pineapple
+  - name: new_non_random
+    rule_type: new_non_randomized_device
+    severity: low

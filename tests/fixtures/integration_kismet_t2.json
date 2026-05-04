@@ -1,0 +1,29 @@
+[
+  {
+    "kismet.device.base.macaddr": "a4:83:e7:55:55:55",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.first_time": 1700000000,
+    "kismet.device.base.last_time": 1700003700,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -45},
+    "kismet.device.base.manuf": "Apple",
+    "kismet.device.base.name": "HomeNet"
+  },
+  {
+    "kismet.device.base.macaddr": "00:13:37:ab:cd:ef",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.first_time": 1700000000,
+    "kismet.device.base.last_time": 1700003700,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -50},
+    "kismet.device.base.manuf": "Hak5",
+    "kismet.device.base.name": "definitely_not_a_pineapple"
+  },
+  {
+    "kismet.device.base.macaddr": "de:ad:be:ef:00:99",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.first_time": 1700003700,
+    "kismet.device.base.last_time": 1700003700,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -60},
+    "kismet.device.base.manuf": "Unknown",
+    "kismet.device.base.name": "newcomer"
+  }
+]
