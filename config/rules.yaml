@@ -1,2 +1,36 @@
 # Talos detection rules.
-# Rule definitions go here. See docs/rules.md (TBD) for schema.
+# Each rule is evaluated against every supported device observation. See README
+# for the schema; rule_type is one of watchlist_mac, watchlist_oui,
+# watchlist_ssid, or new_non_randomized_device.
+rules:
+  # Hak5 WiFi Pineapple uses a recognizable OUI prefix — flag it on sight.
+  - name: hak5_pineapple_oui
+    rule_type: watchlist_oui
+    severity: high
+    patterns: ["00:13:37"]
+    description: Hak5 WiFi Pineapple OUI prefix
+
+  # Specific MACs known to be hostile (replace with your own intel).
+  - name: known_bad_mac
+    rule_type: watchlist_mac
+    severity: high
+    patterns: ["DE:AD:BE:EF:00:01"]
+
+  # SSIDs commonly used for evil-twin / captive-portal attacks.
+  - name: rogue_ssids
+    rule_type: watchlist_ssid
+    severity: med
+    patterns: ["FreeAirportWiFi", "attwifi-rogue"]
+
+  # Catch any first-time-seen device that is NOT using a randomized MAC —
+  # i.e. a device that didn't bother hiding its real OUI.
+  - name: new_device_alert
+    rule_type: new_non_randomized_device
+    severity: low
+
+  # Example of a rule kept in the file but switched off via `enabled: false`.
+  - name: temporarily_disabled
+    rule_type: watchlist_mac
+    severity: low
+    patterns: ["11:22:33:44:55:66"]
+    enabled: false
