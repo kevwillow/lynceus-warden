@@ -22,16 +22,24 @@ dev = [
     "pytest-mock>=3.12",
     "freezegun>=1.5",
     "ruff>=0.6",
+    "build>=1.2",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["talos*"]
+
+[tool.setuptools.package-data]
+talos = ["migrations/*.sql"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = "-ra --strict-markers --strict-config"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "slow: tests that build a wheel or do other slow setup",
+]
 
 [tool.ruff]
 line-length = 100

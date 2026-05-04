@@ -7,7 +7,26 @@ import time
 from pathlib import Path
 from types import TracebackType
 
-_MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent / "migrations"
+
+def _find_migrations_dir() -> Path:
+    try:
+        from importlib.resources import files
+
+        pkg_migrations = files("talos.migrations")
+        as_path = Path(str(pkg_migrations))
+        if as_path.is_dir() and any(as_path.glob("*.sql")):
+            return as_path
+    except (ModuleNotFoundError, TypeError, OSError):
+        pass
+
+    repo_relative = Path(__file__).resolve().parent.parent.parent / "migrations"
+    if repo_relative.is_dir() and any(repo_relative.glob("*.sql")):
+        return repo_relative
+
+    raise FileNotFoundError(
+        "Could not locate talos migrations directory. "
+        "Expected either talos.migrations package data or a repo-relative migrations/ folder."
+    )
 
 
 class Database:
@@ -19,6 +38,7 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
+        self._migrations_dir = _find_migrations_dir()
         self._apply_migrations()
 
     def _apply_migrations(self) -> None:
@@ -29,7 +49,7 @@ class Database:
         )
         self._conn.commit()
         applied = {row[0] for row in self._conn.execute("SELECT version FROM schema_migrations")}
-        for sql_path in sorted(_MIGRATIONS_DIR.glob("*.sql")):
+        for sql_path in sorted(self._migrations_dir.glob("*.sql")):
             version = int(sql_path.name.split("_", 1)[0])
             if version in applied:
                 continue

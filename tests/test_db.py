@@ -131,3 +131,14 @@ def test_get_recent_alert_null_mac(db):
     assert row is not None
     assert row["mac"] is None
     assert row["rule_name"] == "rule_a"
+
+
+def test_migrations_dir_found_via_package_resources(db):
+    assert db._migrations_dir.is_dir()
+    assert (db._migrations_dir / "001_initial.sql").exists()
+    assert any("talos" in part for part in db._migrations_dir.parts)
+
+
+def test_migrations_dir_lists_both_files(db):
+    names = sorted(p.name for p in db._migrations_dir.glob("*.sql"))
+    assert names == ["001_initial.sql", "002_poller_state.sql"]
