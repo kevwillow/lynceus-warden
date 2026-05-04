@@ -25,6 +25,8 @@ APPLE_MAC = "a4:83:e7:55:55:55"
 PINEAPPLE_MAC = "00:13:37:ab:cd:ef"
 RANDOM_CLIENT_MAC = "02:ff:ee:dd:cc:bb"
 CAMBRIDGE_MAC = "00:1a:7d:da:71:99"
+AIRTAG_MAC = "7a:bb:cc:dd:ee:ff"
+AIRTAG_UUID = "0000fd5a-0000-1000-8000-00805f9b34fb"
 NEWCOMER_MAC = "de:ad:be:ef:00:99"
 
 
@@ -75,12 +77,12 @@ def test_e2e_first_poll_writes_devices_sightings_alerts_and_notifications(tmp_pa
     db, client, ruleset, allowlist, notifier = _build_pipeline(config)
     try:
         processed = _run_poll(client, db, config, 1700000200, ruleset, allowlist, notifier)
-        assert processed == 4
+        assert processed == 5
 
-        assert _count(db, "devices") == 4
+        assert _count(db, "devices") == 5
 
         sighting_rows = db._conn.execute("SELECT location_id FROM sightings").fetchall()
-        assert len(sighting_rows) == 4
+        assert len(sighting_rows) == 5
         assert all(r["location_id"] == "integration" for r in sighting_rows)
 
         alerts = _alerts(db)
@@ -88,6 +90,7 @@ def test_e2e_first_poll_writes_devices_sightings_alerts_and_notifications(tmp_pa
             ("pineapple_oui", PINEAPPLE_MAC, "high"),
             ("new_non_random", PINEAPPLE_MAC, "low"),
             ("new_non_random", CAMBRIDGE_MAC, "low"),
+            ("airtag_detected", AIRTAG_MAC, "high"),
         ]
 
         # Apple MAC must NOT have any alerts (allowlisted)
@@ -106,10 +109,12 @@ def test_e2e_first_poll_writes_devices_sightings_alerts_and_notifications(tmp_pa
             ("high", "talos: HIGH alert", notifier.calls[0][2]),
             ("low", "talos: LOW alert", notifier.calls[1][2]),
             ("low", "talos: LOW alert", notifier.calls[2][2]),
+            ("high", "talos: HIGH alert", notifier.calls[3][2]),
         ]
         assert PINEAPPLE_MAC in notifier.calls[0][2]
         assert PINEAPPLE_MAC in notifier.calls[1][2]
         assert CAMBRIDGE_MAC in notifier.calls[2][2]
+        assert AIRTAG_MAC in notifier.calls[3][2]
 
         assert db.get_state(STATE_KEY_LAST_POLL) == "1700000200"
     finally:
@@ -122,7 +127,7 @@ def test_e2e_second_poll_dedup_suppresses_repeat_alerts(tmp_path):
     try:
         _run_poll(client_t1, db, config_t1, 1700000200, ruleset, allowlist, notifier_t1)
         baseline_alerts = _count(db, "alerts")
-        assert baseline_alerts == 3
+        assert baseline_alerts == 4
 
         # Build a second config/client targeting the t2 fixture but the same db.
         config_t2 = config_t1.model_copy(update={"kismet_fixture_path": str(KISMET_T2)})
@@ -132,10 +137,10 @@ def test_e2e_second_poll_dedup_suppresses_repeat_alerts(tmp_path):
         processed = _run_poll(client_t2, db, config_t2, 1700000300, ruleset, allowlist, notifier_t2)
         assert processed == 3
 
-        assert _count(db, "alerts") == 3
+        assert _count(db, "alerts") == 4
         assert notifier_t2.calls == []
 
-        assert _count(db, "devices") == 5
+        assert _count(db, "devices") == 6
 
         apple_count = db._conn.execute(
             "SELECT sighting_count FROM devices WHERE mac = ?", (APPLE_MAC,)
@@ -212,8 +217,8 @@ def test_e2e_no_notifications_when_null_notifier(tmp_path):
     try:
         _run_poll(client, db, config, 1700000200, ruleset, allowlist, notifier)
 
-        assert _count(db, "alerts") == 3
-        assert len(notifier.return_values) == 3
+        assert _count(db, "alerts") == 4
+        assert len(notifier.return_values) == 4
         assert all(v is True for v in notifier.return_values)
     finally:
         db.close()
@@ -238,9 +243,9 @@ def test_e2e_observation_persist_failure_does_not_block_others(tmp_path):
         db.upsert_device = flaky  # type: ignore[method-assign]
 
         processed = _run_poll(client, db, config, 1700000200, ruleset, allowlist, notifier)
-        assert processed == 3
+        assert processed == 4
 
-        assert _count(db, "devices") == 3
+        assert _count(db, "devices") == 4
 
         # The failed observation was the Pineapple (second in the fixture); it must
         # have produced no alerts.
@@ -249,9 +254,12 @@ def test_e2e_observation_persist_failure_does_not_block_others(tmp_path):
         ).fetchone()[0]
         assert pineapple_alerts == 0
 
-        # Cambridge is the only device that should still trigger an alert
-        # (Apple is allowlisted, randomized client matches no rule).
-        assert _alerts(db) == [("new_non_random", CAMBRIDGE_MAC, "low")]
+        # Cambridge fires new_non_random; the airtag BLE fires airtag_detected.
+        # (Apple is allowlisted, randomized client matches no rule.)
+        assert _alerts(db) == [
+            ("new_non_random", CAMBRIDGE_MAC, "low"),
+            ("airtag_detected", AIRTAG_MAC, "high"),
+        ]
     finally:
         db.upsert_device = orig  # type: ignore[method-assign]
         db.close()
@@ -270,6 +278,27 @@ def test_e2e_state_advances_even_with_zero_observations(tmp_path):
         assert processed == 0
 
         assert db.get_state(STATE_KEY_LAST_POLL) == "2000"
+    finally:
+        db.close()
+
+
+def test_e2e_airtag_detection(tmp_path):
+    config = _make_config(tmp_path, KISMET_T1, RULES, ALLOWLIST)
+    db, client, ruleset, allowlist, notifier = _build_pipeline(config)
+    try:
+        _run_poll(client, db, config, 1700000200, ruleset, allowlist, notifier)
+
+        airtag_rows = db._conn.execute(
+            "SELECT severity, message FROM alerts WHERE rule_name = ? AND mac = ?",
+            ("airtag_detected", AIRTAG_MAC),
+        ).fetchall()
+        assert len(airtag_rows) == 1
+        assert airtag_rows[0]["severity"] == "high"
+        assert AIRTAG_UUID in airtag_rows[0]["message"]
+
+        airtag_calls = [c for c in notifier.calls if c[0] == "high" and AIRTAG_UUID in c[2]]
+        assert len(airtag_calls) == 1
+        assert AIRTAG_MAC in airtag_calls[0][2]
     finally:
         db.close()
 

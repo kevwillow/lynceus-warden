@@ -37,5 +37,14 @@
     "kismet.device.base.type": "RTL433",
     "kismet.device.base.first_time": 1699999500,
     "kismet.device.base.last_time": 1700000500
+  },
+  {
+    "kismet.device.base.macaddr": "5a:11:22:33:44:55",
+    "kismet.device.base.type": "BTLE",
+    "kismet.device.base.first_time": 1699999600,
+    "kismet.device.base.last_time": 1700000600,
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -75},
+    "kismet.device.base.manuf": "Apple",
+    "kismet.device.base.service_uuids": ["0000FD5A-0000-1000-8000-00805F9B34FB"]
   }
 ]

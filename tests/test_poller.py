@@ -59,11 +59,11 @@ def test_poll_once_empty_returns_zero(db, config, fake_client):
 
 def test_poll_once_processes_supported_devices(db, config, fake_client):
     count = poll_once(fake_client, db, config, 1700001000)
-    assert count == 4
+    assert count == 5
     devices = db._conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
     sightings = db._conn.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
-    assert devices == 4
-    assert sightings == 4
+    assert devices == 5
+    assert sightings == 5
 
 
 def test_poll_once_advances_state(db, config, fake_client):
@@ -110,7 +110,7 @@ def test_poll_once_continues_on_observation_error(db, config, fake_client, monke
 
     monkeypatch.setattr(db, "upsert_device", flaky)
     count = poll_once(fake_client, db, config, 1700001000)
-    assert count == 3
+    assert count == 4
 
 
 def test_poll_once_ensures_location_first(db, config, fake_client):
@@ -148,7 +148,7 @@ def test_run_once_returns_count_and_closes_db(config, mocker):
     poller = Poller(config)
     spy = mocker.spy(poller.db, "close")
     count = poller.run_once()
-    assert count == 4
+    assert count == 5
     assert spy.call_count == 1
 
 
@@ -342,7 +342,7 @@ def test_poll_once_alert_write_error_does_not_abort_poll(db, config, fake_client
 
     monkeypatch.setattr(db, "add_alert", flaky_add)
     count = poll_once(fake_client, db, cfg, 1700001000, ruleset=rs)
-    assert count == 4
+    assert count == 5
     assert state["calls"] >= 2
     assert _alerts_count(db) >= 1
 
@@ -476,7 +476,7 @@ def test_poll_once_notifier_failure_does_not_prevent_alert_db_row(db, config, fa
     )
     notifier = _RaisingNotifier()
     count = poll_once(fake_client, db, config, 1700001000, ruleset=rs, notifier=notifier)
-    assert count == 4
+    assert count == 5
     assert _alerts_count(db) == 1
     assert notifier.calls == 1
 

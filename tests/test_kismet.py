@@ -13,6 +13,7 @@ from talos.kismet import (
     KismetClient,
     is_locally_administered,
     normalize_mac,
+    normalize_uuid,
     parse_kismet_device,
 )
 
@@ -259,21 +260,21 @@ def test_observation_frozen():
 def test_fake_loads_returns_supported_only():
     client = FakeKismetClient(str(FIXTURE_PATH))
     obs = client.get_devices_since(0)
-    assert len(obs) == 4
+    assert len(obs) == 5
 
 
 def test_fake_filters_since_ts_inclusive():
     client = FakeKismetClient(str(FIXTURE_PATH))
     obs = client.get_devices_since(1700000300)
-    assert len(obs) == 2
+    assert len(obs) == 3
     assert {o.device_type for o in obs} == {"ble", "bt_classic"}
 
 
 def test_fake_filters_excludes_strictly_older():
     client = FakeKismetClient(str(FIXTURE_PATH))
     obs = client.get_devices_since(1700000301)
-    assert len(obs) == 1
-    assert obs[0].device_type == "bt_classic"
+    assert len(obs) == 2
+    assert {o.device_type for o in obs} == {"ble", "bt_classic"}
 
 
 def test_fake_no_http(monkeypatch):
@@ -283,7 +284,7 @@ def test_fake_no_http(monkeypatch):
     monkeypatch.setattr(requests, "get", boom)
     client = FakeKismetClient(str(FIXTURE_PATH))
     obs = client.get_devices_since(0)
-    assert len(obs) == 4
+    assert len(obs) == 5
 
 
 # -------------------------------- KismetClient -----------------------------
@@ -358,3 +359,84 @@ def test_real_returned_observations_match_parser(mocker):
     expected = parse_kismet_device(raw)
     assert len(result) == 1
     assert result[0] == expected
+
+
+# ------------------------------- normalize_uuid ----------------------------
+
+
+_AIRTAG_UUID = "0000fd5a-0000-1000-8000-00805f9b34fb"
+
+
+def test_normalize_uuid_lowercase():
+    assert normalize_uuid("0000FD5A-0000-1000-8000-00805F9B34FB") == _AIRTAG_UUID
+
+
+def test_normalize_uuid_strips_whitespace():
+    assert normalize_uuid("  0000fd5a-0000-1000-8000-00805f9b34fb  ") == _AIRTAG_UUID
+
+
+def test_normalize_uuid_rejects_short_form():
+    with pytest.raises(ValueError):
+        normalize_uuid("fd5a")
+
+
+def test_normalize_uuid_rejects_no_dashes():
+    with pytest.raises(ValueError):
+        normalize_uuid("0000fd5a000010008000" + "00805f9b34fb")
+
+
+# --------------- DeviceObservation ble_service_uuids -----------------------
+
+
+def test_observation_silently_drops_uuids_on_wifi():
+    obs = DeviceObservation(
+        **_valid_obs_kwargs(
+            device_type="wifi",
+            ble_service_uuids=(_AIRTAG_UUID,),
+        )
+    )
+    assert obs.ble_service_uuids == ()
+
+
+# ------------------- parse_kismet_device BLE UUID extraction ----------------
+
+
+def _ble_raw(uuids: list[str] | None = None) -> dict:
+    raw = {
+        "kismet.device.base.macaddr": "5a:11:22:33:44:55",
+        "kismet.device.base.type": "BTLE",
+        "kismet.device.base.first_time": 1700000000,
+        "kismet.device.base.last_time": 1700000600,
+        "kismet.device.base.signal": {"kismet.common.signal.last_signal": -75},
+        "kismet.device.base.manuf": "Apple",
+    }
+    if uuids is not None:
+        raw["kismet.device.base.service_uuids"] = uuids
+    return raw
+
+
+def test_parse_ble_extracts_and_normalizes_uuids():
+    raw = _ble_raw(["0000FD5A-0000-1000-8000-00805F9B34FB"])
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.device_type == "ble"
+    assert obs.ble_service_uuids == (_AIRTAG_UUID,)
+
+
+def test_parse_ble_drops_malformed_uuid_logs_debug(caplog):
+    raw = _ble_raw([_AIRTAG_UUID, "fd5a"])
+    with caplog.at_level(logging.DEBUG, logger="talos.kismet"):
+        obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.ble_service_uuids == (_AIRTAG_UUID,)
+    assert any(r.levelname == "DEBUG" for r in caplog.records)
+    assert not any(
+        r.levelname == "WARNING" and "uuid" in r.getMessage().lower() for r in caplog.records
+    )
+
+
+def test_parse_ble_no_service_uuids_field_yields_empty_tuple():
+    raw = _ble_raw(uuids=None)
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.ble_service_uuids == ()

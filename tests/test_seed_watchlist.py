@@ -6,10 +6,12 @@ import yaml
 
 from talos.cli.seed_watchlist import (
     main,
+    seed_ble_uuids,
     seed_from_yaml,
     seed_threat_ouis,
 )
 from talos.db import Database
+from talos.seeds.ble_uuids import TRACKER_UUIDS
 from talos.seeds.threat_ouis import THREAT_OUIS
 
 
@@ -196,5 +198,32 @@ def test_main_threat_ouis_returns_0(tmp_path):
     try:
         rows = _watchlist_rows(db)
         assert len(rows) == len(THREAT_OUIS)
+    finally:
+        db.close()
+
+
+def test_seed_ble_uuids_first_run_inserts_all(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        inserted, skipped = seed_ble_uuids(db)
+        assert inserted == len(TRACKER_UUIDS)
+        assert skipped == 0
+        rows = _watchlist_rows(db)
+        assert len(rows) == len(TRACKER_UUIDS)
+        assert {r["pattern"] for r in rows} == {e["pattern"] for e in TRACKER_UUIDS}
+        assert all(r["pattern_type"] == "ble_uuid" for r in rows)
+    finally:
+        db.close()
+
+
+def test_main_ble_uuids_flag_returns_0(tmp_path):
+    db_path = tmp_path / "x.db"
+    rc = main(["--db", str(db_path), "--ble-uuids"])
+    assert rc == 0
+    db = Database(str(db_path))
+    try:
+        rows = _watchlist_rows(db)
+        assert len(rows) == len(TRACKER_UUIDS)
+        assert all(r["pattern_type"] == "ble_uuid" for r in rows)
     finally:
         db.close()

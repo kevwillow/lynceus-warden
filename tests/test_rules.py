@@ -316,3 +316,96 @@ def test_evaluate_returns_empty_list_when_no_matches():
     )
     rs = Ruleset(rules=[rule])
     assert evaluate(rs, _obs(mac="11:22:33:44:55:66"), is_new_device=False) == []
+
+
+# ---------------------------------- ble_uuid -------------------------------
+
+_AIRTAG_UUID = "0000fd5a-0000-1000-8000-00805f9b34fb"
+_TILE_UUID = "0000feed-0000-1000-8000-00805f9b34fb"
+
+
+def _ble_obs(
+    mac: str = "7a:bb:cc:dd:ee:ff",
+    uuids: tuple[str, ...] = (),
+) -> DeviceObservation:
+    return DeviceObservation(
+        mac=mac,
+        device_type="ble",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-80,
+        ssid=None,
+        oui_vendor="Apple",
+        is_randomized=True,
+        ble_service_uuids=uuids,
+    )
+
+
+def test_ble_uuid_rule_normalizes_pattern_uppercase():
+    rule = Rule(
+        name="airtag",
+        rule_type="ble_uuid",
+        severity="high",
+        patterns=["0000FD5A-0000-1000-8000-00805F9B34FB"],
+    )
+    assert rule.patterns == [_AIRTAG_UUID]
+
+
+def test_ble_uuid_rule_rejects_malformed_pattern():
+    with pytest.raises(ValidationError):
+        Rule(
+            name="bad",
+            rule_type="ble_uuid",
+            severity="high",
+            patterns=["fd5a"],
+        )
+
+
+def test_ble_uuid_rule_empty_patterns_rejected():
+    with pytest.raises(ValidationError):
+        Rule(name="empty", rule_type="ble_uuid", severity="high", patterns=[])
+
+
+def test_evaluate_ble_uuid_hit():
+    rule = Rule(
+        name="airtag",
+        rule_type="ble_uuid",
+        severity="high",
+        patterns=[_AIRTAG_UUID],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(rs, _ble_obs(uuids=(_AIRTAG_UUID,)), is_new_device=False)
+    assert len(hits) == 1
+    assert hits[0].rule_name == "airtag"
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_ble_uuid_miss():
+    rule = Rule(
+        name="airtag",
+        rule_type="ble_uuid",
+        severity="high",
+        patterns=[_AIRTAG_UUID],
+    )
+    rs = Ruleset(rules=[rule])
+    assert evaluate(rs, _ble_obs(uuids=(_TILE_UUID,)), is_new_device=False) == []
+
+
+def test_evaluate_ble_uuid_message_format_includes_first_matched_uuid():
+    rule = Rule(
+        name="trackers",
+        rule_type="ble_uuid",
+        severity="high",
+        patterns=[_AIRTAG_UUID, _TILE_UUID],
+        description="Known trackers",
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_obs(mac="7a:bb:cc:dd:ee:ff", uuids=(_TILE_UUID, _AIRTAG_UUID)),
+        is_new_device=False,
+    )
+    assert len(hits) == 1
+    assert hits[0].message == (
+        f"BLE service UUID {_AIRTAG_UUID} on watchlist: Known trackers (mac 7a:bb:cc:dd:ee:ff)"
+    )

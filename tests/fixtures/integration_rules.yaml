@@ -7,3 +7,8 @@ rules:
   - name: new_non_random
     rule_type: new_non_randomized_device
     severity: low
+  - name: airtag_detected
+    rule_type: ble_uuid
+    severity: high
+    patterns: ["0000fd5a-0000-1000-8000-00805f9b34fb"]
+    description: Apple Find My / AirTag service
