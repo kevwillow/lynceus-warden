@@ -1489,3 +1489,74 @@ def test_index_kismet_status_health_check_exception_degrades(tmp_path):
         assert "kaboom" in r.text
     finally:
         db.close()
+
+
+@pytest.mark.webui
+def test_topnav_present_on_every_page(tmp_path):
+    """Every page that renders the base template must include the top nav.
+
+    This test exists because /healthz shipped without _topnav.html for
+    several prompts and was only caught by manual browser testing. Tests
+    that asserted page-specific content didn't notice the missing nav.
+
+    Approach: hit every GET route that renders an HTML page, assert each
+    response contains the topnav's distinctive markers (the link to /alerts
+    AND the link to /devices). If a future page is added without the
+    partial, this test fails for that page.
+    """
+    app, db = _make_app(tmp_path)
+
+    # Seed minimal data so detail pages have something to render.
+    now = 1700000000
+    db.ensure_location("default", "Default")
+    db.upsert_device(
+        mac="aa:bb:cc:dd:ee:ff",
+        device_type="wifi",
+        oui_vendor="TestVendor",
+        is_randomized=0,
+        now_ts=now,
+    )
+    db.insert_sighting(
+        mac="aa:bb:cc:dd:ee:ff",
+        ts=now,
+        rssi=-50,
+        ssid="test",
+        location_id="default",
+    )
+    alert_id = db.add_alert(
+        ts=now,
+        rule_name="test_rule",
+        mac="aa:bb:cc:dd:ee:ff",
+        message="test alert",
+        severity="low",
+    )
+
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+
+    pages = [
+        "/",
+        "/healthz",
+        "/alerts",
+        f"/alerts/{alert_id}",
+        "/devices",
+        "/devices/aa:bb:cc:dd:ee:ff",
+        "/rules",
+        "/allowlist",
+    ]
+
+    for path in pages:
+        resp = client.get(path)
+        assert resp.status_code == 200, f"{path} returned {resp.status_code}"
+        # Topnav distinctive markers — these come from _topnav.html only.
+        # Use markers that are unlikely to appear in any page's content
+        # by accident. All four must be present, anchored as href targets,
+        # so a page that incidentally mentioned the word "alerts" in
+        # body content wouldn't pass while missing the nav.
+        assert 'href="/alerts"' in resp.text, f"{path} missing /alerts nav link"
+        assert 'href="/devices"' in resp.text, f"{path} missing /devices nav link"
+        assert 'href="/rules"' in resp.text, f"{path} missing /rules nav link"
+        assert 'href="/allowlist"' in resp.text, f"{path} missing /allowlist nav link"
+
+    db.close()
