@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}alerts &mdash; talos{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <h2>alerts</h2>
+
+  <form method="get" action="/alerts">
+    <fieldset class="grid">
+      <label>severity
+        <select name="severity">
+          <option value="" {% if not severity %}selected{% endif %}>any</option>
+          <option value="low" {% if severity == 'low' %}selected{% endif %}>low</option>
+          <option value="med" {% if severity == 'med' %}selected{% endif %}>med</option>
+          <option value="high" {% if severity == 'high' %}selected{% endif %}>high</option>
+        </select>
+      </label>
+      <label>acknowledged
+        <select name="acknowledged">
+          <option value="" {% if acknowledged is none %}selected{% endif %}>any</option>
+          <option value="false" {% if acknowledged is sameas false %}selected{% endif %}>no</option>
+          <option value="true" {% if acknowledged is sameas true %}selected{% endif %}>yes</option>
+        </select>
+      </label>
+      <label>page size
+        <select name="page_size">
+          {% for n in [10, 25, 50, 100, 200] %}
+            <option value="{{ n }}" {% if n == page_size %}selected{% endif %}>{{ n }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">filter</button>
+    </fieldset>
+  </form>
+
+  <p><small>{{ total_count }} alert(s) total &middot; page {{ page }} of {{ total_pages }}</small></p>
+
+  {% if alerts %}
+    <table>
+      <thead>
+        <tr>
+          <th>timestamp</th>
+          <th>severity</th>
+          <th>rule</th>
+          <th>mac</th>
+          <th>message</th>
+          <th>ack</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in alerts %}
+          <tr>
+            <td>{{ a.ts }}</td>
+            <td><span class="badge-{{ a.severity }}">{{ a.severity }}</span></td>
+            <td><a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a></td>
+            <td class="mac-cell">
+              {% if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif %}
+            </td>
+            <td>
+              <span class="truncate">
+                {% if a.message|length > 80 %}{{ a.message[:80] }}&hellip;{% else %}{{ a.message }}{% endif %}
+              </span>
+            </td>
+            <td>{% if a.acknowledged %}&check;{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p><em>No alerts match the current filter.</em></p>
+  {% endif %}
+
+  <nav>
+    {% set qs = [] %}
+    {% if severity %}{% set _ = qs.append('severity=' ~ severity) %}{% endif %}
+    {% if acknowledged is sameas true %}{% set _ = qs.append('acknowledged=true') %}{% endif %}
+    {% if acknowledged is sameas false %}{% set _ = qs.append('acknowledged=false') %}{% endif %}
+    {% set _ = qs.append('page_size=' ~ page_size) %}
+    {% set base_qs = qs | join('&') %}
+    <ul>
+      <li>
+        {% if page > 1 %}
+          <a href="/alerts?{{ base_qs }}&page={{ page - 1 }}">&larr; prev</a>
+        {% else %}
+          <span class="dim">&larr; prev</span>
+        {% endif %}
+      </li>
+    </ul>
+    <ul>
+      <li><small>page {{ page }} of {{ total_pages }}</small></li>
+    </ul>
+    <ul>
+      <li>
+        {% if page < total_pages %}
+          <a href="/alerts?{{ base_qs }}&page={{ page + 1 }}">next &rarr;</a>
+        {% else %}
+          <span class="dim">next &rarr;</span>
+        {% endif %}
+      </li>
+    </ul>
+  </nav>
+{% endblock %}

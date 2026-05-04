@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}home &mdash; talos{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <h2>home</h2>
+
+  <section>
+    <h3>health</h3>
+    <p>
+      <strong>schema:</strong> {{ health.schema_version }} &middot;
+      <strong>devices:</strong> {{ health.device_count }} &middot;
+      <strong>alerts:</strong> {{ health.alert_count }} &middot;
+      <strong>unacked:</strong> {{ health.unacked_alert_count }}
+    </p>
+  </section>
+
+  <section>
+    <h3>recent unacknowledged alerts</h3>
+    {% if recent_alerts %}
+      <table>
+        <thead>
+          <tr><th>ts</th><th>severity</th><th>rule</th><th>mac</th><th>message</th></tr>
+        </thead>
+        <tbody>
+          {% for a in recent_alerts %}
+            <tr>
+              <td>{{ a.ts }}</td>
+              <td><span class="badge-{{ a.severity }}">{{ a.severity }}</span></td>
+              <td><a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a></td>
+              <td class="mac-cell">
+                {% if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif %}
+              </td>
+              <td><span class="truncate">{{ a.message }}</span></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p><em>No unacknowledged alerts.</em></p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h3>recently seen devices</h3>
+    {% if recent_devices %}
+      <table>
+        <thead>
+          <tr><th>mac</th><th>type</th><th>vendor</th><th>last seen</th><th>sightings</th></tr>
+        </thead>
+        <tbody>
+          {% for d in recent_devices %}
+            <tr>
+              <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
+              <td>{{ d.device_type }}</td>
+              <td>{{ d.oui_vendor or "" }}</td>
+              <td>{{ d.last_seen }}</td>
+              <td>{{ d.sighting_count }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p><em>No devices seen yet.</em></p>
+    {% endif %}
+  </section>
+{% endblock %}
