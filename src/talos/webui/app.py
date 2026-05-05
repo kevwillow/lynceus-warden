@@ -101,6 +101,42 @@ def unix_to_iso(ts) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _enrich_alerts_with_devices(db, alerts: list[dict]) -> None:
+    """Populate alert['device'] (a dict or None) for each alert in-place.
+
+    Templates render the Device column off this enriched dict. Alerts
+    with mac=None or with a mac that has no matching device row get
+    device=None and the template renders an em dash.
+    Errors on individual lookups are swallowed so one bad row cannot
+    crash the page."""
+    for alert in alerts:
+        mac = alert.get("mac")
+        if not mac:
+            alert["device"] = None
+            continue
+        try:
+            alert["device"] = db.get_device(mac)
+        except Exception:
+            alert["device"] = None
+
+
+def _device_label(device: dict | None) -> str:
+    """Best-available human label for a device.
+
+    Priority: friendly_name (BLE/BT advertised name, v0.3+) → oui_vendor
+    (Kismet manuf, v0.2) → "—". Forward-compatible: a v0.2 dict without
+    the friendly_name key falls through to oui_vendor naturally."""
+    if not device:
+        return "—"
+    name = device.get("friendly_name")
+    if name and name.strip():
+        return name.strip()
+    vendor = device.get("oui_vendor")
+    if vendor and vendor.strip():
+        return vendor.strip()
+    return "—"
+
+
 def _safe_redirect_target(request: Request, default: str) -> str:
     referer = request.headers.get("referer")
     if not referer:
@@ -172,6 +208,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     app.state.templates = Jinja2Templates(directory=str(_resolve_templates_dir()))
     app.state.templates.env.globals["csrf_token"] = lambda request: get_csrf_token(request)
     app.state.templates.env.filters["unix_to_iso"] = unix_to_iso
+    app.state.templates.env.filters["device_label"] = _device_label
 
     app.mount(
         "/static",
@@ -196,6 +233,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         now = time.time()
         now_int = int(now)
         kismet_status = _get_kismet_status(app, now)
+        recent_alerts = db.list_alerts(limit=10, acknowledged=False)
+        _enrich_alerts_with_devices(db, recent_alerts)
         return app.state.templates.TemplateResponse(
             request=request,
             name="index.html",
@@ -207,7 +246,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "sev_7d": db.alert_severity_counts(since_ts=now_int - 7 * 86400),
                 "sev_30d": db.alert_severity_counts(since_ts=now_int - 30 * 86400),
                 "per_day": db.alerts_per_day(days=30, now_ts=now_int),
-                "recent_alerts": db.list_alerts(limit=10, acknowledged=False),
+                "recent_alerts": recent_alerts,
                 "recent_devices": db.list_devices(limit=10),
                 "device_seen": db.device_seen_counts(now_ts=now_int),
                 "last_poll": db.latest_poll_ts(),
@@ -256,6 +295,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             until_ts=until_ts,
             search=search_clean,
         )
+        _enrich_alerts_with_devices(db, alerts)
         filters_active = bool(
             severity or ack_bool is not None or since or until or (search and search != "")
         )

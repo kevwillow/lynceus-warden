@@ -1,0 +1,11 @@
+{% set max_count = (per_day | map(attribute='count') | max) or 0 %}
+<div class="sparkline" role="img" aria-label="alerts per day, last {{ per_day|length }} days">
+  {% for d in per_day %}
+    {% if max_count > 0 %}
+      {% set pct = (d.count * 100) // max_count %}
+    {% else %}
+      {% set pct = 0 %}
+    {% endif %}
+    <div class="sparkline-bar" style="height: {{ pct }}%;" title="{{ d.date }}: {{ d.count }}"></div>
+  {% endfor %}
+</div>

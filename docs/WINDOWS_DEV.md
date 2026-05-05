@@ -79,6 +79,28 @@ Open `http://127.0.0.1:8765/` in your browser. You should see the index with hea
   `--ff` re-runs failures first; `-x` stops on first failure. This usually puts you back in the feedback loop in under 5 seconds after a code change.
 - Type checking and the test suite verify code correctness, not browser behavior. For UI work, keep a browser tab open against `http://127.0.0.1:8765/` and reload after each change. The ack flow in particular only exercises CSRF end-to-end through a real cookie jar.
 
+## Maintenance: rebumping the dev fixture
+
+The dev fixture (`tests/fixtures/dev_kismet.json`) ships with timestamps anchored to a specific real-world time. As wall-clock time advances, the recency-aware UI surfaces (devices-seen-in-last-24h, the 30-day sparkline, "Last polled" age, etc.) will start showing empty or stale state because the fixture's "newest" data falls out of view.
+
+When this happens, run:
+
+```powershell
+python scripts/rebump_dev_fixture.py
+```
+
+This rewrites the fixture's timestamps to be relative to "now" (anchored one hour back, with devices spread across the last several hours). The fixture's MACs, vendors, SSIDs, and BLE service UUIDs are preserved verbatim — only timestamps change.
+
+Use `--dry-run` first if you want to see what the script will do:
+
+```powershell
+python scripts/rebump_dev_fixture.py --dry-run
+```
+
+Why this is necessary: integration test fixtures freeze time within their tests, so they don't have this problem. The dev fixture is consumed by a live daemon, which compares fixture timestamps against the system clock. The durable fix is auto-shift-on-load in `FakeKismetClient` — see [BACKLOG.md](../BACKLOG.md). Until that lands, manual rebumping every few months is the expedient.
+
+Commit the resulting fixture change separately from any other work, with a message like `chore: rebump dev fixture timestamps`. Future-you will appreciate the clean diff.
+
 ## When to stop iterating on Windows and move to the Pi
 
 When the feature involves any of: real WiFi or BLE captures, monitor-mode behavior, multi-adapter testing, multi-Pi deployment, ntfy delivery to your phone, or systemd unit lifecycle. Everything else can be developed and tested on Windows with the fixture path.

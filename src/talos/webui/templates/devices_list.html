@@ -35,32 +35,34 @@
   <p><small>{{ total_count }} device(s) total &middot; page {{ page }} of {{ total_pages }}</small></p>
 
   {% if devices %}
-    <table>
-      <thead>
-        <tr>
-          <th>mac</th>
-          <th>type</th>
-          <th>vendor</th>
-          <th>random</th>
-          <th>first seen</th>
-          <th>last seen</th>
-          <th>sightings</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for d in devices %}
+    <div class="table-scroll">
+      <table>
+        <thead>
           <tr>
-            <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
-            <td>{{ d.device_type }}</td>
-            <td>{{ d.oui_vendor or "" }}</td>
-            <td>{% if d.is_randomized %}&check;{% endif %}</td>
-            <td>{{ d.first_seen }}</td>
-            <td>{{ d.last_seen }}</td>
-            <td>{{ d.sighting_count }}</td>
+            <th>Device</th>
+            <th>MAC</th>
+            <th>Type</th>
+            <th>Randomized</th>
+            <th>First seen</th>
+            <th>Last seen</th>
+            <th>Sightings</th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {% for d in devices %}
+            <tr>
+              <td>{{ d | device_label }}</td>
+              <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
+              <td>{{ d.device_type }}</td>
+              <td>{% if d.is_randomized %}&check;{% endif %}</td>
+              <td>{{ d.first_seen }}</td>
+              <td>{{ d.last_seen }}</td>
+              <td>{{ d.sighting_count }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   {% else %}
     <p><em>No devices match the current filter.</em></p>
   {% endif %}
