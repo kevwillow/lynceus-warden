@@ -27,6 +27,22 @@ in development. For a more detailed snapshot — what's shipped, what's not,
 what's been tested — see [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
 What's still on the roadmap lives in [BACKLOG.md](BACKLOG.md).
 
+## Roadmap: Argus
+
+The headline next piece of work is **Argus** — a versioned database of
+RF signatures for common surveillance hardware. Marked police vehicles,
+body-worn cameras, dashcams, license plate readers, and fixed camera
+systems like Flock all emit recognisable WiFi or Bluetooth signatures.
+The goal is a curated list talos can consume through the existing
+watchlist path, so flagging a new piece of gear is a data-only update —
+no code change in talos itself.
+
+Argus is unbuilt today. The data-gathering work has to come first, and
+it's the part that takes time. There's no timeline. Once a useful
+baseline of signatures exists it'll ship as a separately versioned
+YAML dataset, fork-friendly so anyone can extend it. See [BACKLOG.md](BACKLOG.md)
+for the full entry.
+
 ## How it works
 
 talos runs as a small daemon on a Raspberry Pi. Every minute or so it asks

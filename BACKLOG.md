@@ -32,6 +32,23 @@ What landed in the v0.2 cycle:
 
 ## Deferred features (revisit when conditions met)
 
+### Argus surveillance-equipment database
+A versioned, community-maintainable watchlist of RF signatures for known
+surveillance hardware: marked police vehicle WiFi/BT, body-worn cameras,
+dashcams, license plate readers, Flock and similar fixed camera systems.
+Shipped as a separate YAML dataset consumed via the existing
+`talos-seed-watchlist --yaml` path — no code change inside talos itself,
+only data.
+- **Trigger**: when a useful baseline of real-world signatures has been
+  collected. Data work first; integration is trivial once the data exists.
+- **Estimated**: data-gathering effort dominates; talos-side work is a
+  YAML conversion and a re-seed pass.
+- **Notes**: maintain in its own repo or sub-tree so the dataset can
+  evolve at its own pace and be forked. Permissive licence on the
+  dataset so derivatives are allowed. Detection only — talos does not
+  jam, spoof, or otherwise interfere with any of the equipment in the
+  list, and the project's "passive-only" stance applies to Argus too.
+
 ### Stingray hunter bridge
 Re-emits hunter alerts to Talos ntfy topic. Independent module under
 `src/talos/bridges/stingray.py`, doesn't touch core.
