@@ -170,6 +170,8 @@ sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
 
 ## 8. ntfy reaches your phone
 
+**Before you start:** confirm you've completed the ntfy setup in [docs/NTFY_SETUP.md](NTFY_SETUP.md). The phone app must be installed and subscribed to your topic, and `lynceus.yaml` must have `ntfy_url` and `ntfy_topic` set.
+
 **Action:** confirm the alert from step 6 reached the ntfy app on your phone.
 
 **Verify:** your phone should buzz with the lynceus alert within seconds of the journal line in step 6. The high severity is the test here — severity-based priority (`low=2`, `med=3`, `high=5`) means the high-tier alert breaks through Do Not Disturb on iOS and gets critical priority on Android.
