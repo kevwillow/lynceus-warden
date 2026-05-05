@@ -2,6 +2,34 @@
 
 Deferred features and known followups, captured here so they don't get lost.
 
+## v0.2 release notes
+
+What landed in the v0.2 cycle:
+
+- Project skeleton, packaging, and console scripts (`talos`, `talos-ui`,
+  `talos-seed-watchlist`).
+- SQLite schema with bundled migrations and a `poller_state` table for
+  incremental polling.
+- Kismet REST client with multi-source support, startup health check,
+  and a fixture-driven fake client for offline development.
+- Poll loop with YAML config (pydantic v2 validation), signal handling,
+  and a `--once` smoke-test mode.
+- Rules engine and allowlist, both YAML-defined, with a configurable
+  alert-deduplication window.
+- BLE service-UUID extraction and a matching `ble_uuid` rule type for
+  AirTag-class trackers.
+- ntfy.sh notifier with priority and emoji tags by severity, plus null
+  and recording variants for tests.
+- Read-only FastAPI web UI: dashboard, alerts list and detail, devices
+  list and detail, rules and allowlist views; pagination, filtering,
+  single and bulk alert acknowledgement with audit trail; CSRF middleware
+  on POST routes; localhost-bound by default.
+- Hardened systemd units for the daemon and UI, with env-file template.
+- Watchlist seeding CLI with bundled threat OUIs and BLE tracker UUIDs,
+  plus user-supplied YAML.
+- Documentation: README, configuration reference, rules reference, smoke
+  checklist, Windows dev guide, deploy guide, status snapshot.
+
 ## Deferred features (revisit when conditions met)
 
 ### Stingray hunter bridge

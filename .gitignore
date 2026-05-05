@@ -7,3 +7,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+.audit/
+*.db-wal
+*.db-shm
+talos.yaml
+.docs-backup-*/
