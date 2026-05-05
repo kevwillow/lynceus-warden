@@ -7,7 +7,7 @@ import pytest
 import requests
 from pydantic import ValidationError
 
-from talos.kismet import (
+from lynceus.kismet import (
     DeviceObservation,
     FakeKismetClient,
     KismetClient,
@@ -214,7 +214,7 @@ def test_parse_logs_warning_on_drop(caplog):
         "kismet.device.base.first_time": 1700000000,
         "kismet.device.base.last_time": 1700000100,
     }
-    with caplog.at_level(logging.WARNING, logger="talos.kismet"):
+    with caplog.at_level(logging.WARNING, logger="lynceus.kismet"):
         result = parse_kismet_device(raw)
     assert result is None
     assert any(r.levelname == "WARNING" for r in caplog.records)
@@ -291,7 +291,7 @@ def test_fake_no_http(monkeypatch):
 
 
 def _stub_get(mocker, json_data, raise_status=False):
-    mock_get = mocker.patch("talos.kismet.requests.get")
+    mock_get = mocker.patch("lynceus.kismet.requests.get")
     response = mock_get.return_value
     response.json.return_value = json_data
     if raise_status:
@@ -425,7 +425,7 @@ def test_parse_ble_extracts_and_normalizes_uuids():
 
 def test_parse_ble_drops_malformed_uuid_logs_debug(caplog):
     raw = _ble_raw([_AIRTAG_UUID, "fd5a"])
-    with caplog.at_level(logging.DEBUG, logger="talos.kismet"):
+    with caplog.at_level(logging.DEBUG, logger="lynceus.kismet"):
         obs = parse_kismet_device(raw)
     assert obs is not None
     assert obs.ble_service_uuids == (_AIRTAG_UUID,)
@@ -543,7 +543,7 @@ def test_parse_seenby_not_a_list_yields_empty_tuple():
 
 
 def test_kismet_client_health_check_success(mocker):
-    mock_get = mocker.patch("talos.kismet.requests.get")
+    mock_get = mocker.patch("lynceus.kismet.requests.get")
     response = mock_get.return_value
     response.json.return_value = {"kismet.system.version": "2024-01-R1"}
     response.raise_for_status.return_value = None
@@ -554,7 +554,7 @@ def test_kismet_client_health_check_success(mocker):
 
 
 def test_kismet_client_health_check_http_error(mocker):
-    mock_get = mocker.patch("talos.kismet.requests.get")
+    mock_get = mocker.patch("lynceus.kismet.requests.get")
     response = mock_get.return_value
     response.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
     client = KismetClient(base_url="http://x:2501")
@@ -566,7 +566,7 @@ def test_kismet_client_health_check_http_error(mocker):
 
 
 def test_kismet_client_health_check_transport_error(mocker):
-    mock_get = mocker.patch("talos.kismet.requests.get")
+    mock_get = mocker.patch("lynceus.kismet.requests.get")
     mock_get.side_effect = requests.ConnectionError("connection refused")
     client = KismetClient(base_url="http://x:2501")
     result = client.health_check()
@@ -576,7 +576,7 @@ def test_kismet_client_health_check_transport_error(mocker):
 
 
 def test_kismet_client_health_check_no_version_key(mocker):
-    mock_get = mocker.patch("talos.kismet.requests.get")
+    mock_get = mocker.patch("lynceus.kismet.requests.get")
     response = mock_get.return_value
     response.json.return_value = {"some.other.key": "value"}
     response.raise_for_status.return_value = None

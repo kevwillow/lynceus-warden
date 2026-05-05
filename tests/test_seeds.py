@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from talos.seeds.ble_uuids import TRACKER_UUIDS
-from talos.seeds.threat_ouis import THREAT_OUIS
+from lynceus.seeds.ble_uuids import TRACKER_UUIDS
+from lynceus.seeds.threat_ouis import THREAT_OUIS
 
 OUI_RE = re.compile(r"^[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")

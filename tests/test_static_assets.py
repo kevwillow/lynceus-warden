@@ -18,11 +18,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from talos.config import Config
-from talos.db import Database
-from talos.webui.app import create_app
+from lynceus.config import Config
+from lynceus.db import Database
+from lynceus.webui.app import create_app
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "src" / "talos" / "webui" / "static"
+STATIC_DIR = Path(__file__).resolve().parent.parent / "src" / "lynceus" / "webui" / "static"
 
 
 def _make_app(tmp_path):

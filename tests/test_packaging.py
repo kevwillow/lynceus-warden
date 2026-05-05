@@ -31,7 +31,7 @@ def test_wheel_install_finds_migrations(tmp_path):
     )
     assert result.returncode == 0, f"build failed:\n{result.stderr}"
 
-    wheels = list(dist_dir.glob("talos-*.whl"))
+    wheels = list(dist_dir.glob("lynceus-*.whl"))
     assert len(wheels) == 1, f"expected one wheel, got {wheels}"
 
     venv_dir = tmp_path / "venv"
@@ -50,7 +50,7 @@ def test_wheel_install_finds_migrations(tmp_path):
     assert install.returncode == 0, f"pip install failed:\n{install.stderr}"
 
     db_path = tmp_path / "wheel-test.db"
-    driver = f"from talos.db import Database; db = Database(r'{db_path}'); db.close()"
+    driver = f"from lynceus.db import Database; db = Database(r'{db_path}'); db.close()"
     drive = subprocess.run(
         [str(venv_python), "-c", driver],
         capture_output=True,
@@ -80,42 +80,42 @@ def test_wheel_install_finds_migrations(tmp_path):
         assert required in tables, f"missing {required} after wheel install"
 
     if sys.platform == "win32":
-        venv_talos = venv_dir / "Scripts" / "talos.exe"
+        venv_lynceus = venv_dir / "Scripts" / "lynceus.exe"
     else:
-        venv_talos = venv_dir / "bin" / "talos"
+        venv_lynceus = venv_dir / "bin" / "lynceus"
     version_run = subprocess.run(
-        [str(venv_talos), "--version"],
+        [str(venv_lynceus), "--version"],
         capture_output=True,
         text=True,
         timeout=30,
     )
     assert version_run.returncode == 0, (
-        f"talos --version failed:\nstdout={version_run.stdout}\nstderr={version_run.stderr}"
+        f"lynceus --version failed:\nstdout={version_run.stdout}\nstderr={version_run.stderr}"
     )
     combined = (version_run.stdout + version_run.stderr).strip()
-    assert combined, "talos --version produced no output"
+    assert combined, "lynceus --version produced no output"
     import re as _re
 
     assert _re.search(r"\d+\.\d+\.\d+", combined), (
-        f"no version string in talos --version output: {combined!r}"
+        f"no version string in lynceus --version output: {combined!r}"
     )
 
     if sys.platform == "win32":
-        venv_talos_ui = venv_dir / "Scripts" / "talos-ui.exe"
+        venv_lynceus_ui = venv_dir / "Scripts" / "lynceus-ui.exe"
     else:
-        venv_talos_ui = venv_dir / "bin" / "talos-ui"
+        venv_lynceus_ui = venv_dir / "bin" / "lynceus-ui"
     ui_version_run = subprocess.run(
-        [str(venv_talos_ui), "--version"],
+        [str(venv_lynceus_ui), "--version"],
         capture_output=True,
         text=True,
         timeout=30,
     )
     assert ui_version_run.returncode == 0, (
-        f"talos-ui --version failed:\n"
+        f"lynceus-ui --version failed:\n"
         f"stdout={ui_version_run.stdout}\nstderr={ui_version_run.stderr}"
     )
     ui_combined = (ui_version_run.stdout + ui_version_run.stderr).strip()
-    assert ui_combined, "talos-ui --version produced no output"
+    assert ui_combined, "lynceus-ui --version produced no output"
     assert _re.search(r"\d+\.\d+\.\d+", ui_combined), (
-        f"no version string in talos-ui --version output: {ui_combined!r}"
+        f"no version string in lynceus-ui --version output: {ui_combined!r}"
     )

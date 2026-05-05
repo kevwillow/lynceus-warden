@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from talos.allowlist import load_allowlist
-from talos.config import Config
-from talos.db import Database
-from talos.notify import NullNotifier, RecordingNotifier
-from talos.poller import STATE_KEY_LAST_POLL, build_kismet_client, poll_once
-from talos.rules import load_ruleset
+from lynceus.allowlist import load_allowlist
+from lynceus.config import Config
+from lynceus.db import Database
+from lynceus.notify import NullNotifier, RecordingNotifier
+from lynceus.poller import STATE_KEY_LAST_POLL, build_kismet_client, poll_once
+from lynceus.rules import load_ruleset
 
 FIXTURES = Path(__file__).parent / "fixtures"
 KISMET_T1 = FIXTURES / "integration_kismet_t1.json"
@@ -33,7 +33,7 @@ NEWCOMER_MAC = "de:ad:be:ef:00:99"
 def _make_config(tmp_path, fixture_path, rules_path, allowlist_path, dedup_window=3600):
     return Config(
         kismet_fixture_path=str(fixture_path),
-        db_path=str(tmp_path / "talos.db"),
+        db_path=str(tmp_path / "lynceus.db"),
         rules_path=str(rules_path),
         allowlist_path=str(allowlist_path),
         alert_dedup_window_seconds=dedup_window,
@@ -106,10 +106,10 @@ def test_e2e_first_poll_writes_devices_sightings_alerts_and_notifications(tmp_pa
         assert random_alerts == 0
 
         assert notifier.calls == [
-            ("high", "talos: HIGH alert", notifier.calls[0][2]),
-            ("low", "talos: LOW alert", notifier.calls[1][2]),
-            ("low", "talos: LOW alert", notifier.calls[2][2]),
-            ("high", "talos: HIGH alert", notifier.calls[3][2]),
+            ("high", "lynceus: HIGH alert", notifier.calls[0][2]),
+            ("low", "lynceus: LOW alert", notifier.calls[1][2]),
+            ("low", "lynceus: LOW alert", notifier.calls[2][2]),
+            ("high", "lynceus: HIGH alert", notifier.calls[3][2]),
         ]
         assert PINEAPPLE_MAC in notifier.calls[0][2]
         assert PINEAPPLE_MAC in notifier.calls[1][2]
@@ -195,7 +195,7 @@ def test_e2e_dedup_window_expiry_re_fires_alert(tmp_path):
         assert len(notifier_t2.calls) == 1
         severity, title, _msg = notifier_t2.calls[0]
         assert severity == "high"
-        assert title == "talos: HIGH alert"
+        assert title == "lynceus: HIGH alert"
     finally:
         db.close()
 

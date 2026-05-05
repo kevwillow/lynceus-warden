@@ -1,18 +1,18 @@
-"""Tests for the talos-seed-watchlist CLI."""
+"""Tests for the lynceus-seed-watchlist CLI."""
 
 from __future__ import annotations
 
 import yaml
 
-from talos.cli.seed_watchlist import (
+from lynceus.cli.seed_watchlist import (
     main,
     seed_ble_uuids,
     seed_from_yaml,
     seed_threat_ouis,
 )
-from talos.db import Database
-from talos.seeds.ble_uuids import TRACKER_UUIDS
-from talos.seeds.threat_ouis import THREAT_OUIS
+from lynceus.db import Database
+from lynceus.seeds.ble_uuids import TRACKER_UUIDS
+from lynceus.seeds.threat_ouis import THREAT_OUIS
 
 
 def _watchlist_rows(db: Database) -> list[dict]:

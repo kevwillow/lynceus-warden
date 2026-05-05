@@ -1,0 +1,58 @@
+/* lynceus custom styles — overrides on top of Pico. */
+
+.badge-low   { background: #dde; color: #224; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-med   { background: #fec; color: #730; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-high  { background: #fcc; color: #700; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.mac-cell    { font-family: monospace; }
+.truncate    { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
+.topnav      { display: flex; gap: 0.75em; padding: 0.5em 0; border-bottom: 1px solid #ddd; margin-bottom: 1em; }
+.topnav a    { text-decoration: none; }
+.topnav a.active { font-weight: 600; }
+.dim         { opacity: 0.55; }
+
+.sparkline       { display: flex; align-items: flex-end; gap: 1px; height: 40px; width: 100%; }
+.sparkline-bar   { background: #888; flex: 1 1 0; min-width: 2px; min-height: 1px; }
+.stat-grid       { display: grid; grid-template-columns: 60px repeat(3, 1fr); gap: 0.5em 1em; align-items: center; }
+.stat-grid .stat-row-label { font-weight: 600; }
+.ack-button-inline { padding: 2px 8px; font-size: 0.85em; }
+form.inline-form   { display: inline; }
+
+/* Severity-tinted rows in alert tables */
+tr.row-sev-low  { background: rgba(120, 130, 200, 0.05); }
+tr.row-sev-med  { background: rgba(255, 180, 90, 0.07); }
+tr.row-sev-high { background: rgba(220, 70, 70, 0.08); }
+tr.row-acked    { opacity: 0.55; }
+
+/* Stat tile row (mirrors stat-grid layout but only counts) */
+.tile-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1em; margin: 0.5em 0; }
+.tile { padding: 0.75em; text-align: center; border: 1px solid var(--pico-muted-border-color, #ccc); border-radius: 4px; }
+.tile .tile-num { font-size: 1.5em; font-weight: 600; }
+.tile .tile-label { font-size: 0.85em; opacity: 0.75; }
+
+/* Last-poll indicator */
+.last-poll { font-size: 0.9em; opacity: 0.75; }
+.last-poll time { font-weight: 500; }
+
+/* Reset filters link visibility */
+.reset-filters { margin-left: 1em; font-size: 0.9em; }
+
+/* Inline ack note input */
+.ack-row-note { width: 18ch; font-size: 0.85em; padding: 1px 4px; }
+
+/* Horizontal scroll wrapper for tables that may exceed container width.
+   Apply by wrapping the <table> in <div class="table-scroll">. */
+.table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    /* Subtle visual cue that scrolling is possible: a 1px shadow on the
+       right edge that disappears when scrolled to the end. Only renders
+       when content overflows. */
+    background:
+        linear-gradient(to right, white 30%, rgba(255,255,255,0)) 0 0,
+        linear-gradient(to right, rgba(255,255,255,0), white 70%) 100% 0,
+        radial-gradient(farthest-side at 0 50%, rgba(0,0,0,0.15), rgba(0,0,0,0)) 0 0,
+        radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,0.15), rgba(0,0,0,0)) 100% 0;
+    background-repeat: no-repeat;
+    background-size: 40px 100%, 40px 100%, 14px 100%, 14px 100%;
+    background-attachment: local, local, scroll, scroll;
+}

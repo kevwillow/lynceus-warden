@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from talos.db import Database
+from lynceus.db import Database
 
 MAC = "aa:bb:cc:dd:ee:ff"
 LOC = "lab"
@@ -12,7 +12,7 @@ LOC = "lab"
 
 @pytest.fixture
 def db_path(tmp_path):
-    return str(tmp_path / "talos.db")
+    return str(tmp_path / "lynceus.db")
 
 
 @pytest.fixture
@@ -136,7 +136,7 @@ def test_get_recent_alert_null_mac(db):
 def test_migrations_dir_found_via_package_resources(db):
     assert db._migrations_dir.is_dir()
     assert (db._migrations_dir / "001_initial.sql").exists()
-    assert any("talos" in part for part in db._migrations_dir.parts)
+    assert any("lynceus" in part for part in db._migrations_dir.parts)
 
 
 def test_migrations_dir_lists_both_files(db):

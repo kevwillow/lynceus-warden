@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from talos.config import Config
-from talos.db import Database
-from talos.webui.app import create_app
-from talos.webui.csrf import (
+from lynceus.config import Config
+from lynceus.db import Database
+from lynceus.webui.app import create_app
+from lynceus.webui.csrf import (
     CSRF_COOKIE_NAME,
     CSRF_FORM_FIELD,
     CSRF_HEADER_NAME,
@@ -78,7 +78,7 @@ def test_get_request_preserves_existing_cookie(tmp_path):
             client.cookies.set(CSRF_COOKIE_NAME, "existing-token-value")
             r = client.get("/alerts")
         assert r.status_code == 200
-        # Either no Set-Cookie was sent for talos_csrf (preferred), OR if
+        # Either no Set-Cookie was sent for lynceus_csrf (preferred), OR if
         # one was sent, it must equal the existing value.
         set_cookie_headers = [v for k, v in r.headers.raw if k.lower() == b"set-cookie"]
         for raw in set_cookie_headers:

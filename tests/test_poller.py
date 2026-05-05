@@ -6,27 +6,27 @@ from pathlib import Path
 
 import pytest
 
-from talos import __version__
-from talos.allowlist import Allowlist, AllowlistEntry
-from talos.config import Config
-from talos.db import Database
-from talos.kismet import FakeKismetClient, KismetClient
-from talos.notify import Notifier, RecordingNotifier
-from talos.poller import (
+from lynceus import __version__
+from lynceus.allowlist import Allowlist, AllowlistEntry
+from lynceus.config import Config
+from lynceus.db import Database
+from lynceus.kismet import FakeKismetClient, KismetClient
+from lynceus.notify import Notifier, RecordingNotifier
+from lynceus.poller import (
     STATE_KEY_LAST_POLL,
     Poller,
     build_kismet_client,
     main,
     poll_once,
 )
-from talos.rules import Rule, Ruleset
+from lynceus.rules import Rule, Ruleset
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "kismet_devices.json"
 
 
 @pytest.fixture
 def db_path(tmp_path):
-    return str(tmp_path / "talos.db")
+    return str(tmp_path / "lynceus.db")
 
 
 @pytest.fixture
@@ -153,8 +153,8 @@ def test_run_once_returns_count_and_closes_db(config, mocker):
 
 
 def test_main_once_with_valid_config_returns_zero(tmp_path):
-    cfg_path = tmp_path / "talos.yaml"
-    db_file = tmp_path / "talos.db"
+    cfg_path = tmp_path / "lynceus.yaml"
+    db_file = tmp_path / "lynceus.db"
     cfg_path.write_text(
         f"kismet_fixture_path: {FIXTURE_PATH.as_posix()}\n"
         f"db_path: {db_file.as_posix()}\n"
@@ -172,7 +172,7 @@ def test_main_missing_config_returns_one(tmp_path):
 
 
 def test_main_invalid_config_returns_one(tmp_path):
-    cfg_path = tmp_path / "talos.yaml"
+    cfg_path = tmp_path / "lynceus.yaml"
     cfg_path.write_text("log_level: TRACE\n", encoding="utf-8")
     rc = main(["--config", str(cfg_path), "--once"])
     assert rc == 1
@@ -385,7 +385,7 @@ def test_poll_once_notifier_called_for_alert(db, config, fake_client):
     assert len(rec.calls) == 1
     severity, title, message = rec.calls[0]
     assert severity == "high"
-    assert title == "talos: HIGH alert"
+    assert title == "lynceus: HIGH alert"
     assert "a4:83:e7:11:22:33" in message
     assert "Apple OUI" in message
 
@@ -489,7 +489,7 @@ def test_poll_once_notifier_returning_false_logs_warning_but_continues(
     )
     cfg = config.model_copy(update={"alert_dedup_window_seconds": 0})
     notifier = _FalseNotifier()
-    with caplog.at_level(logging.WARNING, logger="talos.poller"):
+    with caplog.at_level(logging.WARNING, logger="lynceus.poller"):
         poll_once(fake_client, db, cfg, 1700001000, ruleset=rs, notifier=notifier)
     assert len(notifier.calls) == 2
     assert any(r.levelname == "WARNING" for r in caplog.records)
@@ -498,7 +498,7 @@ def test_poll_once_notifier_returning_false_logs_warning_but_continues(
 # ----------------- multi-source filtering / per-source location -------------
 
 
-from talos.kismet import DeviceObservation  # noqa: E402
+from lynceus.kismet import DeviceObservation  # noqa: E402
 
 
 def test_poll_once_no_source_allowlist_processes_all_supported(db, config, fake_client):
@@ -694,14 +694,14 @@ def test_poller_init_health_check_fails_raises(tmp_path, monkeypatch):
     import requests as _requests
 
     cfg = Config(
-        db_path=str(tmp_path / "talos.db"),
+        db_path=str(tmp_path / "lynceus.db"),
         kismet_url="http://127.0.0.1:1",
     )
 
     def boom(*args, **kwargs):
         raise _requests.ConnectionError("connection refused: nobody home")
 
-    monkeypatch.setattr("talos.kismet.requests.get", boom)
+    monkeypatch.setattr("lynceus.kismet.requests.get", boom)
     with pytest.raises(RuntimeError) as exc_info:
         Poller(cfg)
     msg = str(exc_info.value)
@@ -713,7 +713,7 @@ def test_poller_init_health_check_skipped_when_disabled(tmp_path, monkeypatch):
     import requests as _requests
 
     cfg = Config(
-        db_path=str(tmp_path / "talos.db"),
+        db_path=str(tmp_path / "lynceus.db"),
         kismet_url="http://127.0.0.1:1",
         kismet_health_check_on_startup=False,
     )
@@ -721,6 +721,6 @@ def test_poller_init_health_check_skipped_when_disabled(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise _requests.ConnectionError("would fail")
 
-    monkeypatch.setattr("talos.kismet.requests.get", boom)
+    monkeypatch.setattr("lynceus.kismet.requests.get", boom)
     poller = Poller(cfg)
     poller.db.close()

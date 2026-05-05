@@ -33,9 +33,9 @@ The headline next piece of work is **Argus** — a versioned database of
 RF signatures for common surveillance hardware. Marked police vehicles,
 body-worn cameras, dashcams, license plate readers, and fixed camera
 systems like Flock all emit recognisable WiFi or Bluetooth signatures.
-The goal is a curated list talos can consume through the existing
+The goal is a curated list lynceus can consume through the existing
 watchlist path, so flagging a new piece of gear is a data-only update —
-no code change in talos itself.
+no code change in lynceus itself.
 
 Argus is unbuilt today. The data-gathering work has to come first, and
 it's the part that takes time. There's no timeline. Once a useful
@@ -45,13 +45,13 @@ for the full entry.
 
 ## How it works
 
-talos runs as a small daemon on a Raspberry Pi. Every minute or so it asks
+lynceus runs as a small daemon on a Raspberry Pi. Every minute or so it asks
 [Kismet](https://www.kismetwireless.net/) — which does the actual radio
 capture — what devices it has seen recently, and writes those sightings to
 a local SQLite database. Each sighting is checked against a list of
 detection rules (watchlist matches, AirTag-class trackers, first sighting
 of a non-randomized device) and against your allowlist of known-good
-hardware. If a sighting matches a rule and isn't allowlisted, talos sends
+hardware. If a sighting matches a rule and isn't allowlisted, lynceus sends
 a push notification to your phone via [ntfy](https://ntfy.sh/). A separate
 read-only web UI lets you browse alerts, devices, and the rules that are
 currently loaded. Everything runs locally on the Pi — no cloud, no
@@ -77,19 +77,19 @@ external services beyond ntfy delivery.
 
 **Accounts**
 
-None required. Both Kismet and ntfy can run fully self-hosted; talos itself
+None required. Both Kismet and ntfy can run fully self-hosted; lynceus itself
 does not phone home.
 
 ## Quick start
 
 1. Install Kismet on the Pi and confirm it's running.
-2. Build the talos wheel (`python -m build --wheel`) and install it on the
-   Pi (`sudo pip install /tmp/talos-*.whl`).
-3. Copy `config/talos.example.yaml` to `/etc/talos/talos.yaml` and fill in
+2. Build the lynceus wheel (`python -m build --wheel`) and install it on the
+   Pi (`sudo pip install /tmp/lynceus-*.whl`).
+3. Copy `config/lynceus.example.yaml` to `/etc/lynceus/lynceus.yaml` and fill in
    your Kismet API key, ntfy URL, and ntfy topic.
 4. Seed the watchlist with the bundled threat data:
-   `talos-seed-watchlist --db /var/lib/talos/talos.db --threat-ouis --ble-uuids`.
-5. Start the service: `sudo systemctl enable --now talos`.
+   `lynceus-seed-watchlist --db /var/lib/lynceus/lynceus.db --threat-ouis --ble-uuids`.
+5. Start the service: `sudo systemctl enable --now lynceus`.
 
 The full walkthrough — including systemd installation, env files, and
 verification — lives in [deploy/README.md](deploy/README.md). For end-to-end
@@ -97,8 +97,8 @@ verification once you're running, follow [docs/SMOKE.md](docs/SMOKE.md).
 
 ## Watchlist data
 
-The watchlist is the list of devices talos cares about. You seed it with
-the `talos-seed-watchlist` CLI. Three sources are supported:
+The watchlist is the list of devices lynceus cares about. You seed it with
+the `lynceus-seed-watchlist` CLI. Three sources are supported:
 
 - **Built-in threat OUIs.** A bundled list of MAC prefixes for known
   surveillance hardware. Enabled with `--threat-ouis`.
@@ -113,12 +113,12 @@ mix and match sources without worrying about duplicates.
 
 ## Privacy and limits
 
-- **Passive only.** talos never transmits, never probes, never tries to
+- **Passive only.** lynceus never transmits, never probes, never tries to
   associate with another network. It reads what Kismet has already heard.
 - **MAC randomization is real.** Modern phones rotate their addresses on
-  purpose to avoid being tracked. That works against talos too — a
+  purpose to avoid being tracked. That works against lynceus too — a
   randomizing phone walking past your Pi will look like a different device
-  every few minutes. talos is a good fit for spotting unfamiliar hardware
+  every few minutes. lynceus is a good fit for spotting unfamiliar hardware
   that just turned up; it is the wrong tool for tracking a specific
   person's phone.
 - **Storage grows over time.** Every sighting goes into SQLite. There is
@@ -129,23 +129,23 @@ mix and match sources without worrying about duplicates.
 - **Check your local laws.** Passive WiFi/Bluetooth listening is legal in
   most US jurisdictions, but rules vary. It's the operator's job to
   verify what's allowed where they live. Don't cross into active attacks
-  — talos won't help you there and isn't trying to.
+  — lynceus won't help you there and isn't trying to.
 - **No warranty.** This is a personal-use project, distributed in the
   hope it's useful, with no guarantees of any kind.
 
 ## Project layout
 
 ```
-src/talos/        application package
+src/lynceus/        application package
   config.py         config loading and validation
   db.py             sqlite persistence and migrations
   kismet.py         Kismet REST client (real and fixture-based)
-  poller.py         poll loop and `talos` entry point
+  poller.py         poll loop and `lynceus` entry point
   rules.py          detection rules and evaluation
   allowlist.py      known-good device suppression
   notify.py         alert dispatch (ntfy, null, recording)
-  cli/              command-line tools (talos-seed-watchlist)
-  webui/            read-only FastAPI web UI (`talos-ui`)
+  cli/              command-line tools (lynceus-seed-watchlist)
+  webui/            read-only FastAPI web UI (`lynceus-ui`)
   migrations/       sqlite schema migrations
   seeds/            built-in threat data
 tests/            pytest suite and fixtures
@@ -161,8 +161,8 @@ config/           example YAML configs
 - [docs/RULES.md](docs/RULES.md) — rule schema, semantics, and a tuning
   playbook for cutting down false positives.
 - [docs/SMOKE.md](docs/SMOKE.md) — step-by-step verification once you've
-  installed talos on the Pi.
-- [docs/WINDOWS_DEV.md](docs/WINDOWS_DEV.md) — running and testing talos
+  installed lynceus on the Pi.
+- [docs/WINDOWS_DEV.md](docs/WINDOWS_DEV.md) — running and testing lynceus
   on a Windows or non-Linux dev machine.
 - [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) — detailed status
   snapshot: what's shipped, what's deferred, what's tested.
@@ -173,7 +173,7 @@ config/           example YAML configs
 
 Day-to-day development happens on a Linux or Windows machine using a fake
 Kismet client backed by a JSON fixture, so you don't need real radio
-hardware to hack on talos. The full dev setup is in
+hardware to hack on lynceus. The full dev setup is in
 [docs/WINDOWS_DEV.md](docs/WINDOWS_DEV.md). The project ships with 437
 tests across 15 modules; run the fast suite with `pytest -v -m "not slow"`,
 or `make test` for the whole thing including the wheel-build test.
@@ -184,7 +184,7 @@ TBD before public release.
 
 ## Acknowledgments
 
-talos is built on top of [Kismet](https://www.kismetwireless.net/) for the
+lynceus is built on top of [Kismet](https://www.kismetwireless.net/) for the
 radio capture and [ntfy](https://ntfy.sh/) for notification delivery, and
 owes a debt to the wider open-source RF and wireless-security community
 whose tooling makes a project like this possible at all.

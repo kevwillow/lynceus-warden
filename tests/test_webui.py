@@ -10,9 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from talos.config import Config
-from talos.db import Database
-from talos.webui.app import create_app
+from lynceus.config import Config
+from lynceus.db import Database
+from lynceus.webui.app import create_app
 
 
 def _make_app(tmp_path):
@@ -126,8 +126,8 @@ def test_app_factory_returns_distinct_apps(tmp_path):
 
 @pytest.mark.webui
 def test_main_version_flag_exits_zero():
-    from talos import __version__
-    from talos.webui.server import main
+    from lynceus import __version__
+    from lynceus.webui.server import main
 
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -138,7 +138,7 @@ def test_main_version_flag_exits_zero():
 
 @pytest.mark.webui
 def test_main_missing_config_returns_one(tmp_path):
-    from talos.webui.server import main
+    from lynceus.webui.server import main
 
     rc = main(["--config", str(tmp_path / "nonexistent.yaml")])
     assert rc == 1
@@ -613,11 +613,11 @@ def test_topnav_active_link(tmp_path):
 
 
 @pytest.mark.webui
-def test_static_talos_css_served_with_view_classes(tmp_path):
+def test_static_lynceus_css_served_with_view_classes(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         with TestClient(app) as client:
-            r = client.get("/static/talos.css")
+            r = client.get("/static/lynceus.css")
         assert r.status_code == 200
         assert "badge-high" in r.text
     finally:
@@ -628,7 +628,7 @@ def test_static_talos_css_served_with_view_classes(tmp_path):
 # Prompt 003: ack/unack mutations, bulk ack, filter polish, stats, CSRF.
 # ---------------------------------------------------------------------------
 
-from talos.webui.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD  # noqa: E402
+from lynceus.webui.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD  # noqa: E402
 
 
 def _csrf_setup(client) -> tuple[str, dict]:
@@ -1037,7 +1037,7 @@ def test_redirect_to_referer_only_when_same_origin(tmp_path):
 
 # ---------------------------------------------------------------------------
 # UX polish: device-seen tiles, last-poll, ack-all-visible, unix_to_iso filter,
-# severity row classes, inline ack note, reset-filters link, talos.js.
+# severity row classes, inline ack note, reset-filters link, lynceus.js.
 # ---------------------------------------------------------------------------
 
 
@@ -1286,7 +1286,7 @@ def test_unix_to_iso_filter_renders_z_suffix(tmp_path):
 
 @pytest.mark.webui
 def test_unix_to_iso_filter_handles_none():
-    from talos.webui.app import unix_to_iso
+    from lynceus.webui.app import unix_to_iso
 
     assert unix_to_iso(None) == ""
     assert unix_to_iso("") == ""
@@ -1294,11 +1294,11 @@ def test_unix_to_iso_filter_handles_none():
 
 
 @pytest.mark.webui
-def test_static_talos_js_served(tmp_path):
+def test_static_lynceus_js_served(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         with TestClient(app) as client:
-            r = client.get("/static/talos.js")
+            r = client.get("/static/lynceus.js")
         assert r.status_code == 200
         assert "javascript" in r.headers["content-type"]
     finally:
@@ -1306,13 +1306,13 @@ def test_static_talos_js_served(tmp_path):
 
 
 @pytest.mark.webui
-def test_base_html_includes_talos_js_script(tmp_path):
+def test_base_html_includes_lynceus_js_script(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         with TestClient(app) as client:
             r = client.get("/")
         assert r.status_code == 200
-        assert 'src="/static/talos.js"' in r.text
+        assert 'src="/static/lynceus.js"' in r.text
     finally:
         db.close()
 
@@ -1440,7 +1440,7 @@ def test_index_kismet_status_caches_for_30_seconds(tmp_path, monkeypatch):
     def fake_time():
         return fake_now["t"]
 
-    monkeypatch.setattr("talos.webui.app.time.time", fake_time)
+    monkeypatch.setattr("lynceus.webui.app.time.time", fake_time)
     try:
         with TestClient(app) as client:
             client.get("/")
@@ -1462,7 +1462,7 @@ def test_index_kismet_status_recheck_after_cache_expiry(tmp_path, monkeypatch):
     def fake_time():
         return fake_now["t"]
 
-    monkeypatch.setattr("talos.webui.app.time.time", fake_time)
+    monkeypatch.setattr("lynceus.webui.app.time.time", fake_time)
     try:
         with TestClient(app) as client:
             client.get("/")
@@ -1594,15 +1594,22 @@ def test_index_renders_alerts_per_day_section(tmp_path):
         db.close()
 
 
-def test_talos_js_contains_new_format_logic():
+def test_lynceus_js_contains_new_format_logic():
     js_path = (
-        Path(__file__).resolve().parent.parent / "src" / "talos" / "webui" / "static" / "talos.js"
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "lynceus"
+        / "webui"
+        / "static"
+        / "lynceus.js"
     )
     content = js_path.read_text(encoding="utf-8")
     for needle in ("weeks ago", "months ago", "years ago", "just now"):
-        assert needle in content, f"talos.js missing expected phrase: {needle!r}"
+        assert needle in content, f"lynceus.js missing expected phrase: {needle!r}"
     for gone in ("minutes ago", "hours ago"):
-        assert gone not in content, f"talos.js still contains old relative-format phrase: {gone!r}"
+        assert gone not in content, (
+            f"lynceus.js still contains old relative-format phrase: {gone!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1614,7 +1621,7 @@ def test_talos_js_contains_new_format_logic():
 def _render_device_label(d):
     from jinja2 import Environment
 
-    from talos.webui.app import _device_label
+    from lynceus.webui.app import _device_label
 
     env = Environment()
     env.filters["device_label"] = _device_label
@@ -1824,11 +1831,16 @@ def test_table_scroll_class_present_on_devices_list(tmp_path):
 @pytest.mark.webui
 def test_table_scroll_css_class_defined():
     css_path = (
-        Path(__file__).resolve().parent.parent / "src" / "talos" / "webui" / "static" / "talos.css"
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "lynceus"
+        / "webui"
+        / "static"
+        / "lynceus.css"
     )
     content = css_path.read_text(encoding="utf-8")
     idx = content.find(".table-scroll")
-    assert idx != -1, "talos.css is missing the .table-scroll rule"
+    assert idx != -1, "lynceus.css is missing the .table-scroll rule"
     assert "overflow-x: auto" in content[idx : idx + 500]
 
 
@@ -1837,7 +1849,7 @@ def test_base_html_uses_container_fluid():
     base_path = (
         Path(__file__).resolve().parent.parent
         / "src"
-        / "talos"
+        / "lynceus"
         / "webui"
         / "templates"
         / "base.html"

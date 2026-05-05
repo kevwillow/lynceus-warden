@@ -1,11 +1,11 @@
 """Smoke test: every module imports and version is pinned."""
 
-import talos
-from talos import allowlist, db, kismet, main, notify, poller, rules
+import lynceus
+from lynceus import allowlist, db, kismet, main, notify, poller, rules
 
 
 def test_version():
-    assert talos.__version__ == "0.2.0"
+    assert lynceus.__version__ == "0.2.0"
 
 
 def test_modules_importable():

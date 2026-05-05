@@ -3,13 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "talos"
+name = "lynceus"
 version = "0.1.0"
 description = "Personal RF security monitoring platform for Raspberry Pi."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
-authors = [{ name = "Talos" }]
+authors = [{ name = "Lynceus" }]
 dependencies = [
     "requests>=2.32",
     "pydantic>=2.7",
@@ -30,16 +30,16 @@ dev = [
 ]
 
 [project.scripts]
-talos = "talos.poller:main"
-talos-seed-watchlist = "talos.cli.seed_watchlist:main"
-talos-ui = "talos.webui.server:main"
+lynceus = "lynceus.poller:main"
+lynceus-seed-watchlist = "lynceus.cli.seed_watchlist:main"
+lynceus-ui = "lynceus.webui.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["talos*"]
+include = ["lynceus*"]
 
 [tool.setuptools.package-data]
-talos = [
+lynceus = [
     "migrations/*.sql",
     "webui/templates/*.html",
     "webui/static/*",

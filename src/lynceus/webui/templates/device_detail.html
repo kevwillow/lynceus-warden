@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}device {{ device.mac }} &mdash; lynceus{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <p><a href="/devices">&larr; back to devices</a></p>
+  <h2>device <span class="mac-cell">{{ device.mac }}</span></h2>
+
+  <article>
+    <p>
+      <strong>type:</strong> {{ device.device_type }}<br>
+      <strong>vendor:</strong> {{ device.oui_vendor or "unknown" }}<br>
+      <strong>randomized:</strong> {% if device.is_randomized %}yes{% else %}no{% endif %}<br>
+      <strong>first seen:</strong> {{ device.first_seen }}<br>
+      <strong>last seen:</strong> {{ device.last_seen }}<br>
+      <strong>sightings (total):</strong> {{ device.sighting_count }}<br>
+      {% if device.notes %}<strong>notes:</strong> {{ device.notes }}<br>{% endif %}
+    </p>
+  </article>
+
+  <h3>recent sightings</h3>
+  {% if sightings %}
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>timestamp</th><th>rssi</th><th>ssid</th><th>location</th></tr>
+        </thead>
+        <tbody>
+          {% for s in sightings %}
+            <tr>
+              <td>{{ s.ts }}</td>
+              <td>{% if s.rssi is not none %}{{ s.rssi }}{% endif %}</td>
+              <td>{{ s.ssid or "" }}</td>
+              <td>{{ s.location_id }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if device.sighting_count and sightings|length < device.sighting_count %}
+      <p><small>showing {{ sightings|length }} of {{ device.sighting_count }}</small></p>
+    {% endif %}
+  {% else %}
+    <p><em>No sightings recorded.</em></p>
+  {% endif %}
+{% endblock %}

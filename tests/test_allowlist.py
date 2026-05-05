@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from talos.allowlist import Allowlist, AllowlistEntry, load_allowlist
-from talos.kismet import DeviceObservation
+from lynceus.allowlist import Allowlist, AllowlistEntry, load_allowlist
+from lynceus.kismet import DeviceObservation
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "allowlist_example.yaml"
 
