@@ -1603,3 +1603,246 @@ def test_talos_js_contains_new_format_logic():
         assert needle in content, f"talos.js missing expected phrase: {needle!r}"
     for gone in ("minutes ago", "hours ago"):
         assert gone not in content, f"talos.js still contains old relative-format phrase: {gone!r}"
+
+
+# ---------------------------------------------------------------------------
+# v0.2 UI cleanup: full-width layout, table scroll, header/button rename,
+# Device column + device_label Jinja filter.
+# ---------------------------------------------------------------------------
+
+
+def _render_device_label(d):
+    from jinja2 import Environment
+
+    from talos.webui.app import _device_label
+
+    env = Environment()
+    env.filters["device_label"] = _device_label
+    return env.from_string("{{ d | device_label }}").render(d=d)
+
+
+@pytest.mark.webui
+def test_device_label_filter_with_friendly_name():
+    assert _render_device_label({"friendly_name": "AirPods Pro"}) == "AirPods Pro"
+
+
+@pytest.mark.webui
+def test_device_label_filter_falls_back_to_vendor():
+    assert _render_device_label({"oui_vendor": "Apple"}) == "Apple"
+
+
+@pytest.mark.webui
+def test_device_label_filter_returns_dash_for_empty():
+    assert _render_device_label({}) == "—"
+
+
+@pytest.mark.webui
+def test_device_label_filter_handles_none():
+    assert _render_device_label(None) == "—"
+
+
+@pytest.mark.webui
+def test_device_label_filter_friendly_name_takes_priority():
+    out = _render_device_label({"friendly_name": "John's iPhone", "oui_vendor": "Apple"})
+    assert out == "John's iPhone"
+
+
+@pytest.mark.webui
+def test_device_label_filter_strips_whitespace():
+    assert _render_device_label({"friendly_name": "  AirPods  "}) == "AirPods"
+
+
+@pytest.mark.webui
+def test_device_label_filter_empty_string_falls_through():
+    assert _render_device_label({"friendly_name": "", "oui_vendor": "Apple"}) == "Apple"
+    assert _render_device_label({"friendly_name": "   ", "oui_vendor": "Apple"}) == "Apple"
+
+
+@pytest.mark.webui
+def test_alerts_list_renames_ts_to_timestamp(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "Timestamp" in r.text
+        assert ">ts<" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_renames_ack_to_status(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "Status" in r.text
+        assert ">ack<" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_button_says_acknowledge(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "Acknowledge" in r.text
+        assert "Acknowledge selected" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_has_device_column_with_vendor_fallback(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "TestVendor", 0, 100)
+        db.add_alert(
+            ts=100,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:01",
+            message="m",
+            severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "TestVendor" in r.text
+        assert "<th>Device</th>" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_device_column_dash_when_no_device(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "—" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_has_device_column_no_vendor_column(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Apple", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        assert "Apple" in r.text
+        assert "<th>Vendor</th>" not in r.text
+        assert "<th>vendor</th>" not in r.text
+        assert "<th>Device</th>" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_alerts_have_device_data_enriched(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "EnrichTest", 0, 100)
+        db.add_alert(
+            ts=100,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:ff",
+            message="m",
+            severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "EnrichTest" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_alerts_with_missing_device_renders_dash(tmp_path):
+    """Belt-and-braces: even if an alert ends up with a mac that no
+    device row exists for (e.g., a device was deleted, or a future
+    schema relaxation), the Device column must render an em dash and
+    the page must not 500. We bypass the FK temporarily to construct
+    the orphan state."""
+    app, db = _make_app(tmp_path)
+    try:
+        with db._conn:
+            db._conn.execute("PRAGMA foreign_keys = OFF")
+            db._conn.execute(
+                "INSERT INTO alerts(ts, rule_name, mac, message, severity) VALUES (?, ?, ?, ?, ?)",
+                (100, "r", "ff:ff:ff:ff:ff:ff", "missing-device-msg", "low"),
+            )
+            db._conn.execute("PRAGMA foreign_keys = ON")
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "missing-device-msg" in r.text
+        assert "—" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_table_scroll_class_present_on_alerts_list(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'class="table-scroll"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_table_scroll_class_present_on_devices_list(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        assert 'class="table-scroll"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_table_scroll_css_class_defined():
+    css_path = (
+        Path(__file__).resolve().parent.parent / "src" / "talos" / "webui" / "static" / "talos.css"
+    )
+    content = css_path.read_text(encoding="utf-8")
+    idx = content.find(".table-scroll")
+    assert idx != -1, "talos.css is missing the .table-scroll rule"
+    assert "overflow-x: auto" in content[idx : idx + 500]
+
+
+@pytest.mark.webui
+def test_base_html_uses_container_fluid():
+    base_path = (
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "talos"
+        / "webui"
+        / "templates"
+        / "base.html"
+    )
+    content = base_path.read_text(encoding="utf-8")
+    assert 'class="container-fluid"' in content
+    # The non-fluid variant must be gone — guard against an accidental revert.
+    assert 'class="container"' not in content

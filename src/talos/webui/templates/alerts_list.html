@@ -70,56 +70,60 @@
     <form method="post" action="/alerts/bulk-ack">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
       <p>
-        <button type="submit">acknowledge selected</button>
+        <button type="submit">Acknowledge selected</button>
       </p>
-      <table>
-        <thead>
-          <tr>
-            <th><input type="checkbox" id="select-all-noop" disabled title="select rows individually"></th>
-            <th>timestamp</th>
-            <th>severity</th>
-            <th>rule</th>
-            <th>mac</th>
-            <th>message</th>
-            <th>ack</th>
-            <th>action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for a in alerts %}
-            <tr class="row-sev-{{ a.severity }}{% if a.acknowledged %} row-acked{% endif %}">
-              <td><input type="checkbox" name="alert_ids" value="{{ a.id }}"></td>
-              <td><time datetime="{{ a.ts | unix_to_iso }}">{{ a.ts | unix_to_iso }}</time></td>
-              <td><span class="badge-{{ a.severity }}">{{ a.severity }}</span></td>
-              <td><a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a></td>
-              <td class="mac-cell">
-                {% if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif %}
-              </td>
-              <td>
-                <span class="truncate">
-                  {% if a.message|length > 80 %}{{ a.message[:80] }}&hellip;{% else %}{{ a.message }}{% endif %}
-                </span>
-              </td>
-              <td>{% if a.acknowledged %}&check;{% endif %}</td>
-              <td>
-                {% if a.acknowledged %}
-                  <form method="post" action="/alerts/{{ a.id }}/unack" class="inline-form">
-                    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
-                    <input type="text" name="note" maxlength="80" placeholder="note (optional)" class="ack-row-note">
-                    <button type="submit" class="ack-button-inline">unack</button>
-                  </form>
-                {% else %}
-                  <form method="post" action="/alerts/{{ a.id }}/ack" class="inline-form">
-                    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
-                    <input type="text" name="note" maxlength="80" placeholder="note (optional)" class="ack-row-note">
-                    <button type="submit" class="ack-button-inline">ack</button>
-                  </form>
-                {% endif %}
-              </td>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="select-all-noop" disabled title="select rows individually"></th>
+              <th>Timestamp</th>
+              <th>Severity</th>
+              <th>Rule</th>
+              <th>Device</th>
+              <th>MAC</th>
+              <th>Message</th>
+              <th>Status</th>
+              <th>action</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for a in alerts %}
+              <tr class="row-sev-{{ a.severity }}{% if a.acknowledged %} row-acked{% endif %}">
+                <td><input type="checkbox" name="alert_ids" value="{{ a.id }}"></td>
+                <td><time datetime="{{ a.ts | unix_to_iso }}">{{ a.ts | unix_to_iso }}</time></td>
+                <td><span class="badge-{{ a.severity }}">{{ a.severity }}</span></td>
+                <td><a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a></td>
+                <td>{{ a.device | device_label }}</td>
+                <td class="mac-cell">
+                  {% if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif %}
+                </td>
+                <td>
+                  <span class="truncate">
+                    {% if a.message|length > 80 %}{{ a.message[:80] }}&hellip;{% else %}{{ a.message }}{% endif %}
+                  </span>
+                </td>
+                <td>{% if a.acknowledged %}&check;{% endif %}</td>
+                <td>
+                  {% if a.acknowledged %}
+                    <form method="post" action="/alerts/{{ a.id }}/unack" class="inline-form">
+                      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+                      <input type="text" name="note" maxlength="80" placeholder="note (optional)" class="ack-row-note">
+                      <button type="submit" class="ack-button-inline">unack</button>
+                    </form>
+                  {% else %}
+                    <form method="post" action="/alerts/{{ a.id }}/ack" class="inline-form">
+                      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+                      <input type="text" name="note" maxlength="80" placeholder="note (optional)" class="ack-row-note">
+                      <button type="submit" class="ack-button-inline">Acknowledge</button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </form>
   {% else %}
     <p><em>No alerts match the current filter.</em></p>

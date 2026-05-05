@@ -65,6 +65,26 @@ deployment behind a reverse proxy at a non-root path, switch to
 url_for('static', path=...) and update tests to assert the resolved
 path rather than the literal substring.
 
+### Auto-shift-to-now in FakeKismetClient
+The dev fixture (tests/fixtures/dev_kismet.json) currently requires
+manual rebumping when its timestamps age out (see scripts/rebump_dev_fixture.py
+and docs/WINDOWS_DEV.md). The durable fix:
+
+- Add FakeKismetClient(auto_shift_to_now: bool = False,
+  auto_shift_anchor_seconds: float | None = None) constructor params.
+- When auto_shift_to_now is True, on first get_devices_since call,
+  compute the offset = now - max(last_time across fixture) and apply
+  that delta to all timestamps before parsing into observations.
+- Surface the flag through Config as kismet_fixture_auto_shift: bool.
+- Default to False to preserve current FakeKismetClient behavior for
+  integration tests that depend on frozen timestamps.
+
+Trigger: next time someone has to manually rebump the fixture, OR when
+v0.3 work touches kismet.py for other reasons (rolling both into one
+prompt is cheap).
+Estimated: 1 prompt, ~50 LOC + ~15 tests, including a regression test
+that proves integration test fixtures are NOT shifted (default off).
+
 ## Network capture features
 
 ### Per-band filtering (2.4/5/6 GHz)

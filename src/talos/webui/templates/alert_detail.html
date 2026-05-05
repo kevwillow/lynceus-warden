@@ -59,21 +59,23 @@
   <article>
     <header><strong>action history</strong></header>
     {% if actions %}
-      <table>
-        <thead>
-          <tr><th>ts</th><th>action</th><th>actor</th><th>note</th></tr>
-        </thead>
-        <tbody>
-          {% for act in actions %}
-            <tr>
-              <td><time datetime="{{ act.ts | unix_to_iso }}">{{ act.ts | unix_to_iso }}</time></td>
-              <td>{{ act.action }}</td>
-              <td>{{ act.actor }}</td>
-              <td>{{ act.note or "" }}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Timestamp</th><th>action</th><th>actor</th><th>note</th></tr>
+          </thead>
+          <tbody>
+            {% for act in actions %}
+              <tr>
+                <td><time datetime="{{ act.ts | unix_to_iso }}">{{ act.ts | unix_to_iso }}</time></td>
+                <td>{{ act.action }}</td>
+                <td>{{ act.actor }}</td>
+                <td>{{ act.note or "" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     {% else %}
       <p><em>No actions recorded.</em></p>
     {% endif %}

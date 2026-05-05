@@ -38,3 +38,21 @@ tr.row-acked    { opacity: 0.55; }
 
 /* Inline ack note input */
 .ack-row-note { width: 18ch; font-size: 0.85em; padding: 1px 4px; }
+
+/* Horizontal scroll wrapper for tables that may exceed container width.
+   Apply by wrapping the <table> in <div class="table-scroll">. */
+.table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    /* Subtle visual cue that scrolling is possible: a 1px shadow on the
+       right edge that disappears when scrolled to the end. Only renders
+       when content overflows. */
+    background:
+        linear-gradient(to right, white 30%, rgba(255,255,255,0)) 0 0,
+        linear-gradient(to right, rgba(255,255,255,0), white 70%) 100% 0,
+        radial-gradient(farthest-side at 0 50%, rgba(0,0,0,0.15), rgba(0,0,0,0)) 0 0,
+        radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,0.15), rgba(0,0,0,0)) 100% 0;
+    background-repeat: no-repeat;
+    background-size: 40px 100%, 40px 100%, 14px 100%, 14px 100%;
+    background-attachment: local, local, scroll, scroll;
+}
