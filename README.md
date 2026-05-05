@@ -1,4 +1,4 @@
-# talos
+# Lynceus
 
 A small personal-security tool that watches the WiFi and Bluetooth around
 your home and tells you when something unfamiliar shows up.
