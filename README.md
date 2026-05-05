@@ -45,7 +45,8 @@ for the full entry.
 
 ## How it works
 
-lynceus runs as a small daemon on a Raspberry Pi. Every minute or so it asks
+lynceus runs as a small daemon on a Raspberry Pi. Every poll cycle (default
+60 seconds, configurable) it asks
 [Kismet](https://www.kismetwireless.net/) — which does the actual radio
 capture — what devices it has seen recently, and writes those sightings to
 a local SQLite database. Each sighting is checked against a list of
@@ -72,8 +73,9 @@ external services beyond ntfy delivery.
 - Kismet, installed and configured to capture from your adapter(s).
   Install guide at [kismetwireless.net](https://www.kismetwireless.net/docs/readme/installing/linux/).
 - Python 3.11 or newer.
-- An ntfy server. The hosted [ntfy.sh](https://ntfy.sh/) is fine for personal
-  use, or you can self-host.
+- An ntfy server (the hosted [ntfy.sh](https://ntfy.sh/) is fine for personal
+  use, or you can self-host) and the ntfy app on your phone, subscribed to
+  your chosen topic. Setup walkthrough in [docs/NTFY_SETUP.md](docs/NTFY_SETUP.md).
 
 **Accounts**
 
@@ -87,9 +89,12 @@ does not phone home.
    Pi (`sudo pip install /tmp/lynceus-*.whl`).
 3. Copy `config/lynceus.example.yaml` to `/etc/lynceus/lynceus.yaml` and fill in
    your Kismet API key, ntfy URL, and ntfy topic.
-4. Seed the watchlist with the bundled threat data:
+4. Set up ntfy: pick a topic name, install the ntfy app on your phone,
+   subscribe to the topic, and fill in `ntfy_url` / `ntfy_topic` in your
+   `lynceus.yaml`. Full walkthrough at [docs/NTFY_SETUP.md](docs/NTFY_SETUP.md).
+5. Seed the watchlist with the bundled threat data:
    `lynceus-seed-watchlist --db /var/lib/lynceus/lynceus.db --threat-ouis --ble-uuids`.
-5. Start the service: `sudo systemctl enable --now lynceus`.
+6. Start the service: `sudo systemctl enable --now lynceus`.
 
 The full walkthrough — including systemd installation, env files, and
 verification — lives in [deploy/README.md](deploy/README.md). For end-to-end
@@ -160,6 +165,8 @@ config/           example YAML configs
   worked examples for home, office, travel, and multi-adapter setups.
 - [docs/RULES.md](docs/RULES.md) — rule schema, semantics, and a tuning
   playbook for cutting down false positives.
+- [docs/NTFY_SETUP.md](docs/NTFY_SETUP.md) — picking an ntfy broker,
+  installing the phone app, and verifying alerts end-to-end.
 - [docs/SMOKE.md](docs/SMOKE.md) — step-by-step verification once you've
   installed lynceus on the Pi.
 - [docs/WINDOWS_DEV.md](docs/WINDOWS_DEV.md) — running and testing lynceus
@@ -180,7 +187,7 @@ or `make test` for the whole thing including the wheel-build test.
 
 ## License
 
-TBD before public release.
+lynceus is released under the MIT License. See [LICENSE](LICENSE) for full text.
 
 ## Acknowledgments
 

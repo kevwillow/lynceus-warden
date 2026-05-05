@@ -19,7 +19,7 @@ The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and r
 | `rules_path` | string \| null | `null` | Path to a `rules.yaml` file. When unset, no rules are evaluated and no alerts fire. | `/etc/lynceus/rules.yaml` |
 | `allowlist_path` | string \| null | `null` | Path to an `allowlist.yaml` file. When unset, nothing is allowlisted. | `/etc/lynceus/allowlist.yaml` |
 | `alert_dedup_window_seconds` | integer | `3600` | Suppress repeated alerts for the same `(rule_name, mac)` pair within this many seconds. Set to `0` to disable dedup (every hit becomes an alert). Minimum `0`. | `1800` |
-| `ntfy_url` | string \| null | `null` | Base URL of the ntfy server. When set, `ntfy_topic` is required. | `https://ntfy.sh` |
+| `ntfy_url` | string \| null | `null` | Base URL of the ntfy server. When set, `ntfy_topic` is required. For end-to-end setup including phone app installation, see [NTFY_SETUP.md](NTFY_SETUP.md). | `https://ntfy.sh` |
 | `ntfy_topic` | string \| null | `null` | ntfy topic to publish alerts to. When set, `ntfy_url` is required. | `my-lynceus-alerts` |
 | `ntfy_auth_token` | string \| null | `null` | Optional bearer token for protected topics. | `tk_...` |
 | `ui_bind_host` | string | `127.0.0.1` | Host interface for the web UI (`lynceus-ui`). Loopback by default. Non-loopback values require `ui_allow_remote: true`. | `0.0.0.0` |
