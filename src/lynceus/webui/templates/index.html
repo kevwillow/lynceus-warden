@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}home &mdash; lynceus{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <h2>home</h2>
+
+  <article>
+    <header><strong>health</strong></header>
+    <p>
+      <strong>schema:</strong> {{ health.schema_version }} &middot;
+      <strong>devices:</strong> {{ health.device_count }} &middot;
+      <strong>alerts:</strong> {{ health.alert_count }} &middot;
+      <strong>unacked:</strong> {{ health.unacked_alert_count }}
+    </p>
+  </article>
+
+  <article>
+    <header><strong>last poll</strong></header>
+    <p class="last-poll">
+      {% if last_poll %}
+        Last polled: <time datetime="{{ last_poll | unix_to_iso }}">{{ last_poll | unix_to_iso }}</time>
+      {% else %}
+        Never polled yet.
+      {% endif %}
+    </p>
+  </article>
+
+  <article>
+    <header><strong>devices seen</strong></header>
+    <div class="tile-row">
+      <div class="tile">
+        <div class="tile-num">{{ device_seen.day }}</div>
+        <div class="tile-label">last 24h</div>
+      </div>
+      <div class="tile">
+        <div class="tile-num">{{ device_seen.week }}</div>
+        <div class="tile-label">last 7d</div>
+      </div>
+      <div class="tile">
+        <div class="tile-num">{{ device_seen.month }}</div>
+        <div class="tile-label">last 30d</div>
+      </div>
+    </div>
+  </article>
+
+  <article>
+    <header><strong>alerts at a glance</strong></header>
+    <div class="stat-grid">
+      <span></span>
+      <span class="stat-row-label">24h</span>
+      <span class="stat-row-label">7d</span>
+      <span class="stat-row-label">30d</span>
+
+      <span><span class="badge-low">low</span></span>
+      <span>{{ sev_24h.low }}</span>
+      <span>{{ sev_7d.low }}</span>
+      <span>{{ sev_30d.low }}</span>
+
+      <span><span class="badge-med">med</span></span>
+      <span>{{ sev_24h.med }}</span>
+      <span>{{ sev_7d.med }}</span>
+      <span>{{ sev_30d.med }}</span>
+
+      <span><span class="badge-high">high</span></span>
+      <span>{{ sev_24h.high }}</span>
+      <span>{{ sev_7d.high }}</span>
+      <span>{{ sev_30d.high }}</span>
+    </div>
+  </article>
+
+  <article>
+    <header><strong>alerts per day (last 30 days)</strong></header>
+    {% include "_sparkline.html" %}
+  </article>
+
+  <article>
+    <header><strong>recent unacknowledged alerts</strong></header>
+    {% if recent_alerts %}
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Timestamp</th><th>Severity</th><th>Rule</th><th>Device</th><th>MAC</th><th>Message</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            {% for a in recent_alerts %}
+              <tr class="row-sev-{{ a.severity }}">
+                <td><time datetime="{{ a.ts | unix_to_iso }}">{{ a.ts | unix_to_iso }}</time></td>
+                <td><span class="badge-{{ a.severity }}">{{ a.severity }}</span></td>
+                <td><a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a></td>
+                <td>{{ a.device | device_label }}</td>
+                <td class="mac-cell">
+                  {% if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif %}
+                </td>
+                <td><span class="truncate">{{ a.message }}</span></td>
+                <td>
+                  <form method="post" action="/alerts/{{ a.id }}/ack" class="inline-form">
+                    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+                    <button type="submit" class="ack-button-inline">Acknowledge</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p><em>No unacknowledged alerts.</em></p>
+    {% endif %}
+  </article>
+
+  <article>
+    <header><strong>Kismet status</strong></header>
+    {% if kismet_status %}
+      <p class="last-poll">
+        {% if kismet_status.reachable %}
+          <span class="badge-low">reachable</span>
+          {% if kismet_status.version %}
+            &middot; <strong>version:</strong> <code>{{ kismet_status.version }}</code>
+          {% endif %}
+        {% else %}
+          <span class="badge-high">unreachable</span>
+          {% if kismet_status.error %}
+            &middot; <strong>error:</strong> <code>{{ kismet_status.error }}</code>
+          {% endif %}
+        {% endif %}
+        {% if kismet_status.checked_at %}
+          &middot; <strong>checked:</strong>
+          <time datetime="{{ kismet_status.checked_at | unix_to_iso }}">{{ kismet_status.checked_at | unix_to_iso }}</time>
+        {% endif %}
+      </p>
+    {% else %}
+      <p><em>Kismet status unavailable.</em></p>
+    {% endif %}
+  </article>
+
+  <article>
+    <header><strong>recently seen devices</strong></header>
+    {% if recent_devices %}
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Device</th><th>MAC</th><th>Type</th><th>Last seen</th><th>Sightings</th></tr>
+          </thead>
+          <tbody>
+            {% for d in recent_devices %}
+              <tr>
+                <td>{{ d | device_label }}</td>
+                <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
+                <td>{{ d.device_type }}</td>
+                <td><time datetime="{{ d.last_seen | unix_to_iso }}">{{ d.last_seen | unix_to_iso }}</time></td>
+                <td>{{ d.sighting_count }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p><em>No devices seen yet.</em></p>
+    {% endif %}
+  </article>
+{% endblock %}

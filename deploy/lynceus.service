@@ -1,0 +1,32 @@
+[Unit]
+Description=Lynceus personal RF security monitor
+After=network-online.target kismet.service
+Wants=network-online.target
+# Kismet is optional — lynceus can run with a fixture for testing
+
+[Service]
+Type=simple
+User=lynceus
+Group=lynceus
+EnvironmentFile=-/etc/lynceus/lynceus.env
+ExecStart=/usr/local/bin/lynceus --config /etc/lynceus/lynceus.yaml
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lynceus
+StateDirectory=lynceus
+StateDirectoryMode=0750
+LogsDirectory=lynceus
+LogsDirectoryMode=0750
+
+# Resource limits (Pi-friendly)
+MemoryMax=256M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,6 @@
 # Rules engine reference
 
-Detection rules live in a separate YAML file pointed to by `rules_path` in `talos.yaml`. The schema is defined in [src/talos/rules.py](../src/talos/rules.py) and rejects unknown fields.
+Detection rules live in a separate YAML file pointed to by `rules_path` in `lynceus.yaml`. The schema is defined in [src/lynceus/rules.py](../src/lynceus/rules.py) and rejects unknown fields.
 
 When a sighting comes in, the poller asks the allowlist whether the device is suppressed; if not, it evaluates the full ruleset against the observation and emits one alert per hit (subject to dedup).
 
@@ -71,7 +71,7 @@ Fires when the device's `ssid` exactly matches any pattern. Only WiFi devices po
 
 Fires when the device's advertised BLE GATT service UUIDs include any pattern. Patterns must be 128-bit UUIDs in the standard `8-4-4-4-12` hex form; they are normalized at load time (lowercased, dashes preserved). Only BLE devices populate `ble_service_uuids` — Wi-Fi and Bluetooth Classic sightings always miss.
 
-This is the AirTag-class detector: Apple's tracker advertises a known service UUID even when in lost mode, and the same shape works for a growing list of consumer trackers. Bring your own list; the seed file in `src/talos/seeds/` is a starting point, not exhaustive.
+This is the AirTag-class detector: Apple's tracker advertises a known service UUID even when in lost mode, and the same shape works for a growing list of consumer trackers. Bring your own list; the seed file in `src/lynceus/seeds/` is a starting point, not exhaustive.
 
 ```yaml
 - name: airtag_detected
@@ -103,7 +103,7 @@ Severity drives both the ntfy priority and the tag emoji:
 | `med` | `3` | `warning` | Default-priority alert worth attention. | Triage within minutes. |
 | `high` | `5` | `rotating_light` | Maximum-priority alert. Phone breaks through Do Not Disturb on most ntfy clients. | Look immediately. |
 
-The ntfy notification title is always `talos: {SEVERITY} alert` (uppercase severity), and the body is the rule's generated message. See [src/talos/notify.py](../src/talos/notify.py) for the exact mapping.
+The ntfy notification title is always `lynceus: {SEVERITY} alert` (uppercase severity), and the body is the rule's generated message. See [src/lynceus/notify.py](../src/lynceus/notify.py) for the exact mapping.
 
 A rough calibration: reserve `high` for things you would actually drop a meeting for (Pineapple OUI, known bad MAC). Keep `low` for the broad "noticed something new" rule. Use `med` in between, sparingly.
 
@@ -113,7 +113,7 @@ The allowlist is checked **before** rule evaluation. If a device matches any all
 
 This is a deliberate design choice: the allowlist is meant to mean "I know this device, do not bother me about it ever" with no per-rule carve-outs. If you find yourself wanting to allowlist a device for one rule but still alert on another, the right answer is usually to disable or scope down the noisy rule rather than to add a more granular allowlist.
 
-`allowlist.yaml` shape (from [src/talos/allowlist.py](../src/talos/allowlist.py)):
+`allowlist.yaml` shape (from [src/lynceus/allowlist.py](../src/lynceus/allowlist.py)):
 
 ```yaml
 entries:
@@ -138,9 +138,9 @@ Dedup state lives in the `alerts` table, so it survives restarts.
 
 ## A note on MAC randomization
 
-Talos does not try to defeat MAC randomization, and you should not expect it to. Modern iPhones and Android phones change their WiFi MAC for each network they connect to (sometimes for each individual connection), and they rotate their Bluetooth Low Energy address every few minutes regardless. So if the same phone walks past your Pi twice, it will most likely look like two completely different devices — neither `watchlist_mac` nor `new_non_randomized_device` can stitch those sightings together.
+Lynceus does not try to defeat MAC randomization, and you should not expect it to. Modern iPhones and Android phones change their WiFi MAC for each network they connect to (sometimes for each individual connection), and they rotate their Bluetooth Low Energy address every few minutes regardless. So if the same phone walks past your Pi twice, it will most likely look like two completely different devices — neither `watchlist_mac` nor `new_non_randomized_device` can stitch those sightings together.
 
-What talos **is** useful for:
+What lynceus **is** useful for:
 
 - IoT devices (smart bulbs, plugs, cameras) that ship with stable OEM MACs.
 - Fitness trackers, headphones, and other Bluetooth Classic gear.
@@ -148,7 +148,7 @@ What talos **is** useful for:
 - Older or non-randomizing devices that don't bother hiding their real MAC.
 - AirTag-class BLE trackers, via the `ble_uuid` rule type plus a list of known tracker service UUIDs.
 
-If your threat model is "is a specific person's iPhone in this room," talos is the wrong tool. If it's "did a piece of unfamiliar hardware just appear," it's a good fit.
+If your threat model is "is a specific person's iPhone in this room," lynceus is the wrong tool. If it's "did a piece of unfamiliar hardware just appear," it's a good fit.
 
 ## Tuning playbook (first week)
 
@@ -161,7 +161,7 @@ A rough triage flow when an alert fires:
    - **Allowlist** when the device is yours or otherwise expected. Add an entry to `allowlist.yaml` keyed by MAC for one device or by OUI for a vendor block. This is the right answer for the bulk of first-week noise.
    - **Disable a rule** (`enabled: false`) when the rule itself doesn't fit your environment — for example, `new_non_randomized_device` set to `med` in a coffee shop is going to be useless. Drop its severity or turn it off.
    - **Raise the dedup window** when a single device legitimately matches but you don't need to be told every hour. Bump `alert_dedup_window_seconds` from `3600` to `86400` (one day) for a noisy persistent match.
-3. **Restart talos** so the changes take effect (no live reload yet — see [CONFIGURATION.md](CONFIGURATION.md) and [BACKLOG.md](../BACKLOG.md)).
+3. **Restart lynceus** so the changes take effect (no live reload yet — see [CONFIGURATION.md](CONFIGURATION.md) and [BACKLOG.md](../BACKLOG.md)).
 4. **Keep notes.** A short comment on each allowlist entry (`note:`) is worth its weight three months later when you can't remember why a MAC is on the list.
 
 By the end of week one, you should be down to a handful of alerts per day, almost all of which are interesting. If you're still drowning, the next move is usually to drop `new_non_randomized_device` to `low` (or off) and rely on the `watchlist_*` rules for signal.

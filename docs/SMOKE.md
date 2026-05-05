@@ -2,7 +2,7 @@
 
 Run this **after** installing per [deploy/README.md](../deploy/README.md). Each step has an action, a verify command, an expected outcome, and a troubleshooting bullet. If any step fails, **stop and debug** — later steps assume earlier ones passed.
 
-The checklist assumes the standard install paths: config at `/etc/talos/talos.yaml`, database at `/var/lib/talos/talos.db`, services running as the `talos` system user, both the `talos` poller daemon and the `talos-ui` web UI installed as systemd units.
+The checklist assumes the standard install paths: config at `/etc/lynceus/lynceus.yaml`, database at `/var/lib/lynceus/lynceus.db`, services running as the `lynceus` system user, both the `lynceus` poller daemon and the `lynceus-ui` web UI installed as systemd units.
 
 For local development without a Pi or a real Kismet — building, testing, exercising the UI — see [docs/WINDOWS_DEV.md](WINDOWS_DEV.md). For deferred features so you don't burn time wondering why something isn't there, see [BACKLOG.md](../BACKLOG.md).
 
@@ -10,19 +10,19 @@ For local development without a Pi or a real Kismet — building, testing, exerc
 
 Read this before deciding how many adapters to attach.
 
-- **Pi 3B+** has 1 GB of RAM. Running Kismet against multiple adapters plus the talos daemon plus the talos-ui web UI on a 3B+ will pressure memory; you'll see swapping, and capture quality degrades when the kernel starts swapping out Kismet's ring buffers. Recommended on a 3B+: **one adapter, no UI auto-start at boot**. Run `talos-ui` on demand (`sudo systemctl start talos-ui`) when you want to ack alerts. Multi-adapter on a 3B+ is doable but watch `vmstat 5` for `si`/`so` activity during peak hours.
+- **Pi 3B+** has 1 GB of RAM. Running Kismet against multiple adapters plus the lynceus daemon plus the lynceus-ui web UI on a 3B+ will pressure memory; you'll see swapping, and capture quality degrades when the kernel starts swapping out Kismet's ring buffers. Recommended on a 3B+: **one adapter, no UI auto-start at boot**. Run `lynceus-ui` on demand (`sudo systemctl start lynceus-ui`) when you want to ack alerts. Multi-adapter on a 3B+ is doable but watch `vmstat 5` for `si`/`so` activity during peak hours.
 - **Pi 5** has 4–8 GB. Comfortable with 2–3 adapters plus the web UI running 24/7.
-- The systemd units in `deploy/` set `MemoryMax=256M` for `talos.service` and `MemoryMax=128M` for `talos-ui.service`. These are intentional and roughly correct for both Pi tiers; the variable is Kismet itself, not talos. If you see `talos` getting OOM-killed (`journalctl -u talos | grep -i 'memory cgroup'`), look at what Kismet is doing first.
+- The systemd units in `deploy/` set `MemoryMax=256M` for `lynceus.service` and `MemoryMax=128M` for `lynceus-ui.service`. These are intentional and roughly correct for both Pi tiers; the variable is Kismet itself, not lynceus. If you see `lynceus` getting OOM-killed (`journalctl -u lynceus | grep -i 'memory cgroup'`), look at what Kismet is doing first.
 
 ## 1. Kismet is capturing
 
-**Action:** confirm the Kismet service is up, your monitor adapter is attached, and (if you've configured `kismet_sources` in `talos.yaml`) every named source is reporting in.
+**Action:** confirm the Kismet service is up, your monitor adapter is attached, and (if you've configured `kismet_sources` in `lynceus.yaml`) every named source is reporting in.
 
 **Verify:**
 
 ```bash
 sudo systemctl status kismet
-KEY="$(grep -oP '(?<=^kismet_api_key:\s).*' /etc/talos/talos.yaml | tr -d '"')"
+KEY="$(grep -oP '(?<=^kismet_api_key:\s).*' /etc/lynceus/lynceus.yaml | tr -d '"')"
 curl -s -b "KISMET=$KEY" http://localhost:2501/system/status.json | head -c 400
 curl -s -b "KISMET=$KEY" http://localhost:2501/datasource/all_sources.json \
   | python3 -c 'import sys,json; [print(s["kismet.datasource.name"], s["kismet.datasource.running"]) for s in json.load(sys.stdin)]'
@@ -33,35 +33,35 @@ curl -s -b "KISMET=$KEY" http://localhost:2501/datasource/all_sources.json \
 **Troubleshoot:**
 - Monitor mode not enabled on the capture adapter (`iw dev`, then check Kismet's `kismet_site.conf`).
 - Wrong adapter selected — Kismet attached to the host's regular WiFi rather than a dedicated monitor interface.
-- Source name mismatch — `kismet_sources:` in `talos.yaml` is matched **exactly** against the `kismet.datasource.name` reported above. Typo on either side and observations are silently dropped.
+- Source name mismatch — `kismet_sources:` in `lynceus.yaml` is matched **exactly** against the `kismet.datasource.name` reported above. Typo on either side and observations are silently dropped.
 
-## 2. Talos daemon is running
+## 2. Lynceus daemon is running
 
-**Action:** confirm the `talos` systemd unit is active, steady-state, and that the startup health check passed.
+**Action:** confirm the `lynceus` systemd unit is active, steady-state, and that the startup health check passed.
 
 **Verify:**
 
 ```bash
-sudo systemctl status talos
-sudo journalctl -u talos -n 80 --no-pager | grep -E '(Kismet health check|poll cycle|Traceback)'
+sudo systemctl status lynceus
+sudo journalctl -u lynceus -n 80 --no-pager | grep -E '(Kismet health check|poll cycle|Traceback)'
 ```
 
 **Expected:** unit is `active (running)`. The journal shows `Kismet health check passed` near startup (the v0.2 fail-fast probe — if Kismet is unreachable at boot, `Poller.__init__` raises and the daemon exits immediately rather than running blind). After that, you should see one poll-cycle log line per `poll_interval_seconds`. No Python tracebacks.
 
 **Troubleshoot:**
-- Missing config file at `/etc/talos/talos.yaml` (the unit hard-fails on `FileNotFoundError`).
-- `Kismet health check failed` line at startup → fix Kismet (step 1) before retrying. If you legitimately want to start talos before Kismet is ready, set `kismet_health_check_on_startup: false`.
-- Bad permissions on `/var/lib/talos` — must be owned by the `talos` user with mode `0750`.
+- Missing config file at `/etc/lynceus/lynceus.yaml` (the unit hard-fails on `FileNotFoundError`).
+- `Kismet health check failed` line at startup → fix Kismet (step 1) before retrying. If you legitimately want to start lynceus before Kismet is ready, set `kismet_health_check_on_startup: false`.
+- Bad permissions on `/var/lib/lynceus` — must be owned by the `lynceus` user with mode `0750`.
 - Kismet API key wrong (look for `requests` exceptions or 401s in the journal).
 
-## 3. Talos UI is running
+## 3. Lynceus UI is running
 
-**Action:** confirm the `talos-ui` systemd unit is active and `/healthz` responds.
+**Action:** confirm the `lynceus-ui` systemd unit is active and `/healthz` responds.
 
 **Verify:**
 
 ```bash
-sudo systemctl status talos-ui
+sudo systemctl status lynceus-ui
 curl -sS -i http://127.0.0.1:8765/healthz | head -20
 curl -sS http://127.0.0.1:8765/healthz | grep -E 'schema version|devices tracked'
 ```
@@ -69,9 +69,9 @@ curl -sS http://127.0.0.1:8765/healthz | grep -E 'schema version|devices tracked
 **Expected:** unit is `active (running)`. The first curl returns HTTP 200 with `Content-Type: text/html`. The body contains `schema version` and `devices tracked` near the top.
 
 **Troubleshoot:**
-- Port 8765 already in use — `sudo ss -ltnp '( sport = :8765 )'`. Pick a different port via `ui_bind_port` in `talos.yaml`.
-- `ui-bind_host` set to non-loopback without `ui_allow_remote: true` → config load fails. Either revert to `127.0.0.1` or set the flag explicitly (and put real auth in front of it; talos has none of its own).
-- DB path mismatch — `talos-ui` reads the same `db_path` as `talos`. If they point at different files, the UI shows zeros while the daemon writes elsewhere.
+- Port 8765 already in use — `sudo ss -ltnp '( sport = :8765 )'`. Pick a different port via `ui_bind_port` in `lynceus.yaml`.
+- `ui-bind_host` set to non-loopback without `ui_allow_remote: true` → config load fails. Either revert to `127.0.0.1` or set the flag explicitly (and put real auth in front of it; lynceus has none of its own).
+- DB path mismatch — `lynceus-ui` reads the same `db_path` as `lynceus`. If they point at different files, the UI shows zeros while the daemon writes elsewhere.
 
 ## 4. Database is being written (and per-source attribution works)
 
@@ -80,10 +80,10 @@ curl -sS http://127.0.0.1:8765/healthz | grep -E 'schema version|devices tracked
 **Verify:** run this twice, 60 seconds apart:
 
 ```bash
-sudo -u talos sqlite3 /var/lib/talos/talos.db "SELECT COUNT(*) FROM sightings;"
+sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db "SELECT COUNT(*) FROM sightings;"
 sleep 60
-sudo -u talos sqlite3 /var/lib/talos/talos.db "SELECT COUNT(*) FROM sightings;"
-sudo -u talos sqlite3 /var/lib/talos/talos.db \
+sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db "SELECT COUNT(*) FROM sightings;"
+sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
   "SELECT location_id, COUNT(*) FROM sightings GROUP BY location_id;"
 ```
 
@@ -93,28 +93,28 @@ sudo -u talos sqlite3 /var/lib/talos/talos.db \
 - `poll_interval_seconds` set high — drop to `5` for the duration of the smoke test.
 - Kismet returning no devices since the last poll — re-do step 1, or walk past the Pi with your phone's Wi-Fi on.
 - Per-source location row missing → the corresponding source isn't actually capturing. `iw dev` and Kismet's source list (step 1) will tell you which one.
-- DB permissions — file must be writable by the `talos` user.
+- DB permissions — file must be writable by the `lynceus` user.
 
 ## 5. Watchlist seeded
 
-**Action:** confirm `talos-seed-watchlist` populated the table.
+**Action:** confirm `lynceus-seed-watchlist` populated the table.
 
 **Verify:**
 
 ```bash
-sudo -u talos sqlite3 /var/lib/talos/talos.db \
+sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
   "SELECT pattern_type, COUNT(*) FROM watchlist GROUP BY pattern_type;"
 ```
 
 **Expected:** at least one row for `pattern_type = 'oui'` (from `--threat-ouis`). If you ran `--ble-uuids` you'll also see a row for `pattern_type = 'uuid'`.
 
 **Troubleshoot:**
-- Seed step skipped during install — re-run `talos-seed-watchlist --db /var/lib/talos/talos.db --threat-ouis --ble-uuids`.
-- Wrong DB path — confirm the seed CLI and the talos service point at the same file (`grep db_path /etc/talos/talos.yaml`).
+- Seed step skipped during install — re-run `lynceus-seed-watchlist --db /var/lib/lynceus/lynceus.db --threat-ouis --ble-uuids`.
+- Wrong DB path — confirm the seed CLI and the lynceus service point at the same file (`grep db_path /etc/lynceus/lynceus.yaml`).
 
 ## 6. Test rule fires
 
-**Action:** temporarily add your own laptop's WiFi MAC to a high-severity `watchlist_mac` rule. Save it to `/etc/talos/rules.yaml` and restart talos.
+**Action:** temporarily add your own laptop's WiFi MAC to a high-severity `watchlist_mac` rule. Save it to `/etc/lynceus/rules.yaml` and restart lynceus.
 
 ```yaml
 rules:
@@ -126,13 +126,13 @@ rules:
 ```
 
 ```bash
-sudo systemctl restart talos
+sudo systemctl restart lynceus
 ```
 
 **Verify:** tail the journal and walk near the Pi with your laptop's WiFi on.
 
 ```bash
-sudo journalctl -u talos -f
+sudo journalctl -u lynceus -f
 ```
 
 After at most one `poll_interval_seconds`, also check the web UI:
@@ -144,8 +144,8 @@ curl -sS 'http://127.0.0.1:8765/alerts?search=smoke_test' | grep -c smoke_test
 **Expected:** within one poll interval, the journal shows an `alert` line for the high-severity hit. The `/alerts?search=smoke_test` curl prints a non-zero count. The line `Failed to write alert` should **not** appear.
 
 **Troubleshoot:**
-- Rule YAML syntax — `python3 -c "import yaml; yaml.safe_load(open('/etc/talos/rules.yaml'))"`.
-- MAC format — talos normalizes to lowercase, colon-separated. Hyphens accepted, case-insensitive.
+- Rule YAML syntax — `python3 -c "import yaml; yaml.safe_load(open('/etc/lynceus/rules.yaml'))"`.
+- MAC format — lynceus normalizes to lowercase, colon-separated. Hyphens accepted, case-insensitive.
 - Allowlist — if you previously allowlisted your laptop, it suppresses this alert. Comment out the relevant entry for the test.
 
 ## 7. Acknowledge from the web UI
@@ -155,9 +155,9 @@ curl -sS 'http://127.0.0.1:8765/alerts?search=smoke_test' | grep -c smoke_test
 **Verify:** in the browser, the alert row dims and gains an "acknowledged" badge. Check the DB to confirm the write landed:
 
 ```bash
-sudo -u talos sqlite3 /var/lib/talos/talos.db \
+sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
   "SELECT acknowledged, ack_actor FROM alerts WHERE rule_name = 'smoke_test' ORDER BY id DESC LIMIT 1;"
-sudo -u talos sqlite3 /var/lib/talos/talos.db \
+sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
   "SELECT action, actor FROM alert_actions WHERE alert_id = (SELECT id FROM alerts WHERE rule_name = 'smoke_test' ORDER BY id DESC LIMIT 1);"
 ```
 
@@ -172,12 +172,12 @@ sudo -u talos sqlite3 /var/lib/talos/talos.db \
 
 **Action:** confirm the alert from step 6 reached the ntfy app on your phone.
 
-**Verify:** your phone should buzz with the talos alert within seconds of the journal line in step 6. The high severity is the test here — severity-based priority (`low=2`, `med=3`, `high=5`) means the high-tier alert breaks through Do Not Disturb on iOS and gets critical priority on Android.
+**Verify:** your phone should buzz with the lynceus alert within seconds of the journal line in step 6. The high severity is the test here — severity-based priority (`low=2`, `med=3`, `high=5`) means the high-tier alert breaks through Do Not Disturb on iOS and gets critical priority on Android.
 
-**Expected:** notification with title `talos: HIGH alert` and body matching the rule message (e.g. `MAC aa:bb:cc:dd:ee:ff on watchlist: smoke test — remove after step 10`).
+**Expected:** notification with title `lynceus: HIGH alert` and body matching the rule message (e.g. `MAC aa:bb:cc:dd:ee:ff on watchlist: smoke test — remove after step 10`).
 
 **Troubleshoot:**
-- Wrong topic — `ntfy_topic` in `talos.yaml` must exactly match the topic your phone is subscribed to.
+- Wrong topic — `ntfy_topic` in `lynceus.yaml` must exactly match the topic your phone is subscribed to.
 - ntfy server unreachable — `curl -I "$NTFY_URL"` from the Pi should return 200.
 - Auth token mismatch — if your topic is protected, `ntfy_auth_token` must match.
 - DnD overriding the high-priority push → check the ntfy app's notification channel settings, not just the OS.
@@ -189,7 +189,7 @@ sudo -u talos sqlite3 /var/lib/talos/talos.db \
 **Verify:**
 
 ```bash
-sudo -u talos sqlite3 /var/lib/talos/talos.db \
+sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
   "SELECT location_id, COUNT(*) FROM sightings WHERE first_seen_ts > strftime('%s','now') - 3600 GROUP BY location_id;"
 ```
 
@@ -201,11 +201,11 @@ sudo -u talos sqlite3 /var/lib/talos/talos.db \
 
 ## 10. Cleanup
 
-Remove the temporary `smoke_test` rule from `/etc/talos/rules.yaml`, restart talos, and confirm via the web UI.
+Remove the temporary `smoke_test` rule from `/etc/lynceus/rules.yaml`, restart lynceus, and confirm via the web UI.
 
 ```bash
-sudo systemctl restart talos
-sudo journalctl -u talos -n 20 --no-pager
+sudo systemctl restart lynceus
+sudo journalctl -u lynceus -n 20 --no-pager
 curl -sS http://127.0.0.1:8765/rules | grep -c 'smoke_test'
 ```
 

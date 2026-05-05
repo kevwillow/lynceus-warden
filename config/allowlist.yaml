@@ -1,4 +1,4 @@
-# Talos allowlist.
+# Lynceus allowlist.
 # List known-good devices here to suppress matching alerts. Each entry has:
 #   pattern:      the value to match (MAC, OUI prefix, or SSID string)
 #   pattern_type: one of "mac" | "oui" | "ssid"

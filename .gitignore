@@ -10,5 +10,6 @@ build/
 .audit/
 *.db-wal
 *.db-shm
+lynceus.yaml
 talos.yaml
 .docs-backup-*/

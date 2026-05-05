@@ -1,4 +1,4 @@
-# Talos detection rules.
+# Lynceus detection rules.
 # Each rule is evaluated against every supported device observation. See README
 # for the schema; rule_type is one of watchlist_mac, watchlist_oui,
 # watchlist_ssid, or new_non_randomized_device.

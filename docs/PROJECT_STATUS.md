@@ -1,6 +1,6 @@
 # Project status
 
-A snapshot of where talos stands today, for someone who's read the
+A snapshot of where lynceus stands today, for someone who's read the
 [README](../README.md) and is asking "should I deploy this on my Pi this
 weekend?"
 
@@ -10,7 +10,7 @@ weekend?"
 
 ## What's shipped
 
-**Daemon (`talos`)**
+**Daemon (`lynceus`)**
 
 - Polls Kismet on a configurable interval.
 - Filters observations by source, by minimum RSSI, and remaps source
@@ -24,7 +24,7 @@ weekend?"
 - Optional Kismet health check on startup, fail-fast if unreachable.
 - Clean shutdown on SIGTERM/SIGINT.
 
-**Web UI (`talos-ui`)**
+**Web UI (`lynceus-ui`)**
 
 - Read-only dashboard, alerts list and detail, devices list and detail,
   rules and allowlist views.
@@ -35,7 +35,7 @@ weekend?"
 - Localhost-bound by default; non-loopback bind requires an explicit
   `ui_allow_remote: true` flag (intentional friction — v0.2 has no auth).
 
-**CLI (`talos-seed-watchlist`)**
+**CLI (`lynceus-seed-watchlist`)**
 
 - Seeds the watchlist with bundled threat OUIs, bundled BLE tracker
   UUIDs, or a user-supplied YAML file. Re-runnable; duplicates are
@@ -99,7 +99,7 @@ release.
 
 ## Known limitations
 
-Things talos explicitly does not do today:
+Things lynceus explicitly does not do today:
 
 - **Does not defeat MAC randomization.** It records each device's
   randomization status, but does not try to correlate across rotations.

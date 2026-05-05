@@ -1,0 +1,32 @@
+[Unit]
+Description=Lynceus web UI (read-only dashboard)
+After=network-online.target lynceus.service
+Wants=network-online.target
+# lynceus.service is a soft dependency — UI can run independently if you want
+
+[Service]
+Type=simple
+User=lynceus
+Group=lynceus
+EnvironmentFile=-/etc/lynceus/lynceus.env
+ExecStart=/usr/local/bin/lynceus-ui --config /etc/lynceus/lynceus.yaml
+Restart=on-failure
+RestartSec=5s
+
+# Hardening (mirrors lynceus.service)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lynceus
+StateDirectory=lynceus
+StateDirectoryMode=0750
+LogsDirectory=lynceus
+LogsDirectoryMode=0750
+
+# Resource limits
+MemoryMax=128M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target

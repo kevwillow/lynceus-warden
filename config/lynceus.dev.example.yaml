@@ -1,0 +1,41 @@
+# Sample config for Windows local development.
+# Copy to lynceus.yaml in repo root. See docs/WINDOWS_DEV.md.
+#
+# This config drives lynceus against a fixture file rather than a live Kismet,
+# so you can iterate on rules, the web UI, and notify behavior without a Pi.
+
+# Use the bundled fixture instead of a real Kismet HTTP endpoint. When this
+# is set, lynceus uses FakeKismetClient and never makes outbound requests.
+kismet_fixture_path: ./tests/fixtures/dev_kismet.json
+
+# Local SQLite path. Kept out of /var/lib/lynceus so it doesn't collide with a
+# parallel Pi install if you mount this repo on shared storage.
+db_path: ./lynceus-dev.db
+
+# Tag every sighting with a "dev" location so you can tell development data
+# apart from real captures if you ever pool them.
+location_id: dev
+location_label: Development workstation
+
+# Tight loop for fast feedback. The validator rejects values below 5.
+poll_interval_seconds: 5
+
+# DEBUG keeps every dropped-source / RSSI-filtered observation in view —
+# useful when you're testing filter behavior and want to see what was thrown
+# away rather than just what was kept.
+log_level: DEBUG
+
+# Point at the in-repo example rules and allowlist.
+rules_path: ./config/rules.yaml
+allowlist_path: ./config/allowlist.yaml
+
+# FakeKismetClient.health_check() always reports reachable, so this could
+# be either value; setting it false explicitly here documents that the dev
+# config does not depend on the startup probe path. If you switch to a real
+# kismet_url for partial integration testing, flip this back to true.
+kismet_health_check_on_startup: false
+
+# ui_bind_host, ui_bind_port left at their defaults (127.0.0.1:8765).
+# ntfy_url, ntfy_topic left unset → lynceus uses NullNotifier and alerts are
+#   written to the DB only. Set both if you want to test ntfy delivery to a
+#   real (or self-hosted) ntfy server during dev.
