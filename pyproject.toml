@@ -58,6 +58,7 @@ dev = [
 [project.scripts]
 lynceus = "lynceus.poller:main"
 lynceus-seed-watchlist = "lynceus.cli.seed_watchlist:main"
+lynceus-import-argus = "lynceus.cli.import_argus:main"
 lynceus-ui = "lynceus.webui.server:main"
 
 [project.urls]
