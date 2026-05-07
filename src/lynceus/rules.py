@@ -90,6 +90,7 @@ class RuleHit(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     rule_name: str
+    rule_type: RuleType
     severity: Severity
     message: str
     mac: str
@@ -120,6 +121,7 @@ def evaluate(
                 hits.append(
                     RuleHit(
                         rule_name=rule.name,
+                        rule_type=rule.rule_type,
                         severity=rule.severity,
                         message=msg,
                         mac=obs.mac,
@@ -135,6 +137,7 @@ def evaluate(
                     hits.append(
                         RuleHit(
                             rule_name=rule.name,
+                            rule_type=rule.rule_type,
                             severity=rule.severity,
                             message=msg,
                             mac=obs.mac,
@@ -150,6 +153,7 @@ def evaluate(
                 hits.append(
                     RuleHit(
                         rule_name=rule.name,
+                        rule_type=rule.rule_type,
                         severity=rule.severity,
                         message=msg,
                         mac=obs.mac,
@@ -165,6 +169,7 @@ def evaluate(
                     hits.append(
                         RuleHit(
                             rule_name=rule.name,
+                            rule_type=rule.rule_type,
                             severity=rule.severity,
                             message=msg,
                             mac=obs.mac,
@@ -179,6 +184,7 @@ def evaluate(
                 hits.append(
                     RuleHit(
                         rule_name=rule.name,
+                        rule_type=rule.rule_type,
                         severity=rule.severity,
                         message=msg,
                         mac=obs.mac,

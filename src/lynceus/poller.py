@@ -110,6 +110,13 @@ def poll_once(
                 logger.debug("allowlisted, suppressing alerts: %s", obs.mac)
                 continue
             hits = evaluate(ruleset, obs, is_new_device=is_new)
+            matched_watchlist_id: int | None = None
+            if any(h.rule_type != "new_non_randomized_device" for h in hits):
+                matched_watchlist_id = db.resolve_matched_watchlist_id(
+                    mac=obs.mac,
+                    ssid=obs.ssid,
+                    ble_service_uuids=obs.ble_service_uuids,
+                )
             for hit in hits:
                 if config.alert_dedup_window_seconds > 0:
                     since = now_ts - config.alert_dedup_window_seconds
@@ -119,6 +126,9 @@ def poll_once(
                     ):
                         logger.debug("dedup-skip %s/%s", hit.rule_name, hit.mac)
                         continue
+                hit_match_id = (
+                    matched_watchlist_id if hit.rule_type != "new_non_randomized_device" else None
+                )
                 try:
                     db.add_alert(
                         ts=now_ts,
@@ -126,6 +136,7 @@ def poll_once(
                         mac=hit.mac,
                         message=hit.message,
                         severity=hit.severity,
+                        matched_watchlist_id=hit_match_id,
                     )
                 except Exception as e:
                     logger.warning("Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e)

@@ -125,13 +125,57 @@ class Database:
         mac: str | None,
         message: str,
         severity: str,
+        matched_watchlist_id: int | None = None,
     ) -> int:
         with self._conn:
             cur = self._conn.execute(
-                "INSERT INTO alerts(ts, rule_name, mac, message, severity) VALUES (?, ?, ?, ?, ?)",
-                (ts, rule_name, mac, message, severity),
+                "INSERT INTO alerts(ts, rule_name, mac, message, severity, matched_watchlist_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (ts, rule_name, mac, message, severity, matched_watchlist_id),
             )
             return cur.lastrowid
+
+    def resolve_matched_watchlist_id(
+        self,
+        *,
+        mac: str | None,
+        ssid: str | None = None,
+        ble_service_uuids: tuple[str, ...] = (),
+    ) -> int | None:
+        """Pick the most-specific watchlist row matching this observation.
+
+        Tiebreaker order: mac > oui > ssid > ble_uuid. Returns the watchlist
+        row id, or None when no row matches.
+        """
+        if mac is not None:
+            row = self._conn.execute(
+                "SELECT id FROM watchlist WHERE pattern_type = 'mac' AND pattern = ? LIMIT 1",
+                (mac,),
+            ).fetchone()
+            if row is not None:
+                return int(row["id"])
+            oui = mac[:8]
+            row = self._conn.execute(
+                "SELECT id FROM watchlist WHERE pattern_type = 'oui' AND pattern = ? LIMIT 1",
+                (oui,),
+            ).fetchone()
+            if row is not None:
+                return int(row["id"])
+        if ssid:
+            row = self._conn.execute(
+                "SELECT id FROM watchlist WHERE pattern_type = 'ssid' AND pattern = ? LIMIT 1",
+                (ssid,),
+            ).fetchone()
+            if row is not None:
+                return int(row["id"])
+        for uuid in ble_service_uuids:
+            row = self._conn.execute(
+                "SELECT id FROM watchlist WHERE pattern_type = 'ble_uuid' AND pattern = ? LIMIT 1",
+                (uuid,),
+            ).fetchone()
+            if row is not None:
+                return int(row["id"])
+        return None
 
     def get_recent_alert_for_rule_and_mac(
         self,
@@ -265,24 +309,26 @@ class Database:
         since_ts: int | None,
         until_ts: int | None,
         search: str | None,
+        alias: str = "",
     ) -> tuple[list[str], list]:
+        prefix = f"{alias}." if alias else ""
         clauses: list[str] = []
         params: list = []
         if severity is not None:
-            clauses.append("severity = ?")
+            clauses.append(f"{prefix}severity = ?")
             params.append(severity)
         if acknowledged is not None:
-            clauses.append("acknowledged = ?")
+            clauses.append(f"{prefix}acknowledged = ?")
             params.append(1 if acknowledged else 0)
         if since_ts is not None:
-            clauses.append("ts >= ?")
+            clauses.append(f"{prefix}ts >= ?")
             params.append(since_ts)
         if until_ts is not None:
-            clauses.append("ts <= ?")
+            clauses.append(f"{prefix}ts <= ?")
             params.append(until_ts)
         if search is not None and search != "":
             like = f"%{search.lower()}%"
-            clauses.append("(LOWER(message) LIKE ? OR LOWER(rule_name) LIKE ?)")
+            clauses.append(f"(LOWER({prefix}message) LIKE ? OR LOWER({prefix}rule_name) LIKE ?)")
             params.extend([like, like])
         return clauses, params
 
@@ -303,6 +349,122 @@ class Database:
         else:
             alert["device"] = None
         return alert
+
+    _ALERT_WITH_MATCH_FILTER_KEYS = (
+        "limit",
+        "offset",
+        "severity",
+        "acknowledged",
+        "since_ts",
+        "until_ts",
+        "search",
+    )
+
+    _ALERT_WITH_MATCH_SELECT = (
+        "SELECT "
+        "a.id AS id, a.ts AS ts, a.rule_name AS rule_name, a.mac AS mac, "
+        "a.message AS message, a.severity AS severity, "
+        "a.acknowledged AS acknowledged, "
+        "a.matched_watchlist_id AS matched_watchlist_id, "
+        "w.id AS w_id, w.pattern AS w_pattern, "
+        "w.pattern_type AS w_pattern_type, w.severity AS w_severity, "
+        "w.description AS w_description, "
+        "m.id AS m_id, m.argus_record_id AS m_argus_record_id, "
+        "m.device_category AS m_device_category, m.confidence AS m_confidence, "
+        "m.vendor AS m_vendor, m.source AS m_source, "
+        "m.source_url AS m_source_url, m.source_excerpt AS m_source_excerpt, "
+        "m.fcc_id AS m_fcc_id, m.geographic_scope AS m_geographic_scope, "
+        "m.first_seen AS m_first_seen, m.last_verified AS m_last_verified, "
+        "m.notes AS m_notes, m.created_at AS m_created_at, "
+        "m.updated_at AS m_updated_at "
+        "FROM alerts a "
+        "LEFT JOIN watchlist w ON w.id = a.matched_watchlist_id "
+        "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id"
+    )
+
+    @staticmethod
+    def _alert_match_row_to_dict(row) -> dict:
+        alert = {
+            "id": row["id"],
+            "ts": row["ts"],
+            "rule_name": row["rule_name"],
+            "mac": row["mac"],
+            "message": row["message"],
+            "severity": row["severity"],
+            "acknowledged": row["acknowledged"],
+            "matched_watchlist_id": row["matched_watchlist_id"],
+        }
+        if row["w_id"] is not None:
+            alert["watchlist"] = {
+                "id": row["w_id"],
+                "pattern": row["w_pattern"],
+                "pattern_type": row["w_pattern_type"],
+                "severity": row["w_severity"],
+                "description": row["w_description"],
+            }
+        else:
+            alert["watchlist"] = None
+        if row["m_id"] is not None:
+            alert["watchlist_metadata"] = {
+                "id": row["m_id"],
+                "argus_record_id": row["m_argus_record_id"],
+                "device_category": row["m_device_category"],
+                "confidence": row["m_confidence"],
+                "vendor": row["m_vendor"],
+                "source": row["m_source"],
+                "source_url": row["m_source_url"],
+                "source_excerpt": row["m_source_excerpt"],
+                "fcc_id": row["m_fcc_id"],
+                "geographic_scope": row["m_geographic_scope"],
+                "first_seen": row["m_first_seen"],
+                "last_verified": row["m_last_verified"],
+                "notes": row["m_notes"],
+                "created_at": row["m_created_at"],
+                "updated_at": row["m_updated_at"],
+            }
+        else:
+            alert["watchlist_metadata"] = None
+        return alert
+
+    def get_alert_with_match(self, alert_id: int) -> dict | None:
+        self._validate_alert_id(alert_id)
+        row = self._conn.execute(
+            f"{self._ALERT_WITH_MATCH_SELECT} WHERE a.id = ?",
+            (alert_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._alert_match_row_to_dict(row)
+
+    def list_alerts_with_match(self, filters: dict | None = None) -> list[dict]:
+        filters = filters or {}
+        unknown = set(filters) - set(self._ALERT_WITH_MATCH_FILTER_KEYS)
+        if unknown:
+            raise ValueError(f"unknown filter keys: {sorted(unknown)}")
+
+        limit = filters.get("limit", 100)
+        offset = filters.get("offset", 0)
+        self._validate_pagination(limit, offset)
+        severity = filters.get("severity")
+        if severity is not None and severity not in self._ALERT_SEVERITIES:
+            raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
+
+        clauses, params = self._alert_filter_clauses(
+            severity=severity,
+            acknowledged=filters.get("acknowledged"),
+            since_ts=filters.get("since_ts"),
+            until_ts=filters.get("until_ts"),
+            search=filters.get("search"),
+            alias="a",
+        )
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            f"{self._ALERT_WITH_MATCH_SELECT} {where} "
+            "ORDER BY a.ts DESC, a.id DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._alert_match_row_to_dict(r) for r in rows]
 
     def list_devices(
         self,
