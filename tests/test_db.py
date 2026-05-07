@@ -146,6 +146,7 @@ def test_migrations_dir_lists_both_files(db):
         "002_poller_state.sql",
         "003_alert_actions.sql",
         "004_watchlist_metadata.sql",
+        "005_alert_watchlist_link.sql",
     ]
 
 
