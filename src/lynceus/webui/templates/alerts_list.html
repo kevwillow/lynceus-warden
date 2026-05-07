@@ -102,6 +102,9 @@
                   <span class="truncate">
                     {% if a.message|length > 80 %}{{ a.message[:80] }}&hellip;{% else %}{{ a.message }}{% endif %}
                   </span>
+                  {% if a.watchlist_metadata and a.watchlist_metadata.vendor %}
+                    <br><small class="alert-vendor-subtitle">{{ a.watchlist_metadata.vendor }}</small>
+                  {% endif %}
                 </td>
                 <td>{% if a.acknowledged %}&check;{% endif %}</td>
                 <td>

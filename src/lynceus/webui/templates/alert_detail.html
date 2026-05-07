@@ -8,6 +8,21 @@
   <article>
     <p>
       <strong>severity:</strong> <span class="badge-{{ alert.severity }}">{{ alert.severity }}</span>
+      {% if alert.watchlist_metadata %}
+        {% if alert.watchlist_metadata.vendor %}
+          &middot; <strong>vendor:</strong> {{ alert.watchlist_metadata.vendor }}
+        {% endif %}
+        {% if alert.watchlist_metadata.confidence is not none %}
+          &middot; <strong>confidence:</strong>
+          {% if alert.watchlist_metadata.confidence >= 70 %}
+            <span class="badge-conf-high">{{ alert.watchlist_metadata.confidence }}</span>
+          {% elif alert.watchlist_metadata.confidence >= 30 %}
+            <span class="badge-conf-med">{{ alert.watchlist_metadata.confidence }}</span>
+          {% else %}
+            <span class="badge-conf-low">{{ alert.watchlist_metadata.confidence }}</span>
+          {% endif %}
+        {% endif %}
+      {% endif %}
       &middot; <strong>rule:</strong> <code>{{ alert.rule_name }}</code>
       &middot; <strong>timestamp:</strong> <time datetime="{{ alert.ts | unix_to_iso }}">{{ alert.ts | unix_to_iso }}</time>
       &middot; <strong>acknowledged:</strong> {% if alert.acknowledged %}yes{% else %}no{% endif %}
@@ -15,6 +30,28 @@
     <p><strong>message:</strong></p>
     <pre>{{ alert.message }}</pre>
   </article>
+
+  {% if alert.matched_watchlist_id %}
+    <article>
+      <header><strong>matched watchlist entry</strong></header>
+      <p><a href="/watchlist/{{ alert.matched_watchlist_id }}">View matched watchlist entry</a></p>
+      {% if alert.watchlist_metadata %}
+        {% if alert.watchlist_metadata.source_url %}
+          <p><a href="{{ alert.watchlist_metadata.source_url }}" target="_blank" rel="noopener noreferrer">View source evidence</a></p>
+        {% endif %}
+        {% if alert.watchlist_metadata.source_excerpt %}
+          {% if alert.watchlist_metadata.source_excerpt | length > 200 %}
+            <details>
+              <summary>(excerpt &mdash; click to expand, {{ alert.watchlist_metadata.source_excerpt | length }} chars)</summary>
+              <blockquote>{{ alert.watchlist_metadata.source_excerpt }}</blockquote>
+            </details>
+          {% else %}
+            <blockquote>{{ alert.watchlist_metadata.source_excerpt }}</blockquote>
+          {% endif %}
+        {% endif %}
+      {% endif %}
+    </article>
+  {% endif %}
 
   {% if alert.device %}
     <article>

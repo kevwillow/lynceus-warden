@@ -106,6 +106,24 @@ class NtfyNotifier(Notifier):
         return False
 
 
+def build_metadata_suffix(metadata: dict | None) -> str:
+    """Return the ntfy body suffix for a watchlist_metadata row.
+
+    Format: " | vendor: <vendor>" + " | confidence: <n>" when each is non-NULL,
+    in that order. Empty string when metadata is None or both fields are NULL,
+    so the v0.2 body is preserved by string concatenation."""
+    if not metadata:
+        return ""
+    parts: list[str] = []
+    vendor = metadata.get("vendor")
+    if vendor:
+        parts.append(f" | vendor: {vendor}")
+    confidence = metadata.get("confidence")
+    if confidence is not None:
+        parts.append(f" | confidence: {confidence}")
+    return "".join(parts)
+
+
 def build_notifier(config: Config) -> Notifier:
     if config.ntfy_url and config.ntfy_topic:
         return NtfyNotifier(
