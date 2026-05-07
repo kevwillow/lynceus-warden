@@ -101,6 +101,21 @@ def unix_to_iso(ts) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def unix_to_utc_human(ts) -> str:
+    """Format a unix epoch int as 'YYYY-MM-DD HH:MM UTC' for human display."""
+    if ts is None or ts == "":
+        return ""
+    dt = _dt.datetime.fromtimestamp(int(ts), tz=_dt.UTC)
+    return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+
+_SEVERITY_ORDER = {"high": 0, "med": 1, "low": 2}
+
+
+def _watchlist_sort_key(entry: dict) -> tuple[int, str]:
+    return (_SEVERITY_ORDER.get(entry.get("severity"), 99), entry.get("pattern") or "")
+
+
 def _enrich_alerts_with_devices(db, alerts: list[dict]) -> None:
     """Populate alert['device'] (a dict or None) for each alert in-place.
 
@@ -208,6 +223,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     app.state.templates = Jinja2Templates(directory=str(_resolve_templates_dir()))
     app.state.templates.env.globals["csrf_token"] = lambda request: get_csrf_token(request)
     app.state.templates.env.filters["unix_to_iso"] = unix_to_iso
+    app.state.templates.env.filters["unix_to_utc_human"] = unix_to_utc_human
     app.state.templates.env.filters["device_label"] = _device_label
 
     app.mount(
@@ -594,6 +610,73 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "active": "rules",
                 "ruleset": ruleset,
                 "notice": notice,
+            },
+        )
+
+    @app.get("/watchlist", response_class=HTMLResponse)
+    def watchlist_list(request: Request):
+        rows = db.list_watchlist_with_metadata()
+        rows_sorted = sorted(rows, key=_watchlist_sort_key)
+        return app.state.templates.TemplateResponse(
+            request=request,
+            name="watchlist_list.html",
+            context={
+                "version": __version__,
+                "active": "watchlist",
+                "entries": rows_sorted,
+            },
+        )
+
+    @app.get("/watchlist/{watchlist_id}", response_class=HTMLResponse)
+    def watchlist_detail(request: Request, watchlist_id: int):
+        if watchlist_id < 1:
+            raise HTTPException(status_code=400, detail="watchlist_id must be positive")
+        rows = db.list_watchlist_with_metadata()
+        row = next((r for r in rows if r["id"] == watchlist_id), None)
+        if row is None:
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "watchlist",
+                    "message": f"Watchlist entry {watchlist_id} not found.",
+                },
+                status_code=404,
+            )
+        entry = {
+            "id": row["id"],
+            "pattern": row["pattern"],
+            "pattern_type": row["pattern_type"],
+            "severity": row["severity"],
+            "description": row["description"],
+        }
+        has_metadata = row.get("metadata_id") is not None
+        metadata = None
+        if has_metadata:
+            metadata = {
+                "argus_record_id": row.get("argus_record_id"),
+                "device_category": row.get("device_category"),
+                "confidence": row.get("confidence"),
+                "vendor": row.get("vendor"),
+                "source": row.get("source"),
+                "source_url": row.get("source_url"),
+                "source_excerpt": row.get("source_excerpt"),
+                "fcc_id": row.get("fcc_id"),
+                "geographic_scope": row.get("geographic_scope"),
+                "first_seen": row.get("first_seen"),
+                "last_verified": row.get("last_verified"),
+                "notes": row.get("notes"),
+            }
+        return app.state.templates.TemplateResponse(
+            request=request,
+            name="watchlist_detail.html",
+            context={
+                "version": __version__,
+                "active": "watchlist",
+                "entry": entry,
+                "has_metadata": has_metadata,
+                "metadata": metadata,
             },
         )
 

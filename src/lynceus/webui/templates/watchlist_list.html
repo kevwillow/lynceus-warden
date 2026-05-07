@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}watchlist &mdash; lynceus{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <h2>watchlist</h2>
+
+  <p><small>{{ entries | length }} entr{{ "y" if entries | length == 1 else "ies" }}</small></p>
+
+  {% if entries %}
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>pattern</th>
+            <th>type</th>
+            <th>severity</th>
+            <th>description</th>
+            <th>vendor</th>
+            <th>confidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in entries %}
+            <tr>
+              <td><a href="/watchlist/{{ e.id }}"><code>{{ e.pattern }}</code></a></td>
+              <td>{{ e.pattern_type }}</td>
+              <td><span class="badge-{{ e.severity }}">{{ e.severity }}</span></td>
+              <td>{{ e.description or "" }}</td>
+              <td>{{ e.vendor or "" }}</td>
+              <td>
+                {% if e.confidence is not none %}
+                  {% if e.confidence >= 70 %}
+                    <span class="badge-conf-high">{{ e.confidence }}</span>
+                  {% elif e.confidence >= 30 %}
+                    <span class="badge-conf-med">{{ e.confidence }}</span>
+                  {% else %}
+                    <span class="badge-conf-low">{{ e.confidence }}</span>
+                  {% endif %}
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p><em>No watchlist entries.</em></p>
+  {% endif %}
+
+  <p><small>Edit watchlist via the <code>lynceus-seed-watchlist</code> CLI; UI is read-only.</small></p>
+{% endblock %}

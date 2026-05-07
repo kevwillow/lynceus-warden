@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}watchlist entry #{{ entry.id }} &mdash; lynceus{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <p><a href="/watchlist">&larr; back to watchlist</a></p>
+  <h2>watchlist entry #{{ entry.id }}</h2>
+
+  <article>
+    <p>
+      <strong>pattern:</strong> <code>{{ entry.pattern }}</code>
+      &middot; <strong>type:</strong> {{ entry.pattern_type }}
+      &middot; <strong>severity:</strong> <span class="badge-{{ entry.severity }}">{{ entry.severity }}</span>
+    </p>
+    {% if entry.description %}
+      <p><strong>description:</strong> {{ entry.description }}</p>
+    {% endif %}
+  </article>
+
+  {% if has_metadata %}
+    <article>
+      <header><h3>metadata</h3></header>
+      <dl class="metadata-grid">
+        {% if metadata.device_category %}
+          <dt>device_category</dt>
+          <dd>{{ metadata.device_category }}</dd>
+        {% endif %}
+        {% if metadata.vendor %}
+          <dt>vendor</dt>
+          <dd>{{ metadata.vendor }}</dd>
+        {% endif %}
+        {% if metadata.confidence is not none %}
+          <dt>confidence</dt>
+          <dd>
+            {% if metadata.confidence >= 70 %}
+              <span class="badge-conf-high">{{ metadata.confidence }}</span>
+            {% elif metadata.confidence >= 30 %}
+              <span class="badge-conf-med">{{ metadata.confidence }}</span>
+            {% else %}
+              <span class="badge-conf-low">{{ metadata.confidence }}</span>
+            {% endif %}
+          </dd>
+        {% endif %}
+        {% if metadata.source %}
+          <dt>source</dt>
+          <dd>{{ metadata.source }}</dd>
+        {% endif %}
+        {% if metadata.source_url %}
+          <dt>source_url</dt>
+          <dd><a href="{{ metadata.source_url }}" target="_blank" rel="noopener noreferrer">{{ metadata.source_url }}</a></dd>
+        {% endif %}
+        {% if metadata.source_excerpt %}
+          <dt>source_excerpt</dt>
+          <dd>
+            {% if metadata.source_excerpt | length > 200 %}
+              <details>
+                <summary>(excerpt — click to expand, {{ metadata.source_excerpt | length }} chars)</summary>
+                <blockquote>{{ metadata.source_excerpt }}</blockquote>
+              </details>
+            {% else %}
+              <blockquote>{{ metadata.source_excerpt }}</blockquote>
+            {% endif %}
+          </dd>
+        {% endif %}
+        {% if metadata.fcc_id %}
+          <dt>fcc_id</dt>
+          <dd><code>{{ metadata.fcc_id }}</code></dd>
+        {% endif %}
+        {% if metadata.geographic_scope %}
+          <dt>geographic_scope</dt>
+          <dd>{{ metadata.geographic_scope }}</dd>
+        {% endif %}
+        {% if metadata.first_seen %}
+          <dt>first_seen</dt>
+          <dd><time>{{ metadata.first_seen | unix_to_utc_human }}</time></dd>
+        {% endif %}
+        {% if metadata.last_verified %}
+          <dt>last_verified</dt>
+          <dd><time>{{ metadata.last_verified | unix_to_utc_human }}</time></dd>
+        {% endif %}
+        {% if metadata.notes %}
+          <dt>notes</dt>
+          <dd>{{ metadata.notes }}</dd>
+        {% endif %}
+      </dl>
+    </article>
+
+    <p class="argus-footer">argus_record_id: {{ metadata.argus_record_id }}</p>
+  {% endif %}
+{% endblock %}
