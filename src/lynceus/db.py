@@ -383,6 +383,121 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    # --- watchlist_metadata (Argus side table) ----------------------------
+
+    _WATCHLIST_PATTERN_TYPES = ("mac", "oui", "ssid", "ble_uuid")
+    _METADATA_OPTIONAL_FIELDS = (
+        "confidence",
+        "vendor",
+        "source",
+        "source_url",
+        "source_excerpt",
+        "fcc_id",
+        "geographic_scope",
+        "first_seen",
+        "last_verified",
+        "notes",
+    )
+    _METADATA_ALLOWED_FIELDS = (
+        "argus_record_id",
+        "device_category",
+        *_METADATA_OPTIONAL_FIELDS,
+    )
+
+    def upsert_metadata(self, watchlist_id: int, fields: dict) -> int:
+        if not isinstance(watchlist_id, int) or isinstance(watchlist_id, bool):
+            raise ValueError("watchlist_id must be int")
+        if not isinstance(fields, dict):
+            raise ValueError("fields must be a dict")
+        if not fields.get("argus_record_id"):
+            raise ValueError("fields['argus_record_id'] is required")
+        if not fields.get("device_category"):
+            raise ValueError("fields['device_category'] is required")
+        unknown = set(fields) - set(self._METADATA_ALLOWED_FIELDS)
+        if unknown:
+            raise ValueError(f"unknown metadata fields: {sorted(unknown)}")
+
+        now_ts = int(time.time())
+        with self._conn:
+            existing = self._conn.execute(
+                "SELECT id FROM watchlist_metadata WHERE watchlist_id = ?",
+                (watchlist_id,),
+            ).fetchone()
+            if existing is None:
+                cols = ["watchlist_id", *fields.keys(), "created_at", "updated_at"]
+                values = [watchlist_id, *fields.values(), now_ts, now_ts]
+                placeholders = ", ".join("?" for _ in cols)
+                cur = self._conn.execute(
+                    f"INSERT INTO watchlist_metadata({', '.join(cols)}) VALUES ({placeholders})",
+                    values,
+                )
+                return int(cur.lastrowid)
+            set_clause = ", ".join(f"{k} = ?" for k in fields)
+            values = [*fields.values(), now_ts, watchlist_id]
+            self._conn.execute(
+                f"UPDATE watchlist_metadata SET {set_clause}, updated_at = ? "
+                f"WHERE watchlist_id = ?",
+                values,
+            )
+            return int(existing["id"])
+
+    def get_metadata_by_watchlist_id(self, watchlist_id: int) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM watchlist_metadata WHERE watchlist_id = ?",
+            (watchlist_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_metadata_by_argus_record_id(self, argus_record_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM watchlist_metadata WHERE argus_record_id = ?",
+            (argus_record_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_watchlist_with_metadata(
+        self,
+        filters: dict | None = None,
+    ) -> list[dict]:
+        filters = filters or {}
+        unknown = set(filters) - {"pattern_type", "severity", "device_category"}
+        if unknown:
+            raise ValueError(f"unknown filter keys: {sorted(unknown)}")
+        pattern_type = filters.get("pattern_type")
+        severity = filters.get("severity")
+        device_category = filters.get("device_category")
+        if pattern_type is not None and pattern_type not in self._WATCHLIST_PATTERN_TYPES:
+            raise ValueError(f"pattern_type must be one of {self._WATCHLIST_PATTERN_TYPES}")
+        if severity is not None and severity not in self._ALERT_SEVERITIES:
+            raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
+
+        clauses: list[str] = []
+        params: list = []
+        if pattern_type is not None:
+            clauses.append("w.pattern_type = ?")
+            params.append(pattern_type)
+        if severity is not None:
+            clauses.append("w.severity = ?")
+            params.append(severity)
+        if device_category is not None:
+            clauses.append("m.device_category = ?")
+            params.append(device_category)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT "
+            "w.id AS id, w.pattern, w.pattern_type, w.severity, w.description, "
+            "m.id AS metadata_id, m.argus_record_id, m.device_category, "
+            "m.confidence, m.vendor, m.source, m.source_url, m.source_excerpt, "
+            "m.fcc_id, m.geographic_scope, m.first_seen, m.last_verified, "
+            "m.notes, m.created_at, m.updated_at "
+            "FROM watchlist w "
+            "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
+            f"{where} "
+            "ORDER BY w.pattern_type, w.pattern"
+        )
+        rows = self._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     # --- Alert acknowledgement actions and stats --------------------------
 
     @staticmethod
