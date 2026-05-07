@@ -12,7 +12,7 @@ from .allowlist import Allowlist, load_allowlist
 from .config import Config, load_config
 from .db import Database
 from .kismet import FakeKismetClient, KismetClient
-from .notify import Notifier, NullNotifier, build_notifier
+from .notify import Notifier, NullNotifier, build_metadata_suffix, build_notifier
 from .rules import Ruleset, evaluate, load_ruleset
 
 STATE_KEY_LAST_POLL = "last_poll_ts"
@@ -142,8 +142,19 @@ def poll_once(
                     logger.warning("Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e)
                     continue
                 title = f"lynceus: {hit.severity.upper()} alert"
+                suffix = ""
+                if hit_match_id is not None:
+                    try:
+                        md = db.get_metadata_by_watchlist_id(hit_match_id)
+                        suffix = build_metadata_suffix(md)
+                    except Exception:
+                        suffix = ""
                 try:
-                    ok = notifier.send(severity=hit.severity, title=title, message=hit.message)
+                    ok = notifier.send(
+                        severity=hit.severity,
+                        title=title,
+                        message=hit.message + suffix,
+                    )
                     if not ok:
                         logger.warning("Notifier returned False for %s/%s", hit.rule_name, hit.mac)
                 except Exception as e:

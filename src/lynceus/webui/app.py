@@ -302,14 +302,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
             until_ts=until_ts,
             search=search_clean,
         )
-        alerts = db.list_alerts(
-            limit=page_size,
-            offset=offset,
-            severity=severity,
-            acknowledged=ack_bool,
-            since_ts=since_ts,
-            until_ts=until_ts,
-            search=search_clean,
+        alerts = db.list_alerts_with_match(
+            {
+                "limit": page_size,
+                "offset": offset,
+                "severity": severity,
+                "acknowledged": ack_bool,
+                "since_ts": since_ts,
+                "until_ts": until_ts,
+                "search": search_clean,
+            }
         )
         _enrich_alerts_with_devices(db, alerts)
         filters_active = bool(
@@ -339,7 +341,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     def alert_detail(request: Request, alert_id: int):
         if alert_id < 1:
             raise HTTPException(status_code=400, detail="alert_id must be positive")
-        alert = db.get_alert(alert_id)
+        alert = db.get_alert_with_match(alert_id)
         if alert is None:
             return app.state.templates.TemplateResponse(
                 request=request,
@@ -351,6 +353,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 },
                 status_code=404,
             )
+        _enrich_alerts_with_devices(db, [alert])
         actions = db.list_alert_actions(alert_id)
         return app.state.templates.TemplateResponse(
             request=request,
