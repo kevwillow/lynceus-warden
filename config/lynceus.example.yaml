@@ -107,3 +107,23 @@ kismet_timeout_seconds: 10.0
 # Poller.__init__ raises and the daemon exits immediately. Set to false
 # to skip the check (e.g. when starting lynceus before kismet is ready).
 kismet_health_check_on_startup: true
+
+# --- Tier 1 passive metadata capture ---
+#
+# Lynceus is a tool to *detect* surveillance, not to become surveillance.
+# These toggles control whether two pieces of broadcast metadata get
+# stored on the device row. Both columns are NULL when their toggle is
+# off, and the poller does not even read the underlying Kismet field —
+# opt-out means the data never enters the lynceus process.
+capture:
+  # Wi-Fi clients leak their probe-request SSID lists (e.g. SSIDs of
+  # networks they have previously connected to). Capturing this list is
+  # useful for triage — you can spot a device probing a coffee-shop SSID
+  # in your living room — but it is also surveillance-grade telemetry
+  # about other people's devices. Default OFF; set true only if you
+  # accept the privacy posture.
+  probe_ssids: false
+  # BLE devices broadcast a friendly name in the GAP advertisement
+  # (e.g. "Kev's AirPods", "Tile_a1b2"). This is broadcast with intent
+  # and is more useful than harmful for triage. Default ON.
+  ble_friendly_names: true

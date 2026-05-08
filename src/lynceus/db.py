@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -83,6 +84,67 @@ class Database:
                     sighting_count = devices.sighting_count + 1
                 """,
                 (mac, device_type, now_ts, now_ts, oui_vendor, is_randomized),
+            )
+
+    PROBE_SSIDS_PER_DEVICE_CAP = 50
+
+    def merge_device_probe_ssids(
+        self,
+        mac: str,
+        new_ssids: list[str] | tuple[str, ...],
+        *,
+        cap: int = PROBE_SSIDS_PER_DEVICE_CAP,
+    ) -> tuple[int, bool]:
+        """Merge new probe SSIDs into the device's stored JSON list.
+
+        The merge is order-preserving and de-duplicating: existing
+        SSIDs come first, then any new strings not already present, in
+        the order observed. The resulting list is truncated to ``cap``
+        entries; the second tuple element indicates whether truncation
+        actually happened so the caller can emit a warning.
+
+        Returns ``(stored_count, truncated)``.
+        """
+        with self._conn:
+            row = self._conn.execute(
+                "SELECT probe_ssids FROM devices WHERE mac = ?", (mac,)
+            ).fetchone()
+            if row is None:
+                return (0, False)
+            raw = row["probe_ssids"]
+            existing: list[str] = []
+            if raw:
+                try:
+                    decoded = json.loads(raw)
+                    if isinstance(decoded, list):
+                        existing = [s for s in decoded if isinstance(s, str)]
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    existing = []
+            merged: list[str] = list(existing)
+            seen: set[str] = set(existing)
+            for ssid in new_ssids:
+                if not isinstance(ssid, str) or not ssid:
+                    continue
+                if ssid in seen:
+                    continue
+                seen.add(ssid)
+                merged.append(ssid)
+            truncated = len(merged) > cap
+            if truncated:
+                merged = merged[:cap]
+            payload = json.dumps(merged) if merged else None
+            self._conn.execute(
+                "UPDATE devices SET probe_ssids = ? WHERE mac = ?",
+                (payload, mac),
+            )
+            return (len(merged), truncated)
+
+    def update_device_ble_name(self, mac: str, ble_name: str) -> None:
+        """Set the device's BLE friendly name. Latest write wins."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE devices SET ble_name = ? WHERE mac = ?",
+                (ble_name, mac),
             )
 
     def insert_sighting(

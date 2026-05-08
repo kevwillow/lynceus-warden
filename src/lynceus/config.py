@@ -14,6 +14,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_KISMET_URL = "http://localhost:2501"
 
 
+class CaptureConfig(BaseModel):
+    """Tier 1 passive metadata capture toggles.
+
+    Probe SSIDs are off by default — lynceus is a tool to detect
+    surveillance, not to become it. Operators opt in explicitly when the
+    triage value (matching probes against a known-watchlist offline) is
+    worth the privacy footprint.
+
+    BLE friendly names are on by default — they are publicly broadcast
+    with intent (the device name is part of the GAP advertisement).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    probe_ssids: bool = False
+    ble_friendly_names: bool = True
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -39,6 +57,7 @@ class Config(BaseModel):
     min_rssi: int | None = None
     kismet_timeout_seconds: float = 10.0
     kismet_health_check_on_startup: bool = True
+    capture: CaptureConfig = CaptureConfig()
 
     @field_validator("poll_interval_seconds")
     @classmethod
