@@ -61,7 +61,12 @@ def _getpass_seq(answers):
 
 
 def _full_input_sequence(*, interface=None, ntfy_topic="lynceus-deadbeef"):
-    """Default end-to-end input sequence used by the smoke test and probe variants."""
+    """Default end-to-end input sequence used by the smoke test and probe variants.
+
+    Tests using this helper must monkeypatch ``enumerate_bluetooth_adapters``
+    to return ``None`` (or use ``_stub_path_resolution`` which does it), so
+    no Bluetooth-related inputs need to be threaded in.
+    """
     seq = [
         "",  # Kismet URL: accept default
     ]
@@ -74,11 +79,10 @@ def _full_input_sequence(*, interface=None, ntfy_topic="lynceus-deadbeef"):
     seq += [
         "",  # probe_ssids: default (N -> False)
         "",  # ble_friendly_names: default (Y -> True)
-        "",  # ntfy URL: accept default
+        "https://ntfy.sh",  # ntfy URL (non-empty so we don't skip ntfy)
         ntfy_topic,  # ntfy topic
         "",  # RSSI: accept default
         "",  # severity overrides path: accept default
-        "n",  # don't import argus
     ]
     return seq
 
@@ -341,9 +345,15 @@ def test_ntfy_probe_failure_network(monkeypatch):
 
 def _stub_path_resolution(monkeypatch, tmp_path):
     """Make resolve_config_path return tmp_path/lynceus.yaml so tests don't
-    touch real user/system paths."""
+    touch real user/system paths.
+
+    Also stubs ``enumerate_bluetooth_adapters`` to ``None`` so the wizard
+    silently skips the BT section by default — tests that exercise the BT
+    flow override this stub.
+    """
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     return target
 
 
@@ -371,11 +381,10 @@ def test_run_wizard_kismet_probe_fail_continue_yes(monkeypatch, tmp_path, capsys
         "wlan1",  # capture interface (freeform)
         "",  # probe_ssids default no
         "",  # ble_friendly_names default yes
-        "",  # ntfy URL default
+        "https://ntfy.sh",  # ntfy URL (non-empty, so we don't skip ntfy)
         "lynceus-deadbeef",
         "",  # rssi default
         "",  # severity overrides default
-        "n",  # skip argus import
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -439,12 +448,11 @@ def test_run_wizard_ntfy_probe_fail_continue_yes(monkeypatch, tmp_path, capsys):
         "wlan0",  # capture interface
         "",  # probe_ssids default
         "",  # ble names default
-        "",  # ntfy URL default
+        "https://ntfy.sh",  # ntfy URL (non-empty)
         "lynceus-cafe",
         "y",  # continue after ntfy fail
         "",  # rssi default
         "",  # severity overrides default
-        "n",  # skip argus
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -465,7 +473,7 @@ def test_run_wizard_ntfy_probe_fail_continue_no_aborts(monkeypatch, tmp_path):
         "wlan0",
         "",  # probe_ssids default
         "",  # ble names default
-        "",  # ntfy URL default
+        "https://ntfy.sh",  # ntfy URL (non-empty)
         "lynceus-cafe",
         "n",  # don't continue
     ]
@@ -489,11 +497,10 @@ def test_run_wizard_capture_interface_numbered_selection(monkeypatch, tmp_path):
         "2",  # pick wlan1
         "",  # probe_ssids default
         "",  # ble names default
-        "",  # ntfy URL default
+        "https://ntfy.sh",  # ntfy URL (non-empty)
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
-        "n",  # skip argus
     ]
     rc = wiz.run_wizard(
         _args(),
@@ -514,11 +521,10 @@ def test_run_wizard_capture_interface_freeform_when_enumeration_unavailable(monk
         "wlx0c",  # free-form interface
         "",  # probe_ssids default
         "",  # ble names default
-        "",  # ntfy URL default
+        "https://ntfy.sh",  # ntfy URL (non-empty)
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
-        "n",  # skip argus
     ]
     rc = wiz.run_wizard(_args(), input_fn=_input_seq(inputs), getpass_fn=_getpass_seq(["tok"]))
     assert rc == 0
@@ -661,91 +667,13 @@ def test_severity_overrides_not_overwritten_when_present(tmp_path):
     assert p.read_text() == original
 
 
-# ---- argus import ----------------------------------------------------------
-
-
-def test_argus_import_yes_invokes_subprocess(monkeypatch, tmp_path):
-    csv = tmp_path / "argus.csv"
-    csv.write_text("# meta: argus_export v3 (CP11)\n")
-    captured = {}
-
-    def fake_popen(args, **kwargs):
-        captured["args"] = args
-        proc = MagicMock()
-        proc.wait.return_value = 0
-        return proc
-
-    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
-    wiz.maybe_import_argus(
-        db_path="lynceus.db",
-        severity_path=str(tmp_path / "sev.yaml"),
-        input_fn=_input_seq(["y", str(csv)]),
-    )
-    assert captured["args"][0] == "lynceus-import-argus"
-    assert "--input" in captured["args"]
-    idx = captured["args"].index("--input")
-    assert captured["args"][idx + 1] == str(csv)
-
-
-def test_argus_import_no_prints_deferred_message(capsys, tmp_path):
-    wiz.maybe_import_argus(
-        db_path="lynceus.db",
-        severity_path=str(tmp_path / "sev.yaml"),
-        input_fn=_input_seq(["n"]),
-    )
-    out = capsys.readouterr().out
-    assert "Skipping import" in out
-    assert "lynceus-import-argus" in out
-
-
-def test_argus_import_re_prompts_when_path_missing(monkeypatch, tmp_path):
-    csv = tmp_path / "argus.csv"
-    csv.write_text("# meta: argus_export v3 (CP11)\n")
-    captured = {}
-
-    def fake_popen(args, **kwargs):
-        captured["args"] = args
-        proc = MagicMock()
-        proc.wait.return_value = 0
-        return proc
-
-    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
-    wiz.maybe_import_argus(
-        db_path="lynceus.db",
-        severity_path=str(tmp_path / "sev.yaml"),
-        input_fn=_input_seq(["y", "/no/such/file.csv", str(csv)]),
-    )
-    # Must have ultimately Popen'd with the existing file
-    idx = captured["args"].index("--input")
-    assert captured["args"][idx + 1] == str(csv)
-
-
-def test_argus_import_failure_prints_retry_hint(monkeypatch, tmp_path, capsys):
-    csv = tmp_path / "argus.csv"
-    csv.write_text("# meta: argus_export v3 (CP11)\n")
-
-    def fake_popen(args, **kwargs):
-        proc = MagicMock()
-        proc.wait.return_value = 2
-        return proc
-
-    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
-    wiz.maybe_import_argus(
-        db_path="lynceus.db",
-        severity_path=str(tmp_path / "sev.yaml"),
-        input_fn=_input_seq(["y", str(csv)]),
-    )
-    out = capsys.readouterr().out
-    assert "Import failed" in out
-    assert str(csv) in out
-
-
 # ---- end-to-end smoke ------------------------------------------------------
 
 
 def test_run_wizard_end_to_end_smoke(monkeypatch, tmp_path, capsys):
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
     # Probes: skip via flag.
@@ -754,11 +682,10 @@ def test_run_wizard_end_to_end_smoke(monkeypatch, tmp_path, capsys):
         "1",  # pick wlan0
         "y",  # opt in to probe ssids
         "",  # default ble names
-        "",  # default ntfy URL
+        "https://ntfy.sh",  # explicit ntfy URL
         "lynceus-feedface",
         "-80",  # custom rssi
         "",  # severity overrides default path
-        "n",  # skip argus import
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=True),
@@ -810,6 +737,7 @@ def test_main_system_without_root_refuses(monkeypatch, tmp_path, capsys):
 def test_main_returns_zero_on_full_skip_probes_run(monkeypatch, tmp_path):
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     monkeypatch.setattr("builtins.input", _input_seq(_full_input_sequence()))
@@ -983,7 +911,7 @@ def test_bundled_import_failure_when_command_missing(monkeypatch, tmp_path):
     assert "import failed" in msg
 
 
-# ---- maybe_import_argus prompt re-wording ----------------------------------
+# ---- prompt-recording helper ----------------------------------------------
 
 
 def _recording_input(answers):
@@ -1001,39 +929,14 @@ def _recording_input(answers):
     return _input, log
 
 
-def test_maybe_import_argus_uses_reworded_prompt_when_bundled_succeeded(tmp_path):
-    fn, prompts = _recording_input(["n"])
-    wiz.maybe_import_argus(
-        db_path="lynceus.db",
-        severity_path=str(tmp_path / "sev.yaml"),
-        input_fn=fn,
-        bundled_succeeded=True,
-    )
-    assert any("additional Argus CSV" in p for p in prompts)
-    assert not any("Would you like to import Argus" in p for p in prompts)
-
-
-def test_maybe_import_argus_uses_original_prompt_when_bundled_not_succeeded(tmp_path):
-    fn, prompts = _recording_input(["n"])
-    wiz.maybe_import_argus(
-        db_path="lynceus.db",
-        severity_path=str(tmp_path / "sev.yaml"),
-        input_fn=fn,
-        bundled_succeeded=False,
-    )
-    assert any("Would you like to import Argus" in p for p in prompts)
-    assert not any("additional Argus CSV" in p for p in prompts)
-
-
 # ---- wizard flow integration with bundled import --------------------------
 
 
-def test_wizard_with_bundled_present_success_prints_and_reworded_prompt(
-    monkeypatch, tmp_path, capsys
-):
+def test_wizard_with_bundled_present_success_prints_summary(monkeypatch, tmp_path, capsys):
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     monkeypatch.setattr(
         wiz,
         "import_bundled_watchlist",
@@ -1049,15 +952,16 @@ def test_wizard_with_bundled_present_success_prints_and_reworded_prompt(
     assert rc == 0
     assert "Imported bundled threat data" in out
     assert "42 records" in out
-    assert any("additional Argus CSV" in p for p in prompts)
+    # Additional-CSV prompt has been retired; ensure no flavour of it survives.
+    assert not any("additional Argus CSV" in p for p in prompts)
+    assert not any("Would you like to import Argus" in p for p in prompts)
 
 
-def test_wizard_with_bundled_present_failure_warns_and_keeps_original_prompt(
-    monkeypatch, tmp_path, capsys
-):
+def test_wizard_with_bundled_present_failure_warns(monkeypatch, tmp_path, capsys):
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     monkeypatch.setattr(
         wiz,
         "import_bundled_watchlist",
@@ -1074,15 +978,16 @@ def test_wizard_with_bundled_present_failure_warns_and_keeps_original_prompt(
     assert "Bundled threat-data import failed" in out
     assert "schema mismatch" in out
     assert "lynceus-import-argus" in out
-    assert any("Would you like to import Argus" in p for p in prompts)
+    # Retired prompt must not have come back under any wording.
+    assert not any("additional Argus CSV" in p for p in prompts)
+    assert not any("Would you like to import Argus" in p for p in prompts)
 
 
-def test_wizard_with_bundled_absent_prints_nothing_keeps_original_prompt(
-    monkeypatch, tmp_path, capsys
-):
+def test_wizard_with_bundled_absent_prints_nothing_extra(monkeypatch, tmp_path, capsys):
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     monkeypatch.setattr(
         wiz,
         "import_bundled_watchlist",
@@ -1099,7 +1004,7 @@ def test_wizard_with_bundled_absent_prints_nothing_keeps_original_prompt(
     assert "Imported bundled threat data" not in out
     assert "Bundled threat-data import failed" not in out
     assert "no bundled watchlist" not in out
-    assert any("Would you like to import Argus" in p for p in prompts)
+    assert not any("Would you like to import Argus" in p for p in prompts)
 
 
 def test_wizard_passes_db_path_and_severity_to_bundled_helper(monkeypatch, tmp_path):
@@ -1108,6 +1013,7 @@ def test_wizard_passes_db_path_and_severity_to_bundled_helper(monkeypatch, tmp_p
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     captured = {}
 
     def fake_bundled(db_path, override_file):
@@ -1140,8 +1046,13 @@ def test_wizard_uses_system_db_path_when_system_scope(monkeypatch, tmp_path):
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     monkeypatch.setattr(wiz, "_is_windows", lambda: False)
     monkeypatch.setattr(wiz, "_euid", lambda: 0)  # pretend we're root for --system
+    # Stub data + log dir mkdirs onto tmp_path so we don't try to mkdir
+    # /var/lib/lynceus on the test host.
+    monkeypatch.setattr(paths, "default_data_dir", lambda scope: tmp_path / "data")
+    monkeypatch.setattr(paths, "default_log_dir", lambda scope: tmp_path / "log")
     captured = {}
 
     def fake_bundled(db_path, override_file):
@@ -1156,6 +1067,333 @@ def test_wizard_uses_system_db_path_when_system_scope(monkeypatch, tmp_path):
     )
     assert rc == 0
     assert captured["db_path"] == str(paths.default_db_path("system"))
+
+
+# ---- Bluetooth adapter enumeration ----------------------------------------
+
+
+def test_enumerate_bluetooth_adapters_returns_none_on_windows(monkeypatch):
+    monkeypatch.setattr(wiz.os, "name", "nt")
+    assert wiz.enumerate_bluetooth_adapters() is None
+
+
+def test_enumerate_bluetooth_adapters_returns_none_on_macos(monkeypatch):
+    monkeypatch.setattr(wiz.os, "name", "posix")
+    monkeypatch.setattr(wiz.sys, "platform", "darwin")
+    assert wiz.enumerate_bluetooth_adapters() is None
+
+
+def test_enumerate_bluetooth_adapters_returns_empty_when_dir_missing(monkeypatch):
+    """When the platform is Linux but ``/sys/class/bluetooth`` is absent
+    (e.g. running tests on a Windows host with the stubs below, or a
+    Linux kernel without the BT subsystem), the function returns an empty
+    list — distinct from ``None`` which means "platform not supported"."""
+    monkeypatch.setattr(wiz.os, "name", "posix")
+    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    # On a Windows host the path doesn't exist; on a Linux host without
+    # bluez it also doesn't exist. Either way we expect [].
+    if Path("/sys/class/bluetooth").is_dir():
+        pytest.skip("real /sys/class/bluetooth present; cannot exercise missing-dir branch")
+    assert wiz.enumerate_bluetooth_adapters() == []
+
+
+# ---- run_wizard: Bluetooth flow -------------------------------------------
+
+
+def test_run_wizard_bluetooth_unsupported_platform_skipped_silently(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # _stub_path_resolution already stubs enumerate_bluetooth_adapters → None
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Bluetooth adapter selection not implemented on this platform" in out
+
+
+def test_run_wizard_bluetooth_no_adapters_skipped_with_message(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: [])
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No Bluetooth adapter detected" in out
+
+
+def test_run_wizard_bluetooth_adapter_chosen_appends_to_kismet_sources(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: ["hci0", "hci1"])
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",  # wifi capture interface (freeform)
+        "",  # bluetooth: yes (default Y)
+        "1",  # pick hci0
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["wlan0", "hci0"]
+
+
+def test_run_wizard_bluetooth_declined_keeps_wifi_only(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: ["hci0"])
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "n",  # decline bluetooth source
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(_args(), input_fn=_input_seq(inputs), getpass_fn=_getpass_seq(["tok"]))
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["wlan0"]
+
+
+# ---- run_wizard: severity-overrides explanation + path validation ---------
+
+
+def test_run_wizard_severity_overrides_explanation_printed(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Severity overrides let you customize" in out
+    assert "Argus device category" in out
+
+
+def test_run_wizard_severity_overrides_rejects_garbage_then_accepts_path(
+    monkeypatch, tmp_path, capsys
+):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    accepted_path = str(tmp_path / "custom_sev.yaml")
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "na",  # rejected
+        "skip",  # rejected
+        accepted_path,  # accepted (contains separator + .yaml)
+    ]
+    rc = wiz.run_wizard(_args(), input_fn=_input_seq(inputs), getpass_fn=_getpass_seq(["tok"]))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "doesn't look like a file path" in out
+    assert target.exists()
+
+
+def test_run_wizard_severity_overrides_default_accepted_on_enter(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    # Default scaffold should have been written next to the config file.
+    assert (tmp_path / "severity_overrides.yaml").exists()
+    assert target.exists()
+
+
+def test_looks_like_path_helper_accepts_paths_and_yaml():
+    assert wiz._looks_like_path("/etc/lynceus/sev.yaml") is True
+    assert wiz._looks_like_path("C:\\config\\sev.yaml") is True
+    assert wiz._looks_like_path("relative/path") is True
+    assert wiz._looks_like_path("sev.yaml") is True
+    assert wiz._looks_like_path("sev.yml") is True
+
+
+def test_looks_like_path_helper_rejects_garbage():
+    assert wiz._looks_like_path("") is False
+    assert wiz._looks_like_path("na") is False
+    assert wiz._looks_like_path("skip") is False
+    assert wiz._looks_like_path("none") is False
+    assert wiz._looks_like_path("blah") is False
+
+
+# ---- run_wizard: ntfy skip support ----------------------------------------
+
+
+def test_run_wizard_ntfy_url_empty_skips_ntfy_and_probe(monkeypatch, tmp_path, capsys):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    probe_called = []
+    monkeypatch.setattr(
+        wiz,
+        "probe_ntfy",
+        lambda *a, **kw: probe_called.append(True) or (True, None),
+    )
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ntfy URL: empty → skip; no topic prompt should follow
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Skipping ntfy" in out
+    assert probe_called == [], "ntfy probe must not run when URL is empty"
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_url"] == ""
+    assert data["ntfy_topic"] == ""
+
+
+def test_run_wizard_ntfy_url_set_topic_empty_re_prompts(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",  # URL set
+        "",  # topic empty → must re-prompt
+        "  ",  # whitespace also rejected
+        "lynceus-real",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_url"] == "https://ntfy.sh"
+    assert data["ntfy_topic"] == "lynceus-real"
+
+
+# ---- DB parent directory creation before bundled import -------------------
+
+
+def test_db_parent_dir_created_before_bundled_import(monkeypatch, tmp_path):
+    """The wizard must mkdir the data dir before invoking
+    lynceus-import-argus, otherwise the subprocess crashes with a sqlite
+    "unable to open database file" error on a fresh box."""
+    from lynceus import paths
+
+    _stub_path_resolution(monkeypatch, tmp_path)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    fake_data_dir = tmp_path / "fresh_data" / "lynceus"
+    fake_log_dir = tmp_path / "fresh_log" / "lynceus"
+    monkeypatch.setattr(paths, "default_data_dir", lambda scope: fake_data_dir)
+    monkeypatch.setattr(paths, "default_log_dir", lambda scope: fake_log_dir)
+    assert not fake_data_dir.exists(), "precondition: data dir must not exist yet"
+
+    captured = {}
+
+    def fake_bundled(db_path, override_file):
+        captured["db_path"] = db_path
+        captured["parent_existed"] = Path(db_path).parent.is_dir()
+        return (False, "no bundled watchlist")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert captured["parent_existed"] is True, (
+        "data dir must be created before lynceus-import-argus runs"
+    )
+    assert fake_log_dir.is_dir(), "log dir must be created at setup time"
+
+
+# ---- additional-CSV prompt removal ----------------------------------------
+
+
+def test_run_wizard_does_not_prompt_for_additional_argus_csv(monkeypatch, tmp_path):
+    """The optional 'import an additional Argus CSV' prompt was retired —
+    the wizard should never ask the operator about it under any flow."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    fn, prompts = _recording_input(_full_input_sequence())
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert not any("additional Argus CSV" in p for p in prompts)
+    assert not any("Would you like to import Argus" in p for p in prompts)
+    assert not any("Path to Argus CSV" in p for p in prompts)
+
+
+def test_run_wizard_prints_deferred_argus_import_hint(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "To import a custom Argus CSV later" in out
+    assert "lynceus-import-argus --input" in out
+
+
+def test_maybe_import_argus_helper_is_gone():
+    """The helper that drove the retired prompt should no longer exist."""
+    assert not hasattr(wiz, "maybe_import_argus")
 
 
 # Suppress the unused-import warning for sys (used by helpers above).
