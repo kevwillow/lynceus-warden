@@ -51,7 +51,11 @@ def poll_once(
     last_poll_str = db.get_state(STATE_KEY_LAST_POLL)
     last_poll_ts = int(last_poll_str) if last_poll_str else 0
     db.ensure_location(config.location_id, config.location_label)
-    observations = client.get_devices_since(last_poll_ts)
+    observations = client.get_devices_since(
+        last_poll_ts,
+        capture_probe_ssids=config.capture.probe_ssids,
+        capture_ble_name=config.capture.ble_friendly_names,
+    )
     processed = 0
     for obs in observations:
         try:
@@ -98,6 +102,17 @@ def poll_once(
                 is_randomized=int(obs.is_randomized),
                 now_ts=now_ts,
             )
+            if config.capture.probe_ssids and obs.probe_ssids:
+                stored, truncated = db.merge_device_probe_ssids(obs.mac, obs.probe_ssids)
+                if truncated:
+                    logger.warning(
+                        "probe_ssids cap reached for %s: stored=%d cap=%d",
+                        obs.mac,
+                        stored,
+                        db.PROBE_SSIDS_PER_DEVICE_CAP,
+                    )
+            if config.capture.ble_friendly_names and obs.ble_name:
+                db.update_device_ble_name(obs.mac, obs.ble_name)
             db.insert_sighting(
                 mac=obs.mac,
                 ts=obs.last_seen,

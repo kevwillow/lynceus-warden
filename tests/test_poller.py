@@ -76,9 +76,9 @@ def test_poll_once_uses_last_poll_ts(db, config, fake_client, monkeypatch):
     captured: list[int] = []
     orig = fake_client.get_devices_since
 
-    def spy(since_ts):
+    def spy(since_ts, **kwargs):
         captured.append(since_ts)
-        return orig(since_ts)
+        return orig(since_ts, **kwargs)
 
     monkeypatch.setattr(fake_client, "get_devices_since", spy)
     poll_once(fake_client, db, config, 1700001000)
@@ -89,9 +89,9 @@ def test_poll_once_default_last_poll_ts_zero(db, config, fake_client, monkeypatc
     captured: list[int] = []
     orig = fake_client.get_devices_since
 
-    def spy(since_ts):
+    def spy(since_ts, **kwargs):
         captured.append(since_ts)
-        return orig(since_ts)
+        return orig(since_ts, **kwargs)
 
     monkeypatch.setattr(fake_client, "get_devices_since", spy)
     poll_once(fake_client, db, config, 1700001000)
@@ -536,7 +536,7 @@ def test_poll_once_source_allowlist_drops_obs_without_seenby(db, config, monkeyp
     )
 
     class _SingleObsClient:
-        def get_devices_since(self, since_ts):
+        def get_devices_since(self, since_ts, **kwargs):
             return [obs]
 
     count = poll_once(
@@ -573,7 +573,7 @@ def test_poll_once_min_rssi_drops_weak_observations(db, config):
     )
 
     class _C:
-        def get_devices_since(self, since_ts):
+        def get_devices_since(self, since_ts, **kwargs):
             return [weak, strong]
 
     cfg = config.model_copy(update={"min_rssi": -80})
@@ -596,7 +596,7 @@ def test_poll_once_min_rssi_none_observation_kept_under_filter(db, config):
     )
 
     class _C:
-        def get_devices_since(self, since_ts):
+        def get_devices_since(self, since_ts, **kwargs):
             return [obs]
 
     cfg = config.model_copy(update={"min_rssi": -80})
@@ -675,7 +675,7 @@ def test_poll_once_combined_filters_apply_independently(db, config):
     )
 
     class _C:
-        def get_devices_since(self, since_ts):
+        def get_devices_since(self, since_ts, **kwargs):
             return [obs_strong_wrong_src, obs_weak_right_src, obs_good]
 
     cfg = config.model_copy(update={"min_rssi": -80})

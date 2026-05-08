@@ -38,6 +38,8 @@ class DeviceObservation(BaseModel):
     is_randomized: bool
     ble_service_uuids: tuple[str, ...] = ()
     seen_by_sources: tuple[str, ...] = ()
+    probe_ssids: tuple[str, ...] | None = None
+    ble_name: str | None = None
 
     @field_validator("mac")
     @classmethod
@@ -62,6 +64,16 @@ class DeviceObservation(BaseModel):
         for s in v:
             if not isinstance(s, str) or not s:
                 raise ValueError(f"seen_by_sources entries must be non-empty strings: {s!r}")
+        return v
+
+    @field_validator("probe_ssids")
+    @classmethod
+    def _validate_probe_ssids(cls, v: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if v is None:
+            return None
+        for s in v:
+            if not isinstance(s, str):
+                raise ValueError(f"probe_ssids entries must be strings: {s!r}")
         return v
 
     @field_validator("first_seen")
@@ -104,7 +116,57 @@ def is_locally_administered(mac: str) -> bool:
     return bool(first_octet & 0x02)
 
 
-def parse_kismet_device(raw: dict) -> DeviceObservation | None:
+_DOT11_DEVICE_FIELD = "dot11.device"
+_PROBED_SSID_MAP_FIELD = "dot11.device.last_probed_ssid_csum_map"
+_PROBED_SSID_RECORD_FIELD = "dot11.probedssid.ssid"
+_BLE_NAME_FIELD = "kismet.device.base.name"
+
+
+def _extract_probe_ssids(raw: dict) -> tuple[str, ...]:
+    """Pull probed-SSID strings out of a Wi-Fi client's dot11.device sub-tree.
+
+    Only called when ``capture.probe_ssids`` is True — opt-out callers
+    must not invoke this function so the data does not enter memory.
+    """
+    dot11 = raw.get(_DOT11_DEVICE_FIELD)
+    if not isinstance(dot11, dict):
+        return ()
+    csum_map = dot11.get(_PROBED_SSID_MAP_FIELD)
+    if not isinstance(csum_map, dict):
+        return ()
+    collected: list[str] = []
+    seen: set[str] = set()
+    for record in csum_map.values():
+        if not isinstance(record, dict):
+            continue
+        ssid = record.get(_PROBED_SSID_RECORD_FIELD)
+        if not isinstance(ssid, str) or not ssid:
+            continue
+        if ssid in seen:
+            continue
+        seen.add(ssid)
+        collected.append(ssid)
+    return tuple(collected)
+
+
+def _extract_ble_name(raw: dict) -> str | None:
+    """Pull the BLE friendly name out of a kismet device record.
+
+    Only called when ``capture.ble_friendly_names`` is True. Returns
+    None when the field is absent or an empty string.
+    """
+    name = raw.get(_BLE_NAME_FIELD)
+    if isinstance(name, str) and name:
+        return name
+    return None
+
+
+def parse_kismet_device(
+    raw: dict,
+    *,
+    capture_probe_ssids: bool = False,
+    capture_ble_name: bool = False,
+) -> DeviceObservation | None:
     raw_mac = raw.get("kismet.device.base.macaddr")
     kismet_type = raw.get("kismet.device.base.type")
     first_time = raw.get("kismet.device.base.first_time")
@@ -171,6 +233,14 @@ def parse_kismet_device(raw: dict) -> DeviceObservation | None:
                 break
         seen_by_sources = tuple(collected)
 
+    probe_ssids: tuple[str, ...] | None = None
+    if capture_probe_ssids and device_type == "wifi":
+        probe_ssids = _extract_probe_ssids(raw)
+
+    ble_name: str | None = None
+    if capture_ble_name and device_type == "ble":
+        ble_name = _extract_ble_name(raw)
+
     return DeviceObservation(
         mac=mac,
         device_type=device_type,
@@ -182,6 +252,8 @@ def parse_kismet_device(raw: dict) -> DeviceObservation | None:
         is_randomized=is_locally_administered(mac),
         ble_service_uuids=ble_service_uuids,
         seen_by_sources=seen_by_sources,
+        probe_ssids=probe_ssids,
+        ble_name=ble_name,
     )
 
 
@@ -191,7 +263,13 @@ class KismetClient:
         self.api_key = api_key
         self.timeout = timeout
 
-    def get_devices_since(self, since_ts: int) -> list[DeviceObservation]:
+    def get_devices_since(
+        self,
+        since_ts: int,
+        *,
+        capture_probe_ssids: bool = False,
+        capture_ble_name: bool = False,
+    ) -> list[DeviceObservation]:
         url = f"{self.base_url}/devices/last-time/{since_ts}/devices.json"
         kwargs: dict[str, Any] = {"timeout": self.timeout}
         if self.api_key:
@@ -203,7 +281,11 @@ class KismetClient:
             raise ValueError(f"expected list response, got {type(data).__name__}")
         results: list[DeviceObservation] = []
         for raw in data:
-            obs = parse_kismet_device(raw)
+            obs = parse_kismet_device(
+                raw,
+                capture_probe_ssids=capture_probe_ssids,
+                capture_ble_name=capture_ble_name,
+            )
             if obs is not None:
                 results.append(obs)
         return results
@@ -239,11 +321,21 @@ class FakeKismetClient(KismetClient):
             raise ValueError(f"fixture must be a list, got {type(data).__name__}")
         self._fixture: list[dict] = data
 
-    def get_devices_since(self, since_ts: int) -> list[DeviceObservation]:
+    def get_devices_since(
+        self,
+        since_ts: int,
+        *,
+        capture_probe_ssids: bool = False,
+        capture_ble_name: bool = False,
+    ) -> list[DeviceObservation]:
         results: list[DeviceObservation] = []
         for raw in self._fixture:
             if raw.get("kismet.device.base.last_time", 0) >= since_ts:
-                obs = parse_kismet_device(raw)
+                obs = parse_kismet_device(
+                    raw,
+                    capture_probe_ssids=capture_probe_ssids,
+                    capture_ble_name=capture_ble_name,
+                )
                 if obs is not None:
                     results.append(obs)
         return results
