@@ -47,6 +47,15 @@ tr.row-acked    { opacity: 0.55; }
 /* Inline ack note input */
 .ack-row-note { width: 18ch; font-size: 0.85em; padding: 1px 4px; }
 
+/* Settings page: privacy and status badges. Privacy-on (probe SSIDs OFF)
+   reuses the calm green tier; recording uses the amber/warning tier so
+   it's immediately legible as "lynceus is collecting sensitive data." */
+.badge-privacy-on      { background: #cfc; color: #060; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-privacy-warning { background: #fec; color: #730; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; font-weight: 600; }
+.badge-status-ok       { background: #cfc; color: #060; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-status-error    { background: #fcc; color: #700; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.settings-card         { margin-bottom: 1em; }
+
 /* Horizontal scroll wrapper for tables that may exceed container width.
    Apply by wrapping the <table> in <div class="table-scroll">. */
 .table-scroll {

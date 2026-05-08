@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}settings &mdash; lynceus{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <h2>settings</h2>
+
+  <p><small>
+    Read-only view of the active configuration. Use the noted CLI tools to make changes.
+  </small></p>
+
+  <article class="settings-card">
+    <header><strong>capture configuration</strong></header>
+
+    <p>
+      <code>probe_ssids</code>:
+      {% if capture.probe_ssids %}
+        <span class="badge-privacy-warning">recording probe SSIDs</span>
+      {% else %}
+        <span class="badge-privacy-on">privacy mode</span>
+      {% endif %}
+    </p>
+    {% if capture.probe_ssids %}
+      <p>
+        Probe SSID capture is ON. Lynceus is recording WiFi network names that
+        nearby devices probe for. This data reveals where those devices have been.
+      </p>
+    {% else %}
+      <p>
+        Probe SSID capture is OFF. WiFi history of nearby devices is not recorded.
+      </p>
+    {% endif %}
+
+    <p>
+      <code>ble_friendly_names</code>:
+      {% if capture.ble_friendly_names %}
+        <span class="badge-status-ok">ON</span>
+      {% else %}
+        <span class="badge-status-error">OFF</span>
+      {% endif %}
+    </p>
+    <p>
+      {% if capture.ble_friendly_names %}
+        BLE friendly-name capture is ON. Device-advertised BLE/BT names are recorded.
+      {% else %}
+        BLE friendly-name capture is OFF. Device-advertised BLE/BT names are not recorded.
+      {% endif %}
+    </p>
+
+    <p><small>To change, run <code>lynceus-setup --reconfigure</code>.</small></p>
+  </article>
+
+  <article class="settings-card">
+    <header><strong>kismet connection</strong></header>
+    <dl class="metadata-grid">
+      <dt>API URL</dt>
+      <dd><code>{{ kismet.url }}</code></dd>
+      <dt>connection</dt>
+      <dd>
+        {% if kismet.status.reachable %}
+          <span class="badge-status-ok">reachable</span>
+          {% if kismet.status.version %}
+            &middot; <small>{{ kismet.status.version }}</small>
+          {% endif %}
+        {% else %}
+          <span class="badge-status-error">unreachable</span>
+          {% if kismet.status.error %}
+            : <code>{{ kismet.status.error }}</code>
+          {% endif %}
+        {% endif %}
+      </dd>
+      <dt>API token</dt>
+      <dd><code>{{ kismet.token_display }}</code></dd>
+      <dt>capture sources</dt>
+      <dd>
+        {% if kismet.sources %}
+          {% for src in kismet.sources %}
+            <code>{{ src }}</code>{% if not loop.last %}, {% endif %}
+          {% endfor %}
+        {% else %}
+          <em>(none configured)</em>
+        {% endif %}
+      </dd>
+    </dl>
+    <p><small>To change, run <code>lynceus-setup --reconfigure</code>.</small></p>
+  </article>
+
+  <article class="settings-card">
+    <header><strong>ntfy notifications</strong></header>
+    {% if ntfy.configured %}
+      <dl class="metadata-grid">
+        <dt>broker URL</dt>
+        <dd><code>{{ ntfy.url }}</code></dd>
+        <dt>topic</dt>
+        <dd><code>{{ ntfy.topic_display }}</code> <small>(redacted)</small></dd>
+      </dl>
+    {% else %}
+      <p><em>ntfy is not configured.</em></p>
+    {% endif %}
+    <p><small>To change, run <code>lynceus-setup --reconfigure</code>.</small></p>
+  </article>
+
+  <article class="settings-card">
+    <header><strong>watchlist data</strong></header>
+    <dl class="metadata-grid">
+      <dt>total entries</dt>
+      <dd>{{ watchlist_stats.total }}</dd>
+      <dt>argus-imported</dt>
+      <dd>{{ watchlist_stats.argus }}</dd>
+      <dt>yaml-seeded</dt>
+      <dd>{{ watchlist_stats.yaml }}</dd>
+      <dt>bundled-or-other</dt>
+      <dd>{{ watchlist_stats.bundled }}</dd>
+      <dt>last imported</dt>
+      <dd>
+        {% if watchlist_stats.last_imported_ts %}
+          {{ watchlist_stats.last_imported_ts | unix_to_utc_human }}
+        {% else %}
+          <em>(never)</em>
+        {% endif %}
+      </dd>
+    </dl>
+    <p><a href="/watchlist">view watchlist entries &rarr;</a></p>
+    <p><small>
+      To add data, run <code>lynceus-import-argus --input &lt;path&gt;</code> or
+      <code>lynceus-seed-watchlist --yaml &lt;path&gt;</code>.
+    </small></p>
+  </article>
+
+  <article class="settings-card">
+    <header><strong>severity overrides</strong></header>
+    <dl class="metadata-grid">
+      <dt>path</dt>
+      <dd><code>{{ severity_overrides.path }}</code></dd>
+      <dt>status</dt>
+      <dd>
+        {% if severity_overrides.exists %}
+          <span class="badge-status-ok">exists</span>
+        {% else %}
+          <span class="badge-status-error">missing</span>
+        {% endif %}
+      </dd>
+    </dl>
+    <p><small>
+      Edit the file directly to customize severity rules; rerun
+      <code>lynceus-import-argus</code> to apply.
+    </small></p>
+  </article>
+
+  <article class="settings-card">
+    <header><strong>system info</strong></header>
+    <dl class="metadata-grid">
+      <dt>lynceus version</dt>
+      <dd><code>{{ system.lynceus_version }}</code></dd>
+      <dt>database path</dt>
+      <dd><code>{{ system.db_path }}</code></dd>
+      <dt>database size</dt>
+      <dd>
+        {% if system.db_size_human %}
+          {{ system.db_size_human }}
+        {% else %}
+          <em>(file not found)</em>
+        {% endif %}
+      </dd>
+      <dt>database last modified</dt>
+      <dd>
+        {% if system.db_mtime %}
+          {{ system.db_mtime | unix_to_utc_human }}
+        {% else %}
+          &mdash;
+        {% endif %}
+      </dd>
+      <dt>config path</dt>
+      <dd><code>{{ system.config_path }}</code></dd>
+      <dt>log path</dt>
+      <dd><code>{{ system.log_dir }}</code></dd>
+    </dl>
+  </article>
+{% endblock %}
