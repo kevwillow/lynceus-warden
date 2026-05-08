@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import importlib.metadata
 import time
 from math import ceil
 from pathlib import Path
@@ -13,7 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from lynceus import __version__, kismet
+from lynceus import __version__, kismet, paths
 from lynceus import allowlist as allowlist_mod
 from lynceus import rules as rules_mod
 from lynceus.config import Config
@@ -183,6 +184,127 @@ def _build_ui_kismet_client(config: Config) -> kismet.KismetClient:
         api_key=config.kismet_api_key,
         timeout=config.kismet_timeout_seconds,
     )
+
+
+def _redact_ntfy_topic(topic: str | None) -> str:
+    """Server-side redaction for ntfy topic.
+
+    Topics function as a shared secret on public ntfy brokers; full
+    disclosure in the read-only UI is wrong. We show first 4 + ``•••``
+    + last 2 when long enough, else fully redacted.
+    """
+    if topic is None:
+        return ""
+    if len(topic) < 6:
+        return "•••"
+    return topic[:4] + "•••" + topic[-2:]
+
+
+def _humanize_bytes(num: int) -> str:
+    """Format a byte count as a short human string (e.g. ``"1.2 MB"``)."""
+    n = float(num)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024.0:
+            if unit == "B":
+                return f"{int(n)} {unit}"
+            return f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} PB"
+
+
+def _watchlist_origin_breakdown(db: Database) -> dict:
+    """Return total + argus/yaml/bundled split for the watchlist.
+
+    Discriminator: argus_record_id ``LIKE 'yaml-%'`` is yaml-seeded;
+    other metadata rows are argus-imported; watchlist rows with no
+    metadata row are bundled-or-other (matches Prompt 24's pattern).
+    """
+    conn = db._conn
+    total = conn.execute("SELECT COUNT(*) AS c FROM watchlist").fetchone()["c"]
+    argus = conn.execute(
+        "SELECT COUNT(*) AS c FROM watchlist_metadata WHERE argus_record_id NOT LIKE 'yaml-%'"
+    ).fetchone()["c"]
+    yaml_seeded = conn.execute(
+        "SELECT COUNT(*) AS c FROM watchlist_metadata WHERE argus_record_id LIKE 'yaml-%'"
+    ).fetchone()["c"]
+    bundled = conn.execute(
+        "SELECT COUNT(*) AS c FROM watchlist w "
+        "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
+        "WHERE m.id IS NULL"
+    ).fetchone()["c"]
+    last_imported = conn.execute("SELECT MAX(updated_at) AS ts FROM watchlist_metadata").fetchone()[
+        "ts"
+    ]
+    return {
+        "total": int(total),
+        "argus": int(argus),
+        "yaml": int(yaml_seeded),
+        "bundled": int(bundled),
+        "last_imported_ts": last_imported,
+    }
+
+
+def _build_settings_context(config: Config, db: Database, kismet_status: dict) -> dict:
+    """Compute the read-only /settings page payload.
+
+    Sensitive values (Kismet token, full ntfy topic) are redacted on the
+    server — the raw values never leave this function. The template only
+    sees the safe-to-render strings produced here.
+    """
+    ntfy_topic_display = _redact_ntfy_topic(config.ntfy_topic) if config.ntfy_topic else ""
+    kismet_token_display = "•••••• (configured)" if config.kismet_api_key else "(not configured)"
+
+    db_path = Path(config.db_path)
+    db_size_human: str | None = None
+    db_mtime: int | None = None
+    if db_path.exists():
+        try:
+            stat = db_path.stat()
+            db_size_human = _humanize_bytes(stat.st_size)
+            db_mtime = int(stat.st_mtime)
+        except OSError:
+            db_size_human = None
+            db_mtime = None
+
+    overrides_path = paths.default_overrides_path("user")
+    config_path_default = paths.default_config_path("user")
+    log_dir_default = paths.default_log_dir("user")
+
+    try:
+        lynceus_version = importlib.metadata.version("lynceus")
+    except importlib.metadata.PackageNotFoundError:
+        lynceus_version = __version__
+
+    return {
+        "capture": {
+            "probe_ssids": bool(config.capture.probe_ssids),
+            "ble_friendly_names": bool(config.capture.ble_friendly_names),
+        },
+        "kismet": {
+            "url": config.kismet_url,
+            "token_display": kismet_token_display,
+            "sources": config.kismet_sources or [],
+            "status": kismet_status,
+        },
+        "ntfy": {
+            "url": config.ntfy_url or "",
+            "topic_display": ntfy_topic_display,
+            "configured": bool(config.ntfy_url and config.ntfy_topic),
+        },
+        "watchlist_stats": _watchlist_origin_breakdown(db),
+        "severity_overrides": {
+            "path": str(overrides_path),
+            "exists": overrides_path.exists(),
+        },
+        "system": {
+            "lynceus_version": lynceus_version,
+            "db_path": str(db_path),
+            "db_size_human": db_size_human,
+            "db_mtime": db_mtime,
+            "config_path": str(config_path_default),
+            "log_dir": str(log_dir_default),
+        },
+    }
 
 
 def _get_kismet_status(app: FastAPI, now: float) -> dict:
@@ -680,6 +802,21 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "entry": entry,
                 "has_metadata": has_metadata,
                 "metadata": metadata,
+            },
+        )
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_view(request: Request):
+        now = time.time()
+        kismet_status = _get_kismet_status(app, now)
+        ctx = _build_settings_context(app.state.config, db, kismet_status)
+        return app.state.templates.TemplateResponse(
+            request=request,
+            name="settings.html",
+            context={
+                "version": __version__,
+                "active": "settings",
+                **ctx,
             },
         )
 
