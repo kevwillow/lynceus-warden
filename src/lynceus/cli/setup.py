@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import importlib.resources
 import os
 import secrets
 import subprocess
@@ -365,18 +366,86 @@ def scaffold_severity_overrides(path: Path) -> bool:
 # --- Argus import -----------------------------------------------------------
 
 
+BUNDLED_WATCHLIST_PACKAGE = "lynceus.data"
+BUNDLED_WATCHLIST_RESOURCE = "default_watchlist.csv"
+BUNDLED_ABSENT_MESSAGE = "no bundled watchlist"
+
+
+def import_bundled_watchlist(db_path: str, override_file: str | None) -> tuple[bool, str]:
+    """Auto-import the bundled default_watchlist.csv when shipped in
+    ``lynceus.data``. Returns ``(success, message)``.
+
+    Silently returns ``(False, "no bundled watchlist")`` when the data
+    package or CSV resource is missing — that is the expected case for
+    source builds without bundled threat data, not an error. On subprocess
+    failure returns ``(False, "import failed: <reason>")`` with stderr (or
+    stdout) captured in the reason. On success returns ``(True, <summary>)``
+    where the summary is the import_argus summary line if recognisable.
+    """
+    try:
+        resource = importlib.resources.files(BUNDLED_WATCHLIST_PACKAGE).joinpath(
+            BUNDLED_WATCHLIST_RESOURCE
+        )
+    except (ModuleNotFoundError, FileNotFoundError):
+        return False, BUNDLED_ABSENT_MESSAGE
+    try:
+        present = resource.is_file()
+    except (FileNotFoundError, OSError):
+        return False, BUNDLED_ABSENT_MESSAGE
+    if not present:
+        return False, BUNDLED_ABSENT_MESSAGE
+
+    try:
+        with importlib.resources.as_file(resource) as csv_path:
+            cmd = [
+                "lynceus-import-argus",
+                "--input",
+                str(csv_path),
+                "--db",
+                db_path,
+            ]
+            if override_file:
+                cmd += ["--override-file", override_file]
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except FileNotFoundError:
+                return False, "import failed: lynceus-import-argus not found on PATH"
+            stdout, stderr = proc.communicate()
+            rc = proc.returncode
+    except (FileNotFoundError, OSError) as e:
+        return False, f"import failed: {e}"
+
+    if rc != 0:
+        detail = (stderr or stdout or f"exit code {rc}").strip().splitlines()
+        reason = detail[-1] if detail else f"exit code {rc}"
+        return False, f"import failed: {reason}"
+
+    summary = next(
+        (line for line in stdout.splitlines() if line.lstrip().startswith("imported")),
+        "imported successfully",
+    )
+    return True, summary
+
+
 def maybe_import_argus(
     *,
     db_path: str,
     severity_path: str,
     input_fn=None,
+    bundled_succeeded: bool = False,
 ) -> None:
     in_fn = input_fn or input
-    if not prompt_yes_no(
-        "Would you like to import Argus threat data now? Requires an Argus CSV export file.",
-        default=False,
-        input_fn=in_fn,
-    ):
+    prompt = (
+        "Import an additional Argus CSV with newer data?"
+        if bundled_succeeded
+        else "Would you like to import Argus threat data now? Requires an Argus CSV export file."
+    )
+    if not prompt_yes_no(prompt, default=False, input_fn=in_fn):
         print(
             "Skipping import. Run `lynceus-import-argus --input <path-to-csv>` "
             "when you have an Argus export."
@@ -556,12 +625,28 @@ def run_wizard(
     else:
         print(f"  severity overrides: {sev_path} (existing, not modified)")
 
-    # Argus import (final prompt)
+    # Auto-import bundled threat data when shipped. Silent skip when absent.
+    print()
+    bundled_ok, bundled_msg = import_bundled_watchlist(
+        db_path=DEFAULT_DB_PATH,
+        override_file=str(sev_path),
+    )
+    if bundled_msg != BUNDLED_ABSENT_MESSAGE:
+        if bundled_ok:
+            print(f"Imported bundled threat data: {bundled_msg}.")
+        else:
+            print(
+                f"Bundled threat-data import failed: {bundled_msg}. "
+                "You can retry later with lynceus-import-argus."
+            )
+
+    # Optional additional Argus import (final prompt)
     print()
     maybe_import_argus(
         db_path=DEFAULT_DB_PATH,
         severity_path=str(sev_path),
         input_fn=in_fn,
+        bundled_succeeded=bundled_ok,
     )
 
     print()

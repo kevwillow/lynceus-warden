@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -810,6 +811,297 @@ def test_default_ntfy_broker_is_ntfy_sh():
 
 def test_default_rssi_threshold_is_minus_70():
     assert wiz.DEFAULT_RSSI_THRESHOLD == -70
+
+
+# ---- bundled watchlist import ---------------------------------------------
+
+
+def _patch_bundled_resource(
+    monkeypatch,
+    *,
+    exists: bool,
+    real_path: Path | None = None,
+    raise_module_not_found: bool = False,
+):
+    """Stub importlib.resources.files / as_file for the bundled-import helper.
+
+    - ``raise_module_not_found=True`` simulates ``lynceus.data`` not shipped.
+    - ``exists=False`` simulates the package being present but the CSV missing.
+    - ``exists=True`` requires ``real_path`` — the on-disk file the wizard
+      will actually pass to the subprocess via ``importlib.resources.as_file``.
+    """
+    if raise_module_not_found:
+
+        def _raises(_pkg):
+            raise ModuleNotFoundError("lynceus.data")
+
+        monkeypatch.setattr(wiz.importlib.resources, "files", _raises)
+        return
+    fake_traversable = MagicMock()
+    fake_traversable.is_file.return_value = exists
+    fake_files = MagicMock()
+    fake_files.joinpath.return_value = fake_traversable
+    monkeypatch.setattr(wiz.importlib.resources, "files", lambda _pkg: fake_files)
+    if exists:
+        if real_path is None:  # pragma: no cover - test bug
+            raise AssertionError("must provide real_path when exists=True")
+
+        @contextlib.contextmanager
+        def fake_as_file(_traversable):
+            yield real_path
+
+        monkeypatch.setattr(wiz.importlib.resources, "as_file", fake_as_file)
+
+
+def test_bundled_import_skip_when_data_package_missing(monkeypatch):
+    _patch_bundled_resource(monkeypatch, exists=False, raise_module_not_found=True)
+    popen_calls = []
+    monkeypatch.setattr(
+        wiz.subprocess,
+        "Popen",
+        lambda *a, **kw: popen_calls.append(a) or MagicMock(),
+    )
+    ok, msg = wiz.import_bundled_watchlist(db_path="/x/db.sqlite", override_file=None)
+    assert ok is False
+    assert msg == "no bundled watchlist"
+    assert popen_calls == [], "Popen must not be called when data package is missing"
+
+
+def test_bundled_import_skip_when_csv_resource_absent(monkeypatch):
+    _patch_bundled_resource(monkeypatch, exists=False)
+    popen_calls = []
+    monkeypatch.setattr(
+        wiz.subprocess,
+        "Popen",
+        lambda *a, **kw: popen_calls.append(a) or MagicMock(),
+    )
+    ok, msg = wiz.import_bundled_watchlist(db_path="/x/db.sqlite", override_file=None)
+    assert ok is False
+    assert msg == "no bundled watchlist"
+    assert popen_calls == [], "Popen must not be called when CSV resource is absent"
+
+
+def test_bundled_import_invokes_subprocess_with_correct_args(monkeypatch, tmp_path):
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta: argus_export v3 (CP11)\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = list(args)
+        captured["kwargs"] = kwargs
+        proc = MagicMock()
+        proc.communicate.return_value = (
+            "Total rows in CSV: 7\nimported 7 records, updated 0, dropped 0\n",
+            "",
+        )
+        proc.returncode = 0
+        return proc
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, msg = wiz.import_bundled_watchlist(
+        db_path="/data/lynceus.db", override_file="/etc/lynceus/sev.yaml"
+    )
+    assert ok is True
+    assert "imported 7 records" in msg
+    args = captured["args"]
+    assert args[0] == "lynceus-import-argus"
+    assert args[args.index("--input") + 1] == str(csv)
+    assert args[args.index("--db") + 1] == "/data/lynceus.db"
+    assert args[args.index("--override-file") + 1] == "/etc/lynceus/sev.yaml"
+
+
+def test_bundled_import_omits_override_when_none(monkeypatch, tmp_path):
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta: argus_export v3 (CP11)\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = list(args)
+        proc = MagicMock()
+        proc.communicate.return_value = ("imported 1 records, updated 0, dropped 0", "")
+        proc.returncode = 0
+        return proc
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, _msg = wiz.import_bundled_watchlist(db_path="db.sqlite", override_file=None)
+    assert ok is True
+    assert "--override-file" not in captured["args"]
+
+
+def test_bundled_import_failure_returns_error_with_stderr(monkeypatch, tmp_path):
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta:\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+
+    def fake_popen(args, **kwargs):
+        proc = MagicMock()
+        proc.communicate.return_value = ("", "Traceback ...\nValueError: bad header")
+        proc.returncode = 1
+        return proc
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, msg = wiz.import_bundled_watchlist(db_path="db.sqlite", override_file=None)
+    assert ok is False
+    assert msg.startswith("import failed:")
+    assert "bad header" in msg
+
+
+def test_bundled_import_failure_when_command_missing(monkeypatch, tmp_path):
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta:\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+
+    def fake_popen(args, **kwargs):
+        raise FileNotFoundError(args[0])
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, msg = wiz.import_bundled_watchlist(db_path="db.sqlite", override_file=None)
+    assert ok is False
+    assert "import failed" in msg
+
+
+# ---- maybe_import_argus prompt re-wording ----------------------------------
+
+
+def _recording_input(answers):
+    """Like _input_seq but records every prompt argument."""
+    it = iter(answers)
+    log: list[str] = []
+
+    def _input(prompt=""):
+        log.append(prompt)
+        try:
+            return next(it)
+        except StopIteration as exc:  # pragma: no cover - test bug
+            raise AssertionError(f"input() exhausted; prompt={prompt!r}") from exc
+
+    return _input, log
+
+
+def test_maybe_import_argus_uses_reworded_prompt_when_bundled_succeeded(tmp_path):
+    fn, prompts = _recording_input(["n"])
+    wiz.maybe_import_argus(
+        db_path="lynceus.db",
+        severity_path=str(tmp_path / "sev.yaml"),
+        input_fn=fn,
+        bundled_succeeded=True,
+    )
+    assert any("additional Argus CSV" in p for p in prompts)
+    assert not any("Would you like to import Argus" in p for p in prompts)
+
+
+def test_maybe_import_argus_uses_original_prompt_when_bundled_not_succeeded(tmp_path):
+    fn, prompts = _recording_input(["n"])
+    wiz.maybe_import_argus(
+        db_path="lynceus.db",
+        severity_path=str(tmp_path / "sev.yaml"),
+        input_fn=fn,
+        bundled_succeeded=False,
+    )
+    assert any("Would you like to import Argus" in p for p in prompts)
+    assert not any("additional Argus CSV" in p for p in prompts)
+
+
+# ---- wizard flow integration with bundled import --------------------------
+
+
+def test_wizard_with_bundled_present_success_prints_and_reworded_prompt(
+    monkeypatch, tmp_path, capsys
+):
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "import_bundled_watchlist",
+        lambda db_path, override_file: (True, "imported 42 records, updated 0, dropped 0"),
+    )
+    fn, prompts = _recording_input(_full_input_sequence())
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Imported bundled threat data" in out
+    assert "42 records" in out
+    assert any("additional Argus CSV" in p for p in prompts)
+
+
+def test_wizard_with_bundled_present_failure_warns_and_keeps_original_prompt(
+    monkeypatch, tmp_path, capsys
+):
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "import_bundled_watchlist",
+        lambda db_path, override_file: (False, "import failed: schema mismatch"),
+    )
+    fn, prompts = _recording_input(_full_input_sequence())
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Bundled threat-data import failed" in out
+    assert "schema mismatch" in out
+    assert "lynceus-import-argus" in out
+    assert any("Would you like to import Argus" in p for p in prompts)
+
+
+def test_wizard_with_bundled_absent_prints_nothing_keeps_original_prompt(
+    monkeypatch, tmp_path, capsys
+):
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "import_bundled_watchlist",
+        lambda db_path, override_file: (False, "no bundled watchlist"),
+    )
+    fn, prompts = _recording_input(_full_input_sequence())
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Imported bundled threat data" not in out
+    assert "Bundled threat-data import failed" not in out
+    assert "no bundled watchlist" not in out
+    assert any("Would you like to import Argus" in p for p in prompts)
+
+
+def test_wizard_passes_db_path_and_severity_to_bundled_helper(monkeypatch, tmp_path):
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    captured = {}
+
+    def fake_bundled(db_path, override_file):
+        captured["db_path"] = db_path
+        captured["override_file"] = override_file
+        return (False, "no bundled watchlist")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert captured["db_path"] == wiz.DEFAULT_DB_PATH
+    assert captured["override_file"] is not None
+    assert captured["override_file"].endswith("severity_overrides.yaml")
 
 
 # Suppress the unused-import warning for sys (used by helpers above).
