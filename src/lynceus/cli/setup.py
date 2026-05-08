@@ -23,7 +23,7 @@ from pathlib import Path
 
 import requests
 
-from .. import __version__
+from .. import __version__, paths
 from ..kismet import KismetClient
 
 # --- Defaults ---------------------------------------------------------------
@@ -32,7 +32,6 @@ DEFAULT_KISMET_URL = "http://127.0.0.1:2501"
 DEFAULT_NTFY_BROKER = "https://ntfy.sh"
 DEFAULT_RSSI_THRESHOLD = -70
 DEFAULT_UI_PORT = 8765
-DEFAULT_DB_PATH = "lynceus.db"
 PROBE_TIMEOUT_SECONDS = 5.0
 
 SEVERITY_OVERRIDES_TEMPLATE = """\
@@ -626,9 +625,14 @@ def run_wizard(
         print(f"  severity overrides: {sev_path} (existing, not modified)")
 
     # Auto-import bundled threat data when shipped. Silent skip when absent.
+    # Resolve DB path via the canonical paths helper so the bundled threat
+    # data lands where the daemon will actually read from
+    # (``/var/lib/lynceus/lynceus.db`` under --system, the per-user XDG
+    # data dir under --user) instead of the operator's CWD.
+    db_path_str = str(paths.default_db_path(scope))
     print()
     bundled_ok, bundled_msg = import_bundled_watchlist(
-        db_path=DEFAULT_DB_PATH,
+        db_path=db_path_str,
         override_file=str(sev_path),
     )
     if bundled_msg != BUNDLED_ABSENT_MESSAGE:
@@ -643,7 +647,7 @@ def run_wizard(
     # Optional additional Argus import (final prompt)
     print()
     maybe_import_argus(
-        db_path=DEFAULT_DB_PATH,
+        db_path=db_path_str,
         severity_path=str(sev_path),
         input_fn=in_fn,
         bundled_succeeded=bundled_ok,

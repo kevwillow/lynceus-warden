@@ -82,11 +82,66 @@ external services beyond ntfy delivery.
 None required. Both Kismet and ntfy can run fully self-hosted; lynceus itself
 does not phone home.
 
+## Installation
+
+Lynceus ships with `install.sh` for Linux hosts. Two install scopes are
+supported.
+
+**Per-user (default when not running as root):**
+
+```sh
+git clone https://github.com/kevlattice/lynceus
+cd lynceus
+./install.sh --user
+```
+
+This installs into the current user's Python (`pip install --user -e .`,
+or `pip install -e .` when run inside a virtualenv) and creates
+`~/.config/lynceus`, `~/.local/share/lynceus`, and `~/.local/state/lynceus`.
+No systemd integration. Configure with `lynceus-setup` and run
+`lynceus-quickstart` for dev/demo, or wire up your own systemd `--user`
+unit for production.
+
+**System-wide (for production deployments on a Pi or server):**
+
+```sh
+git clone https://github.com/kevlattice/lynceus
+cd lynceus
+sudo ./install.sh --system
+```
+
+This installs into the system Python, creates a `lynceus` system user,
+lays down `/etc/lynceus`, `/var/lib/lynceus`, and `/var/log/lynceus`,
+copies the systemd units into `/etc/systemd/system`, and runs
+`daemon-reload`. The units are **not** auto-enabled. After install:
+
+```sh
+sudo lynceus-setup --system          # generate /etc/lynceus/lynceus.yaml
+sudo systemctl enable --now lynceus.service lynceus-ui.service
+```
+
+To preview either install without changing anything, pass `--dry-run`.
+To reverse a system install, run `sudo ./install.sh --uninstall` (config
+and data are preserved unless `--purge` is given).
+
+**Do NOT use `curl | bash`.** Lynceus is a security tool; install methods
+that don't let you inspect the script first contradict the project's
+threat model. If you really want a one-liner, write your own — we don't
+ship one.
+
+**macOS:** `pip install -e .` from a clone works. No systemd, but the
+Python tools (`lynceus`, `lynceus-ui`, `lynceus-setup`,
+`lynceus-quickstart`) all work. Use `launchd` for production if you need
+it.
+
+**Windows:** `pip install -e .` from a clone works. No installer support,
+no service automation. Linux and macOS are the supported targets.
+
 ## Quick start
 
 1. Install Kismet on the Pi and confirm it's running.
-2. Build the lynceus wheel (`python -m build --wheel`) and install it on the
-   Pi (`sudo pip install /tmp/lynceus-*.whl`).
+2. Install Lynceus with `sudo ./install.sh --system` (see
+   [Installation](#installation) above).
 3. Copy `config/lynceus.example.yaml` to `/etc/lynceus/lynceus.yaml` and fill in
    your Kismet API key, ntfy URL, and ntfy topic.
 4. Set up ntfy: pick a topic name, install the ntfy app on your phone,
@@ -94,7 +149,8 @@ does not phone home.
    `lynceus.yaml`. Full walkthrough at [docs/NTFY_SETUP.md](docs/NTFY_SETUP.md).
 5. Seed the watchlist with the bundled threat data:
    `lynceus-seed-watchlist --db /var/lib/lynceus/lynceus.db --threat-ouis --ble-uuids`.
-6. Start the service: `sudo systemctl enable --now lynceus`.
+6. Start the daemon and UI:
+   `sudo systemctl enable --now lynceus.service lynceus-ui.service`.
 
 The full walkthrough — including systemd installation, env files, and
 verification — lives in [deploy/README.md](deploy/README.md). For end-to-end

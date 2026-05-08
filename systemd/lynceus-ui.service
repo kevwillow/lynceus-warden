@@ -1,0 +1,33 @@
+[Unit]
+Description=Lynceus web UI
+Documentation=https://github.com/kevlattice/lynceus
+After=network-online.target lynceus.service
+Wants=network-online.target lynceus.service
+
+[Service]
+Type=simple
+User=lynceus
+Group=lynceus
+ExecStart=/usr/local/bin/lynceus-ui --config /etc/lynceus/lynceus.yaml
+Restart=on-failure
+RestartSec=5s
+StandardOutput=append:/var/log/lynceus/ui.log
+StandardError=append:/var/log/lynceus/ui.err
+
+# Hardening — UI reads the SQLite database read-only in practice but the
+# sqlite3 driver still needs write access to the directory for journal/WAL
+# sidecar files, so /var/lib/lynceus is in ReadWritePaths.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/lynceus /var/log/lynceus
+
+[Install]
+WantedBy=multi-user.target
