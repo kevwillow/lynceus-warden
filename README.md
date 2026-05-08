@@ -1,93 +1,46 @@
 # Lynceus
 
-A small personal-security tool that watches the WiFi and Bluetooth around
-your home and tells you when something unfamiliar shows up.
+Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchlist matching, alerting.
 
-## What it does
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Status: v0.3.0-rc1](https://img.shields.io/badge/Status-v0.3.0--rc1-yellow.svg)](#project-status)
+[![Counter-Surveillance](https://img.shields.io/badge/Counter--Surveillance-passive%20only-1f6feb.svg)](#privacy--threat-model)
+[![Watching the Watchers](https://img.shields.io/badge/Watching-the%20Watchers-black.svg)](#what-lynceus-does)
 
-- Notices when a new WiFi or Bluetooth device starts hanging around your
-  home that wasn't there before.
-- Recognises specific hardware you've flagged in advance — known
-  surveillance gear, tracker tags like AirTags, anything you've put on a
-  watchlist.
-- Lets you mark your own devices as "expected" so they don't trigger
-  alerts.
-- Pushes a notification to your phone when something matches.
-- Keeps a local history of what's been seen, so you can look back and
-  see when a device first appeared.
+> **Project assertions.** Read these first.
+>
+> - **Passive only.** Lynceus never transmits, probes, injects, or associates. It only reads what Kismet has already heard.
+> - **Read-only UI by design.** The web UI surfaces state and never mutates configuration. Read-only is a security boundary, not a missing feature.
+> - **No telemetry.** Lynceus does not phone home. The only outbound connection is to the operator-configured ntfy broker.
+> - **Probe SSID capture is OFF by default.** Probe SSIDs reveal device WiFi history. Operators opt in explicitly during `lynceus-setup`.
 
-It does not transmit, attack, or interfere with anything. It only listens
-to traffic that's already in the air.
+---
 
-## Status
+## Project status
 
-v0.2 is feature-complete and waiting on its first real-hardware deployment.
-The daemon, the alerting path, and the read-only web UI all work end-to-end
-in development. For a more detailed snapshot — what's shipped, what's not,
-what's been tested — see [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
-What's still on the roadmap lives in [BACKLOG.md](BACKLOG.md).
+**Personal-use RF security monitoring tool. v0.3.0-rc1.**
 
-## Roadmap: Argus
+This is not a hardened public product. It is a personal project, feature-complete for v0.3, with hardware shakedown still in progress. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
 
-The headline next piece of work is **Argus** — a versioned database of
-RF signatures for common surveillance hardware. Marked police vehicles,
-body-worn cameras, dashcams, license plate readers, and fixed camera
-systems like Flock all emit recognisable WiFi or Bluetooth signatures.
-The goal is a curated list lynceus can consume through the existing
-watchlist path, so flagging a new piece of gear is a data-only update —
-no code change in lynceus itself.
+## What Lynceus does
 
-Argus is unbuilt today. The data-gathering work has to come first, and
-it's the part that takes time. There's no timeline. Once a useful
-baseline of signatures exists it'll ship as a separately versioned
-YAML dataset, fork-friendly so anyone can extend it. See [BACKLOG.md](BACKLOG.md)
-for the full entry.
+Lynceus is a small daemon plus read-only web UI that watches the WiFi and Bluetooth airspace around the operator and flags hardware of interest. It polls a local [Kismet](https://www.kismetwireless.net/) instance for sightings, persists them to SQLite, and matches each sighting against a curated watchlist (MAC addresses, OUIs, MAC ranges, BLE service UUIDs). Matches generate alerts that surface in the web UI and as push notifications via [ntfy](https://ntfy.sh/).
 
-## How it works
+The threat model is simple: detect surveillance-relevant devices in the operator's environment — license-plate readers, body-worn cameras, drones, gunshot-detection nodes, known-bad hacking-tool hardware, AirTag-class trackers, and other RF-emitting equipment that's worth knowing about when it shows up. Lynceus is not a network attack tool, not a tracking tool, and not a substitute for situational awareness.
 
-lynceus runs as a small daemon on a Raspberry Pi. Every poll cycle (default
-60 seconds, configurable) it asks
-[Kismet](https://www.kismetwireless.net/) — which does the actual radio
-capture — what devices it has seen recently, and writes those sightings to
-a local SQLite database. Each sighting is checked against a list of
-detection rules (watchlist matches, AirTag-class trackers, first sighting
-of a non-randomized device) and against your allowlist of known-good
-hardware. If a sighting matches a rule and isn't allowlisted, lynceus sends
-a push notification to your phone via [ntfy](https://ntfy.sh/). A separate
-read-only web UI lets you browse alerts, devices, and the rules that are
-currently loaded. Everything runs locally on the Pi — no cloud, no
-external services beyond ntfy delivery.
+## Features
 
-## What you need to run it
-
-**Hardware**
-
-- Raspberry Pi 4 or 5 (4 GB or more recommended).
-- A WiFi adapter that supports monitor mode. The Pi's built-in radio works
-  for short-range capture; an external USB adapter gives much better range.
-- A Bluetooth adapter (the Pi's built-in one is fine; an external dongle
-  gives more range).
-
-**Software**
-
-- Kismet, installed and configured to capture from your adapter(s).
-  Install guide at [kismetwireless.net](https://www.kismetwireless.net/docs/readme/installing/linux/).
-- Python 3.11 or newer.
-- An ntfy server (the hosted [ntfy.sh](https://ntfy.sh/) is fine for personal
-  use, or you can self-host) and the ntfy app on your phone, subscribed to
-  your chosen topic. Setup walkthrough in [docs/NTFY_SETUP.md](docs/NTFY_SETUP.md).
-
-**Accounts**
-
-None required. Both Kismet and ntfy can run fully self-hosted; lynceus itself
-does not phone home.
+- **Argus integration.** Watchlist metadata schema migration, dual-artifact CSV import via `lynceus-import-argus`, optional metadata extension to `lynceus-seed-watchlist` YAML, alert-to-watchlist linkage in the alerts table, and a `/watchlist` UI page that surfaces vendor/category/confidence. Ntfy notification bodies are enriched with vendor and confidence.
+- **Tier 1 enrichment.** Probe SSID capture (opt-in, off by default), BLE friendly-name capture (on by default — BLE names are publicly broadcast), and an expanded BLE service UUID enrichment dictionary.
+- **Ergonomic CLI tooling.** `lynceus-quickstart` (foreground daemon + UI + browser launch for dev/demo), `lynceus-setup` (interactive wizard with Kismet/ntfy probes and optional Argus import).
+- **Read-only `/settings` page.** Surfaces current capture state with prominent privacy treatment (recording warning when probe-SSID capture is on, privacy-mode indicator when off), Kismet/ntfy connection status, watchlist origin breakdown (Argus / YAML / bundled), and system info (version, DB path, log path). Sensitive values (Kismet API token, ntfy topic) are redacted server-side. **No mutation endpoints.**
+- **Release packaging.** `install.sh` (Linux only; `--user` / `--system` / `--uninstall` / `--purge` / `--dry-run`), hardened systemd units (`lynceus.service`, `lynceus-ui.service`) with `NoNewPrivileges`, `ProtectSystem=strict`, restricted namespaces, and friends. Canonical XDG-aware DB-path conventions across the codebase.
+- **Bundled threat data.** A curated default watchlist (~63 records) ships in the wheel as package data and is auto-imported on first `lynceus-setup` run.
 
 ## Installation
 
-Lynceus ships with `install.sh` for Linux hosts. Two install scopes are
-supported.
-
-**Per-user (default when not running as root):**
+**Linux (primary supported target).**
 
 ```sh
 git clone https://github.com/kevlattice/lynceus
@@ -95,159 +48,118 @@ cd lynceus
 ./install.sh --user
 ```
 
-This installs into the current user's Python (`pip install --user -e .`,
-or `pip install -e .` when run inside a virtualenv) and creates
-`~/.config/lynceus`, `~/.local/share/lynceus`, and `~/.local/state/lynceus`.
-No systemd integration. Configure with `lynceus-setup` and run
-`lynceus-quickstart` for dev/demo, or wire up your own systemd `--user`
-unit for production.
-
-**System-wide (for production deployments on a Pi or server):**
+For production on a dedicated host, install system-wide:
 
 ```sh
-git clone https://github.com/kevlattice/lynceus
-cd lynceus
 sudo ./install.sh --system
 ```
 
-This installs into the system Python, creates a `lynceus` system user,
-lays down `/etc/lynceus`, `/var/lib/lynceus`, and `/var/log/lynceus`,
-copies the systemd units into `/etc/systemd/system`, and runs
-`daemon-reload`. The units are **not** auto-enabled. After install:
+The system mode creates a `lynceus` system user, lays down `/etc/lynceus`, `/var/lib/lynceus`, and `/var/log/lynceus`, copies the systemd units into `/etc/systemd/system`, and runs `daemon-reload`. The units are not auto-enabled — that's an explicit step after `lynceus-setup --system`.
 
-```sh
-sudo lynceus-setup --system          # generate /etc/lynceus/lynceus.yaml
-sudo systemctl enable --now lynceus.service lynceus-ui.service
-```
+Run `./install.sh --help` for the full flag list (`--user`, `--system`, `--uninstall`, `--purge`, `--dry-run`).
 
-To preview either install without changing anything, pass `--dry-run`.
-To reverse a system install, run `sudo ./install.sh --uninstall` (config
-and data are preserved unless `--purge` is given).
+**Do NOT pipe `install.sh` through `curl | bash`.** Lynceus is a security tool. An install method that doesn't let you read the script before running it directly contradicts the project's threat model. If you want a one-liner, write your own — none is shipped.
 
-**Do NOT use `curl | bash`.** Lynceus is a security tool; install methods
-that don't let you inspect the script first contradict the project's
-threat model. If you really want a one-liner, write your own — we don't
-ship one.
+**macOS.** `pip install -e .` from a clone. The Python tools (`lynceus`, `lynceus-ui`, `lynceus-setup`, `lynceus-quickstart`, `lynceus-seed-watchlist`, `lynceus-import-argus`) all work. There is no systemd integration; use `launchd` if you need a service.
 
-**macOS:** `pip install -e .` from a clone works. No systemd, but the
-Python tools (`lynceus`, `lynceus-ui`, `lynceus-setup`,
-`lynceus-quickstart`) all work. Use `launchd` for production if you need
-it.
-
-**Windows:** `pip install -e .` from a clone works. No installer support,
-no service automation. Linux and macOS are the supported targets.
+**Windows.** Same as macOS: `pip install -e .` from a clone. Treated as **works for development; production deployment is not supported.** No installer, no service automation, no documentation for running unattended.
 
 ## Quick start
 
-1. Install Kismet on the Pi and confirm it's running.
-2. Install Lynceus with `sudo ./install.sh --system` (see
-   [Installation](#installation) above).
-3. Copy `config/lynceus.example.yaml` to `/etc/lynceus/lynceus.yaml` and fill in
-   your Kismet API key, ntfy URL, and ntfy topic.
-4. Set up ntfy: pick a topic name, install the ntfy app on your phone,
-   subscribe to the topic, and fill in `ntfy_url` / `ntfy_topic` in your
-   `lynceus.yaml`. Full walkthrough at [docs/NTFY_SETUP.md](docs/NTFY_SETUP.md).
-5. Seed the watchlist with the bundled threat data:
-   `lynceus-seed-watchlist --db /var/lib/lynceus/lynceus.db --threat-ouis --ble-uuids`.
-6. Start the daemon and UI:
-   `sudo systemctl enable --now lynceus.service lynceus-ui.service`.
+1. **Install.** `./install.sh --user` from a clone.
+2. **Configure.** Run `lynceus-setup`. The wizard probes Kismet and ntfy, generates `lynceus.yaml`, and prompts explicitly for probe SSID capture with a privacy explanation (off unless you opt in). It can also kick off an Argus import as the final step.
+3. **Run.** For dev/demo, `lynceus-quickstart` launches the daemon, the UI, and a browser tab in the foreground; Ctrl+C shuts it down. For production, `sudo systemctl enable --now lynceus.service lynceus-ui.service`.
+4. **Verify.** Open the UI, watch sightings populate, browse `/watchlist` for the bundled threat data, and visit `/settings` to confirm capture state, Kismet/ntfy connectivity, and the watchlist origin breakdown.
 
-The full walkthrough — including systemd installation, env files, and
-verification — lives in [deploy/README.md](deploy/README.md). For end-to-end
-verification once you're running, follow [docs/SMOKE.md](docs/SMOKE.md).
+## Configuration
 
-## Watchlist data
+`lynceus-setup` is the primary configuration tool. Re-run it with `--reconfigure` to rewrite an existing config; without that flag it refuses to clobber what's already there.
 
-The watchlist is the list of devices lynceus cares about. You seed it with
-the `lynceus-seed-watchlist` CLI. Three sources are supported:
+Configuration files live at XDG-aware paths:
 
-- **Built-in threat OUIs.** A bundled list of MAC prefixes for known
-  surveillance hardware. Enabled with `--threat-ouis`.
-- **Built-in BLE tracker UUIDs.** A bundled list of service UUIDs for
-  AirTag-class tracker tags. Enabled with `--ble-uuids`.
-- **Your own YAML.** Pass `--yaml PATH` to add custom entries. The schema
-  is documented in [docs/CONFIGURATION.md](docs/CONFIGURATION.md). Any
-  external watchlist can be brought in by converting it to that format.
+- **`--user` install:** `~/.config/lynceus/lynceus.yaml` (or `$XDG_CONFIG_HOME/lynceus/lynceus.yaml`).
+- **`--system` install:** `/etc/lynceus/lynceus.yaml`.
 
-The CLI is re-runnable. Identical entries are deduplicated, so you can
-mix and match sources without worrying about duplicates.
+Operator-local severity tuning lives alongside the main config in `severity_overrides.yaml`. Vendor overrides, device-category severity bumps, and a confidence-downgrade threshold all go there; the file is read by `lynceus-import-argus --override-file` so changes propagate at next import.
 
-## Privacy and limits
+To check current configuration without editing files, navigate to `/settings` in the web UI. Capture state, watchlist data status, and system info are visible there. The page is read-only — to change settings, run `lynceus-setup --reconfigure`.
 
-- **Passive only.** lynceus never transmits, never probes, never tries to
-  associate with another network. It reads what Kismet has already heard.
-- **MAC randomization is real.** Modern phones rotate their addresses on
-  purpose to avoid being tracked. That works against lynceus too — a
-  randomizing phone walking past your Pi will look like a different device
-  every few minutes. lynceus is a good fit for spotting unfamiliar hardware
-  that just turned up; it is the wrong tool for tracking a specific
-  person's phone.
-- **Storage grows over time.** Every sighting goes into SQLite. There is
-  no automatic pruning yet, so on a long-running deployment you'll need
-  to occasionally trim or rotate the database file yourself.
-- **Expect noise at first.** False positives are how you learn what's
-  around you. Plan to spend the first week building up your allowlist.
-- **Check your local laws.** Passive WiFi/Bluetooth listening is legal in
-  most US jurisdictions, but rules vary. It's the operator's job to
-  verify what's allowed where they live. Don't cross into active attacks
-  — lynceus won't help you there and isn't trying to.
-- **No warranty.** This is a personal-use project, distributed in the
-  hope it's useful, with no guarantees of any kind.
+## Bundled threat data
 
-## Project layout
+Lynceus ships a default watchlist as package data inside the wheel: `src/lynceus/data/default_watchlist.csv`.
+
+- **Source.** Snapshot from [Argus](https://github.com/kevlattice/argus), the companion RF-signature project. Lynceus is **not** redistributing the full Argus corpus — what's bundled is a point-in-time snapshot.
+- **Coverage.** ~63 records (exported around 2026-05-07) across `mac`, `oui`, and `mac_range` identifier types. Categories include `drone`, `alpr`, `gunshot_detect`, `hacking_tool`, and `unknown`.
+- **First-run.** `lynceus-setup` auto-imports the bundled CSV on first run, so a fresh install has a working watchlist out of the box.
+- **Refresh.** When a newer Argus export is available, refresh in place:
+
+  ```sh
+  lynceus-import-argus --input <path-to-fresh-argus-export.csv> --db <path-to-lynceus.db>
+  ```
+
+  The importer is idempotent and metadata-aware; re-running against the same input is safe.
+
+## Running Lynceus
+
+**Production (Linux + systemd).** Two services:
+
+- `lynceus.service` — the poller daemon.
+- `lynceus-ui.service` — the read-only web UI.
+
+Both units are hardened (`NoNewPrivileges=yes`, `ProtectSystem=strict`, restricted namespaces, etc.) and run as the `lynceus` system user. Logs land under `/var/log/lynceus/`. Database under `/var/lib/lynceus/`.
+
+**Development / demo.** `lynceus-quickstart`. Foreground process group, browser auto-launch, Ctrl+C to shut everything down cleanly. Suitable for hacking on Lynceus or showing somebody what it does. Not suitable for unattended operation.
+
+**CLI surface.**
+
+| Command | Purpose |
+| --- | --- |
+| `lynceus` | Poller daemon (entry point of `lynceus.service`). |
+| `lynceus-ui` | Web UI (entry point of `lynceus-ui.service`). |
+| `lynceus-quickstart` | Foreground dev/demo launcher (daemon + UI + browser). |
+| `lynceus-setup` | Interactive configuration wizard. |
+| `lynceus-seed-watchlist` | Add watchlist entries from a YAML file. |
+| `lynceus-import-argus` | Import an Argus dual-artifact CSV export. |
+
+For at-a-glance configuration and connectivity verification while running, navigate to `/settings` in the web UI. It surfaces capture state, Kismet/ntfy reachability, watchlist origin breakdown, and system info — read-only.
+
+## Privacy / threat model
+
+- **Read-only UI is a security boundary.** All configuration mutations happen out-of-band — `lynceus-setup`, or by editing the YAML directly. Visibility (the `/settings` page) supports operator awareness; mutability would erode the boundary, so it isn't there.
+- **Probe SSID capture is OFF by default.** A device's probe SSIDs are the SSIDs it has previously associated with — effectively a partial WiFi history. Capturing them by default would turn Lynceus into a passive surveillance tool aimed at bystanders. The setup wizard prompts explicitly, and `/settings` makes the current state prominent: a "recording" warning when capture is on, a "privacy mode" indicator when it is off.
+- **BLE friendly-name capture is ON by default.** BLE friendly names are broadcast publicly with intent; capturing them does not breach any reasonable privacy expectation.
+- **Sensitive values are redacted server-side.** The Kismet API token and ntfy topic never appear in `/settings`-rendered HTML. Reduces shoulder-surfing risk and keeps secrets out of the response stream.
+- **No outbound telemetry.** Lynceus does not phone home, ship analytics, or report to any external service. The only outbound connection is to the operator-configured ntfy broker.
+- **Operator responsibility.** Passive WiFi/Bluetooth observation is legal in most US jurisdictions but rules vary. It is the operator's job to verify what is allowed where they live. Lynceus is not, and will not become, an active-attack tool.
+
+## Architecture
+
+Two-process production deployment, single SQLite database between them.
 
 ```
-src/lynceus/        application package
-  config.py         config loading and validation
-  db.py             sqlite persistence and migrations
-  kismet.py         Kismet REST client (real and fixture-based)
-  poller.py         poll loop and `lynceus` entry point
-  rules.py          detection rules and evaluation
-  allowlist.py      known-good device suppression
-  notify.py         alert dispatch (ntfy, null, recording)
-  cli/              command-line tools (lynceus-seed-watchlist)
-  webui/            read-only FastAPI web UI (`lynceus-ui`)
-  migrations/       sqlite schema migrations
-  seeds/            built-in threat data
-tests/            pytest suite and fixtures
-deploy/           systemd units, env template, install guide
-docs/             configuration, rules, smoke, dev, status
-config/           example YAML configs
++----------------+   poll    +----------+   write   +-----------+
+|   Kismet API   |<----------|  poller  |---------->|  SQLite   |
++----------------+           +----+-----+           +-----+-----+
+                                  |                       ^
+                                  | rules engine          | read
+                                  v                       |
+                              +---+----+              +---+-----+
+                              |  ntfy  |<-- alerts    |  webui  |
+                              +--------+    rendered  | (FastAPI|
+                                                      |  Jinja2)|
+                                                      +---------+
 ```
 
-## Documentation index
+- **Poller** (`lynceus`) — polls the Kismet REST API on a configurable interval, runs the rules engine over each sighting, persists sightings + alerts.
+- **Rules engine** — watchlist match (mac / oui / mac_range / ble service uuid), allowlist suppression, AirTag-class tracker recognition, first-sighting heuristics.
+- **Database** — SQLite, with versioned migrations and a canonical XDG-aware path resolution.
+- **Web UI** (`lynceus-ui`) — FastAPI + Jinja2 templates, read-only. Served by uvicorn.
+- **Notifier** — ntfy push for matched alerts. Null/recording backends exist for testing.
 
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — every config field, with
-  worked examples for home, office, travel, and multi-adapter setups.
-- [docs/RULES.md](docs/RULES.md) — rule schema, semantics, and a tuning
-  playbook for cutting down false positives.
-- [docs/NTFY_SETUP.md](docs/NTFY_SETUP.md) — picking an ntfy broker,
-  installing the phone app, and verifying alerts end-to-end.
-- [docs/SMOKE.md](docs/SMOKE.md) — step-by-step verification once you've
-  installed lynceus on the Pi.
-- [docs/WINDOWS_DEV.md](docs/WINDOWS_DEV.md) — running and testing lynceus
-  on a Windows or non-Linux dev machine.
-- [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) — detailed status
-  snapshot: what's shipped, what's deferred, what's tested.
-- [deploy/README.md](deploy/README.md) — full systemd install walkthrough.
-- [BACKLOG.md](BACKLOG.md) — deferred features and technical debt.
+## Project status
 
-## Development
+v0.3.0-rc1. Feature-complete for the v0.3 series; hardware shakedown in progress on Kali. The v0.3.0 final release is blocked on that shakedown landing without surprises. Test count: **888 passing** at v0.3.0-rc1, up from 437 at v0.2 — 451 new tests added across 13 prompts in the v0.3 series.
 
-Day-to-day development happens on a Linux or Windows machine using a fake
-Kismet client backed by a JSON fixture, so you don't need real radio
-hardware to hack on lynceus. The full dev setup is in
-[docs/WINDOWS_DEV.md](docs/WINDOWS_DEV.md). The project ships with 437
-tests across 15 modules; run the fast suite with `pytest -v -m "not slow"`,
-or `make test` for the whole thing including the wheel-build test.
+License: MIT. See [LICENSE](LICENSE).
 
-## License
-
-lynceus is released under the MIT License. See [LICENSE](LICENSE) for full text.
-
-## Acknowledgments
-
-lynceus is built on top of [Kismet](https://www.kismetwireless.net/) for the
-radio capture and [ntfy](https://ntfy.sh/) for notification delivery, and
-owes a debt to the wider open-source RF and wireless-security community
-whose tooling makes a project like this possible at all.
+Built on [Kismet](https://www.kismetwireless.net/) for radio capture and [ntfy](https://ntfy.sh/) for push delivery.
