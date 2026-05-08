@@ -78,6 +78,10 @@ lynceus = [
     "webui/templates/*.html",
     "webui/static/*",
 ]
+"lynceus.data" = [
+    "*.csv",
+    "*.md",
+]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
