@@ -43,17 +43,50 @@ def test_root_check_skipped_when_geteuid_absent(monkeypatch):
 # ---- Pre-flight: systemd check ------------------------------------------------
 
 
-def test_systemd_check_refuses_when_user_unit_active(monkeypatch):
+def test_systemd_check_refuses_when_lynceus_service_active(monkeypatch):
     def fake_run(cmd, **kw):
-        result = MagicMock()
-        result.stdout = "active\n" if "--user" in cmd else "inactive\n"
-        return result
+        active = "lynceus.service" in cmd and "--user" in cmd
+        return MagicMock(stdout="active\n" if active else "inactive\n")
 
     monkeypatch.setattr(quickstart.subprocess, "run", fake_run)
     monkeypatch.setattr(quickstart.os, "name", "posix")
     err = quickstart.check_no_systemd()
     assert err is not None
     assert "already running under systemd" in err
+
+
+def test_systemd_check_refuses_when_lynceus_ui_service_active(monkeypatch):
+    def fake_run(cmd, **kw):
+        return MagicMock(stdout="active\n" if "lynceus-ui.service" in cmd else "inactive\n")
+
+    monkeypatch.setattr(quickstart.subprocess, "run", fake_run)
+    monkeypatch.setattr(quickstart.os, "name", "posix")
+    err = quickstart.check_no_systemd()
+    assert err is not None
+    assert "already running under systemd" in err
+
+
+def test_systemd_check_probes_both_units_under_both_scopes(monkeypatch):
+    """The check must look at both ``lynceus.service`` and
+    ``lynceus-ui.service`` under both ``--user`` and system scope so that
+    quickstart never collides with a partial production deployment."""
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        seen.append(list(cmd))
+        return MagicMock(stdout="inactive\n")
+
+    monkeypatch.setattr(quickstart.subprocess, "run", fake_run)
+    monkeypatch.setattr(quickstart.os, "name", "posix")
+    assert quickstart.check_no_systemd() is None
+
+    flat = [tuple(c) for c in seen]
+    assert any("--user" in c and "lynceus.service" in c for c in flat)
+    assert any("--user" in c and "lynceus-ui.service" in c for c in flat)
+    assert any("--user" not in c and "lynceus.service" in c for c in flat)
+    assert any("--user" not in c and "lynceus-ui.service" in c for c in flat)
+    # Importantly, the legacy "lynceus-daemon.service" name is no longer probed.
+    assert not any("lynceus-daemon.service" in c for c in flat)
 
 
 def test_systemd_check_passes_when_all_inactive(monkeypatch):

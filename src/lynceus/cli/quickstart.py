@@ -62,15 +62,21 @@ def check_not_root() -> str | None:
     return None
 
 
+SYSTEMD_UNITS = ("lynceus.service", "lynceus-ui.service")
+
+
 def check_no_systemd() -> str | None:
-    """Refuse to run if a systemd lynceus unit is active. No-op on Windows or
-    when systemctl is not available on PATH."""
+    """Refuse to run if any Lynceus systemd unit is active. Probes both the
+    daemon (``lynceus.service``) and the UI (``lynceus-ui.service``) under
+    user-scope and system-scope. No-op on Windows or when systemctl is not
+    available on PATH."""
     if os.name != "posix":
         return None
-    for cmd in (
-        ["systemctl", "--user", "is-active", "lynceus-daemon.service"],
-        ["systemctl", "is-active", "lynceus-daemon.service"],
-    ):
+    probes: list[list[str]] = []
+    for unit in SYSTEMD_UNITS:
+        probes.append(["systemctl", "--user", "is-active", unit])
+        probes.append(["systemctl", "is-active", unit])
+    for cmd in probes:
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=5, check=False)
         except (FileNotFoundError, subprocess.TimeoutExpired):

@@ -1,0 +1,33 @@
+[Unit]
+Description=Lynceus RF security monitoring daemon
+Documentation=https://github.com/kevlattice/lynceus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lynceus
+Group=lynceus
+ExecStart=/usr/local/bin/lynceus --config /etc/lynceus/lynceus.yaml
+Restart=on-failure
+RestartSec=5s
+StandardOutput=append:/var/log/lynceus/daemon.log
+StandardError=append:/var/log/lynceus/daemon.err
+
+# Hardening — daemon only needs to read /etc/lynceus and write the SQLite
+# database under /var/lib/lynceus and logs under /var/log/lynceus. Kismet
+# is reached over localhost so no extra network paths are required.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/lynceus /var/log/lynceus
+
+[Install]
+WantedBy=multi-user.target

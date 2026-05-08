@@ -1082,6 +1082,8 @@ def test_wizard_with_bundled_absent_prints_nothing_keeps_original_prompt(
 
 
 def test_wizard_passes_db_path_and_severity_to_bundled_helper(monkeypatch, tmp_path):
+    from lynceus import paths
+
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
@@ -1099,9 +1101,40 @@ def test_wizard_passes_db_path_and_severity_to_bundled_helper(monkeypatch, tmp_p
         getpass_fn=_getpass_seq(["tok"]),
     )
     assert rc == 0
-    assert captured["db_path"] == wiz.DEFAULT_DB_PATH
+    # Wizard now resolves the DB path through ``paths.default_db_path(scope)``
+    # rather than the bare "lynceus.db" relative filename it used before.
+    assert captured["db_path"] == str(paths.default_db_path("user"))
     assert captured["override_file"] is not None
     assert captured["override_file"].endswith("severity_overrides.yaml")
+
+
+def test_wizard_uses_system_db_path_when_system_scope(monkeypatch, tmp_path):
+    """Under --system, the bundled-import helper must receive the system
+    DB path so the import lands in /var/lib/lynceus/lynceus.db rather than
+    the operator's CWD. ``--system`` is Linux-only, so force the platform
+    to Linux for this test regardless of where pytest is running."""
+    from lynceus import paths
+
+    monkeypatch.setattr(paths, "_platform", lambda: "linux")
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)  # pretend we're root for --system
+    captured = {}
+
+    def fake_bundled(db_path, override_file):
+        captured["db_path"] = db_path
+        return (False, "no bundled watchlist")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert captured["db_path"] == str(paths.default_db_path("system"))
 
 
 # Suppress the unused-import warning for sys (used by helpers above).
