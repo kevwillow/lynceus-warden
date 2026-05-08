@@ -4,12 +4,20 @@ Linux-only — install.sh is opinionated about systemd integration and
 refuses to run on macOS or Windows. Operators on those platforms use
 ``pip install -e .`` from a clone instead.
 
+install.sh installs Lynceus into a dedicated Python venv (PEP 668
+compliance: recent Debian/Ubuntu/Kali ship an externally-managed
+system Python and reject ``pip install`` against it). The lynceus-*
+console scripts are exposed via symlinks from the venv's ``bin/``
+into a directory on PATH (``~/.local/bin`` for ``--user``,
+``/usr/local/bin`` for ``--system``).
+
 These tests exercise install.sh through ``--dry-run`` to avoid touching
 the real system. The dry run must:
 
-  * still complete pre-flight (Python / pip / systemctl detection),
-  * print every command it would have executed,
-  * NOT invoke pip, useradd, systemctl, or chown.
+  * still complete pre-flight (Python / venv module / systemctl detection),
+  * print every command it would have executed (venv creation,
+    pip-install-into-venv, symlink commands),
+  * NOT invoke pip, python -m venv, useradd, systemctl, ln, or chown.
 
 When the dry run is exercised under ``--user`` we point ``$HOME`` at a
 ``tmp_path`` sandbox so the directory-creation step lands somewhere
@@ -114,11 +122,14 @@ def test_install_sh_refuses_on_non_linux_uname(tmp_path):
 
 
 def test_install_sh_system_without_root_refuses():
-    """Tests run as a regular user. ``--system`` must reject with a clear
-    ``Use sudo`` hint instead of attempting the install."""
+    """Tests run as a regular user. A real ``--system`` install must
+    reject with a clear ``Use sudo`` hint instead of attempting the
+    install. (``--system --dry-run`` is intentionally allowed without
+    root so operators can preview the install plan; that path is
+    covered separately below.)"""
     if os.geteuid() == 0:
         pytest.skip("test runner is root; cannot exercise the non-root rejection path")
-    r = _run(["--system", "--dry-run"])
+    r = _run(["--system"])
     assert r.returncode != 0
     combined = r.stdout + r.stderr
     assert "sudo" in combined.lower()
@@ -127,30 +138,57 @@ def test_install_sh_system_without_root_refuses():
 # ---- --user dry-run -------------------------------------------------------
 
 
-def test_install_sh_user_dry_run_prints_pip_command(tmp_path):
-    """``--user --dry-run`` must report the pip install it *would* have run
-    and must not actually invoke pip."""
+def test_install_sh_user_dry_run_prints_venv_and_pip_commands(tmp_path):
+    """``--user --dry-run`` must report the venv creation and pip-in-venv
+    install it *would* have run, and must not actually invoke either."""
     sandbox_home = tmp_path / "home"
     sandbox_home.mkdir()
-    # Strip VIRTUAL_ENV so the dry-run reflects the --user code path, not
-    # the venv branch that elides "--user" from pip.
     env = {"HOME": str(sandbox_home)}
     if "VIRTUAL_ENV" in os.environ:
         env["VIRTUAL_ENV"] = ""
     r = _run(["--user", "--dry-run"], env_extra=env)
     assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
     out = r.stdout + r.stderr
-    # The dry-run should reveal both the pip command and the directory plan.
+    # Dry-run must reveal both the venv creation and a pip-in-venv install.
+    assert "python3 -m venv" in out
     assert "pip install" in out
-    assert "--user" in out or "VIRTUAL_ENV" in out
-    # Standard XDG-style targets should be referenced for the user scope.
+    # PEP 668 compliance: install.sh must NOT bypass the system policy.
+    assert "--break-system-packages" not in out
+    # User install creates a venv under ~/.local/share/lynceus/.venv.
+    assert ".local/share/lynceus/.venv" in out
+    # Symlinks for the console scripts go into ~/.local/bin.
+    assert ".local/bin" in out
+    # Standard XDG-style targets are still referenced for config/data/log.
     assert ".config/lynceus" in out
     assert ".local/share/lynceus" in out
 
 
+def test_install_sh_user_dry_run_lists_console_script_symlinks(tmp_path):
+    """Each entry-point command shipped in pyproject.toml must show up
+    in the dry-run plan as a symlink target."""
+    sandbox_home = tmp_path / "home"
+    sandbox_home.mkdir()
+    env = {"HOME": str(sandbox_home)}
+    if "VIRTUAL_ENV" in os.environ:
+        env["VIRTUAL_ENV"] = ""
+    r = _run(["--user", "--dry-run"], env_extra=env)
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    for script in (
+        "lynceus",
+        "lynceus-ui",
+        "lynceus-quickstart",
+        "lynceus-setup",
+        "lynceus-seed-watchlist",
+        "lynceus-import-argus",
+    ):
+        assert script in out, f"console script {script!r} missing from dry-run output"
+
+
 def test_install_sh_user_dry_run_does_not_invoke_pip(tmp_path):
     """A stub pip on PATH that touches a tripwire file proves dry-run did
-    NOT actually call pip."""
+    NOT actually call pip — neither the (now-irrelevant) system pip, nor
+    the venv pip we create."""
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     tripwire = tmp_path / "pip-was-called"
@@ -169,6 +207,93 @@ def test_install_sh_user_dry_run_does_not_invoke_pip(tmp_path):
     assert not tripwire.exists(), "dry-run must not invoke pip"
 
 
+# ---- --system dry-run -----------------------------------------------------
+
+
+def test_install_sh_system_dry_run_mentions_venv_path():
+    """``--system --dry-run`` (no root needed for preview) must reference
+    the dedicated /opt/lynceus/.venv path and a pip-in-venv install."""
+    if shutil.which("systemctl") is None:
+        pytest.skip("systemctl not on PATH; --system pre-flight would fail")
+    r = _run(["--system", "--dry-run"])
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "/opt/lynceus/.venv" in out
+    assert "python3 -m venv" in out
+    assert "pip install" in out
+    assert "--break-system-packages" not in out
+    # Symlinks land in /usr/local/bin under --system.
+    assert "/usr/local/bin" in out
+    # Ownership is set to the lynceus system user.
+    assert "chown" in out
+    assert "lynceus:lynceus" in out
+
+
+# ---- --uninstall dry-run --------------------------------------------------
+
+
+def test_install_sh_uninstall_dry_run_lists_symlinks_and_venv():
+    """``--uninstall --dry-run`` must list both the venv that would be
+    removed and the console-script symlinks that would be unlinked."""
+    if shutil.which("systemctl") is None:
+        pytest.skip("systemctl not on PATH; --uninstall pre-flight would fail")
+    r = _run(["--uninstall", "--dry-run"])
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "/opt/lynceus/.venv" in out
+    assert "/usr/local/bin" in out
+    # Each console script must show up so the operator can audit the plan.
+    for script in (
+        "lynceus-ui",
+        "lynceus-quickstart",
+        "lynceus-setup",
+        "lynceus-seed-watchlist",
+        "lynceus-import-argus",
+    ):
+        assert script in out, f"console script {script!r} missing from uninstall dry-run"
+
+
+# ---- python3-venv module missing -----------------------------------------
+
+
+def test_install_sh_aborts_when_python3_venv_unavailable(tmp_path):
+    """Some minimal Debian/Ubuntu images ship python3 without the venv
+    module. install.sh must detect this in pre-flight and exit with a
+    pointer to ``apt install python3-venv`` rather than crashing midway
+    through the install."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_python3 = fake_bin / "python3"
+    fake_python3.write_text(
+        "#!/usr/bin/env bash\n"
+        "# Stub python3: passes through to the real interpreter for everything\n"
+        "# except 'python3 -m venv ...', which exits non-zero to simulate a\n"
+        "# system that's missing the python3-venv apt package.\n"
+        'if [[ "${1:-}" == "-m" && "${2:-}" == "venv" ]]; then\n'
+        "    echo 'Error: No module named venv' >&2\n"
+        "    exit 1\n"
+        "fi\n"
+        "for cand in /usr/bin/python3 /usr/local/bin/python3 /bin/python3; do\n"
+        '    if [[ -x "$cand" ]]; then exec "$cand" "$@"; fi\n'
+        "done\n"
+        "echo 'no real python3 available for stub passthrough' >&2\n"
+        "exit 127\n"
+    )
+    fake_python3.chmod(0o755)
+
+    sandbox_home = tmp_path / "home"
+    sandbox_home.mkdir()
+    env_path = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    env = {"HOME": str(sandbox_home), "PATH": env_path}
+    if "VIRTUAL_ENV" in os.environ:
+        env["VIRTUAL_ENV"] = ""
+    r = _run(["--user", "--dry-run"], env_extra=env)
+    assert r.returncode != 0, f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    combined = r.stdout + r.stderr
+    assert "python3-venv" in combined
+    assert "apt install python3-venv" in combined
+
+
 # ---- systemd unit files ---------------------------------------------------
 
 
@@ -184,15 +309,16 @@ def test_systemd_unit_has_required_sections(unit_name):
 def test_systemd_unit_lynceus_execstart_invokes_lynceus_with_config():
     content = (SYSTEMD_DIR / "lynceus.service").read_text()
     assert "ExecStart=" in content
-    # Daemon reads the DB path from the config file; ExecStart should not
-    # bolt on a --db flag that lynceus does not accept.
-    assert "/usr/local/bin/lynceus" in content
+    # ExecStart points at the venv binary directly so the daemon does
+    # not depend on whatever happens to be on the systemd PATH and so a
+    # PEP-668-managed system Python is irrelevant at runtime.
+    assert "/opt/lynceus/.venv/bin/lynceus" in content
     assert "--config /etc/lynceus/lynceus.yaml" in content
 
 
 def test_systemd_unit_lynceus_ui_execstart_invokes_lynceus_ui():
     content = (SYSTEMD_DIR / "lynceus-ui.service").read_text()
-    assert "/usr/local/bin/lynceus-ui" in content
+    assert "/opt/lynceus/.venv/bin/lynceus-ui" in content
     assert "--config /etc/lynceus/lynceus.yaml" in content
 
 
