@@ -4,6 +4,46 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0-rc2] - 2026-05-08
+
+### Fixed
+
+- **Setup wizard crashed on a fresh box during the bundled-watchlist
+  import** because the data directory (e.g. `~/.local/share/lynceus`,
+  `/var/lib/lynceus`) didn't exist yet, and sqlite refused to open the
+  target DB with "unable to open database file". The wizard now creates
+  the data and log directories defensively before invoking
+  `lynceus-import-argus`.
+
+### Added
+
+- **Bluetooth capture source selection** in `lynceus-setup`. On Linux the
+  wizard enumerates `/sys/class/bluetooth/` for `hci*` adapters and, when
+  one is present, offers to append it to `kismet_sources` so Tier 1 BLE
+  enrichment has a Kismet source to draw on. macOS and Windows print a
+  one-line note explaining that BT enumeration is not implemented and
+  the operator should configure Kismet's BT source manually.
+- **ntfy skip support.** Pressing Enter at the broker URL prompt now
+  skips ntfy entirely — empty strings are written for `ntfy_url` and
+  `ntfy_topic`, the publish probe is suppressed, and the daemon's
+  existing `NullNotifier` fallback handles the empty config gracefully.
+  When the URL is set, an empty topic re-prompts (topic is required if
+  URL is set).
+
+### Changed
+
+- **Severity-overrides path prompt** now prints an explanation block
+  describing what the file does before asking for a path, and validates
+  the input with a light heuristic — `na`, `skip`, `none`, and other
+  bare alphabetic strings are rejected with "That doesn't look like a
+  file path" instead of silently landing in the wrong place.
+- **Optional 'additional Argus CSV' prompt has been retired.** It was
+  redundant on top of the bundled-watchlist auto-import, and the
+  trailing yes/no/path-prompt loop was a frequent source of
+  copy-paste-the-wrong-string mistakes. The wizard now closes with a
+  one-line hint pointing operators at `lynceus-import-argus --input
+  <path>` for later imports.
+
 ## [0.3.0-rc1] - 2026-05-08
 
 ### Added
