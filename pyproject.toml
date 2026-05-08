@@ -61,6 +61,7 @@ lynceus-seed-watchlist = "lynceus.cli.seed_watchlist:main"
 lynceus-import-argus = "lynceus.cli.import_argus:main"
 lynceus-ui = "lynceus.webui.server:main"
 lynceus-quickstart = "lynceus.cli.quickstart:main"
+lynceus-setup = "lynceus.cli.setup:main"
 
 [project.urls]
 Homepage = "https://github.com/kevlattice/lynceus"
