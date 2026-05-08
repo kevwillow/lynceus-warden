@@ -347,8 +347,19 @@ def _stub_path_resolution(monkeypatch, tmp_path):
     return target
 
 
+def _stub_bundled_import(monkeypatch, *, success: bool = False, msg: str = "no bundled watchlist"):
+    """Stub ``import_bundled_watchlist`` so wizard end-to-end tests don't fork
+    a real ``lynceus-import-argus`` against the now-shipping bundled CSV."""
+    monkeypatch.setattr(
+        wiz,
+        "import_bundled_watchlist",
+        lambda db_path, override_file: (success, msg),
+    )
+
+
 def test_run_wizard_kismet_probe_fail_continue_yes(monkeypatch, tmp_path, capsys):
     _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     monkeypatch.setattr(
         wiz, "probe_kismet", lambda url, token, timeout=None: (False, None, "connection refused")
@@ -395,6 +406,7 @@ def test_run_wizard_kismet_probe_fail_continue_no_aborts(monkeypatch, tmp_path, 
 
 def test_run_wizard_skip_probes_does_not_call_probes(monkeypatch, tmp_path):
     _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     called = []
     monkeypatch.setattr(
@@ -418,6 +430,7 @@ def test_run_wizard_skip_probes_does_not_call_probes(monkeypatch, tmp_path):
 
 def test_run_wizard_ntfy_probe_fail_continue_yes(monkeypatch, tmp_path, capsys):
     _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     monkeypatch.setattr(wiz, "probe_kismet", lambda url, token, timeout=None: (True, "v1", None))
     monkeypatch.setattr(wiz, "probe_ntfy", lambda url, topic, timeout=None: (False, "boom"))
@@ -469,6 +482,7 @@ def test_run_wizard_ntfy_probe_fail_continue_no_aborts(monkeypatch, tmp_path):
 
 def test_run_wizard_capture_interface_numbered_selection(monkeypatch, tmp_path):
     target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
     inputs = [
         "",  # kismet URL default
@@ -493,6 +507,7 @@ def test_run_wizard_capture_interface_numbered_selection(monkeypatch, tmp_path):
 
 def test_run_wizard_capture_interface_freeform_when_enumeration_unavailable(monkeypatch, tmp_path):
     target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     inputs = [
         "",  # kismet URL default
@@ -516,6 +531,7 @@ def test_run_wizard_capture_interface_freeform_when_enumeration_unavailable(monk
 
 def test_run_wizard_probe_ssids_defaults_false(monkeypatch, tmp_path):
     target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     rc = wiz.run_wizard(
         _args(),
@@ -529,6 +545,7 @@ def test_run_wizard_probe_ssids_defaults_false(monkeypatch, tmp_path):
 
 def test_run_wizard_ble_friendly_names_defaults_true(monkeypatch, tmp_path):
     target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     rc = wiz.run_wizard(
         _args(),
@@ -545,6 +562,7 @@ def test_run_wizard_ble_friendly_names_defaults_true(monkeypatch, tmp_path):
 
 def test_config_yaml_contains_expected_keys(monkeypatch, tmp_path):
     target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     rc = wiz.run_wizard(
         _args(),
@@ -571,6 +589,7 @@ def test_config_yaml_contains_expected_keys(monkeypatch, tmp_path):
 
 def test_config_yaml_contains_api_token(monkeypatch, tmp_path):
     target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     rc = wiz.run_wizard(
         _args(),
@@ -727,6 +746,7 @@ def test_argus_import_failure_prints_retry_hint(monkeypatch, tmp_path, capsys):
 def test_run_wizard_end_to_end_smoke(monkeypatch, tmp_path, capsys):
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
     # Probes: skip via flag.
     inputs = [
@@ -790,6 +810,7 @@ def test_main_system_without_root_refuses(monkeypatch, tmp_path, capsys):
 def test_main_returns_zero_on_full_skip_probes_run(monkeypatch, tmp_path):
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     monkeypatch.setattr("builtins.input", _input_seq(_full_input_sequence()))
     monkeypatch.setattr(wiz.getpass, "getpass", _getpass_seq(["tok"]))
