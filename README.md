@@ -81,7 +81,7 @@ Run `./install.sh --help` for the full flag list (`--user`, `--system`, `--unins
 ## Quick start
 
 1. **Install.** `./install.sh --user` from a clone.
-2. **Configure.** Run `lynceus-setup`. The wizard probes Kismet and ntfy, generates `lynceus.yaml`, and prompts explicitly for probe SSID capture with a privacy explanation (off unless you opt in). It can also kick off an Argus import as the final step.
+2. **Configure.** Run `lynceus-setup`. The wizard probes Kismet and ntfy, generates `lynceus.yaml`, and prompts explicitly for probe SSID capture with a privacy explanation (off unless you opt in). It also offers to add a Bluetooth capture source (when an `hci*` adapter is detected) and auto-imports the bundled threat data. Press Enter at the ntfy prompt to skip notifications entirely. To import a custom Argus CSV later, run `lynceus-import-argus --input <path-to-csv>`.
 3. **Run.** For dev/demo, `lynceus-quickstart` launches the daemon, the UI, and a browser tab in the foreground; Ctrl+C shuts it down. For production, `sudo systemctl enable --now lynceus.service lynceus-ui.service`.
 4. **Verify.** Open the UI, watch sightings populate, browse `/watchlist` for the bundled threat data, and visit `/settings` to confirm capture state, Kismet/ntfy connectivity, and the watchlist origin breakdown.
 
