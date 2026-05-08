@@ -54,15 +54,29 @@ For production on a dedicated host, install system-wide:
 sudo ./install.sh --system
 ```
 
-The system mode creates a `lynceus` system user, lays down `/etc/lynceus`, `/var/lib/lynceus`, and `/var/log/lynceus`, copies the systemd units into `/etc/systemd/system`, and runs `daemon-reload`. The units are not auto-enabled — that's an explicit step after `lynceus-setup --system`.
+> **Lynceus uses a dedicated Python venv to comply with PEP 668** (the externally-managed-environment policy on Debian/Ubuntu/Kali). The `lynceus-*` commands are exposed via symlinks to the venv binaries; you don't need to activate the venv manually.
 
-Run `./install.sh --help` for the full flag list (`--user`, `--system`, `--uninstall`, `--purge`, `--dry-run`).
+`install.sh --user` creates the venv at `~/.local/share/lynceus/.venv` and symlinks the console scripts into `~/.local/bin/`. `install.sh --system` does the same at `/opt/lynceus/.venv` with symlinks under `/usr/local/bin/`. Operators don't need to manage the venv themselves; the symlinks make the `lynceus-*` commands appear on `PATH` transparently. `install.sh` never adds `--break-system-packages` — the venv is the whole point.
+
+The system mode also creates a `lynceus` system user (which owns `/opt/lynceus`), lays down `/etc/lynceus`, `/var/lib/lynceus`, and `/var/log/lynceus`, copies the systemd units into `/etc/systemd/system`, and runs `daemon-reload`. The units are not auto-enabled — that's an explicit step after `lynceus-setup --system`.
+
+Run `./install.sh --help` for the full flag list (`--user`, `--system`, `--uninstall`, `--purge`, `--dry-run`). `--dry-run` works without root and prints the planned commands so operators can preview the install before committing to it.
 
 **Do NOT pipe `install.sh` through `curl | bash`.** Lynceus is a security tool. An install method that doesn't let you read the script before running it directly contradicts the project's threat model. If you want a one-liner, write your own — none is shipped.
 
-**macOS.** `pip install -e .` from a clone. The Python tools (`lynceus`, `lynceus-ui`, `lynceus-setup`, `lynceus-quickstart`, `lynceus-seed-watchlist`, `lynceus-import-argus`) all work. There is no systemd integration; use `launchd` if you need a service.
+**macOS.** `pip install -e .` from a clone (or, on PEP-668-managed installs, inside your own venv). The Python tools (`lynceus`, `lynceus-ui`, `lynceus-setup`, `lynceus-quickstart`, `lynceus-seed-watchlist`, `lynceus-import-argus`) all work. There is no systemd integration; use `launchd` if you need a service.
 
 **Windows.** Same as macOS: `pip install -e .` from a clone. Treated as **works for development; production deployment is not supported.** No installer, no service automation, no documentation for running unattended.
+
+### Troubleshooting
+
+- **`install.sh` fails with `python3 -m venv` errors.** Install the venv module via your distro's package manager and re-run:
+  - Debian/Ubuntu/Kali: `sudo apt install python3-venv`
+  - Fedora/RHEL: `sudo dnf install python3-virtualenv`
+  - Arch: ships with `python` (no separate package needed).
+- **`lynceus-*` commands not found after install.** Confirm the install's bin directory is on your `PATH`:
+  - `--user` install: `~/.local/bin` must be on `PATH`. `install.sh --user` prints a one-liner hint when it isn't.
+  - `--system` install: `/usr/local/bin` is on `PATH` for normal login shells; if it isn't, fix your shell profile rather than working around it.
 
 ## Quick start
 
