@@ -807,6 +807,165 @@ def test_poller_init_health_check_backoff_schedule_honored(tmp_path, monkeypatch
     assert sleeps == [2.0, 4.0]
 
 
+# ----------------- H4: top-level exception handler in run_forever -----------
+
+
+def test_run_forever_continues_past_connection_error(config, monkeypatch):
+    """A transient ConnectionError mid-poll must NOT exit the daemon.
+
+    Pre-fix: the first ConnectionError escaped the while loop and crashed
+    the daemon — poll_once would have been called exactly once. After the
+    fix the loop swallows it, logs at ERROR, and proceeds to the next tick.
+    The third side effect raises KeyboardInterrupt to break out cleanly.
+    """
+    import requests as _requests
+
+    poller = Poller(config)
+    calls: list[int] = []
+
+    def fake_poll(client, db, cfg, now_ts, **kwargs):
+        calls.append(now_ts)
+        if len(calls) == 1:
+            raise _requests.ConnectionError("kismet flapping")
+        if len(calls) == 2:
+            return 0
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("lynceus.poller.poll_once", fake_poll)
+    monkeypatch.setattr(poller, "_interruptible_sleep", lambda s: None)
+
+    with pytest.raises(KeyboardInterrupt):
+        poller.run_forever()
+    assert len(calls) == 3
+
+
+def test_run_forever_continues_past_validation_error(config, monkeypatch):
+    """A pydantic ValidationError from a malformed device record mid-poll
+    must not crash the daemon either."""
+    from pydantic import BaseModel
+
+    poller = Poller(config)
+    calls: list[int] = []
+
+    class _Tiny(BaseModel):
+        x: int
+
+    def fake_poll(client, db, cfg, now_ts, **kwargs):
+        calls.append(now_ts)
+        if len(calls) == 1:
+            _Tiny(x="not-an-int")  # raises ValidationError
+        if len(calls) == 2:
+            return 0
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("lynceus.poller.poll_once", fake_poll)
+    monkeypatch.setattr(poller, "_interruptible_sleep", lambda s: None)
+
+    with pytest.raises(KeyboardInterrupt):
+        poller.run_forever()
+    assert len(calls) == 3
+
+
+def test_run_forever_logs_error_with_traceback_on_swallowed_exception(config, monkeypatch, caplog):
+    """The swallowed exception must land in journalctl with exc_info so
+    operators can diagnose without strace."""
+    import requests as _requests
+
+    poller = Poller(config)
+    calls: list[int] = []
+
+    def fake_poll(client, db, cfg, now_ts, **kwargs):
+        calls.append(now_ts)
+        if len(calls) == 1:
+            raise _requests.ConnectionError("transient")
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("lynceus.poller.poll_once", fake_poll)
+    monkeypatch.setattr(poller, "_interruptible_sleep", lambda s: None)
+
+    with caplog.at_level(logging.ERROR, logger="lynceus.poller"):
+        with pytest.raises(KeyboardInterrupt):
+            poller.run_forever()
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) == 1
+    # exc_info must be populated so the traceback is rendered in journalctl.
+    assert error_records[0].exc_info is not None
+    assert error_records[0].exc_info[0] is _requests.ConnectionError
+
+
+def test_run_forever_sleeps_between_swallowed_exception_and_next_tick(config, monkeypatch):
+    """After swallowing an exception we must wait the configured poll
+    interval before retrying — a tight loop on a persistent error would
+    DoS Kismet on every restart cycle."""
+    import requests as _requests
+
+    poller = Poller(config)
+    calls: list[int] = []
+
+    def fake_poll(client, db, cfg, now_ts, **kwargs):
+        calls.append(now_ts)
+        if len(calls) == 1:
+            raise _requests.ConnectionError("transient")
+        raise KeyboardInterrupt()
+
+    sleeps: list[int] = []
+    monkeypatch.setattr("lynceus.poller.poll_once", fake_poll)
+    monkeypatch.setattr(poller, "_interruptible_sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(KeyboardInterrupt):
+        poller.run_forever()
+    # The sleep ran exactly once — after the swallowed exception, before
+    # the second iteration that raises KeyboardInterrupt.
+    assert sleeps == [poller.config.poll_interval_seconds]
+
+
+def test_run_forever_propagates_keyboard_interrupt_and_closes_db(config, monkeypatch):
+    """SIGINT (KeyboardInterrupt) must escape run_forever — Ctrl+C should
+    actually stop the daemon — and the DB must close on the way out."""
+    poller = Poller(config)
+    closed: list[bool] = []
+    orig_close = poller.db.close
+
+    def closing():
+        closed.append(True)
+        orig_close()
+
+    monkeypatch.setattr(poller.db, "close", closing)
+
+    def boom(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("lynceus.poller.poll_once", boom)
+
+    with pytest.raises(KeyboardInterrupt):
+        poller.run_forever()
+    assert closed == [True]
+
+
+def test_run_forever_propagates_system_exit_and_closes_db(config, monkeypatch):
+    """SystemExit must escape too — ``systemctl stop`` and any explicit
+    ``sys.exit()`` from a deeper layer should not be swallowed."""
+    poller = Poller(config)
+    closed: list[bool] = []
+    orig_close = poller.db.close
+
+    def closing():
+        closed.append(True)
+        orig_close()
+
+    monkeypatch.setattr(poller.db, "close", closing)
+
+    def boom(*args, **kwargs):
+        raise SystemExit(2)
+
+    monkeypatch.setattr("lynceus.poller.poll_once", boom)
+
+    with pytest.raises(SystemExit) as exc_info:
+        poller.run_forever()
+    assert exc_info.value.code == 2
+    assert closed == [True]
+
+
 def test_poller_init_health_check_retry_logs_info(tmp_path, monkeypatch, caplog):
     """Each retry emits an INFO log line that includes the attempt counter."""
     cfg = Config(

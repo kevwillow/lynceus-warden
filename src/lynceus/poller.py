@@ -256,20 +256,30 @@ class Poller:
             pass
         try:
             while not self._stop_flag:
-                poll_once(
-                    self.client,
-                    self.db,
-                    self.config,
-                    int(time.time()),
-                    ruleset=self.ruleset,
-                    allowlist=self.allowlist,
-                    notifier=self.notifier,
-                    source_allowlist=self._source_allowlist,
-                    source_locations=self.config.kismet_source_locations,
-                )
+                # Per-iteration exception boundary. A single transient failure
+                # (Kismet 5xx, DNS hiccup, malformed device record raising
+                # ValidationError mid-poll) used to escape the loop and exit
+                # the daemon. Catching here keeps the poll loop alive and
+                # logs the traceback so journalctl shows what happened.
+                # KeyboardInterrupt and SystemExit (BaseException, not
+                # Exception) propagate so Ctrl+C / ``systemctl stop`` still
+                # work cleanly — the outer ``finally`` still runs and closes
+                # the DB before the signal is re-raised.
+                try:
+                    poll_once(
+                        self.client,
+                        self.db,
+                        self.config,
+                        int(time.time()),
+                        ruleset=self.ruleset,
+                        allowlist=self.allowlist,
+                        notifier=self.notifier,
+                        source_allowlist=self._source_allowlist,
+                        source_locations=self.config.kismet_source_locations,
+                    )
+                except Exception:
+                    logger.error("poll_once raised; continuing", exc_info=True)
                 self._interruptible_sleep(self.config.poll_interval_seconds)
-        except KeyboardInterrupt:
-            self._stop_flag = True
         finally:
             self.db.close()
 
