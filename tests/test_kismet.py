@@ -291,7 +291,12 @@ def test_fake_no_http(monkeypatch):
 
 
 def _stub_get(mocker, json_data, raise_status=False):
-    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    """Patch ``requests.Session.get`` at class level — the KismetClient now
+    drives every HTTP call through its mounted Session (with urllib3 Retry),
+    not through the module-level ``requests.get`` shortcut. MagicMock does
+    not implement the descriptor protocol, so ``call_args.args[0]`` is the
+    URL the client passed (no implicit ``self``)."""
+    mock_get = mocker.patch("requests.sessions.Session.get")
     response = mock_get.return_value
     response.json.return_value = json_data
     if raise_status:
@@ -543,7 +548,7 @@ def test_parse_seenby_not_a_list_yields_empty_tuple():
 
 
 def test_kismet_client_health_check_success(mocker):
-    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    mock_get = mocker.patch("requests.sessions.Session.get")
     response = mock_get.return_value
     response.json.return_value = {"kismet.system.version": "2024-01-R1"}
     response.raise_for_status.return_value = None
@@ -554,7 +559,7 @@ def test_kismet_client_health_check_success(mocker):
 
 
 def test_kismet_client_health_check_http_error(mocker):
-    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    mock_get = mocker.patch("requests.sessions.Session.get")
     response = mock_get.return_value
     response.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
     client = KismetClient(base_url="http://x:2501")
@@ -566,7 +571,7 @@ def test_kismet_client_health_check_http_error(mocker):
 
 
 def test_kismet_client_health_check_transport_error(mocker):
-    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    mock_get = mocker.patch("requests.sessions.Session.get")
     mock_get.side_effect = requests.ConnectionError("connection refused")
     client = KismetClient(base_url="http://x:2501")
     result = client.health_check()
@@ -576,7 +581,7 @@ def test_kismet_client_health_check_transport_error(mocker):
 
 
 def test_kismet_client_health_check_no_version_key(mocker):
-    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    mock_get = mocker.patch("requests.sessions.Session.get")
     response = mock_get.return_value
     response.json.return_value = {"some.other.key": "value"}
     response.raise_for_status.return_value = None
@@ -789,7 +794,7 @@ def test_list_sources_handles_missing_type_driver(mocker):
 
 
 def test_list_sources_raises_on_http_401(mocker):
-    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    mock_get = mocker.patch("requests.sessions.Session.get")
     response = mock_get.return_value
     response.raise_for_status.side_effect = requests.HTTPError("401 Unauthorized")
     client = KismetClient(base_url="http://x:2501")
@@ -799,7 +804,7 @@ def test_list_sources_raises_on_http_401(mocker):
 
 
 def test_list_sources_raises_on_http_500(mocker):
-    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    mock_get = mocker.patch("requests.sessions.Session.get")
     response = mock_get.return_value
     response.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
     client = KismetClient(base_url="http://x:2501")
@@ -809,7 +814,7 @@ def test_list_sources_raises_on_http_500(mocker):
 
 
 def test_list_sources_raises_on_malformed_json(mocker):
-    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    mock_get = mocker.patch("requests.sessions.Session.get")
     response = mock_get.return_value
     response.json.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
     response.raise_for_status.return_value = None
@@ -826,7 +831,7 @@ def test_list_sources_raises_on_non_list_response(mocker):
 
 
 def test_list_sources_raises_on_connection_error(mocker):
-    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    mock_get = mocker.patch("requests.sessions.Session.get")
     mock_get.side_effect = requests.ConnectionError("connection refused")
     client = KismetClient(base_url="http://x:2501")
     with pytest.raises(requests.ConnectionError):
@@ -846,3 +851,123 @@ def test_list_sources_skips_non_dict_entries(mocker):
     client = KismetClient(base_url="http://x:2501")
     sources = client.list_sources()
     assert [s["name"] for s in sources] == ["real_source"]
+
+
+# ----------------- H5: urllib3 Retry mounted on Session ---------------------
+
+
+def test_h5_session_retry_mounted_for_https():
+    """Structural regression: the HTTPS adapter must carry our Retry policy.
+    Pre-fix the client had no ``_session`` attribute at all — the lookup
+    here would raise ``AttributeError`` long before the Retry inspection.
+    """
+    client = KismetClient(base_url="https://kismet.example.com:2501")
+    adapter = client._session.get_adapter("https://kismet.example.com:2501")
+    retry = adapter.max_retries
+    assert retry.total == 3
+    assert retry.backoff_factor == 0.5
+    assert 502 in retry.status_forcelist
+    assert 503 in retry.status_forcelist
+    assert 504 in retry.status_forcelist
+    # urllib3 stores allowed_methods uppercase; GET must be retried.
+    assert "GET" in retry.allowed_methods
+
+
+def test_h5_session_retry_mounted_for_http():
+    """Same Retry policy must apply on plain HTTP — Kismet's REST API on a
+    LAN often runs over plain HTTP, and that path must retry too."""
+    client = KismetClient(base_url="http://kismet.example.com:2501")
+    adapter = client._session.get_adapter("http://kismet.example.com:2501")
+    retry = adapter.max_retries
+    assert retry.total == 3
+    assert retry.backoff_factor == 0.5
+
+
+def test_h5_get_devices_since_recovers_via_retry_aware_adapter(mocker):
+    """Behavioural regression: with the configured ``max_retries.total``
+    on the mounted adapter, a transport-level failure pattern of
+    *fail-fail-success* surfaces as a successful response to the caller.
+
+    Pre-fix: ``KismetClient`` had no ``_session``, so swapping in a
+    test adapter (and indeed the whole Retry concept) wasn't an option —
+    the first ``ConnectionError`` from ``requests.get`` propagated to the
+    poll loop and crashed the daemon.
+
+    Post-fix: a ``_RetryAwareAdapter`` mounted on ``client._session``
+    consults ``self.max_retries.total`` (which is 3, per the production
+    config) and absorbs up to three transient errors before surfacing
+    one. Two failures before success is well within that envelope, so
+    ``get_devices_since`` returns ``[]`` cleanly.
+    """
+    from requests.adapters import HTTPAdapter
+
+    class _RetryAwareAdapter(HTTPAdapter):
+        """Documentation-style adapter that respects ``max_retries.total``
+        when simulating transport-level failures. Mirrors the contract
+        urllib3's ``Retry`` enforces on the production ``HTTPAdapter``
+        without requiring a live socket."""
+
+        def __init__(self, fail_first_n: int, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.fail_first_n = fail_first_n
+            self.send_calls = 0
+
+        def send(self, request, **kwargs):
+            allowance = self.max_retries.total + 1
+            for _ in range(allowance):
+                self.send_calls += 1
+                if self.send_calls <= self.fail_first_n:
+                    continue
+                response = requests.Response()
+                response.status_code = 200
+                response._content = b"[]"
+                response.url = request.url
+                response.headers["Content-Type"] = "application/json"
+                return response
+            raise requests.ConnectionError("transport exhausted")
+
+    client = KismetClient(base_url="http://kismet.test:2501")
+    flaky = _RetryAwareAdapter(
+        fail_first_n=2,
+        max_retries=client._session.get_adapter("http://kismet.test:2501").max_retries,
+    )
+    client._session.mount("http://", flaky)
+
+    result = client.get_devices_since(0)
+    assert result == []
+    assert flaky.send_calls == 3
+
+
+def test_h5_4xx_does_not_trigger_retry(mocker):
+    """Auth and client-error responses must NOT be retried — the operator
+    fixed a bad token by editing config, not by waiting. 401 must surface
+    immediately on the first attempt."""
+    mock_get = mocker.patch("requests.sessions.Session.get")
+    response = mock_get.return_value
+    response.raise_for_status.side_effect = requests.HTTPError("401 Unauthorized")
+    client = KismetClient(base_url="http://x:2501")
+    with pytest.raises(requests.HTTPError) as exc_info:
+        client.get_devices_since(0)
+    assert "401" in str(exc_info.value)
+    assert mock_get.call_count == 1
+
+
+def test_h5_all_three_methods_use_self_session():
+    """Source-level grep: every HTTP-issuing method on KismetClient must go
+    through ``self._session`` so the mounted Retry adapter is engaged. The
+    rc1 silent-drop bug had ``list_sources`` slip through with a bare
+    ``requests.get`` despite the rest of the client being session-aware —
+    a recurrence would re-introduce the no-retry path on that call.
+    """
+    src = Path(__file__).resolve().parent.parent / "src" / "lynceus" / "kismet.py"
+    text = src.read_text(encoding="utf-8")
+    # Find the KismetClient class body (bounded by the next class or EOF).
+    start = text.index("class KismetClient")
+    end = text.index("\nclass ", start + 1) if "\nclass " in text[start + 1 :] else len(text)
+    body = text[start:end]
+    # No bare ``requests.get`` on the class — must always go through the Session.
+    assert "requests.get" not in body, (
+        "KismetClient must not call requests.get directly; route through self._session"
+    )
+    # Each of the three HTTP-issuing methods must hit self._session.get.
+    assert body.count("self._session.get(") == 3

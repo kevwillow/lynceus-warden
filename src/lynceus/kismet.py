@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 import requests
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +264,21 @@ class KismetClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        # Mount a urllib3 Retry policy so a single Kismet 5xx, transient
+        # connection error, or read timeout no longer crashes the poll
+        # tick. Auth (4xx) failures are caller's problem — retrying won't
+        # change the answer — so they are NOT in status_forcelist.
+        self._session = requests.Session()
+        retry = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=(502, 503, 504),
+            allowed_methods=("GET",),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
 
     def get_devices_since(
         self,
@@ -274,7 +291,7 @@ class KismetClient:
         kwargs: dict[str, Any] = {"timeout": self.timeout}
         if self.api_key:
             kwargs["cookies"] = {"KISMET": self.api_key}
-        response = requests.get(url, **kwargs)
+        response = self._session.get(url, **kwargs)
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, list):
@@ -296,7 +313,7 @@ class KismetClient:
         if self.api_key:
             kwargs["cookies"] = {"KISMET": self.api_key}
         try:
-            response = requests.get(url, **kwargs)
+            response = self._session.get(url, **kwargs)
             response.raise_for_status()
             data = response.json()
         except requests.RequestException as e:
@@ -334,7 +351,7 @@ class KismetClient:
         kwargs: dict[str, Any] = {"timeout": self.timeout}
         if self.api_key:
             kwargs["cookies"] = {"KISMET": self.api_key}
-        response = requests.get(url, **kwargs)
+        response = self._session.get(url, **kwargs)
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, list):

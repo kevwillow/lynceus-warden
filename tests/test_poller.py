@@ -704,7 +704,7 @@ def test_poller_init_health_check_fails_raises(tmp_path, monkeypatch):
     # Skip the per-attempt sleep so this test runs sub-second instead of waiting
     # the full default backoff schedule.
     monkeypatch.setattr("lynceus.poller.HEALTH_CHECK_RETRY_BACKOFF", [0.0, 0.0, 0.0])
-    monkeypatch.setattr("lynceus.kismet.requests.get", boom)
+    monkeypatch.setattr("requests.sessions.Session.get", boom)
     with pytest.raises(RuntimeError) as exc_info:
         Poller(cfg)
     msg = str(exc_info.value)
@@ -724,7 +724,7 @@ def test_poller_init_health_check_skipped_when_disabled(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise _requests.ConnectionError("would fail")
 
-    monkeypatch.setattr("lynceus.kismet.requests.get", boom)
+    monkeypatch.setattr("requests.sessions.Session.get", boom)
     poller = Poller(cfg)
     poller.db.close()
 
