@@ -5,7 +5,7 @@
 # --- Kismet source ---
 
 # URL of the Kismet REST API. Override per deployment.
-kismet_url: http://localhost:2501
+kismet_url: http://127.0.0.1:2501
 
 # Kismet API key (cookie). Typically set in production deployments where
 # Kismet is auth-protected. Leave null for unauthenticated local use.

@@ -155,3 +155,27 @@ def default_config_path(scope: Scope) -> Path:
 def default_overrides_path(scope: Scope) -> Path:
     """Canonical severity overrides path: ``<config_dir>/severity_overrides.yaml``."""
     return default_config_dir(scope) / "severity_overrides.yaml"
+
+
+def resolve_existing_config() -> Path | None:
+    """Return the first existing canonical config file, preferring user scope.
+
+    Probes ``default_config_path("user")`` first, then
+    ``default_config_path("system")``. Returns ``None`` when neither exists.
+
+    On macOS / Windows the system-scope helper raises
+    ``NotImplementedError`` — that case is treated as "no system path to
+    probe" and the function returns ``None`` if the user path is also
+    absent. Callers that need the probed paths for an error message should
+    re-derive them rather than rely on this helper to surface them.
+    """
+    user_path = default_config_path("user")
+    if user_path.exists():
+        return user_path
+    try:
+        system_path = default_config_path("system")
+    except NotImplementedError:
+        return None
+    if system_path.exists():
+        return system_path
+    return None

@@ -5,13 +5,33 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_KISMET_URL = "http://localhost:2501"
+# Loopback IP, not "localhost". Deterministic across /etc/hosts edits and
+# IPv4/IPv6 ambiguity (some resolvers prefer ::1, which Kismet doesn't bind by
+# default). Single source of truth for both config defaults and the wizard.
+DEFAULT_KISMET_URL = "http://127.0.0.1:2501"
+
+
+def _validate_url_scheme_and_host(value: str, field_name: str) -> None:
+    """Reject scheme-less or non-http(s) URLs at the config layer.
+
+    The poller previously accepted anything that smelled like a URL and
+    handed it to ``requests.get``, which raises ``MissingSchema`` for inputs
+    like ``"127.0.0.1:2501"``. Operators were typing exactly that into the
+    wizard at rc1, and the failure surfaced as a cryptic stack trace at
+    poll time rather than a clear validation error at config load.
+    """
+    parts = urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ValueError(
+            f"{field_name} must include scheme (http:// or https://) and host. Got: {value!r}"
+        )
 
 
 class CaptureConfig(BaseModel):
@@ -58,6 +78,27 @@ class Config(BaseModel):
     kismet_timeout_seconds: float = 10.0
     kismet_health_check_on_startup: bool = True
     capture: CaptureConfig = CaptureConfig()
+
+    @field_validator("kismet_url")
+    @classmethod
+    def _validate_kismet_url(cls, v: str) -> str:
+        _validate_url_scheme_and_host(v, "kismet_url")
+        return v
+
+    @field_validator("ntfy_url", mode="before")
+    @classmethod
+    def _validate_ntfy_url(cls, v: str | None) -> str | None:
+        # ntfy is optional. Empty / whitespace-only collapses to None so
+        # operators (and the wizard) can disable notifications by writing
+        # ``ntfy_url: ""`` without tripping scheme validation.
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise ValueError(f"ntfy_url must be a string, got {type(v).__name__}")
+        if v.strip() == "":
+            return None
+        _validate_url_scheme_and_host(v, "ntfy_url")
+        return v
 
     @field_validator("poll_interval_seconds")
     @classmethod
