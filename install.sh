@@ -313,6 +313,13 @@ install_system() {
     create_symlinks "$SYSTEM_VENV" "$SYSTEM_BIN_DIR"
 
     run mkdir -p /etc/lynceus /var/lib/lynceus /var/log/lynceus
+    # /etc/lynceus is root-owned but lynceus-group readable so the
+    # daemon (User=lynceus) can traverse the directory to reach
+    # lynceus.yaml. Without this 0750 grant, file-level perms on
+    # lynceus.yaml don't matter — directory-traversal denies the
+    # daemon up front.
+    run chown root:lynceus /etc/lynceus
+    run chmod 0750 /etc/lynceus
     run chown -R lynceus:lynceus /var/lib/lynceus /var/log/lynceus
 
     run install -m 0644 "$SYSTEMD_SRC_DIR/lynceus.service"    "$SYSTEMD_DEST_DIR/lynceus.service"
