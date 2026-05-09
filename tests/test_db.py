@@ -693,3 +693,41 @@ def test_latest_poll_ts_invalid_value_raises(db):
     db.set_state("last_poll_ts", "not-an-int")
     with pytest.raises(ValueError):
         db.latest_poll_ts()
+
+
+# ------------------- G2 regression: parent dir mkdir -----------------------
+#
+# rc1.30c patched ``data_dir.mkdir`` inside the wizard, but anything
+# constructing ``Database()`` directly with a path whose parent does not
+# yet exist still hit the opaque sqlite "unable to open database file"
+# error. Pre-existing tests passed because they always used
+# ``tmp_path / "lynceus.db"`` — ``tmp_path`` exists. This regression
+# uses a deeply-nested path the test creates only once, so the
+# constructor itself must do the mkdir.
+
+
+def test_database_creates_missing_parent_dirs(tmp_path):
+    nested = tmp_path / "deep" / "nested" / "subdir" / "lynceus.db"
+    assert not nested.parent.exists()  # precondition
+
+    d = Database(str(nested))
+    try:
+        assert nested.parent.is_dir()
+        assert nested.exists()
+        # Sanity: usable connection.
+        d.ensure_location("loc", "Lab")
+    finally:
+        d.close()
+
+
+def test_database_in_memory_path_does_not_create_dirs(tmp_path, monkeypatch):
+    """``:memory:`` is the sqlite sentinel for an in-memory database; it has
+    no real path, so the mkdir must be skipped. Otherwise we would create
+    a literally-named ``./:memory:`` directory on platforms that allow it."""
+    cwd_before = list(tmp_path.iterdir())
+    monkeypatch.chdir(tmp_path)
+    d = Database(":memory:")
+    try:
+        assert list(tmp_path.iterdir()) == cwd_before
+    finally:
+        d.close()

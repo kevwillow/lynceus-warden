@@ -26,11 +26,10 @@ from urllib.request import urlopen
 
 import yaml
 
-from .. import __version__
+from .. import __version__, paths
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_PATH = "/etc/lynceus/lynceus.yaml"
 DEFAULT_UI_PORT = 8765
 DAEMON_GRACE_SECONDS = 2.0
 UI_HEALTH_TIMEOUT_SECONDS = 10.0
@@ -393,10 +392,17 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Start daemon + UI but do not launch a browser.",
     )
+    # Resolve at parse time so --help shows the path that will actually be used
+    # — the user-mode XDG file under ``--user`` installs, the system-mode file
+    # otherwise, or a clear "(none found)" sentinel that mirrors what main()
+    # will report when the operator forgets to run lynceus-setup first.
+    resolved_default = paths.resolve_existing_config()
+    config_default = str(resolved_default) if resolved_default is not None else None
+    config_default_help = config_default if config_default else "(none found)"
     parser.add_argument(
         "--config",
-        default=None,
-        help=f"Path to lynceus.yaml (default: {DEFAULT_CONFIG_PATH}).",
+        default=config_default,
+        help=f"Path to lynceus.yaml (default: {config_default_help}).",
     )
     parser.add_argument(
         "--version",
@@ -406,10 +412,42 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _no_config_error() -> str:
+    """Build an error message listing both probed config paths.
+
+    On macOS / Windows the system path is unsupported and is reported as
+    "(unsupported)" so the operator isn't pointed at a path Lynceus refuses
+    to use.
+    """
+    user_path = paths.default_config_path("user")
+    try:
+        system_path: Path | None = paths.default_config_path("system")
+    except NotImplementedError:
+        system_path = None
+    lines = [
+        "no lynceus config found. Looked at:",
+        f"  user:   {user_path}",
+        f"  system: {system_path if system_path is not None else '(unsupported on this platform)'}",
+        "Run lynceus-setup to create one.",
+    ]
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    config_path = args.config or DEFAULT_CONFIG_PATH
+    if args.config is None:
+        # _build_parser already attempted resolution at parse time; re-resolve
+        # here so tests that monkeypatch paths.resolve_existing_config after
+        # parser construction still work and so the error message lists the
+        # actual paths probed.
+        resolved = paths.resolve_existing_config()
+        if resolved is None:
+            print(f"error: {_no_config_error()}", file=sys.stderr)
+            return 2
+        config_path = str(resolved)
+    else:
+        config_path = args.config
 
     for err in (
         check_not_root(),

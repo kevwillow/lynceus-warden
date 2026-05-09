@@ -1891,5 +1891,191 @@ def test_run_wizard_kismet_bt_decline_keeps_wifi_only(monkeypatch, tmp_path):
     assert data["kismet_sources"] == ["external_wifi"]
 
 
+# ---- URL prompt validation -------------------------------------------------
+#
+# rc1's wizard accepted any string at the Kismet / ntfy URL prompt. Inputs
+# without a scheme (``127.0.0.1:2501``) flowed straight into the probe and
+# blew up with ``MissingSchema``. The belt-and-suspenders fix validates the
+# input before any probe runs and re-prompts up to a hard cap before
+# aborting, so a fat-fingered operator can't loop on us.
+
+
+def test_prompt_url_accepts_well_formed_url_first_try():
+    seq = _input_seq(["http://kismet.example.com:2501"])
+    out = wiz.prompt_url("Kismet API URL", default=None, required=True, input_fn=seq)
+    assert out == "http://kismet.example.com:2501"
+
+
+def test_prompt_url_rejects_scheme_less_then_accepts(capsys):
+    seq = _input_seq(["127.0.0.1:2501", "http://127.0.0.1:2501"])
+    out = wiz.prompt_url("Kismet API URL", default=None, required=True, input_fn=seq)
+    assert out == "http://127.0.0.1:2501"
+    err_msg = capsys.readouterr().out
+    assert "URL must include a scheme" in err_msg
+    assert "127.0.0.1:2501" in err_msg
+
+
+def test_prompt_url_rejects_scheme_only_no_host(capsys):
+    seq = _input_seq(["http://", "https://kismet.local"])
+    out = wiz.prompt_url("Kismet API URL", default=None, required=True, input_fn=seq)
+    assert out == "https://kismet.local"
+    assert "URL must include a scheme" in capsys.readouterr().out
+
+
+def test_prompt_url_rejects_non_http_scheme(capsys):
+    seq = _input_seq(["ftp://kismet", "http://kismet:2501"])
+    out = wiz.prompt_url("Kismet API URL", default=None, required=True, input_fn=seq)
+    assert out == "http://kismet:2501"
+    assert "URL must include a scheme" in capsys.readouterr().out
+
+
+def test_prompt_url_aborts_after_max_attempts(capsys):
+    """Four invalid entries → abort sentinel raised. Caller turns this into
+    a non-zero exit so the operator can re-run instead of looping forever."""
+    seq = _input_seq(["bad1", "bad2", "bad3", "bad4"])
+    with pytest.raises(wiz._URLPromptAborted):
+        wiz.prompt_url("Kismet API URL", default=None, required=True, input_fn=seq)
+    out = capsys.readouterr().out
+    # All four rejections were reported to the user, not silently swallowed.
+    assert out.count("URL must include a scheme") == 4
+
+
+def test_prompt_url_accepts_default_via_enter():
+    seq = _input_seq([""])
+    out = wiz.prompt_url(
+        "Kismet API URL",
+        default=wiz.DEFAULT_KISMET_URL,
+        required=True,
+        input_fn=seq,
+    )
+    assert out == wiz.DEFAULT_KISMET_URL
+
+
+def test_prompt_url_optional_empty_returns_empty():
+    """When ``required=False`` (the ntfy URL), empty input means 'skip'."""
+    seq = _input_seq([""])
+    out = wiz.prompt_url("ntfy URL", default=None, required=False, input_fn=seq)
+    assert out == ""
+
+
+def test_run_wizard_aborts_on_persistently_invalid_kismet_url(monkeypatch, tmp_path, capsys):
+    """Wizard returns non-zero after the operator can't produce a valid URL.
+
+    G1-adjacent: the exit message tells the operator to re-run, not just a
+    silent ``rc != 0``.
+    """
+    _stub_path_resolution(monkeypatch, tmp_path)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = ["bad1", "bad2", "bad3", "bad4"]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq([]),  # never reached: aborted before token prompt
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Re-run lynceus-setup" in err
+
+
+def test_run_wizard_re_prompts_on_scheme_less_kismet_url(monkeypatch, tmp_path, capsys):
+    """Belt: bad URL gets rejected at the wizard layer with the clear error
+    message, then accepted on the next attempt — no ``MissingSchema`` ever
+    reaches a probe call."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "127.0.0.1:2501",  # rejected
+        "http://10.0.0.5:2501",  # accepted
+        "wlan0",
+        "",  # probe_ssids
+        "",  # ble names
+        "",  # ntfy URL — skip
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "URL must include a scheme" in out
+    assert "127.0.0.1:2501" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_url"] == "http://10.0.0.5:2501"
+
+
+def test_run_wizard_re_prompts_on_scheme_less_ntfy_url(monkeypatch, tmp_path, capsys):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # accept default kismet URL
+        "wlan0",
+        "",  # probe_ssids
+        "",  # ble names
+        "ntfy.sh",  # rejected — no scheme
+        "https://ntfy.sh",  # accepted
+        "lynceus-test",  # ntfy topic
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "URL must include a scheme" in out
+    assert "ntfy.sh" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_url"] == "https://ntfy.sh"
+
+
+def test_run_wizard_kismet_probe_never_sees_scheme_less_url(monkeypatch, tmp_path):
+    """G1: probe_kismet must NEVER be called with a scheme-less URL.
+
+    The pre-fix flow handed the raw input straight to ``probe_kismet`` →
+    ``KismetClient(base_url=...)`` → ``requests.get`` and the operator got
+    ``MissingSchema``. With the wizard-layer guard, the URL is validated
+    BEFORE the probe runs, so any URL the probe receives is well-formed.
+    """
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+
+    seen_urls: list[str] = []
+
+    def fake_probe_kismet(url, token, timeout=None):
+        seen_urls.append(url)
+        return (True, "v1", None)
+
+    monkeypatch.setattr(wiz, "probe_kismet", fake_probe_kismet)
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **k: None)
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **k: (True, None))
+
+    inputs = [
+        "127.0.0.1:2501",  # rejected at the prompt — never reaches probe
+        "http://10.0.0.5:2501",  # accepted
+        "wlan0",
+        "",
+        "",
+        "",  # skip ntfy
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    # Probe was called exactly once, and only with the well-formed URL.
+    assert seen_urls == ["http://10.0.0.5:2501"]
+
+
 # Suppress the unused-import warning for sys (used by helpers above).
 _ = sys

@@ -21,17 +21,21 @@ import secrets
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
 from .. import __version__, paths
+from ..config import DEFAULT_KISMET_URL
 from ..kismet import KismetClient
 
 logger = logging.getLogger(__name__)
 
 # --- Defaults ---------------------------------------------------------------
 
-DEFAULT_KISMET_URL = "http://127.0.0.1:2501"
+# DEFAULT_KISMET_URL re-exported from lynceus.config so the wizard, the loaded
+# config, and the fixture-vs-url warning compare against a single source of
+# truth.
 DEFAULT_NTFY_BROKER = "https://ntfy.sh"
 DEFAULT_RSSI_THRESHOLD = -70
 DEFAULT_UI_PORT = 8765
@@ -218,6 +222,57 @@ def prompt_secret(question: str, *, getpass_fn=None) -> str:
         if value:
             return value
         print("Value required; please enter a non-empty value.")
+
+
+URL_PROMPT_MAX_ATTEMPTS = 4
+
+
+class _URLPromptAborted(Exception):
+    """Raised by ``prompt_url`` after too many invalid attempts.
+
+    Signals to ``run_wizard`` to abort with a non-zero return code rather
+    than letting the operator loop indefinitely on a fat-fingered input.
+    """
+
+
+def _is_valid_url(value: str) -> bool:
+    """Return True iff ``value`` parses as an http(s) URL with a non-empty host.
+
+    Mirrors the config-layer validator in ``lynceus.config``. The wizard
+    runs this BEFORE any probe so that ``probe_kismet`` / ``probe_ntfy`` —
+    which would otherwise feed scheme-less inputs straight into
+    ``requests.get`` and surface a cryptic ``MissingSchema`` traceback —
+    never see an invalid URL. Belt; the config-layer validator is suspenders.
+    """
+    parts = urlsplit(value)
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def prompt_url(
+    question: str,
+    *,
+    default: str | None,
+    required: bool,
+    input_fn=None,
+    max_attempts: int = URL_PROMPT_MAX_ATTEMPTS,
+) -> str:
+    """Prompt for a URL with scheme validation and a hard re-try cap.
+
+    Empty input is allowed only when ``required`` is False (returns ``""``).
+    Otherwise the input must parse with a scheme of ``http`` or ``https`` and
+    a non-empty host. After ``max_attempts`` invalid entries the function
+    raises ``_URLPromptAborted`` so the wizard can return a non-zero exit
+    code with a "re-run lynceus-setup" hint.
+    """
+    in_fn = input_fn or input
+    for _ in range(max_attempts):
+        value = prompt_default(question, default=default, required=required, input_fn=in_fn)
+        if not value and not required:
+            return value
+        if _is_valid_url(value):
+            return value
+        print(f"✗ URL must include a scheme (http:// or https://). You typed: {value}")
+    raise _URLPromptAborted()
 
 
 def prompt_yes_no(question: str, *, default: bool, input_fn=None) -> bool:
@@ -576,10 +631,21 @@ def run_wizard(
 
     answers: dict = {}
 
-    # (a) Kismet URL
-    answers["kismet_url"] = prompt_default(
-        "Kismet API URL", default=DEFAULT_KISMET_URL, input_fn=in_fn
-    )
+    # (a) Kismet URL — validated for scheme + host before any probe touches it.
+    try:
+        answers["kismet_url"] = prompt_url(
+            "Kismet API URL",
+            default=DEFAULT_KISMET_URL,
+            required=True,
+            input_fn=in_fn,
+        )
+    except _URLPromptAborted:
+        print(
+            f"Too many invalid URL entries (>{URL_PROMPT_MAX_ATTEMPTS - 1}). "
+            "Re-run lynceus-setup to retry.",
+            file=sys.stderr,
+        )
+        return 1
     # (b) Kismet token
     answers["kismet_api_key"] = prompt_secret("Kismet API token (input hidden)", getpass_fn=gp_fn)
 
@@ -709,13 +775,22 @@ def run_wizard(
         input_fn=in_fn,
     )
 
-    # (g) ntfy URL — empty input skips ntfy entirely
-    ntfy_url_input = prompt_default(
-        f"ntfy broker URL (Enter to skip notifications, e.g. {DEFAULT_NTFY_BROKER})",
-        default=None,
-        required=False,
-        input_fn=in_fn,
-    )
+    # (g) ntfy URL — empty input skips ntfy entirely. When non-empty, the same
+    # scheme-and-host validation runs before any probe.
+    try:
+        ntfy_url_input = prompt_url(
+            f"ntfy broker URL (Enter to skip notifications, e.g. {DEFAULT_NTFY_BROKER})",
+            default=None,
+            required=False,
+            input_fn=in_fn,
+        )
+    except _URLPromptAborted:
+        print(
+            f"Too many invalid URL entries (>{URL_PROMPT_MAX_ATTEMPTS - 1}). "
+            "Re-run lynceus-setup to retry.",
+            file=sys.stderr,
+        )
+        return 1
     if not ntfy_url_input:
         print(
             "Skipping ntfy. Notifications will not be sent. "

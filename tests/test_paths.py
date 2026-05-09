@@ -174,3 +174,79 @@ def test_invalid_scope_rejected(monkeypatch):
     _force_linux(monkeypatch)
     with pytest.raises(ValueError):
         paths.default_config_dir("global")  # type: ignore[arg-type]
+
+
+# --- resolve_existing_config: user-mode preferred, system fallback, none ---
+
+
+def test_resolve_existing_config_returns_user_path_when_only_user_exists(monkeypatch, tmp_path):
+    user_path = tmp_path / "user" / "lynceus.yaml"
+    system_path = tmp_path / "system" / "lynceus.yaml"
+    user_path.parent.mkdir(parents=True)
+    user_path.write_text("ui_bind_port: 1\n")
+
+    monkeypatch.setattr(
+        paths,
+        "default_config_path",
+        lambda scope: user_path if scope == "user" else system_path,
+    )
+    assert paths.resolve_existing_config() == user_path
+
+
+def test_resolve_existing_config_returns_system_path_when_only_system_exists(monkeypatch, tmp_path):
+    user_path = tmp_path / "user" / "lynceus.yaml"
+    system_path = tmp_path / "system" / "lynceus.yaml"
+    system_path.parent.mkdir(parents=True)
+    system_path.write_text("ui_bind_port: 1\n")
+
+    monkeypatch.setattr(
+        paths,
+        "default_config_path",
+        lambda scope: user_path if scope == "user" else system_path,
+    )
+    assert paths.resolve_existing_config() == system_path
+
+
+def test_resolve_existing_config_prefers_user_when_both_exist(monkeypatch, tmp_path):
+    user_path = tmp_path / "user" / "lynceus.yaml"
+    system_path = tmp_path / "system" / "lynceus.yaml"
+    user_path.parent.mkdir(parents=True)
+    system_path.parent.mkdir(parents=True)
+    user_path.write_text("ui_bind_port: 1\n")
+    system_path.write_text("ui_bind_port: 2\n")
+
+    monkeypatch.setattr(
+        paths,
+        "default_config_path",
+        lambda scope: user_path if scope == "user" else system_path,
+    )
+    assert paths.resolve_existing_config() == user_path
+
+
+def test_resolve_existing_config_returns_none_when_neither_exists(monkeypatch, tmp_path):
+    user_path = tmp_path / "user" / "lynceus.yaml"
+    system_path = tmp_path / "system" / "lynceus.yaml"
+
+    monkeypatch.setattr(
+        paths,
+        "default_config_path",
+        lambda scope: user_path if scope == "user" else system_path,
+    )
+    assert paths.resolve_existing_config() is None
+
+
+def test_resolve_existing_config_swallows_system_unsupported(monkeypatch, tmp_path):
+    """On macOS / Windows ``default_config_path("system")`` raises
+    ``NotImplementedError``. The resolver treats that as 'no system probe'
+    and returns ``None`` if the user path is also absent — it must not
+    propagate the error to a caller that just wants to know whether any
+    config was discoverable."""
+    user_path = tmp_path / "user" / "lynceus.yaml"
+
+    def fake_default_config_path(scope):
+        if scope == "user":
+            return user_path
+        raise NotImplementedError("unsupported on this platform")
+
+    monkeypatch.setattr(paths, "default_config_path", fake_default_config_path)
+    assert paths.resolve_existing_config() is None

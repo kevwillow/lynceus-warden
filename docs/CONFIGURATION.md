@@ -8,7 +8,7 @@ The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and r
 
 | Field | Type | Default | Description | Example |
 | --- | --- | --- | --- | --- |
-| `kismet_url` | string | `http://localhost:2501` | Base URL of the Kismet REST API. | `http://192.168.1.10:2501` |
+| `kismet_url` | string | `http://127.0.0.1:2501` | Base URL of the Kismet REST API. Must include scheme (`http://` or `https://`); scheme-less values like `127.0.0.1:2501` are rejected at load. | `http://192.168.1.10:2501` |
 | `kismet_api_key` | string \| null | `null` | Kismet API key (sent as the `KISMET` cookie). Required for any Kismet instance with auth enabled. | `abc123def456...` |
 | `kismet_fixture_path` | string \| null | `null` | Path to a JSON fixture matching the Kismet device-list shape. When set, lynceus uses `FakeKismetClient` and never makes HTTP calls — useful for offline development and tests. | `tests/fixtures/kismet_devices.json` |
 | `db_path` | string | `lynceus.db` | Path to the SQLite database file. Override to a stable absolute path on production. | `/var/lib/lynceus/lynceus.db` |
@@ -45,7 +45,7 @@ The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and r
 A single Pi watching the apartment, alerts pushed to a personal ntfy topic.
 
 ```yaml
-kismet_url: http://localhost:2501
+kismet_url: http://127.0.0.1:2501
 kismet_api_key: paste-from-kismet-ui
 
 db_path: /var/lib/lynceus/lynceus.db
@@ -69,7 +69,7 @@ ntfy_topic: kev-lynceus-home
 Same shape as the home install, with an aggressive allowlist for coworker phones, laptops, and headphones to keep the noise down. The allowlist itself lives in `allowlist.yaml`; `lynceus.yaml` just points at it.
 
 ```yaml
-kismet_url: http://localhost:2501
+kismet_url: http://127.0.0.1:2501
 kismet_api_key: paste-from-kismet-ui
 
 db_path: /var/lib/lynceus/lynceus.db
@@ -111,7 +111,7 @@ entries:
 A portable Pi for hotel and conference deployments. Faster poll, no dedup, separate ntfy topic so travel alerts don't mix with home traffic. The lynceus config doesn't have a "travel mode" flag — you configure travel posture by tightening the dedup window and pointing at a stricter `rules.yaml`.
 
 ```yaml
-kismet_url: http://localhost:2501
+kismet_url: http://127.0.0.1:2501
 kismet_api_key: paste-from-kismet-ui
 
 db_path: /var/lib/lynceus/travel.db
@@ -142,7 +142,7 @@ Two adapters on a single Pi — say a 2.4 GHz Wi-Fi monitor and an internal Blue
 Configure Kismet with both `source=` lines first; lynceus doesn't drive Kismet's adapter selection. Then on the lynceus side, list the source names and (optionally) attach a location label per source:
 
 ```yaml
-kismet_url: http://localhost:2501
+kismet_url: http://127.0.0.1:2501
 kismet_api_key: paste-from-kismet-ui
 
 db_path: /var/lib/lynceus/lynceus.db

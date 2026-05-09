@@ -32,6 +32,13 @@ def _find_migrations_dir() -> Path:
 
 class Database:
     def __init__(self, path: str) -> None:
+        # sqlite3.connect with a nested non-existent path fails with the
+        # opaque "unable to open database file" error. The wizard creates
+        # the canonical data dir up front, but anything constructing a
+        # Database() directly (tests, ad-hoc scripts, third-party callers)
+        # would have hit that. ``:memory:`` has no parent to create.
+        if path != ":memory:":
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
             path,
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
