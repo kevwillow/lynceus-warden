@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import importlib.resources
+import logging
 import os
 import secrets
 import subprocess
@@ -25,6 +26,8 @@ import requests
 
 from .. import __version__, paths
 from ..kismet import KismetClient
+
+logger = logging.getLogger(__name__)
 
 # --- Defaults ---------------------------------------------------------------
 
@@ -248,6 +251,32 @@ def prompt_numbered_choice(question: str, options: list[str], *, input_fn=None) 
         print(f"Choice out of range; enter a number between 1 and {len(options)}.")
 
 
+# --- Kismet datasource label rendering -------------------------------------
+
+
+def _format_source_label(source: dict) -> str:
+    """Render a Kismet datasource for the numbered-selection prompt.
+
+    Format: ``"<name>  (interface: <iface>, capture: <capture_iface>)"``.
+    The parenthetical clarifies what the source is actually capturing on
+    so the operator can distinguish e.g. ``external_wifi`` mapped to
+    ``wlan1`` from ``external_wifi`` mapped to a different radio. Empty
+    sub-fields are dropped from the parenthetical so it doesn't render
+    half-empty.
+    """
+    name = source.get("name") or ""
+    parts: list[str] = []
+    iface = source.get("interface") or ""
+    capture = source.get("capture_interface") or ""
+    if iface:
+        parts.append(f"interface: {iface}")
+    if capture:
+        parts.append(f"capture: {capture}")
+    if parts:
+        return f"{name}  ({', '.join(parts)})"
+    return name
+
+
 # --- Wireless interface enumeration ----------------------------------------
 
 
@@ -332,6 +361,28 @@ def probe_kismet(
     client = KismetClient(base_url=url, api_key=token, timeout=timeout)
     result = client.health_check()
     return bool(result.get("reachable")), result.get("version"), result.get("error")
+
+
+def probe_kismet_sources(
+    url: str, token: str, timeout: float = PROBE_TIMEOUT_SECONDS
+) -> list[dict] | None:
+    """Query Kismet for its configured datasource list.
+
+    Returns the normalized source list on success, ``None`` on any failure
+    (network, HTTP, malformed JSON, timeout). Caller falls back to OS
+    enumeration with a clear warning when this returns ``None``.
+
+    The wizard relies on this so the operator picks Kismet *source names*
+    (e.g. ``external_wifi``) — what the poller actually filters on — rather
+    than kernel interface names (e.g. ``wlan1``) which silently mismatch
+    when the operator's Kismet config maps them to a different name.
+    """
+    try:
+        client = KismetClient(base_url=url, api_key=token, timeout=timeout)
+        return client.list_sources()
+    except Exception as e:
+        logger.warning("Kismet list_sources probe failed: %s", e)
+        return None
 
 
 def probe_ntfy(
@@ -532,53 +583,115 @@ def run_wizard(
     # (b) Kismet token
     answers["kismet_api_key"] = prompt_secret("Kismet API token (input hidden)", getpass_fn=gp_fn)
 
-    # (c) Kismet probe
+    # (c) Kismet probe — also queries the configured datasource list when
+    # reachable, so we can offer the operator the actual source NAMES the
+    # poller filters on (rather than kernel interface names which silently
+    # mismatch — the rc1 silent-drop bug).
+    sources_list: list[dict] | None = None
+    fallback_warning_needed = False
     if not args.skip_probes:
         ok, version, error = probe_kismet(answers["kismet_url"], answers["kismet_api_key"])
         if ok:
             print(f"✓ Kismet reachable, version {version or 'unknown'}")
+            sources_list = probe_kismet_sources(answers["kismet_url"], answers["kismet_api_key"])
+            if sources_list is None:
+                fallback_warning_needed = True
         else:
             print(f"✗ Kismet probe failed: {error}")
             if not prompt_yes_no("Continue anyway?", default=False, input_fn=in_fn):
                 print("Aborted.", file=sys.stderr)
                 return 1
+            fallback_warning_needed = True
 
-    # (d) Capture interface (WiFi)
-    interfaces = enumerate_wireless_interfaces()
-    if interfaces:
-        wifi = prompt_numbered_choice("Select capture interface:", interfaces, input_fn=in_fn)
-    else:
-        wifi = prompt_default(
-            "Capture interface name (e.g. wlan0)",
-            default=None,
-            required=True,
-            input_fn=in_fn,
+    wifi_sources: list[dict] = []
+    bt_sources: list[dict] = []
+    if sources_list is not None:
+        wifi_sources = [s for s in sources_list if s.get("driver") == "linuxwifi"]
+        bt_sources = [s for s in sources_list if s.get("driver") == "linuxbluetooth"]
+
+    if fallback_warning_needed and sources_list is None:
+        print(
+            "WARNING: Could not query Kismet for datasource names. "
+            "Falling back to OS interface enumeration."
         )
-    kismet_sources: list[str] = [wifi]
+        print(
+            "Verify the value you pick matches the `name=` in your Kismet source "
+            "line (e.g. `source=wlan1:name=external_wifi` → pick `external_wifi`)."
+        )
+        print("If they don't match, the poller will silently drop every observation.")
+
+    # (d) Capture source selection (WiFi)
+    kismet_sources: list[str] = []
+    if sources_list is not None:
+        if not wifi_sources:
+            print(
+                "Kismet is reachable but has no Wi-Fi datasource configured. "
+                "Add one to your Kismet config (typically /etc/kismet/kismet_site.conf):"
+            )
+            print("    source=wlan1:name=external_wifi")
+            print("Then restart Kismet and re-run lynceus-setup.")
+            return 1
+        wifi_labels = [_format_source_label(s) for s in wifi_sources]
+        picked_wifi = prompt_numbered_choice(
+            "Select Kismet Wi-Fi datasource:", wifi_labels, input_fn=in_fn
+        )
+        wifi_idx = wifi_labels.index(picked_wifi)
+        kismet_sources.append(wifi_sources[wifi_idx]["name"])
+    else:
+        interfaces = enumerate_wireless_interfaces()
+        if interfaces:
+            wifi = prompt_numbered_choice("Select capture interface:", interfaces, input_fn=in_fn)
+        else:
+            wifi = prompt_default(
+                "Capture interface name (e.g. wlan0)",
+                default=None,
+                required=True,
+                input_fn=in_fn,
+            )
+        kismet_sources.append(wifi)
 
     # (d2) Bluetooth capture source
-    bt_adapters = enumerate_bluetooth_adapters()
-    if bt_adapters is None:
-        print(
-            "Bluetooth adapter selection not implemented on this platform; "
-            "configure Kismet's BT source manually if needed."
-        )
-    elif len(bt_adapters) == 0:
-        print(
-            "No Bluetooth adapter detected. Skipping BT source. "
-            "Configure Kismet's bluetooth source manually if you want BLE captures."
-        )
-    else:
-        if prompt_yes_no(
+    if sources_list is not None:
+        if not bt_sources:
+            print("Kismet has no Bluetooth datasource configured. To enable BLE captures later:")
+            print("    Add: source=hci0:type=linuxbluetooth,name=local_bt")
+            print("    Restart Kismet, then re-run lynceus-setup --reconfigure.")
+            print("Continuing without BT capture.")
+        elif prompt_yes_no(
             "Add a Bluetooth capture source? Tier 1 BLE enrichment requires "
             "Kismet to have a BT source configured.",
             default=True,
             input_fn=in_fn,
         ):
-            bt_choice = prompt_numbered_choice(
-                "Select Bluetooth adapter:", bt_adapters, input_fn=in_fn
+            bt_labels = [_format_source_label(s) for s in bt_sources]
+            picked_bt = prompt_numbered_choice(
+                "Select Kismet Bluetooth datasource:", bt_labels, input_fn=in_fn
             )
-            kismet_sources.append(bt_choice)
+            bt_idx = bt_labels.index(picked_bt)
+            kismet_sources.append(bt_sources[bt_idx]["name"])
+    else:
+        bt_adapters = enumerate_bluetooth_adapters()
+        if bt_adapters is None:
+            print(
+                "Bluetooth adapter selection not implemented on this platform; "
+                "configure Kismet's BT source manually if needed."
+            )
+        elif len(bt_adapters) == 0:
+            print(
+                "No Bluetooth adapter detected. Skipping BT source. "
+                "Configure Kismet's bluetooth source manually if you want BLE captures."
+            )
+        else:
+            if prompt_yes_no(
+                "Add a Bluetooth capture source? Tier 1 BLE enrichment requires "
+                "Kismet to have a BT source configured.",
+                default=True,
+                input_fn=in_fn,
+            ):
+                bt_choice = prompt_numbered_choice(
+                    "Select Bluetooth adapter:", bt_adapters, input_fn=in_fn
+                )
+                kismet_sources.append(bt_choice)
 
     answers["kismet_sources"] = kismet_sources
 

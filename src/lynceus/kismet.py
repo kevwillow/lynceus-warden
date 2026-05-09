@@ -310,6 +310,60 @@ class KismetClient:
                 version = v
         return {"reachable": True, "version": version, "error": None}
 
+    def list_sources(self, *, only_running: bool = True) -> list[dict[str, Any]]:
+        """Query Kismet's configured datasources.
+
+        Returns one normalized dict per source with keys: ``name``,
+        ``interface``, ``capture_interface``, ``uuid``, ``driver``,
+        ``running``. The ``name`` is the value Kismet uses on the wire and
+        is what the poller filters against — distinct from the kernel
+        interface (``wlan1``) and the actual capture interface
+        (``wlan1mon``). Misalignment between the wizard-prompted value and
+        the source name is the silent-drop bug this method fixes.
+
+        Sources whose ``kismet.datasource.running`` is falsy are excluded by
+        default (a source in error state can't produce observations and
+        offering it to the operator just confuses things).
+
+        Raises ``requests.HTTPError`` on non-2xx responses, ``ValueError``
+        on malformed JSON or non-list payloads, and ``requests.RequestException``
+        subclasses (Timeout, ConnectionError) on transport failures. Caller
+        decides how to handle each.
+        """
+        url = f"{self.base_url}/datasource/all_sources.json"
+        kwargs: dict[str, Any] = {"timeout": self.timeout}
+        if self.api_key:
+            kwargs["cookies"] = {"KISMET": self.api_key}
+        response = requests.get(url, **kwargs)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, list):
+            raise ValueError(f"expected list response, got {type(data).__name__}")
+        sources: list[dict[str, Any]] = []
+        for raw in data:
+            if not isinstance(raw, dict):
+                continue
+            running = bool(raw.get("kismet.datasource.running", False))
+            if only_running and not running:
+                continue
+            type_driver = raw.get("kismet.datasource.type_driver")
+            driver = ""
+            if isinstance(type_driver, dict):
+                d = type_driver.get("kismet.datasource.driver.type")
+                if isinstance(d, str):
+                    driver = d
+            sources.append(
+                {
+                    "name": str(raw.get("kismet.datasource.name") or ""),
+                    "interface": str(raw.get("kismet.datasource.interface") or ""),
+                    "capture_interface": str(raw.get("kismet.datasource.capture_interface") or ""),
+                    "uuid": str(raw.get("kismet.datasource.uuid") or ""),
+                    "driver": driver,
+                    "running": running,
+                }
+            )
+        return sources
+
 
 class FakeKismetClient(KismetClient):
     def __init__(self, fixture_path: str) -> None:
