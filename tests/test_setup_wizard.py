@@ -616,24 +616,46 @@ def test_config_yaml_contains_api_token(monkeypatch, tmp_path):
     assert data["kismet_api_key"] == "super-secret-token-xyz"
 
 
-def test_write_config_sets_0600_on_posix(monkeypatch, tmp_path):
-    chmod_calls = []
+def test_write_config_uses_atomic_write_with_0600_mode_on_posix(monkeypatch, tmp_path):
+    """write_config must hand off to ``_atomic_write`` so the file is
+    created with mode 0o600 atomically — no umask-derived window between
+    create and chmod (S2). The legacy ``write_text`` + ``chmod`` two-step
+    is gone."""
     monkeypatch.setattr(wiz, "_is_windows", lambda: False)
-    monkeypatch.setattr(wiz.os, "chmod", lambda p, m: chmod_calls.append((str(p), m)))
+    captured: dict = {}
+    real_open = os.open
+
+    def fake_open(path, flags, mode=0o777, *a, **kw):
+        captured["path"] = str(path)
+        captured["flags"] = flags
+        captured["mode"] = mode
+        return real_open(path, flags, mode, *a, **kw)
+
+    monkeypatch.setattr(wiz.os, "open", fake_open)
     target = tmp_path / "lynceus.yaml"
     wiz.write_config(target, "kismet_url: x\n")
     assert target.exists()
-    assert chmod_calls == [(str(target), 0o600)]
+    assert captured["mode"] == 0o600
+    assert captured["flags"] & os.O_CREAT
+    assert captured["flags"] & os.O_WRONLY
+    assert captured["flags"] & os.O_TRUNC
 
 
-def test_write_config_skips_chmod_on_windows(monkeypatch, tmp_path):
-    chmod_calls = []
+def test_write_config_skips_atomic_open_on_windows(monkeypatch, tmp_path):
+    """On Windows POSIX mode bits are meaningless, so ``_atomic_write``
+    falls through to ``Path.write_text`` and never touches ``os.open``."""
     monkeypatch.setattr(wiz, "_is_windows", lambda: True)
-    monkeypatch.setattr(wiz.os, "chmod", lambda p, m: chmod_calls.append((str(p), m)))
+    open_calls = []
+    real_open = os.open
+    monkeypatch.setattr(
+        wiz.os,
+        "open",
+        lambda *a, **kw: open_calls.append((a, kw)) or real_open(*a, **kw),
+    )
     target = tmp_path / "lynceus.yaml"
     wiz.write_config(target, "kismet_url: x\n")
     assert target.exists()
-    assert chmod_calls == []
+    assert open_calls == [], "Windows path must not use os.open with mode bits"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX-only file mode check")
@@ -1055,11 +1077,26 @@ def test_wizard_uses_system_db_path_when_system_scope(monkeypatch, tmp_path):
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.sys, "platform", "linux")
     monkeypatch.setattr(wiz, "_euid", lambda: 0)  # pretend we're root for --system
     # Stub data + log dir mkdirs onto tmp_path so we don't try to mkdir
     # /var/lib/lynceus on the test host.
     monkeypatch.setattr(paths, "default_data_dir", lambda scope: tmp_path / "data")
     monkeypatch.setattr(paths, "default_log_dir", lambda scope: tmp_path / "log")
+    # System-mode now applies lynceus group ownership to the freshly
+    # written config + dirs; stub the chown/chmod plumbing so this test
+    # exercises only the DB-path resolution it cares about.
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(wiz.os, "chmod", lambda *a, **kw: None, raising=False)
+    fake_grp = MagicMock()
+    fake_grp.getgrnam.return_value = MagicMock(gr_gid=2000)
+    fake_pwd = MagicMock()
+    fake_pwd.getpwnam.return_value = MagicMock(pw_uid=2000)
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "grp", fake_grp)
+    monkeypatch.setitem(_sys.modules, "pwd", fake_pwd)
+
     captured = {}
 
     def fake_bundled(db_path, override_file):
@@ -2075,6 +2112,534 @@ def test_run_wizard_kismet_probe_never_sees_scheme_less_url(monkeypatch, tmp_pat
     assert rc == 0
     # Probe was called exactly once, and only with the well-formed URL.
     assert seen_urls == ["http://10.0.0.5:2501"]
+
+
+# ---- system-mode ownership: Bug 6, S1, S2, S5 -----------------------------
+#
+# rc1's --system mode shipped three independent footguns that stacked
+# into "broken-by-default":
+#
+#   Bug 6: config written 0600 root:root → daemon (User=lynceus) can't
+#          read it → unit fails on first start.
+#   S1:    data_dir + lynceus.db owned by root → daemon can't write
+#          → first poll fails with "attempt to write a readonly database".
+#   S2:    secrets-bearing config briefly world-readable between
+#          ``write_text`` and the follow-up ``chmod`` (race window in
+#          BOTH user and system mode).
+#   S5:    /etc/lynceus dir is root:root 0755 → directory-traversal
+#          denied to the lynceus group → even properly-owned config files
+#          remain unreadable.
+#
+# Each test in this section is a regression: it exercises the path that
+# pre-fix code did not implement, so it MUST FAIL against rc1.
+
+
+# ---- S2: atomic write closes the chmod race ------------------------------
+
+
+def test_atomic_write_opens_with_target_mode_on_posix(monkeypatch, tmp_path):
+    """``_atomic_write`` must set the file mode at fd-creation time, not
+    after the fact. ``os.open(...)`` is invoked with O_CREAT|O_WRONLY|
+    O_TRUNC and the explicit 0o600 mode — no umask-derived window
+    between create and chmod."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    captured: dict = {}
+    real_open = os.open
+
+    def fake_open(path, flags, mode=0o777, *a, **kw):
+        captured["path"] = str(path)
+        captured["flags"] = flags
+        captured["mode"] = mode
+        return real_open(path, flags, mode, *a, **kw)
+
+    monkeypatch.setattr(wiz.os, "open", fake_open)
+    target = tmp_path / "secret.yaml"
+    wiz._atomic_write(target, "kismet_api_key: secret\n")
+    assert captured["mode"] == 0o600
+    assert captured["flags"] & os.O_CREAT
+    assert captured["flags"] & os.O_WRONLY
+    assert captured["flags"] & os.O_TRUNC
+    assert target.read_text() == "kismet_api_key: secret\n"
+
+
+def test_atomic_write_honours_explicit_mode(monkeypatch, tmp_path):
+    """The ``mode`` kwarg propagates to the ``os.open`` call so callers
+    that need a different default (e.g. 0o640 for a system-mode file
+    that's group-readable) get the bits they asked for."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    captured: dict = {}
+    real_open = os.open
+
+    def fake_open(path, flags, mode=0o777, *a, **kw):
+        captured["mode"] = mode
+        return real_open(path, flags, mode, *a, **kw)
+
+    monkeypatch.setattr(wiz.os, "open", fake_open)
+    target = tmp_path / "shared.yaml"
+    wiz._atomic_write(target, "x\n", mode=0o640)
+    assert captured["mode"] == 0o640
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only file mode check")
+def test_atomic_write_real_mode_is_0600(tmp_path):
+    """Belt: actually stat the file after _atomic_write and verify the
+    bits. The race window cannot exist if the mode is set at creation."""
+    target = tmp_path / "secret.yaml"
+    wiz._atomic_write(target, "kismet_api_key: secret\n")
+    mode = target.stat().st_mode & 0o777
+    assert mode == 0o600
+
+
+def test_atomic_write_on_windows_falls_back_to_write_text(monkeypatch, tmp_path):
+    """Windows has no meaningful POSIX mode bits, so the helper short-
+    circuits to Path.write_text — ``os.open`` is never called."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    open_calls: list = []
+    real_open = os.open
+    monkeypatch.setattr(
+        wiz.os,
+        "open",
+        lambda *a, **kw: open_calls.append((a, kw)) or real_open(*a, **kw),
+    )
+    target = tmp_path / "secret.yaml"
+    wiz._atomic_write(target, "kismet_api_key: secret\n")
+    assert target.read_text() == "kismet_api_key: secret\n"
+    assert open_calls == []
+
+
+def test_setup_py_no_longer_uses_write_text_then_chmod_pattern():
+    """The legacy ``write_text(...) + chmod(0o600)`` pair leaves a
+    race window in which the secret-bearing config is briefly world-
+    readable. After the S2 fix, the pattern must not exist anywhere
+    in setup.py — every secrets-bearing write goes through
+    ``_atomic_write``."""
+    setup_py = Path(wiz.__file__).read_text()
+    # No top-level write_text on a yaml/conf path immediately followed
+    # by a chmod. Search for the most concrete witness: a chmod 0o600
+    # call. Pre-fix code had two; post-fix code has none.
+    assert "os.chmod(path, 0o600)" not in setup_py, (
+        "Found a chmod-after-write_text remnant; convert the call site to _atomic_write."
+    )
+    assert "chmod(path, 0o600)" not in setup_py
+
+
+# ---- Bug 6: config + overrides chowned root:lynceus 0640 -----------------
+
+
+@pytest.fixture
+def _stub_perms(monkeypatch):
+    """Capture chown / chmod calls and stub pwd/grp lookups so the
+    test never has to be running as root or have a real lynceus user.
+
+    Yields a dict with ``chown_calls``, ``chmod_calls``, ``getgrnam``
+    so individual tests can extend the stub (e.g. force a KeyError).
+
+    ``raising=False`` on the os.* monkeypatches because Windows lacks
+    those attributes natively — the stub adds them so tests can run
+    cross-platform against the Linux code paths.
+    """
+    chown_calls: list = []
+    chmod_calls: list = []
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    monkeypatch.setattr(
+        wiz.os,
+        "chown",
+        lambda p, u, g: chown_calls.append((str(p), u, g)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        wiz.os,
+        "chmod",
+        lambda p, m: chmod_calls.append((str(p), m)),
+        raising=False,
+    )
+
+    fake_grp = MagicMock()
+    fake_grp.getgrnam.return_value = MagicMock(gr_gid=2000)
+    fake_pwd = MagicMock()
+    fake_pwd.getpwnam.return_value = MagicMock(pw_uid=2000)
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "grp", fake_grp)
+    monkeypatch.setitem(_sys.modules, "pwd", fake_pwd)
+    return {
+        "chown_calls": chown_calls,
+        "chmod_calls": chmod_calls,
+        "fake_grp": fake_grp,
+        "fake_pwd": fake_pwd,
+    }
+
+
+def test_apply_system_perms_to_file_chowns_and_chmods_to_0640(_stub_perms, tmp_path):
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("x\n")
+    wiz._apply_system_perms_to_file(target)
+    # owner stays root (uid 0), group becomes the resolved lynceus gid
+    assert _stub_perms["chown_calls"] == [(str(target), 0, 2000)]
+    assert _stub_perms["chmod_calls"] == [(str(target), 0o640)]
+
+
+def test_apply_system_perms_to_file_raises_setuperror_when_group_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    fake_grp = MagicMock()
+    fake_grp.getgrnam.side_effect = KeyError("lynceus")
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "grp", fake_grp)
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(wiz.os, "chmod", lambda *a, **kw: None, raising=False)
+
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("x\n")
+    with pytest.raises(wiz.SetupError) as exc:
+        wiz._apply_system_perms_to_file(target)
+    assert "Group 'lynceus' does not exist" in str(exc.value)
+    assert "install.sh --system" in str(exc.value)
+
+
+def test_apply_system_perms_to_dir_chowns_to_lynceus_lynceus_0750(_stub_perms, tmp_path):
+    d = tmp_path / "data"
+    d.mkdir()
+    wiz._apply_system_perms_to_dir(d)
+    assert _stub_perms["chown_calls"] == [(str(d), 2000, 2000)]
+    assert _stub_perms["chmod_calls"] == [(str(d), 0o750)]
+
+
+def test_apply_system_perms_to_file_noop_on_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    chown_calls: list = []
+    chmod_calls: list = []
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: chown_calls.append(a), raising=False)
+    monkeypatch.setattr(wiz.os, "chmod", lambda *a, **kw: chmod_calls.append(a), raising=False)
+    target = tmp_path / "x.yaml"
+    target.write_text("x\n")
+    wiz._apply_system_perms_to_file(target)
+    assert chown_calls == []
+    assert chmod_calls == []
+
+
+def test_apply_system_perms_raises_setuperror_on_macos(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.sys, "platform", "darwin")
+    target = tmp_path / "x.yaml"
+    target.write_text("x\n")
+    with pytest.raises(wiz.SetupError) as exc:
+        wiz._apply_system_perms_to_file(target)
+    assert "Linux-only" in str(exc.value)
+
+
+# ---- run_wizard wiring: scope=system applies perms; scope=user does not --
+
+
+def _system_scope_inputs():
+    """Identical input shape to ``_full_input_sequence`` but trimmed for
+    a wizard run that's testing the perms-applying tail."""
+    return [
+        "",  # kismet URL default
+        "wlan0",  # capture interface (freeform, since enumerate_wireless returns None)
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+
+
+def _stub_system_wizard_paths(monkeypatch, tmp_path):
+    """Force ``--system`` config, data, and log paths to land under
+    ``tmp_path`` so the wizard doesn't try to mkdir /var/lib/lynceus on
+    the test host. Returns a dict of the stubbed paths."""
+    from lynceus import paths as paths_mod
+
+    target = tmp_path / "etc" / "lynceus" / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)  # pretend we're root
+    monkeypatch.setattr(paths_mod, "_platform", lambda: "linux")
+    data_dir = tmp_path / "var" / "lib" / "lynceus"
+    log_dir = tmp_path / "var" / "log" / "lynceus"
+    db_path = data_dir / "lynceus.db"
+    monkeypatch.setattr(paths_mod, "default_data_dir", lambda scope: data_dir)
+    monkeypatch.setattr(paths_mod, "default_log_dir", lambda scope: log_dir)
+    monkeypatch.setattr(paths_mod, "default_db_path", lambda scope: db_path)
+    return {
+        "target": target,
+        "data_dir": data_dir,
+        "log_dir": log_dir,
+        "db_path": db_path,
+    }
+
+
+def test_run_wizard_system_scope_chowns_config_to_root_lynceus_0640(
+    _stub_perms, monkeypatch, tmp_path
+):
+    """Bug 6 regression — pre-fix code wrote the config 0600 root:root and
+    never chowned it, so the daemon (User=lynceus) couldn't read it."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    chmod_pairs = {(p, m) for (p, m) in _stub_perms["chmod_calls"]}
+    # Config: root (0) : lynceus (2000), mode 0o640.
+    assert (str(paths_d["target"]), 0, 2000) in chown_pairs
+    assert (str(paths_d["target"]), 0o640) in chmod_pairs
+
+
+def test_run_wizard_system_scope_chowns_severity_overrides_to_root_lynceus_0640(
+    _stub_perms, monkeypatch, tmp_path
+):
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    sev_path = str(paths_d["target"].parent / "severity_overrides.yaml")
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    chmod_pairs = {(p, m) for (p, m) in _stub_perms["chmod_calls"]}
+    assert (sev_path, 0, 2000) in chown_pairs
+    assert (sev_path, 0o640) in chmod_pairs
+
+
+def test_run_wizard_system_scope_exits_clean_when_lynceus_group_missing(
+    monkeypatch, tmp_path, capsys
+):
+    """Operator ran ``sudo lynceus-setup --system`` without first running
+    ``sudo ./install.sh --system``. The wizard must abort with a clear
+    "run install.sh first" hint to stderr — not crash with an unhandled
+    KeyError."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(wiz.os, "chmod", lambda *a, **kw: None, raising=False)
+    fake_grp = MagicMock()
+    fake_grp.getgrnam.side_effect = KeyError("lynceus")
+    fake_pwd = MagicMock()
+    fake_pwd.getpwnam.return_value = MagicMock(pw_uid=2000)
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "grp", fake_grp)
+    monkeypatch.setitem(_sys.modules, "pwd", fake_pwd)
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "lynceus" in err
+    assert "install.sh --system" in err
+    # Sanity: target dir got created (perms code ran AFTER write_config).
+    assert paths_d["target"].exists()
+
+
+def test_run_wizard_user_scope_never_calls_chown(monkeypatch, tmp_path):
+    """User scope must NOT touch chown — the rc1 wizard didn't, and we
+    shouldn't have regressed that. The file-mode contract for user-scope
+    configs is 0600 owned by the running user, not root:lynceus 0640."""
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    _stub_bundled_import(monkeypatch)
+    chown_calls: list = []
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: chown_calls.append(a), raising=False)
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),  # user scope by default
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert chown_calls == [], "user-scope wizard must not call chown"
+    if os.name == "posix":
+        # 0600, not 0640 — user-scope contract is unchanged.
+        assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_run_wizard_system_scope_chowns_data_and_log_dirs(_stub_perms, monkeypatch, tmp_path):
+    """S1 part 1: data_dir and log_dir must be chowned lynceus:lynceus
+    0750 so the daemon can write under them."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    chmod_pairs = {(p, m) for (p, m) in _stub_perms["chmod_calls"]}
+    assert (str(paths_d["data_dir"]), 2000, 2000) in chown_pairs
+    assert (str(paths_d["log_dir"]), 2000, 2000) in chown_pairs
+    assert (str(paths_d["data_dir"]), 0o750) in chmod_pairs
+    assert (str(paths_d["log_dir"]), 0o750) in chmod_pairs
+
+
+def test_run_wizard_system_scope_chowns_db_and_sidecars_after_import(
+    _stub_perms, monkeypatch, tmp_path
+):
+    """S1 part 2: after lynceus-import-argus succeeds, the wizard must
+    chown the resulting lynceus.db AND any sqlite sidecars (-wal, -shm)
+    to ``lynceus:lynceus 0640``. The DB must be OWNED by lynceus (not
+    just group-readable) so the daemon can write — root:lynceus 0640
+    would manifest as "attempt to write a readonly database" on the
+    first poll. Pre-fix code never did this."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+
+    # Make the bundled import look successful AND lay down a fake DB +
+    # WAL sidecar at the expected path so the post-import chown step
+    # has something to find.
+    paths_d["data_dir"].mkdir(parents=True, exist_ok=True)
+    db = paths_d["db_path"]
+    wal = Path(str(db) + "-wal")
+
+    def fake_bundled(db_path, override_file):
+        Path(db_path).write_text("fake sqlite\n")
+        Path(str(db_path) + "-wal").write_text("fake wal\n")
+        return (True, "imported 7 records")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    chmod_pairs = {(p, m) for (p, m) in _stub_perms["chmod_calls"]}
+    # DB must be owned by lynceus (uid 2000 in our stub), not root.
+    assert (str(db), 2000, 2000) in chown_pairs
+    assert (str(wal), 2000, 2000) in chown_pairs
+    assert (str(db), 0o640) in chmod_pairs
+    assert (str(wal), 0o640) in chmod_pairs
+
+
+def test_run_wizard_system_scope_db_chown_tolerant_of_missing_sidecars(
+    _stub_perms, monkeypatch, tmp_path
+):
+    """Sidecar tolerance: a freshly-imported DB has no -wal yet (sqlite
+    only creates it when the journal goes WAL). The chown step must not
+    crash when the sidecar is absent."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    paths_d["data_dir"].mkdir(parents=True, exist_ok=True)
+    db = paths_d["db_path"]
+
+    def fake_bundled(db_path, override_file):
+        Path(db_path).write_text("fake sqlite\n")
+        # No sidecar files this time.
+        return (True, "imported 1 record")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    assert (str(db), 2000, 2000) in chown_pairs
+
+
+def test_run_wizard_system_scope_prints_summary_of_chowned_paths(
+    _stub_perms, monkeypatch, tmp_path, capsys
+):
+    """One operator-visible summary line listing every file the wizard
+    just gave lynceus group ownership to, so a `--system` run is
+    auditable from the terminal output alone."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    paths_d["data_dir"].mkdir(parents=True, exist_ok=True)
+    db = paths_d["db_path"]
+
+    def fake_bundled(db_path, override_file):
+        Path(db_path).write_text("fake\n")
+        return (True, "imported 1 record")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Applied lynceus group ownership" in out
+    assert str(paths_d["target"]) in out
+    assert str(db) in out
+
+
+# ---- Integration: every daemon-touched path ends up correct -------------
+
+
+def test_run_wizard_system_scope_all_daemon_touched_paths_have_correct_perms(
+    _stub_perms, monkeypatch, tmp_path
+):
+    """The integration regression that would have caught rc1's
+    broken-by-default --system mode end-to-end.
+
+    A full wizard run in scope="system" must give EVERY file the daemon
+    needs to read (config, severity overrides) and EVERY file/dir it
+    needs to write (DB, data_dir, log_dir) the appropriate ownership
+    and mode. If any of these regress, the unit fails on first start —
+    that's what this test exists to prevent.
+    """
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    paths_d["data_dir"].mkdir(parents=True, exist_ok=True)
+    db = paths_d["db_path"]
+
+    def fake_bundled(db_path, override_file):
+        Path(db_path).write_text("fake sqlite\n")
+        Path(str(db_path) + "-wal").write_text("fake wal\n")
+        Path(str(db_path) + "-shm").write_text("fake shm\n")
+        return (True, "imported 1 record")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+
+    chown_index: dict[str, tuple[int, int]] = {
+        p: (u, g) for (p, u, g) in _stub_perms["chown_calls"]
+    }
+    chmod_index: dict[str, int] = {p: m for (p, m) in _stub_perms["chmod_calls"]}
+
+    sev_path = str(paths_d["target"].parent / "severity_overrides.yaml")
+    wal = str(db) + "-wal"
+    shm = str(db) + "-shm"
+
+    # READ paths: root:lynceus 0640.
+    for p in (str(paths_d["target"]), sev_path):
+        assert chown_index.get(p) == (0, 2000), f"{p} must be root:lynceus"
+        assert chmod_index.get(p) == 0o640, f"{p} must be mode 0o640"
+
+    # WRITE dirs: lynceus:lynceus 0750.
+    for p in (str(paths_d["data_dir"]), str(paths_d["log_dir"])):
+        assert chown_index.get(p) == (2000, 2000), f"{p} must be lynceus:lynceus"
+        assert chmod_index.get(p) == 0o750, f"{p} must be mode 0o750"
+
+    # WRITE files (DB + sidecars): lynceus:lynceus 0640. The daemon owns
+    # them so it can write; mode keeps the file non-executable.
+    for p in (str(db), wal, shm):
+        assert chown_index.get(p) == (2000, 2000), f"{p} must be lynceus:lynceus"
+        assert chmod_index.get(p) == 0o640, f"{p} must be mode 0o640"
 
 
 # Suppress the unused-import warning for sys (used by helpers above).

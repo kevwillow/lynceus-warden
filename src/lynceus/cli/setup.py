@@ -31,6 +31,126 @@ from ..kismet import KismetClient
 
 logger = logging.getLogger(__name__)
 
+
+# --- Errors -----------------------------------------------------------------
+
+
+class SetupError(Exception):
+    """Raised by the wizard helpers for operator-actionable failures.
+
+    Caught at the ``run_wizard`` boundary and rendered to stderr with a
+    non-zero exit code. Distinguished from ad-hoc ``RuntimeError`` so a
+    test can assert exactly which failure mode it's exercising.
+    """
+
+
+# --- Atomic writes + system-mode permissions --------------------------------
+#
+# rc1 had three independent footguns in the way it laid down state under
+# ``--system`` mode:
+#
+#   * Bug 6: config written 0600 root:root → ``User=lynceus`` daemon could
+#     not read it → unit failed on first start.
+#   * S1:    data_dir + lynceus.db owned by root → daemon could not write
+#     → first poll failed with "attempt to write a readonly database".
+#   * S2:    secrets-bearing config briefly world-readable between
+#     ``write_text`` and the follow-up ``chmod`` (race window in BOTH user
+#     and system mode).
+#
+# The fix is a coordinated change: ``_atomic_write`` collapses the S2
+# race by setting the target mode at fd-creation time, and the
+# ``_apply_system_perms_*`` helpers give system mode a clean ownership
+# story (``root:lynceus 0640`` for files, ``lynceus:lynceus 0750`` for
+# directories the daemon must write to). User mode behaviour is
+# unchanged — the helpers are wired in only when ``scope == "system"``.
+
+
+def _atomic_write(path: Path, content: str, *, mode: int = 0o600) -> None:
+    """Write ``content`` to ``path`` with ``mode`` set at creation time.
+
+    Closes the S2 race: the legacy "write the file then chmod" two-step
+    leaves a window in which the file exists with umask-derived bits
+    (typically world-readable ``0o644``) before the chmod lands. Anyone
+    reading the file in that interval sees the secret-bearing config
+    in the clear. Setting the mode in the ``os.open`` flags eliminates
+    the window — the file never exists on disk with permissions broader
+    than requested.
+
+    On Windows the POSIX mode bits are meaningless, so we fall back to
+    ``path.write_text`` to match the chmod-skip pattern used elsewhere.
+    """
+    if _is_windows():
+        path.write_text(content, encoding="utf-8")
+        return
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+def _apply_system_perms_to_file(path: Path, *, group: str = "lynceus", mode: int = 0o640) -> None:
+    """Set ``root:<group>`` ownership and ``mode`` on a system-mode file.
+
+    Used for ``/etc/lynceus/lynceus.yaml`` and the severity-overrides
+    file: the config is owned by root (so a compromised daemon cannot
+    rewrite its own config) but readable by the lynceus group (so the
+    ``User=lynceus`` daemon can actually load it).
+    """
+    if _is_windows():
+        return
+    if sys.platform == "darwin":
+        raise SetupError("--system mode is Linux-only with systemd; not supported on macOS.")
+    import grp
+
+    try:
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError as exc:
+        raise SetupError(
+            f"Group '{group}' does not exist. "
+            "Run `sudo ./install.sh --system` first to create the system user/group."
+        ) from exc
+    os.chown(str(path), 0, gid)
+    os.chmod(str(path), mode)
+
+
+def _apply_system_perms_to_dir(
+    path: Path,
+    *,
+    owner: str = "lynceus",
+    group: str = "lynceus",
+    mode: int = 0o750,
+) -> None:
+    """Set ``<owner>:<group>`` ownership and ``mode`` on a system-mode dir.
+
+    Used for ``/var/lib/lynceus`` and ``/var/log/lynceus``: the daemon
+    needs to create files in these directories, so they must be owned
+    by the lynceus user, not root. Same shape as
+    ``_apply_system_perms_to_file`` but resolves a UID too.
+    """
+    if _is_windows():
+        return
+    if sys.platform == "darwin":
+        raise SetupError("--system mode is Linux-only with systemd; not supported on macOS.")
+    import grp
+    import pwd
+
+    try:
+        uid = pwd.getpwnam(owner).pw_uid
+    except KeyError as exc:
+        raise SetupError(
+            f"User '{owner}' does not exist. "
+            "Run `sudo ./install.sh --system` first to create the system user/group."
+        ) from exc
+    try:
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError as exc:
+        raise SetupError(
+            f"Group '{group}' does not exist. "
+            "Run `sudo ./install.sh --system` first to create the system user/group."
+        ) from exc
+    os.chown(str(path), uid, gid)
+    os.chmod(str(path), mode)
+
+
 # --- Defaults ---------------------------------------------------------------
 
 # DEFAULT_KISMET_URL re-exported from lynceus.config so the wizard, the loaded
@@ -517,9 +637,7 @@ def _yaml_bool(value: bool) -> str:
 
 def write_config(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    if not _is_windows():
-        os.chmod(path, 0o600)
+    _atomic_write(path, content)
 
 
 def scaffold_severity_overrides(path: Path) -> bool:
@@ -528,7 +646,7 @@ def scaffold_severity_overrides(path: Path) -> bool:
     if path.exists():
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(SEVERITY_OVERRIDES_TEMPLATE, encoding="utf-8")
+    _atomic_write(path, SEVERITY_OVERRIDES_TEMPLATE)
     return True
 
 
@@ -860,17 +978,34 @@ def run_wizard(
 
     # Write config
     content = render_config_yaml(answers)
-    write_config(target, content)
+    try:
+        write_config(target, content)
+        if scope == "system":
+            _apply_system_perms_to_file(target)
 
-    sev_created = scaffold_severity_overrides(sev_path)
+        sev_created = scaffold_severity_overrides(sev_path)
+        if scope == "system":
+            # Apply on every system run, not just when newly scaffolded:
+            # an existing file inherited from a botched rc1 install may
+            # still be 0600 root:root and unreadable by the daemon.
+            _apply_system_perms_to_file(sev_path)
 
-    # Defensive: ensure data + log directories exist before we hand off to
-    # lynceus-import-argus. On a fresh box neither exists, and sqlite refuses
-    # to open ``<missing>/lynceus.db`` with "unable to open database file".
-    data_dir = paths.default_data_dir(scope)
-    log_dir = paths.default_log_dir(scope)
-    data_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
+        # Defensive: ensure data + log directories exist before we hand off
+        # to lynceus-import-argus. On a fresh box neither exists, and
+        # sqlite refuses to open ``<missing>/lynceus.db`` with "unable to
+        # open database file". Under --system the daemon (User=lynceus)
+        # also needs to OWN these directories, otherwise the first poll
+        # fails with "attempt to write a readonly database".
+        data_dir = paths.default_data_dir(scope)
+        log_dir = paths.default_log_dir(scope)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        if scope == "system":
+            _apply_system_perms_to_dir(data_dir)
+            _apply_system_perms_to_dir(log_dir)
+    except SetupError as exc:
+        print(f"Setup failed: {exc}", file=sys.stderr)
+        return 1
 
     # Summary
     print()
@@ -907,6 +1042,30 @@ def run_wizard(
                 f"Bundled threat-data import failed: {bundled_msg}. "
                 "You can retry later with lynceus-import-argus."
             )
+
+    # System-mode ownership for the freshly written DB and any sqlite
+    # sidecars (lynceus.db-wal, lynceus.db-shm). The DB must be OWNED
+    # by lynceus (not just group-readable) so the daemon can write to
+    # it — root:lynceus 0640 would let the first poll fail with "attempt
+    # to write a readonly database". We reuse the dir helper because it
+    # already does the ``lynceus:lynceus`` lookup; mode is overridden to
+    # 0o640 to keep DB files non-executable.
+    chowned_db_files: list[Path] = []
+    if scope == "system" and bundled_ok:
+        try:
+            db_path = Path(db_path_str)
+            for candidate in sorted(db_path.parent.glob(db_path.name + "*")):
+                if candidate.is_file():
+                    _apply_system_perms_to_dir(candidate, mode=0o640)
+                    chowned_db_files.append(candidate)
+        except SetupError as exc:
+            print(f"Setup failed: {exc}", file=sys.stderr)
+            return 1
+
+    if scope == "system":
+        touched: list[str] = [str(target), str(sev_path)]
+        touched.extend(str(p) for p in chowned_db_files)
+        print(f"Applied lynceus group ownership: {', '.join(touched)}")
 
     print()
     print(f"Setup complete. Config at {target}.")

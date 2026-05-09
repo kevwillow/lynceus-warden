@@ -38,9 +38,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "install.sh"
 SYSTEMD_DIR = REPO_ROOT / "systemd"
 
-pytestmark = pytest.mark.skipif(
+# Tests that need to *run* install.sh under bash use this marker; tests
+# that only inspect file contents (grep-based perm assertions, systemd
+# unit content checks) do not, so they execute on Windows/macOS too.
+_NEEDS_BASH = pytest.mark.skipif(
     sys.platform != "linux",
-    reason="install.sh is Linux-only; skipping installer tests on non-Linux platforms.",
+    reason="install.sh is Linux-only; skipping bash-driven tests on non-Linux platforms.",
 )
 
 
@@ -67,12 +70,19 @@ def _run(args, *, env_extra=None, cwd=None, check=False, timeout=30):
 # ---- presence + syntax ----------------------------------------------------
 
 
-def test_install_sh_exists_and_is_executable():
+def test_install_sh_exists():
+    """Cross-platform existence check; the executable-bit assertion lives
+    on the Linux-only test below since Windows doesn't model that bit."""
     assert INSTALL_SH.exists(), f"missing installer at {INSTALL_SH}"
+
+
+@_NEEDS_BASH
+def test_install_sh_is_executable():
     mode = INSTALL_SH.stat().st_mode
     assert mode & 0o111, "install.sh must be executable"
 
 
+@_NEEDS_BASH
 def test_install_sh_passes_bash_syntax_check():
     bash = shutil.which("bash")
     if bash is None:  # pragma: no cover
@@ -89,6 +99,7 @@ def test_install_sh_passes_bash_syntax_check():
 # ---- --help ---------------------------------------------------------------
 
 
+@_NEEDS_BASH
 def test_install_sh_help_exits_zero_with_usage():
     r = _run(["--help"])
     assert r.returncode == 0, f"stderr:\n{r.stderr}"
@@ -102,6 +113,7 @@ def test_install_sh_help_exits_zero_with_usage():
 # ---- non-Linux refusal ----------------------------------------------------
 
 
+@_NEEDS_BASH
 def test_install_sh_refuses_on_non_linux_uname(tmp_path):
     """A stub ``uname`` earlier on PATH simulates running on macOS. install.sh
     must detect this and exit non-zero with a clear "Linux only" message."""
@@ -121,6 +133,7 @@ def test_install_sh_refuses_on_non_linux_uname(tmp_path):
 # ---- --system without root -----------------------------------------------
 
 
+@_NEEDS_BASH
 def test_install_sh_system_without_root_refuses():
     """Tests run as a regular user. A real ``--system`` install must
     reject with a clear ``Use sudo`` hint instead of attempting the
@@ -138,6 +151,7 @@ def test_install_sh_system_without_root_refuses():
 # ---- --user dry-run -------------------------------------------------------
 
 
+@_NEEDS_BASH
 def test_install_sh_user_dry_run_prints_venv_and_pip_commands(tmp_path):
     """``--user --dry-run`` must report the venv creation and pip-in-venv
     install it *would* have run, and must not actually invoke either."""
@@ -163,6 +177,7 @@ def test_install_sh_user_dry_run_prints_venv_and_pip_commands(tmp_path):
     assert ".local/share/lynceus" in out
 
 
+@_NEEDS_BASH
 def test_install_sh_user_dry_run_lists_console_script_symlinks(tmp_path):
     """Each entry-point command shipped in pyproject.toml must show up
     in the dry-run plan as a symlink target."""
@@ -185,6 +200,7 @@ def test_install_sh_user_dry_run_lists_console_script_symlinks(tmp_path):
         assert script in out, f"console script {script!r} missing from dry-run output"
 
 
+@_NEEDS_BASH
 def test_install_sh_user_dry_run_does_not_invoke_pip(tmp_path):
     """A stub pip on PATH that touches a tripwire file proves dry-run did
     NOT actually call pip — neither the (now-irrelevant) system pip, nor
@@ -210,6 +226,7 @@ def test_install_sh_user_dry_run_does_not_invoke_pip(tmp_path):
 # ---- --system dry-run -----------------------------------------------------
 
 
+@_NEEDS_BASH
 def test_install_sh_system_dry_run_mentions_venv_path():
     """``--system --dry-run`` (no root needed for preview) must reference
     the dedicated /opt/lynceus/.venv path and a pip-in-venv install."""
@@ -232,6 +249,7 @@ def test_install_sh_system_dry_run_mentions_venv_path():
 # ---- --uninstall dry-run --------------------------------------------------
 
 
+@_NEEDS_BASH
 def test_install_sh_uninstall_dry_run_lists_symlinks_and_venv():
     """``--uninstall --dry-run`` must list both the venv that would be
     removed and the console-script symlinks that would be unlinked."""
@@ -256,6 +274,7 @@ def test_install_sh_uninstall_dry_run_lists_symlinks_and_venv():
 # ---- python3-venv module missing -----------------------------------------
 
 
+@_NEEDS_BASH
 def test_install_sh_aborts_when_python3_venv_unavailable(tmp_path):
     """Some minimal Debian/Ubuntu images ship python3 without the venv
     module. install.sh must detect this in pre-flight and exit with a
@@ -351,3 +370,74 @@ def test_systemd_unit_lynceus_ui_orders_after_daemon():
     assert "lynceus.service" in unit_block, (
         "lynceus-ui must declare After=/Wants= on lynceus.service in [Unit]"
     )
+
+
+# ---- S5 regression: /etc/lynceus directory ownership ----------------------
+#
+# rc1's install.sh created /etc/lynceus root:root 0755 and only chowned
+# /var/lib/lynceus and /var/log/lynceus to lynceus:lynceus. The lynceus
+# group could enter /etc/lynceus through the world-execute bit, but a
+# defence-in-depth posture (or future tightening) requires that the
+# directory itself grant traversal explicitly to the daemon's group.
+# The fix grants ``root:lynceus 0750``: file-level perms (0640) on
+# lynceus.yaml are then sufficient because the daemon can traverse
+# /etc/lynceus on the strength of being in the lynceus group, and
+# nothing else on the box can (mode 0750 = no other-traverse).
+#
+# These tests are grep-based on install.sh content, so they don't need
+# bash and run on every platform.
+
+
+def test_install_sh_grants_lynceus_group_traversal_on_etc_lynceus():
+    """The install.sh /etc/lynceus mkdir must be followed by an explicit
+    ``chown root:lynceus`` and ``chmod 0750`` so the daemon can traverse
+    the directory to reach lynceus.yaml. Without this S5 fix, file-level
+    perms on the config don't matter — the daemon is denied at the
+    directory boundary."""
+    content = INSTALL_SH.read_text()
+    assert "chown root:lynceus /etc/lynceus" in content, (
+        "missing chown root:lynceus on /etc/lynceus — file-level perms "
+        "on lynceus.yaml are useless without dir-level traversal grant"
+    )
+    assert "chmod 0750 /etc/lynceus" in content, (
+        "missing chmod 0750 on /etc/lynceus — leaves the dir world-traversable"
+    )
+
+
+def test_install_sh_etc_lynceus_chown_lives_inside_install_system():
+    """The /etc/lynceus chown must live inside install_system(), not
+    install_user() or uninstall_system() — otherwise --user installs
+    would try to chown a directory that doesn't apply, and --uninstall
+    would re-chown a directory we may be about to remove."""
+    content = INSTALL_SH.read_text()
+    install_system_block = content.split("install_system()", 1)[1].split("uninstall_system()", 1)[0]
+    assert "chown root:lynceus /etc/lynceus" in install_system_block, (
+        "/etc/lynceus chown must be inside install_system()"
+    )
+    assert "chmod 0750 /etc/lynceus" in install_system_block, (
+        "/etc/lynceus chmod must be inside install_system()"
+    )
+
+
+def test_install_sh_existing_var_chowns_preserved():
+    """Defensive: the new /etc/lynceus chown additions must not have
+    broken the pre-existing chowns of /var/lib/lynceus and
+    /var/log/lynceus. The daemon needs both to write."""
+    content = INSTALL_SH.read_text()
+    assert "chown -R lynceus:lynceus /var/lib/lynceus /var/log/lynceus" in content, (
+        "the original /var/lib + /var/log chown was lost; daemon would "
+        "fail with EACCES on first write"
+    )
+
+
+def test_install_sh_etc_lynceus_chown_runs_after_mkdir():
+    """The chown lines must come after the mkdir, otherwise we'd be
+    chowning a path that doesn't exist yet."""
+    content = INSTALL_SH.read_text()
+    install_system_block = content.split("install_system()", 1)[1].split("uninstall_system()", 1)[0]
+    mkdir_idx = install_system_block.find("mkdir -p /etc/lynceus")
+    chown_idx = install_system_block.find("chown root:lynceus /etc/lynceus")
+    chmod_idx = install_system_block.find("chmod 0750 /etc/lynceus")
+    assert mkdir_idx >= 0, "expected /etc/lynceus mkdir in install_system()"
+    assert chown_idx > mkdir_idx, "chown root:lynceus must run AFTER mkdir"
+    assert chmod_idx > mkdir_idx, "chmod 0750 must run AFTER mkdir"
