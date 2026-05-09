@@ -425,6 +425,11 @@ def test_run_wizard_skip_probes_does_not_call_probes(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: called.append("k_sources") or None,
+    )
+    monkeypatch.setattr(
+        wiz,
         "probe_ntfy",
         lambda *a, **kw: called.append("n") or (False, "should not be called"),
     )
@@ -442,6 +447,7 @@ def test_run_wizard_ntfy_probe_fail_continue_yes(monkeypatch, tmp_path, capsys):
     _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     monkeypatch.setattr(wiz, "probe_kismet", lambda url, token, timeout=None: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
     monkeypatch.setattr(wiz, "probe_ntfy", lambda url, topic, timeout=None: (False, "boom"))
     inputs = [
         "",  # kismet URL default
@@ -467,6 +473,7 @@ def test_run_wizard_ntfy_probe_fail_continue_no_aborts(monkeypatch, tmp_path):
     _stub_path_resolution(monkeypatch, tmp_path)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     monkeypatch.setattr(wiz, "probe_kismet", lambda url, token, timeout=None: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
     monkeypatch.setattr(wiz, "probe_ntfy", lambda url, topic, timeout=None: (False, "boom"))
     inputs = [
         "",  # kismet URL
@@ -1268,6 +1275,7 @@ def test_run_wizard_ntfy_url_empty_skips_ntfy_and_probe(monkeypatch, tmp_path, c
         lambda *a, **kw: probe_called.append(True) or (True, None),
     )
     monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
     inputs = [
         "",  # kismet URL default
         "wlan0",
@@ -1394,6 +1402,493 @@ def test_run_wizard_prints_deferred_argus_import_hint(monkeypatch, tmp_path, cap
 def test_maybe_import_argus_helper_is_gone():
     """The helper that drove the retired prompt should no longer exist."""
     assert not hasattr(wiz, "maybe_import_argus")
+
+
+# ---- C1 fix: probe Kismet datasources for source names --------------------
+
+
+def _wifi_source(name="external_wifi", interface="wlan1", capture_interface="wlan1mon"):
+    return {
+        "name": name,
+        "interface": interface,
+        "capture_interface": capture_interface,
+        "uuid": "5fe308bd-0000-0000-0000-00c0caaaaaaa",
+        "driver": "linuxwifi",
+        "running": True,
+    }
+
+
+def _bt_source(name="local_bt", interface="hci0", capture_interface="hci0"):
+    return {
+        "name": name,
+        "interface": interface,
+        "capture_interface": capture_interface,
+        "uuid": "6fe308bd-0000-0000-0000-00c0cabbbbbb",
+        "driver": "linuxbluetooth",
+        "running": True,
+    }
+
+
+def test_format_source_label_full_form():
+    """Operator-visible label for a Kismet source must include the
+    interface and capture-interface in parentheses so it's clear what
+    the source is actually capturing on (e.g. wlan1 in monitor mode
+    becoming wlan1mon)."""
+    label = wiz._format_source_label(
+        {"name": "external_wifi", "interface": "wlan1", "capture_interface": "wlan1mon"}
+    )
+    assert label == "external_wifi  (interface: wlan1, capture: wlan1mon)"
+
+
+def test_format_source_label_drops_empty_subfields():
+    """Sources without an interface or capture_interface (older Kismet,
+    non-Linux, BT classic) should still render cleanly without empty
+    parenthetical noise."""
+    assert wiz._format_source_label({"name": "bare"}) == "bare"
+    assert (
+        wiz._format_source_label({"name": "iface_only", "interface": "wlan0"})
+        == "iface_only  (interface: wlan0)"
+    )
+
+
+def test_probe_kismet_sources_returns_list_on_success(monkeypatch):
+    """The wizard helper delegates to ``KismetClient.list_sources`` and
+    passes through whatever it returns when the call succeeds."""
+    fake = MagicMock()
+    fake.list_sources.return_value = [_wifi_source()]
+    monkeypatch.setattr(wiz, "KismetClient", lambda **kw: fake)
+    result = wiz.probe_kismet_sources("http://x", "tok")
+    assert result == [_wifi_source()]
+
+
+def test_probe_kismet_sources_returns_none_on_exception(monkeypatch, caplog):
+    """Any exception (HTTPError, ConnectionError, malformed JSON, timeout)
+    must collapse to None so the wizard cleanly falls back to OS
+    enumeration with a warning. The ground truth on what gets logged is
+    asserted via caplog."""
+    import logging as _logging
+
+    fake = MagicMock()
+    fake.list_sources.side_effect = RuntimeError("kaboom")
+    monkeypatch.setattr(wiz, "KismetClient", lambda **kw: fake)
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.setup"):
+        result = wiz.probe_kismet_sources("http://x", "tok")
+    assert result is None
+    assert any("list_sources probe failed" in r.getMessage() for r in caplog.records)
+
+
+def test_probe_kismet_sources_passes_token_to_client(monkeypatch):
+    """The wizard's probe helper must hand the API token through to
+    KismetClient so the request hits Kismet authenticated."""
+    captured = {}
+
+    def fake_client(**kw):
+        captured.update(kw)
+        m = MagicMock()
+        m.list_sources.return_value = []
+        return m
+
+    monkeypatch.setattr(wiz, "KismetClient", fake_client)
+    wiz.probe_kismet_sources("http://x:2501", "the-token")
+    assert captured.get("api_key") == "the-token"
+    assert captured.get("base_url") == "http://x:2501"
+
+
+def test_run_wizard_uses_kismet_source_name_when_probe_succeeds(monkeypatch, tmp_path):
+    """Happy path: list_sources returns one wifi source named
+    ``external_wifi``; the wizard offers it, the operator picks it, and
+    the resulting ``kismet_sources`` is the source NAME — what the
+    poller actually filters on."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: [_wifi_source(name="external_wifi")],
+    )
+    inputs = [
+        "",  # kismet URL default
+        "1",  # pick the only Kismet wifi source
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi"]
+
+
+def test_run_wizard_presents_kismet_source_names_not_iw_interfaces(monkeypatch, tmp_path, capsys):
+    """REGRESSION FOR C1 — the rc1 silent-drop bug.
+
+    Construct the exact scenario that bit the operator in the field:
+    iw enumerates ``wlan0``/``wlan1`` (kernel interface names), AND
+    Kismet's configured source NAME is ``external_wifi``. The wizard
+    must present ``external_wifi`` (the source name, which the poller
+    filters on) and MUST NOT present the kernel interface names — those
+    silently mismatch and cause every observation to be dropped.
+
+    This test would have failed against rc1 setup.py because that code
+    only ever called ``enumerate_wireless_interfaces()``. With the
+    Kismet-source probe wired in, the iw output is reduced to a
+    fallback for unreachable Kismet, and the prompt now offers the real
+    source names.
+    """
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: [_wifi_source(name="external_wifi")],
+    )
+    # iw enumeration is set up too — if the wizard fell back to it
+    # (the bug), the test would observe wlan0/wlan1 in the output.
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
+    fn, prompts = _recording_input(
+        [
+            "",  # kismet URL default
+            "1",  # pick the Kismet source
+            "",  # probe_ssids default
+            "",  # ble names default
+            "https://ntfy.sh",
+            "lynceus-cafe",
+            "",  # rssi default
+            "",  # severity overrides default
+        ]
+    )
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The Kismet source name MUST appear in the operator-visible prompt.
+    assert "external_wifi" in out
+    # The kernel interface names MUST NOT appear in the wifi-selection
+    # prompt — they would silently mismatch the poller filter. The
+    # parenthetical "(interface: wlan1, capture: wlan1mon)" is allowed
+    # because that's clarifying context, not a selectable option; the
+    # *fallback iw enumeration* is what we're guarding against.
+    fallback_warning = "WARNING: Could not query Kismet for datasource names"
+    assert fallback_warning not in out, (
+        "Successful Kismet probe must not trigger the iw fallback warning"
+    )
+    # And the persisted config must contain the source NAME, not an iface.
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi"]
+    assert "wlan0" not in data["kismet_sources"]
+    assert "wlan1" not in data["kismet_sources"]
+    # No prompt asks the operator to free-form-type a kernel interface;
+    # ensure none of the prompts contain the iw fallback's signature
+    # phrasing.
+    assert not any("Capture interface name" in p for p in prompts)
+
+
+def test_run_wizard_aborts_when_kismet_has_no_wifi_source(monkeypatch, tmp_path, capsys):
+    """If Kismet is reachable but has zero wifi datasources, the wizard
+    cannot guess a source name and must abort with an actionable
+    message that points the operator at the kismet_site.conf snippet."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    # Kismet has only a BT source — wifi capture cannot proceed.
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: [_bt_source()])
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq([""]),  # only the kismet URL prompt is reached
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc != 0
+    assert "no Wi-Fi datasource configured" in out
+    assert "source=wlan1:name=external_wifi" in out
+    assert "/etc/kismet/kismet_site.conf" in out
+
+
+def test_run_wizard_falls_back_to_iw_with_warning_when_list_sources_fails(
+    monkeypatch, tmp_path, capsys
+):
+    """probe_kismet succeeds (Kismet up) but probe_kismet_sources fails
+    (e.g. Kismet upgrade dropped the endpoint, or partial auth). The
+    wizard must fall back to iw enumeration AND print the explicit
+    name-matching warning so the operator knows to verify the value
+    matches their Kismet ``name=`` line."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
+    inputs = [
+        "",  # kismet URL default
+        "2",  # pick wlan1
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WARNING: Could not query Kismet for datasource names" in out
+    assert "Falling back to OS interface enumeration" in out
+    assert "silently drop every observation" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["wlan1"]
+
+
+def test_run_wizard_kismet_probe_fail_continue_y_shows_warning(monkeypatch, tmp_path, capsys):
+    """When the operator continues past a failed Kismet probe, the
+    wizard must still print the name-matching warning before iw
+    enumeration — they have no Kismet to query so the fallback rules
+    apply."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet",
+        lambda url, token, timeout=None: (False, None, "connection refused"),
+    )
+    list_sources_called = []
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: list_sources_called.append(True) or None,
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "y",  # continue past kismet failure
+        "wlan0",  # freeform capture interface (fallback)
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WARNING: Could not query Kismet for datasource names" in out
+    assert list_sources_called == [], (
+        "list_sources must not be called when probe_kismet itself failed — "
+        "Kismet is unreachable, the second call would just hang another 5s"
+    )
+
+
+def test_run_wizard_skip_probes_does_not_print_fallback_warning(monkeypatch, tmp_path, capsys):
+    """``--skip-probes`` is a deliberate operator opt-out, not a probe
+    failure. The wizard must NOT emit the name-matching WARNING in this
+    case; the operator already knows what they're doing."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WARNING: Could not query Kismet for datasource names" not in out
+
+
+def test_run_wizard_kismet_probe_fail_does_not_call_list_sources(monkeypatch, tmp_path):
+    """If probe_kismet itself fails, list_sources must not be called —
+    Kismet is unreachable, a second blocking call would just stack a
+    5-second timeout on top of the first."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet",
+        lambda url, token, timeout=None: (False, None, "connection refused"),
+    )
+    list_sources_called = []
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: list_sources_called.append(True) or None,
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL
+        "n",  # do not continue
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc != 0
+    assert list_sources_called == []
+
+
+def test_run_wizard_with_bt_source_offers_kismet_bt_prompt(monkeypatch, tmp_path, capsys):
+    """When Kismet has both a wifi and BT source, the wizard offers the
+    BT prompt using the Kismet source NAME (not /sys/class/bluetooth
+    output), and the picked NAME is appended to kismet_sources."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: [
+            _wifi_source(name="external_wifi"),
+            _bt_source(name="local_bt"),
+        ],
+    )
+    inputs = [
+        "",  # kismet URL default
+        "1",  # pick the wifi source
+        "",  # accept default Y for BT prompt
+        "1",  # pick the BT source
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "local_bt" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi", "local_bt"]
+
+
+def test_run_wizard_no_bt_source_in_kismet_skips_with_note(monkeypatch, tmp_path, capsys):
+    """When Kismet is reachable but has no BT source configured, the
+    wizard skips the BT prompt entirely and prints an actionable note
+    showing the kismet_site.conf line the operator would need to add
+    later."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    # Wifi only — no BT in the source list.
+    monkeypatch.setattr(
+        wiz, "probe_kismet_sources", lambda *a, **kw: [_wifi_source(name="external_wifi")]
+    )
+    inputs = [
+        "",  # kismet URL default
+        "1",  # pick the wifi source
+        # no BT prompt expected
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no Bluetooth datasource configured" in out
+    assert "source=hci0:type=linuxbluetooth,name=local_bt" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi"]
+
+
+def test_run_wizard_multiple_bt_sources_picks_by_number(monkeypatch, tmp_path):
+    """Two BT sources → numbered selection prompts with each Kismet
+    source name; picked NAME is appended to kismet_sources."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: [
+            _wifi_source(name="external_wifi"),
+            _bt_source(name="local_bt"),
+            _bt_source(name="usb_bt", interface="hci1", capture_interface="hci1"),
+        ],
+    )
+    inputs = [
+        "",  # kismet URL default
+        "1",  # pick the wifi source
+        "",  # accept default Y for BT prompt
+        "2",  # pick the second BT source (usb_bt)
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi", "usb_bt"]
+
+
+def test_run_wizard_kismet_bt_decline_keeps_wifi_only(monkeypatch, tmp_path):
+    """If Kismet has a BT source but the operator declines the prompt,
+    only the wifi source goes into kismet_sources."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: [_wifi_source(name="external_wifi"), _bt_source(name="local_bt")],
+    )
+    inputs = [
+        "",  # kismet URL default
+        "1",  # pick the wifi source
+        "n",  # decline BT
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi"]
 
 
 # Suppress the unused-import warning for sys (used by helpers above).

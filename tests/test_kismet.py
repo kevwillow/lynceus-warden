@@ -594,3 +594,255 @@ def test_fake_kismet_client_health_check(monkeypatch):
     client = FakeKismetClient(str(FIXTURE_PATH))
     result = client.health_check()
     assert result == {"reachable": True, "version": "fake-fixture", "error": None}
+
+
+# ------------------------------- list_sources -----------------------------
+
+
+def _source_record(
+    *,
+    name: str,
+    interface: str = "",
+    capture_interface: str = "",
+    uuid: str = "",
+    driver: str = "linuxwifi",
+    running: bool = True,
+    extra: dict | None = None,
+) -> dict:
+    """Build a Kismet datasource record matching the on-the-wire shape.
+
+    Mirrors what an operator sees from
+    ``curl -s -b "KISMET=<token>" http://127.0.0.1:2501/datasource/all_sources.json``
+    against a real Kismet instance. The wizard's silent-drop bug was caught
+    by exactly this kind of capture during the rc1 shakedown.
+    """
+    rec: dict = {
+        "kismet.datasource.name": name,
+        "kismet.datasource.interface": interface,
+        "kismet.datasource.capture_interface": capture_interface,
+        "kismet.datasource.uuid": uuid,
+        "kismet.datasource.running": 1 if running else 0,
+        "kismet.datasource.type_driver": {
+            "kismet.datasource.driver.type": driver,
+        },
+    }
+    if extra:
+        rec.update(extra)
+    return rec
+
+
+def test_list_sources_url_construction(mocker):
+    mock_get = _stub_get(mocker, [])
+    client = KismetClient(base_url="http://x:2501")
+    client.list_sources()
+    assert mock_get.call_args.args[0] == "http://x:2501/datasource/all_sources.json"
+
+
+def test_list_sources_strips_trailing_slash(mocker):
+    mock_get = _stub_get(mocker, [])
+    client = KismetClient(base_url="http://x:2501/")
+    client.list_sources()
+    assert mock_get.call_args.args[0] == "http://x:2501/datasource/all_sources.json"
+
+
+def test_list_sources_passes_auth_cookie(mocker):
+    mock_get = _stub_get(mocker, [])
+    client = KismetClient(base_url="http://x:2501", api_key="abc")
+    client.list_sources()
+    assert mock_get.call_args.kwargs.get("cookies") == {"KISMET": "abc"}
+
+
+def test_list_sources_no_auth_cookie_when_absent(mocker):
+    mock_get = _stub_get(mocker, [])
+    client = KismetClient(base_url="http://x:2501")
+    client.list_sources()
+    cookies = mock_get.call_args.kwargs.get("cookies")
+    assert cookies is None or cookies == {}
+
+
+def test_list_sources_uses_client_timeout(mocker):
+    """The client's configured timeout must be passed to ``requests.get``;
+    the wizard wires this up to 5s via ``PROBE_TIMEOUT_SECONDS`` so a wedged
+    Kismet doesn't hang the setup flow."""
+    mock_get = _stub_get(mocker, [])
+    client = KismetClient(base_url="http://x:2501", timeout=5.0)
+    client.list_sources()
+    assert mock_get.call_args.kwargs.get("timeout") == 5.0
+
+
+def test_list_sources_parses_realistic_response(mocker):
+    """Realistic Kismet payload — captured during rc1 shakedown — with one
+    Wi-Fi source mapped to wlan1mon and one Bluetooth source on hci0."""
+    raw = [
+        _source_record(
+            name="external_wifi",
+            interface="wlan1",
+            capture_interface="wlan1mon",
+            uuid="5fe308bd-0000-0000-0000-00c0caaaaaaa",
+            driver="linuxwifi",
+            running=True,
+        ),
+        _source_record(
+            name="local_bt",
+            interface="hci0",
+            capture_interface="hci0",
+            uuid="6fe308bd-0000-0000-0000-00c0cabbbbbb",
+            driver="linuxbluetooth",
+            running=True,
+        ),
+    ]
+    _stub_get(mocker, raw)
+    client = KismetClient(base_url="http://x:2501")
+    sources = client.list_sources()
+    assert len(sources) == 2
+    wifi = sources[0]
+    assert wifi["name"] == "external_wifi"
+    assert wifi["interface"] == "wlan1"
+    assert wifi["capture_interface"] == "wlan1mon"
+    assert wifi["uuid"] == "5fe308bd-0000-0000-0000-00c0caaaaaaa"
+    assert wifi["driver"] == "linuxwifi"
+    assert wifi["running"] is True
+    bt = sources[1]
+    assert bt["name"] == "local_bt"
+    assert bt["driver"] == "linuxbluetooth"
+
+
+def test_list_sources_returns_normalized_dict_keys(mocker):
+    raw = [_source_record(name="external_wifi", interface="wlan1")]
+    _stub_get(mocker, raw)
+    client = KismetClient(base_url="http://x:2501")
+    sources = client.list_sources()
+    assert len(sources) == 1
+    expected_keys = {"name", "interface", "capture_interface", "uuid", "driver", "running"}
+    assert set(sources[0].keys()) == expected_keys
+
+
+def test_list_sources_empty_response_returns_empty_list(mocker):
+    _stub_get(mocker, [])
+    client = KismetClient(base_url="http://x:2501")
+    assert client.list_sources() == []
+
+
+def test_list_sources_filters_non_running_by_default(mocker):
+    raw = [
+        _source_record(name="active_wifi", driver="linuxwifi", running=True),
+        _source_record(name="errored_wifi", driver="linuxwifi", running=False),
+    ]
+    _stub_get(mocker, raw)
+    client = KismetClient(base_url="http://x:2501")
+    sources = client.list_sources()
+    assert [s["name"] for s in sources] == ["active_wifi"]
+
+
+def test_list_sources_only_running_false_returns_all(mocker):
+    raw = [
+        _source_record(name="active_wifi", running=True),
+        _source_record(name="errored_wifi", running=False),
+    ]
+    _stub_get(mocker, raw)
+    client = KismetClient(base_url="http://x:2501")
+    sources = client.list_sources(only_running=False)
+    assert {s["name"] for s in sources} == {"active_wifi", "errored_wifi"}
+    by_name = {s["name"]: s for s in sources}
+    assert by_name["errored_wifi"]["running"] is False
+
+
+def test_list_sources_extracts_driver_from_nested_field(mocker):
+    """The driver name lives at type_driver -> kismet.datasource.driver.type
+    (a nested dict, not a flat string). Verify we don't accidentally read
+    the wrong key path."""
+    raw = [
+        {
+            "kismet.datasource.name": "external_wifi",
+            "kismet.datasource.interface": "wlan1",
+            "kismet.datasource.capture_interface": "wlan1mon",
+            "kismet.datasource.uuid": "u1",
+            "kismet.datasource.running": 1,
+            "kismet.datasource.type_driver": {
+                "kismet.datasource.driver.type": "linuxwifi",
+                "kismet.datasource.driver.description": "Linux Wi-Fi",
+            },
+        }
+    ]
+    _stub_get(mocker, raw)
+    client = KismetClient(base_url="http://x:2501")
+    sources = client.list_sources()
+    assert sources[0]["driver"] == "linuxwifi"
+
+
+def test_list_sources_handles_missing_type_driver(mocker):
+    """An older or partial Kismet record without the nested driver block
+    must not crash; driver becomes empty string and the source still
+    appears in the output."""
+    raw = [
+        {
+            "kismet.datasource.name": "old_source",
+            "kismet.datasource.running": 1,
+        }
+    ]
+    _stub_get(mocker, raw)
+    client = KismetClient(base_url="http://x:2501")
+    sources = client.list_sources()
+    assert len(sources) == 1
+    assert sources[0]["driver"] == ""
+    assert sources[0]["name"] == "old_source"
+
+
+def test_list_sources_raises_on_http_401(mocker):
+    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    response = mock_get.return_value
+    response.raise_for_status.side_effect = requests.HTTPError("401 Unauthorized")
+    client = KismetClient(base_url="http://x:2501")
+    with pytest.raises(requests.HTTPError) as excinfo:
+        client.list_sources()
+    assert "401" in str(excinfo.value)
+
+
+def test_list_sources_raises_on_http_500(mocker):
+    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    response = mock_get.return_value
+    response.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
+    client = KismetClient(base_url="http://x:2501")
+    with pytest.raises(requests.HTTPError) as excinfo:
+        client.list_sources()
+    assert "500" in str(excinfo.value)
+
+
+def test_list_sources_raises_on_malformed_json(mocker):
+    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    response = mock_get.return_value
+    response.json.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
+    response.raise_for_status.return_value = None
+    client = KismetClient(base_url="http://x:2501")
+    with pytest.raises(ValueError):
+        client.list_sources()
+
+
+def test_list_sources_raises_on_non_list_response(mocker):
+    _stub_get(mocker, {"not": "a list"})
+    client = KismetClient(base_url="http://x:2501")
+    with pytest.raises(ValueError):
+        client.list_sources()
+
+
+def test_list_sources_raises_on_connection_error(mocker):
+    mock_get = mocker.patch("lynceus.kismet.requests.get")
+    mock_get.side_effect = requests.ConnectionError("connection refused")
+    client = KismetClient(base_url="http://x:2501")
+    with pytest.raises(requests.ConnectionError):
+        client.list_sources()
+
+
+def test_list_sources_skips_non_dict_entries(mocker):
+    """Defense in depth: a malformed Kismet response containing a stray
+    string or null in the array shouldn't crash the wizard — those entries
+    are silently dropped."""
+    raw = [
+        _source_record(name="real_source"),
+        "garbage",
+        None,
+    ]
+    _stub_get(mocker, raw)
+    client = KismetClient(base_url="http://x:2501")
+    sources = client.list_sources()
+    assert [s["name"] for s in sources] == ["real_source"]
