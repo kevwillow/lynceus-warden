@@ -17,6 +17,13 @@ from .rules import Ruleset, evaluate, load_ruleset
 
 STATE_KEY_LAST_POLL = "last_poll_ts"
 
+# Backoff schedule for the startup Kismet health check, in seconds.
+# Three attempts with 2s/4s waits between them — covers the window where
+# Kismet is still coming up under systemd's After=network.target without
+# letting an actually-broken Kismet hold up daemon start indefinitely.
+# Tests override to ``[0.0, 0.0, 0.0]`` to skip the sleeps.
+HEALTH_CHECK_RETRY_BACKOFF: list[float] = [2.0, 4.0, 8.0]
+
 logger = logging.getLogger(__name__)
 
 
@@ -187,14 +194,7 @@ class Poller:
         self.db = Database(config.db_path)
         self.client = build_kismet_client(config)
         if config.kismet_health_check_on_startup:
-            health = self.client.health_check()
-            if not health.get("reachable"):
-                err = health.get("error") or "unknown error"
-                logger.error("Kismet health check failed at startup: %s", err)
-                raise RuntimeError(
-                    f"Kismet unreachable at startup: {err}. "
-                    "Set kismet_health_check_on_startup=false to skip this check."
-                )
+            self._startup_health_check()
         self._source_allowlist: frozenset[str] | None = (
             frozenset(config.kismet_sources) if config.kismet_sources else None
         )
@@ -204,6 +204,40 @@ class Poller:
         )
         self.notifier: Notifier = build_notifier(config)
         self._stop_flag = False
+
+    def _startup_health_check(self) -> None:
+        """Probe Kismet at startup, retrying transient failures with backoff.
+
+        Under systemd's ``After=network.target`` the Kismet REST endpoint may
+        not be ready when the lynceus unit starts — a single 5xx, DNS hiccup,
+        or transient connection refused was enough on rc1 to crash the
+        daemon. The retry loop tolerates ``len(HEALTH_CHECK_RETRY_BACKOFF)``
+        attempts; only after all of them fail do we surface the same
+        ``RuntimeError`` callers have always seen, so behaviour at the
+        ``main()`` boundary is unchanged.
+        """
+        backoff = HEALTH_CHECK_RETRY_BACKOFF
+        total = len(backoff)
+        last_err: str = "unknown error"
+        for attempt in range(1, total + 1):
+            health = self.client.health_check()
+            if health.get("reachable"):
+                return
+            last_err = health.get("error") or "unknown error"
+            if attempt < total:
+                wait = backoff[attempt - 1]
+                logger.info(
+                    "Kismet health check failed (attempt %d/%d), retrying in %.1fs...",
+                    attempt,
+                    total,
+                    wait,
+                )
+                time.sleep(wait)
+        logger.error("Kismet health check failed at startup: %s", last_err)
+        raise RuntimeError(
+            f"Kismet unreachable at startup: {last_err}. "
+            "Set kismet_health_check_on_startup=false to skip this check."
+        )
 
     def _on_signal(self, signum: int, frame: object) -> None:
         self._stop_flag = True

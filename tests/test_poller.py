@@ -701,6 +701,9 @@ def test_poller_init_health_check_fails_raises(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise _requests.ConnectionError("connection refused: nobody home")
 
+    # Skip the per-attempt sleep so this test runs sub-second instead of waiting
+    # the full default backoff schedule.
+    monkeypatch.setattr("lynceus.poller.HEALTH_CHECK_RETRY_BACKOFF", [0.0, 0.0, 0.0])
     monkeypatch.setattr("lynceus.kismet.requests.get", boom)
     with pytest.raises(RuntimeError) as exc_info:
         Poller(cfg)
@@ -724,3 +727,105 @@ def test_poller_init_health_check_skipped_when_disabled(tmp_path, monkeypatch):
     monkeypatch.setattr("lynceus.kismet.requests.get", boom)
     poller = Poller(cfg)
     poller.db.close()
+
+
+# ----------------- H3: startup health-check retry with backoff --------------
+
+
+def test_poller_init_health_check_retries_then_succeeds(tmp_path, monkeypatch):
+    """Two transient health-check failures followed by success: poller starts
+    cleanly. Pre-fix this raised on the first failure (no retry loop)."""
+    cfg = Config(
+        db_path=str(tmp_path / "lynceus.db"),
+        kismet_url="http://127.0.0.1:1",
+    )
+
+    monkeypatch.setattr("lynceus.poller.HEALTH_CHECK_RETRY_BACKOFF", [0.0, 0.0, 0.0])
+
+    results = iter(
+        [
+            {"reachable": False, "version": None, "error": "Conn refused"},
+            {"reachable": False, "version": None, "error": "Conn refused"},
+            {"reachable": True, "version": "2024-01-R1", "error": None},
+        ]
+    )
+
+    def fake_health_check(self):
+        return next(results)
+
+    monkeypatch.setattr(
+        "lynceus.kismet.KismetClient.health_check",
+        fake_health_check,
+    )
+    poller = Poller(cfg)
+    try:
+        # Sanity: only 3 results were produced; nothing else consumed.
+        with pytest.raises(StopIteration):
+            next(results)
+    finally:
+        poller.db.close()
+
+
+def test_poller_init_health_check_all_attempts_fail_raises(tmp_path, monkeypatch):
+    """All three startup attempts fail: RuntimeError mentions Kismet and
+    points operators at the config switch."""
+    cfg = Config(
+        db_path=str(tmp_path / "lynceus.db"),
+        kismet_url="http://127.0.0.1:1",
+    )
+
+    monkeypatch.setattr("lynceus.poller.HEALTH_CHECK_RETRY_BACKOFF", [0.0, 0.0, 0.0])
+    monkeypatch.setattr(
+        "lynceus.kismet.KismetClient.health_check",
+        lambda self: {"reachable": False, "version": None, "error": "boom"},
+    )
+    with pytest.raises(RuntimeError) as exc_info:
+        Poller(cfg)
+    msg = str(exc_info.value)
+    assert "Kismet" in msg
+    assert "kismet_health_check_on_startup" in msg
+    assert "boom" in msg
+
+
+def test_poller_init_health_check_backoff_schedule_honored(tmp_path, monkeypatch):
+    """Sleep is invoked between attempts 1->2 and 2->3 with the configured
+    waits, and NOT after the final failed attempt (we raise instead)."""
+    cfg = Config(
+        db_path=str(tmp_path / "lynceus.db"),
+        kismet_url="http://127.0.0.1:1",
+    )
+
+    monkeypatch.setattr("lynceus.poller.HEALTH_CHECK_RETRY_BACKOFF", [2.0, 4.0, 8.0])
+    monkeypatch.setattr(
+        "lynceus.kismet.KismetClient.health_check",
+        lambda self: {"reachable": False, "version": None, "error": "down"},
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr("lynceus.poller.time.sleep", lambda s: sleeps.append(s))
+    with pytest.raises(RuntimeError):
+        Poller(cfg)
+    assert sleeps == [2.0, 4.0]
+
+
+def test_poller_init_health_check_retry_logs_info(tmp_path, monkeypatch, caplog):
+    """Each retry emits an INFO log line that includes the attempt counter."""
+    cfg = Config(
+        db_path=str(tmp_path / "lynceus.db"),
+        kismet_url="http://127.0.0.1:1",
+    )
+
+    monkeypatch.setattr("lynceus.poller.HEALTH_CHECK_RETRY_BACKOFF", [0.0, 0.0, 0.0])
+    monkeypatch.setattr(
+        "lynceus.kismet.KismetClient.health_check",
+        lambda self: {"reachable": False, "version": None, "error": "down"},
+    )
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        with pytest.raises(RuntimeError):
+            Poller(cfg)
+    info_lines = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
+    # Two retry log lines (between attempts 1->2 and 2->3); none after the final
+    # failure since we raise immediately.
+    assert len(info_lines) == 2
+    assert "attempt 1/3" in info_lines[0]
+    assert "attempt 2/3" in info_lines[1]
+    assert "retrying in" in info_lines[0]
