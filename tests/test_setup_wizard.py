@@ -1336,7 +1336,12 @@ def test_run_wizard_ntfy_url_empty_skips_ntfy_and_probe(monkeypatch, tmp_path, c
     assert data["ntfy_topic"] == ""
 
 
-def test_run_wizard_ntfy_url_set_topic_empty_re_prompts(monkeypatch, tmp_path):
+def test_run_wizard_ntfy_url_set_topic_empty_skips_ntfy(monkeypatch, tmp_path):
+    """Bug 7: leaving the topic prompt blank now means *skip ntfy entirely*
+    rather than re-prompting forever. Operators who got cold feet after
+    typing a URL can back out without restarting the wizard, and both
+    ``ntfy_url`` and ``ntfy_topic`` end up empty in the saved config so
+    the runtime notifier is left in its disabled state."""
     target = _stub_path_resolution(monkeypatch, tmp_path)
     _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
@@ -1346,9 +1351,7 @@ def test_run_wizard_ntfy_url_set_topic_empty_re_prompts(monkeypatch, tmp_path):
         "",  # probe_ssids default
         "",  # ble names default
         "https://ntfy.sh",  # URL set
-        "",  # topic empty → must re-prompt
-        "  ",  # whitespace also rejected
-        "lynceus-real",
+        "",  # topic empty → skip ntfy entirely
         "",  # rssi default
         "",  # severity overrides default
     ]
@@ -1359,8 +1362,8 @@ def test_run_wizard_ntfy_url_set_topic_empty_re_prompts(monkeypatch, tmp_path):
     )
     assert rc == 0
     data = yaml.safe_load(target.read_text())
-    assert data["ntfy_url"] == "https://ntfy.sh"
-    assert data["ntfy_topic"] == "lynceus-real"
+    assert data["ntfy_url"] == ""
+    assert data["ntfy_topic"] == ""
 
 
 # ---- DB parent directory creation before bundled import -------------------
@@ -2640,6 +2643,141 @@ def test_run_wizard_system_scope_all_daemon_touched_paths_have_correct_perms(
     for p in (str(db), wal, shm):
         assert chown_index.get(p) == (2000, 2000), f"{p} must be lynceus:lynceus"
         assert chmod_index.get(p) == 0o640, f"{p} must be mode 0o640"
+
+
+# ---- Bug 7: ntfy topic validator -------------------------------------------
+
+
+def test_looks_like_ntfy_topic_accepts_valid_topics():
+    assert wiz._looks_like_ntfy_topic("lynceus-deadbeef") is True
+    assert wiz._looks_like_ntfy_topic("lynceus_test_01") is True
+    # Boundary at 6 characters — exactly the minimum length.
+    assert wiz._looks_like_ntfy_topic("abc123") is True
+    # Boundary at 64 characters — exactly the maximum length.
+    assert wiz._looks_like_ntfy_topic("a" * 64) is True
+    assert wiz._looks_like_ntfy_topic("CamelCase-Topic_42") is True
+
+
+def test_looks_like_ntfy_topic_rejects_cancellation_words_case_insensitive():
+    """Operators who type these words mean to skip ntfy, not to use them
+    as a topic. The deny-list points them at the empty-input skip path."""
+    for word in ("na", "n/a", "none", "skip", "no", "null", "nil", "abort"):
+        assert wiz._looks_like_ntfy_topic(word) is False, word
+    # Case-insensitive — uppercase variants must also be rejected.
+    assert wiz._looks_like_ntfy_topic("NA") is False
+    assert wiz._looks_like_ntfy_topic("Skip") is False
+    assert wiz._looks_like_ntfy_topic("NONE") is False
+
+
+def test_looks_like_ntfy_topic_rejects_length_and_charset_failures():
+    # Below minimum length.
+    assert wiz._looks_like_ntfy_topic("ab") is False
+    assert wiz._looks_like_ntfy_topic("abcde") is False
+    # Above maximum length.
+    assert wiz._looks_like_ntfy_topic("a" * 65) is False
+    # Disallowed characters: spaces, punctuation, slashes.
+    assert wiz._looks_like_ntfy_topic("has spaces") is False
+    assert wiz._looks_like_ntfy_topic("has!special") is False
+    assert wiz._looks_like_ntfy_topic("with/slash") is False
+    assert wiz._looks_like_ntfy_topic("with.dot") is False
+    # Empty string is handled separately by the caller; the helper rejects.
+    assert wiz._looks_like_ntfy_topic("") is False
+
+
+def test_run_wizard_re_prompts_on_invalid_ntfy_topic_with_clear_error(
+    monkeypatch, tmp_path, capsys
+):
+    """Operator types ``na`` (a deny-list word) once, sees the clear error
+    naming the input and pointing at the skip path, then types a valid
+    topic on the second try. Wizard succeeds with the second topic
+    persisted."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",  # ntfy URL
+        "na",  # invalid topic — deny-listed
+        "lynceus-real01",  # valid topic accepted on retry
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "✗ Topic must be 6-64 alphanumeric/underscore/hyphen" in out
+    assert "got: na" in out
+    assert "Leave blank to skip ntfy entirely" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_topic"] == "lynceus-real01"
+
+
+def test_run_wizard_accepts_ntfy_topic_on_4th_attempt_after_3_invalid(monkeypatch, tmp_path):
+    """Three invalid inputs followed by a valid one on the 4th try: the
+    wizard accepts the valid topic and persists it. The 4-attempt cap is
+    a *failure* threshold (the 4th invalid raises) — a 4th *valid* entry
+    is fine."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",  # ntfy URL
+        "na",  # invalid #1
+        "skip",  # invalid #2
+        "ab",  # invalid #3 — too short
+        "lynceus-finalshot",  # valid on 4th try
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_topic"] == "lynceus-finalshot"
+
+
+def test_run_wizard_aborts_after_4_invalid_ntfy_topic_attempts(monkeypatch, tmp_path, capsys):
+    """Four invalid topics in a row exceeds the cap: the wizard exits
+    non-zero and prints the SetupError-style message pointing the operator
+    at re-running setup or skipping ntfy entirely."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",  # ntfy URL
+        "na",  # invalid #1
+        "skip",  # invalid #2
+        "ab",  # invalid #3
+        "n/a",  # invalid #4 — triggers SetupError abort
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "Could not produce a valid ntfy topic" in err
+    assert "4 attempts" in err
+    assert "Re-run lynceus-setup or leave the topic blank" in err
 
 
 # Suppress the unused-import warning for sys (used by helpers above).
