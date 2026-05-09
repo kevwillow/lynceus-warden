@@ -17,6 +17,7 @@ import getpass
 import importlib.resources
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -508,6 +509,35 @@ def enumerate_bluetooth_adapters() -> list[str] | None:
 # --- Path-input validation -------------------------------------------------
 
 
+# --- ntfy topic validation -------------------------------------------------
+
+_NTFY_TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
+_NTFY_TOPIC_DENY_LIST = frozenset({"na", "n/a", "none", "skip", "no", "null", "nil", "abort"})
+NTFY_TOPIC_MAX_ATTEMPTS = 4
+
+
+def _looks_like_ntfy_topic(value: str) -> bool:
+    """Return True iff ``value`` is a plausible ntfy topic name.
+
+    ntfy.sh's actual constraint is broader (any non-empty string), but
+    accepting "na", "skip", or a fat-fingered three-letter typo as a
+    topic routes alerts to a topic the operator never subscribed to —
+    a worse failure mode than a re-prompt. The regex tightens to
+    ``[A-Za-z0-9_-]{6,64}`` so bare cancellation words and
+    accidentally-pasted secrets that are too short or too long both
+    fail closed. The deny-list catches the cases that DO match the
+    regex (e.g. ``skip`` is 4 chars, but ``aborted`` would match
+    length-wise) and that operators commonly type meaning "I want to
+    skip this prompt"; the validator points them at the empty-input
+    skip path instead.
+    """
+    if not value:
+        return False
+    if value.lower() in _NTFY_TOPIC_DENY_LIST:
+        return False
+    return bool(_NTFY_TOPIC_RE.match(value))
+
+
 def _looks_like_path(value: str) -> bool:
     """Heuristic for accepting a config-file path entered at a prompt.
 
@@ -722,6 +752,46 @@ def import_bundled_watchlist(db_path: str, override_file: str | None) -> tuple[b
 # --- Wizard orchestration ---------------------------------------------------
 
 
+def _prompt_ntfy_topic(*, input_fn=None) -> str | None:
+    """Prompt the operator for an ntfy topic with validation.
+
+    Returns the validated topic string when accepted, or ``None`` when the
+    operator left the prompt blank (signal to the caller to skip ntfy
+    entirely and clear ``ntfy_url`` too).
+
+    Raises ``SetupError`` after ``NTFY_TOPIC_MAX_ATTEMPTS`` invalid entries
+    so the operator hits a clear failure boundary instead of an infinite
+    re-prompt loop. rc1 accepted any non-empty string here, which let
+    "na" / "skip" / fat-fingered typos through and silently routed alerts
+    to a topic the operator never subscribed to.
+    """
+    suggested = f"lynceus-{secrets.token_hex(4)}"
+    print(f"  Suggested random topic (unguessable): {suggested}")
+    invalid_count = 0
+    while True:
+        entered = prompt_default(
+            "ntfy topic name (Enter to skip ntfy entirely)",
+            default=None,
+            required=False,
+            input_fn=input_fn,
+        )
+        if not entered:
+            return None
+        if _looks_like_ntfy_topic(entered):
+            return entered
+        invalid_count += 1
+        print(
+            f"✗ Topic must be 6-64 alphanumeric/underscore/hyphen "
+            f"characters (got: {entered}). Leave blank to skip ntfy entirely."
+        )
+        if invalid_count >= NTFY_TOPIC_MAX_ATTEMPTS:
+            raise SetupError(
+                f"Could not produce a valid ntfy topic after "
+                f"{NTFY_TOPIC_MAX_ATTEMPTS} attempts. Re-run lynceus-setup "
+                "or leave the topic blank to disable ntfy."
+            )
+
+
 def run_wizard(
     args: argparse.Namespace,
     *,
@@ -918,33 +988,33 @@ def run_wizard(
         answers["ntfy_topic"] = ""
     else:
         answers["ntfy_url"] = ntfy_url_input
-        # (h) ntfy topic — required when URL is set
-        suggested = f"lynceus-{secrets.token_hex(4)}"
-        print(f"  Suggested random topic (unguessable): {suggested}")
-        while True:
-            topic = prompt_default(
-                "ntfy topic name",
-                default=None,
-                required=False,
-                input_fn=in_fn,
-            )
-            if topic:
-                break
+        # (h) ntfy topic — validated. Empty input means "skip ntfy entirely"
+        # and clears the URL too; invalid input re-prompts up to
+        # NTFY_TOPIC_MAX_ATTEMPTS times before SetupError aborts.
+        try:
+            topic = _prompt_ntfy_topic(input_fn=in_fn)
+        except SetupError as exc:
+            print(f"Setup failed: {exc}", file=sys.stderr)
+            return 1
+        if topic is None:
             print(
-                "ntfy topic is required when ntfy URL is set. "
-                "Press Enter at the URL prompt to skip ntfy entirely."
+                "Skipping ntfy. Notifications will not be sent. "
+                "To enable later, edit lynceus.yaml or run lynceus-setup --reconfigure."
             )
-        answers["ntfy_topic"] = topic
-        # (i) ntfy probe
-        if not args.skip_probes:
-            ok, error = probe_ntfy(answers["ntfy_url"], answers["ntfy_topic"])
-            if ok:
-                print("✓ ntfy publish OK, check your subscriber for the test message")
-            else:
-                print(f"✗ ntfy publish failed: {error}")
-                if not prompt_yes_no("Continue anyway?", default=False, input_fn=in_fn):
-                    print("Aborted.", file=sys.stderr)
-                    return 1
+            answers["ntfy_url"] = ""
+            answers["ntfy_topic"] = ""
+        else:
+            answers["ntfy_topic"] = topic
+            # (i) ntfy probe
+            if not args.skip_probes:
+                ok, error = probe_ntfy(answers["ntfy_url"], answers["ntfy_topic"])
+                if ok:
+                    print("✓ ntfy publish OK, check your subscriber for the test message")
+                else:
+                    print(f"✗ ntfy publish failed: {error}")
+                    if not prompt_yes_no("Continue anyway?", default=False, input_fn=in_fn):
+                        print("Aborted.", file=sys.stderr)
+                        return 1
 
     # (j) RSSI threshold
     rssi_str = prompt_default(
