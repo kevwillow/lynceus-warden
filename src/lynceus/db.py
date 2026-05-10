@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from pathlib import Path
 from types import TracebackType
+
+logger = logging.getLogger(__name__)
 
 
 def _find_migrations_dir() -> Path:
@@ -504,6 +507,63 @@ class Database:
         if row is None:
             return None
         return self._alert_match_row_to_dict(row)
+
+    def get_evidence_for_alert(self, alert_id: int) -> dict | None:
+        """Return the evidence snapshot for an alert, or None when absent.
+
+        ``kismet_record`` and ``rssi_history`` come back already JSON-decoded
+        so the caller (and the templating layer) does not need to know about
+        the on-disk JSON columns. A malformed JSON column is reported via the
+        ``kismet_record_corrupt`` / ``rssi_history_corrupt`` flags rather than
+        raising — defense-in-depth so a single bad row cannot crash the
+        alert detail page. The web handler is responsible for logging the
+        warning when it sees a corrupt flag.
+        """
+        self._validate_alert_id(alert_id)
+        row = self._conn.execute(
+            "SELECT id, alert_id, mac, captured_at, kismet_record_json, "
+            "rssi_history_json, gps_lat, gps_lon, gps_alt, gps_captured_at "
+            "FROM evidence_snapshots WHERE alert_id = ? ORDER BY id ASC LIMIT 1",
+            (alert_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        kismet_record: dict | None
+        kismet_corrupt = False
+        raw_kismet = row["kismet_record_json"]
+        try:
+            decoded = json.loads(raw_kismet) if raw_kismet else None
+            kismet_record = decoded if isinstance(decoded, dict) else None
+            if raw_kismet and kismet_record is None:
+                kismet_corrupt = True
+        except (json.JSONDecodeError, TypeError, ValueError):
+            kismet_record = None
+            kismet_corrupt = True
+        rssi_history: list | None
+        rssi_corrupt = False
+        raw_rssi = row["rssi_history_json"]
+        try:
+            decoded = json.loads(raw_rssi) if raw_rssi else None
+            rssi_history = decoded if isinstance(decoded, list) else None
+            if raw_rssi and rssi_history is None:
+                rssi_corrupt = True
+        except (json.JSONDecodeError, TypeError, ValueError):
+            rssi_history = None
+            rssi_corrupt = True
+        return {
+            "id": row["id"],
+            "alert_id": row["alert_id"],
+            "mac": row["mac"],
+            "captured_at": row["captured_at"],
+            "kismet_record": kismet_record,
+            "kismet_record_corrupt": kismet_corrupt,
+            "rssi_history": rssi_history,
+            "rssi_history_corrupt": rssi_corrupt,
+            "gps_lat": row["gps_lat"],
+            "gps_lon": row["gps_lon"],
+            "gps_alt": row["gps_alt"],
+            "gps_captured_at": row["gps_captured_at"],
+        }
 
     def list_alerts_with_match(self, filters: dict | None = None) -> list[dict]:
         filters = filters or {}

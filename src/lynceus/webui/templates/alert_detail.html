@@ -31,6 +31,30 @@
     <pre>{{ alert.message }}</pre>
   </article>
 
+  <article>
+    <h2>Evidence</h2>
+    {% if evidence is none %}
+      <p class="dim">No evidence captured for this alert.</p>
+    {% else %}
+      {% if evidence.kismet_record_corrupt %}
+        <p class="dim">Kismet record could not be parsed.</p>
+      {% else %}
+        <details>
+          <summary>Full Kismet record (click to expand)</summary>
+          <pre>{{ kismet_record_pretty }}</pre>
+        </details>
+      {% endif %}
+      {% if rssi_sparkline_svg %}
+        <p><strong>RSSI history (last 60 seconds):</strong></p>
+        {{ rssi_sparkline_svg | safe }}
+      {% endif %}
+      {% if evidence.gps_lat is not none %}
+        <p>Captured location: <code>{{ evidence.gps_lat }}, {{ evidence.gps_lon }}</code> ({{ evidence.gps_alt }}m alt) at {{ evidence.gps_captured_at | unix_to_iso }}.</p>
+        <p><a href="https://www.openstreetmap.org/?mlat={{ evidence.gps_lat }}&amp;mlon={{ evidence.gps_lon }}#map=18/{{ evidence.gps_lat }}/{{ evidence.gps_lon }}" rel="noopener noreferrer">View on OpenStreetMap</a></p>
+      {% endif %}
+    {% endif %}
+  </article>
+
   {% if alert.matched_watchlist_id %}
     <article>
       <header><strong>matched watchlist entry</strong></header>

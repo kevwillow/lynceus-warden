@@ -30,8 +30,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Daily housekeeping: `maybe_prune_evidence` runs at most once per
     24h from the poll loop, tracked under a new
     `last_evidence_prune_ts` poller-state key.
-  - UI surface and CLI export commands intentionally deferred to a
-    follow-up prompt.
+  - Alert detail page surfaces evidence with RSSI sparkline and GPS link.
+    `/alerts/{id}` now renders an Evidence section with the captured
+    Kismet record (collapsed `<details>` with pre-formatted JSON), an
+    inline SVG sparkline of the 60-sample RSSI history (no external
+    chart library — Lynceus stays offline-capable), and an
+    OpenStreetMap link for the captured GPS fix when present (not Google
+    Maps — privacy posture matters here). Older alerts that predate
+    v0.4.0, or alerts where capture was disabled, render a "No evidence
+    captured" placeholder.
+  - CLI export commands intentionally deferred to a follow-up prompt.
 
 ## [0.3.0-rc2] - 2026-05-08
 
