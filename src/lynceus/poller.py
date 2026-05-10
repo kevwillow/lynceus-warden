@@ -172,6 +172,7 @@ def poll_once(
                         obs.raw_record,
                         now_ts=now_ts,
                         capture=config.capture,
+                        store_gps=config.evidence_store_gps,
                     )
                 title = f"lynceus: {hit.severity.upper()} alert"
                 suffix = ""

@@ -16,6 +16,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   persisted to disk. `capture_evidence` now redacts the record per the
   active `CaptureConfig` before serialization (deep-copy-safe — the
   upstream record is never mutated).
+- **GPS in evidence rows is now opt-in.** The geopoint in a Kismet
+  device record is the receiver's GPS fix, not the observed device's,
+  so persisting it on every alert was building a high-resolution
+  operator-movement log retained for the full
+  `evidence_retention_days` window. New config flag
+  `evidence_store_gps` (default `false`) gates the GPS columns; when
+  off, `gps_lat` / `gps_lon` / `gps_alt` / `gps_captured_at` stay NULL
+  even when the Kismet record contains location data.
+  - **BREAKING (pre-release):** `evidence_store_gps` defaults to
+    `false`. Operators who want GPS in evidence rows must enable it
+    explicitly. Existing rows in `evidence_snapshots` from a
+    pre-release v0.4.0 still carry whatever GPS values were captured
+    at the time; only future captures are gated.
 
 ### Added
 
