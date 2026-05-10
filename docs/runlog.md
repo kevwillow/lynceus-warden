@@ -184,3 +184,172 @@ cycle:
 
 After the Kali round-2 shakedown of rc3, if clean, the `-rc3` suffix is
 dropped and this becomes `v0.3.0` final.
+
+## v0.4.0-rc1 (2026-05-10)
+
+### Feature: evidence preservation
+
+The headline feature for v0.4.0. On every alert the poller now writes a
+full snapshot of what was observed — the complete Kismet device record
+as JSON, the RSSI history at the moment the alert fired, and (opt-in)
+the operator's GPS fix at capture time — into a new `evidence_snapshots`
+table keyed by `alert_id`. Snapshots are pruned by age on each poll
+tick per `evidence_retention_days`, and the alert detail page surfaces
+the snapshot inline (Kismet record block, RSSI sparkline, optional OSM
+link) so an operator triaging a post-hoc alert is no longer staring at
+a bare timestamp + MAC. Schema and capture path landed in 6a3f9e2; the
+webui surface in b56c7ac.
+
+### Privacy posture
+
+This is the most sensitive feature shipped to date — every dimension of
+the privacy posture is called out explicitly here so an operator
+deciding whether to enable evidence capture has the full picture in one
+place.
+
+- The capture toggles already governing the live observation path
+  (`capture.probe_ssids`, `capture.ble_friendly_names`) are now honored
+  end-to-end, including in the evidence rows that get written to disk
+  and retained for `evidence_retention_days`. Pre-fix, an operator who
+  had disabled probe-SSID capture for the alert path was still writing
+  probe SSIDs into evidence. Closed in 9debb43 (C-1).
+- Operator GPS in evidence rows is opt-in via a new `evidence_store_gps`
+  config knob, default `false`. The geopoint Kismet emits is the
+  receiver's fix, not the observed device's location — capturing it by
+  default would have built a high-resolution operator-movement log into
+  the privacy-sensitive evidence path. Closed in f5a8396 (C-2). The
+  README privacy section was updated in the same commit to document
+  the knob and the rationale.
+- Capture failures log only the exception type, not its `repr`. The
+  `repr` of common exceptions can include the values that triggered
+  them — fragments of MACs, SSIDs, hostnames — and a capture-failure
+  log line is exactly the sort of thing operators tail in a terminal
+  or pipe to a third-party log shipper. Closed in b0879e2 (H-7).
+- `SECURITY.md` documents the data-at-rest threat model for the
+  evidence path: the on-disk surface area, what each column can
+  contain, the WAL sidecar retention concern (deleted rows linger in
+  `*-wal` until checkpoint), and a checkpoint recipe for operators who
+  need to flush the WAL before a backup or hand-off. Landed in 2792c56
+  (H-8 + M-12).
+- The SQLite database file gets `0600` on first creation in user-mode
+  installs, so the evidence table is not world-readable on shared
+  systems. System-mode is unchanged from the rc3 system-mode work
+  (`0640` `root:lynceus`, daemon group has read). Closed in 687051c
+  (M-11).
+
+### Hardening
+
+- Bytes / bytearray fields in Kismet records are hex-encoded before
+  evidence JSON serialization. Pre-fix, raw bytes raised
+  `TypeError: not JSON serializable` mid-capture and dropped the
+  snapshot for that alert. H-1, d4f0c16.
+- Non-finite floats (`inf`, `-inf`, `nan`) are sanitized to `null`
+  before serialization. Same shape as H-1 — Kismet records can carry
+  these from upstream sensor noise and the default `json.dumps`
+  encoder rejects them. H-2, d4ea850.
+- `raw_record` is only carried on observations when
+  `evidence_capture_enabled` is true. On busy sites this saves
+  multiple MB per poll tick that were otherwise being shuttled
+  through the in-memory observation path and discarded. H-3, 40621d6.
+- The webui hides the GPS section when coordinates are non-finite,
+  even for hand-edited or legacy rows where the row exists but the
+  numeric values would render as `inf`/`nan` in the OSM link. H-5,
+  39db7b6.
+- OSM links open in a new tab (`target="_blank"` with the usual
+  `rel="noopener noreferrer"`) so a triage click doesn't navigate
+  the operator away from the alert detail page mid-investigation.
+  H-6, d04bb0b.
+- The `PRAGMA foreign_keys` contract is pinned by a dedicated test —
+  the FK-cascade behavior on `evidence_snapshots` (alert delete →
+  snapshot delete) silently depends on it being on, and the only
+  prior coverage was load-bearing on PRAGMA state set elsewhere.
+  H-10, 502d91e.
+- The `rssi_history_corrupt` branch in both `db` and `webui` has
+  dedicated regression coverage — pre-fix it was a never-exercised
+  defensive branch, exactly the shape of bug the rc3 G-series
+  pattern was built to catch. H-11, c2859c2.
+
+### Performance
+
+- `captured_at` index added on `evidence_snapshots` for prune
+  efficiency at scale. The daily prune (`DELETE WHERE captured_at <
+  cutoff`) was a full table scan; at 100K rows that's a multi-second
+  stall on a Pi every poll tick. With the index it's an index seek.
+  H-4, 7ae6893.
+
+### Forward-compat
+
+- The `evidence_snapshots.do_not_publish` column landed in this cycle
+  (default `0`, no producers or consumers in v0.4.0) so that v0.5.0's
+  public-feed export work doesn't have to do a destructive migration
+  on a table that by then will have meaningful production data in it.
+  Adding a column with a default is cheap now and surgical later.
+  M-13, 29faf0a.
+
+### Test discipline
+
+The pre-shakedown diagnostic for v0.4.0 surfaced two privacy
+criticals (C-1 capture-toggle bypass, C-2 operator GPS leakage) plus
+six should-fix items, all of which landed in this rc. Static review
+caught what mock-driven tests had missed — the same rc3 G-series
+pattern recurred in three distinct places in the v0.4.0 codebase: a
+shared Kismet test fixture lacking `signal_rrd`/`location` so the
+RSSI-history and GPS paths were exercised against synthetic absence
+rather than real presence; an FK-cascade test silently load-bearing
+on PRAGMA state set in an unrelated conftest; the
+`rssi_history_corrupt` defensive branch never reached by any
+existing test. All three are closed by dedicated regression tests in
+this rc. The "diagnostic-first, then code" cycle is a pattern worth
+keeping for future feature releases — the cost of a static review
+pass before the ship-or-not call is small relative to the cost of
+shipping a privacy bug.
+
+### Notable departures from spec
+
+- **C-2 GPS default flipped from opt-out to opt-in**: the initial
+  evidence-capture implementation in Prompt 35 stored operator GPS
+  by default whenever the Kismet record carried a location block.
+  The C-2 fix in f5a8396 flipped the default to opt-in
+  (`evidence_store_gps` defaults `false`) so the rc1 ship state has
+  GPS gated. Operators who pulled an interim commit between Prompt
+  35 and the rc1 cycle would have had GPS captured by default; no
+  frozen on-disk semantics are affected because v0.4.0-rc1 is the
+  first tag with `evidence_snapshots` in the schema, so any interim
+  on-disk evidence rows belong to the operator's own dev branch and
+  were never part of a tagged release.
+
+### Test counts
+
+1078 (post-Prompt 36, v0.4.0 work-in-progress) → 1107 (v0.4.0-rc1
+ship). +29 tests over the privacy/cleanup arc, every one driving a
+real failure path the original implementation either missed or only
+mock-tested.
+
+### Known issues deferred to v0.4.x or rc2
+
+Diagnostic findings flagged but intentionally not addressed in this
+rc:
+
+- **H-9 — replace synthetic Kismet fixture with one captured during
+  Kali shakedown**: the highest-value test addition possible —
+  every other privacy/hardening fix in this rc would have been
+  one-shot caught by exercising the path against a real Kismet
+  device record — but it requires real hardware data and so belongs
+  to the post-shakedown follow-up, not release prep.
+- **M-series remaining**: `last_time` int-only check, RSSI history
+  not `:60`-truncated, geopoint length-3 silent accept,
+  `isinstance(alt, int|float)` accepts `bool`, clock-jump
+  regression in `maybe_prune`, migration 007 missing
+  `IF NOT EXISTS`, `<pre>` block size caps, bidi defense on inline
+  fields, `alert.message` `<pre>` block sizing, capture-failure log
+  lacks evidence row id.
+- **L-series**: UI accessibility and operator affordances —
+  delete-all-evidence CLI, storage indicator on `/settings`,
+  sparkline `aria-label` min/max folding, `focus-visible` on
+  details summary.
+- **L-8 auth layer**: same forward concern as rc3, deferred to
+  v0.5+. The webui still binds loopback-only and assumes a trusted
+  local operator; a real auth story is a v0.5 conversation.
+
+After the Kali round-1 shakedown of rc1, if clean, the `-rc1` suffix
+is dropped and this becomes `v0.4.0` final.
