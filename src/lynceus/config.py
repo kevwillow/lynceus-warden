@@ -78,6 +78,8 @@ class Config(BaseModel):
     kismet_timeout_seconds: float = 10.0
     kismet_health_check_on_startup: bool = True
     capture: CaptureConfig = CaptureConfig()
+    evidence_capture_enabled: bool = True
+    evidence_retention_days: int = 90
 
     @field_validator("kismet_url")
     @classmethod
@@ -177,6 +179,13 @@ class Config(BaseModel):
             raise ValueError("kismet_timeout_seconds must be > 0")
         if v > 120.0:
             raise ValueError("kismet_timeout_seconds must be <= 120.0")
+        return v
+
+    @field_validator("evidence_retention_days")
+    @classmethod
+    def _validate_evidence_retention_days(cls, v: int) -> int:
+        if v < 1 or v > 3650:
+            raise ValueError("evidence_retention_days must be in [1, 3650]")
         return v
 
     @model_validator(mode="after")
