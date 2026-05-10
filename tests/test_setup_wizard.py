@@ -1336,22 +1336,23 @@ def test_run_wizard_ntfy_url_empty_skips_ntfy_and_probe(monkeypatch, tmp_path, c
     assert data["ntfy_topic"] == ""
 
 
-def test_run_wizard_ntfy_url_set_topic_empty_skips_ntfy(monkeypatch, tmp_path):
-    """Bug 7: leaving the topic prompt blank now means *skip ntfy entirely*
-    rather than re-prompting forever. Operators who got cold feet after
-    typing a URL can back out without restarting the wizard, and both
-    ``ntfy_url`` and ``ntfy_topic`` end up empty in the saved config so
-    the runtime notifier is left in its disabled state."""
+def test_run_wizard_ntfy_url_set_topic_empty_uses_suggested(monkeypatch, tmp_path):
+    """URL set + topic blank → wizard accepts the suggested random topic
+    shown at the prompt and persists it. The skip-ntfy path is the URL
+    prompt only; once the URL is set, the operator has committed to ntfy
+    and blank-topic is an accept-default, not an opt-out."""
     target = _stub_path_resolution(monkeypatch, tmp_path)
     _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # Pin the random suggestion so we can assert on the exact topic written.
+    monkeypatch.setattr("lynceus.cli.setup.secrets.token_hex", lambda n: "deadbeef")
     inputs = [
         "",  # kismet URL default
         "wlan0",
         "",  # probe_ssids default
         "",  # ble names default
         "https://ntfy.sh",  # URL set
-        "",  # topic empty → skip ntfy entirely
+        "",  # topic empty → accepts suggested
         "",  # rssi default
         "",  # severity overrides default
     ]
@@ -1362,8 +1363,8 @@ def test_run_wizard_ntfy_url_set_topic_empty_skips_ntfy(monkeypatch, tmp_path):
     )
     assert rc == 0
     data = yaml.safe_load(target.read_text())
-    assert data["ntfy_url"] == ""
-    assert data["ntfy_topic"] == ""
+    assert data["ntfy_url"] == "https://ntfy.sh"
+    assert data["ntfy_topic"] == "lynceus-deadbeef"
 
 
 # ---- DB parent directory creation before bundled import -------------------
@@ -2714,7 +2715,8 @@ def test_run_wizard_re_prompts_on_invalid_ntfy_topic_with_clear_error(
     out = capsys.readouterr().out
     assert "✗ Topic must be 6-64 alphanumeric/underscore/hyphen" in out
     assert "got: na" in out
-    assert "Leave blank to skip ntfy entirely" in out
+    assert "Press Enter to accept the suggested topic" in out
+    assert "blank URL to skip ntfy" in out
     data = yaml.safe_load(target.read_text())
     assert data["ntfy_topic"] == "lynceus-real01"
 
@@ -2777,7 +2779,67 @@ def test_run_wizard_aborts_after_4_invalid_ntfy_topic_attempts(monkeypatch, tmp_
     err = capsys.readouterr().err
     assert "Could not produce a valid ntfy topic" in err
     assert "4 attempts" in err
-    assert "Re-run lynceus-setup or leave the topic blank" in err
+    assert "leave the URL prompt blank to disable ntfy" in err
+
+
+def test_run_wizard_ntfy_blank_topic_accepts_suggested_default(monkeypatch, tmp_path):
+    """Blank-topic at the prompt accepts the suggested random topic. This
+    is the explicit accept-default path (the corollary of "leave URL blank
+    to skip ntfy"). The persisted topic matches the suggestion shown.
+    """
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr("lynceus.cli.setup.secrets.token_hex", lambda n: "cafef00d")
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",  # URL set
+        "",  # topic blank → accept suggested
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_topic"] == "lynceus-cafef00d"
+
+
+def test_run_wizard_ntfy_blank_topic_does_not_disable_ntfy(monkeypatch, tmp_path):
+    """Regression guard for the inverted Bug 7 fix: blank topic with URL
+    set must NOT clear ``ntfy_url``. The earlier landing of Bug 7 wrongly
+    treated topic-blank as a back-out and zeroed both fields, silently
+    turning an opt-in into an opt-out — exactly the misrouting class
+    Bug 7 was supposed to prevent. After this fix, ntfy_url stays put
+    and ntfy_topic is populated with the suggested default."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",  # URL set
+        "",  # topic blank
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_url"] == "https://ntfy.sh"
+    assert data["ntfy_topic"], "ntfy_topic must be non-empty when URL is set"
 
 
 # Suppress the unused-import warning for sys (used by helpers above).

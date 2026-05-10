@@ -752,43 +752,48 @@ def import_bundled_watchlist(db_path: str, override_file: str | None) -> tuple[b
 # --- Wizard orchestration ---------------------------------------------------
 
 
-def _prompt_ntfy_topic(*, input_fn=None) -> str | None:
+def _prompt_ntfy_topic(*, input_fn=None) -> str:
     """Prompt the operator for an ntfy topic with validation.
 
-    Returns the validated topic string when accepted, or ``None`` when the
-    operator left the prompt blank (signal to the caller to skip ntfy
-    entirely and clear ``ntfy_url`` too).
+    Returns the validated topic string. By the time we reach this prompt
+    the operator has already committed to ntfy by entering a non-empty
+    URL — blank input here is *accept the suggested random topic*, not
+    a back-out. The skip-ntfy path is the URL prompt; clearing ``ntfy_url``
+    after the operator typed it would silently turn an opt-in into an
+    opt-out, which is the exact misrouting Bug 7 set out to prevent.
 
-    Raises ``SetupError`` after ``NTFY_TOPIC_MAX_ATTEMPTS`` invalid entries
-    so the operator hits a clear failure boundary instead of an infinite
-    re-prompt loop. rc1 accepted any non-empty string here, which let
-    "na" / "skip" / fat-fingered typos through and silently routed alerts
-    to a topic the operator never subscribed to.
+    Raises ``SetupError`` after ``NTFY_TOPIC_MAX_ATTEMPTS`` invalid
+    non-empty entries so the operator hits a clear failure boundary
+    instead of an infinite re-prompt loop. rc1 accepted any non-empty
+    string here, which let "na" / "skip" / fat-fingered typos through
+    and silently routed alerts to a topic the operator never subscribed
+    to.
     """
     suggested = f"lynceus-{secrets.token_hex(4)}"
     print(f"  Suggested random topic (unguessable): {suggested}")
     invalid_count = 0
     while True:
         entered = prompt_default(
-            "ntfy topic name (Enter to skip ntfy entirely)",
+            "ntfy topic name (Enter to accept the suggested topic above)",
             default=None,
             required=False,
             input_fn=input_fn,
         )
         if not entered:
-            return None
+            return suggested
         if _looks_like_ntfy_topic(entered):
             return entered
         invalid_count += 1
         print(
             f"✗ Topic must be 6-64 alphanumeric/underscore/hyphen "
-            f"characters (got: {entered}). Leave blank to skip ntfy entirely."
+            f"characters (got: {entered}). Press Enter to accept the suggested "
+            "topic, or re-run lynceus-setup with a blank URL to skip ntfy."
         )
         if invalid_count >= NTFY_TOPIC_MAX_ATTEMPTS:
             raise SetupError(
                 f"Could not produce a valid ntfy topic after "
                 f"{NTFY_TOPIC_MAX_ATTEMPTS} attempts. Re-run lynceus-setup "
-                "or leave the topic blank to disable ntfy."
+                "and leave the URL prompt blank to disable ntfy entirely."
             )
 
 
@@ -988,33 +993,25 @@ def run_wizard(
         answers["ntfy_topic"] = ""
     else:
         answers["ntfy_url"] = ntfy_url_input
-        # (h) ntfy topic — validated. Empty input means "skip ntfy entirely"
-        # and clears the URL too; invalid input re-prompts up to
-        # NTFY_TOPIC_MAX_ATTEMPTS times before SetupError aborts.
+        # (h) ntfy topic — validated. Blank input here is *accept the
+        # suggested random topic*, not skip; the skip-ntfy path is the URL
+        # prompt above. Invalid input re-prompts up to NTFY_TOPIC_MAX_ATTEMPTS
+        # times before SetupError aborts.
         try:
-            topic = _prompt_ntfy_topic(input_fn=in_fn)
+            answers["ntfy_topic"] = _prompt_ntfy_topic(input_fn=in_fn)
         except SetupError as exc:
             print(f"Setup failed: {exc}", file=sys.stderr)
             return 1
-        if topic is None:
-            print(
-                "Skipping ntfy. Notifications will not be sent. "
-                "To enable later, edit lynceus.yaml or run lynceus-setup --reconfigure."
-            )
-            answers["ntfy_url"] = ""
-            answers["ntfy_topic"] = ""
-        else:
-            answers["ntfy_topic"] = topic
-            # (i) ntfy probe
-            if not args.skip_probes:
-                ok, error = probe_ntfy(answers["ntfy_url"], answers["ntfy_topic"])
-                if ok:
-                    print("✓ ntfy publish OK, check your subscriber for the test message")
-                else:
-                    print(f"✗ ntfy publish failed: {error}")
-                    if not prompt_yes_no("Continue anyway?", default=False, input_fn=in_fn):
-                        print("Aborted.", file=sys.stderr)
-                        return 1
+        # (i) ntfy probe
+        if not args.skip_probes:
+            ok, error = probe_ntfy(answers["ntfy_url"], answers["ntfy_topic"])
+            if ok:
+                print("✓ ntfy publish OK, check your subscriber for the test message")
+            else:
+                print(f"✗ ntfy publish failed: {error}")
+                if not prompt_yes_no("Continue anyway?", default=False, input_fn=in_fn):
+                    print("Aborted.", file=sys.stderr)
+                    return 1
 
     # (j) RSSI threshold
     rssi_str = prompt_default(
