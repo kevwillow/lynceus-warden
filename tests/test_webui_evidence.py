@@ -292,3 +292,57 @@ def test_get_evidence_for_alert_flags_corrupt_kismet_json(tmp_path):
         assert evidence["kismet_record_corrupt"] is True
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Non-finite GPS guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_alert_detail_hides_gps_when_lat_is_nan(tmp_path):
+    """REGRESSION: a row with non-finite gps_lat (e.g. nan from a
+    pre-H-2 install or a hand-edited DB) used to render a malformed
+    OSM URL like mlat=nan&mlon=...&map=18/nan/... Hiding the entire
+    GPS section is the safe fallback. H-2 prevents new captures from
+    storing non-finite values; this test pins the read-side guard."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = _make_alert(db)
+        # Stomp on the captured row directly so we drive the real
+        # SELECT path with non-finite floats coming back from SQLite.
+        db._conn.execute(
+            "UPDATE evidence_snapshots SET gps_lat = ?, gps_lon = ? WHERE alert_id = ?",
+            (float("nan"), 0.0, aid),
+        )
+        db._conn.commit()
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        body = r.text
+        # No OSM link, no "nan" string, no "Captured location" line.
+        assert "openstreetmap.org" not in body
+        assert "nan" not in body.lower()
+        assert "Captured location" not in body
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_hides_gps_when_lon_is_inf(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = _make_alert(db)
+        db._conn.execute(
+            "UPDATE evidence_snapshots SET gps_lat = ?, gps_lon = ? WHERE alert_id = ?",
+            (37.7749, float("inf"), aid),
+        )
+        db._conn.commit()
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        body = r.text
+        assert "openstreetmap.org" not in body
+        assert "inf" not in body.lower()
+    finally:
+        db.close()

@@ -6,6 +6,7 @@ import datetime as _dt
 import importlib.metadata
 import json
 import logging
+import math
 import time
 from math import ceil
 from pathlib import Path
@@ -555,6 +556,24 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     alert_id,
                 )
             rssi_sparkline_svg = render_rssi_sparkline(evidence["rssi_history"])
+            # Belt-and-suspenders against non-finite GPS values: capture
+            # already sanitizes inf/nan to NULL (H-2), but pre-H-2 rows
+            # or hand-edited DBs could still hold non-finite floats. The
+            # OSM URL would render as "mlat=nan&mlon=inf..." which is
+            # malformed. Treat non-finite as absent.
+            lat = evidence["gps_lat"]
+            lon = evidence["gps_lon"]
+            if (isinstance(lat, float) and not math.isfinite(lat)) or (
+                isinstance(lon, float) and not math.isfinite(lon)
+            ):
+                logger.warning(
+                    "evidence gps coordinates non-finite for alert %d, hiding GPS section",
+                    alert_id,
+                )
+                evidence["gps_lat"] = None
+                evidence["gps_lon"] = None
+                evidence["gps_alt"] = None
+                evidence["gps_captured_at"] = None
         return app.state.templates.TemplateResponse(
             request=request,
             name="alert_detail.html",

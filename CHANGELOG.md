@@ -18,6 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Alert detail page hides the GPS section when stored coordinates
+  are non-finite.** Belt-and-suspenders against a pre-H-2 install or
+  hand-edited DB row carrying `inf` / `nan`: the OSM URL would
+  otherwise render as `mlat=nan&mlon=...&map=18/nan/...` and the
+  visible coordinate line would say "nan, 0". The handler now
+  zeroes out the GPS context fields and logs a WARNING when it
+  detects non-finite values.
 - **Evidence capture now honors the `capture.probe_ssids` and
   `capture.ble_friendly_names` toggles.** Previously the verbatim
   Kismet record stored in `evidence_snapshots.kismet_record_json`
