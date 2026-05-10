@@ -249,6 +249,19 @@ def test_capture_serializes_non_json_native_with_default_str(db, alert_id):
 # -------------------------- foreign-key cascade -----------------------------
 
 
+def test_foreign_keys_pragma_is_on(db):
+    """PRAGMA foreign_keys is per-connection in SQLite (not persistent
+    in the file), so test_foreign_key_cascade_deletes_evidence below is
+    silently load-bearing on Database.__init__ setting it. Pin the
+    contract independently — if a future refactor moves the PRAGMA to
+    a place that the running daemon's connection bypasses (raw
+    sqlite3.connect, a worker thread, etc.), this guards against the
+    regression even if cascade deletes appear to "work" because the
+    constraint is parsed-but-inert."""
+    result = db._conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    assert result == 1, "PRAGMA foreign_keys must be ON for cascade deletes"
+
+
 def test_foreign_key_cascade_deletes_evidence(db, alert_id):
     rid = capture_evidence(db, alert_id, MAC, _kismet_record())
     assert rid is not None
