@@ -23,6 +23,39 @@ operator is the user; bystanders are not part of the threat model.
 - Attackers with physical access to the host running Lynceus.
 - Adversaries who can read or modify the SQLite database directly.
 
+## Data at rest
+
+The `lynceus.db` SQLite file is **unencrypted**. Lynceus uses the
+stdlib `sqlite3` module (not SQLCipher); rely on full-disk encryption,
+filesystem permissions, and physical security to protect the
+database. The hardened systemd units lay the file down as
+`0640 root:lynceus`; user-mode installs write `0600` on first
+creation but operator-set modes are preserved on subsequent opens.
+
+Two surfaces in `lynceus.db` are notably sensitive:
+
+- **`evidence_snapshots`** (introduced in v0.4.0) stores the full
+  Kismet device record at alert time. It can contain probe SSIDs and
+  BLE friendly names when the matching `capture.*` toggles are
+  enabled, and the OPERATOR's GPS fix when `evidence_store_gps` is
+  enabled. Probe-SSID and GPS capture are off by default; the
+  retention window is governed by `evidence_retention_days`
+  (default 90).
+- **WAL sidecars (`lynceus.db-wal`, `lynceus.db-shm`)** retain
+  recently-written rows even after a `DELETE` has logically removed
+  them — the prune does not synchronously rewrite the WAL. Standard
+  rsync/borg backups sweep both files alongside `lynceus.db`.
+  Operators who care about post-deletion residue should checkpoint
+  the WAL before backing up:
+
+  ```sh
+  sqlite3 /var/lib/lynceus/lynceus.db "PRAGMA wal_checkpoint(TRUNCATE);"
+  ```
+
+  This is also worth running before handing the database to anyone
+  outside the trust boundary, since rows the operator believes were
+  pruned may otherwise be recoverable from the WAL.
+
 ## Reporting a vulnerability
 
 **Preferred — private security advisory:**

@@ -30,6 +30,9 @@ The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and r
 | `min_rssi` | integer \| null | `null` | Drop observations weaker than this RSSI threshold (dBm). Range `[-120, 0]`. Observations with no RSSI report are kept regardless. Unset disables RSSI filtering. | `-85` |
 | `kismet_timeout_seconds` | float | `10.0` | HTTP timeout (seconds) for all Kismet REST calls. Range `(0, 120]`. | `15.0` |
 | `kismet_health_check_on_startup` | bool | `true` | Probe Kismet's `/system/status.json` once at poller startup; on failure, the daemon exits immediately. Set `false` to skip the check (e.g. when starting lynceus before Kismet is ready). | `false` |
+| `evidence_capture_enabled` | bool | `true` | Whether to capture an evidence snapshot when an alert fires. Each snapshot stores the full Kismet device record (subject to `capture.*` redaction) plus RSSI history; storage cost grows with alert volume and `evidence_retention_days`. Set `false` on storage-constrained Pis. | `false` |
+| `evidence_retention_days` | int | `90` | How long to keep evidence rows before the daily prune deletes them. Range `[1, 3650]`. Increase for transparency-reporting use cases; decrease to reduce on-disk exposure of operator-side data. | `30` |
+| `evidence_store_gps` | bool | `false` | Whether to store the OPERATOR's GPS fix in evidence rows. Kismet's geopoint is the receiver's location, not the observed device's, so enabling this builds a high-resolution operator-movement log retained per `evidence_retention_days`. Opt-in by default. See the README privacy section. | `true` |
 
 ### Cross-field validation
 

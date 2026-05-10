@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.0] - Unreleased
 
+### Documentation
+
+- **SECURITY.md gains a "Data at rest" section** documenting that
+  `lynceus.db` is unencrypted, that `evidence_snapshots` carries the
+  most sensitive data Lynceus has shipped (probe SSIDs gated by
+  capture toggle, operator GPS gated by `evidence_store_gps`), and
+  that the WAL sidecar retains rows after a logical `DELETE`.
+  Includes the `PRAGMA wal_checkpoint(TRUNCATE)` recipe for
+  operators who need to flush the WAL before a backup or hand-off.
+- **CONFIGURATION.md field-reference table now lists the v0.4.0
+  evidence knobs** (`evidence_capture_enabled`,
+  `evidence_retention_days`, `evidence_store_gps`).
+
 ### Performance
 
 - **`captured_at` index for the evidence retention prune.** Migration
