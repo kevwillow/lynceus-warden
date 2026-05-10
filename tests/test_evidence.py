@@ -676,3 +676,55 @@ def test_capture_handles_bytearray_in_record(db, alert_id):
     ).fetchone()
     decoded = json.loads(row["kismet_record_json"])
     assert decoded["dot11.ssid.raw"] == "000102ff"
+
+
+# ----------------------- non-finite float sanitization ---------------------
+
+
+def _reject_constant(c):
+    raise ValueError(f"non-finite token in JSON: {c}")
+
+
+def _strict_loads(blob: str):
+    """json.loads that rejects Infinity / NaN tokens.
+
+    Default json.loads accepts non-standard "Infinity"/"NaN" tokens and
+    decodes them into Python floats — which is exactly what FOIA-export
+    or journalist-tool consumers using strict JSON parsers will choke
+    on. parse_constant is invoked for those tokens; raising here turns
+    them into a hard test failure if they ever leak through."""
+    return json.loads(blob, parse_constant=_reject_constant)
+
+
+def test_capture_handles_inf_in_rrd(db, alert_id):
+    """REGRESSION: inf in a signal RRD slot must serialize as null,
+    not the non-standard "Infinity" token. The captured row must
+    round-trip through a strict JSON parser."""
+    record = _kismet_record(minute_vec=[float("inf"), -50, -55] + [-60] * 57)
+    rid = capture_evidence(db, alert_id, MAC, record)
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json, rssi_history_json FROM evidence_snapshots WHERE id = ?",
+        (rid,),
+    ).fetchone()
+    # Strict round-trip — Infinity / NaN tokens would raise here.
+    decoded = _strict_loads(row["kismet_record_json"])
+    history = _strict_loads(row["rssi_history_json"])
+    # The inf value is now null in both encodings.
+    minute_vec = decoded["kismet.device.base.signal"]["kismet.common.signal.signal_rrd"][
+        "kismet.common.rrd.minute_vec"
+    ]
+    assert None in minute_vec
+    assert any(entry["rssi"] is None for entry in history)
+
+
+def test_capture_handles_nan_in_signal(db, alert_id):
+    record = _kismet_record()
+    record["kismet.device.base.signal"]["kismet.common.signal.last_signal"] = float("nan")
+    rid = capture_evidence(db, alert_id, MAC, record)
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    decoded = _strict_loads(row["kismet_record_json"])
+    assert decoded["kismet.device.base.signal"]["kismet.common.signal.last_signal"] is None
