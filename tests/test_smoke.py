@@ -5,7 +5,7 @@ from lynceus import allowlist, db, kismet, main, notify, poller, rules
 
 
 def test_version():
-    assert lynceus.__version__ == "0.2.0"
+    assert lynceus.__version__ == "0.3.0rc3"
 
 
 def test_modules_importable():
