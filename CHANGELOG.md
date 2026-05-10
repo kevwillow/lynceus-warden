@@ -21,6 +21,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `default=str` produced ugly tool-hostile blobs like
   `"b'\\xff\\xfe'"`; new custom default emits clean hex (`"fffe"`)
   that round-trips through any JSON consumer.
+- **Non-finite floats in Kismet records (`inf`, `nan`) are now
+  serialized as `null` in evidence JSON** instead of the non-standard
+  `Infinity` / `NaN` tokens. Strict JSON parsers (FOIA-export
+  pipelines, journalist tooling) reject those tokens; a single
+  Kismet RRD slot carrying a sentinel value used to render the entire
+  snapshot non-portable.
 - **GPS in evidence rows is now opt-in.** The geopoint in a Kismet
   device record is the receiver's GPS fix, not the observed device's,
   so persisting it on every alert was building a high-resolution

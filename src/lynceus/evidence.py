@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from typing import Any
 
@@ -61,6 +62,25 @@ _BLE_NAME_KEYS = frozenset(
 _BLE_DEVICE_TYPES = frozenset({"BTLE", "Bluetooth"})
 _DEVICE_TYPE_KEY = "kismet.device.base.type"
 _DEVICE_NAME_KEY = "kismet.device.base.name"
+
+
+def _sanitize_floats(obj: Any) -> Any:
+    """Return a copy of obj with non-finite floats replaced by None.
+
+    Kismet RRD blocks occasionally carry float('inf') / float('nan') as
+    "no data" sentinels. json.dumps with default allow_nan=True emits
+    these as the literal tokens Infinity / NaN, which are not valid
+    JSON — strict consumers (FOIA export pipelines, journalist tooling)
+    reject them. Walks dicts and lists recursively; non-container
+    leaves are returned unchanged so the caller's cost is one pass.
+    """
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(item) for item in obj]
+    return obj
 
 
 def _json_default(obj: Any) -> str:
@@ -194,6 +214,7 @@ def capture_evidence(
         if not isinstance(kismet_record, dict):
             raise TypeError(f"kismet_record must be a dict, got {type(kismet_record).__name__}")
         kismet_record = _redact_kismet_record(kismet_record, capture)
+        kismet_record = _sanitize_floats(kismet_record)
         # json.dumps with _json_default copes with datetime / set / Decimal
         # / bytes values that occasionally sneak into Kismet records via
         # plugin extensions. It still raises on circular references —
@@ -205,7 +226,9 @@ def capture_evidence(
             if store_gps
             else {"lat": None, "lon": None, "alt": None, "captured_at": None}
         )
-        rssi_history_json = json.dumps(rssi_history) if rssi_history is not None else None
+        rssi_history_json = (
+            json.dumps(_sanitize_floats(rssi_history)) if rssi_history is not None else None
+        )
         with db._conn:
             cur = db._conn.execute(
                 "INSERT INTO evidence_snapshots("
