@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   persisted to disk. `capture_evidence` now redacts the record per the
   active `CaptureConfig` before serialization (deep-copy-safe — the
   upstream record is never mutated).
+- **`bytes` / `bytearray` fields in Kismet records are now hex-encoded
+  in evidence JSON** instead of stringified as a Python repr. Previous
+  `default=str` produced ugly tool-hostile blobs like
+  `"b'\\xff\\xfe'"`; new custom default emits clean hex (`"fffe"`)
+  that round-trips through any JSON consumer.
 - **GPS in evidence rows is now opt-in.** The geopoint in a Kismet
   device record is the receiver's GPS fix, not the observed device's,
   so persisting it on every alert was building a high-resolution

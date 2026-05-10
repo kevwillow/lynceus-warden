@@ -644,3 +644,35 @@ def test_poll_path_omits_gps_by_default(db_path):
         assert row["gps_lon"] is None
         assert row["gps_alt"] is None
         assert row["gps_captured_at"] is None
+
+
+# ----------------------- bytes-safe JSON serialization ---------------------
+
+
+def test_capture_handles_bytes_in_record(db, alert_id):
+    """REGRESSION: a raw bytes field anywhere in a Kismet record must
+    not lose the entire snapshot. json.dumps' default=str path is *not*
+    consulted for bytes — the encoder rejects them outright with
+    TypeError before falling through. The custom default hex-encodes
+    bytes so the snapshot survives."""
+    record = _kismet_record()
+    record["dot11.device.bssid_bytes"] = b"\xff\xfe\x12\x34"
+    rid = capture_evidence(db, alert_id, MAC, record)
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    decoded = json.loads(row["kismet_record_json"])
+    assert decoded["dot11.device.bssid_bytes"] == "fffe1234"
+
+
+def test_capture_handles_bytearray_in_record(db, alert_id):
+    record = _kismet_record()
+    record["dot11.ssid.raw"] = bytearray(b"\x00\x01\x02\xff")
+    rid = capture_evidence(db, alert_id, MAC, record)
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    decoded = json.loads(row["kismet_record_json"])
+    assert decoded["dot11.ssid.raw"] == "000102ff"

@@ -63,6 +63,20 @@ _DEVICE_TYPE_KEY = "kismet.device.base.type"
 _DEVICE_NAME_KEY = "kismet.device.base.name"
 
 
+def _json_default(obj: Any) -> str:
+    """Custom json.dumps default that hex-encodes bytes/bytearray.
+
+    Kismet plugin extensions occasionally return raw byte fields (binary
+    BSSIDs, non-UTF-8 SSIDs). Stdlib json raises TypeError on bytes
+    without a default; the previous default=str path stringified them as
+    the literal repr ("b'\\xff\\xfe'") which is ugly and tool-hostile.
+    Hex round-trips cleanly through any JSON consumer.
+    """
+    if isinstance(obj, bytes | bytearray):
+        return obj.hex()
+    return str(obj)
+
+
 def _redact_kismet_record(record: dict, capture: CaptureConfig) -> dict:
     """Return a redacted deep copy of a Kismet device record.
 
@@ -180,11 +194,11 @@ def capture_evidence(
         if not isinstance(kismet_record, dict):
             raise TypeError(f"kismet_record must be a dict, got {type(kismet_record).__name__}")
         kismet_record = _redact_kismet_record(kismet_record, capture)
-        # json.dumps with default=str copes with datetime / set / Decimal
-        # values that occasionally sneak into Kismet records via plugin
-        # extensions. It still raises on circular references — that path
-        # is deliberately exercised by the regression test.
-        kismet_record_json = json.dumps(kismet_record, default=str)
+        # json.dumps with _json_default copes with datetime / set / Decimal
+        # / bytes values that occasionally sneak into Kismet records via
+        # plugin extensions. It still raises on circular references —
+        # that path is deliberately exercised by the regression test.
+        kismet_record_json = json.dumps(kismet_record, default=_json_default)
         rssi_history = _extract_rssi_history(kismet_record)
         gps = (
             _extract_gps(kismet_record)
