@@ -329,6 +329,31 @@ def test_alert_detail_hides_gps_when_lat_is_nan(tmp_path):
 
 
 @pytest.mark.webui
+def test_alert_detail_osm_link_opens_in_new_tab(tmp_path):
+    """REGRESSION: the OSM link previously had rel="noopener noreferrer"
+    but no target="_blank", so clicking it navigated the operator off
+    the alert page (losing pagination/filter context). Must match the
+    watchlist source_url link's behaviour: open in a new tab."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = _make_alert(db)
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        body = r.text
+        assert "openstreetmap.org" in body
+        # Find the OSM <a> and assert it has both attributes.
+        osm_anchor_start = body.find('href="https://www.openstreetmap.org')
+        assert osm_anchor_start != -1
+        osm_anchor_end = body.find(">", osm_anchor_start)
+        osm_anchor = body[osm_anchor_start:osm_anchor_end]
+        assert 'target="_blank"' in osm_anchor
+        assert 'rel="noopener noreferrer"' in osm_anchor
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
 def test_alert_detail_hides_gps_when_lon_is_inf(tmp_path):
     app, db = _make_app(tmp_path)
     try:

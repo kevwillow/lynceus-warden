@@ -25,6 +25,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   visible coordinate line would say "nan, 0". The handler now
   zeroes out the GPS context fields and logs a WARNING when it
   detects non-finite values.
+- **OpenStreetMap link on the alert detail page now opens in a new
+  tab.** Previously had `rel="noopener noreferrer"` but no
+  `target="_blank"`, so clicking it navigated the operator off the
+  alert page and dropped any pagination/filter context. Now matches
+  the watchlist `source_url` link's behaviour.
 - **Evidence capture now honors the `capture.probe_ssids` and
   `capture.ble_friendly_names` toggles.** Previously the verbatim
   Kismet record stored in `evidence_snapshots.kismet_record_json`
