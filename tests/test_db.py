@@ -1,6 +1,9 @@
 """Tests for the SQLite persistence layer."""
 
+import os
 import sqlite3
+import stat
+import sys
 
 import pytest
 
@@ -731,5 +734,41 @@ def test_database_in_memory_path_does_not_create_dirs(tmp_path, monkeypatch):
     d = Database(":memory:")
     try:
         assert list(tmp_path.iterdir()) == cwd_before
+    finally:
+        d.close()
+
+
+# ---------------------------- file mode (POSIX) ----------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
+def test_fresh_database_is_chmod_0600(tmp_path):
+    """REGRESSION: user-mode installs left lynceus.db at the process
+    umask (typically 0644 — world-readable). Evidence rows can carry
+    operator GPS and probe SSIDs; system-mode already chmods to 0640
+    via setup, but user-mode had no equivalent. Database.__init__ now
+    forces 0600 on first creation."""
+    db_path = str(tmp_path / "fresh.db")
+    d = Database(db_path)
+    try:
+        mode = stat.S_IMODE(os.stat(db_path).st_mode)
+        assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
+    finally:
+        d.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
+def test_reopening_database_preserves_existing_mode(tmp_path):
+    """Operator-set modes (e.g. the 0640 root:lynceus that the
+    system-mode installer applies) must survive a daemon restart.
+    Database.__init__ only chmods on first creation, not on reopen."""
+    db_path = str(tmp_path / "preexisting.db")
+    Database(db_path).close()
+    # Operator chmods to a non-default mode.
+    os.chmod(db_path, 0o640)
+    d = Database(db_path)
+    try:
+        mode = stat.S_IMODE(os.stat(db_path).st_mode)
+        assert mode == 0o640, f"expected 0o640 preserved, got {oct(mode)}"
     finally:
         d.close()
