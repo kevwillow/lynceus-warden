@@ -85,6 +85,52 @@ def test_poll_once_uses_last_poll_ts(db, config, fake_client, monkeypatch):
     assert captured == [1700000300]
 
 
+def test_poll_once_threads_capture_flag_through_to_parser(db, config, fake_client, monkeypatch):
+    """REGRESSION: poll_once must propagate evidence_capture_enabled
+    down to parse_kismet_device so observations don't carry the full
+    Kismet record in memory when capture is off."""
+    config_off = Config(
+        kismet_fixture_path=config.kismet_fixture_path,
+        db_path=config.db_path,
+        location_id=config.location_id,
+        location_label=config.location_label,
+        evidence_capture_enabled=False,
+    )
+    captured_kwargs: dict = {}
+    orig = fake_client.get_devices_since
+
+    def spy(since_ts, **kwargs):
+        captured_kwargs.update(kwargs)
+        return orig(since_ts, **kwargs)
+
+    monkeypatch.setattr(fake_client, "get_devices_since", spy)
+    poll_once(fake_client, db, config_off, 1700001000)
+    assert captured_kwargs.get("evidence_capture_enabled") is False
+    # And every observation that *would* have been alerted has no
+    # raw_record attached: confirm by re-running through the parser
+    # directly with the same flag.
+    obs_list = fake_client.get_devices_since(0, evidence_capture_enabled=False)
+    assert obs_list
+    assert all(o.raw_record is None for o in obs_list)
+
+
+def test_poll_once_threads_capture_flag_when_enabled(db, config, fake_client, monkeypatch):
+    captured_kwargs: dict = {}
+    orig = fake_client.get_devices_since
+
+    def spy(since_ts, **kwargs):
+        captured_kwargs.update(kwargs)
+        return orig(since_ts, **kwargs)
+
+    monkeypatch.setattr(fake_client, "get_devices_since", spy)
+    poll_once(fake_client, db, config, 1700001000)
+    # Default config has evidence_capture_enabled=True.
+    assert captured_kwargs.get("evidence_capture_enabled") is True
+    obs_list = fake_client.get_devices_since(0, evidence_capture_enabled=True)
+    assert obs_list
+    assert all(o.raw_record is not None for o in obs_list)
+
+
 def test_poll_once_default_last_poll_ts_zero(db, config, fake_client, monkeypatch):
     captured: list[int] = []
     orig = fake_client.get_devices_since

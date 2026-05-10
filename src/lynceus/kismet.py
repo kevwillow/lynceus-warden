@@ -173,6 +173,7 @@ def parse_kismet_device(
     *,
     capture_probe_ssids: bool = False,
     capture_ble_name: bool = False,
+    evidence_capture_enabled: bool = False,
 ) -> DeviceObservation | None:
     raw_mac = raw.get("kismet.device.base.macaddr")
     kismet_type = raw.get("kismet.device.base.type")
@@ -261,7 +262,12 @@ def parse_kismet_device(
         seen_by_sources=seen_by_sources,
         probe_ssids=probe_ssids,
         ble_name=ble_name,
-        raw_record=raw,
+        # Only carry the full Kismet record forward when evidence
+        # capture is enabled. Each record is tens of KB; for a poll
+        # batch of hundreds of devices, holding all of them in memory
+        # until poll_once returns is multi-MB of needless overhead
+        # when the evidence path will not consume them.
+        raw_record=raw if evidence_capture_enabled else None,
     )
 
 
@@ -292,6 +298,7 @@ class KismetClient:
         *,
         capture_probe_ssids: bool = False,
         capture_ble_name: bool = False,
+        evidence_capture_enabled: bool = False,
     ) -> list[DeviceObservation]:
         url = f"{self.base_url}/devices/last-time/{since_ts}/devices.json"
         kwargs: dict[str, Any] = {"timeout": self.timeout}
@@ -308,6 +315,7 @@ class KismetClient:
                 raw,
                 capture_probe_ssids=capture_probe_ssids,
                 capture_ble_name=capture_ble_name,
+                evidence_capture_enabled=evidence_capture_enabled,
             )
             if obs is not None:
                 results.append(obs)
@@ -404,6 +412,7 @@ class FakeKismetClient(KismetClient):
         *,
         capture_probe_ssids: bool = False,
         capture_ble_name: bool = False,
+        evidence_capture_enabled: bool = False,
     ) -> list[DeviceObservation]:
         results: list[DeviceObservation] = []
         for raw in self._fixture:
@@ -412,6 +421,7 @@ class FakeKismetClient(KismetClient):
                     raw,
                     capture_probe_ssids=capture_probe_ssids,
                     capture_ble_name=capture_ble_name,
+                    evidence_capture_enabled=evidence_capture_enabled,
                 )
                 if obs is not None:
                     results.append(obs)

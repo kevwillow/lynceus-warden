@@ -544,6 +544,35 @@ def test_parse_seenby_not_a_list_yields_empty_tuple():
     assert obs.seen_by_sources == ()
 
 
+# ------------------------- raw_record / capture gate ------------------------
+
+
+def test_parse_kismet_device_omits_raw_record_when_capture_disabled():
+    """REGRESSION: parse_kismet_device unconditionally attaching the
+    full Kismet device record to every observation costs multi-MB of
+    memory per poll batch on busy sites — even when evidence capture
+    is off and the data will never be consumed. The flag gates the
+    attachment at the source."""
+    obs = parse_kismet_device(_wifi_ap_raw(), evidence_capture_enabled=False)
+    assert obs is not None
+    assert obs.raw_record is None
+
+
+def test_parse_kismet_device_populates_raw_record_when_capture_enabled():
+    obs = parse_kismet_device(_wifi_ap_raw(), evidence_capture_enabled=True)
+    assert obs is not None
+    assert obs.raw_record is not None
+    assert obs.raw_record["kismet.device.base.macaddr"] == "a4:83:e7:11:22:33"
+
+
+def test_parse_kismet_device_default_omits_raw_record():
+    """The default is False (privacy/memory conservative). Direct
+    callers without an explicit kwarg get the cheap behaviour."""
+    obs = parse_kismet_device(_wifi_ap_raw())
+    assert obs is not None
+    assert obs.raw_record is None
+
+
 # ------------------------------- health_check ------------------------------
 
 

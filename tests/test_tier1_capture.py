@@ -118,10 +118,12 @@ class _SingleObsClient:
         *,
         capture_probe_ssids: bool = False,
         capture_ble_name: bool = False,
+        evidence_capture_enabled: bool = False,
     ) -> list[DeviceObservation]:
         self.last_kwargs = {
             "capture_probe_ssids": capture_probe_ssids,
             "capture_ble_name": capture_ble_name,
+            "evidence_capture_enabled": evidence_capture_enabled,
         }
         return list(self._obs)
 
@@ -453,6 +455,7 @@ def test_poller_passes_capture_flag_to_kismet_client(db, db_path):
     assert client.last_kwargs == {
         "capture_probe_ssids": True,
         "capture_ble_name": False,
+        "evidence_capture_enabled": True,
     }
 
 
@@ -466,10 +469,18 @@ def test_poller_probe_ssids_opt_out_does_not_read_kismet_field(db, db_path):
         def __init__(self) -> None:
             self.kwargs: dict = {}
 
-        def get_devices_since(self, since_ts, *, capture_probe_ssids=False, capture_ble_name=False):
+        def get_devices_since(
+            self,
+            since_ts,
+            *,
+            capture_probe_ssids=False,
+            capture_ble_name=False,
+            evidence_capture_enabled=False,
+        ):
             self.kwargs = {
                 "capture_probe_ssids": capture_probe_ssids,
                 "capture_ble_name": capture_ble_name,
+                "evidence_capture_enabled": evidence_capture_enabled,
             }
             obs = parse_kismet_device(
                 raw,
@@ -487,6 +498,7 @@ def test_poller_probe_ssids_opt_out_does_not_read_kismet_field(db, db_path):
     assert client.kwargs == {
         "capture_probe_ssids": False,
         "capture_ble_name": False,
+        "evidence_capture_enabled": True,
     }
     # Critical: the probe-SSID-related keys must never be read.
     assert "dot11.device" not in raw.accessed
