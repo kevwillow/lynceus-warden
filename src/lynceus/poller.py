@@ -63,6 +63,7 @@ def poll_once(
         last_poll_ts,
         capture_probe_ssids=config.capture.probe_ssids,
         capture_ble_name=config.capture.ble_friendly_names,
+        evidence_capture_enabled=config.evidence_capture_enabled,
     )
     processed = 0
     for obs in observations:

@@ -27,6 +27,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pipelines, journalist tooling) reject those tokens; a single
   Kismet RRD slot carrying a sentinel value used to render the entire
   snapshot non-portable.
+- **`raw_record` is no longer attached to `DeviceObservation` when
+  evidence capture is disabled.** Each Kismet device record can be
+  tens of KB; for poll batches of hundreds of devices that was
+  multi-MB of needless retention every tick when the evidence path
+  would never consume it. `parse_kismet_device` now takes
+  `evidence_capture_enabled`, threaded down from `poll_once` via the
+  Kismet client.
 - **GPS in evidence rows is now opt-in.** The geopoint in a Kismet
   device record is the receiver's GPS fix, not the observed device's,
   so persisting it on every alert was building a high-resolution
