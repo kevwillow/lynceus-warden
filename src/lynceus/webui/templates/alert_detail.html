@@ -50,7 +50,7 @@
       {% endif %}
       {% if evidence.gps_lat is not none %}
         <p>Captured location: <code>{{ evidence.gps_lat }}, {{ evidence.gps_lon }}</code> ({{ evidence.gps_alt }}m alt) at {{ evidence.gps_captured_at | unix_to_iso }}.</p>
-        <p><a href="https://www.openstreetmap.org/?mlat={{ evidence.gps_lat }}&amp;mlon={{ evidence.gps_lon }}#map=18/{{ evidence.gps_lat }}/{{ evidence.gps_lon }}" rel="noopener noreferrer">View on OpenStreetMap</a></p>
+        <p><a href="https://www.openstreetmap.org/?mlat={{ evidence.gps_lat }}&amp;mlon={{ evidence.gps_lon }}#map=18/{{ evidence.gps_lat }}/{{ evidence.gps_lon }}" target="_blank" rel="noopener noreferrer">View on OpenStreetMap</a></p>
       {% endif %}
     {% endif %}
   </article>
