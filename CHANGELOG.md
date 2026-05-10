@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.0] - Unreleased
 
+### Performance
+
+- **`captured_at` index for the evidence retention prune.** Migration
+  008 adds `evidence_captured_at_idx` so the daily
+  `DELETE FROM evidence_snapshots WHERE captured_at < ?` no longer
+  falls back to a full table scan. The pre-existing
+  `(mac, captured_at DESC)` index leads with `mac` and is not usable
+  for an unconstrained range scan; this becomes a real cost on
+  Pi-class hardware after weeks of operation on a busy site.
+
 ### Fixed
 
 - **Evidence capture now honors the `capture.probe_ssids` and

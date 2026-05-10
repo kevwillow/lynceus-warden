@@ -107,6 +107,10 @@ def test_migration_creates_indexes(db):
     }
     assert "evidence_alert_id_idx" in names
     assert "evidence_mac_captured_idx" in names
+    # Migration 008: captured_at-only index for the retention prune.
+    # Without this, DELETE WHERE captured_at < ? falls back to a full
+    # table scan because (mac, captured_at DESC) leads with mac.
+    assert "evidence_captured_at_idx" in names
 
 
 def test_migration_idempotent(db_path):
