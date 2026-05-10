@@ -294,6 +294,62 @@ def test_get_evidence_for_alert_flags_corrupt_kismet_json(tmp_path):
         db.close()
 
 
+def test_get_evidence_for_alert_flags_corrupt_rssi_history_json(tmp_path):
+    """REGRESSION: db.get_evidence_for_alert has a symmetric corrupt-
+    detection path for rssi_history_json (db.py: try/except around
+    json.loads with rssi_history_corrupt flag), but no test covered
+    it. If someone breaks the parsing branch, the bug ships silently.
+    Mirror the kismet_record_corrupt test for the parallel column."""
+    db = Database(str(tmp_path / "rc.db"))
+    try:
+        db.upsert_device(MAC, "wifi", "TestVendor", 0, 1700000000)
+        aid = db.add_alert(ts=1700000000, rule_name="r", mac=MAC, message="m", severity="low")
+        capture_evidence(db, aid, MAC, _kismet_record(), now_ts=1700000200)
+        db._conn.execute(
+            "UPDATE evidence_snapshots SET rssi_history_json = ? WHERE alert_id = ?",
+            ("[bad", aid),
+        )
+        db._conn.commit()
+        evidence = db.get_evidence_for_alert(aid)
+        assert evidence is not None
+        assert evidence["rssi_history"] is None
+        assert evidence["rssi_history_corrupt"] is True
+        # The kismet record is unaffected by rssi corruption.
+        assert evidence["kismet_record_corrupt"] is False
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_with_corrupt_rssi_history_omits_sparkline(tmp_path):
+    """The handler must render cleanly when rssi_history_json is
+    corrupt: no <polyline>, no aria-label sparkline, the existing
+    "no rssi history" empty-state takes over. The corrupt JSON
+    content itself must NOT leak into the response body."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = _make_alert(db)
+        sentinel = "[bad-rssi-content-DO-NOT-LEAK"
+        db._conn.execute(
+            "UPDATE evidence_snapshots SET rssi_history_json = ? WHERE alert_id = ?",
+            (sentinel, aid),
+        )
+        db._conn.commit()
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        body = r.text
+        # No sparkline rendered.
+        assert "<polyline" not in body
+        assert 'aria-label="RSSI history' not in body
+        # The corrupt JSON content is not echoed back to the page.
+        assert sentinel not in body
+        # The Kismet record block is unaffected.
+        assert "Full Kismet record" in body
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Non-finite GPS guard
 # ---------------------------------------------------------------------------
