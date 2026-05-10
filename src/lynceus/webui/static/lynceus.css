@@ -44,6 +44,13 @@ tr.row-acked    { opacity: 0.55; }
 /* Reset filters link visibility */
 .reset-filters { margin-left: 1em; font-size: 0.9em; }
 
+/* Evidence section: RSSI sparkline + collapsible Kismet record. The
+   sparkline polyline uses currentColor so it inherits text color and
+   stays legible when the v0.4.x dark theme lands without per-theme
+   palette tweaks. */
+.rssi-sparkline { color: currentColor; vertical-align: middle; }
+details > summary { cursor: pointer; }
+
 /* Inline ack note input */
 .ack-row-note { width: 18ch; font-size: 0.85em; padding: 1px 4px; }
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as _dt
 import importlib.metadata
+import json
+import logging
 import time
 from math import ceil
 from pathlib import Path
@@ -20,6 +22,8 @@ from lynceus import rules as rules_mod
 from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
+
+logger = logging.getLogger(__name__)
 
 PACKAGE = "lynceus.webui"
 
@@ -108,6 +112,63 @@ def unix_to_utc_human(ts) -> str:
         return ""
     dt = _dt.datetime.fromtimestamp(int(ts), tz=_dt.UTC)
     return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+
+_RSSI_SPARKLINE_WIDTH = 200
+_RSSI_SPARKLINE_HEIGHT = 40
+
+
+def render_rssi_sparkline(rssi_history) -> str:
+    """Return a small inline SVG plotting the captured RSSI series.
+
+    Empty / None input returns an empty string so the template can omit
+    the section. A constant series renders a flat midline (no divide-by-
+    zero in the normalization step). Stronger signal (less negative dBm)
+    plots towards the top of the chart, matching operator intuition.
+
+    The SVG uses ``stroke="currentColor"`` so it inherits the surrounding
+    text color in both light and dark themes (no theme-specific palette
+    needed). No user-controlled attributes are interpolated — every
+    interpolated value is an int or a server-computed float — so the
+    output is safe to render with Jinja's ``| safe``.
+    """
+    if not rssi_history:
+        return ""
+    values: list[int] = []
+    for sample in rssi_history:
+        if isinstance(sample, dict) and "rssi" in sample:
+            try:
+                values.append(int(sample["rssi"]))
+            except (TypeError, ValueError):
+                continue
+    if not values:
+        return ""
+    n = len(values)
+    rmin = min(values)
+    rmax = max(values)
+    span = rmax - rmin
+    height = _RSSI_SPARKLINE_HEIGHT
+    width = _RSSI_SPARKLINE_WIDTH
+    if span == 0:
+        ys = [height / 2.0] * n
+    else:
+        ys = [(rmax - v) / span * height for v in values]
+    if n == 1:
+        xs = [width / 2.0]
+    else:
+        step = width / (n - 1)
+        xs = [i * step for i in range(n)]
+    points = " ".join(f"{x:.2f},{y:.2f}" for x, y in zip(xs, ys, strict=True))
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" class="rssi-sparkline" '
+        f'width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+        f'role="img" aria-label="RSSI history over the last 60 seconds">'
+        f'<polyline fill="none" stroke="currentColor" stroke-width="1.5" '
+        f'points="{points}"/>'
+        f'<text x="{width - 2}" y="10" text-anchor="end" font-size="9" '
+        f'fill="currentColor">min: {rmin} max: {rmax}</text>'
+        f"</svg>"
+    )
 
 
 _SEVERITY_ORDER = {"high": 0, "med": 1, "low": 2}
@@ -477,6 +538,23 @@ def create_app(config: Config, db: Database) -> FastAPI:
             )
         _enrich_alerts_with_devices(db, [alert])
         actions = db.list_alert_actions(alert_id)
+        evidence = db.get_evidence_for_alert(alert_id)
+        kismet_record_pretty: str | None = None
+        rssi_sparkline_svg = ""
+        if evidence is not None:
+            if evidence["kismet_record_corrupt"]:
+                logger.warning(
+                    "evidence kismet_record_json could not be parsed for alert %d",
+                    alert_id,
+                )
+            elif evidence["kismet_record"] is not None:
+                kismet_record_pretty = json.dumps(evidence["kismet_record"], indent=2)
+            if evidence["rssi_history_corrupt"]:
+                logger.warning(
+                    "evidence rssi_history_json could not be parsed for alert %d",
+                    alert_id,
+                )
+            rssi_sparkline_svg = render_rssi_sparkline(evidence["rssi_history"])
         return app.state.templates.TemplateResponse(
             request=request,
             name="alert_detail.html",
@@ -485,6 +563,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "active": "alerts",
                 "alert": alert,
                 "actions": actions,
+                "evidence": evidence,
+                "kismet_record_pretty": kismet_record_pretty,
+                "rssi_sparkline_svg": rssi_sparkline_svg,
             },
         )
 
