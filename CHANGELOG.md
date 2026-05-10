@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.0] - Unreleased
 
+### Fixed
+
+- **Evidence capture now honors the `capture.probe_ssids` and
+  `capture.ble_friendly_names` toggles.** Previously the verbatim
+  Kismet record stored in `evidence_snapshots.kismet_record_json`
+  bypassed both toggles, so an operator who explicitly disabled probe
+  capture still had every probed SSID for every alerting device
+  persisted to disk. `capture_evidence` now redacts the record per the
+  active `CaptureConfig` before serialization (deep-copy-safe — the
+  upstream record is never mutated).
+
 ### Added
 
 - **Evidence snapshots table, alert-time capture, retention prune.** When

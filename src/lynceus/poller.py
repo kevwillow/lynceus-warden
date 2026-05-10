@@ -165,7 +165,14 @@ def poll_once(
                     logger.warning("Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e)
                     continue
                 if config.evidence_capture_enabled and obs.raw_record is not None:
-                    capture_evidence(db, new_alert_id, hit.mac, obs.raw_record, now_ts=now_ts)
+                    capture_evidence(
+                        db,
+                        new_alert_id,
+                        hit.mac,
+                        obs.raw_record,
+                        now_ts=now_ts,
+                        capture=config.capture,
+                    )
                 title = f"lynceus: {hit.severity.upper()} alert"
                 suffix = ""
                 if hit_match_id is not None:

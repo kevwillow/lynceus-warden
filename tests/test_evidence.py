@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from lynceus.config import Config
+from lynceus.config import CaptureConfig, Config
 from lynceus.db import Database
 from lynceus.evidence import (
     STATE_KEY_LAST_EVIDENCE_PRUNE,
@@ -465,3 +465,121 @@ def test_capture_circular_record_does_not_raise(db, alert_id, caplog):
     # A WARNING (not ERROR) was logged.
     assert any(r.levelname == "WARNING" for r in caplog.records)
     assert not any(r.levelname == "ERROR" for r in caplog.records)
+
+
+# ----------------------- redaction per capture toggle -----------------------
+
+
+def _wifi_record_with_probes() -> dict:
+    """Wi-Fi AP record carrying the probed-SSID nest the toggle gates."""
+    record = _kismet_record()
+    record["dot11.device"] = {
+        "dot11.device.last_probed_ssid_csum_map": {
+            "0xdeadbeef": {"dot11.probedssid.ssid": "HomeNet-5G"},
+            "0xcafef00d": {"dot11.probedssid.ssid": "AirportFreeWiFi"},
+        }
+    }
+    return record
+
+
+def _ble_record_with_friendly_names() -> dict:
+    """BLE record carrying the friendly-name fields the toggle gates."""
+    return {
+        "kismet.device.base.macaddr": "06:aa:bb:cc:dd:ee",
+        "kismet.device.base.type": "BTLE",
+        "kismet.device.base.first_time": 1699999300,
+        "kismet.device.base.last_time": 1700000300,
+        "kismet.device.base.name": "John's iPhone",
+        "btle": {
+            "btle.device.name": "John's iPhone",
+            "btle.advertised.name": "John's iPhone (BLE adv)",
+        },
+    }
+
+
+def test_capture_redacts_probe_ssids_when_toggle_disabled(db, alert_id):
+    record = _wifi_record_with_probes()
+    rid = capture_evidence(db, alert_id, MAC, record, capture=CaptureConfig(probe_ssids=False))
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    blob = row["kismet_record_json"]
+    # The csum-map key and the nested per-record SSID key must both be gone.
+    assert "dot11.device.last_probed_ssid_csum_map" not in blob
+    assert "dot11.probedssid.ssid" not in blob
+    assert "HomeNet-5G" not in blob
+    assert "AirportFreeWiFi" not in blob
+
+
+def test_capture_redacts_ble_friendly_names_when_toggle_disabled(db, alert_id):
+    record = _ble_record_with_friendly_names()
+    rid = capture_evidence(
+        db,
+        alert_id,
+        MAC,
+        record,
+        capture=CaptureConfig(probe_ssids=False, ble_friendly_names=False),
+    )
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    blob = row["kismet_record_json"]
+    decoded = json.loads(blob)
+    assert "kismet.device.base.name" not in decoded
+    assert "btle.device.name" not in blob
+    assert "btle.advertised.name" not in blob
+    assert "John's iPhone" not in blob
+
+
+def test_capture_does_not_mutate_upstream_record(db, alert_id):
+    record = _wifi_record_with_probes()
+    record_before = json.dumps(record, sort_keys=True)
+    capture_evidence(db, alert_id, MAC, record, capture=CaptureConfig(probe_ssids=False))
+    record_after = json.dumps(record, sort_keys=True)
+    assert record_before == record_after
+
+
+def test_capture_with_both_toggles_on_keeps_all_fields(db, alert_id):
+    record = _wifi_record_with_probes()
+    rid = capture_evidence(
+        db,
+        alert_id,
+        MAC,
+        record,
+        capture=CaptureConfig(probe_ssids=True, ble_friendly_names=True),
+    )
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    decoded = json.loads(row["kismet_record_json"])
+    assert "dot11.device" in decoded
+    assert "dot11.device.last_probed_ssid_csum_map" in decoded["dot11.device"]
+    assert (
+        decoded["dot11.device"]["dot11.device.last_probed_ssid_csum_map"]["0xdeadbeef"][
+            "dot11.probedssid.ssid"
+        ]
+        == "HomeNet-5G"
+    )
+
+
+def test_capture_keeps_wifi_ssid_even_when_ble_names_disabled(db, alert_id):
+    """kismet.device.base.name is the SSID for Wi-Fi devices; BLE-name
+    redaction must not strip it for non-BLE device types."""
+    record = _kismet_record()
+    record["kismet.device.base.name"] = "HomeNet"
+    rid = capture_evidence(
+        db,
+        alert_id,
+        MAC,
+        record,
+        capture=CaptureConfig(probe_ssids=False, ble_friendly_names=False),
+    )
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    decoded = json.loads(row["kismet_record_json"])
+    assert decoded.get("kismet.device.base.name") == "HomeNet"
