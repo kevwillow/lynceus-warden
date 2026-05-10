@@ -249,12 +249,21 @@ def capture_evidence(
             )
             return int(cur.lastrowid)
     except Exception as exc:
+        # Only the exception type name is safe to log unconditionally:
+        # the formatted exception body can contain field values from
+        # the offending Kismet record (BLE friendly names, SSIDs,
+        # vendor strings) and that text lands in journalctl outside
+        # the rest of Lynceus's privacy controls. Operators who
+        # explicitly raise the log level to DEBUG accept the leakage
+        # in exchange for full diagnostic context.
         logger.warning(
             "Failed to capture evidence for alert %s (mac %s): %s",
             alert_id,
             mac,
-            exc,
+            type(exc).__name__,
         )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Capture failure detail", exc_info=True)
         return None
 
 
