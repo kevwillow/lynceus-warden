@@ -150,6 +150,7 @@ def capture_evidence(
     *,
     now_ts: int | None = None,
     capture: CaptureConfig | None = None,
+    store_gps: bool = False,
 ) -> int | None:
     """Persist an evidence snapshot for the given alert.
 
@@ -163,6 +164,13 @@ def capture_evidence(
     via the verbatim-record path. Defaults to a fresh ``CaptureConfig``
     (probe_ssids=False, ble_friendly_names=True) so direct callers
     without an explicit config get the privacy-conservative behaviour.
+
+    ``store_gps`` gates whether the GPS columns (gps_lat/lon/alt and
+    gps_captured_at) are populated. The geopoint Kismet emits is the
+    receiver's GPS fix, not the observed device's, so persisting it
+    builds a high-resolution operator-movement log. Opt-in by default;
+    when False the columns stay NULL even if the record contains
+    location data.
     """
     try:
         if now_ts is None:
@@ -178,7 +186,11 @@ def capture_evidence(
         # is deliberately exercised by the regression test.
         kismet_record_json = json.dumps(kismet_record, default=str)
         rssi_history = _extract_rssi_history(kismet_record)
-        gps = _extract_gps(kismet_record)
+        gps = (
+            _extract_gps(kismet_record)
+            if store_gps
+            else {"lat": None, "lon": None, "alt": None, "captured_at": None}
+        )
         rssi_history_json = json.dumps(rssi_history) if rssi_history is not None else None
         with db._conn:
             cur = db._conn.execute(

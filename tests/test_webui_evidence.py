@@ -71,7 +71,11 @@ def _make_alert(db, *, with_evidence: bool = True, kismet_record: dict | None = 
     )
     if with_evidence:
         record = kismet_record if kismet_record is not None else _kismet_record()
-        rid = capture_evidence(db, aid, MAC, record, now_ts=1700000200)
+        # store_gps=True so the GPS-rendering paths in the UI tests below
+        # (OSM link, lat/lon display) actually have data to render. The
+        # webui tests are exercising "what happens when GPS is present"
+        # — the privacy-default behaviour is covered by test_evidence.py.
+        rid = capture_evidence(db, aid, MAC, record, now_ts=1700000200, store_gps=True)
         assert rid is not None
     return aid
 
@@ -258,7 +262,7 @@ def test_get_evidence_for_alert_decodes_json_columns(tmp_path):
     try:
         db.upsert_device(MAC, "wifi", "TestVendor", 0, 1700000000)
         aid = db.add_alert(ts=1700000000, rule_name="r", mac=MAC, message="m", severity="low")
-        capture_evidence(db, aid, MAC, _kismet_record(), now_ts=1700000200)
+        capture_evidence(db, aid, MAC, _kismet_record(), now_ts=1700000200, store_gps=True)
         evidence = db.get_evidence_for_alert(aid)
         assert evidence is not None
         assert isinstance(evidence["kismet_record"], dict)

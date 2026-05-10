@@ -176,7 +176,7 @@ def test_capture_rssi_history_null_when_minute_vec_malformed(db, alert_id):
 
 
 def test_capture_extracts_gps_when_present(db, alert_id):
-    rid = capture_evidence(db, alert_id, MAC, _kismet_record())
+    rid = capture_evidence(db, alert_id, MAC, _kismet_record(), store_gps=True)
     row = db._conn.execute(
         "SELECT gps_lat, gps_lon, gps_alt, gps_captured_at FROM evidence_snapshots WHERE id = ?",
         (rid,),
@@ -188,7 +188,7 @@ def test_capture_extracts_gps_when_present(db, alert_id):
 
 
 def test_capture_gps_null_when_location_absent(db, alert_id):
-    rid = capture_evidence(db, alert_id, MAC, _kismet_record(with_location=False))
+    rid = capture_evidence(db, alert_id, MAC, _kismet_record(with_location=False), store_gps=True)
     row = db._conn.execute(
         "SELECT gps_lat, gps_lon, gps_alt, gps_captured_at FROM evidence_snapshots WHERE id = ?",
         (rid,),
@@ -583,3 +583,64 @@ def test_capture_keeps_wifi_ssid_even_when_ble_names_disabled(db, alert_id):
     ).fetchone()
     decoded = json.loads(row["kismet_record_json"])
     assert decoded.get("kismet.device.base.name") == "HomeNet"
+
+
+# --------------------------- evidence_store_gps -----------------------------
+
+
+def test_capture_omits_gps_when_evidence_store_gps_false(db, alert_id):
+    """Default behaviour: GPS columns stay NULL even when the record has
+    a location block. The geopoint Kismet emits is the OPERATOR's GPS
+    fix; storing it by default would be a privacy regression."""
+    rid = capture_evidence(db, alert_id, MAC, _kismet_record(), store_gps=False)
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT gps_lat, gps_lon, gps_alt, gps_captured_at FROM evidence_snapshots WHERE id = ?",
+        (rid,),
+    ).fetchone()
+    assert row["gps_lat"] is None
+    assert row["gps_lon"] is None
+    assert row["gps_alt"] is None
+    assert row["gps_captured_at"] is None
+
+
+def test_capture_includes_gps_when_evidence_store_gps_true(db, alert_id):
+    rid = capture_evidence(db, alert_id, MAC, _kismet_record(), store_gps=True)
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT gps_lat, gps_lon, gps_alt, gps_captured_at FROM evidence_snapshots WHERE id = ?",
+        (rid,),
+    ).fetchone()
+    assert row["gps_lat"] == pytest.approx(37.7749)
+    assert row["gps_lon"] == pytest.approx(-122.4194)
+    assert row["gps_alt"] == pytest.approx(52.0)
+    assert row["gps_captured_at"] == 1700000095
+
+
+def test_config_evidence_store_gps_defaults_false():
+    assert Config().evidence_store_gps is False
+
+
+def test_poll_path_omits_gps_by_default(db_path):
+    """Integration: even with a fixture that has location data, the
+    poll path must not populate GPS columns when evidence_store_gps is
+    at its default (False)."""
+    cfg = Config(
+        kismet_fixture_path=str(FIXTURE_PATH),
+        db_path=db_path,
+        location_id="testloc",
+        location_label="Test",
+    )
+    db = Database(db_path)
+    client = FakeKismetClient(str(FIXTURE_PATH))
+    poll_once(client, db, cfg, 1700001000, ruleset=_ruleset_for_fixture_mac())
+    rows = db._conn.execute(
+        "SELECT gps_lat, gps_lon, gps_alt, gps_captured_at FROM evidence_snapshots"
+    ).fetchall()
+    db.close()
+    assert len(rows) >= 1
+    for row in rows:
+        assert row["gps_lat"] is None
+        assert row["gps_lon"] is None
+        assert row["gps_alt"] is None
+        assert row["gps_captured_at"] is None

@@ -80,6 +80,12 @@ class Config(BaseModel):
     capture: CaptureConfig = CaptureConfig()
     evidence_capture_enabled: bool = True
     evidence_retention_days: int = 90
+    # GPS coordinates in evidence rows are the OPERATOR's location at
+    # alert time (Kismet sources the geopoint from the receiver's GPS
+    # fix, not the observed device's). Opt-in by default so an operator
+    # who enables evidence capture does not silently start a 90-day
+    # high-resolution self-movement log.
+    evidence_store_gps: bool = False
 
     @field_validator("kismet_url")
     @classmethod
