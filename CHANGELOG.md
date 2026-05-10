@@ -34,6 +34,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   would never consume it. `parse_kismet_device` now takes
   `evidence_capture_enabled`, threaded down from `poll_once` via the
   Kismet client.
+- **Capture-failure log line no longer leaks exception body content.**
+  `json.dumps` failures can carry offending field values (BLE friendly
+  names, SSIDs, vendor strings) in the exception message; logging the
+  exception via `%s` echoed those values into journalctl outside
+  Lynceus's privacy controls. The WARNING line now includes only the
+  exception type name; full traceback is reserved for explicit
+  DEBUG-mode operation (`logger.isEnabledFor(logging.DEBUG)` gate).
 - **GPS in evidence rows is now opt-in.** The geopoint in a Kismet
   device record is the receiver's GPS fix, not the observed device's,
   so persisting it on every alert was building a high-resolution

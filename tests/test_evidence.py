@@ -728,3 +728,61 @@ def test_capture_handles_nan_in_signal(db, alert_id):
     ).fetchone()
     decoded = _strict_loads(row["kismet_record_json"])
     assert decoded["kismet.device.base.signal"]["kismet.common.signal.last_signal"] is None
+
+
+# -------------------- log sanitization on capture failure ------------------
+
+
+class _LeakyValue:
+    """A value whose serialization path raises with a sensitive payload
+    embedded in the exception text. Drives the "exception body echoes
+    field content" leakage path that H-7 closes."""
+
+    def __repr__(self) -> str:
+        return "<redacted-repr>"
+
+    def __str__(self) -> str:
+        # Mimics what real Kismet plugin extensions can do: a stringify
+        # path that raises with offending content embedded. Our
+        # custom json default falls back to str(obj), so this surfaces
+        # inside json.dumps and the exception text carries the sensitive
+        # name verbatim.
+        raise RuntimeError("encoding failure for value: John's iPhone")
+
+
+def test_capture_failure_log_does_not_leak_exception_repr(db, alert_id, caplog):
+    """REGRESSION: when json.dumps fails, the exception's formatted body
+    can echo offending field values from the record (e.g. a BLE
+    friendly name "John's iPhone" surfacing in the RuntimeError text).
+    The WARNING log line must include only the exception type name so
+    journalctl never sees per-record content; full context is reserved
+    for explicit DEBUG mode."""
+    bad = _kismet_record()
+    bad["plugin.extension.value"] = _LeakyValue()
+
+    with caplog.at_level(logging.WARNING, logger="lynceus.evidence"):
+        result = capture_evidence(db, alert_id, MAC, bad)
+
+    assert result is None
+    warning_messages = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert warning_messages, "expected a WARNING log line"
+    joined = " ".join(warning_messages)
+    # The exception type name IS allowed in the WARNING.
+    assert "RuntimeError" in joined
+    # The sensitive field value MUST NOT be.
+    assert "John's iPhone" not in joined
+
+
+def test_capture_failure_debug_mode_logs_full_traceback(db, alert_id, caplog):
+    """Operators who explicitly raise the log level to DEBUG accept the
+    leakage in exchange for full diagnostic context. The DEBUG record
+    carries exc_info so the traceback (and any embedded values) are
+    available for triage when the operator opted in."""
+    bad = _kismet_record()
+    bad["plugin.extension.value"] = _LeakyValue()
+
+    with caplog.at_level(logging.DEBUG, logger="lynceus.evidence"):
+        capture_evidence(db, alert_id, MAC, bad)
+
+    debug_records = [r for r in caplog.records if r.levelname == "DEBUG"]
+    assert any(r.exc_info is not None for r in debug_records)
