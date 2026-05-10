@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from types import TracebackType
@@ -40,13 +42,28 @@ class Database:
         # the canonical data dir up front, but anything constructing a
         # Database() directly (tests, ad-hoc scripts, third-party callers)
         # would have hit that. ``:memory:`` has no parent to create.
+        is_fresh = False
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
+            is_fresh = not Path(path).exists()
         self._conn = sqlite3.connect(
             path,
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
             check_same_thread=False,
         )
+        # On POSIX, freshly-created user-mode DBs land at the process
+        # umask (typically 0644 — world-readable). Evidence rows can
+        # contain operator GPS and probe SSIDs; the system-mode install
+        # already chmods to 0640 root:lynceus, but user-mode left the
+        # default. Force 0600 on first creation so user-mode installs
+        # don't ship a world-readable DB. Don't touch existing files —
+        # operator-set modes (e.g. the 0640 from systemd install) must
+        # be preserved on subsequent opens.
+        if is_fresh and path != ":memory:" and sys.platform != "win32":
+            try:
+                os.chmod(path, 0o600)
+            except OSError as exc:
+                logger.warning("could not chmod 0600 on fresh database %s: %s", path, exc)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")

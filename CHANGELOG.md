@@ -31,6 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Freshly-created user-mode databases are now `chmod 0600` on
+  POSIX.** Previously the file landed at the process umask (typically
+  `0644` — world-readable on multi-user boxes). System-mode installs
+  already get `0640 root:lynceus` from setup; this fix only affects
+  user-mode where evidence rows could otherwise be readable by any
+  local account. Existing databases keep operator-set modes; the
+  chmod runs only on first creation. No-op on Windows.
 - **Alert detail page hides the GPS section when stored coordinates
   are non-finite.** Belt-and-suspenders against a pre-H-2 install or
   hand-edited DB row carrying `inf` / `nan`: the OSM URL would
