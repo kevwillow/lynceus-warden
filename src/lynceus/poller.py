@@ -11,6 +11,7 @@ from . import __version__
 from .allowlist import Allowlist, load_allowlist
 from .config import Config, load_config
 from .db import Database
+from .evidence import capture_evidence, maybe_prune_evidence
 from .kismet import FakeKismetClient, KismetClient
 from .notify import Notifier, NullNotifier, build_metadata_suffix, build_notifier
 from .rules import Ruleset, evaluate, load_ruleset
@@ -152,7 +153,7 @@ def poll_once(
                     matched_watchlist_id if hit.rule_type != "new_non_randomized_device" else None
                 )
                 try:
-                    db.add_alert(
+                    new_alert_id = db.add_alert(
                         ts=now_ts,
                         rule_name=hit.rule_name,
                         mac=hit.mac,
@@ -163,6 +164,8 @@ def poll_once(
                 except Exception as e:
                     logger.warning("Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e)
                     continue
+                if config.evidence_capture_enabled and obs.raw_record is not None:
+                    capture_evidence(db, new_alert_id, hit.mac, obs.raw_record, now_ts=now_ts)
                 title = f"lynceus: {hit.severity.upper()} alert"
                 suffix = ""
                 if hit_match_id is not None:
@@ -185,6 +188,14 @@ def poll_once(
             logger.warning("Failed to persist observation %s: %s", obs.mac, e)
             continue
     db.set_state(STATE_KEY_LAST_POLL, str(now_ts))
+    # Daily housekeeping: prune evidence rows past the retention window. The
+    # helper is a no-op except once per ~24h, so this is cheap to call from
+    # every poll tick. Wrapped defensively because a prune failure must not
+    # crash the poll loop.
+    try:
+        maybe_prune_evidence(db, config.evidence_retention_days, now_ts=now_ts)
+    except Exception as e:
+        logger.warning("Evidence prune failed: %s", e)
     return processed
 
 

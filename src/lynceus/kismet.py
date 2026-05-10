@@ -42,6 +42,11 @@ class DeviceObservation(BaseModel):
     seen_by_sources: tuple[str, ...] = ()
     probe_ssids: tuple[str, ...] | None = None
     ble_name: str | None = None
+    # Carries the original Kismet device record so the alert path can hand
+    # it to evidence capture without a second REST call. Only populated by
+    # parse_kismet_device — test stubs that build observations directly
+    # leave this None and the capture path no-ops.
+    raw_record: dict | None = None
 
     @field_validator("mac")
     @classmethod
@@ -256,6 +261,7 @@ def parse_kismet_device(
         seen_by_sources=seen_by_sources,
         probe_ssids=probe_ssids,
         ble_name=ble_name,
+        raw_record=raw,
     )
 
 

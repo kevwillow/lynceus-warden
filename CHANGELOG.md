@@ -4,6 +4,35 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] - Unreleased
+
+### Added
+
+- **Evidence snapshots table, alert-time capture, retention prune.** When
+  an alert fires, lynceus now persists a full evidence snapshot to a new
+  `evidence_snapshots` table: the Kismet device record at that moment
+  (verbatim JSON), the recent RSSI history pulled from Kismet's signal
+  RRD (60-sample minute_vec), and the GPS fix when one is present. This
+  is the foundational layer for transparency reporting, FOIA requests,
+  journalism use cases, and the v0.4.1 movement-aware alerting that
+  needs recent per-device evidence.
+  - Schema migration `007_evidence_snapshots.sql` adds the table with
+    a foreign key onto `alerts(id) ON DELETE CASCADE` plus
+    `(alert_id)` and `(mac, captured_at DESC)` indexes for the
+    "recent evidence for this device" lookup pattern.
+  - New config knobs `evidence_capture_enabled` (default true; the
+    operator off-switch for storage-constrained Pis) and
+    `evidence_retention_days` (default 90, validated to [1, 3650]).
+  - New `lynceus.evidence` module exports `capture_evidence` and
+    `prune_old_evidence`. Capture is wrapped in a broad try/except —
+    a malformed Kismet record must never derail the alert path — and
+    failures log at WARNING (not ERROR).
+  - Daily housekeeping: `maybe_prune_evidence` runs at most once per
+    24h from the poll loop, tracked under a new
+    `last_evidence_prune_ts` poller-state key.
+  - UI surface and CLI export commands intentionally deferred to a
+    follow-up prompt.
+
 ## [0.3.0-rc2] - 2026-05-08
 
 ### Fixed
