@@ -19,6 +19,7 @@ import logging
 import time
 from typing import Any
 
+from .config import CaptureConfig
 from .db import Database
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,61 @@ _LOCATION_LAST_KEY = "kismet.common.location.last"
 _LOCATION_GEOPOINT_KEY = "kismet.common.location.geopoint"
 _LOCATION_ALT_KEY = "kismet.common.location.alt"
 _LOCATION_TIME_KEY = "kismet.common.location.time_sec"
+
+# Redaction targets — Kismet keys that carry the data the operator's
+# capture toggles are meant to gate. These can appear at any nesting
+# depth (inside seenby blocks, nested probed-SSID maps, etc.) so the
+# walker recurses over both dicts and lists.
+_PROBE_SSID_KEYS = frozenset(
+    {
+        "dot11.device.last_probed_ssid_csum_map",
+        "dot11.probedssid.ssid",
+    }
+)
+_BLE_NAME_KEYS = frozenset(
+    {
+        "btle.device.name",
+        "btle.advertised.name",
+    }
+)
+# kismet.device.base.name is the SSID for Wi-Fi devices and the BLE
+# friendly name for BLE/Bluetooth devices. Strip it only when the device
+# type at the top level is BLE-related; this preserves Wi-Fi SSIDs that
+# are needed for triage.
+_BLE_DEVICE_TYPES = frozenset({"BTLE", "Bluetooth"})
+_DEVICE_TYPE_KEY = "kismet.device.base.type"
+_DEVICE_NAME_KEY = "kismet.device.base.name"
+
+
+def _redact_kismet_record(record: dict, capture: CaptureConfig) -> dict:
+    """Return a redacted deep copy of a Kismet device record.
+
+    Honors ``capture.probe_ssids`` and ``capture.ble_friendly_names``:
+    when either toggle is False, the corresponding fields are stripped
+    everywhere they appear in the nested structure. The input record is
+    never mutated — capture must not have side effects on data the
+    poller is about to hand to other code paths.
+    """
+    is_ble_device = record.get(_DEVICE_TYPE_KEY) in _BLE_DEVICE_TYPES
+    strip_ble_base_name = (not capture.ble_friendly_names) and is_ble_device
+
+    def _walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            out: dict = {}
+            for k, v in node.items():
+                if not capture.probe_ssids and k in _PROBE_SSID_KEYS:
+                    continue
+                if not capture.ble_friendly_names and k in _BLE_NAME_KEYS:
+                    continue
+                if strip_ble_base_name and k == _DEVICE_NAME_KEY:
+                    continue
+                out[k] = _walk(v)
+            return out
+        if isinstance(node, list):
+            return [_walk(item) for item in node]
+        return node
+
+    return _walk(record)
 
 
 def _extract_rssi_history(kismet_record: dict) -> list[dict] | None:
@@ -93,18 +149,29 @@ def capture_evidence(
     kismet_record: Any,
     *,
     now_ts: int | None = None,
+    capture: CaptureConfig | None = None,
 ) -> int | None:
     """Persist an evidence snapshot for the given alert.
 
     Returns the new row id on success, or None on capture failure (in
     which case a WARNING is logged). Never raises — the alert path is
     too important to derail on a malformed Kismet record.
+
+    ``capture`` gates which sensitive fields are persisted into
+    ``kismet_record_json``. When the operator has disabled probe-SSID or
+    BLE-friendly-name capture, those fields must not slip into evidence
+    via the verbatim-record path. Defaults to a fresh ``CaptureConfig``
+    (probe_ssids=False, ble_friendly_names=True) so direct callers
+    without an explicit config get the privacy-conservative behaviour.
     """
     try:
         if now_ts is None:
             now_ts = int(time.time())
+        if capture is None:
+            capture = CaptureConfig()
         if not isinstance(kismet_record, dict):
             raise TypeError(f"kismet_record must be a dict, got {type(kismet_record).__name__}")
+        kismet_record = _redact_kismet_record(kismet_record, capture)
         # json.dumps with default=str copes with datetime / set / Decimal
         # values that occasionally sneak into Kismet records via plugin
         # extensions. It still raises on circular references — that path
