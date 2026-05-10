@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.0] - Unreleased
 
+### Added
+
+- **`evidence_snapshots.do_not_publish` column** (migration 009).
+  Forward-compat for v0.5.0 public-feed export — no producers or
+  consumers in v0.4.0. Defaults to 0; surfaced in
+  `db.get_evidence_for_alert` so future consumers can read it
+  without a second query. Adding the column now while the table is
+  small avoids a destructive migration when v0.5.0 ships.
+
 ### Documentation
 
 - **SECURITY.md gains a "Data at rest" section** documenting that

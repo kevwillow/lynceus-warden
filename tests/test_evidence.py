@@ -122,6 +122,31 @@ def test_migration_idempotent(db_path):
     assert rows == 0
 
 
+def test_migration_009_adds_do_not_publish_column(db):
+    """Migration 009 lands the v0.5.0 forward-compat column. No
+    production logic uses it in v0.4.0; adding it now (while the
+    table is empty or small) avoids a destructive migration when
+    public-feed export ships."""
+    cols = {row[1] for row in db._conn.execute("PRAGMA table_info(evidence_snapshots)").fetchall()}
+    assert "do_not_publish" in cols
+
+
+def test_capture_defaults_do_not_publish_to_zero(db, alert_id):
+    rid = capture_evidence(db, alert_id, MAC, _kismet_record())
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT do_not_publish FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    assert row["do_not_publish"] == 0
+
+
+def test_get_evidence_for_alert_returns_do_not_publish(db, alert_id):
+    capture_evidence(db, alert_id, MAC, _kismet_record())
+    evidence = db.get_evidence_for_alert(alert_id)
+    assert evidence is not None
+    assert evidence["do_not_publish"] == 0
+
+
 # ------------------------------- capture path -------------------------------
 
 

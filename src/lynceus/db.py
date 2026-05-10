@@ -539,7 +539,8 @@ class Database:
         self._validate_alert_id(alert_id)
         row = self._conn.execute(
             "SELECT id, alert_id, mac, captured_at, kismet_record_json, "
-            "rssi_history_json, gps_lat, gps_lon, gps_alt, gps_captured_at "
+            "rssi_history_json, gps_lat, gps_lon, gps_alt, gps_captured_at, "
+            "do_not_publish "
             "FROM evidence_snapshots WHERE alert_id = ? ORDER BY id ASC LIMIT 1",
             (alert_id,),
         ).fetchone()
@@ -580,6 +581,11 @@ class Database:
             "gps_lon": row["gps_lon"],
             "gps_alt": row["gps_alt"],
             "gps_captured_at": row["gps_captured_at"],
+            # do_not_publish is a v0.5.0 forward-compat column — no
+            # producers in v0.4.0. Surfaced in the dict so future
+            # consumers (public-feed export) can read it without a
+            # second query.
+            "do_not_publish": row["do_not_publish"],
         }
 
     def list_alerts_with_match(self, filters: dict | None = None) -> list[dict]:
