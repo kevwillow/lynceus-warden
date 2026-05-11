@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Literal
 
 import requests
 
+from .redact import redact_topic_in_url
+
 if TYPE_CHECKING:
     from .config import Config
 
@@ -79,6 +81,11 @@ class NtfyNotifier(Notifier):
         message: str,
     ) -> bool:
         url = f"{self.base_url}/{self.topic}"
+        # ntfy topics are shared secrets; never let them reach log surfaces.
+        # The exception's __str__() typically embeds the full URL+topic too,
+        # so we log only the exception type name and reserve the full
+        # traceback for explicit DEBUG operation (mirrors H-7).
+        safe_url = redact_topic_in_url(url)
         headers = {
             "Title": title,
             "Priority": str(SEVERITY_TO_PRIORITY[severity]),
@@ -94,13 +101,15 @@ class NtfyNotifier(Notifier):
                 timeout=self.timeout,
             )
         except requests.exceptions.RequestException as e:
-            logger.warning("ntfy POST to %s failed: %s", url, e)
+            logger.warning("ntfy POST to %s failed: %s", safe_url, type(e).__name__)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("ntfy POST exception detail", exc_info=True)
             return False
         if 200 <= response.status_code <= 299:
             return True
         logger.warning(
             "ntfy POST to %s returned non-2xx status %s",
-            url,
+            safe_url,
             response.status_code,
         )
         return False
