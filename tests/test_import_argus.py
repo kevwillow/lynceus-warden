@@ -247,6 +247,101 @@ def test_unknown_identifier_type_dropped_increments_counter(tmp_path, db):
 
 
 # ---------------------------------------------------------------------------
+# Drop-bucket per-row logging (audit-3).
+# Counter-only drops left operators with no forensic trail; each drop
+# now emits one INFO log line carrying argus_record_id, the raw
+# identifier_type from the CSV (so it's grep-able), and a stable
+# reason token (mac_range_unsupported / unknown_identifier_type).
+# INFO not WARNING — expected drops per Argus §4.4, not anomalies.
+# ---------------------------------------------------------------------------
+
+import logging as _logging  # local alias for caplog tests below
+
+
+def _drop_log_records(caplog, argus_record_id: str, reason: str) -> list:
+    return [
+        r
+        for r in caplog.records
+        if r.levelno == _logging.INFO
+        and r.name == "lynceus.cli.import_argus"
+        and argus_record_id in r.getMessage()
+        and reason in r.getMessage()
+    ]
+
+
+def test_mac_range_drop_emits_info_log(tmp_path, db, caplog):
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="mr-logged", identifier_type="mac_range")],
+    )
+    with caplog.at_level(_logging.INFO, logger="lynceus.cli.import_argus"):
+        import_csv(db, path, OverrideConfig())
+    matches = _drop_log_records(caplog, "mr-logged", "mac_range_unsupported")
+    assert len(matches) == 1
+    assert "'mac_range'" in matches[0].getMessage()  # identifier_type=%r
+
+
+def test_ble_characteristic_drop_emits_info_log(tmp_path, db, caplog):
+    """ble_characteristic is a known Argus type that Wave G may emit but
+    Lynceus does not yet support; falls through to unknown_identifier_type."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="bc-logged", identifier_type="ble_characteristic")],
+    )
+    with caplog.at_level(_logging.INFO, logger="lynceus.cli.import_argus"):
+        import_csv(db, path, OverrideConfig())
+    matches = _drop_log_records(caplog, "bc-logged", "unknown_identifier_type")
+    assert len(matches) == 1
+    assert "'ble_characteristic'" in matches[0].getMessage()
+
+
+def test_garbage_identifier_type_drop_emits_info_log(tmp_path, db, caplog):
+    """Defensive case: a future Argus identifier_type Lynceus has never
+    seen must produce a log line so operators can trace why imports
+    shrunk after a Wave-X+N push."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="gt-logged", identifier_type="garbage_type_42")],
+    )
+    with caplog.at_level(_logging.INFO, logger="lynceus.cli.import_argus"):
+        import_csv(db, path, OverrideConfig())
+    matches = _drop_log_records(caplog, "gt-logged", "unknown_identifier_type")
+    assert len(matches) == 1
+    assert "'garbage_type_42'" in matches[0].getMessage()
+
+
+def test_drop_log_preserves_raw_identifier_type_case(tmp_path, db, caplog):
+    """audit-1 case-normalized identifier_type for the allowlist lookup,
+    but the log must surface the RAW CSV value (case preserved) so an
+    operator's `grep argus_export.csv` finds the source row."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="case-logged", identifier_type="GARBAGE_TYPE_42")],
+    )
+    with caplog.at_level(_logging.INFO, logger="lynceus.cli.import_argus"):
+        import_csv(db, path, OverrideConfig())
+    matches = _drop_log_records(caplog, "case-logged", "unknown_identifier_type")
+    assert len(matches) == 1
+    assert "'GARBAGE_TYPE_42'" in matches[0].getMessage()
+
+
+def test_kept_row_emits_no_drop_log(tmp_path, db, caplog):
+    """Guard: rows that successfully import must NOT emit a drop log line
+    (catches the regression where someone accidentally logs every row)."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="kept", identifier_type="mac")],
+    )
+    with caplog.at_level(_logging.INFO, logger="lynceus.cli.import_argus"):
+        import_csv(db, path, OverrideConfig())
+    drop_messages = [
+        r for r in caplog.records
+        if "skipping row" in r.getMessage()
+    ]
+    assert drop_messages == []
+
+
+# ---------------------------------------------------------------------------
 # L-RULES-1: write-time pattern normalization.
 # ---------------------------------------------------------------------------
 
