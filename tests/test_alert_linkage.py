@@ -503,6 +503,68 @@ def test_watchlist_rule_with_no_matching_db_row_yields_null(db, config, fake_cli
     assert alerts[0]["matched_watchlist_id"] is None
 
 
+def test_alert_matched_watchlist_id_works_with_mixed_case_pattern(db, config, fake_client):
+    """L-RULES-1: an entry seeded with an uppercase MAC must still link
+    to the alert that fires for the lowercase observation MAC.
+
+    Pre-fix, ``seed_from_yaml`` stored the YAML pattern verbatim, so the
+    poller's lowercase-normalized observation MAC missed the equality
+    lookup in ``db.resolve_matched_watchlist_id`` and the alert landed
+    with ``matched_watchlist_id = NULL`` — silently dropping the entire
+    Argus metadata enrichment chain (vendor, severity hint, source URL)
+    that v0.4.0 promises. THIS MUST FAIL PRE-FIX.
+    """
+    import yaml
+
+    from lynceus.cli.seed_watchlist import seed_from_yaml
+
+    yaml_path = config.db_path + ".wl.yaml"
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            {
+                "entries": [
+                    {
+                        "pattern": "A4:83:E7:11:22:33",
+                        "pattern_type": "mac",
+                        "severity": "high",
+                        "description": "uppercase apple mac",
+                        "metadata": {
+                            "device_category": "alpr",
+                            "vendor": "Flock",
+                            "confidence": 92,
+                        },
+                    }
+                ]
+            },
+            f,
+        )
+    seed_from_yaml(db, yaml_path)
+
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    alerts = _alerts(db)
+    assert len(alerts) == 1
+    assert alerts[0]["matched_watchlist_id"] is not None
+    enriched = db.get_alert_with_match(alerts[0]["id"])
+    assert enriched is not None
+    assert enriched["watchlist"] is not None
+    assert enriched["watchlist"]["pattern"] == "a4:83:e7:11:22:33"
+    md = enriched["watchlist_metadata"]
+    assert md is not None
+    assert md["vendor"] == "Flock"
+    assert md["device_category"] == "alpr"
+    assert md["confidence"] == 92
+
+
 # ---------------------------------------------------------------------------
 # FK ON DELETE SET NULL.
 # ---------------------------------------------------------------------------

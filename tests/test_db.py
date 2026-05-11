@@ -154,6 +154,7 @@ def test_migrations_dir_lists_both_files(db):
         "007_evidence_snapshots.sql",
         "008_evidence_captured_at_index.sql",
         "009_evidence_do_not_publish.sql",
+        "010_normalize_watchlist_patterns.sql",
     ]
 
 

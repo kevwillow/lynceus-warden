@@ -167,9 +167,18 @@ def test_ssid_exact_identifier_type_imports_as_ssid(tmp_path, db):
 
 
 def test_ble_uuid_identifier_type_imports_as_ble_uuid(tmp_path, db):
+    # Full 128-bit UUID — short forms are rejected by normalize_pattern
+    # (L-RULES-1) since the poller only matches against the 128-bit
+    # observation UUIDs from Kismet.
     path = _write_csv(
         tmp_path / "wl.csv",
-        [_row(argus_record_id="b1", identifier_type="ble_uuid", identifier="0000fd5a")],
+        [
+            _row(
+                argus_record_id="b1",
+                identifier_type="ble_uuid",
+                identifier="0000fd5a-0000-1000-8000-00805f9b34fb",
+            )
+        ],
     )
     import_csv(db, path, OverrideConfig())
     row = db._conn.execute("SELECT pattern_type FROM watchlist").fetchone()
@@ -179,7 +188,13 @@ def test_ble_uuid_identifier_type_imports_as_ble_uuid(tmp_path, db):
 def test_ble_service_identifier_type_imports_as_ble_uuid(tmp_path, db):
     path = _write_csv(
         tmp_path / "wl.csv",
-        [_row(argus_record_id="b2", identifier_type="ble_service", identifier="0000fd6f")],
+        [
+            _row(
+                argus_record_id="b2",
+                identifier_type="ble_service",
+                identifier="0000fd6f-0000-1000-8000-00805f9b34fb",
+            )
+        ],
     )
     import_csv(db, path, OverrideConfig())
     row = db._conn.execute("SELECT pattern_type FROM watchlist").fetchone()
@@ -205,6 +220,116 @@ def test_unknown_identifier_type_dropped_increments_counter(tmp_path, db):
     report = import_csv(db, path, OverrideConfig())
     assert report.dropped_unknown_type == 1
     assert _wl_count(db) == 0
+
+
+# ---------------------------------------------------------------------------
+# L-RULES-1: write-time pattern normalization.
+# ---------------------------------------------------------------------------
+
+
+def test_import_argus_normalizes_uppercase_mac_at_write(tmp_path, db):
+    """Argus exports may carry uppercase MACs; the poller normalizes its
+    observation MAC to lowercase before the watchlist equality lookup,
+    so a row stored uppercase silently never links. THIS MUST FAIL
+    PRE-FIX (the import would store the MAC verbatim)."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="m-upper",
+                identifier_type="mac",
+                identifier="AA:BB:CC:DD:EE:FF",
+            )
+        ],
+    )
+    import_csv(db, path, OverrideConfig())
+    row = db._conn.execute("SELECT pattern FROM watchlist").fetchone()
+    assert row["pattern"] == "aa:bb:cc:dd:ee:ff"
+
+
+def test_import_argus_normalizes_uppercase_ble_service(tmp_path, db):
+    """The Wave G push will exercise the ``ble_service`` identifier_type
+    specifically; ensure uppercase 128-bit UUIDs land in canonical
+    lowercase hyphen-separated form."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="b-upper",
+                identifier_type="ble_service",
+                identifier="0000FD6F-0000-1000-8000-00805F9B34FB",
+            )
+        ],
+    )
+    import_csv(db, path, OverrideConfig())
+    row = db._conn.execute("SELECT pattern, pattern_type FROM watchlist").fetchone()
+    assert row["pattern_type"] == "ble_uuid"
+    assert row["pattern"] == "0000fd6f-0000-1000-8000-00805f9b34fb"
+
+
+def test_import_argus_normalizes_dehyphenated_ble_service(tmp_path, db):
+    """Dehyphenated 32-hex UUID inputs are reinserted with canonical
+    hyphens; the poller's ``normalize_uuid`` produces hyphenated form."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="b-flat",
+                identifier_type="ble_service",
+                identifier="0000fd6f00001000800000805f9b34fb",
+            )
+        ],
+    )
+    import_csv(db, path, OverrideConfig())
+    row = db._conn.execute("SELECT pattern FROM watchlist").fetchone()
+    assert row["pattern"] == "0000fd6f-0000-1000-8000-00805f9b34fb"
+
+
+def test_import_argus_rejects_malformed_pattern_increments_counter(tmp_path, db):
+    """A row with an identifier that cannot be normalized (here: 2-octet
+    string declared as a full MAC) must be skipped without aborting the
+    whole import, and surface as ``normalization_failed`` on the
+    report — not as a generic ``errors`` bucket entry."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="bad-mac",
+                identifier_type="mac",
+                identifier="AA:BB",
+            ),
+            _row(
+                argus_record_id="good-mac",
+                identifier_type="mac",
+                identifier="aa:bb:cc:dd:ee:ff",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.normalization_failed == 1
+    assert report.imported_new == 1  # the good row still landed
+    assert report.errors == 0  # not surfaced as a generic error
+    rows = db._conn.execute("SELECT pattern FROM watchlist ORDER BY id").fetchall()
+    assert [r["pattern"] for r in rows] == ["aa:bb:cc:dd:ee:ff"]
+
+
+def test_import_argus_render_includes_normalization_failed(tmp_path, db):
+    """Operator-facing report must surface the new counter so silent
+    drops are visible at the end of the import run."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="bad-mac",
+                identifier_type="mac",
+                identifier="AA:BB",
+            )
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    rendered = report.render()
+    assert "normalization_failed" in rendered
+    assert "Dropped (normalization_failed): 1" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -772,7 +897,10 @@ def _e2e_rows() -> list[dict[str, str]]:
         _row(
             argus_record_id="k4",
             identifier_type="ble_uuid",
-            identifier="0000fd5a",
+            # Full 128-bit UUID — short forms are rejected by L-RULES-1
+            # normalization (Kismet observations carry the full 128-bit
+            # form so a short pattern would never match anyway).
+            identifier="0000fd5a-0000-1000-8000-00805f9b34fb",
             device_category="body_cam",
             confidence="90",
             geographic_scope="",
@@ -780,7 +908,7 @@ def _e2e_rows() -> list[dict[str, str]]:
         _row(
             argus_record_id="k5",
             identifier_type="ble_service",
-            identifier="0000fd6f",
+            identifier="0000fd6f-0000-1000-8000-00805f9b34fb",
             device_category="unknown",
             confidence="90",
             geographic_scope="us",

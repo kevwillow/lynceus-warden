@@ -20,6 +20,7 @@ from typing import Any
 import yaml
 
 from ..db import Database
+from ..patterns import normalize_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,7 @@ class ImportReport:
     dropped_severity_drop: int = 0
     dropped_geographic_filter: int = 0
     dropped_unknown_type: int = 0
+    normalization_failed: int = 0
     errors: int = 0
     error_log: list[str] = field(default_factory=list)
     dry_run: bool = False
@@ -185,6 +187,7 @@ class ImportReport:
             f"{prefix}Dropped (severity_drop): {self.dropped_severity_drop}",
             f"{prefix}Dropped (geographic_filter): {self.dropped_geographic_filter}",
             f"{prefix}Dropped (unknown_type): {self.dropped_unknown_type}",
+            f"{prefix}Dropped (normalization_failed): {self.normalization_failed}",
             f"{prefix}Errors: {self.errors}",
         ]
         if self.error_log:
@@ -195,6 +198,7 @@ class ImportReport:
             + self.dropped_severity_drop
             + self.dropped_geographic_filter
             + self.dropped_unknown_type
+            + self.normalization_failed
         )
         lines.append(
             f"{prefix}imported {self.imported_new} records, "
@@ -203,7 +207,8 @@ class ImportReport:
             f"({self.dropped_mac_range} mac_range, "
             f"{self.dropped_geographic_filter} geographic_filter, "
             f"{self.dropped_severity_drop} severity_drop, "
-            f"{self.dropped_unknown_type} unknown_type)"
+            f"{self.dropped_unknown_type} unknown_type, "
+            f"{self.normalization_failed} normalization_failed)"
         )
         return "\n".join(lines)
 
@@ -334,6 +339,20 @@ def import_csv(
             pattern = row["identifier"]
             if not pattern:
                 raise ValueError("identifier is empty")
+            # Normalize at write time (L-RULES-1). The poller normalizes its
+            # observation MAC/UUID before the equality lookup against the
+            # watchlist table; a row stored in non-canonical form silently
+            # never matches and the alert loses its Argus metadata link.
+            try:
+                pattern = normalize_pattern(pattern_type, pattern)
+            except ValueError as exc:
+                report.normalization_failed += 1
+                logger.warning(
+                    "row argus_record_id=%r: rejected for normalization: %s",
+                    argus_id,
+                    exc,
+                )
+                continue
             description = _empty_to_none(row["description"])
             new_metadata = _build_metadata_fields(row, confidence)
 

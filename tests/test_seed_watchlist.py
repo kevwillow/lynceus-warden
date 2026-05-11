@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import yaml
 
 from lynceus.cli.seed_watchlist import (
@@ -225,5 +227,107 @@ def test_main_ble_uuids_flag_returns_0(tmp_path):
         rows = _watchlist_rows(db)
         assert len(rows) == len(TRACKER_UUIDS)
         assert all(r["pattern_type"] == "ble_uuid" for r in rows)
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# L-RULES-1: write-time pattern normalization.
+# ---------------------------------------------------------------------------
+
+
+def test_seed_watchlist_normalizes_uppercase_mac_at_write(tmp_path):
+    """YAML-authored uppercase MACs must land lowercase in the DB so the
+    poller's lowercase-normalized observation MAC matches at lookup time.
+    THIS MUST FAIL PRE-FIX (the seeder wrote the YAML pattern verbatim)."""
+    yaml_path = tmp_path / "wl.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "entries": [
+                    {
+                        "pattern": "AA:BB:CC:DD:EE:FF",
+                        "pattern_type": "mac",
+                        "severity": "high",
+                        "description": "uppercase mac",
+                    }
+                ]
+            }
+        )
+    )
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        seed_from_yaml(db, str(yaml_path))
+        rows = _watchlist_rows(db)
+        assert len(rows) == 1
+        assert rows[0]["pattern"] == "aa:bb:cc:dd:ee:ff"
+    finally:
+        db.close()
+
+
+def test_seed_watchlist_normalizes_hyphen_mac_at_write(tmp_path):
+    """Hyphen-separated MACs (Linux convention from /sys/class/net) coerce
+    to canonical colon form."""
+    yaml_path = tmp_path / "wl.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "entries": [
+                    {
+                        "pattern": "aa-bb-cc-dd-ee-ff",
+                        "pattern_type": "mac",
+                        "severity": "high",
+                        "description": "hyphen mac",
+                    }
+                ]
+            }
+        )
+    )
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        seed_from_yaml(db, str(yaml_path))
+        rows = _watchlist_rows(db)
+        assert len(rows) == 1
+        assert rows[0]["pattern"] == "aa:bb:cc:dd:ee:ff"
+    finally:
+        db.close()
+
+
+def test_seed_watchlist_rejects_malformed_mac(tmp_path, caplog):
+    """A YAML entry whose pattern can't be normalized (here: 3-octet
+    string declared as a full MAC) is skipped with a WARNING; the
+    counter surfaces in a summary log line so silent drops are
+    visible. Other valid entries in the same file still land."""
+    yaml_path = tmp_path / "wl.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "entries": [
+                    {
+                        "pattern": "AA:BB:CC",
+                        "pattern_type": "mac",
+                        "severity": "high",
+                        "description": "too short for mac",
+                    },
+                    {
+                        "pattern": "11:22:33:44:55:66",
+                        "pattern_type": "mac",
+                        "severity": "low",
+                        "description": "valid",
+                    },
+                ]
+            }
+        )
+    )
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        with caplog.at_level(logging.WARNING, logger="lynceus.cli.seed_watchlist"):
+            inserted, skipped = seed_from_yaml(db, str(yaml_path))
+        assert inserted == 1
+        assert skipped == 1
+        rows = _watchlist_rows(db)
+        assert [r["pattern"] for r in rows] == ["11:22:33:44:55:66"]
+        assert "rejected for normalization" in caplog.text
+        assert "1 rejected for normalization" in caplog.text
     finally:
         db.close()
