@@ -315,9 +315,28 @@ def import_csv(
             argus_type = (row["identifier_type"] or "").strip().lower()
             if argus_type == "mac_range":
                 report.dropped_mac_range += 1
+                # INFO not WARNING: these are expected drops per the
+                # Argus §4.4 contract, not anomalies. Operators who want
+                # silence can lift to WARN; the row-level forensic trail
+                # is for diagnosing Wave-G-style surprises without
+                # grepping the original CSV.
+                logger.info(
+                    "argus import: skipping row argus_record_id=%s "
+                    "identifier_type=%r reason=%s",
+                    argus_id,
+                    row["identifier_type"],
+                    "mac_range_unsupported",
+                )
                 continue
             if argus_type not in IDENTIFIER_TYPE_MAP:
                 report.dropped_unknown_type += 1
+                logger.info(
+                    "argus import: skipping row argus_record_id=%s "
+                    "identifier_type=%r reason=%s",
+                    argus_id,
+                    row["identifier_type"],
+                    "unknown_identifier_type",
+                )
                 continue
             pattern_type = IDENTIFIER_TYPE_MAP[argus_type]
 

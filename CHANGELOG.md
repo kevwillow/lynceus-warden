@@ -110,6 +110,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for an unconstrained range scan; this becomes a real cost on
   Pi-class hardware after weeks of operation on a busy site.
 
+### Changed
+
+- **`cli.import_argus` now emits a per-row INFO log line on every
+  identifier_type drop.** Pre-change, `mac_range` rows and rows
+  carrying an unknown `identifier_type` were silently swallowed into
+  the `dropped_mac_range` / `dropped_unknown_type` counters — visible
+  in the final report total, but with zero row-level forensic trail.
+  An operator who imported an Argus export and saw the unknown-type
+  count jump had no way to learn *which* identifier_type values Argus
+  had pushed without re-grepping the source CSV. The new log lines
+  carry `argus_record_id` and the raw (case-preserved) identifier_type
+  value plus a stable reason token
+  (`mac_range_unsupported` / `unknown_identifier_type`), so the
+  forensic question is answered by `journalctl | grep "argus import:
+  skipping"`. INFO not WARNING because these are *expected* drops per
+  the Argus §4.4 contract, not anomalies — they must surface for
+  debuggability but must not upgrade the ntfy notification threshold
+  or screen-flood on large imports. The immediate consumer is the
+  Wave G + flock-back push the Argus engineer is about to ship: any
+  new identifier_type Argus emits behind us will now be visible in
+  the first operator's import log rather than being lost to the
+  unknown-type bucket.
+
 ### Fixed
 
 - **Watchlist patterns are now normalized at write time (L-RULES-1,
