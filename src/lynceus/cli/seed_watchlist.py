@@ -14,6 +14,7 @@ import sys
 import yaml
 
 from ..db import Database
+from ..patterns import normalize_pattern
 from ..seeds.ble_uuids import TRACKER_UUIDS
 from ..seeds.threat_ouis import THREAT_OUIS
 
@@ -164,6 +165,7 @@ def seed_from_yaml(db: Database, yaml_path: str) -> tuple[int, int]:
 
     inserted = 0
     skipped = 0
+    rejected_for_normalization = 0
     for raw in entries:
         pattern = raw.get("pattern")
         pattern_type = raw.get("pattern_type")
@@ -182,6 +184,22 @@ def seed_from_yaml(db: Database, yaml_path: str) -> tuple[int, int]:
         if severity not in VALID_SEVERITIES:
             logger.warning("skipping entry with invalid severity %r: %r", severity, raw)
             skipped += 1
+            continue
+
+        # Normalize at write time (L-RULES-1). The poller normalizes its
+        # observation MAC before the DB equality lookup, so a row stored
+        # in non-canonical form silently never matches.
+        try:
+            pattern = normalize_pattern(pattern_type, pattern)
+        except ValueError as exc:
+            logger.warning(
+                "skipping entry %s/%s: rejected for normalization: %s",
+                pattern_type,
+                raw.get("pattern"),
+                exc,
+            )
+            skipped += 1
+            rejected_for_normalization += 1
             continue
 
         if metadata is not None:
@@ -212,6 +230,12 @@ def seed_from_yaml(db: Database, yaml_path: str) -> tuple[int, int]:
                 pattern,
                 md_fields["argus_record_id"],
             )
+
+    if rejected_for_normalization:
+        logger.warning(
+            "Seed from YAML: %d rejected for normalization (see WARNING lines above)",
+            rejected_for_normalization,
+        )
 
     return inserted, skipped
 

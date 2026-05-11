@@ -95,6 +95,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Watchlist patterns are now normalized at write time (L-RULES-1,
+  L-RULES-11).** Pre-fix, `cli.seed_watchlist` and `cli.import_argus`
+  inserted operator-supplied patterns verbatim. The poller normalizes
+  its observation MAC to lowercase colon-separated form (and BLE UUIDs
+  to lowercase hyphen-separated form) before the equality lookup in
+  `db.resolve_matched_watchlist_id`, so a watchlist row stored as
+  `"AA:BB:CC:DD:EE:FF"` silently never linked to the alert that fired
+  for `"aa:bb:cc:dd:ee:ff"`. The alert was still written (the rules
+  engine had already matched the pattern via the in-memory rule), but
+  `matched_watchlist_id` landed `NULL` — dropping the entire Argus
+  metadata enrichment chain (vendor, confidence, source URL, severity
+  hint) that v0.4.0 surfaces on the alert detail page. The bug was
+  structural: any seed/import path that didn't happen to use canonical
+  lowercase silently broke the Argus integration contract.
+
+  A new `lynceus.patterns.normalize_pattern` helper is now the single
+  source of truth for canonical persistent form, called by both the
+  YAML seeder and the Argus CSV importer before insert. Accepts the
+  separator variants found in the wild (Cisco-dotted MACs, hyphen
+  MACs, IEEE-distribution flat-hex OUIs — that last form closes
+  L-RULES-11) and rejects anything that can't be coerced. SSIDs pass
+  through unchanged (case-sensitive per IEEE 802.11 — L-RULES-10 is a
+  separate v0.4.x deferral). Short 16-bit / 32-bit BLE UUIDs are
+  rejected rather than silently expanded; the Bluetooth-base
+  expansion is a separate fix tracked under the Kismet short-UUID
+  hardware finding.
+
+  Migration 010 normalizes pre-existing rows in place: `LOWER` +
+  collapse `-`/`.`/space to `:` for `mac`/`oui`, `LOWER` only for
+  `ble_uuid` (canonical UUID form keeps hyphens). SSID rows are
+  intentionally not touched. Idempotent — re-running on
+  already-canonical input is a no-op. Exotic input forms (flat 12-hex
+  MACs, dehyphenated 32-hex UUIDs) won't be perfectly normalized by
+  the SQL pass but the next seed/import run lands them in canonical
+  form via the new helper; chasing perfect SQL-side normalization
+  isn't worth the regex/UDF complexity for a corner case.
+
+  `cli.import_argus` reports a new `normalization_failed` counter on
+  `ImportReport`, surfaced in the operator-facing summary so silent
+  drops are visible at the end of an import run. `cli.seed_watchlist`
+  emits a per-rejection WARNING and a single rolling-up summary
+  WARNING when any rejections occurred. This matters specifically for
+  the Wave G + flock-back data the Argus engineer is about to push —
+  fixing pre-push is the right ordering since we don't know how their
+  export normalizes patterns.
+
 - **Freshly-created user-mode databases are now `chmod 0600` on
   POSIX.** Previously the file landed at the process umask (typically
   `0644` — world-readable on multi-user boxes). System-mode installs
