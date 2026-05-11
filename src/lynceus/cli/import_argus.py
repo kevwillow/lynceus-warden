@@ -171,6 +171,7 @@ class ImportReport:
     dropped_severity_drop: int = 0
     dropped_geographic_filter: int = 0
     dropped_unknown_type: int = 0
+    dropped_low_confidence: int = 0
     normalization_failed: int = 0
     errors: int = 0
     error_log: list[str] = field(default_factory=list)
@@ -187,6 +188,7 @@ class ImportReport:
             f"{prefix}Dropped (severity_drop): {self.dropped_severity_drop}",
             f"{prefix}Dropped (geographic_filter): {self.dropped_geographic_filter}",
             f"{prefix}Dropped (unknown_type): {self.dropped_unknown_type}",
+            f"{prefix}Dropped (low_confidence): {self.dropped_low_confidence}",
             f"{prefix}Dropped (normalization_failed): {self.normalization_failed}",
             f"{prefix}Errors: {self.errors}",
         ]
@@ -198,6 +200,7 @@ class ImportReport:
             + self.dropped_severity_drop
             + self.dropped_geographic_filter
             + self.dropped_unknown_type
+            + self.dropped_low_confidence
             + self.normalization_failed
         )
         lines.append(
@@ -208,6 +211,7 @@ class ImportReport:
             f"{self.dropped_geographic_filter} geographic_filter, "
             f"{self.dropped_severity_drop} severity_drop, "
             f"{self.dropped_unknown_type} unknown_type, "
+            f"{self.dropped_low_confidence} low_confidence, "
             f"{self.normalization_failed} normalization_failed)"
         )
         return "\n".join(lines)
@@ -294,6 +298,7 @@ def import_csv(
     overrides: OverrideConfig,
     *,
     dry_run: bool = False,
+    min_confidence: int | None = None,
 ) -> ImportReport:
     rows = parse_argus_csv(csv_path)
     report = ImportReport(total_rows=len(rows), dry_run=dry_run)
@@ -328,6 +333,20 @@ def import_csv(
                 confidence = int(conf_str)
             except ValueError as exc:
                 raise ValueError(f"confidence must be int, got {conf_str!r}") from exc
+
+            # Hard skip for --min-confidence. Distinct from
+            # overrides.confidence_downgrade_threshold, which downgrades
+            # severity but still imports the row.
+            if min_confidence is not None and confidence < min_confidence:
+                report.dropped_low_confidence += 1
+                logger.info(
+                    "row argus_record_id=%r: skipped "
+                    "(confidence=%d below --min-confidence=%d)",
+                    argus_id,
+                    confidence,
+                    min_confidence,
+                )
+                continue
 
             severity = resolve_severity(
                 manufacturer=_empty_to_none(row["manufacturer"]),
@@ -445,6 +464,19 @@ def main(argv: list[str] | None = None) -> int:
         help="parse, validate, and print the report without writing to DB",
     )
     parser.add_argument(
+        "--min-confidence",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "hard-skip rows with confidence < N (0-100). Rows below the "
+            "threshold land in the dropped_low_confidence counter and never "
+            "touch the DB. Distinct from the YAML "
+            "confidence_downgrade_threshold (which downgrades severity but "
+            "still imports the row)."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -457,7 +489,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         db = Database(args.db)
         try:
-            report = import_csv(db, args.input, overrides, dry_run=args.dry_run)
+            report = import_csv(
+                db,
+                args.input,
+                overrides,
+                dry_run=args.dry_run,
+                min_confidence=args.min_confidence,
+            )
         finally:
             db.close()
     except Exception:

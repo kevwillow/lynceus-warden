@@ -504,6 +504,135 @@ def test_confidence_threshold_zero_disables_downgrade():
 
 
 # ---------------------------------------------------------------------------
+# --min-confidence row-skip (audit-2).
+# Distinct from confidence_downgrade_threshold above: --min-confidence hard
+# skips the row pre-DB; the threshold downgrades severity but imports.
+# ---------------------------------------------------------------------------
+
+
+def test_min_confidence_below_threshold_row_skipped(tmp_path, db):
+    """confidence=79 with min_confidence=80 → skipped, counted in
+    dropped_low_confidence, no DB write."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="lc1", confidence="79")],
+    )
+    report = import_csv(db, path, OverrideConfig(), min_confidence=80)
+    assert report.dropped_low_confidence == 1
+    assert report.imported_new == 0
+    assert _wl_count(db) == 0
+    assert _md_count(db) == 0
+
+
+def test_min_confidence_at_threshold_row_kept(tmp_path, db):
+    """confidence=80 with min_confidence=80 → kept (boundary is inclusive)."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="lc2", confidence="80")],
+    )
+    report = import_csv(db, path, OverrideConfig(), min_confidence=80)
+    assert report.dropped_low_confidence == 0
+    assert report.imported_new == 1
+    assert _wl_count(db) == 1
+
+
+def test_min_confidence_above_threshold_row_kept(tmp_path, db):
+    """confidence=81 with min_confidence=80 → kept."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="lc3", confidence="81")],
+    )
+    report = import_csv(db, path, OverrideConfig(), min_confidence=80)
+    assert report.dropped_low_confidence == 0
+    assert report.imported_new == 1
+
+
+def test_min_confidence_unset_imports_all_confidences(tmp_path, db):
+    """Default behavior (no --min-confidence) must not skip any row;
+    guards against accidental "always-on" filtering regressions."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(argus_record_id="u1", identifier="aa:bb:cc:dd:ee:01", confidence="10"),
+            _row(argus_record_id="u2", identifier="aa:bb:cc:dd:ee:02", confidence="99"),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.dropped_low_confidence == 0
+    assert report.imported_new == 2
+
+
+def test_min_confidence_does_not_downgrade_kept_severity(tmp_path, db):
+    """A row at min_confidence=80 with default downgrade threshold=70 is
+    NOT downgraded — confirms --min-confidence and confidence_downgrade_threshold
+    operate independently (kept row's severity should reflect the downgrade
+    rule alone, here: confidence=80 ≥ 70 so no downgrade)."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="lc4", confidence="80", device_category="alpr")],
+    )
+    import_csv(db, path, OverrideConfig(), min_confidence=80)
+    row = db._conn.execute("SELECT severity FROM watchlist").fetchone()
+    assert row["severity"] == "high"
+
+
+def test_min_confidence_cli_flag_threads_through_to_importer(tmp_path, db_path, capsys):
+    """End-to-end argparse plumbing: --min-confidence on the CLI must reach
+    import_csv as the keyword arg. Pre-fix this raises SystemExit at
+    parse_args time because the flag does not exist."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(argus_record_id="cli-a", identifier="aa:bb:cc:dd:ee:01", confidence="50"),
+            _row(argus_record_id="cli-b", identifier="aa:bb:cc:dd:ee:02", confidence="90"),
+        ],
+    )
+    rc = main(
+        [
+            "--db",
+            db_path,
+            "--input",
+            path,
+            "--override-file",
+            str(tmp_path / "missing.yaml"),
+            "--min-confidence",
+            "80",
+        ]
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "Dropped (low_confidence): 1" in captured.out
+    assert "Imported (new): 1" in captured.out
+
+
+def test_min_confidence_skip_logs_argus_record_id_and_confidence(tmp_path, db, caplog):
+    """Per-row INFO log line on each skip must include argus_record_id and
+    confidence so operators can debug ambiguous post-import counts."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="lc-logged", confidence="42")],
+    )
+    import logging as _logging
+
+    with caplog.at_level(_logging.INFO, logger="lynceus.cli.import_argus"):
+        import_csv(db, path, OverrideConfig(), min_confidence=80)
+    assert any("lc-logged" in r.message and "42" in r.message for r in caplog.records)
+
+
+def test_min_confidence_render_includes_counter(tmp_path, db):
+    """Operator-facing summary must surface dropped_low_confidence on
+    both the per-bucket line and the trailing summary line."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="lc-render", confidence="10")],
+    )
+    report = import_csv(db, path, OverrideConfig(), min_confidence=80)
+    text = report.render()
+    assert "Dropped (low_confidence): 1" in text
+    assert "1 low_confidence" in text
+
+
+# ---------------------------------------------------------------------------
 # Geographic filter.
 # ---------------------------------------------------------------------------
 

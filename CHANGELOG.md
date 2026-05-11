@@ -63,6 +63,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`lynceus-import-argus --min-confidence N` row-skip flag.** Hard-skips
+  rows where `confidence < N` before any DB write; skipped rows land in
+  a new `ImportReport.dropped_low_confidence` counter surfaced in both
+  the per-bucket and the trailing-summary lines of the operator-facing
+  report, plus a per-row INFO log line (`argus_record_id` + actual
+  confidence) so the count is debuggable instead of opaque. Deliberately
+  distinct from the YAML-configured `confidence_downgrade_threshold`
+  (which downgrades severity tier — high→med→low — but still imports
+  the row): `--min-confidence` is a hard pre-DB filter, the threshold
+  is a severity nudge. Both can be active simultaneously and operate
+  independently. The intended Wave G workflow is a high-confidence-first
+  smoke test — `--min-confidence=80 --dry-run` against the incoming
+  push to confirm the high-conf subset lands cleanly before re-running
+  without the flag to ingest the full export. Default is unset (no
+  filtering), so the flag is opt-in and existing import scripts are
+  unaffected.
+
 - **`evidence_snapshots.do_not_publish` column** (migration 009).
   Forward-compat for v0.5.0 public-feed export — no producers or
   consumers in v0.4.0. Defaults to 0; surfaced in
