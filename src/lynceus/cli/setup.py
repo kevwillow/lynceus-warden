@@ -29,6 +29,7 @@ import requests
 from .. import __version__, paths
 from ..config import DEFAULT_KISMET_URL
 from ..kismet import KismetClient
+from ..redact import redact_ntfy_topic, redact_topic_in_url
 
 logger = logging.getLogger(__name__)
 
@@ -593,12 +594,21 @@ def probe_kismet_sources(
 def probe_ntfy(
     url: str, topic: str, timeout: float = PROBE_TIMEOUT_SECONDS
 ) -> tuple[bool, str | None]:
-    """POST a one-line message to the ntfy topic. Return ``(ok, error)``."""
+    """POST a one-line message to the ntfy topic. Return ``(ok, error)``.
+
+    The error string never carries the raw topic. ``requests`` exceptions'
+    ``__str__()`` typically embeds the full URL (with topic) — instead of
+    forwarding that to the wizard's terminal output we return only the
+    exception type name plus a topic-redacted URL. Full exception detail
+    is logged at DEBUG for operators who need it.
+    """
     full_url = f"{url.rstrip('/')}/{topic}"
+    safe_url = redact_topic_in_url(full_url)
     try:
         response = requests.post(full_url, data=b"Lynceus setup test", timeout=timeout)
     except requests.exceptions.RequestException as e:
-        return False, str(e)
+        logger.debug("ntfy probe exception detail", exc_info=True)
+        return False, f"{type(e).__name__} ({safe_url})"
     if 200 <= response.status_code < 300:
         return True, None
     return False, f"HTTP {response.status_code}"
@@ -1083,7 +1093,11 @@ def run_wizard(
     print(f"  probe_ssids:       {answers['probe_ssids']}")
     print(f"  ble_friendly_names:{answers['ble_friendly_names']}")
     print(f"  ntfy_url:          {answers['ntfy_url'] or '(skipped)'}")
-    print(f"  ntfy_topic:        {answers['ntfy_topic'] or '(skipped)'}")
+    # Redact the topic in the wizard summary — terminal scrollback and any
+    # tee'd install log otherwise capture the shared-secret value. The
+    # full topic remains in the config file at ``target`` for the daemon.
+    ntfy_topic_summary = redact_ntfy_topic(answers["ntfy_topic"]) or "(skipped)"
+    print(f"  ntfy_topic:        {ntfy_topic_summary}")
     print(f"  min_rssi:          {answers['min_rssi']}")
     if sev_created:
         print(f"  severity overrides: {sev_path} (scaffolded)")

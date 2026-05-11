@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.0] - Unreleased
 
+### Security
+
+- **ntfy topic no longer leaks in notifier logs, wizard summary, or
+  probe-failure prints.** The topic is a shared-secret URL path
+  component on public ntfy brokers — anyone who knows it can both
+  subscribe to alerts and publish forged ones. The webui already
+  redacted it via a private helper; three other surfaces still rendered
+  it verbatim:
+  - **`notify.py`** logged the full POST URL on every network failure
+    AND embedded the `requests` exception's `__str__()`, which itself
+    typically embeds the URL+topic — so the secret landed in journalctl
+    twice per failure (L-NTFY-4).
+  - **`lynceus-setup` wizard summary** printed the raw topic to stdout
+    at the end of a run, where it lingers in terminal scrollback and
+    any tee'd install log (L-NTFY-5).
+  - **`probe_ntfy` failure path** returned `str(exc)` verbatim, which
+    the wizard then printed; same exception-body-embeds-URL leak as
+    `notify.py` (L-NTFY-6).
+
+  All three now route through a new `lynceus.redact` module that
+  exposes `redact_ntfy_topic` (the existing webui helper, lifted to a
+  shared location and made public) and `redact_topic_in_url` (parses
+  the URL, redacts only the final path segment, preserves query and
+  fragment). The previously-private `_redact_ntfy_topic` in
+  `webui/app.py` is gone; the webui now imports the shared version so
+  every surface speaks one consistent redaction shape (`prefix•••suffix`).
+
+  The notifier and the wizard probe now log only the exception type
+  name plus the topic-redacted URL on failure; full exception detail
+  is reserved for explicit DEBUG operation (mirrors the H-7 discipline
+  from `b0879e2`). The trade-off is a small loss of debug context in
+  default-INFO journalctl in exchange for a guarantee that the topic
+  cannot leak via the warning line — operators who need the full
+  exception body can enable DEBUG temporarily.
+
 ### Added
 
 - **`evidence_snapshots.do_not_publish` column** (migration 009).

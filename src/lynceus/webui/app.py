@@ -22,6 +22,7 @@ from lynceus import allowlist as allowlist_mod
 from lynceus import rules as rules_mod
 from lynceus.config import Config
 from lynceus.db import Database
+from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 
 logger = logging.getLogger(__name__)
@@ -248,20 +249,6 @@ def _build_ui_kismet_client(config: Config) -> kismet.KismetClient:
     )
 
 
-def _redact_ntfy_topic(topic: str | None) -> str:
-    """Server-side redaction for ntfy topic.
-
-    Topics function as a shared secret on public ntfy brokers; full
-    disclosure in the read-only UI is wrong. We show first 4 + ``•••``
-    + last 2 when long enough, else fully redacted.
-    """
-    if topic is None:
-        return ""
-    if len(topic) < 6:
-        return "•••"
-    return topic[:4] + "•••" + topic[-2:]
-
-
 def _humanize_bytes(num: int) -> str:
     """Format a byte count as a short human string (e.g. ``"1.2 MB"``)."""
     n = float(num)
@@ -313,7 +300,7 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
     server — the raw values never leave this function. The template only
     sees the safe-to-render strings produced here.
     """
-    ntfy_topic_display = _redact_ntfy_topic(config.ntfy_topic) if config.ntfy_topic else ""
+    ntfy_topic_display = redact_ntfy_topic(config.ntfy_topic) if config.ntfy_topic else ""
     kismet_token_display = "•••••• (configured)" if config.kismet_api_key else "(not configured)"
 
     db_path = Path(config.db_path)

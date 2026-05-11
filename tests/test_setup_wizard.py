@@ -332,12 +332,86 @@ def test_ntfy_probe_failure_http(monkeypatch):
 
 def test_ntfy_probe_failure_network(monkeypatch):
     def fake_post(url, data=None, timeout=None):
-        raise wiz.requests.exceptions.ConnectionError("no route")
+        raise wiz.requests.exceptions.ConnectionError("no route to https://ntfy.sh/lynceus-aaa")
 
     monkeypatch.setattr(wiz.requests, "post", fake_post)
     ok, error = wiz.probe_ntfy("https://ntfy.sh", "lynceus-aaa")
     assert ok is False
-    assert "no route" in error
+    # Error string carries the exception type + redacted URL only — the
+    # raw topic and the exception body (which often re-embeds the URL)
+    # must not appear.
+    assert "ConnectionError" in error
+    assert "lynceus-aaa" not in error
+    assert "no route" not in error
+
+
+# --------- regression: wizard must never print raw ntfy topic ----------------
+#
+# Mirrors the notify.py contract: the topic is a shared secret, and the
+# wizard's stdout (summary line, probe-error print) ends up in terminal
+# scrollback and tee'd install logs. These tests MUST FAIL PRE-FIX.
+
+
+_LEAK_TOPIC_WIZ = "lynceus-supersecret-leak"
+
+
+def test_wizard_summary_redacts_ntfy_topic(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence(ntfy_topic=_LEAK_TOPIC_WIZ)),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Raw topic must not survive into the summary; the redacted form
+    # (first 4 + bullets + last 2) must appear instead.
+    assert _LEAK_TOPIC_WIZ not in out
+    assert "lync•••ak" in out
+
+
+def test_wizard_probe_failure_redacts_ntfy_topic(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda url, token, timeout=None: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
+
+    # Real-shape ConnectionError whose __str__() embeds the URL+topic.
+    # Stub requests.post so the real probe_ntfy runs (and its in-function
+    # redaction is exercised). Do NOT monkeypatch probe_ntfy itself.
+    def fake_post(url, data=None, timeout=None):
+        raise wiz.requests.exceptions.ConnectionError(
+            f"Max retries exceeded with url: /{_LEAK_TOPIC_WIZ}"
+        )
+
+    monkeypatch.setattr(wiz.requests, "post", fake_post)
+
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",  # capture interface
+        "",  # probe_ssids default
+        "",  # ble names default
+        "https://ntfy.sh",  # ntfy URL
+        _LEAK_TOPIC_WIZ,
+        "y",  # continue after ntfy fail
+        "",  # rssi default
+        "",  # severity overrides default
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Probe-failure line ran; topic is absent; redacted URL is present.
+    assert "ntfy publish failed" in out
+    assert _LEAK_TOPIC_WIZ not in out
+    # Summary line also runs after probe — and also redacts.
+    assert "lync•••ak" in out
 
 
 # ---- run_wizard: probe failure paths ---------------------------------------

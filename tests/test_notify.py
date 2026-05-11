@@ -214,6 +214,59 @@ def test_ntfy_does_not_raise_for_status(mocker):
     assert resp.raise_for_status.call_count == 0
 
 
+# --------------- regression: topic must never appear in logs ----------------
+#
+# The ntfy topic is a shared-secret URL path component on public brokers.
+# Every log surface in notify.py runs the topic through the redact helper;
+# these tests fence that contract. THESE TESTS MUST FAIL PRE-FIX.
+
+_LEAK_TOPIC = "lynceus-supersecret-leak"
+
+
+def test_ntfy_failure_log_does_not_leak_topic(mocker, caplog):
+    mocker.patch(
+        "lynceus.notify.requests.post",
+        side_effect=requests.exceptions.ConnectionError("boom"),
+    )
+    with caplog.at_level(logging.WARNING, logger="lynceus.notify"):
+        NtfyNotifier("https://ntfy.sh", _LEAK_TOPIC).send("low", "t", "m")
+    assert _LEAK_TOPIC not in caplog.text
+
+
+def test_ntfy_failure_log_does_not_leak_topic_via_exception_repr(mocker, caplog):
+    # `requests` exceptions' __str__() typically embeds the full URL
+    # including the topic. The fix logs only the exception type name and
+    # MUST NOT call str(exc) on the warning line.
+    mocker.patch(
+        "lynceus.notify.requests.post",
+        side_effect=requests.exceptions.ConnectionError(
+            f"HTTPSConnectionPool(host='ntfy.sh', port=443): "
+            f"Max retries exceeded with url: /{_LEAK_TOPIC} (Caused by ...)"
+        ),
+    )
+    with caplog.at_level(logging.WARNING, logger="lynceus.notify"):
+        NtfyNotifier("https://ntfy.sh", _LEAK_TOPIC).send("low", "t", "m")
+    assert _LEAK_TOPIC not in caplog.text
+
+
+def test_ntfy_non_2xx_warning_does_not_leak_topic(mocker, caplog):
+    mocker.patch("lynceus.notify.requests.post", return_value=_ok_response(503))
+    with caplog.at_level(logging.WARNING, logger="lynceus.notify"):
+        NtfyNotifier("https://ntfy.sh", _LEAK_TOPIC).send("low", "t", "m")
+    assert _LEAK_TOPIC not in caplog.text
+
+
+def test_ntfy_success_log_does_not_leak_topic(mocker, caplog):
+    # Success path emits no info-level "publishing to {url}" line today, but
+    # this test fences against future regressions: if anyone adds one, it
+    # MUST go through the redact helper.
+    mocker.patch("lynceus.notify.requests.post", return_value=_ok_response(200))
+    with caplog.at_level(logging.DEBUG, logger="lynceus.notify"):
+        result = NtfyNotifier("https://ntfy.sh", _LEAK_TOPIC).send("low", "t", "m")
+    assert result is True
+    assert _LEAK_TOPIC not in caplog.text
+
+
 # --------------------------------- build_notifier ---------------------------
 
 
