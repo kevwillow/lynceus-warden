@@ -46,6 +46,15 @@ class Allowlist(BaseModel):
     entries: list[AllowlistEntry] = []
 
     def is_allowed(self, obs: DeviceObservation) -> bool:
+        """Return True if the device matches any allowlist entry.
+
+        Allowlist matches take precedence over watchlist matches: callers
+        should not produce alerts for allowlisted devices, and should emit
+        an audit log when an allowlisted device would have matched a
+        watchlist rule (see ``poller.poll_once`` for the canonical pattern).
+        Without that audit signal, anyone with allowlist write access can
+        silently disable a watchlist rule by adding the matching device.
+        """
         for entry in self.entries:
             if entry.pattern_type == "mac":
                 if obs.mac == entry.pattern:

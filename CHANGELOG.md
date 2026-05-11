@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **Allowlist suppression of watchlist hits is now audit-logged
+  (L-RULES-2).** Previously the allowlist-then-evaluate ordering in
+  `poll_once` meant an allowlist entry could silently disable any
+  watchlist rule whose pattern overlapped with the allowlisted device
+  — anyone with write access to the allowlist file got an undocumented
+  watchlist kill-switch with zero log signal. The poll loop now
+  re-evaluates rules on the allowlisted-suppression path and emits an
+  INFO line per suppressed watchlist hit
+  (`Allowlist suppressed watchlist hit: rule=<name> mac=<mac> severity=<sev>`),
+  so operators can grep journalctl to review whether their allowlist
+  is too permissive. The audit pass costs one extra `evaluate()` call
+  per allowlisted observation; allowlists are operator-curated and
+  typically small, and the visibility win is worth the cost. Docstrings
+  on `poll_once` and `Allowlist.is_allowed` now make the precedence
+  ordering explicit so future refactors don't drop the audit signal.
+  `new_non_randomized_device` hits are intentionally excluded from the
+  audit log — the whole point of allowlisting is to silence the "first
+  time we've seen this known device" path, and logging it would just
+  mean every allowlisted device gets one INFO line per poll cycle.
+
 - **ntfy topic no longer leaks in notifier logs, wizard summary, or
   probe-failure prints.** The topic is a shared-secret URL path
   component on public ntfy brokers — anyone who knows it can both

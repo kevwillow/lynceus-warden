@@ -131,3 +131,11 @@ def test_is_allowed_ssid_match():
 def test_is_allowed_ssid_returns_false_when_obs_ssid_none():
     al = Allowlist(entries=[AllowlistEntry(pattern="HomeNet", pattern_type="ssid")])
     assert al.is_allowed(_obs("aa:bb:cc:dd:ee:ff", ssid=None)) is False
+
+
+def test_is_allowed_docstring_pins_precedence_note():
+    """Docstring regression guard: the precedence-over-watchlist note on
+    Allowlist.is_allowed pairs with poller.poll_once's audit-log block — if
+    a future refactor drops one, the other becomes mysterious."""
+    assert Allowlist.is_allowed.__doc__ is not None
+    assert "precedence" in Allowlist.is_allowed.__doc__

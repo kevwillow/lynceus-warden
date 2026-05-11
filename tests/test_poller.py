@@ -299,6 +299,98 @@ def test_poll_once_allowlist_suppresses_alert(db, config, fake_client):
     assert _alerts_count(db) == 0
 
 
+def test_allowlist_suppresses_watchlist_hit_logs_audit(db, config, fake_client, caplog):
+    """L-RULES-2: an allowlist entry that hides a watchlist hit emits an INFO
+    audit line. Without this, allowlist write access is a silent watchlist
+    kill-switch — operators have no journalctl trail of what was suppressed."""
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    al = Allowlist(entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")])
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poll_once(fake_client, db, config, 1700001000, ruleset=rs, allowlist=al)
+    assert _alerts_count(db) == 0
+    import re
+
+    assert re.search(r"Allowlist suppressed watchlist hit: rule=.*mac=.*", caplog.text)
+    assert "apple_mac" in caplog.text
+    assert "a4:83:e7:11:22:33" in caplog.text
+
+
+def test_allowlist_match_without_watchlist_match_does_not_log(db, config, fake_client, caplog):
+    """An allowlisted device that wouldn't have matched any watchlist rule is
+    the normal case (operator-known device just doing its thing) — emitting
+    an audit line for it would spam journalctl with non-events."""
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="other_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["de:ad:be:ef:00:01"],
+            )
+        ]
+    )
+    al = Allowlist(entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")])
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poll_once(fake_client, db, config, 1700001000, ruleset=rs, allowlist=al)
+    assert _alerts_count(db) == 0
+    assert "Allowlist suppressed" not in caplog.text
+
+
+def test_normal_watchlist_hit_no_allowlist_no_suppression_log(db, config, fake_client, caplog):
+    """Regression guard: the new audit-log block must not fire on the normal
+    alert path (no allowlist entry, watchlist matches, alert written)."""
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    assert _alerts_count(db) == 1
+    assert "suppressed" not in caplog.text
+
+
+def test_allowlist_suppression_log_includes_severity(db, config, fake_client, caplog):
+    """The severity field in the audit line lets operators triage which
+    suppressions to investigate first — a high-severity watchlist rule
+    silenced by allowlist is a different signal than a low-severity one."""
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac_high",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    al = Allowlist(entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")])
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poll_once(fake_client, db, config, 1700001000, ruleset=rs, allowlist=al)
+    assert "severity=high" in caplog.text
+
+
+def test_poll_once_docstring_pins_allowlist_precedence_paragraph():
+    """Docstring regression guard: future refactors must not drop the
+    Allowlist precedence note from poll_once."""
+    assert poll_once.__doc__ is not None
+    assert "Allowlist precedence" in poll_once.__doc__
+
+
 def test_poll_once_dedup_within_window_skips_duplicate(db, config, fake_client):
     rs = Ruleset(
         rules=[

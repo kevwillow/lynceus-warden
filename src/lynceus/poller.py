@@ -50,6 +50,15 @@ def poll_once(
     source_allowlist: frozenset[str] | None = None,
     source_locations: dict[str, str] | None = None,
 ) -> int:
+    """Run one poll tick: fetch from Kismet, persist sightings, evaluate rules.
+
+    Allowlist precedence: a device matching any allowlist entry is suppressed,
+    regardless of any watchlist rules it would have matched. When suppression
+    hides what would have been a watchlist hit, an INFO-level audit line is
+    emitted so operators can review whether the allowlist is too permissive —
+    silently disabling a watchlist rule by allowlisting the matching device
+    is exactly the kind of misconfiguration the audit log is meant to surface.
+    """
     if ruleset is None:
         ruleset = Ruleset()
     if allowlist is None:
@@ -132,6 +141,22 @@ def poll_once(
             processed += 1
             if allowlist.is_allowed(obs):
                 logger.debug("allowlisted, suppressing alerts: %s", obs.mac)
+                # Audit pass: re-evaluate rules ONLY to record any watchlist
+                # hits the allowlist just suppressed. Operators with write
+                # access to the allowlist can otherwise silently disable a
+                # watchlist rule by adding the matching device — this INFO
+                # line gives them a journalctl trail. Cost is bounded by
+                # the allowlist size (operator-curated, typically small).
+                suppressed_hits = evaluate(ruleset, obs, is_new_device=is_new)
+                for sh in suppressed_hits:
+                    if sh.rule_type == "new_non_randomized_device":
+                        continue
+                    logger.info(
+                        "Allowlist suppressed watchlist hit: rule=%s mac=%s severity=%s",
+                        sh.rule_name,
+                        obs.mac,
+                        sh.severity,
+                    )
                 continue
             hits = evaluate(ruleset, obs, is_new_device=is_new)
             matched_watchlist_id: int | None = None
