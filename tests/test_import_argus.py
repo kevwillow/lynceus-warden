@@ -201,6 +201,30 @@ def test_ble_service_identifier_type_imports_as_ble_uuid(tmp_path, db):
     assert row["pattern_type"] == "ble_uuid"
 
 
+def test_uppercase_identifier_type_normalized_to_lowercase_allowlist(tmp_path, db):
+    """Argus may emit identifier_type as uppercase (``BLE_SERVICE``). The
+    allowlist keys in ``IDENTIFIER_TYPE_MAP`` are lowercase, so without
+    case-normalization the row silently lands in ``dropped_unknown_type``
+    and the Argus metadata enrichment chain is lost — symmetrical with
+    the 19aabf6 pattern-value normalization fix. Pre-fix this asserts
+    ``imported_new == 1`` and fails (it would be ``dropped_unknown_type == 1``)."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="b-upper-type",
+                identifier_type="BLE_SERVICE",
+                identifier="0000fd6f-0000-1000-8000-00805f9b34fb",
+            )
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    assert report.dropped_unknown_type == 0
+    row = db._conn.execute("SELECT pattern_type FROM watchlist").fetchone()
+    assert row["pattern_type"] == "ble_uuid"
+
+
 def test_mac_range_identifier_type_dropped_increments_counter(tmp_path, db):
     path = _write_csv(
         tmp_path / "wl.csv",

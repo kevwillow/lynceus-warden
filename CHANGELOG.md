@@ -141,6 +141,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fixing pre-push is the right ordering since we don't know how their
   export normalizes patterns.
 
+- **`cli.import_argus` now case-normalizes `identifier_type` before the
+  allowlist check.** Symmetrical with the 19aabf6 pattern-value
+  normalization fix: that one canonicalized the *identifier* (the
+  pattern string itself) at write time, this one canonicalizes the
+  *identifier_type* column at read time. Pre-fix, a row from Argus
+  with `identifier_type="BLE_SERVICE"` (uppercase) missed the
+  lowercase keys in `IDENTIFIER_TYPE_MAP` and silently dropped into
+  the `dropped_unknown_type` counter — visible in the final report
+  total but with no per-row log line, so operators reviewing import
+  stdout would see the count drop without learning which type
+  variants Argus had pushed. The importer now does
+  `(row["identifier_type"] or "").strip().lower()` before the
+  allowlist lookup; the whitespace strip also handles
+  BOM / trailing-space edge cases for free. This matters specifically
+  for the Wave G + flock-back push the Argus engineer is about to
+  ship: high-confidence `ble_service` rows that happen to ship as
+  `BLE_SERVICE` would otherwise be lost without warning.
 - **Freshly-created user-mode databases are now `chmod 0600` on
   POSIX.** Previously the file landed at the process umask (typically
   `0644` — world-readable on multi-user boxes). System-mode installs

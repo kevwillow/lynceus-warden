@@ -304,7 +304,10 @@ def import_csv(
             if not argus_id:
                 raise ValueError("row is missing argus_record_id")
 
-            argus_type = row["identifier_type"]
+            # Argus may emit identifier_type in any case (e.g. BLE_SERVICE).
+            # Allowlist keys are lowercase; normalize before the lookup so
+            # uppercase rows aren't silently swallowed as dropped_unknown_type.
+            argus_type = (row["identifier_type"] or "").strip().lower()
             if argus_type == "mac_range":
                 report.dropped_mac_range += 1
                 continue
