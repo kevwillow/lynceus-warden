@@ -63,6 +63,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Dark mode for the web UI.** Auto-follows the OS via
+  `prefers-color-scheme: dark`, with a small `theme: auto / light /
+  dark` toggle button in the topnav for operators who want to
+  override. The toggle cycles auto → light → dark → auto and
+  persists the choice to `localStorage` (`lynceus-theme` key), so it
+  sticks across page navigations and reloads. Pico CSS v2.1.1
+  (already vendored) handles the dark palette for every standard
+  semantic element — body, text, links, tables, forms, buttons,
+  nav, article, borders — and `lynceus.css` adds matching dark
+  variants for the project-custom surface (severity / confidence /
+  status badges, the topnav border, the sparkline bar fill, the
+  severity-tinted alert rows, and the table-scroll fade gradient).
+  The toggle sets `data-theme` on `<html>`, which Pico and our
+  `lynceus.css` overrides both honor coherently from a single flag.
+  Light-mode rendering is byte-identical to pre-change (the
+  `:root` defaults preserve the prior color literals exactly), so
+  operators who keep their OS in light mode and never touch the
+  toggle see no visual change. Known limitation: a brief
+  flash-of-prefers-color-scheme on every page load because
+  `lynceus.js` runs `defer`red; fixing requires an inline `<head>`
+  script and is deferred to a future iteration if anyone reports
+  it as bothersome.
+
 - **`lynceus-import-argus --min-confidence N` row-skip flag.** Hard-skips
   rows where `confidence < N` before any DB write; skipped rows land in
   a new `ImportReport.dropped_low_confidence` counter surfaced in both

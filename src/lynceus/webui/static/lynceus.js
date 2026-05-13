@@ -120,3 +120,79 @@
     formatAll(evt.target || document);
   });
 })();
+
+// Theme toggle: cycles auto → light → dark → auto and persists the
+// choice to localStorage. "auto" leaves <html> with no data-theme
+// attribute so Pico's own @media (prefers-color-scheme: dark) block
+// (and our matching one in lynceus.css) decide. The two forced modes
+// set data-theme on <html>, which Pico and our overrides both honor.
+//
+// Caveat: this script is loaded with `defer`, so there's a brief
+// flash-of-prefers-color-scheme before the stored choice applies on
+// every page load. Mitigating that would require an inline <head>
+// script; deferred to a future iteration if anyone complains.
+(function () {
+  "use strict";
+
+  var THEME_KEY = "lynceus-theme";
+  var THEME_CYCLE = ["auto", "light", "dark"];
+
+  function readStoredTheme() {
+    try {
+      var v = localStorage.getItem(THEME_KEY);
+      return THEME_CYCLE.indexOf(v) >= 0 ? v : "auto";
+    } catch (_) {
+      // localStorage may throw under strict privacy settings or in
+      // sandboxed contexts; degrade to auto silently.
+      return "auto";
+    }
+  }
+
+  function writeStoredTheme(t) {
+    try { localStorage.setItem(THEME_KEY, t); } catch (_) { /* swallow */ }
+  }
+
+  function applyTheme(theme) {
+    var html = document.documentElement;
+    if (theme === "auto") {
+      html.removeAttribute("data-theme");
+    } else {
+      html.setAttribute("data-theme", theme);
+    }
+    var btn = document.querySelector("[data-theme-toggle]");
+    if (btn) {
+      btn.textContent = "theme: " + theme;
+      btn.setAttribute("aria-pressed", theme === "auto" ? "false" : "true");
+    }
+  }
+
+  function cycleTheme() {
+    var current = readStoredTheme();
+    var next = THEME_CYCLE[(THEME_CYCLE.indexOf(current) + 1) % THEME_CYCLE.length];
+    writeStoredTheme(next);
+    applyTheme(next);
+  }
+
+  // Apply stored theme immediately so the DOM is in the right state by
+  // the time the button is wired up below.
+  applyTheme(readStoredTheme());
+
+  function bindToggle() {
+    var btn = document.querySelector("[data-theme-toggle]");
+    if (!btn) return;
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      cycleTheme();
+    });
+    // Re-apply once the button is in the DOM so its label reflects the
+    // stored theme (applyTheme above ran before bindToggle when the
+    // script first loads on a page where the topnav hadn't parsed yet).
+    applyTheme(readStoredTheme());
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindToggle);
+  } else {
+    bindToggle();
+  }
+})();
