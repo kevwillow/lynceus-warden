@@ -11,7 +11,13 @@
 -- The (mac, captured_at DESC) index supports "give me the most recent
 -- evidence for this device" lookups in v0.4.1 without a full scan.
 
-CREATE TABLE evidence_snapshots(
+-- M-series partial-apply hardening: IF NOT EXISTS guards so re-running
+-- this file on a DB where the table/indexes were created but the
+-- schema_migrations row was never written (interrupted runner, crash
+-- mid-script) is a no-op rather than raising "already exists". The
+-- broader migration-runner atomicity work (L-MIG-1/7) stays deferred
+-- to v0.4.1; this guard only narrows the recovery path for 007.
+CREATE TABLE IF NOT EXISTS evidence_snapshots(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   alert_id INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
   mac TEXT NOT NULL,
@@ -24,5 +30,5 @@ CREATE TABLE evidence_snapshots(
   gps_captured_at INTEGER
 );
 
-CREATE INDEX evidence_alert_id_idx ON evidence_snapshots(alert_id);
-CREATE INDEX evidence_mac_captured_idx ON evidence_snapshots(mac, captured_at DESC);
+CREATE INDEX IF NOT EXISTS evidence_alert_id_idx ON evidence_snapshots(alert_id);
+CREATE INDEX IF NOT EXISTS evidence_mac_captured_idx ON evidence_snapshots(mac, captured_at DESC);

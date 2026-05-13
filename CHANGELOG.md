@@ -158,6 +158,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Migration 007 (`evidence_snapshots`) now uses `IF NOT EXISTS`
+  guards on its three CREATE statements** (one table, two indexes).
+  Re-running the SQL on a DB where 007's objects exist but the
+  `schema_migrations` row was never written (interrupted runner,
+  crash mid-script) is now a no-op rather than raising
+  `sqlite3.OperationalError: table evidence_snapshots already exists`.
+  Narrow M-series partial-apply hardening from the v0.4.0 diagnostic
+  backlog — the broader migration-runner atomicity work (L-MIG-1/7,
+  per-migration transactions and a recovery path that reconciles the
+  on-disk schema with `schema_migrations`) stays deferred to v0.4.1.
+  Other migrations are unchanged in this pass; a follow-up sweep
+  will apply the same guards to 001-006 and 008-010 once the runner
+  work lands.
+
 - **Watchlist patterns are now normalized at write time (L-RULES-1,
   L-RULES-11).** Pre-fix, `cli.seed_watchlist` and `cli.import_argus`
   inserted operator-supplied patterns verbatim. The poller normalizes

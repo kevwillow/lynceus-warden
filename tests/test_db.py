@@ -41,6 +41,29 @@ def test_migration_idempotent(db_path):
     assert count_first == count_second
 
 
+def test_migration_007_sql_idempotent_at_statement_level(db_path):
+    """Replay 007's SQL DIRECTLY via executescript, bypassing the
+    runner's version-tracking short-circuit. Guards the recovery path
+    on a DB where 007's objects were created but the corresponding
+    schema_migrations row was never written (interrupted runner, crash
+    mid-script). Without IF NOT EXISTS the second apply raises
+    sqlite3.OperationalError 'table evidence_snapshots already exists'
+    on the first CREATE TABLE, or analogous errors on the CREATE INDEX
+    statements that follow.
+
+    Narrow M-series hardening — the broader migration-runner atomicity
+    work (L-MIG-1/7) stays deferred to v0.4.1."""
+    db = Database(db_path)
+    try:
+        sql_path = db._migrations_dir / "007_evidence_snapshots.sql"
+        sql = sql_path.read_text(encoding="utf-8")
+        # First apply already happened on Database.__init__; the replay
+        # below is the second-apply that must be a no-op.
+        db._conn.executescript(sql)
+    finally:
+        db.close()
+
+
 def test_foreign_keys_enforced(db):
     db.ensure_location(LOC, "Lab")
     with pytest.raises(sqlite3.IntegrityError):
