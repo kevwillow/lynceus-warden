@@ -1,11 +1,82 @@
-/* lynceus custom styles — overrides on top of Pico. */
+/* lynceus custom styles — overrides on top of Pico.
+ *
+ * Theme: Pico classless v2.1.1 handles dark mode automatically for every
+ * semantic element (body, text, links, tables, forms, buttons, nav,
+ * article, borders, code, dialogs) via its own
+ * @media (prefers-color-scheme: dark) block. This file only adds dark
+ * variants for the lynceus-custom surface — the severity / confidence /
+ * status badges, the topnav border, the sparkline bar fill, the
+ * severity-tinted alert rows, and the table-scroll fade gradient.
+ *
+ * Three layers control which palette applies:
+ *   1. :root              — light defaults.
+ *   2. @media + :not([data-theme="light"]) — OS-prefers-dark, unless
+ *      the operator has explicitly forced light via the topnav toggle.
+ *   3. [data-theme="dark"] — operator toggle forced dark, overrides
+ *      everything.
+ * Pico uses the same data-theme convention, so the manual toggle
+ * controls both Pico's palette and ours coherently from a single flag
+ * on <html>. */
 
-.badge-low   { background: #dde; color: #224; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
-.badge-med   { background: #fec; color: #730; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
-.badge-high  { background: #fcc; color: #700; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
-.badge-conf-low  { background: #fcc; color: #700; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
-.badge-conf-med  { background: #fec; color: #730; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
-.badge-conf-high { background: #cfc; color: #060; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+:root {
+  --lyn-badge-positive-bg: #cfc;
+  --lyn-badge-positive-fg: #060;
+  --lyn-badge-warning-bg:  #fec;
+  --lyn-badge-warning-fg:  #730;
+  --lyn-badge-negative-bg: #fcc;
+  --lyn-badge-negative-fg: #700;
+  --lyn-badge-neutral-bg:  #dde;
+  --lyn-badge-neutral-fg:  #224;
+  --lyn-topnav-border:     #ddd;
+  --lyn-sparkline-bar:     #888;
+  --lyn-row-sev-low:       rgba(120, 130, 200, 0.05);
+  --lyn-row-sev-med:       rgba(255, 180, 90, 0.07);
+  --lyn-row-sev-high:      rgba(220, 70, 70, 0.08);
+  --lyn-scroll-edge-shadow: rgba(0, 0, 0, 0.15);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --lyn-badge-positive-bg: #1f3a1f;
+    --lyn-badge-positive-fg: #9bd49b;
+    --lyn-badge-warning-bg:  #3a2e15;
+    --lyn-badge-warning-fg:  #e8c074;
+    --lyn-badge-negative-bg: #3a1f1f;
+    --lyn-badge-negative-fg: #e89c9c;
+    --lyn-badge-neutral-bg:  #232838;
+    --lyn-badge-neutral-fg:  #b8c0d8;
+    --lyn-topnav-border:     #2a2f38;
+    --lyn-sparkline-bar:     #8a93a4;
+    --lyn-row-sev-low:       rgba(120, 130, 200, 0.10);
+    --lyn-row-sev-med:       rgba(255, 180, 90, 0.10);
+    --lyn-row-sev-high:      rgba(220, 70, 70, 0.13);
+    --lyn-scroll-edge-shadow: rgba(255, 255, 255, 0.10);
+  }
+}
+
+[data-theme="dark"] {
+  --lyn-badge-positive-bg: #1f3a1f;
+  --lyn-badge-positive-fg: #9bd49b;
+  --lyn-badge-warning-bg:  #3a2e15;
+  --lyn-badge-warning-fg:  #e8c074;
+  --lyn-badge-negative-bg: #3a1f1f;
+  --lyn-badge-negative-fg: #e89c9c;
+  --lyn-badge-neutral-bg:  #232838;
+  --lyn-badge-neutral-fg:  #b8c0d8;
+  --lyn-topnav-border:     #2a2f38;
+  --lyn-sparkline-bar:     #8a93a4;
+  --lyn-row-sev-low:       rgba(120, 130, 200, 0.10);
+  --lyn-row-sev-med:       rgba(255, 180, 90, 0.10);
+  --lyn-row-sev-high:      rgba(220, 70, 70, 0.13);
+  --lyn-scroll-edge-shadow: rgba(255, 255, 255, 0.10);
+}
+
+.badge-low   { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-med   { background: var(--lyn-badge-warning-bg);  color: var(--lyn-badge-warning-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-high  { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-conf-low  { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-conf-med  { background: var(--lyn-badge-warning-bg);  color: var(--lyn-badge-warning-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-conf-high { background: var(--lyn-badge-positive-bg); color: var(--lyn-badge-positive-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .argus-footer    { font-family: monospace; font-size: 0.8em; opacity: 0.6; margin-top: 1em; }
 .alert-vendor-subtitle { font-size: 0.8em; opacity: 0.65; }
 .metadata-grid   { display: grid; grid-template-columns: max-content 1fr; gap: 0.25em 1em; }
@@ -13,22 +84,38 @@
 .metadata-grid dd { margin: 0; }
 .mac-cell    { font-family: monospace; }
 .truncate    { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
-.topnav      { display: flex; gap: 0.75em; padding: 0.5em 0; border-bottom: 1px solid #ddd; margin-bottom: 1em; }
+.topnav      { display: flex; align-items: center; gap: 0.75em; padding: 0.5em 0; border-bottom: 1px solid var(--lyn-topnav-border); margin-bottom: 1em; }
 .topnav a    { text-decoration: none; }
 .topnav a.active { font-weight: 600; }
 .dim         { opacity: 0.55; }
 
+/* Theme toggle in the topnav. margin-left:auto pushes it to the right
+   end of the flex row so it doesn't collide with the link cluster. */
+.theme-toggle {
+    margin-left: auto;
+    padding: 0.1em 0.6em;
+    font-size: 0.85em;
+    background: transparent;
+    border: 1px solid var(--lyn-topnav-border);
+    color: inherit;
+    cursor: pointer;
+    border-radius: 4px;
+    font-family: inherit;
+    line-height: 1.4;
+}
+.theme-toggle:hover { border-color: currentColor; }
+
 .sparkline       { display: flex; align-items: flex-end; gap: 1px; height: 40px; width: 100%; }
-.sparkline-bar   { background: #888; flex: 1 1 0; min-width: 2px; min-height: 1px; }
+.sparkline-bar   { background: var(--lyn-sparkline-bar); flex: 1 1 0; min-width: 2px; min-height: 1px; }
 .stat-grid       { display: grid; grid-template-columns: 60px repeat(3, 1fr); gap: 0.5em 1em; align-items: center; }
 .stat-grid .stat-row-label { font-weight: 600; }
 .ack-button-inline { padding: 2px 8px; font-size: 0.85em; }
 form.inline-form   { display: inline; }
 
 /* Severity-tinted rows in alert tables */
-tr.row-sev-low  { background: rgba(120, 130, 200, 0.05); }
-tr.row-sev-med  { background: rgba(255, 180, 90, 0.07); }
-tr.row-sev-high { background: rgba(220, 70, 70, 0.08); }
+tr.row-sev-low  { background: var(--lyn-row-sev-low); }
+tr.row-sev-med  { background: var(--lyn-row-sev-med); }
+tr.row-sev-high { background: var(--lyn-row-sev-high); }
 tr.row-acked    { opacity: 0.55; }
 
 /* Stat tile row (mirrors stat-grid layout but only counts) */
@@ -46,7 +133,7 @@ tr.row-acked    { opacity: 0.55; }
 
 /* Evidence section: RSSI sparkline + collapsible Kismet record. The
    sparkline polyline uses currentColor so it inherits text color and
-   stays legible when the v0.4.x dark theme lands without per-theme
+   stays legible in both light and dark themes without per-theme
    palette tweaks. */
 .rssi-sparkline { color: currentColor; vertical-align: middle; }
 details > summary { cursor: pointer; }
@@ -57,25 +144,26 @@ details > summary { cursor: pointer; }
 /* Settings page: privacy and status badges. Privacy-on (probe SSIDs OFF)
    reuses the calm green tier; recording uses the amber/warning tier so
    it's immediately legible as "lynceus is collecting sensitive data." */
-.badge-privacy-on      { background: #cfc; color: #060; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
-.badge-privacy-warning { background: #fec; color: #730; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; font-weight: 600; }
-.badge-status-ok       { background: #cfc; color: #060; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
-.badge-status-error    { background: #fcc; color: #700; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-privacy-on      { background: var(--lyn-badge-positive-bg); color: var(--lyn-badge-positive-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-privacy-warning { background: var(--lyn-badge-warning-bg);  color: var(--lyn-badge-warning-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; font-weight: 600; }
+.badge-status-ok       { background: var(--lyn-badge-positive-bg); color: var(--lyn-badge-positive-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-status-error    { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .settings-card         { margin-bottom: 1em; }
 
 /* Horizontal scroll wrapper for tables that may exceed container width.
-   Apply by wrapping the <table> in <div class="table-scroll">. */
+   Apply by wrapping the <table> in <div class="table-scroll">. The
+   gradient fades to var(--pico-background-color) (which Pico swaps per
+   theme) so the fade looks correct in both light and dark mode. The
+   edge shadow flips light↔dark via --lyn-scroll-edge-shadow so the
+   "scrollable" cue survives the theme flip. */
 .table-scroll {
     width: 100%;
     overflow-x: auto;
-    /* Subtle visual cue that scrolling is possible: a 1px shadow on the
-       right edge that disappears when scrolled to the end. Only renders
-       when content overflows. */
     background:
-        linear-gradient(to right, white 30%, rgba(255,255,255,0)) 0 0,
-        linear-gradient(to right, rgba(255,255,255,0), white 70%) 100% 0,
-        radial-gradient(farthest-side at 0 50%, rgba(0,0,0,0.15), rgba(0,0,0,0)) 0 0,
-        radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,0.15), rgba(0,0,0,0)) 100% 0;
+        linear-gradient(to right, var(--pico-background-color, white) 30%, transparent) 0 0,
+        linear-gradient(to right, transparent, var(--pico-background-color, white) 70%) 100% 0,
+        radial-gradient(farthest-side at 0 50%, var(--lyn-scroll-edge-shadow), transparent) 0 0,
+        radial-gradient(farthest-side at 100% 50%, var(--lyn-scroll-edge-shadow), transparent) 100% 0;
     background-repeat: no-repeat;
     background-size: 40px 100%, 40px 100%, 14px 100%, 14px 100%;
     background-attachment: local, local, scroll, scroll;
