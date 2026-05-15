@@ -1172,6 +1172,190 @@ def test_override_file_loads_yaml_contents(tmp_path):
     assert cfg.confidence_downgrade_threshold == 50
 
 
+def test_load_override_config_permission_error_raises_useful_message(tmp_path, monkeypatch):
+    """A PermissionError on the is_file() probe must surface as a
+    RuntimeError naming the offending path. The bare PermissionError
+    traceback isn't actionable for an operator. This is what crashes
+    unprivileged --user invocations when the default points at
+    /etc/lynceus/severity_overrides.yaml (0750 root:lynceus)."""
+    blocked = tmp_path / "blocked.yaml"
+    blocked.touch()
+
+    PathCls = type(blocked)
+    real_is_file = PathCls.is_file
+
+    def _raise(self):
+        if str(self) == str(blocked):
+            raise PermissionError(13, "Permission denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(PathCls, "is_file", _raise)
+    with pytest.raises(RuntimeError, match="cannot probe override file"):
+        load_override_config(str(blocked))
+
+
+# ---------------------------------------------------------------------------
+# Scope-strict --override-file resolution.
+#
+# Bug from the rc4 live smoke: argparse defaulted --override-file to a
+# hardcoded /etc/lynceus/severity_overrides.yaml regardless of --scope.
+# On a host with a parallel --system install (where that dir is 0750
+# root:lynceus), an unprivileged --scope user run blew up with a bare
+# PermissionError instead of using the user-scope override path. Fix:
+# omitted --override-file derives from paths.default_overrides_path(scope),
+# and never probes the opposite scope.
+# ---------------------------------------------------------------------------
+
+
+def test_main_scope_user_does_not_probe_system_override(tmp_path, db_path, monkeypatch):
+    """With --scope user and no --override-file, the importer must
+    probe the user-scope path and ONLY the user-scope path. The
+    system-scope path must not be touched even when the user file is
+    absent (the bug was: hardcoded /etc/ default; user-scope hosts
+    without permission crashed)."""
+    user_override = tmp_path / "user-overrides.yaml"
+    system_override = tmp_path / "system-overrides.yaml"
+    # Neither file exists — this exercises the absent-file fallback,
+    # which is the exact path that used to leak into /etc/.
+
+    scope_calls = []
+
+    def _fake_overrides_path(scope):
+        scope_calls.append(scope)
+        return {"user": user_override, "system": system_override}[scope]
+
+    monkeypatch.setattr(import_argus.paths, "default_overrides_path", _fake_overrides_path)
+
+    PathCls = type(user_override)
+    real_is_file = PathCls.is_file
+    probed_paths = []
+
+    def _probe(self):
+        probed_paths.append(str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(PathCls, "is_file", _probe)
+
+    csv_path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="s1")])
+    rc = main(["--db", db_path, "--input", csv_path, "--scope", "user"])
+
+    assert rc == 0
+    assert scope_calls == ["user"], (
+        f"default_overrides_path should be called exactly once with 'user'; "
+        f"got {scope_calls}"
+    )
+    assert str(user_override) in probed_paths
+    assert str(system_override) not in probed_paths, (
+        f"system override path probed despite --scope user: {probed_paths}"
+    )
+
+
+def test_main_scope_system_does_not_probe_user_override(tmp_path, db_path, monkeypatch):
+    """Inverse: --scope system must not probe the user-scope path.
+    The symmetry matters: if a system-scope batch job ran on a
+    multi-user box, the user-scope default would change behavior
+    based on whose home dir the daemon happens to be invoked from."""
+    user_override = tmp_path / "user-overrides.yaml"
+    system_override = tmp_path / "system-overrides.yaml"
+
+    def _fake_overrides_path(scope):
+        return {"user": user_override, "system": system_override}[scope]
+
+    monkeypatch.setattr(import_argus.paths, "default_overrides_path", _fake_overrides_path)
+    # default_db_path under --scope system raises NotImplementedError
+    # on macOS/Windows; spoof it so the test holds cross-platform.
+    monkeypatch.setattr(import_argus.paths, "default_db_path", lambda scope: Path(db_path))
+
+    PathCls = type(user_override)
+    real_is_file = PathCls.is_file
+    probed_paths = []
+
+    def _probe(self):
+        probed_paths.append(str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(PathCls, "is_file", _probe)
+
+    csv_path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="s2")])
+    rc = main(["--input", csv_path, "--scope", "system"])
+
+    assert rc == 0
+    assert str(system_override) in probed_paths
+    assert str(user_override) not in probed_paths, (
+        f"user override path probed despite --scope system: {probed_paths}"
+    )
+
+
+def test_main_explicit_override_file_ignores_scope_default(tmp_path, db_path, monkeypatch):
+    """When --override-file is passed explicitly, paths.default_overrides_path
+    must NOT be called — explicit beats scope-derived. The operator's
+    chosen path is used verbatim regardless of --scope."""
+    explicit = tmp_path / "explicit-overrides.yaml"
+    # File doesn't exist — load_override_config falls back to defaults,
+    # but the resolution itself proves the scope-default helper was
+    # never consulted.
+
+    def _explode(scope):
+        raise AssertionError(
+            f"paths.default_overrides_path must not be called when "
+            f"--override-file is given explicitly (scope={scope})"
+        )
+
+    monkeypatch.setattr(import_argus.paths, "default_overrides_path", _explode)
+
+    csv_path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="ex1")])
+    rc = main(
+        [
+            "--db",
+            db_path,
+            "--input",
+            csv_path,
+            "--scope",
+            "user",
+            "--override-file",
+            str(explicit),
+        ]
+    )
+    assert rc == 0
+
+
+def test_main_user_scope_permission_error_surfaces_clean_message(
+    tmp_path, db_path, monkeypatch, caplog
+):
+    """Direct repro of the rc4 live-smoke crash: --scope user, override
+    path resolves to a location whose is_file() probe raises
+    PermissionError. The importer must return non-zero AND the log must
+    include the offending path so the operator can see *what* is wrong
+    without staring at a bare PermissionError traceback."""
+    blocked = tmp_path / "blocked-overrides.yaml"
+    blocked.touch()
+
+    monkeypatch.setattr(
+        import_argus.paths,
+        "default_overrides_path",
+        lambda scope: blocked,
+    )
+
+    PathCls = type(blocked)
+    real_is_file = PathCls.is_file
+
+    def _raise(self):
+        if str(self) == str(blocked):
+            raise PermissionError(13, "Permission denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(PathCls, "is_file", _raise)
+
+    csv_path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="p1")])
+    with caplog.at_level("ERROR"):
+        rc = main(["--db", db_path, "--input", csv_path, "--scope", "user"])
+
+    assert rc == 1
+    assert str(blocked) in caplog.text, (
+        f"error output should name the offending override path; got: {caplog.text!r}"
+    )
+
+
 def test_main_returns_zero_on_success(tmp_path, db_path, capsys):
     path = _write_csv(
         tmp_path / "wl.csv",
