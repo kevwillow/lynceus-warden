@@ -4,6 +4,34 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0-rc4] - 2026-05-15
+
+### Fixed
+
+- **`lynceus-import-argus --from-github` default `--repo` was
+  pointing at a non-existent repository.** rc3 hard-coded
+  `kevlattice/argus` as the default; the actual Argus repo is
+  `kevwillow/argus-db`. The headline rc3 feature 404'd on the
+  `/releases/latest` API call before it could even start the raw
+  fetch, and operators saw an opaque `HTTPError` instead of a
+  successful refresh. `DEFAULT_GITHUB_REPO` now resolves
+  correctly; passing `--repo OWNER/NAME` for a fork still works
+  the same way.
+
+### Changed
+
+- **All `kevlattice/lynceus` GitHub URLs replaced with
+  `kevwillow/lynceus-warden`** to reflect the upstream account
+  rename + repo rename. Surfaces touched: `pyproject.toml`
+  (Homepage / Repository / Issues, which flow into the wheel's
+  PKG-INFO and PyPI metadata), `SECURITY.md` (private-advisory
+  and public-issues URLs), the `git clone` URL in the README, and
+  the `Documentation=` line in both systemd unit files (visible
+  in `systemctl status` and journalctl context). The
+  `kevwillow/lynceus.git` → `kevwillow/lynceus-warden.git`
+  GitHub-side redirect is still active, so older clones continue
+  to push and pull, but new clones should use the canonical URL.
+
 ## [0.4.0-rc3] - 2026-05-15
 
 ### Added
