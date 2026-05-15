@@ -4,7 +4,7 @@ Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchli
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Status: v0.3.0-rc1](https://img.shields.io/badge/Status-v0.3.0--rc1-yellow.svg)](#project-status)
+[![Status: v0.4.0-rc4](https://img.shields.io/badge/Status-v0.4.0--rc4-yellow.svg)](#project-status)
 [![Counter-Surveillance](https://img.shields.io/badge/Counter--Surveillance-passive%20only-1f6feb.svg)](#privacy--threat-model)
 [![Watching the Watchers](https://img.shields.io/badge/Watching-the%20Watchers-black.svg)](#what-lynceus-does)
 
@@ -19,9 +19,9 @@ Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchli
 
 ## Project status
 
-**Personal-use RF security monitoring tool. v0.3.0-rc1.**
+**Personal-use RF security monitoring tool. v0.4.0-rc4.**
 
-This is not a hardened public product. It is a personal project, feature-complete for v0.3, with hardware shakedown still in progress. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
+This is not a hardened public product. It is a personal project, feature-complete for v0.4, with hardware shakedown still in progress. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
 
 ## What Lynceus does
 
@@ -44,7 +44,7 @@ The threat model is simple: detect surveillance-relevant devices in the operator
 
 ```sh
 git clone https://github.com/kevwillow/lynceus-warden
-cd lynceus
+cd lynceus-warden
 ./install.sh --user
 ```
 
@@ -192,7 +192,7 @@ Two-process production deployment, single SQLite database between them.
 
 ## Project status
 
-v0.3.0-rc1. Feature-complete for the v0.3 series; hardware shakedown in progress on Kali. The v0.3.0 final release is blocked on that shakedown landing without surprises. Test count: **888 passing** at v0.3.0-rc1, up from 437 at v0.2 — 451 new tests added across 13 prompts in the v0.3 series.
+v0.4.0-rc4. Feature-complete for the v0.4 series; hardware shakedown in progress on Kali. Test count: **1215 passing** at v0.4.0-rc4, up from 888 at v0.3.0-rc1.
 
 License: MIT. See [LICENSE](LICENSE).
 
