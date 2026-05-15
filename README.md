@@ -182,7 +182,7 @@ Built on [Kismet](https://www.kismetwireless.net/) for radio capture and [ntfy](
 
 ## How I built this
 
-Argus is the result of many long days and longer nights of iterative work across multiple machines — Windows dev boxes for some scraping and analysis work, Linux dev machines and a Linux server for the database, orchestration, and most agent work. The build process spans research, scraping, validation, schema design, license posture, discipline framework, and the audit trail that backs every promotion. The substantive growth from a 514-row baseline to over 22,000 active identifiers happened across roughly two weeks of compressed work; the architectural framework that makes those promotions trustworthy took longer.
+Lynceus-Warden && Argus-db is the result of many long days and longer nights of iterative work across multiple machines — Windows dev boxes for some scraping and analysis work, Linux dev machines and a Linux server for the database, orchestration, and most agent work. The build process spans research, scraping, validation, schema design, license posture, discipline framework, building the web UI and the audit trail that backs every promotion. The substantive growth from a 514-row baseline to over 22,000 active identifiers happened across roughly two weeks of compressed work; the architectural framework that makes those promotions trustworthy took longer.
 
 ### Operator-led orchestration
 
