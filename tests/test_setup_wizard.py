@@ -1510,8 +1510,47 @@ def test_run_wizard_prints_deferred_argus_import_hint(monkeypatch, tmp_path, cap
     )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "To import a custom Argus CSV later" in out
+    # Closing hint must surface BOTH refresh paths so operators learn
+    # about --from-github at the same moment they learn about --input.
+    # User-scope output is unprivileged (no sudo, no --scope flag).
+    assert "Watchlist refresh" in out
+    assert "lynceus-import-argus --from-github" in out
     assert "lynceus-import-argus --input" in out
+    assert "sudo " not in out.split("Watchlist refresh", 1)[1].split("To start", 1)[0], (
+        "user-scope refresh hint must not include sudo"
+    )
+
+
+def test_run_wizard_system_scope_refresh_hint_uses_sudo_and_scope(
+    monkeypatch, tmp_path, capsys
+):
+    """System-scope wizard must surface the refresh hint with sudo +
+    --scope system so operators copy a command that actually works
+    against /var/lib/lynceus/lynceus.db, not their per-user XDG path."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # Stub the canonical path helpers — the real ones raise
+    # NotImplementedError for scope="system" on macOS / Windows, which
+    # would mask the actual hint-text assertion this test cares about
+    # behind a platform-dependent crash.
+    monkeypatch.setattr(wiz.paths, "default_data_dir", lambda scope: tmp_path / "data")
+    monkeypatch.setattr(wiz.paths, "default_log_dir", lambda scope: tmp_path / "logs")
+    monkeypatch.setattr(wiz.paths, "default_db_path", lambda scope: tmp_path / "data" / "lynceus.db")
+    # Avoid the system-scope chown/permission helpers actually running
+    # against the test sandbox — they assume a real lynceus group exists.
+    monkeypatch.setattr(wiz, "_apply_system_perms_to_file", lambda *a, **kw: None)
+    monkeypatch.setattr(wiz, "_apply_system_perms_to_dir", lambda *a, **kw: None)
+    rc = wiz.run_wizard(
+        _args(system=True, skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Watchlist refresh" in out
+    assert "sudo lynceus-import-argus --scope system --from-github" in out
+    assert "sudo lynceus-import-argus --scope system --input" in out
 
 
 def test_maybe_import_argus_helper_is_gone():

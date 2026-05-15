@@ -1150,7 +1150,18 @@ def run_wizard(
 
     print()
     print(f"Setup complete. Config at {target}.")
-    print("To import a custom Argus CSV later, run: lynceus-import-argus --input <path-to-csv>")
+    # Scope-aware refresh hint. Mirrors the install.sh "Watchlist data:"
+    # block so an operator who saw both surfaces recognizes them as the
+    # same hint. Hint only — the wizard makes no network call here; the
+    # bundled default_watchlist.csv auto-import above is the default,
+    # --from-github is opt-in for the next refresh.
+    print("Watchlist refresh (run later, optional):")
+    if scope == "system":
+        print("  sudo lynceus-import-argus --scope system --from-github         # network")
+        print("  sudo lynceus-import-argus --scope system --input <path-to-csv> # air-gapped")
+    else:
+        print("  lynceus-import-argus --from-github            # latest from GitHub")
+        print("  lynceus-import-argus --input <path-to-csv>    # air-gapped")
     print(
         "To start Lynceus: `lynceus-quickstart` for dev/demo, "
         "or enable the systemd service for production."
