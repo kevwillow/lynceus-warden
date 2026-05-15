@@ -1199,6 +1199,282 @@ def test_main_exposed_as_entry_point():
 
 
 # ---------------------------------------------------------------------------
+# --from-github fetch flow.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_ref_returns_explicit_ref_without_api_call(monkeypatch):
+    """If the operator passed --ref X, _resolve_ref must return X
+    verbatim and never touch the network. The latest-release lookup is
+    only for the default-ref path."""
+
+    def _no_network_get(*args, **kwargs):
+        raise AssertionError(f"requests.get must not be called, got {args!r}")
+
+    monkeypatch.setattr(import_argus.requests, "get", _no_network_get)
+    assert import_argus._resolve_ref("kevlattice/argus", "v1.2.3") == "v1.2.3"
+    assert import_argus._resolve_ref("kevlattice/argus", "main") == "main"
+
+
+def test_resolve_ref_queries_releases_latest_when_ref_is_none(monkeypatch):
+    """Default --ref behavior: hit /releases/latest and return tag_name.
+    NOT the tip of main — see the docstring rationale."""
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"tag_name": "v0.9.7", "name": "Argus v0.9.7"}
+
+    def _fake_get(url, timeout=None):
+        captured["url"] = url
+        captured["timeout"] = timeout
+        return _FakeResp()
+
+    monkeypatch.setattr(import_argus.requests, "get", _fake_get)
+    tag = import_argus._resolve_ref("kevlattice/argus", None)
+    assert tag == "v0.9.7"
+    assert captured["url"] == "https://api.github.com/repos/kevlattice/argus/releases/latest"
+    # Sanity: timeout must be set so a hung GitHub request can't wedge
+    # the CLI indefinitely.
+    assert captured["timeout"] is not None and captured["timeout"] > 0
+
+
+def test_resolve_ref_raises_when_payload_lacks_tag_name(monkeypatch):
+    """A 200 from GitHub with no tag_name (unusual, but not impossible
+    on a freshly-created repo with no releases) must surface as a
+    RuntimeError naming the repo, not a silent KeyError."""
+
+    class _FakeResp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"name": "no-tag-here"}
+
+    monkeypatch.setattr(import_argus.requests, "get", lambda *a, **kw: _FakeResp())
+    with pytest.raises(RuntimeError, match="kevlattice/argus"):
+        import_argus._resolve_ref("kevlattice/argus", None)
+
+
+def test_fetch_argus_export_writes_cache_file_with_resolved_ref(tmp_path, monkeypatch):
+    """fetch_argus_export must call raw.githubusercontent.com at the
+    resolved ref/path, write the bytes into cache_dir, and return the
+    cache path. The filename embeds the ref so multiple pulled artifacts
+    coexist."""
+    payload = b"# meta: argus_export v3 (test)\nheader,row\n"
+
+    class _FakeResp:
+        content = payload
+
+        def raise_for_status(self):
+            return None
+
+    captured = {}
+
+    def _fake_get(url, timeout=None):
+        captured["url"] = url
+        captured["timeout"] = timeout
+        return _FakeResp()
+
+    monkeypatch.setattr(import_argus.requests, "get", _fake_get)
+    cache = tmp_path / "argus-cache"
+    out = import_argus.fetch_argus_export("kevlattice/argus", "v1.2.3", cache)
+    assert out == cache / "v1.2.3__argus_export.csv"
+    assert out.read_bytes() == payload
+    # raw.githubusercontent.com URL with the resolved ref + the
+    # repo-internal export path.
+    assert captured["url"] == (
+        "https://raw.githubusercontent.com/kevlattice/argus/v1.2.3/"
+        "exports/argus_export.csv"
+    )
+    assert captured["timeout"] is not None and captured["timeout"] > 0
+
+
+def test_fetch_argus_export_sanitizes_slash_in_ref(tmp_path, monkeypatch):
+    """A ref like 'release/v1.2' must not escape the cache_dir into a
+    subdirectory the test never mkdir'd. Sanitize the slash."""
+
+    class _FakeResp:
+        content = b"x"
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(import_argus.requests, "get", lambda *a, **kw: _FakeResp())
+    cache = tmp_path / "argus-cache"
+    out = import_argus.fetch_argus_export("kevlattice/argus", "release/v1.2", cache)
+    # Filename has the slash collapsed; no surprise subdirectory created.
+    assert out.parent == cache
+    assert "release_v1.2" in out.name
+
+
+def test_main_from_github_and_input_are_mutually_exclusive(tmp_path, db_path):
+    """Passing both --from-github and --input must error. argparse parse
+    errors raise SystemExit(2) — that's the contract."""
+    path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="x")])
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--db", db_path, "--input", path, "--from-github"])
+    assert excinfo.value.code == 2
+
+
+def test_main_neither_input_nor_from_github_is_error(db_path):
+    """Pre-change --input was required; the new dispatch must keep that
+    strictness — passing neither flag is a parse error, not a silent
+    no-op."""
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--db", db_path])
+    assert excinfo.value.code == 2
+
+
+def test_main_ref_without_from_github_is_error(tmp_path, db_path):
+    """--ref only makes sense when fetching; passing it alongside
+    --input is a config bug worth surfacing rather than silently
+    ignoring."""
+    path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="r1")])
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--db", db_path, "--input", path, "--ref", "main"])
+    assert excinfo.value.code == 2
+
+
+def test_main_from_github_invokes_fetch_and_imports(tmp_path, db_path, monkeypatch, capsys):
+    """End-to-end: --from-github must call fetch_argus_export with the
+    parsed --repo / --ref, then run the existing import on the returned
+    file. We stub fetch_argus_export to point at a local fixture so the
+    test stays offline."""
+    fixture = _write_csv(
+        tmp_path / "fetched.csv",
+        [_row(argus_record_id="gh-1", identifier="aa:bb:cc:dd:ee:01")],
+    )
+    captured = {}
+
+    def _fake_fetch(repo, ref, cache_dir):
+        captured["repo"] = repo
+        captured["ref"] = ref
+        captured["cache_dir"] = cache_dir
+        return Path(fixture)
+
+    monkeypatch.setattr(import_argus, "fetch_argus_export", _fake_fetch)
+    rc = main(
+        [
+            "--db",
+            db_path,
+            "--from-github",
+            "--repo",
+            "someone/argus-fork",
+            "--ref",
+            "v9.9.9",
+            "--override-file",
+            str(tmp_path / "missing.yaml"),
+        ]
+    )
+    assert rc == 0
+    assert captured["repo"] == "someone/argus-fork"
+    assert captured["ref"] == "v9.9.9"
+    # Cache path lives under data_dir/argus-cache. We can't pin the
+    # exact path without spoofing scope -> data_dir, so just assert the
+    # tail.
+    assert captured["cache_dir"].name == "argus-cache"
+    out = capsys.readouterr().out
+    assert "Imported (new): 1" in out
+
+
+# ---------------------------------------------------------------------------
+# Default --db resolution against paths.default_db_path.
+# ---------------------------------------------------------------------------
+
+
+def test_main_default_db_resolves_to_user_default(tmp_path, monkeypatch, capsys):
+    """When --db is omitted, the importer must write to
+    paths.default_db_path(--scope). Spoofing the helper proves the
+    plumbing without reaching the actual XDG dir."""
+    spoofed_db = tmp_path / "spoofed-user.db"
+    captured = {}
+
+    def _fake_default_db_path(scope):
+        captured["scope"] = scope
+        return spoofed_db
+
+    monkeypatch.setattr(import_argus.paths, "default_db_path", _fake_default_db_path)
+
+    csv_path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="def-u")])
+    rc = main(
+        [
+            "--input",
+            csv_path,
+            "--scope",
+            "user",
+            "--override-file",
+            str(tmp_path / "missing.yaml"),
+        ]
+    )
+    assert rc == 0
+    assert captured["scope"] == "user"
+    # The DB file should now exist at the spoofed path.
+    assert spoofed_db.exists()
+
+
+def test_main_default_db_resolves_to_system_default(tmp_path, monkeypatch):
+    """Same as the user case but for --scope system, which on macOS /
+    Windows would otherwise raise NotImplementedError. We monkeypatch
+    so the assertion holds cross-platform."""
+    spoofed_db = tmp_path / "spoofed-system.db"
+    captured = {}
+
+    def _fake_default_db_path(scope):
+        captured["scope"] = scope
+        return spoofed_db
+
+    monkeypatch.setattr(import_argus.paths, "default_db_path", _fake_default_db_path)
+
+    csv_path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="def-s")])
+    rc = main(
+        [
+            "--input",
+            csv_path,
+            "--scope",
+            "system",
+            "--override-file",
+            str(tmp_path / "missing.yaml"),
+        ]
+    )
+    assert rc == 0
+    assert captured["scope"] == "system"
+    assert spoofed_db.exists()
+
+
+def test_main_explicit_db_does_not_invoke_default_helper(tmp_path, monkeypatch):
+    """When --db is given, paths.default_db_path must not be called
+    (avoids surprising NotImplementedError on macOS --scope=system
+    when the operator isn't even relying on the default)."""
+
+    def _explode(scope):
+        raise AssertionError(
+            f"paths.default_db_path should not be called when --db is given (scope={scope})"
+        )
+
+    monkeypatch.setattr(import_argus.paths, "default_db_path", _explode)
+    explicit_db = tmp_path / "explicit.db"
+    csv_path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="e1")])
+    rc = main(
+        [
+            "--db",
+            str(explicit_db),
+            "--input",
+            csv_path,
+            "--override-file",
+            str(tmp_path / "missing.yaml"),
+        ]
+    )
+    assert rc == 0
+    assert explicit_db.exists()
+
+
+# ---------------------------------------------------------------------------
 # End-to-end smoke: heterogeneous fixture exercising every branch.
 # ---------------------------------------------------------------------------
 

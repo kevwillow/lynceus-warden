@@ -92,7 +92,7 @@ For convenience, `./uninstall.sh` is a thin wrapper that auto-detects the instal
 ## Quick start
 
 1. **Install.** `./install.sh --user` from a clone.
-2. **Configure.** Run `lynceus-setup`. The wizard probes Kismet and ntfy, generates `lynceus.yaml`, and prompts explicitly for probe SSID capture with a privacy explanation (off unless you opt in). It also offers to add a Bluetooth capture source (when an `hci*` adapter is detected) and auto-imports the bundled threat data. Press Enter at the ntfy prompt to skip notifications entirely. To import a custom Argus CSV later, run `lynceus-import-argus --input <path-to-csv>`.
+2. **Configure.** Run `lynceus-setup`. The wizard probes Kismet and ntfy, generates `lynceus.yaml`, and prompts explicitly for probe SSID capture with a privacy explanation (off unless you opt in). It also offers to add a Bluetooth capture source (when an `hci*` adapter is detected) and auto-imports the bundled threat data. Press Enter at the ntfy prompt to skip notifications entirely. To refresh the Argus watchlist later, run `lynceus-import-argus --from-github` (or `--input <path-to-csv>` for an air-gapped host).
 3. **Run.** For dev/demo, `lynceus-quickstart` launches the daemon, the UI, and a browser tab in the foreground; Ctrl+C shuts it down. For production, `sudo systemctl enable --now lynceus.service lynceus-ui.service`.
 4. **Verify.** Open the UI, watch sightings populate, browse `/watchlist` for the bundled threat data, and visit `/settings` to confirm capture state, Kismet/ntfy connectivity, and the watchlist origin breakdown.
 
@@ -116,13 +116,21 @@ Lynceus ships a default watchlist as package data inside the wheel: `src/lynceus
 - **Source.** Snapshot from [Argus](https://github.com/kevlattice/argus), the companion RF-signature project. Lynceus is **not** redistributing the full Argus corpus — what's bundled is a point-in-time snapshot.
 - **Coverage.** ~63 records (exported around 2026-05-07) across `mac`, `oui`, and `mac_range` identifier types. Categories include `drone`, `alpr`, `gunshot_detect`, `hacking_tool`, and `unknown`.
 - **First-run.** `lynceus-setup` auto-imports the bundled CSV on first run, so a fresh install has a working watchlist out of the box.
-- **Refresh.** When a newer Argus export is available, refresh in place:
+- **Refresh.** When a newer Argus export is available, refresh in place. The single-command path pulls the latest tagged release straight from GitHub:
 
   ```sh
-  lynceus-import-argus --input <path-to-fresh-argus-export.csv> --db <path-to-lynceus.db>
+  lynceus-import-argus --from-github
   ```
 
-  The importer is idempotent and metadata-aware; re-running against the same input is safe.
+  This fetches `exports/argus_export.csv` from the latest release of [`kevlattice/argus`](https://github.com/kevlattice/argus) and runs the existing import. The pulled artifact is preserved at `<data-dir>/argus-cache/<ref>__argus_export.csv` so each refresh leaves an audit trail. `--db` defaults to the canonical path for the active scope (`~/.local/share/lynceus/lynceus.db` for `--scope user`, `/var/lib/lynceus/lynceus.db` for `--scope system`); pass `--db` to override. Pin a specific ref with `--ref v1.2.3` (tag, branch, or commit), and override the source repo with `--repo OWNER/NAME` if you maintain a fork.
+
+  Air-gapped operators still pass a local file:
+
+  ```sh
+  lynceus-import-argus --input <path-to-fresh-argus-export.csv>
+  ```
+
+  `--from-github` and `--input` are mutually exclusive; pass exactly one. The importer is idempotent and metadata-aware in both modes — re-running against the same input is safe. `lynceus-import-argus` is the only Lynceus CLI that touches the network; `install.sh` and the daemon stay offline.
 
 ## Running Lynceus
 
@@ -144,7 +152,7 @@ Both units are hardened (`NoNewPrivileges=yes`, `ProtectSystem=strict`, restrict
 | `lynceus-quickstart` | Foreground dev/demo launcher (daemon + UI + browser). |
 | `lynceus-setup` | Interactive configuration wizard. |
 | `lynceus-seed-watchlist` | Add watchlist entries from a YAML file. |
-| `lynceus-import-argus` | Import an Argus dual-artifact CSV export. |
+| `lynceus-import-argus` | Import an Argus CSV export. `--from-github` pulls the latest release from `kevlattice/argus`; `--input <path>` reads a local file. `--db` defaults to the canonical scope path. |
 
 For at-a-glance configuration and connectivity verification while running, navigate to `/settings` in the web UI. It surfaces capture state, Kismet/ntfy reachability, watchlist origin breakdown, and system info — read-only.
 
