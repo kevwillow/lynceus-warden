@@ -43,7 +43,7 @@ The threat model is simple: detect surveillance-relevant devices in the operator
 **Linux (primary supported target).**
 
 ```sh
-git clone https://github.com/kevlattice/lynceus
+git clone https://github.com/kevwillow/lynceus-warden
 cd lynceus
 ./install.sh --user
 ```

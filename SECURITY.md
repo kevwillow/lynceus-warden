@@ -59,11 +59,11 @@ Two surfaces in `lynceus.db` are notably sensitive:
 ## Reporting a vulnerability
 
 **Preferred — private security advisory:**
-<https://github.com/kevlattice/lynceus/security/advisories/new>
+<https://github.com/kevwillow/lynceus-warden/security/advisories/new>
 (GitHub: Settings → Security → Report a vulnerability)
 
 **Low-severity issues — public issue tracker:**
-<https://github.com/kevlattice/lynceus/issues>
+<https://github.com/kevwillow/lynceus-warden/issues>
 
 Please include:
 

@@ -1,6 +1,6 @@
 [Unit]
 Description=Lynceus RF security monitoring daemon
-Documentation=https://github.com/kevlattice/lynceus
+Documentation=https://github.com/kevwillow/lynceus-warden
 After=network-online.target
 Wants=network-online.target
 

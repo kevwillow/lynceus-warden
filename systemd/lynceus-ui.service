@@ -1,6 +1,6 @@
 [Unit]
 Description=Lynceus web UI
-Documentation=https://github.com/kevlattice/lynceus
+Documentation=https://github.com/kevwillow/lynceus-warden
 After=network-online.target lynceus.service
 Wants=network-online.target lynceus.service
 
