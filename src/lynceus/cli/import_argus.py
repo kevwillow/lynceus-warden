@@ -535,11 +535,26 @@ def _resolve_ref(repo: str, ref: str | None) -> str:
     must not poison every operator who refreshes via ``--from-github``;
     pulling tagged releases by default keeps refresh on the slower,
     operator-curated cadence the Argus side uses for cuts.
+
+    Argus's release cadence is discretionary per its README — a repo can
+    legitimately be at a conceptual ``vX.Y`` without any published
+    GitHub Release objects (the sidebar reads "No releases published").
+    When ``/releases/latest`` 404s we fall back to ``main`` with a
+    WARNING so operators can see at a glance whether they got a release
+    tag or a branch HEAD. Don't downgrade the warning — it's the only
+    visible signal that the build isn't pinned.
     """
     if ref:
         return ref
     url = f"https://api.github.com/repos/{repo}/releases/latest"
     r = requests.get(url, timeout=GITHUB_API_TIMEOUT_SECONDS)
+    if r.status_code == 404:
+        logger.warning(
+            "No published releases for %s; falling back to 'main'. "
+            "Pin a tag with --ref for reproducibility.",
+            repo,
+        )
+        return "main"
     r.raise_for_status()
     payload = r.json()
     tag = payload.get("tag_name")
