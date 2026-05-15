@@ -68,8 +68,23 @@ VALID_SEVERITIES = ("high", "med", "low")
 DEFAULT_OVERRIDE_PATH = "/etc/lynceus/severity_overrides.yaml"
 DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD = 70
 
-# UTC timestamps in Argus exports use this format.
-_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+# Argus CSV `first_seen` / `last_verified` accepted timestamp shapes.
+#
+# Argus codified the canonical emission as ISO-8601 UTC with `Z` suffix at
+# seconds precision (e.g. ``"2026-05-14T06:13:42Z"``) on 2026-05-14. Live
+# archived exports may predate that landing and carry any of:
+#
+# - canonical Z form              (``"2026-05-14T06:13:42Z"``)
+# - ISO with explicit UTC offset  (``"2026-05-14T06:13:42.204792+00:00"``)
+# - space-separated, treated UTC  (``"2026-05-06 00:30:28"``)
+# - date-only, midnight UTC       (``"2026-05-10"``)
+#
+# `_parse_date` tries each in order; returns int Unix UTC timestamp.
+_DATE_FORMATS: tuple[str, ...] = (
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
+)
 
 
 @dataclass
@@ -149,10 +164,41 @@ def _passes_geographic_filter(scope: str | None, filter_list: list[str]) -> bool
 
 
 def _parse_date(value: str | None) -> int | None:
+    """Parse an Argus CSV `first_seen` / `last_verified` value to Unix UTC.
+
+    Tolerant of all four shapes historically emitted by Argus. Canonical
+    emission is ISO-8601 UTC `Z` form at seconds precision; the older
+    shapes remain supported for backward compat with archived exports.
+    """
     if value is None or value == "":
         return None
-    dt = _dt.datetime.strptime(value, _DATE_FORMAT).replace(tzinfo=_dt.UTC)
-    return int(dt.timestamp())
+    raw = value.strip()
+    # ISO-8601 with `Z` suffix or explicit offset — `fromisoformat`
+    # (Python 3.11+) handles both. Try this first: it's the canonical
+    # shape and the dominant pre-canonicalization shape.
+    if "T" in raw:
+        normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        try:
+            dt = _dt.datetime.fromisoformat(normalized)
+        except ValueError:
+            pass
+        else:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_dt.UTC)
+            else:
+                dt = dt.astimezone(_dt.UTC)
+            return int(dt.timestamp())
+    for fmt in _DATE_FORMATS:
+        try:
+            dt = _dt.datetime.strptime(raw, fmt).replace(tzinfo=_dt.UTC)
+        except ValueError:
+            continue
+        return int(dt.timestamp())
+    raise ValueError(
+        f"unparseable Argus timestamp {value!r} — expected ISO-8601 with Z "
+        f"or offset, space-separated `YYYY-MM-DD HH:MM:SS`, "
+        f"or date-only `YYYY-MM-DD`"
+    )
 
 
 def _empty_to_none(value: str | None) -> str | None:
