@@ -34,6 +34,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.0-rc3] - 2026-05-15
 
+> **⚠️ Broken release — superseded by [0.4.0-rc4](#040-rc4---2026-05-15). Do not install.**
+>
+> The headline `lynceus-import-argus --from-github` feature shipped
+> with a non-existent default `--repo` (`kevlattice/argus`); the API
+> release lookup 404s before the fetch can start, and operators see
+> an opaque `HTTPError` instead of a successful refresh. Fixed in
+> rc4 (`kevwillow/argus-db`). The `v0.4.0-rc3` tag has been deleted
+> from the GitHub remote to prevent accidental installs from the
+> tag; the commit history remains for reference.
+
 ### Added
 
 - **`lynceus-import-argus --from-github`.** Argus-watchlist refresh
