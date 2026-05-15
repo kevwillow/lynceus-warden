@@ -1217,6 +1217,28 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    # Refuse sudo-without-system. The wizard derives scope from --system
+    # alone (not euid), so `sudo lynceus-setup --reconfigure` would
+    # silently write to /root/.config/lynceus/lynceus.yaml — a path the
+    # system daemon (which reads /etc/lynceus/lynceus.yaml) never sees.
+    # The operator's last touch surface must NEVER silently switch
+    # scopes: a misplaced config is worse than a refusal, because it
+    # creates divergence between what the operator believes they
+    # configured and what the daemon actually loads. Refuse with both
+    # correct invocations shown side-by-side so the recovery move is
+    # obvious. The _euid() wrapper returns None on Windows, so this
+    # check is a no-op there (Windows has no sudo trap to fall into).
+    if _euid() == 0 and not args.system:
+        print(
+            "Refusing to run as root without --system.\n\n"
+            "Running as root with --user scope would write to\n"
+            "  /root/.config/lynceus/lynceus.yaml\n"
+            "which is not the path the system daemon reads. Did you mean one of:\n\n"
+            "  sudo lynceus-setup --system [--reconfigure]   # system-wide\n"
+            "  lynceus-setup [--reconfigure]                 # user-scope, no sudo\n",
+            file=sys.stderr,
+        )
+        return 2
     return run_wizard(args)
 
 
