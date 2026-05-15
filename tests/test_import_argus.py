@@ -826,6 +826,95 @@ def test_malformed_date_logged_as_row_error(tmp_path, db):
 
 
 # ---------------------------------------------------------------------------
+# `_parse_date` multi-format tolerance.
+#
+# Argus codified canonical emission as ISO-8601 UTC `Z` form at seconds
+# precision on 2026-05-14 (CP22). Archived exports may predate that and
+# carry any of: ISO with offset, space-separated, or date-only. Lynceus
+# tolerates all four for backward compat.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_date_iso_with_z(tmp_path, db):
+    """Canonical Argus emission shape — must parse cleanly."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="dz", first_seen="2026-05-11T18:21:50Z")],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.errors == 0
+    assert report.imported_new == 1
+    row = db._conn.execute("SELECT first_seen FROM watchlist_metadata").fetchone()
+    import datetime as _dt
+
+    expected = int(_dt.datetime(2026, 5, 11, 18, 21, 50, tzinfo=_dt.UTC).timestamp())
+    assert row["first_seen"] == expected
+
+
+def test_parse_date_iso_with_microseconds_offset(tmp_path, db):
+    """Pre-canonicalization dominant shape (~99% of pre-CP22 last_verified rows)."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="dm", first_seen="2026-05-14T06:13:42.204792+00:00")],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.errors == 0
+    assert report.imported_new == 1
+    row = db._conn.execute("SELECT first_seen FROM watchlist_metadata").fetchone()
+    import datetime as _dt
+
+    expected = int(
+        _dt.datetime(2026, 5, 14, 6, 13, 42, 204792, tzinfo=_dt.UTC).timestamp()
+    )
+    assert row["first_seen"] == expected
+
+
+def test_parse_date_iso_with_nonzero_offset_coerces_to_utc(tmp_path, db):
+    """Non-zero offset: 2026-05-14T08:13:42-04:00 → 2026-05-14T12:13:42 UTC."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="do", first_seen="2026-05-14T08:13:42-04:00")],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.errors == 0
+    row = db._conn.execute("SELECT first_seen FROM watchlist_metadata").fetchone()
+    import datetime as _dt
+
+    expected = int(_dt.datetime(2026, 5, 14, 12, 13, 42, tzinfo=_dt.UTC).timestamp())
+    assert row["first_seen"] == expected
+
+
+def test_parse_date_date_only_emits_midnight_utc(tmp_path, db):
+    """Date-only row preserves only day signal; treat as midnight UTC."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="dd", first_seen="2026-05-10")],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.errors == 0
+    row = db._conn.execute("SELECT first_seen FROM watchlist_metadata").fetchone()
+    import datetime as _dt
+
+    expected = int(_dt.datetime(2026, 5, 10, 0, 0, 0, tzinfo=_dt.UTC).timestamp())
+    assert row["first_seen"] == expected
+
+
+def test_parse_date_space_separated_still_works(tmp_path, db):
+    """Backward compat: archived pre-CP22 Argus exports."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="ds", first_seen="2026-05-06 00:30:28")],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.errors == 0
+    row = db._conn.execute("SELECT first_seen FROM watchlist_metadata").fetchone()
+    import datetime as _dt
+
+    expected = int(_dt.datetime(2026, 5, 6, 0, 30, 28, tzinfo=_dt.UTC).timestamp())
+    assert row["first_seen"] == expected
+
+
+# ---------------------------------------------------------------------------
 # Empty optional fields and confidence validation.
 # ---------------------------------------------------------------------------
 
@@ -1226,3 +1315,75 @@ def test_run_summary_line_formatted_correctly(tmp_path, db):
     assert "0 geographic_filter" in text
     assert "0 severity_drop" in text
     assert "1 unknown_type" in text
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo contract smoke against a live Argus CSV export.
+#
+# Argus and Lynceus live in separate repos. This test verifies the end-to-end
+# contract: a real `argus_export.csv` produced by the Argus export pipeline
+# imports into Lynceus without parse errors. Skipped when the sibling Argus
+# checkout is not present (e.g. CI), opportunistic when both repos coexist.
+#
+# Searched paths (first hit wins):
+# - $LYNCEUS_ARGUS_CSV (env var override)
+# - <repo_root>/../argus-db-main/exports/argus_export.csv
+# - <repo_root>/../argus/exports/argus_export.csv
+# ---------------------------------------------------------------------------
+
+
+def _find_live_argus_csv() -> Path | None:
+    import os
+
+    override = os.environ.get("LYNCEUS_ARGUS_CSV")
+    if override:
+        p = Path(override)
+        return p if p.is_file() else None
+    repo_root = Path(__file__).resolve().parents[1]
+    for candidate in (
+        repo_root.parent / "argus-db-main" / "exports" / "argus_export.csv",
+        repo_root.parent / "argus" / "exports" / "argus_export.csv",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def test_cross_repo_live_argus_csv_imports_without_errors(tmp_path, db):
+    """Real Argus CSV → Lynceus import: zero timestamp / row errors.
+
+    The bedrock contract claim: whatever shapes the current Argus export
+    pipeline emits for `first_seen` / `last_verified`, Lynceus's
+    `_parse_date` tolerates them. Counts are reconciled rather than
+    hard-pinned so the test does not drift as the Argus dataset grows.
+    """
+    csv_path = _find_live_argus_csv()
+    if csv_path is None:
+        pytest.skip(
+            "live Argus CSV not found — set LYNCEUS_ARGUS_CSV or place "
+            "the sibling argus-db-main repo next to lynceus"
+        )
+
+    report = import_csv(db, str(csv_path), OverrideConfig(), dry_run=True)
+
+    assert report.errors == 0, (
+        f"live Argus CSV produced {report.errors} row errors; "
+        f"first 3: {report.error_log[:3]}"
+    )
+    assert report.imported_new > 0, "live Argus CSV imported zero rows"
+    total_classified = (
+        report.imported_new
+        + report.updated
+        + report.unchanged
+        + report.dropped_mac_range
+        + report.dropped_severity_drop
+        + report.dropped_geographic_filter
+        + report.dropped_unknown_type
+        + report.dropped_low_confidence
+        + report.normalization_failed
+        + report.errors
+    )
+    assert total_classified == report.total_rows, (
+        f"row reconciliation mismatch: {total_classified} classified vs "
+        f"{report.total_rows} total"
+    )
