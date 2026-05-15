@@ -67,7 +67,6 @@ DEFAULT_CATEGORY_SEVERITIES: dict[str, str] = {
 }
 
 VALID_SEVERITIES = ("high", "med", "low")
-DEFAULT_OVERRIDE_PATH = "/etc/lynceus/severity_overrides.yaml"
 DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD = 70
 
 # GitHub-fetch defaults for `--from-github`. Argus publishes its
@@ -106,15 +105,37 @@ class OverrideConfig:
 
 
 def load_override_config(path: str | None) -> OverrideConfig:
-    """Load operator overrides from YAML; absent file yields built-in defaults."""
+    """Load operator overrides from YAML; absent file yields built-in defaults.
+
+    Probes exactly the path it is given — no cross-scope fallback. A
+    ``PermissionError`` on the probe (e.g. an unprivileged user pointed
+    at ``/etc/lynceus/severity_overrides.yaml`` which is 0750
+    root:lynceus by design) is surfaced as a ``RuntimeError`` that
+    names the offending path. The bare ``PermissionError`` traceback
+    isn't actionable for an operator looking at the CLI output.
+    """
     if path is None:
         return OverrideConfig()
     p = Path(path)
-    if not p.is_file():
+    try:
+        exists = p.is_file()
+    except PermissionError as exc:
+        raise RuntimeError(
+            f"cannot probe override file {path}: {exc}. "
+            f"Check filesystem permissions or pass --override-file "
+            f"to a readable path."
+        ) from exc
+    if not exists:
         logger.info("override file %s not found, using built-in defaults", path)
         return OverrideConfig()
-    with open(p, encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+    try:
+        with open(p, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except PermissionError as exc:
+        raise RuntimeError(
+            f"cannot read override file {path}: {exc}. "
+            f"Check filesystem permissions."
+        ) from exc
     return OverrideConfig(
         vendor_overrides=dict(raw.get("vendor_overrides") or {}),
         device_category_severity=dict(raw.get("device_category_severity") or {}),
@@ -655,8 +676,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--override-file",
-        default=DEFAULT_OVERRIDE_PATH,
-        help="path to severity overrides YAML (default: %(default)s)",
+        default=None,
+        help=(
+            "path to severity overrides YAML (default: "
+            "paths.default_overrides_path(--scope), e.g. "
+            "~/.config/lynceus/severity_overrides.yaml for --scope user, "
+            "/etc/lynceus/severity_overrides.yaml for --scope system). "
+            "Resolution is scope-strict — there is no user→system "
+            "fallback. Absent files yield built-in defaults."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -698,8 +726,20 @@ def main(argv: list[str] | None = None) -> int:
 
     db_path = args.db if args.db is not None else paths.default_db_path(args.scope)
 
-    overrides = load_override_config(args.override_file)
+    # Scope-strict override-file resolution: when --override-file is not
+    # passed explicitly, derive from paths.default_overrides_path(scope)
+    # — never probe the opposite scope. An unprivileged user under
+    # --scope user must not touch /etc/lynceus/severity_overrides.yaml
+    # (0750 root:lynceus by design), which crashes with PermissionError
+    # on hosts that also carry a --system install.
+    override_path = (
+        args.override_file
+        if args.override_file is not None
+        else str(paths.default_overrides_path(args.scope))
+    )
+
     try:
+        overrides = load_override_config(override_path)
         if args.from_github:
             cache_dir = paths.default_data_dir(args.scope) / "argus-cache"
             input_path = str(fetch_argus_export(args.repo, args.ref, cache_dir))
