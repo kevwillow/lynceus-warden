@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   collapses from a three-step manual flow (scp the CSV, find the
   right `--db` path, run the importer) into a single command. The
   new flag fetches `exports/argus_export.csv` from
-  [`kevlattice/argus`](https://github.com/kevlattice/argus) over
+  [`kevwillow/argus-db`](https://github.com/kevwillow/argus-db) over
   HTTPS and runs the existing idempotent, migration-aware import.
   Default ref is the *latest tagged release* (NOT the tip of
   `main`) — a single bad push must not poison every operator who
