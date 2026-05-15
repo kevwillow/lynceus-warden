@@ -17,8 +17,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import requests
 import yaml
 
+from .. import paths
 from ..db import Database
 from ..patterns import normalize_pattern
 
@@ -67,6 +69,14 @@ DEFAULT_CATEGORY_SEVERITIES: dict[str, str] = {
 VALID_SEVERITIES = ("high", "med", "low")
 DEFAULT_OVERRIDE_PATH = "/etc/lynceus/severity_overrides.yaml"
 DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD = 70
+
+# GitHub-fetch defaults for `--from-github`. Argus publishes its
+# canonical CSV at exports/argus_export.csv on the kevlattice/argus
+# repository; the path is fixed by the Argus side of the contract.
+DEFAULT_GITHUB_REPO = "kevlattice/argus"
+ARGUS_EXPORT_PATH_IN_REPO = "exports/argus_export.csv"
+GITHUB_API_TIMEOUT_SECONDS = 15
+GITHUB_RAW_TIMEOUT_SECONDS = 30
 
 # Argus CSV `first_seen` / `last_verified` accepted timestamp shapes.
 #
@@ -514,10 +524,120 @@ def import_csv(
     return report
 
 
+def _resolve_ref(repo: str, ref: str | None) -> str:
+    """Resolve which Argus repo ref to fetch the export from.
+
+    With ``ref`` set, return it verbatim — operators who explicitly ask
+    for ``main`` or a specific commit get exactly that, no API call.
+
+    With ``ref is None``, query the GitHub Releases API for the latest
+    *tagged release* (NOT the tip of main). A single bad push to main
+    must not poison every operator who refreshes via ``--from-github``;
+    pulling tagged releases by default keeps refresh on the slower,
+    operator-curated cadence the Argus side uses for cuts.
+    """
+    if ref:
+        return ref
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    r = requests.get(url, timeout=GITHUB_API_TIMEOUT_SECONDS)
+    r.raise_for_status()
+    payload = r.json()
+    tag = payload.get("tag_name")
+    if not tag:
+        raise RuntimeError(
+            f"GitHub API returned no tag_name for {repo} latest release: {payload!r}"
+        )
+    return tag
+
+
+def fetch_argus_export(repo: str, ref: str | None, cache_dir: Path) -> Path:
+    """Download an Argus CSV export from GitHub at ``ref`` (or latest tag).
+
+    The file lands in ``cache_dir`` named ``<resolved-ref>__argus_export.csv``
+    so each pulled artifact is preserved alongside the ref it came from
+    — useful for forensic re-runs and for distinguishing two refreshes
+    that landed on the same day. Re-fetching the same ref overwrites the
+    cached copy; we don't try to be clever about ETags.
+    """
+    resolved = _resolve_ref(repo, ref)
+    url = (
+        f"https://raw.githubusercontent.com/{repo}/{resolved}/"
+        f"{ARGUS_EXPORT_PATH_IN_REPO}"
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    # Sanitize the ref into the filename so a slash-bearing ref
+    # (e.g. ``release/v1.2``) doesn't escape into a subdirectory.
+    safe_ref = resolved.replace("/", "_").replace("\\", "_")
+    dest = cache_dir / f"{safe_ref}__argus_export.csv"
+    logger.info("Fetching Argus export %s@%s from %s", repo, resolved, url)
+    # verify=True is the requests default; do NOT disable it. The
+    # threat-model rationale for --from-github relies on TLS + GitHub's
+    # serving infrastructure to authenticate the artifact.
+    resp = requests.get(url, timeout=GITHUB_RAW_TIMEOUT_SECONDS)
+    resp.raise_for_status()
+    dest.write_bytes(resp.content)
+    logger.info("Cached %d bytes at %s", len(resp.content), dest)
+    return dest
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lynceus-import-argus")
-    parser.add_argument("--db", required=True, help="path to lynceus sqlite database")
-    parser.add_argument("--input", required=True, help="path to Argus CSV export")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help=(
+            "path to lynceus sqlite database (default: "
+            "paths.default_db_path(--scope), e.g. "
+            "~/.local/share/lynceus/lynceus.db for --scope user, "
+            "/var/lib/lynceus/lynceus.db for --scope system)"
+        ),
+    )
+    parser.add_argument(
+        "--scope",
+        choices=("user", "system"),
+        default="user",
+        help=(
+            "scope used to derive default --db and --from-github cache "
+            "directory (default: %(default)s). Ignored when --db is "
+            "passed explicitly AND --from-github is not used."
+        ),
+    )
+    # --input and --from-github are alternatives. Mutual exclusion is
+    # enforced after parse_args() so the error message can name both
+    # flags clearly; argparse's add_mutually_exclusive_group() emits a
+    # less-actionable "not allowed with" message and would not let us
+    # require *exactly* one without bolting on the same post-parse
+    # check anyway. --input stays available for air-gapped operators.
+    parser.add_argument(
+        "--input",
+        default=None,
+        help="path to a local Argus CSV export (alternative to --from-github)",
+    )
+    parser.add_argument(
+        "--from-github",
+        action="store_true",
+        help=(
+            "fetch the Argus CSV export from GitHub before importing. "
+            "Default ref is the latest tagged release of --repo; pass "
+            "--ref to pin to a specific tag, branch, or commit."
+        ),
+    )
+    parser.add_argument(
+        "--ref",
+        default=None,
+        help=(
+            "git ref (tag / branch / commit) to fetch from --repo when "
+            "--from-github is set. Default: latest tagged release. "
+            "Explicit --ref main is allowed but not recommended."
+        ),
+    )
+    parser.add_argument(
+        "--repo",
+        default=DEFAULT_GITHUB_REPO,
+        metavar="OWNER/NAME",
+        help="GitHub OWNER/NAME of the Argus repo (default: %(default)s)",
+    )
     parser.add_argument(
         "--override-file",
         default=DEFAULT_OVERRIDE_PATH,
@@ -550,13 +670,32 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=args.log_level)
 
+    # Mutex on input source. "Exactly one" — neither is also an error,
+    # because there is no sensible default behavior here: previously
+    # --input was required, so we keep the strictness, just split across
+    # two flags.
+    if args.from_github and args.input:
+        parser.error("--from-github and --input are mutually exclusive; pass exactly one")
+    if not args.from_github and not args.input:
+        parser.error("one of --from-github or --input is required")
+    if args.ref and not args.from_github:
+        parser.error("--ref is only meaningful with --from-github")
+
+    db_path = args.db if args.db is not None else paths.default_db_path(args.scope)
+
     overrides = load_override_config(args.override_file)
     try:
-        db = Database(args.db)
+        if args.from_github:
+            cache_dir = paths.default_data_dir(args.scope) / "argus-cache"
+            input_path = str(fetch_argus_export(args.repo, args.ref, cache_dir))
+        else:
+            input_path = args.input
+
+        db = Database(str(db_path))
         try:
             report = import_csv(
                 db,
-                args.input,
+                input_path,
                 overrides,
                 dry_run=args.dry_run,
                 min_confidence=args.min_confidence,
