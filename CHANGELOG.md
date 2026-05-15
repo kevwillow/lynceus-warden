@@ -4,6 +4,86 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0-rc3] - 2026-05-15
+
+### Added
+
+- **`lynceus-import-argus --from-github`.** Argus-watchlist refresh
+  collapses from a three-step manual flow (scp the CSV, find the
+  right `--db` path, run the importer) into a single command. The
+  new flag fetches `exports/argus_export.csv` from
+  [`kevlattice/argus`](https://github.com/kevlattice/argus) over
+  HTTPS and runs the existing idempotent, migration-aware import.
+  Default ref is the *latest tagged release* (NOT the tip of
+  `main`) — a single bad push must not poison every operator who
+  refreshes. Explicit `--ref` overrides the default (tag / branch /
+  commit all work; `--ref main` is allowed for operators who
+  consciously want the bleeding edge). `--repo OWNER/NAME` swaps
+  the source repo for forks. Pulled artifacts land in
+  `<data-dir>/argus-cache/<ref>__argus_export.csv` so each refresh
+  leaves a forensic trail.
+
+  Network access is confined to this one CLI by design:
+  `install.sh` stays offline (its header invariant), the daemon
+  and the web UI don't change, and the bundled-watchlist first-run
+  import in `lynceus-setup` continues to read from the wheel. The
+  `--from-github` path uses `requests` with default `verify=True`
+  TLS and bounded timeouts (15s for the API release lookup, 30s
+  for the raw fetch). No GitHub API token is required — both
+  `/releases/latest` and `raw.githubusercontent.com` work
+  unauthenticated. `--input` remains for air-gapped operators;
+  the two flags are mutually exclusive, exactly one is required.
+
+- **`--db` now defaults to the canonical scope path** in
+  `lynceus-import-argus`. Pre-change the flag was required, so
+  every operator had to hand-roll `/var/lib/lynceus/lynceus.db`
+  (under `--system`) or `~/.local/share/lynceus/lynceus.db`
+  (under `--user`) every time. The flag now resolves to
+  `paths.default_db_path(--scope)` when omitted — same XDG-aware
+  helper the setup wizard and the daemon already consult — so the
+  common case is a no-flag invocation. New `--scope user|system`
+  picks the default scope (defaults to `user`); pass `--db`
+  explicitly to override. Existing scripts passing `--db` keep
+  working unchanged.
+
+- **Scope-aware uninstall.** `install.sh --uninstall` now accepts
+  both `--user` and `--system`, closing the gap where only
+  `--system` installs had a clean reversal path. The internal
+  `MODE` variable was split into orthogonal `ACTION` (install /
+  uninstall) and `SCOPE` (user / system), so `--uninstall --user`
+  and `--user --uninstall` are order-independent and the dispatch
+  table is `case "$ACTION:$SCOPE"`. Pre-flight is now
+  action-aware: `python3` and `python3-venv` are install-only
+  requirements (uninstall must work on a host where Python is
+  already gone), and `systemctl` is gated on `SCOPE=system` (covers
+  both install-system and uninstall-system). `--purge` now errors
+  unless `--uninstall` is also passed, making the previously-implicit
+  "purge only applies to uninstall" relationship explicit at the
+  CLI surface.
+
+  `--user --purge` semantics: deletes `~/.config/lynceus`,
+  `~/.local/share/lynceus`, and `~/.local/state/lynceus` (the
+  latter two contain `lynceus.db` and logs). Without `--purge`,
+  the venv at `~/.local/share/lynceus/.venv` is removed (the
+  install artifact) but the surrounding data dir is preserved, so
+  the operator's database survives a non-purge uninstall. If no
+  `--user` install artifact is found anywhere, the script prints
+  the checked paths and suggests `sudo install.sh --uninstall
+  --system` in case the operator picked the wrong scope, then
+  exits 0 rather than running a chain of no-op `rm`s.
+
+- **Top-level `uninstall.sh` wrapper.** Operators look for an
+  `uninstall.sh` next to `install.sh`; we now ship one. Thin shell
+  wrapper — not a Python entry point, doesn't touch
+  `pyproject.toml` or the `CONSOLE_SCRIPTS` array. Auto-detects
+  scope by venv marker (`~/.local/share/lynceus/.venv` for `--user`,
+  `/opt/lynceus/.venv` for `--system`), refuses to guess if both
+  markers exist (lists them, asks the operator to be explicit),
+  prints where it looked if neither is present, and otherwise
+  execs `install.sh --uninstall --user|--system` with `--purge`
+  and `--dry-run` passed through. Like `install.sh`, it's
+  intentionally OFFLINE — no network access of any kind.
+
 ## [0.4.0-rc2] - 2026-05-15
 
 ### Security
