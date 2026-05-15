@@ -95,12 +95,14 @@ lynceus-ui, lynceus-setup, lynceus-quickstart) all work, but service
 automation is unavailable.
 
 After --user install:
-  lynceus-setup           # configure
-  lynceus-quickstart      # dev/demo
+  lynceus-setup                                # configure
+  lynceus-quickstart                           # dev/demo
+  lynceus-import-argus --from-github           # refresh watchlist (network)
 
 After --system install:
   sudo lynceus-setup --system
   sudo systemctl enable --now lynceus.service lynceus-ui.service
+  sudo lynceus-import-argus --scope system --from-github   # refresh watchlist
 EOF
 }
 
@@ -295,6 +297,11 @@ install_user() {
     log "User install complete."
     log "Next: run 'lynceus-setup' to configure, then 'lynceus-quickstart'"
     log "for dev/demo, or enable a systemd --user unit for production."
+    log ""
+    log "Watchlist data:"
+    log "  Bundled watchlist auto-imports on first 'lynceus-setup' run."
+    log "  Refresh later: lynceus-import-argus --from-github           # network"
+    log "                 lynceus-import-argus --input <path-to-csv>   # air-gapped"
 }
 
 install_system() {
@@ -343,6 +350,11 @@ install_system() {
     log "Next:"
     log "  sudo lynceus-setup --system           # generate /etc/lynceus/lynceus.yaml"
     log "  sudo systemctl enable --now lynceus.service lynceus-ui.service"
+    log ""
+    log "Watchlist data:"
+    log "  Bundled watchlist auto-imports on first 'sudo lynceus-setup --system' run."
+    log "  Refresh later: sudo lynceus-import-argus --scope system --from-github         # network"
+    log "                 sudo lynceus-import-argus --scope system --input <path-to-csv> # air-gapped"
 }
 
 uninstall_user() {
