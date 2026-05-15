@@ -18,6 +18,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   correctly; passing `--repo OWNER/NAME` for a fork still works
   the same way.
 
+- **`lynceus-import-argus --from-github` no longer crashes when
+  the Argus repo has no published GitHub Releases.** rc4 still
+  required `/repos/{repo}/releases/latest` to return a tag, but
+  `kevwillow/argus-db` ships its CSV on every commit and does not
+  cut formal Release objects (its README is explicit that release
+  cadence is discretionary; the GitHub sidebar reads "No releases
+  published"). The API returned 404, `raise_for_status()` raised
+  `HTTPError`, and `--from-github` was unusable until Argus
+  published its first Release — wrong dependency to bake in.
+  `_resolve_ref` now treats a 404 on `/releases/latest` as "no
+  published releases" and falls back to the `main` branch, logging
+  a WARNING (`No published releases for {repo}; falling back to
+  'main'. Pin a tag with --ref for reproducibility.`) so operators
+  can see at a glance whether they got a release tag or a branch
+  HEAD. Other non-200 statuses (500, 403) still propagate — a
+  transient GitHub outage must not silently degrade to importing
+  whatever `main` happens to be. Surfaced by the rc4 live smoke
+  against the real Argus repo.
+
+- **`lynceus-import-argus --override-file` is now scope-strict and
+  no longer crashes for unprivileged `--scope user` runs on a
+  host that also carries a `--system` install.** Pre-fix, the
+  argparse default was hard-coded to
+  `/etc/lynceus/severity_overrides.yaml` regardless of `--scope`.
+  On a Linux host with the system-scope install (`/etc/lynceus`
+  is `0750 root:lynceus` by design), an unprivileged user running
+  the importer hit the system path via the default and crashed
+  with `PermissionError` inside `Path.is_file()`. The flag now
+  defaults to `None`; resolution derives from
+  `paths.default_overrides_path(--scope)` — user-scope only ever
+  probes the user-scope path, system-scope only the system path,
+  no cross-scope fallback. Explicit `--override-file <path>` is
+  used verbatim and bypasses scope-derived defaults entirely.
+  `load_override_config` also converts `PermissionError` on the
+  probe into a `RuntimeError` that names the offending path, so
+  operators see an actionable message instead of a bare traceback.
+  Surfaced by the rc4 live smoke; the bug was latent in every
+  prior `lynceus-import-argus` ship but only triggers on mixed
+  user+system installs.
+
+- **`lynceus-setup` refuses sudo-without-`--system` to prevent
+  silent scope misplacement.** Reproduced in the rc4 live smoke:
+  `sudo lynceus-setup --reconfigure` (no `--system`) silently
+  regenerated `/root/.config/lynceus/lynceus.yaml` while the
+  system daemon kept reading `/etc/lynceus/lynceus.yaml` — the
+  operator believed they had reconfigured the daemon, but the
+  daemon was still running the stale pre-reconfigure config. The
+  wizard followed its scope rules literally (`euid=0`, scope
+  defaults to user, `Path.home()` is `/root`) but the
+  operator-facing result was divergence between intent and effect.
+  The wizard now refuses early in `main()` when `euid=0` and
+  `--system` is not passed, prints both correct invocations
+  side-by-side, and exits 2. Three legitimate combinations are
+  unchanged: root + `--system` (system install), non-root + no
+  flag (user install), non-root + `--system` (still hits the
+  pre-existing "use sudo" preflight). Windows is a no-op for the
+  new check — `_euid()` returns `None`, no sudo trap to fall into.
+  After upgrading, operators who hit this bug in rc4 should re-run
+  `sudo lynceus-setup --system --reconfigure` to bring
+  `/etc/lynceus/lynceus.yaml` back into sync with their intended
+  configuration.
+
 ### Changed
 
 - **All `kevlattice/lynceus` GitHub URLs replaced with
