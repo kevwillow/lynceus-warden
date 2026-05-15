@@ -1,4 +1,4 @@
-# Lynceus
+# Lynceus - Warden
 
 Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchlist matching, alerting.
 
