@@ -1245,11 +1245,14 @@ def test_resolve_ref_queries_releases_latest_when_ref_is_none(monkeypatch):
 
 
 def test_resolve_ref_raises_when_payload_lacks_tag_name(monkeypatch):
-    """A 200 from GitHub with no tag_name (unusual, but not impossible
-    on a freshly-created repo with no releases) must surface as a
-    RuntimeError naming the repo, not a silent KeyError."""
+    """A 200 from GitHub with no tag_name must surface as a RuntimeError
+    naming the repo, not a silent KeyError. (Distinct from the 404 path
+    — GitHub returns 404 for "no releases published"; a 200 with no
+    tag_name is malformed.)"""
 
     class _FakeResp:
+        status_code = 200
+
         def raise_for_status(self):
             return None
 
@@ -1258,6 +1261,80 @@ def test_resolve_ref_raises_when_payload_lacks_tag_name(monkeypatch):
 
     monkeypatch.setattr(import_argus.requests, "get", lambda *a, **kw: _FakeResp())
     with pytest.raises(RuntimeError, match="kevwillow/argus-db"):
+        import_argus._resolve_ref("kevwillow/argus-db", None)
+
+
+def test_resolve_ref_falls_back_to_main_on_404(monkeypatch, caplog):
+    """When /releases/latest 404s (repo has no published GitHub Release
+    objects — e.g. kevwillow/argus-db ships its CSV on every commit but
+    doesn't cut formal Releases), _resolve_ref must fall back to 'main'
+    and emit a WARNING. The warning is load-bearing: it's the only
+    signal operators get that they didn't pin a tag."""
+    import requests as _requests
+
+    class _FakeResp:
+        status_code = 404
+
+        def raise_for_status(self):
+            raise _requests.HTTPError("404 Client Error: Not Found")
+
+        def json(self):
+            return {"message": "Not Found"}
+
+    monkeypatch.setattr(import_argus.requests, "get", lambda *a, **kw: _FakeResp())
+    with caplog.at_level("WARNING", logger="lynceus.cli.import_argus"):
+        ref = import_argus._resolve_ref("kevwillow/argus-db", None)
+    assert ref == "main"
+    matching = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "No published releases" in r.getMessage()
+    ]
+    assert matching, (
+        f"expected a WARNING-level log mentioning 'No published releases'; "
+        f"got {[(r.levelname, r.getMessage()) for r in caplog.records]}"
+    )
+    assert "kevwillow/argus-db" in matching[0].getMessage()
+    assert "--ref" in matching[0].getMessage()
+
+
+def test_resolve_ref_raises_on_non_404_http_error(monkeypatch):
+    """A 500 from /releases/latest must propagate — only 404 ("no
+    releases published") gets the main-fallback. A 500 is GitHub
+    saying "try later", not "no releases"; silently importing from
+    main would mask transient outages."""
+    import requests as _requests
+
+    class _FakeResp:
+        status_code = 500
+
+        def raise_for_status(self):
+            raise _requests.HTTPError("500 Server Error")
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(import_argus.requests, "get", lambda *a, **kw: _FakeResp())
+    with pytest.raises(_requests.HTTPError):
+        import_argus._resolve_ref("kevwillow/argus-db", None)
+
+
+def test_resolve_ref_raises_on_403_http_error(monkeypatch):
+    """403 (rate-limited or auth-required) must also propagate — same
+    reasoning as 500."""
+    import requests as _requests
+
+    class _FakeResp:
+        status_code = 403
+
+        def raise_for_status(self):
+            raise _requests.HTTPError("403 Forbidden")
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(import_argus.requests, "get", lambda *a, **kw: _FakeResp())
+    with pytest.raises(_requests.HTTPError):
         import_argus._resolve_ref("kevwillow/argus-db", None)
 
 
