@@ -3,9 +3,9 @@
 # install.sh — Linux installer for Lynceus.
 #
 # Modes:
-#   ./install.sh [--user]              (default when not root)
-#   sudo ./install.sh --system         (system-wide; needs systemd)
-#   sudo ./install.sh --uninstall      (reverse a system install)
+#   ./install.sh [--user]                        (default when not root)
+#   sudo ./install.sh --system                   (system-wide; needs systemd)
+#   ./install.sh --uninstall [--user|--system]   (reverse an install)
 #
 # Lynceus installs into a dedicated Python venv to comply with PEP 668
 # (the externally-managed-environment policy enforced by current
@@ -26,6 +26,9 @@ SYSTEMD_DEST_DIR="/etc/systemd/system"
 
 USER_VENV="$HOME/.local/share/lynceus/.venv"
 USER_BIN_DIR="$HOME/.local/bin"
+USER_CONFIG_DIR="$HOME/.config/lynceus"
+USER_DATA_DIR="$HOME/.local/share/lynceus"
+USER_STATE_DIR="$HOME/.local/state/lynceus"
 SYSTEM_PREFIX="/opt/lynceus"
 SYSTEM_VENV="$SYSTEM_PREFIX/.venv"
 SYSTEM_BIN_DIR="/usr/local/bin"
@@ -41,39 +44,43 @@ CONSOLE_SCRIPTS=(
     lynceus-import-argus
 )
 
-MODE=""
+ACTION=install
+SCOPE=""
 DRY_RUN=0
 PURGE=0
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--user | --system | --uninstall] [--dry-run] [--purge] [--help]
+Usage: install.sh [--user | --system] [--uninstall] [--dry-run] [--purge] [--help]
 
-Modes:
-  --user        Per-user install (default when not root). Creates a
-                dedicated venv under ~/.local/share/lynceus/.venv,
-                runs "pip install -e ." inside it, and symlinks the
-                lynceus-* console scripts into ~/.local/bin/. Also
-                creates ~/.config/lynceus, ~/.local/share/lynceus, and
-                ~/.local/state/lynceus. No systemd integration.
-  --system      System-wide install (default when run as root). Creates
-                a dedicated venv under /opt/lynceus/.venv, runs
-                "pip install -e ." inside it, symlinks the lynceus-*
-                commands into /usr/local/bin/, ensures the "lynceus"
-                system user owns /opt/lynceus, lays down /etc/lynceus,
-                /var/lib/lynceus, /var/log/lynceus, copies the systemd
-                units into /etc/systemd/system, and runs daemon-reload.
-                Does NOT auto-enable the units.
-  --uninstall   Reverse a --system install: stop/disable units, remove
-                the unit files, remove the /usr/local/bin symlinks,
-                delete /opt/lynceus/.venv, and run daemon-reload.
-                Config and data are preserved unless --purge is given.
+Actions:
+  (default)     Install Lynceus.
+  --uninstall   Reverse an install. Combine with --user or --system to
+                pick the scope; defaults to --user when not root,
+                --system when root (same euid rule as install).
+
+Scopes (apply to BOTH install and uninstall):
+  --user        Per-user scope. Venv at ~/.local/share/lynceus/.venv,
+                symlinks in ~/.local/bin/. XDG dirs:
+                ~/.config/lynceus, ~/.local/share/lynceus,
+                ~/.local/state/lynceus. No systemd integration; no
+                root required.
+  --system      System-wide scope. Venv at /opt/lynceus/.venv,
+                symlinks in /usr/local/bin/. Creates the lynceus
+                system user, lays down /etc/lynceus, /var/lib/lynceus,
+                /var/log/lynceus, copies the systemd units into
+                /etc/systemd/system, and runs daemon-reload. Does NOT
+                auto-enable the units. Requires systemd.
 
 Options:
-  --dry-run     Print every command that would have run, without running it.
-                --system / --uninstall in dry-run do NOT require root, so
-                operators can preview the install plan from a normal shell.
-  --purge       With --uninstall, also delete /etc/lynceus and /var/lib/lynceus.
+  --dry-run     Print every command that would have run, without
+                running it. --system in dry-run does NOT require root,
+                so operators can preview the plan from a normal shell.
+  --purge       Only valid with --uninstall. With --user, also deletes
+                ~/.config/lynceus, ~/.local/share/lynceus, and
+                ~/.local/state/lynceus (the latter two contain
+                lynceus.db and logs). With --system, also deletes
+                /etc/lynceus and /var/lib/lynceus.
   --help, -h    Show this help and exit.
 
 Lynceus uses a dedicated Python venv to comply with PEP 668 (the
@@ -115,22 +122,19 @@ run() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --user)
-            if [[ -n "$MODE" && "$MODE" != "user" ]]; then
-                err "Cannot combine --$MODE and --user."; exit 2
+            if [[ -n "$SCOPE" && "$SCOPE" != "user" ]]; then
+                err "Cannot combine --$SCOPE and --user."; exit 2
             fi
-            MODE=user
+            SCOPE=user
             ;;
         --system)
-            if [[ -n "$MODE" && "$MODE" != "system" ]]; then
-                err "Cannot combine --$MODE and --system."; exit 2
+            if [[ -n "$SCOPE" && "$SCOPE" != "system" ]]; then
+                err "Cannot combine --$SCOPE and --system."; exit 2
             fi
-            MODE=system
+            SCOPE=system
             ;;
         --uninstall)
-            if [[ -n "$MODE" && "$MODE" != "uninstall" ]]; then
-                err "Cannot combine --$MODE and --uninstall."; exit 2
-            fi
-            MODE=uninstall
+            ACTION=uninstall
             ;;
         --purge)   PURGE=1 ;;
         --dry-run) DRY_RUN=1 ;;
@@ -145,6 +149,12 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+# --purge only makes sense with --uninstall.
+if [[ "$PURGE" -eq 1 && "$ACTION" != "uninstall" ]]; then
+    err "--purge is only valid together with --uninstall."
+    exit 2
+fi
+
 # --- platform check (must happen before anything platform-specific) --------
 
 UNAME_S="$(uname -s 2>/dev/null || echo unknown)"
@@ -153,13 +163,13 @@ if [[ "$UNAME_S" != "Linux" ]]; then
     exit 1
 fi
 
-# --- default mode ----------------------------------------------------------
+# --- default scope ---------------------------------------------------------
 
-if [[ -z "$MODE" ]]; then
+if [[ -z "$SCOPE" ]]; then
     if [[ "$(id -u)" -eq 0 ]]; then
-        MODE=system
+        SCOPE=system
     else
-        MODE=user
+        SCOPE=user
     fi
 fi
 
@@ -191,17 +201,23 @@ require_venv_module() {
 
 require_systemctl() {
     if ! command -v systemctl >/dev/null 2>&1; then
-        err "systemctl not found. --system / --uninstall require systemd."
+        err "systemctl not found. --system requires systemd."
         exit 1
     fi
 }
 
 preflight() {
-    require_python
-    if [[ "$MODE" == "user" || "$MODE" == "system" ]]; then
+    # python3 + python3-venv are install-only requirements. Uninstall
+    # must work on a box where Python has already been removed —
+    # operators tearing down a host should not be blocked by a missing
+    # interpreter.
+    if [[ "$ACTION" == "install" ]]; then
+        require_python
         require_venv_module
     fi
-    if [[ "$MODE" == "system" || "$MODE" == "uninstall" ]]; then
+    # systemctl is needed for both install-system (to copy + reload
+    # units) and uninstall-system (to stop/disable + reload).
+    if [[ "$SCOPE" == "system" ]]; then
         require_systemctl
     fi
 }
@@ -263,17 +279,13 @@ note_path_if_missing() {
 install_user() {
     log "Installing Lynceus (--user) from $SCRIPT_DIR"
 
-    local cfg_dir="$HOME/.config/lynceus"
-    local data_dir="$HOME/.local/share/lynceus"
-    local log_dir="$HOME/.local/state/lynceus"
-
-    if [[ -d "$cfg_dir" || -d "$data_dir" || -d "$USER_VENV" ]]; then
+    if [[ -d "$USER_CONFIG_DIR" || -d "$USER_DATA_DIR" || -d "$USER_VENV" ]]; then
         log "Already installed; updating."
     else
         log "Installing fresh."
     fi
 
-    run mkdir -p "$cfg_dir" "$data_dir" "$log_dir"
+    run mkdir -p "$USER_CONFIG_DIR" "$USER_DATA_DIR" "$USER_STATE_DIR"
 
     create_or_update_venv "$USER_VENV"
     create_symlinks "$USER_VENV" "$USER_BIN_DIR"
@@ -333,9 +345,54 @@ install_system() {
     log "  sudo systemctl enable --now lynceus.service lynceus-ui.service"
 }
 
+uninstall_user() {
+    log "Uninstalling Lynceus (--user)"
+
+    # If nothing's there at all, tell the operator clearly and exit 0
+    # rather than silently doing a bunch of no-op rms. Most likely the
+    # operator picked the wrong scope.
+    if [[ ! -d "$USER_VENV" && ! -d "$USER_CONFIG_DIR" && ! -d "$USER_DATA_DIR" \
+          && ! -d "$USER_STATE_DIR" && ! -L "$USER_BIN_DIR/lynceus" ]]; then
+        log "No --user install found. Checked:"
+        log "  $USER_VENV"
+        log "  $USER_CONFIG_DIR"
+        log "  $USER_DATA_DIR"
+        log "  $USER_STATE_DIR"
+        log "  $USER_BIN_DIR/lynceus (symlink)"
+        log ""
+        log "If you installed system-wide, try: sudo $0 --uninstall --system"
+        return 0
+    fi
+
+    remove_symlinks "$USER_BIN_DIR"
+
+    # USER_VENV sits inside USER_DATA_DIR. We delete it explicitly here
+    # so non-purge runs still drop the install artifact (the venv) while
+    # preserving the operator's lynceus.db, which also lives under
+    # USER_DATA_DIR.
+    if [[ -d "$USER_VENV" ]]; then
+        log "Removing venv at $USER_VENV"
+        run rm -rf "$USER_VENV"
+    fi
+
+    if [[ "$PURGE" -eq 1 ]]; then
+        log "Purging $USER_CONFIG_DIR, $USER_DATA_DIR, $USER_STATE_DIR."
+        run rm -rf "$USER_CONFIG_DIR" "$USER_DATA_DIR" "$USER_STATE_DIR"
+    else
+        log "Preserving:"
+        log "  $USER_CONFIG_DIR  (config)"
+        log "  $USER_DATA_DIR    (contains lynceus.db)"
+        log "  $USER_STATE_DIR   (logs / runtime state)"
+        log "Pass --purge to remove them."
+    fi
+
+    log ""
+    log "User uninstall complete."
+}
+
 uninstall_system() {
     if [[ "$DRY_RUN" -eq 0 && "$(id -u)" -ne 0 ]]; then
-        err "Use sudo for --uninstall."
+        err "Use sudo for --uninstall --system."
         exit 1
     fi
 
@@ -377,12 +434,13 @@ uninstall_system() {
 
 preflight
 
-case "$MODE" in
-    user)      install_user ;;
-    system)    install_system ;;
-    uninstall) uninstall_system ;;
+case "$ACTION:$SCOPE" in
+    install:user)     install_user ;;
+    install:system)   install_system ;;
+    uninstall:user)   uninstall_user ;;
+    uninstall:system) uninstall_system ;;
     *)
-        err "Internal error: unknown mode '$MODE'"
+        err "Internal error: unknown ACTION:SCOPE '$ACTION:$SCOPE'"
         exit 2
         ;;
 esac

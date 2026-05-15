@@ -35,7 +35,7 @@ The threat model is simple: detect surveillance-relevant devices in the operator
 - **Tier 1 enrichment.** Probe SSID capture (opt-in, off by default), BLE friendly-name capture (on by default — BLE names are publicly broadcast), and an expanded BLE service UUID enrichment dictionary.
 - **Ergonomic CLI tooling.** `lynceus-quickstart` (foreground daemon + UI + browser launch for dev/demo), `lynceus-setup` (interactive wizard with Kismet/ntfy probes and optional Argus import).
 - **Read-only `/settings` page.** Surfaces current capture state with prominent privacy treatment (recording warning when probe-SSID capture is on, privacy-mode indicator when off), Kismet/ntfy connection status, watchlist origin breakdown (Argus / YAML / bundled), and system info (version, DB path, log path). Sensitive values (Kismet API token, ntfy topic) are redacted server-side. **No mutation endpoints.**
-- **Release packaging.** `install.sh` (Linux only; `--user` / `--system` / `--uninstall` / `--purge` / `--dry-run`), hardened systemd units (`lynceus.service`, `lynceus-ui.service`) with `NoNewPrivileges`, `ProtectSystem=strict`, restricted namespaces, and friends. Canonical XDG-aware DB-path conventions across the codebase.
+- **Release packaging.** `install.sh` and a thin `uninstall.sh` wrapper (Linux only; `--user` / `--system` / `--uninstall` / `--purge` / `--dry-run`), hardened systemd units (`lynceus.service`, `lynceus-ui.service`) with `NoNewPrivileges`, `ProtectSystem=strict`, restricted namespaces, and friends. Canonical XDG-aware DB-path conventions across the codebase.
 - **Bundled threat data.** A curated default watchlist (~63 records) ships in the wheel as package data and is auto-imported on first `lynceus-setup` run.
 
 ## Installation
@@ -61,6 +61,17 @@ sudo ./install.sh --system
 The system mode also creates a `lynceus` system user (which owns `/opt/lynceus`), lays down `/etc/lynceus`, `/var/lib/lynceus`, and `/var/log/lynceus`, copies the systemd units into `/etc/systemd/system`, and runs `daemon-reload`. The units are not auto-enabled — that's an explicit step after `lynceus-setup --system`.
 
 Run `./install.sh --help` for the full flag list (`--user`, `--system`, `--uninstall`, `--purge`, `--dry-run`). `--dry-run` works without root and prints the planned commands so operators can preview the install before committing to it.
+
+To reverse an install, pass the matching scope to `--uninstall`:
+
+```sh
+./install.sh --uninstall --user             # reverse a --user install
+sudo ./install.sh --uninstall --system      # reverse a --system install
+```
+
+`--purge` extends `--uninstall` to also delete config / data / state. With `--user` that's `~/.config/lynceus`, `~/.local/share/lynceus`, and `~/.local/state/lynceus` (the latter two contain `lynceus.db` and logs). With `--system` that's `/etc/lynceus` and `/var/lib/lynceus`. Without `--purge`, the install artifacts (venv, symlinks, systemd units) are removed and operator data is preserved.
+
+For convenience, `./uninstall.sh` is a thin wrapper that auto-detects the install scope by looking for the venv marker (`~/.local/share/lynceus/.venv` for `--user`, `/opt/lynceus/.venv` for `--system`) and execs `install.sh --uninstall` with the right flag. Pass `--user` / `--system` explicitly if both are present, or to override the auto-detection. `--purge` and `--dry-run` pass through.
 
 **Do NOT pipe `install.sh` through `curl | bash`.** Lynceus is a security tool. An install method that doesn't let you read the script before running it directly contradicts the project's threat model. If you want a one-liner, write your own — none is shipped.
 
