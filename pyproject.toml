@@ -64,9 +64,9 @@ lynceus-quickstart = "lynceus.cli.quickstart:main"
 lynceus-setup = "lynceus.cli.setup:main"
 
 [project.urls]
-Homepage = "https://github.com/kevlattice/lynceus"
-Repository = "https://github.com/kevlattice/lynceus"
-Issues = "https://github.com/kevlattice/lynceus/issues"
+Homepage = "https://github.com/kevwillow/lynceus-warden"
+Repository = "https://github.com/kevwillow/lynceus-warden"
+Issues = "https://github.com/kevwillow/lynceus-warden/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
