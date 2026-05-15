@@ -21,7 +21,9 @@ Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchli
 
 **Personal-use RF security monitoring tool. v0.4.0-rc4.**
 
-This is not a hardened public product. It is a personal project, feature-complete for v0.4, with hardware shakedown still in progress. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
+This is not a hardened public product. It is a personal project, feature-complete for v0.4, with hardware shakedown still in progress on Kali. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
+
+Test count: **1215 passing** at v0.4.0-rc4, up from 888 at v0.3.0-rc1.
 
 ## What Lynceus does
 
@@ -190,9 +192,7 @@ Two-process production deployment, single SQLite database between them.
 - **Web UI** (`lynceus-ui`) — FastAPI + Jinja2 templates, read-only. Served by uvicorn.
 - **Notifier** — ntfy push for matched alerts. Null/recording backends exist for testing.
 
-## Project status
-
-v0.4.0-rc4. Feature-complete for the v0.4 series; hardware shakedown in progress on Kali. Test count: **1215 passing** at v0.4.0-rc4, up from 888 at v0.3.0-rc1.
+## License & credits
 
 License: MIT. See [LICENSE](LICENSE).
 
