@@ -837,6 +837,171 @@ def test_main_system_without_root_refuses(monkeypatch, tmp_path, capsys):
     assert "sudo" in err or "Administrator" in err
 
 
+# ---- sudo-without-system refusal -----------------------------------------
+#
+# rc4 live smoke: `sudo lynceus-setup --reconfigure` (no --system)
+# silently regenerated /root/.config/lynceus/lynceus.yaml while the
+# system daemon was reading from /etc/lynceus/lynceus.yaml. The wizard
+# followed its scope rules literally (euid=0, scope=user, Path.home() is
+# /root) but the operator-facing result was a stale /etc/ config
+# diverging from "what I just configured". The invariant going forward:
+# the wizard NEVER silently switches scopes — a misplaced config is
+# worse than a refusal.
+
+
+def test_main_sudo_without_system_refuses_with_actionable_message(
+    monkeypatch, tmp_path, capsys
+):
+    """The exact rc4 footgun: euid=0, --system not passed, --reconfigure
+    set. The wizard must refuse (rc=2), name the misplacement path that
+    would have been written, and show both correct invocations
+    side-by-side. No prompts, no file writes."""
+    target = tmp_path / "lynceus.yaml"
+    write_calls: list[Path] = []
+
+    def _explode_resolve(scope, output):
+        # If the early refusal fires, resolve_config_path must NOT be
+        # called — we should bail before any path resolution. Calling
+        # it would mean main() proceeded past the check.
+        raise AssertionError(
+            f"resolve_config_path must not be called when sudo-without-system "
+            f"refusal fires (scope={scope!r})"
+        )
+
+    monkeypatch.setattr(wiz, "resolve_config_path", _explode_resolve)
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)
+
+    # If we somehow leak past the check, _atomic_write would be the next
+    # observable side effect; trip it loudly.
+    def _explode_write(path, content, *, mode=0o600):
+        write_calls.append(path)
+        raise AssertionError(f"_atomic_write must not be called; got path={path!r}")
+
+    monkeypatch.setattr(wiz, "_atomic_write", _explode_write)
+
+    rc = wiz.main(["--reconfigure"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    # Operator-facing message must name *why* and show *what to do*.
+    assert "Refusing to run as root without --system" in err
+    assert "/root/.config/lynceus/lynceus.yaml" in err
+    assert "sudo lynceus-setup --system" in err
+    assert "lynceus-setup" in err  # the non-sudo invocation
+    # No config written.
+    assert not target.exists()
+    assert write_calls == []
+
+
+def test_main_sudo_without_system_refuses_even_with_explicit_user_flag(
+    monkeypatch, capsys
+):
+    """`sudo lynceus-setup --user` is the same trap as `sudo lynceus-setup`
+    — args.system is still False, scope still resolves to user, the
+    write still lands in /root/.config. The refusal must fire regardless
+    of whether --user is passed explicitly."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)
+
+    def _explode_resolve(scope, output):
+        raise AssertionError("resolve_config_path called despite sudo-without-system refusal")
+
+    monkeypatch.setattr(wiz, "resolve_config_path", _explode_resolve)
+
+    rc = wiz.main(["--user", "--reconfigure"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Refusing to run as root without --system" in err
+
+
+def test_main_sudo_with_system_does_not_trigger_refusal(monkeypatch, capsys):
+    """euid=0 AND --system is the legitimate system install. The new
+    refusal must NOT fire — main() must reach run_wizard. We stub
+    run_wizard with a sentinel so we don't have to drive the full
+    interactive flow."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)
+
+    sentinel = {"called": False, "args": None}
+
+    def _fake_run_wizard(args, **kwargs):
+        sentinel["called"] = True
+        sentinel["args"] = args
+        return 0
+
+    monkeypatch.setattr(wiz, "run_wizard", _fake_run_wizard)
+
+    rc = wiz.main(["--system"])
+    assert rc == 0
+    assert sentinel["called"] is True
+    assert sentinel["args"].system is True
+    # The sudo-without-system message must NOT have been emitted.
+    err = capsys.readouterr().err
+    assert "Refusing to run as root without --system" not in err
+
+
+def test_main_non_root_user_scope_does_not_trigger_refusal(monkeypatch, capsys):
+    """The common case: non-root operator, default --user scope. The new
+    refusal must NOT fire and main() must dispatch to run_wizard."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 1000)
+
+    sentinel = {"called": False}
+
+    def _fake_run_wizard(args, **kwargs):
+        sentinel["called"] = True
+        return 0
+
+    monkeypatch.setattr(wiz, "run_wizard", _fake_run_wizard)
+
+    rc = wiz.main([])
+    assert rc == 0
+    assert sentinel["called"] is True
+    err = capsys.readouterr().err
+    assert "Refusing to run as root without --system" not in err
+
+
+def test_main_non_root_system_scope_unchanged_existing_refusal(monkeypatch, capsys):
+    """Sanity-check the inverse pre-existing path: non-root + --system
+    still falls into the pre-existing preflight_scope refusal, NOT the
+    new sudo-without-system refusal. The two error messages must not
+    blur together."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 1000)
+    monkeypatch.setattr(
+        wiz, "resolve_config_path", lambda scope, output: Path("/tmp/never-written.yaml")
+    )
+
+    rc = wiz.main(["--system"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    # Existing preflight_scope message — NOT the new sudo-without-system one.
+    assert "Refusing to run as root without --system" not in err
+    assert "sudo" in err or "Administrator" in err
+
+
+def test_main_sudo_without_system_no_op_on_windows(monkeypatch, capsys):
+    """Windows has no sudo trap to fall into — _euid() returns None, so
+    the new check must be a no-op. main() must dispatch to run_wizard
+    just like the non-root posix case."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    monkeypatch.setattr(wiz, "_euid", lambda: None)
+
+    sentinel = {"called": False}
+
+    def _fake_run_wizard(args, **kwargs):
+        sentinel["called"] = True
+        return 0
+
+    monkeypatch.setattr(wiz, "run_wizard", _fake_run_wizard)
+
+    rc = wiz.main([])
+    assert rc == 0
+    assert sentinel["called"] is True
+    err = capsys.readouterr().err
+    assert "Refusing to run as root without --system" not in err
+
+
 def test_main_returns_zero_on_full_skip_probes_run(monkeypatch, tmp_path):
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
