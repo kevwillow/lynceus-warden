@@ -4,7 +4,7 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.4.0] - Unreleased
+## [0.4.0-rc2] - 2026-05-15
 
 ### Security
 
@@ -157,6 +157,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unknown-type bucket.
 
 ### Fixed
+
+- **`cli.import_argus._parse_date` now tolerates four timestamp shapes
+  in the Argus CSV's `first_seen` / `last_verified` columns** (F6).
+  Pre-fix, the parser only accepted the space-separated
+  `"%Y-%m-%d %H:%M:%S"` shape — but on 2026-05-14 Argus codified its
+  canonical emission (CP22) as ISO-8601 UTC with `Z` suffix at seconds
+  precision (e.g. `"2026-05-14T06:13:42Z"`), and the older write-paths
+  that fed the dataset had historically emitted at least four distinct
+  shapes anyway. The strict parser rejected every Z-form value with
+  `ValueError`, surfacing in the per-row `errors` bucket and silently
+  dropping the matching watchlist rows. Smoke against the live
+  `argus_export.csv` (22,532 rows) showed **50 imported / 53 errors**
+  pre-fix, every error of the form
+  `time data '...Z' does not match format '%Y-%m-%d %H:%M:%S'`. Post-fix,
+  the same dry-run reports **103 imported / 0 errors** with the
+  expected reconciliation (103 + 17,794 `mac_range` + 4,635
+  `unknown_type` = 22,532); the 50→103 delta is rows that previously
+  failed on a Z-form `last_verified` value mid-row, now parsed cleanly.
+  `_parse_date` accepts: canonical Z form (`"2026-05-14T06:13:42Z"`),
+  ISO with explicit UTC offset (`"2026-05-14T06:13:42.204792+00:00"`,
+  the pre-CP22 dominant shape), space-separated treated as UTC
+  (`"2026-05-06 00:30:28"`, backward compat with archived exports), and
+  date-only midnight UTC (`"2026-05-10"`, preserves the only signal a
+  date-only row carries). Non-zero offsets are coerced to UTC via
+  `astimezone`. Unparseable shapes still raise `ValueError` so a future
+  fifth shape surfaces immediately in the existing row-error path
+  rather than landing silently. Defense in depth with the Argus-side
+  `_normalize_datetime` (which canonicalizes at emission): either side
+  could have fixed it alone, both is more robust against archived
+  pre-CP22 exports an operator may replay. Five new format-tolerance
+  unit tests cover each shape end-to-end through `import_csv`, and one
+  opportunistic cross-repo integration smoke
+  (`test_cross_repo_live_argus_csv_imports_without_errors`) imports a
+  real `argus_export.csv` and asserts zero row errors plus full
+  reconciliation — skips when the sibling Argus checkout is absent
+  (CI, fresh clone), runs locally when both repos coexist.
 
 - **Migration 007 (`evidence_snapshots`) now uses `IF NOT EXISTS`
   guards on its three CREATE statements** (one table, two indexes).
