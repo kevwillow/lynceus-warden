@@ -71,9 +71,9 @@ DEFAULT_OVERRIDE_PATH = "/etc/lynceus/severity_overrides.yaml"
 DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD = 70
 
 # GitHub-fetch defaults for `--from-github`. Argus publishes its
-# canonical CSV at exports/argus_export.csv on the kevlattice/argus
+# canonical CSV at exports/argus_export.csv on the kevwillow/argus-db
 # repository; the path is fixed by the Argus side of the contract.
-DEFAULT_GITHUB_REPO = "kevlattice/argus"
+DEFAULT_GITHUB_REPO = "kevwillow/argus-db"
 ARGUS_EXPORT_PATH_IN_REPO = "exports/argus_export.csv"
 GITHUB_API_TIMEOUT_SECONDS = 15
 GITHUB_RAW_TIMEOUT_SECONDS = 30

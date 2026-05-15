@@ -113,7 +113,7 @@ To check current configuration without editing files, navigate to `/settings` in
 
 Lynceus ships a default watchlist as package data inside the wheel: `src/lynceus/data/default_watchlist.csv`.
 
-- **Source.** Snapshot from [Argus](https://github.com/kevlattice/argus), the companion RF-signature project. Lynceus is **not** redistributing the full Argus corpus — what's bundled is a point-in-time snapshot.
+- **Source.** Snapshot from [Argus](https://github.com/kevwillow/argus-db), the companion RF-signature project. Lynceus is **not** redistributing the full Argus corpus — what's bundled is a point-in-time snapshot.
 - **Coverage.** ~63 records (exported around 2026-05-07) across `mac`, `oui`, and `mac_range` identifier types. Categories include `drone`, `alpr`, `gunshot_detect`, `hacking_tool`, and `unknown`.
 - **First-run.** `lynceus-setup` auto-imports the bundled CSV on first run, so a fresh install has a working watchlist out of the box.
 - **Refresh.** When a newer Argus export is available, refresh in place. The single-command path pulls the latest tagged release straight from GitHub:
@@ -122,7 +122,7 @@ Lynceus ships a default watchlist as package data inside the wheel: `src/lynceus
   lynceus-import-argus --from-github
   ```
 
-  This fetches `exports/argus_export.csv` from the latest release of [`kevlattice/argus`](https://github.com/kevlattice/argus) and runs the existing import. The pulled artifact is preserved at `<data-dir>/argus-cache/<ref>__argus_export.csv` so each refresh leaves an audit trail. `--db` defaults to the canonical path for the active scope (`~/.local/share/lynceus/lynceus.db` for `--scope user`, `/var/lib/lynceus/lynceus.db` for `--scope system`); pass `--db` to override. Pin a specific ref with `--ref v1.2.3` (tag, branch, or commit), and override the source repo with `--repo OWNER/NAME` if you maintain a fork.
+  This fetches `exports/argus_export.csv` from the latest release of [`kevwillow/argus-db`](https://github.com/kevwillow/argus-db) and runs the existing import. The pulled artifact is preserved at `<data-dir>/argus-cache/<ref>__argus_export.csv` so each refresh leaves an audit trail. `--db` defaults to the canonical path for the active scope (`~/.local/share/lynceus/lynceus.db` for `--scope user`, `/var/lib/lynceus/lynceus.db` for `--scope system`); pass `--db` to override. Pin a specific ref with `--ref v1.2.3` (tag, branch, or commit), and override the source repo with `--repo OWNER/NAME` if you maintain a fork.
 
   Air-gapped operators still pass a local file:
 
@@ -152,7 +152,7 @@ Both units are hardened (`NoNewPrivileges=yes`, `ProtectSystem=strict`, restrict
 | `lynceus-quickstart` | Foreground dev/demo launcher (daemon + UI + browser). |
 | `lynceus-setup` | Interactive configuration wizard. |
 | `lynceus-seed-watchlist` | Add watchlist entries from a YAML file. |
-| `lynceus-import-argus` | Import an Argus CSV export. `--from-github` pulls the latest release from `kevlattice/argus`; `--input <path>` reads a local file. `--db` defaults to the canonical scope path. |
+| `lynceus-import-argus` | Import an Argus CSV export. `--from-github` pulls the latest release from `kevwillow/argus-db`; `--input <path>` reads a local file. `--db` defaults to the canonical scope path. |
 
 For at-a-glance configuration and connectivity verification while running, navigate to `/settings` in the web UI. It surfaces capture state, Kismet/ntfy reachability, watchlist origin breakdown, and system info — read-only.
 

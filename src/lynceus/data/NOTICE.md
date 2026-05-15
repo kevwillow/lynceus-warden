@@ -1,7 +1,7 @@
 # Bundled threat-data notice
 
 `default_watchlist.csv` in this directory is a snapshot exported from
-[Argus](https://github.com/kevlattice/argus), a sibling project that curates
+[Argus](https://github.com/kevwillow/argus-db), a sibling project that curates
 identifiers (OUIs, MAC ranges, individual MACs) associated with surveillance
 and tracking equipment.
 

@@ -1212,8 +1212,8 @@ def test_resolve_ref_returns_explicit_ref_without_api_call(monkeypatch):
         raise AssertionError(f"requests.get must not be called, got {args!r}")
 
     monkeypatch.setattr(import_argus.requests, "get", _no_network_get)
-    assert import_argus._resolve_ref("kevlattice/argus", "v1.2.3") == "v1.2.3"
-    assert import_argus._resolve_ref("kevlattice/argus", "main") == "main"
+    assert import_argus._resolve_ref("kevwillow/argus-db", "v1.2.3") == "v1.2.3"
+    assert import_argus._resolve_ref("kevwillow/argus-db", "main") == "main"
 
 
 def test_resolve_ref_queries_releases_latest_when_ref_is_none(monkeypatch):
@@ -1236,9 +1236,9 @@ def test_resolve_ref_queries_releases_latest_when_ref_is_none(monkeypatch):
         return _FakeResp()
 
     monkeypatch.setattr(import_argus.requests, "get", _fake_get)
-    tag = import_argus._resolve_ref("kevlattice/argus", None)
+    tag = import_argus._resolve_ref("kevwillow/argus-db", None)
     assert tag == "v0.9.7"
-    assert captured["url"] == "https://api.github.com/repos/kevlattice/argus/releases/latest"
+    assert captured["url"] == "https://api.github.com/repos/kevwillow/argus-db/releases/latest"
     # Sanity: timeout must be set so a hung GitHub request can't wedge
     # the CLI indefinitely.
     assert captured["timeout"] is not None and captured["timeout"] > 0
@@ -1257,8 +1257,8 @@ def test_resolve_ref_raises_when_payload_lacks_tag_name(monkeypatch):
             return {"name": "no-tag-here"}
 
     monkeypatch.setattr(import_argus.requests, "get", lambda *a, **kw: _FakeResp())
-    with pytest.raises(RuntimeError, match="kevlattice/argus"):
-        import_argus._resolve_ref("kevlattice/argus", None)
+    with pytest.raises(RuntimeError, match="kevwillow/argus-db"):
+        import_argus._resolve_ref("kevwillow/argus-db", None)
 
 
 def test_fetch_argus_export_writes_cache_file_with_resolved_ref(tmp_path, monkeypatch):
@@ -1283,13 +1283,13 @@ def test_fetch_argus_export_writes_cache_file_with_resolved_ref(tmp_path, monkey
 
     monkeypatch.setattr(import_argus.requests, "get", _fake_get)
     cache = tmp_path / "argus-cache"
-    out = import_argus.fetch_argus_export("kevlattice/argus", "v1.2.3", cache)
+    out = import_argus.fetch_argus_export("kevwillow/argus-db", "v1.2.3", cache)
     assert out == cache / "v1.2.3__argus_export.csv"
     assert out.read_bytes() == payload
     # raw.githubusercontent.com URL with the resolved ref + the
     # repo-internal export path.
     assert captured["url"] == (
-        "https://raw.githubusercontent.com/kevlattice/argus/v1.2.3/"
+        "https://raw.githubusercontent.com/kevwillow/argus-db/v1.2.3/"
         "exports/argus_export.csv"
     )
     assert captured["timeout"] is not None and captured["timeout"] > 0
@@ -1307,7 +1307,7 @@ def test_fetch_argus_export_sanitizes_slash_in_ref(tmp_path, monkeypatch):
 
     monkeypatch.setattr(import_argus.requests, "get", lambda *a, **kw: _FakeResp())
     cache = tmp_path / "argus-cache"
-    out = import_argus.fetch_argus_export("kevlattice/argus", "release/v1.2", cache)
+    out = import_argus.fetch_argus_export("kevwillow/argus-db", "release/v1.2", cache)
     # Filename has the slash collapsed; no surprise subdirectory created.
     assert out.parent == cache
     assert "release_v1.2" in out.name
