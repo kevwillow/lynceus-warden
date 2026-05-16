@@ -157,6 +157,114 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   prior bullet (migration 011, `parse_mac_range_pattern`); the
   full arc reads in order down the page.
 
+- **Watchlist delegation extension — `watchlist_mac`,
+  `watchlist_oui`, `watchlist_ssid`, and `ble_uuid` now accept the
+  empty-patterns-delegates-to-DB semantic.** Closes the broader
+  DB-delegation gap that the Part 2 bullet above flagged as a
+  natural follow-up. Before this change, only `watchlist_mac_range`
+  fired alerts via DB delegation; the 63 rows shipped via the
+  bundled `default_watchlist.csv` plus every Argus-imported
+  mac/oui/ssid/ble_uuid row remained inert unless operators
+  manually duplicated their patterns into `rules.yaml`. After this
+  change, a single empty-patterns rule per type enables alert-firing
+  for every matching DB row of that type — same one-line idiom that
+  Part 2 established for `watchlist_mac_range`.
+
+  Three changes land together:
+
+  - **`db.resolve_matched_{mac,oui,ssid,ble_uuid}_for_eval`** —
+    four new matchers returning a `ResolvedWatchlistMatch`
+    (`watchlist_id`, `severity`) or `None`. The four delegate to a
+    single `_lookup_simple_watchlist_match(pattern_type, pattern)`
+    helper that also backs `resolve_matched_watchlist_id` (the
+    annotation path used by `matched_watchlist_id` stamping), so
+    the eval path and the annotation path can never drift on what
+    counts as a match. The oui matcher takes a full MAC and slices
+    the first 8 chars internally (mirror of the annotation path's
+    `mac[:8]` derivation); the ble_uuid matcher takes the obs's
+    UUID list and returns the first watchlisted UUID, mirroring
+    the existing in-memory ble_uuid eval branch's first-match
+    behavior.
+
+  - **`rules.evaluate` gains delegation paths** for the four
+    rule types. Each existing in-memory branch wraps in
+    `if rule.patterns:` (preserved verbatim) and adds an `else:`
+    delegation branch consulting the corresponding DB matcher.
+    Severity sourced from the matched DB row in the delegation
+    case, from `rule.severity` in the in-memory case (Part 2's
+    severity-from-row pattern, now established as the convention
+    for every DB-delegated path). Rules with non-empty patterns
+    see byte-identical behavior — the in-memory branch's code is
+    untouched, just indented one level under the new `if`.
+
+  - **Validator restructured** — `Rule._validate_rule` no longer
+    relies on a generic `startswith("watchlist_")` branch to
+    require non-empty patterns. Each rule type's empty/non-empty
+    admission is now spelled out explicitly: `watchlist_mac_range`
+    REQUIRES empty (Part 2 carve-out unchanged),
+    `new_non_randomized_device` REQUIRES empty (existing carve-out
+    unchanged), and the four delegation-capable types accept BOTH
+    shapes. Spelling each policy out individually means a future
+    hypothetical `watchlist_X` lands in an explicit branch rather
+    than silently inheriting whichever default is most recent.
+
+  **Backward compatibility — non-negotiable, verified end-to-end.**
+  Operators running pre-existing deployments with non-empty
+  `watchlist_mac` / `watchlist_oui` / `watchlist_ssid` / `ble_uuid`
+  rules see ZERO behavioral change. Verified by per-type "in-memory
+  path severity from rule unchanged" regression tests in
+  `test_rules.py` and by every existing test in `test_rules.py`
+  (33 prior callsites) and `test_alert_linkage.py` continuing to
+  pass without modification. The validator change relaxes empty
+  patterns from "rejected" to "accepted as delegation idiom" for
+  the four affected types, so two pre-existing tests that asserted
+  the old "empty rejected" behavior were updated to assert the new
+  semantic — this is the only test modification in scope, and it's
+  on the precise behavior this rc deliberately changes.
+
+  **Operator UX — alert volume after enabling.** All four entries
+  ship commented-out in `config/rules.yaml`; default is OFF.
+  Uncommenting an entry enables alert-firing for every matching
+  watchlist row of that type. The matched DB row's severity flows
+  into the alert directly (NOT `rule.severity`, which is ignored
+  for the delegation case — the rules.yaml comment is explicit).
+  Per-row severity is populated by `lynceus-import-argus` from
+  `device_category` via `DEFAULT_CATEGORY_SEVERITIES` in
+  `import_argus.py:62-72`:
+
+  - `imsi_catcher` → `high`
+  - `alpr` → `high`
+  - `hacking_tool` → `high`
+  - `body_cam` → `med`
+  - `drone` → `med`
+  - `gunshot_detect` → `med`
+  - `in_vehicle_router` → `med`
+  - `unknown` → `low`
+  - any category not listed → `low`
+
+  The 63 bundled rows in `default_watchlist.csv` are populated
+  per the same map. Operators planning to enable a delegation
+  entry should `lynceus-list-watchlist --pattern-type mac` (and
+  the other three types) first to see the `severity` distribution
+  of what's actually in their DB; the alert volume after enabling
+  scales with the count of matching observations and the imported
+  per-category severity. If a category's default severity is
+  wrong for an operator's environment, tune via
+  `--override-file severity_overrides.yaml` at import time
+  (the existing OverrideConfig path) before enabling the
+  delegation entry. Runtime `severity_overrides.yaml` consumption
+  (the half-wired feature noted in the Part 2 archaeology) is
+  still in backlog — operators wanting per-category severity
+  tuning today still do it via the import-time OverrideConfig,
+  not at evaluate time.
+
+  Cross-references Part 2's bullet above as the architectural
+  precedent (`watchlist_mac_range` was the first DB-delegated rule
+  type; this bullet completes the broader story by extending the
+  same pattern to the other four). Part 2 introduced the
+  empty-patterns idiom and the severity-from-row divergence; this
+  bullet generalizes both as the convention.
+
 ### Fixed
 
 - **`lynceus-import-argus --from-github` default `--repo` was
