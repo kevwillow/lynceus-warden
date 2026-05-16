@@ -65,6 +65,98 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   state is intentional and keeps the diff bisect-clean: the schema
   + import path land first, the runtime match wires up second.
 
+- **`watchlist_mac_range` rule type — first DB-delegated rule in
+  Lynceus.** Closes the runtime-matching gap from the previous
+  bullet. The redrafted Part 2 design (after archaeological
+  confirmation that no existing watchlist DB → rules engine bridge
+  exists in the codebase) establishes a new architectural pattern:
+  a rule type whose matching is delegated to the watchlist DB at
+  evaluate-time, rather than checked against `rule.patterns` in
+  memory. A single empty-patterns `watchlist_mac_range` entry in
+  `rules.yaml` enables alert-firing for every matching mac_range
+  row in the watchlist DB — operators no longer have to duplicate
+  patterns across the DB and rules.yaml for mac_range coverage.
+
+  Three changes land together:
+
+  - **`db.resolve_matched_mac_range(mac)`** returns a
+    `ResolvedMacRangeMatch` (watchlist_id, severity, prefix_length)
+    or `None`. Hits the partial index from migration 011 — two
+    indexed lookups per call (/36 first, then /28) so the more-
+    specific match sorts ahead of the less-specific one. Falsy
+    `mac` short-circuits to `None`; uppercase observation MACs are
+    lowercased at the boundary to harden against the L-RULES-1
+    silent-no-match class of bug. `/28` and `/36` ranges covering
+    the same MAC are forbidden by IEEE design; if both surface
+    defensively, a single WARNING is logged carrying both
+    watchlist_ids and the more-specific `/36` row wins.
+    `resolve_matched_watchlist_id` (the existing annotation path)
+    gains a mac_range branch between the oui and ssid checks
+    using the same private helper, so alerts fired by mac_range
+    rules get `matched_watchlist_id` stamped without re-issuing
+    the WARNING.
+
+  - **`rules.evaluate` admits `watchlist_mac_range`** and gains
+    an optional keyword-only `db` parameter. The 18 pre-Part-2
+    callsites in `test_rules.py` all pass without modification —
+    the optional-kwarg signature change is verified non-breaking
+    by an explicit regression test. The validator carve-out
+    (`rule_type == "watchlist_mac_range"` REQUIRES empty
+    patterns, mirror of the `new_non_randomized_device` carve-out)
+    is the first such requirement among `watchlist_*` types.
+
+  - **`/watchlist` detail page** renders the prefix length (`/28`
+    or `/36`) plus a block-class annotation (MA-M, 1,048,576
+    addresses vs MA-S / IAB, 4,096 addresses) for mac_range
+    entries. The annotation is presentational but operationally
+    useful — `vendor /28 owns a million MACs` and `specific
+    device identifier` get different responses from a triager.
+    The list page needs no template change; Part 1's write-time
+    canonicalization makes `pattern` render uniformly.
+
+  **Architectural divergence — severity is sourced from the
+  matched DB row, NOT from `rule.severity`.** Every other
+  `watchlist_*` rule type populates `RuleHit.severity` from
+  `rule.severity`; for `watchlist_mac_range` the alert's severity
+  comes from `watchlist.severity` of the matched row, which the
+  importer writes from `device_category → severity` defaults at
+  import time. The divergence is deliberate: the importer wrote
+  per-row severity for a reason, and reading it back at alert
+  time is the only path that respects that data. `rule.severity`
+  is ignored for this rule type — the bundled `config/rules.yaml`
+  template's commented-out example calls this out explicitly so
+  operators don't expect the field to apply.
+
+  **Operator UX — alert volume after enabling.** A
+  `watchlist_mac_range` entry is shipped commented-out in
+  `config/rules.yaml`; default is OFF. Uncommenting enables
+  alert-firing for any MAC inside any of the 17,786 IEEE-registry
+  rows imported by lynceus-import-argus. All of these rows have
+  `device_category = 'unknown'`, which maps to severity `"low"`
+  in `import_argus.py`'s `DEFAULT_CATEGORY_SEVERITIES`. So:
+  enabling the rule will produce `low`-severity alerts at
+  whatever rate observed MACs fall inside the IEEE allocations
+  Argus catalogued. The 17,786 rows cover Mitsubishi Electric,
+  Becton Dickinson, Airgain, and similar enterprise / embedded /
+  medical / industrial vendors — predominantly enterprise scan
+  surfaces, sparse on residential. If `"low"` is the wrong tier
+  for this volume, tune `DEFAULT_CATEGORY_SEVERITIES['unknown']`
+  before enabling the rule, or use the allowlist to scope the
+  detection geographically. The default severity is intentionally
+  not changed in this rc — that's an operator-policy
+  conversation, not a code-level decision.
+
+  This pattern is a natural migration target for the other
+  `watchlist_*` rule types in a future rc, which would close the
+  broader UX gap surfaced by the Part 2 archaeology: today every
+  watchlist DB row is inert unless operators manually duplicate
+  its pattern into rules.yaml. That migration is deliberately out
+  of scope here; this rc establishes the precedent cleanly.
+
+  Cross-references the schema+importer half of this arc in the
+  prior bullet (migration 011, `parse_mac_range_pattern`); the
+  full arc reads in order down the page.
+
 ### Fixed
 
 - **`lynceus-import-argus --from-github` default `--repo` was
