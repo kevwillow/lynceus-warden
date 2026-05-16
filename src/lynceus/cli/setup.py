@@ -170,38 +170,72 @@ maps to a fixed severity (low/med/high). The overrides file lets you
 reassign severities, filter out categories you don't care about, or
 add vendor-specific rules.
 
+Two layers read this file:
+  - IMPORT-TIME (vendor_overrides, geographic_filter, confidence_
+    downgrade_threshold): applied by lynceus-import-argus when data
+    is brought in. Edits take effect after the next re-import.
+  - RUNTIME (device_category_severity, suppress_categories): applied
+    by the poller at alert time. Edits take effect on daemon restart
+    — no re-import required.
+
 A starter file with explanatory comments will be created at the path
 below. You can edit it any time. Press Enter to accept the default.
 """
 
 SEVERITY_OVERRIDES_TEMPLATE = """\
-# Lynceus severity overrides — consumed by `lynceus-import-argus --override-file`.
+# Lynceus severity overrides — consumed by TWO layers:
+#
+#   IMPORT-TIME (lynceus-import-argus --override-file): keys
+#     vendor_overrides, geographic_filter, confidence_downgrade_threshold.
+#     Edits require re-importing to apply.
+#
+#   RUNTIME (the poller / daemon): keys device_category_severity,
+#     suppress_categories. Edits require only a daemon restart;
+#     already-imported rows fire at the new severity.
 #
 # Each section is optional. Uncomment and edit only what you want to change.
-# First match wins: vendor_overrides > device_category_severity > built-in.
+# Each section below carries an inline `# LAYER:` tag so it's clear which
+# layer (and what action) the change requires.
 
-# vendor_overrides:
+# vendor_overrides:           # LAYER: IMPORT-TIME — re-import to apply
 #   # Force a specific severity for any record from this manufacturer.
 #   # Use the literal string "drop" to skip records from a vendor entirely.
+#   # NOTE: vendor_overrides has no runtime effect today; the "drop" sentinel
+#   # is import-skip semantics. A future suppress_vendors key may add a
+#   # runtime equivalent — until then, vendor tuning is import-time only.
 #   "ACME Surveillance Inc": high
 #   "Hobbyist Drone Co":     drop
 
-# device_category_severity:
-#   # Override the built-in severity for an Argus device_category.
-#   # Built-ins: imsi_catcher=high, alpr=high, body_cam=med, drone=med,
-#   # gunshot_detect=med, hacking_tool=high, in_vehicle_router=med, unknown=low.
+# device_category_severity:   # LAYER: BOTH — daemon restart applies live
+#   # Remap the severity for an Argus device_category.
+#   # Import time bakes this into the watchlist row at write time;
+#   # the poller re-applies it at alert time on top of whatever was
+#   # baked, so an edit takes effect on the next daemon restart with
+#   # no re-import needed. Built-ins:
+#   #   imsi_catcher=high, alpr=high, body_cam=med, drone=med,
+#   #   gunshot_detect=med, hacking_tool=high, in_vehicle_router=med,
+#   #   unknown=low.
 #   imsi_catcher: high
 #   drone: low
 
-# geographic_filter:
+# suppress_categories:        # LAYER: RUNTIME — daemon restart applies live
+#   # Categories listed here produce NO alerts at runtime, even if
+#   # delegation rules in rules.yaml are active for the matched
+#   # pattern_type. The matching row stays in the watchlist DB (the
+#   # importer is unaffected); only alert emission is suppressed.
+#   # Useful when an operator wants to keep enrichment metadata for
+#   # a category without producing alerts on it.
+#   # - some_category
+
+# geographic_filter:          # LAYER: IMPORT-TIME — re-import to apply
 #   # Only import records whose geographic_scope matches one of these values
 #   # (records with scope "global" are always kept). Empty/unset = no filter.
 #   - US
 #   - global
 
-# Argus records below this confidence (0-100) get their severity downgraded
-# one notch (high -> med, med -> low). Set to 0 to disable.
-# confidence_downgrade_threshold: 70
+# confidence_downgrade_threshold: 70   # LAYER: IMPORT-TIME — re-import to apply
+# # Argus records below this confidence (0-100) get their severity downgraded
+# # one notch (high -> med, med -> low) at import. Set to 0 to disable.
 """
 
 
