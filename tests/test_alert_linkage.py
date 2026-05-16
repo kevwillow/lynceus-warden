@@ -745,6 +745,170 @@ def test_watchlist_mac_range_rule_e2e_allowlist_audit_logs(db, config, fake_clie
 
 
 # ---------------------------------------------------------------------------
+# Delegation extension end-to-end: watchlist_mac, watchlist_oui,
+# watchlist_ssid, ble_uuid with empty patterns each fire alerts whose
+# severity is sourced from the matched DB row and whose
+# matched_watchlist_id stamps the matched row id. Mirror of the
+# watchlist_mac_range e2e block above; same fixture and same
+# alert-shape assertions, one block per rule_type.
+# ---------------------------------------------------------------------------
+
+# The kismet fixture (tests/fixtures/kismet_devices.json) carries:
+#   - a4:83:e7:11:22:33 wifi AP with SSID "HomeNet", vendor "Apple"
+#   - 5a:11:22:33:44:55 BTLE with service_uuid 0000FD5A-... (airtag)
+# These exact identifiers back the four delegation hits below.
+_FIXTURE_MAC = "a4:83:e7:11:22:33"
+_FIXTURE_OUI = "a4:83:e7"
+_FIXTURE_SSID = "HomeNet"
+_FIXTURE_BLE_UUID = "0000fd5a-0000-1000-8000-00805f9b34fb"
+
+
+def test_watchlist_mac_delegation_rule_fires_e2e_severity_from_db(db, config, fake_client):
+    """End-to-end: a single empty-patterns watchlist_mac rule enables
+    alert-firing for every mac watchlist row. Severity from the DB
+    row (NOT from rule.severity, which is 'low' here — proving the
+    delegation contract). matched_watchlist_id stamps the row."""
+    mac_id = _add_watchlist(db, _FIXTURE_MAC, "mac", "high")
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac",
+                rule_type="watchlist_mac",
+                severity="low",  # ignored — DB severity wins
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    alerts = [a for a in _alerts(db) if a["mac"] == _FIXTURE_MAC]
+    assert len(alerts) == 1
+    assert alerts[0]["matched_watchlist_id"] == mac_id
+    assert alerts[0]["severity"] == "high"
+
+
+def test_watchlist_mac_delegation_e2e_no_db_row_no_alert(db, config, fake_client):
+    """Empty patterns + no matching DB row → no alert. Confirms that
+    the empty-patterns idiom does NOT fire on every observation
+    (which would be a catastrophic delegation contract bug)."""
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac",
+                rule_type="watchlist_mac",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    assert _alerts(db) == []
+
+
+def test_watchlist_oui_delegation_rule_fires_e2e_severity_from_db(db, config, fake_client):
+    oui_id = _add_watchlist(db, _FIXTURE_OUI, "oui", "high")
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_oui",
+                rule_type="watchlist_oui",
+                severity="low",  # ignored
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    apple_alerts = [a for a in _alerts(db) if a["mac"].startswith(_FIXTURE_OUI + ":")]
+    assert len(apple_alerts) == 1
+    assert apple_alerts[0]["matched_watchlist_id"] == oui_id
+    assert apple_alerts[0]["severity"] == "high"
+
+
+def test_watchlist_oui_delegation_e2e_no_db_row_no_alert(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_oui",
+                rule_type="watchlist_oui",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    assert _alerts(db) == []
+
+
+def test_watchlist_ssid_delegation_rule_fires_e2e_severity_from_db(db, config, fake_client):
+    ssid_id = _add_watchlist(db, _FIXTURE_SSID, "ssid", "med")
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_ssid",
+                rule_type="watchlist_ssid",
+                severity="low",  # ignored
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    # The kismet fixture row with HomeNet SSID is at _FIXTURE_MAC.
+    homenet_alerts = [a for a in _alerts(db) if a["mac"] == _FIXTURE_MAC]
+    assert len(homenet_alerts) == 1
+    assert homenet_alerts[0]["matched_watchlist_id"] == ssid_id
+    assert homenet_alerts[0]["severity"] == "med"
+
+
+def test_watchlist_ssid_delegation_e2e_no_db_row_no_alert(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_ssid",
+                rule_type="watchlist_ssid",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    assert _alerts(db) == []
+
+
+def test_ble_uuid_delegation_rule_fires_e2e_severity_from_db(db, config, fake_client):
+    ble_id = _add_watchlist(db, _FIXTURE_BLE_UUID, "ble_uuid", "high")
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_ble_uuid",
+                rule_type="ble_uuid",
+                severity="low",  # ignored
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    # Fixture's BTLE device with the airtag UUID is mac 5a:11:22:33:44:55.
+    ble_alerts = [a for a in _alerts(db) if a["mac"] == "5a:11:22:33:44:55"]
+    assert len(ble_alerts) == 1
+    assert ble_alerts[0]["matched_watchlist_id"] == ble_id
+    assert ble_alerts[0]["severity"] == "high"
+
+
+def test_ble_uuid_delegation_e2e_no_db_row_no_alert(db, config, fake_client):
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_ble_uuid",
+                rule_type="ble_uuid",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    assert _alerts(db) == []
+
+
+# ---------------------------------------------------------------------------
 # get_alert_with_match.
 # ---------------------------------------------------------------------------
 
