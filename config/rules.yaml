@@ -1,7 +1,7 @@
 # Lynceus detection rules.
 # Each rule is evaluated against every supported device observation. See README
 # for the schema; rule_type is one of watchlist_mac, watchlist_oui,
-# watchlist_ssid, or new_non_randomized_device.
+# watchlist_ssid, watchlist_mac_range, ble_uuid, or new_non_randomized_device.
 rules:
   # Hak5 WiFi Pineapple uses a recognizable OUI prefix — flag it on sight.
   - name: hak5_pineapple_oui
@@ -34,3 +34,20 @@ rules:
     severity: low
     patterns: ["11:22:33:44:55:66"]
     enabled: false
+
+  # watchlist_mac_range delegates matching to the watchlist DB. Patterns MUST
+  # be empty — the rule fires when an observed MAC falls inside any imported
+  # mac_range row's /28 or /36 prefix (populated by lynceus-import-argus).
+  # Severity is sourced from the matched DB row, NOT from the `severity`
+  # field below (which is ignored for this rule_type). For Argus-imported
+  # rows the per-row severity comes from device_category → severity defaults
+  # in import_argus.py; for the 17,786 IEEE-registry rows currently shipped,
+  # device_category is "unknown" which maps to "low" by default.
+  #
+  # Uncomment to enable.
+  #
+  # - name: argus_mac_range
+  #   rule_type: watchlist_mac_range
+  #   severity: low  # ignored — actual severity comes from the matched row
+  #   patterns: []
+  #   description: "Argus mac_range corpus — IEEE registry sub-allocations"
