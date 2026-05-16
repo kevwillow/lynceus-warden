@@ -130,6 +130,151 @@ class RuleHit(BaseModel):
     mac: str
 
 
+_VALID_SEVERITIES = ("low", "med", "high")
+
+
+class RuntimeSeverityOverride(BaseModel):
+    """Runtime-layer view of severity_overrides.yaml.
+
+    Reads two keys from the same file the import-time
+    ``OverrideConfig`` in ``import_argus.py`` consumes, but exposes
+    only the runtime-relevant subset:
+
+    - ``device_category_severity`` (BOTH layers). Import time bakes
+      this into ``watchlist.severity`` at write time; the runtime
+      layer re-applies it at alert time on top of whatever was
+      baked. Operators editing the value after import → daemon
+      restart picks it up → already-imported rows fire at the new
+      severity without re-importing the 17,786-row Argus corpus.
+
+    - ``suppress_categories`` (RUNTIME only — NEW key). Delegation
+      matches whose ``device_category`` is in this list emit no
+      RuleHit (alert suppressed entirely). The import-time layer
+      has no equivalent; this is the closest runtime cousin of
+      vendor_overrides' ``"drop"`` sentinel, but at category
+      granularity instead of vendor.
+
+    Other ``OverrideConfig`` keys (``vendor_overrides``,
+    ``geographic_filter``, ``confidence_downgrade_threshold``)
+    remain consumed by the importer's existing code path and have
+    NO runtime effect — they shape what gets imported, not what
+    gets alerted on. ``vendor_overrides`` at runtime is a deliberate
+    deferral; its ``"drop"`` sentinel means "skip-at-import" today,
+    and a runtime interpretation would silently overload that
+    meaning. A future ``suppress_vendors`` key designed
+    deliberately is the right path.
+
+    The frozen+extra-ignore config lets the parser tolerate the
+    full superset of keys the wizard's starter file documents —
+    parsing an import-time-only file produces an empty runtime
+    view, not a validation error.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    device_category_severity: dict[str, Severity] = {}
+    suppress_categories: frozenset[str] = frozenset()
+
+    @model_validator(mode="after")
+    def _validate(self) -> RuntimeSeverityOverride:
+        for cat, sev in self.device_category_severity.items():
+            if sev not in _VALID_SEVERITIES:
+                raise ValueError(
+                    f"device_category_severity[{cat!r}] = {sev!r}: "
+                    f"expected one of {_VALID_SEVERITIES}"
+                )
+        return self
+
+    def is_empty(self) -> bool:
+        """No remap and no suppression → fast-path pass-through.
+
+        ``rules.evaluate`` short-circuits the override block when the
+        config is None OR empty by this definition; the
+        ``match.device_category is None`` check is the second tier
+        of the pass-through fast-path (a match without metadata
+        has nothing to key on, regardless of config richness).
+        """
+        return not self.device_category_severity and not self.suppress_categories
+
+
+def load_runtime_severity_overrides(
+    path: str | Path | None,
+) -> RuntimeSeverityOverride | None:
+    """Load the runtime view of severity_overrides.yaml.
+
+    Failure modes are all benign — the runtime override layer is
+    additive; the poller must never crash because the operator
+    edited their override file into a malformed state.
+
+    - ``path`` is None: return None (caller treats as pass-through).
+    - File missing: INFO log + return None. Absence is normal — the
+      operator may not have run the wizard, or may have intentionally
+      removed the file.
+    - File present but unreadable (PermissionError, OSError): WARNING
+      log + return None.
+    - YAML parse error: WARNING log + return None.
+    - Pydantic validation error (e.g. invalid severity literal):
+      WARNING log + return None.
+    - File parses but the runtime keys are absent/empty (e.g. a
+      file with only import-time keys): return a valid
+      RuntimeSeverityOverride whose ``is_empty()`` is True.
+      ``rules.evaluate`` fast-paths through.
+
+    Each WARNING names the path and the underlying error so an
+    operator scanning journalctl can fix the file without grepping
+    the source. The poller continues running with pass-through
+    semantics for the runtime layer; the import-time consumer in
+    ``import_argus.py`` is unaffected (separate code path, separate
+    error handling).
+    """
+    if path is None:
+        return None
+    p = Path(path)
+    if not p.exists():
+        logger.info(
+            "severity overrides file %s not found; runtime override layer disabled "
+            "(import-time overrides via lynceus-import-argus are unaffected)",
+            path,
+        )
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        logger.warning(
+            "could not read severity overrides file %s (%s); runtime override "
+            "layer disabled. Fix the file and restart the daemon to re-enable.",
+            path,
+            exc,
+        )
+        return None
+    if not isinstance(raw, dict):
+        logger.warning(
+            "severity overrides file %s did not parse to a YAML mapping "
+            "(got %s); runtime override layer disabled.",
+            path,
+            type(raw).__name__,
+        )
+        return None
+    runtime_kwargs: dict = {}
+    if isinstance(raw.get("device_category_severity"), dict):
+        runtime_kwargs["device_category_severity"] = raw["device_category_severity"]
+    if isinstance(raw.get("suppress_categories"), list):
+        runtime_kwargs["suppress_categories"] = frozenset(
+            s for s in raw["suppress_categories"] if isinstance(s, str)
+        )
+    try:
+        return RuntimeSeverityOverride(**runtime_kwargs)
+    except Exception as exc:
+        logger.warning(
+            "severity overrides file %s failed validation (%s); runtime override "
+            "layer disabled.",
+            path,
+            exc,
+        )
+        return None
+
+
 def load_ruleset(path: str) -> Ruleset:
     p = Path(path)
     if not p.exists():
@@ -139,12 +284,65 @@ def load_ruleset(path: str) -> Ruleset:
     return Ruleset(**data)
 
 
+def _apply_runtime_overrides(
+    *,
+    match_severity: str,
+    match_device_category: str | None,
+    match_watchlist_id: int,
+    rule_name: str,
+    overrides: RuntimeSeverityOverride | None,
+) -> str | None:
+    """Apply runtime severity overrides to a DB-delegation match.
+
+    Returns the (possibly remapped) severity to use for the RuleHit,
+    or ``None`` to signal suppression (caller skips emitting the
+    RuleHit entirely).
+
+    Pass-through fast-path — byte-identical to pre-overrides
+    behavior — when any of:
+    - ``overrides`` is None (no file loaded, or file disabled the
+      layer per ``load_runtime_severity_overrides`` failure modes).
+    - ``overrides.is_empty()`` (file parsed but neither runtime key
+      populated — e.g. a file containing only import-time keys).
+    - ``match_device_category`` is None (matched row has no
+      watchlist_metadata row, so there is nothing to key on).
+
+    Precedence when the layer is active and the match has a
+    category:
+    1. Suppression wins: category in ``suppress_categories`` →
+       return None. INFO-log the suppression with rule_name,
+       category, and watchlist_id so operators have a forensic
+       trail (the suppressed alert never reaches the DB / ntfy).
+    2. Remap: category in ``device_category_severity`` → return
+       the remapped severity.
+    3. Default: no rule for this category → return
+       ``match_severity`` unchanged.
+    """
+    if overrides is None or overrides.is_empty():
+        return match_severity
+    if match_device_category is None:
+        return match_severity
+    if match_device_category in overrides.suppress_categories:
+        logger.info(
+            "runtime override: suppressing category=%s alert for "
+            "watchlist_id=%d (rule=%s)",
+            match_device_category,
+            match_watchlist_id,
+            rule_name,
+        )
+        return None
+    if match_device_category in overrides.device_category_severity:
+        return overrides.device_category_severity[match_device_category]
+    return match_severity
+
+
 def evaluate(
     ruleset: Ruleset,
     obs: DeviceObservation,
     is_new_device: bool,
     *,
     db: Database | None = None,
+    severity_overrides: RuntimeSeverityOverride | None = None,
 ) -> list[RuleHit]:
     """Match an observation against the ruleset; emit one RuleHit per hit.
 
@@ -157,6 +355,16 @@ def evaluate(
     in-memory against ``rule.patterns`` and ignore ``db`` — backward
     compat for pre-existing rules.yaml deployments. Keyword-only on
     purpose so existing callers stay source-compatible.
+
+    ``severity_overrides`` is the runtime view of
+    severity_overrides.yaml (see ``RuntimeSeverityOverride``). Only
+    the five DB-delegation branches consult it; in-memory pattern
+    matches keep their rule-sourced severity unchanged. None or
+    empty config short-circuits to pass-through — byte-identical
+    RuleHits to the pre-overrides behavior. The transform applies
+    only when the match also has a non-None ``device_category``
+    (rows without metadata pass through with their imported
+    severity).
     """
     hits: list[RuleHit] = []
     for rule in ruleset.rules:
@@ -197,6 +405,15 @@ def evaluate(
                 match = db.resolve_matched_mac_for_eval(obs.mac)
                 if match is None:
                     continue
+                effective_severity = _apply_runtime_overrides(
+                    match_severity=match.severity,
+                    match_device_category=match.device_category,
+                    match_watchlist_id=match.watchlist_id,
+                    rule_name=rule.name,
+                    overrides=severity_overrides,
+                )
+                if effective_severity is None:
+                    continue  # suppressed by runtime override
                 msg = (
                     f"MAC {obs.mac} on watchlist "
                     f"(watchlist_id={match.watchlist_id}): "
@@ -206,7 +423,7 @@ def evaluate(
                     RuleHit(
                         rule_name=rule.name,
                         rule_type=rule.rule_type,
-                        severity=match.severity,
+                        severity=effective_severity,
                         message=msg,
                         mac=obs.mac,
                     )
@@ -245,6 +462,15 @@ def evaluate(
                 match = db.resolve_matched_oui_for_eval(obs.mac)
                 if match is None:
                     continue
+                effective_severity = _apply_runtime_overrides(
+                    match_severity=match.severity,
+                    match_device_category=match.device_category,
+                    match_watchlist_id=match.watchlist_id,
+                    rule_name=rule.name,
+                    overrides=severity_overrides,
+                )
+                if effective_severity is None:
+                    continue
                 msg = (
                     f"OUI {obs.mac[:8]} on watchlist "
                     f"(watchlist_id={match.watchlist_id}): "
@@ -254,7 +480,7 @@ def evaluate(
                     RuleHit(
                         rule_name=rule.name,
                         rule_type=rule.rule_type,
-                        severity=match.severity,
+                        severity=effective_severity,
                         message=msg,
                         mac=obs.mac,
                     )
@@ -291,6 +517,15 @@ def evaluate(
                 match = db.resolve_matched_ssid_for_eval(obs.ssid)
                 if match is None:
                     continue
+                effective_severity = _apply_runtime_overrides(
+                    match_severity=match.severity,
+                    match_device_category=match.device_category,
+                    match_watchlist_id=match.watchlist_id,
+                    rule_name=rule.name,
+                    overrides=severity_overrides,
+                )
+                if effective_severity is None:
+                    continue
                 msg = (
                     f"SSID {obs.ssid!r} on watchlist "
                     f"(watchlist_id={match.watchlist_id}): "
@@ -300,7 +535,7 @@ def evaluate(
                     RuleHit(
                         rule_name=rule.name,
                         rule_type=rule.rule_type,
-                        severity=match.severity,
+                        severity=effective_severity,
                         message=msg,
                         mac=obs.mac,
                     )
@@ -342,6 +577,15 @@ def evaluate(
             match = db.resolve_matched_mac_range(obs.mac)
             if match is None:
                 continue
+            effective_severity = _apply_runtime_overrides(
+                match_severity=match.severity,
+                match_device_category=match.device_category,
+                match_watchlist_id=match.watchlist_id,
+                rule_name=rule.name,
+                overrides=severity_overrides,
+            )
+            if effective_severity is None:
+                continue
             msg = (
                 f"MAC {obs.mac} inside watchlisted mac_range "
                 f"(/{match.prefix_length}, watchlist_id={match.watchlist_id}): "
@@ -351,7 +595,7 @@ def evaluate(
                 RuleHit(
                     rule_name=rule.name,
                     rule_type=rule.rule_type,
-                    severity=match.severity,
+                    severity=effective_severity,
                     message=msg,
                     mac=obs.mac,
                 )
@@ -395,6 +639,15 @@ def evaluate(
                 match = db.resolve_matched_ble_uuid_for_eval(obs.ble_service_uuids)
                 if match is None:
                     continue
+                effective_severity = _apply_runtime_overrides(
+                    match_severity=match.severity,
+                    match_device_category=match.device_category,
+                    match_watchlist_id=match.watchlist_id,
+                    rule_name=rule.name,
+                    overrides=severity_overrides,
+                )
+                if effective_severity is None:
+                    continue
                 msg = (
                     f"BLE service UUID on watchlist "
                     f"(watchlist_id={match.watchlist_id}): "
@@ -404,7 +657,7 @@ def evaluate(
                     RuleHit(
                         rule_name=rule.name,
                         rule_type=rule.rule_type,
-                        severity=match.severity,
+                        severity=effective_severity,
                         message=msg,
                         mac=obs.mac,
                     )

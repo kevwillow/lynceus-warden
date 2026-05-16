@@ -8,7 +8,14 @@ from pydantic import ValidationError
 
 from lynceus.db import Database
 from lynceus.kismet import DeviceObservation
-from lynceus.rules import Rule, RuleHit, Ruleset, evaluate, load_ruleset
+from lynceus.rules import (
+    Rule,
+    RuleHit,
+    Ruleset,
+    RuntimeSeverityOverride,
+    evaluate,
+    load_ruleset,
+)
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "rules_example.yaml"
 
@@ -998,3 +1005,382 @@ def test_evaluate_ble_uuid_delegation_without_db_logs_error(caplog):
         if r.levelno == logging.ERROR and "ble_uuid" in r.getMessage()
     ]
     assert len(errors) == 1
+
+
+# ---- runtime severity overrides --------------------------------------------
+#
+# Per-branch coverage that the runtime override layer applies at the
+# correct eval branch and obeys the documented precedence
+# (suppression wins over remap; pass-through when overrides is None,
+# is_empty(), or match has no device_category). Mirrors the five
+# delegation branches (mac_range + four extension types).
+
+
+def _attach_category(db: Database, watchlist_id: int, category: str) -> None:
+    """Attach a watchlist_metadata row with the given device_category.
+    The matchers LEFT JOIN watchlist_metadata so the category
+    surfaces on the resolved match for the runtime layer to key on."""
+    db.upsert_metadata(
+        watchlist_id,
+        {"argus_record_id": f"argus-{watchlist_id}", "device_category": category},
+    )
+
+
+@pytest.fixture
+def db_with_categorized_rows(tmp_path):
+    """Same shape as db_with_delegation_rows but with
+    watchlist_metadata rows attached so each match surfaces a
+    device_category. Five rows, one per pattern_type + the
+    mac_range row, each at a distinct category so the runtime
+    transform per branch is observable."""
+    db_path = str(tmp_path / "rules_overrides.db")
+    db = Database(db_path)
+    with db._conn:
+        cur = db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('a4:83:e7:11:22:33', 'mac', 'low', NULL)"
+        )
+        mac_id = int(cur.lastrowid)
+        cur = db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('00:13:37', 'oui', 'low', NULL)"
+        )
+        oui_id = int(cur.lastrowid)
+        cur = db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('FreeAirportWiFi', 'ssid', 'low', NULL)"
+        )
+        ssid_id = int(cur.lastrowid)
+        cur = db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            f"VALUES ('{_AIRTAG_UUID}', 'ble_uuid', 'low', NULL)"
+        )
+        ble_id = int(cur.lastrowid)
+        cur = db._conn.execute(
+            "INSERT INTO watchlist("
+            "pattern, pattern_type, severity, description, "
+            "mac_range_prefix, mac_range_prefix_length) "
+            "VALUES ('aa:bb:cc:d/28', 'mac_range', 'low', NULL, 'aabbccd', 28)"
+        )
+        mr_id = int(cur.lastrowid)
+    _attach_category(db, mac_id, "alpr")
+    _attach_category(db, oui_id, "hacking_tool")
+    _attach_category(db, ssid_id, "drone")
+    _attach_category(db, ble_id, "imsi_catcher")
+    _attach_category(db, mr_id, "unknown")
+    yield db
+    db.close()
+
+
+# ---- per-branch: pass-through when overrides is None / empty ----
+
+
+def test_evaluate_runtime_overrides_none_passes_through_severity(db_with_categorized_rows):
+    """Backward-compat fast path: severity_overrides=None →
+    byte-identical to pre-override behavior. The DB severity ("low"
+    for all seeded rows) flows directly onto the RuleHit."""
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="high", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "low"  # from DB; rule severity ignored
+
+
+def test_evaluate_runtime_overrides_empty_config_passes_through(db_with_categorized_rows):
+    """An empty RuntimeSeverityOverride (no remap, no suppress) is
+    a load-bearing pass-through case — the wizard's starter file
+    produces this state until operator uncomments something."""
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="high", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=RuntimeSeverityOverride(),
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "low"
+
+
+def test_evaluate_runtime_overrides_no_category_on_match_passes_through(tmp_path):
+    """A delegation match against a row with NO watchlist_metadata
+    (e.g. the 63 bundled default_watchlist rows) surfaces
+    device_category=None. The runtime layer pass-throughs on None
+    category regardless of how rich the override config is."""
+    db_path = str(tmp_path / "no_meta.db")
+    db = Database(db_path)
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('a4:83:e7:11:22:33', 'mac', 'low', NULL)"
+        )
+    try:
+        rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="high", patterns=[])
+        rs = Ruleset(rules=[rule])
+        hits = evaluate(
+            rs,
+            _obs(mac="a4:83:e7:11:22:33"),
+            is_new_device=False,
+            db=db,
+            severity_overrides=RuntimeSeverityOverride(
+                device_category_severity={"alpr": "high"},
+                suppress_categories=frozenset({"drone"}),
+            ),
+        )
+        assert len(hits) == 1
+        assert hits[0].severity == "low"  # passes through; no category to key on
+    finally:
+        db.close()
+
+
+# ---- per-branch: remap applies ----
+
+
+def test_evaluate_runtime_remap_watchlist_mac(db_with_categorized_rows):
+    """watchlist_mac delegation hit on category=alpr; remap alpr→high
+    should override the row's baked severity ("low") at alert time."""
+    overrides = RuntimeSeverityOverride(device_category_severity={"alpr": "high"})
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"  # remapped from "low"
+
+
+def test_evaluate_runtime_remap_watchlist_oui(db_with_categorized_rows):
+    overrides = RuntimeSeverityOverride(device_category_severity={"hacking_tool": "med"})
+    rule = Rule(name="del_oui", rule_type="watchlist_oui", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="00:13:37:aa:bb:cc"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_runtime_remap_watchlist_ssid(db_with_categorized_rows):
+    overrides = RuntimeSeverityOverride(device_category_severity={"drone": "high"})
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="FreeAirportWiFi"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_runtime_remap_ble_uuid(db_with_categorized_rows):
+    overrides = RuntimeSeverityOverride(device_category_severity={"imsi_catcher": "med"})
+    rule = Rule(name="del_ble", rule_type="ble_uuid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_obs(uuids=(_AIRTAG_UUID,)),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_runtime_remap_watchlist_mac_range(db_with_categorized_rows):
+    """Mirror of Part 2's mac_range branch under the runtime layer.
+    Remap unknown→med means the 17,786 IEEE-registry rows
+    (device_category=unknown) fire at "med" instead of the baked
+    "low" without re-importing."""
+    overrides = RuntimeSeverityOverride(device_category_severity={"unknown": "med"})
+    rule = Rule(name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:d1:23:45"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_runtime_remap_other_categories_unaffected(db_with_categorized_rows):
+    """A remap that doesn't cover the match's category is a no-op
+    on this match (the remap dict is per-category; non-listed
+    categories pass through)."""
+    overrides = RuntimeSeverityOverride(
+        device_category_severity={"some_other_category": "high"}
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),  # category=alpr
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "low"  # alpr unaffected
+
+
+# ---- per-branch: suppression ----
+
+
+def test_evaluate_runtime_suppress_watchlist_mac(db_with_categorized_rows, caplog):
+    """suppress_categories listing alpr → the watchlist_mac
+    delegation match on category=alpr emits NO RuleHit. An INFO
+    log line records the suppression so operators have a forensic
+    trail."""
+    overrides = RuntimeSeverityOverride(suppress_categories=frozenset({"alpr"}))
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.INFO, logger="lynceus.rules"):
+        hits = evaluate(
+            rs,
+            _obs(mac="a4:83:e7:11:22:33"),
+            is_new_device=False,
+            db=db_with_categorized_rows,
+            severity_overrides=overrides,
+        )
+    assert hits == []
+    info = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO
+        and "suppressing category=alpr" in r.getMessage()
+        and "del_mac" in r.getMessage()
+    ]
+    assert len(info) == 1
+
+
+def test_evaluate_runtime_suppress_watchlist_oui(db_with_categorized_rows):
+    overrides = RuntimeSeverityOverride(suppress_categories=frozenset({"hacking_tool"}))
+    rule = Rule(name="del_oui", rule_type="watchlist_oui", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="00:13:37:aa:bb:cc"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+def test_evaluate_runtime_suppress_watchlist_ssid(db_with_categorized_rows):
+    overrides = RuntimeSeverityOverride(suppress_categories=frozenset({"drone"}))
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="FreeAirportWiFi"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+def test_evaluate_runtime_suppress_ble_uuid(db_with_categorized_rows):
+    overrides = RuntimeSeverityOverride(suppress_categories=frozenset({"imsi_catcher"}))
+    rule = Rule(name="del_ble", rule_type="ble_uuid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_obs(uuids=(_AIRTAG_UUID,)),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+def test_evaluate_runtime_suppress_watchlist_mac_range(db_with_categorized_rows):
+    """An operator who wants the 17,786 IEEE-registry rows in the
+    DB for metadata enrichment but doesn't want alerts on them
+    can suppress category=unknown at runtime. Rows stay in the
+    watchlist; only alerts are silenced."""
+    overrides = RuntimeSeverityOverride(suppress_categories=frozenset({"unknown"}))
+    rule = Rule(name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:d1:23:45"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+# ---- precedence: suppression wins over remap ----
+
+
+def test_evaluate_runtime_suppress_wins_over_remap(db_with_categorized_rows):
+    """When a category has BOTH a remap and a suppress entry,
+    suppression wins. The documented precedence: vendor (deferred) >
+    suppress > remap > pass-through."""
+    overrides = RuntimeSeverityOverride(
+        device_category_severity={"alpr": "high"},  # would remap to high
+        suppress_categories=frozenset({"alpr"}),  # but suppress wins
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []  # suppressed, not remapped
+
+
+# ---- in-memory pattern rules are unaffected ----
+
+
+def test_evaluate_in_memory_pattern_rule_ignores_runtime_overrides(db_with_categorized_rows):
+    """Critical invariant: rules with non-empty patterns continue
+    to source severity from the rule. Runtime overrides apply only
+    to DB-delegation matches. An in-memory watchlist_mac rule with
+    pattern matching the same MAC must still fire at rule.severity
+    regardless of the override config."""
+    overrides = RuntimeSeverityOverride(
+        device_category_severity={"alpr": "low"},  # would lower if applied
+        suppress_categories=frozenset({"alpr"}),  # would suppress if applied
+    )
+    rule = Rule(
+        name="legacy_mac",
+        rule_type="watchlist_mac",
+        severity="high",
+        patterns=["a4:83:e7:11:22:33"],  # NON-empty = in-memory path
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"  # from rule, not from DB or override
