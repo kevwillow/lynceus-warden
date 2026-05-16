@@ -932,6 +932,222 @@ def test_resolve_matched_watchlist_id_mac_range_does_not_double_warn(db, caplog)
     assert overlap_warnings == []
 
 
+# --- delegation eval matchers (resolve_matched_*_for_eval) ----------------
+#
+# Backs the empty-patterns delegation semantic for watchlist_mac,
+# watchlist_oui, watchlist_ssid, and ble_uuid in rules.evaluate. Each
+# matcher returns a ResolvedWatchlistMatch (watchlist_id + severity)
+# so the consuming branch can stamp the emitted RuleHit with the
+# matched DB row's severity rather than the rule's severity. The
+# matchers share the _lookup_simple_watchlist_match helper with
+# resolve_matched_watchlist_id (the annotation path), so SQL changes
+# flow to both at once.
+
+
+def _add_simple(
+    db: Database,
+    pattern: str,
+    pattern_type: str,
+    severity: str = "low",
+) -> int:
+    with db._conn:
+        cur = db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, ?, ?, NULL)",
+            (pattern, pattern_type, severity),
+        )
+        return int(cur.lastrowid)
+
+
+# ---- resolve_matched_mac_for_eval ----
+
+
+def test_resolve_matched_mac_for_eval_hit(db):
+    wid = _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac", severity="high")
+    match = db.resolve_matched_mac_for_eval("aa:bb:cc:dd:ee:ff")
+    assert match is not None
+    assert match.watchlist_id == wid
+    assert match.severity == "high"
+
+
+def test_resolve_matched_mac_for_eval_miss(db):
+    _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac")
+    assert db.resolve_matched_mac_for_eval("11:22:33:44:55:66") is None
+
+
+def test_resolve_matched_mac_for_eval_none_and_empty(db):
+    """Falsy mac short-circuits — same boundary check as
+    resolve_matched_mac_range, kept consistent across the matchers."""
+    _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac")
+    assert db.resolve_matched_mac_for_eval(None) is None
+    assert db.resolve_matched_mac_for_eval("") is None
+
+
+def test_resolve_matched_mac_for_eval_only_matches_mac_pattern_type(db):
+    """A row with the same string but pattern_type != 'mac' must not
+    match. Tightens the SELECT against accidental cross-type leakage
+    (e.g. a row with pattern='aa:bb:cc' and pattern_type='oui' must
+    NOT show up for a literal-MAC lookup)."""
+    _add_simple(db, "aa:bb:cc", "oui")
+    assert db.resolve_matched_mac_for_eval("aa:bb:cc") is None
+
+
+# ---- resolve_matched_oui_for_eval ----
+
+
+def test_resolve_matched_oui_for_eval_hit(db):
+    wid = _add_simple(db, "aa:bb:cc", "oui", severity="med")
+    match = db.resolve_matched_oui_for_eval("aa:bb:cc:dd:ee:ff")
+    assert match is not None
+    assert match.watchlist_id == wid
+    assert match.severity == "med"
+
+
+def test_resolve_matched_oui_for_eval_miss(db):
+    _add_simple(db, "aa:bb:cc", "oui")
+    assert db.resolve_matched_oui_for_eval("11:22:33:44:55:66") is None
+
+
+def test_resolve_matched_oui_for_eval_none_and_empty(db):
+    _add_simple(db, "aa:bb:cc", "oui")
+    assert db.resolve_matched_oui_for_eval(None) is None
+    assert db.resolve_matched_oui_for_eval("") is None
+
+
+def test_resolve_matched_oui_for_eval_extracts_first_8_chars(db):
+    """OUI is the first 8 chars of the MAC (the MAC[:8] slice). A
+    different MAC sharing the same OUI must match the same row."""
+    wid = _add_simple(db, "00:13:37", "oui")
+    assert db.resolve_matched_oui_for_eval("00:13:37:aa:bb:cc").watchlist_id == wid
+    assert db.resolve_matched_oui_for_eval("00:13:37:99:88:77").watchlist_id == wid
+
+
+# ---- resolve_matched_ssid_for_eval ----
+
+
+def test_resolve_matched_ssid_for_eval_hit(db):
+    wid = _add_simple(db, "FreeAirportWiFi", "ssid", severity="high")
+    match = db.resolve_matched_ssid_for_eval("FreeAirportWiFi")
+    assert match is not None
+    assert match.watchlist_id == wid
+    assert match.severity == "high"
+
+
+def test_resolve_matched_ssid_for_eval_miss(db):
+    _add_simple(db, "FreeAirportWiFi", "ssid")
+    assert db.resolve_matched_ssid_for_eval("HomeNet") is None
+
+
+def test_resolve_matched_ssid_for_eval_none_and_empty(db):
+    """Falsy ssid (None or "") short-circuits to None — observations
+    without a captured SSID can't match a watchlist_ssid row."""
+    _add_simple(db, "FreeAirportWiFi", "ssid")
+    assert db.resolve_matched_ssid_for_eval(None) is None
+    assert db.resolve_matched_ssid_for_eval("") is None
+
+
+def test_resolve_matched_ssid_for_eval_case_sensitive(db):
+    """SSIDs are case-sensitive per IEEE 802.11. The DB stores the
+    pattern verbatim; the matcher does an equality lookup. A
+    case-mismatched SSID must NOT match. Documented as intentional —
+    operators wanting case-insensitive matching curate per-case rows."""
+    _add_simple(db, "FreeAirportWiFi", "ssid")
+    assert db.resolve_matched_ssid_for_eval("freeairportwifi") is None
+
+
+# ---- resolve_matched_ble_uuid_for_eval ----
+
+
+_AIRTAG_UUID = "0000fd5a-0000-1000-8000-00805f9b34fb"
+_TILE_UUID = "0000feed-0000-1000-8000-00805f9b34fb"
+
+
+def test_resolve_matched_ble_uuid_for_eval_hit(db):
+    wid = _add_simple(db, _AIRTAG_UUID, "ble_uuid", severity="high")
+    match = db.resolve_matched_ble_uuid_for_eval([_AIRTAG_UUID])
+    assert match is not None
+    assert match.watchlist_id == wid
+    assert match.severity == "high"
+
+
+def test_resolve_matched_ble_uuid_for_eval_miss(db):
+    _add_simple(db, _AIRTAG_UUID, "ble_uuid")
+    assert db.resolve_matched_ble_uuid_for_eval([_TILE_UUID]) is None
+
+
+def test_resolve_matched_ble_uuid_for_eval_empty_uuids(db):
+    _add_simple(db, _AIRTAG_UUID, "ble_uuid")
+    assert db.resolve_matched_ble_uuid_for_eval([]) is None
+    assert db.resolve_matched_ble_uuid_for_eval(()) is None
+
+
+def test_resolve_matched_ble_uuid_for_eval_returns_first_match(db):
+    """Iterates ``uuids`` in order and returns the first watchlisted
+    UUID — same first-match shape as the existing in-memory
+    ble_uuid eval branch (which loops rule.patterns and breaks on
+    first hit). Determinism matters because operators build alert
+    expectations on rule order."""
+    airtag_id = _add_simple(db, _AIRTAG_UUID, "ble_uuid", severity="high")
+    tile_id = _add_simple(db, _TILE_UUID, "ble_uuid", severity="med")
+    # Tile listed first → tile wins.
+    match = db.resolve_matched_ble_uuid_for_eval([_TILE_UUID, _AIRTAG_UUID])
+    assert match.watchlist_id == tile_id
+    # Airtag listed first → airtag wins.
+    match = db.resolve_matched_ble_uuid_for_eval([_AIRTAG_UUID, _TILE_UUID])
+    assert match.watchlist_id == airtag_id
+
+
+def test_resolve_matched_ble_uuid_for_eval_skips_non_matching_uuids(db):
+    """A UUID list with a non-matching prefix and a matching one
+    later returns the matching one rather than short-circuiting on
+    the first miss."""
+    wid = _add_simple(db, _AIRTAG_UUID, "ble_uuid")
+    match = db.resolve_matched_ble_uuid_for_eval(
+        ["0000beef-0000-1000-8000-00805f9b34fb", _AIRTAG_UUID]
+    )
+    assert match is not None
+    assert match.watchlist_id == wid
+
+
+# ---- shared lookup contract ----
+
+
+def test_resolve_matched_eval_matchers_share_lookup_with_annotation_path(db):
+    """The four eval matchers use _lookup_simple_watchlist_match,
+    which also backs resolve_matched_watchlist_id. A row that one
+    sees, the other must see — drift between the eval path and the
+    annotation path used to mean alerts fired with the right severity
+    but landed without a matched_watchlist_id stamp (or vice versa).
+    Single SELECT shared across both paths makes the drift class of
+    bug structurally impossible."""
+    mac_id = _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac")
+    oui_id = _add_simple(db, "00:13:37", "oui")
+    ssid_id = _add_simple(db, "HomeNet", "ssid")
+    ble_id = _add_simple(db, _AIRTAG_UUID, "ble_uuid")
+
+    assert db.resolve_matched_mac_for_eval("aa:bb:cc:dd:ee:ff").watchlist_id == mac_id
+    assert (
+        db.resolve_matched_watchlist_id(mac="aa:bb:cc:dd:ee:ff") == mac_id
+    )
+
+    assert db.resolve_matched_oui_for_eval("00:13:37:11:22:33").watchlist_id == oui_id
+    # Annotation path returns mac_id absent the mac row, oui_id otherwise.
+    assert db.resolve_matched_watchlist_id(mac="00:13:37:11:22:33") == oui_id
+
+    assert db.resolve_matched_ssid_for_eval("HomeNet").watchlist_id == ssid_id
+    assert (
+        db.resolve_matched_watchlist_id(mac=None, ssid="HomeNet") == ssid_id
+    )
+
+    assert db.resolve_matched_ble_uuid_for_eval([_AIRTAG_UUID]).watchlist_id == ble_id
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac=None, ble_service_uuids=(_AIRTAG_UUID,)
+        )
+        == ble_id
+    )
+
+
 # ---------------------------- file mode (POSIX) ----------------------------
 
 

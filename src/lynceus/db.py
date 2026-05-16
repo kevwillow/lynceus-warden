@@ -31,6 +31,26 @@ class ResolvedMacRangeMatch(NamedTuple):
     prefix_length: int
 
 
+class ResolvedWatchlistMatch(NamedTuple):
+    """A watchlist row matched by a DB-delegated rule_type.
+
+    Returned by ``Database.resolve_matched_{mac,oui,ssid,ble_uuid}_for_eval``
+    — the eval-time matchers that back the empty-patterns delegation
+    semantic established in lockstep with ``ResolvedMacRangeMatch``.
+    Same severity-from-row contract: the consuming rules.evaluate
+    branches stamp the emitted RuleHit with this severity, NOT the
+    rule's severity, so that imported per-row severities (e.g. the
+    Argus device_category-derived defaults) survive into alerts.
+
+    Shape is deliberately the minimal pair of fields shared across
+    the four DB-delegated rule_types; mac_range carries an extra
+    ``prefix_length`` and so kept its own dedicated NamedTuple.
+    """
+
+    watchlist_id: int
+    severity: str
+
+
 def _find_migrations_dir() -> Path:
     try:
         from importlib.resources import files
@@ -241,6 +261,35 @@ class Database:
             )
             return cur.lastrowid
 
+    def _lookup_simple_watchlist_match(
+        self, pattern_type: str, pattern: str
+    ) -> ResolvedWatchlistMatch | None:
+        """Single shared SELECT for the four pattern-equality rule_types.
+
+        Backs both ``resolve_matched_watchlist_id`` (annotation path,
+        which only needs the row id) and the four
+        ``resolve_matched_*_for_eval`` matchers (the DB-delegated
+        eval path, which needs id + severity). Sharing the SQL keeps
+        the two callers from drifting — adding a column projection
+        here flows to both at once.
+
+        Returns None for falsy ``pattern`` so callers can pass through
+        unfiltered observation fields without pre-checking.
+        """
+        if not pattern:
+            return None
+        row = self._conn.execute(
+            "SELECT id, severity FROM watchlist "
+            "WHERE pattern_type = ? AND pattern = ? LIMIT 1",
+            (pattern_type, pattern),
+        ).fetchone()
+        if row is None:
+            return None
+        return ResolvedWatchlistMatch(
+            watchlist_id=int(row["id"]),
+            severity=str(row["severity"]),
+        )
+
     def resolve_matched_watchlist_id(
         self,
         *,
@@ -260,19 +309,12 @@ class Database:
         but the ordering is conservative.
         """
         if mac is not None:
-            row = self._conn.execute(
-                "SELECT id FROM watchlist WHERE pattern_type = 'mac' AND pattern = ? LIMIT 1",
-                (mac,),
-            ).fetchone()
-            if row is not None:
-                return int(row["id"])
-            oui = mac[:8]
-            row = self._conn.execute(
-                "SELECT id FROM watchlist WHERE pattern_type = 'oui' AND pattern = ? LIMIT 1",
-                (oui,),
-            ).fetchone()
-            if row is not None:
-                return int(row["id"])
+            match = self._lookup_simple_watchlist_match("mac", mac)
+            if match is not None:
+                return match.watchlist_id
+            match = self._lookup_simple_watchlist_match("oui", mac[:8])
+            if match is not None:
+                return match.watchlist_id
             # mac_range annotation: call the private helper directly
             # rather than the public resolve_matched_mac_range so the
             # WARNING-on-overlap is not emitted twice when the rules
@@ -281,19 +323,13 @@ class Database:
             if mac_range_matches:
                 return mac_range_matches[0].watchlist_id
         if ssid:
-            row = self._conn.execute(
-                "SELECT id FROM watchlist WHERE pattern_type = 'ssid' AND pattern = ? LIMIT 1",
-                (ssid,),
-            ).fetchone()
-            if row is not None:
-                return int(row["id"])
+            match = self._lookup_simple_watchlist_match("ssid", ssid)
+            if match is not None:
+                return match.watchlist_id
         for uuid in ble_service_uuids:
-            row = self._conn.execute(
-                "SELECT id FROM watchlist WHERE pattern_type = 'ble_uuid' AND pattern = ? LIMIT 1",
-                (uuid,),
-            ).fetchone()
-            if row is not None:
-                return int(row["id"])
+            match = self._lookup_simple_watchlist_match("ble_uuid", uuid)
+            if match is not None:
+                return match.watchlist_id
         return None
 
     def _lookup_mac_range_matches(self, mac: str | None) -> list[ResolvedMacRangeMatch]:
@@ -369,6 +405,81 @@ class Database:
                 matches[0].prefix_length,
             )
         return matches[0] if matches else None
+
+    # ---- DB-delegated eval matchers ---------------------------------
+    #
+    # The four matchers below back the empty-patterns delegation
+    # semantic for watchlist_mac, watchlist_oui, watchlist_ssid, and
+    # ble_uuid. They mirror the role of resolve_matched_mac_range from
+    # Part 2: each is consulted from the corresponding rules.evaluate
+    # branch when rule.patterns is empty, and each returns severity
+    # alongside watchlist_id so the consuming branch can stamp the
+    # emitted RuleHit with the matched DB row's severity (NOT the
+    # rule's severity — see the rationale in ResolvedMacRangeMatch
+    # and the rules.evaluate branches).
+    #
+    # All four delegate to _lookup_simple_watchlist_match so the SQL
+    # cannot drift from the annotation path that resolve_matched_
+    # watchlist_id walks for matched_watchlist_id stamping.
+
+    def resolve_matched_mac_for_eval(
+        self, mac: str | None
+    ) -> ResolvedWatchlistMatch | None:
+        """Watchlist row for an exact MAC match, or None.
+
+        Used by rules.evaluate's watchlist_mac branch when rule.patterns
+        is empty (delegation mode). Falsy ``mac`` short-circuits to None.
+        """
+        if not mac:
+            return None
+        return self._lookup_simple_watchlist_match("mac", mac)
+
+    def resolve_matched_oui_for_eval(
+        self, mac: str | None
+    ) -> ResolvedWatchlistMatch | None:
+        """Watchlist row for the OUI prefix of ``mac``, or None.
+
+        OUI is the first 8 chars of the MAC (e.g. ``"aa:bb:cc"`` from
+        ``"aa:bb:cc:dd:ee:ff"``). Used by rules.evaluate's
+        watchlist_oui branch when rule.patterns is empty (delegation
+        mode). Falsy ``mac`` short-circuits to None.
+        """
+        if not mac:
+            return None
+        return self._lookup_simple_watchlist_match("oui", mac[:8])
+
+    def resolve_matched_ssid_for_eval(
+        self, ssid: str | None
+    ) -> ResolvedWatchlistMatch | None:
+        """Watchlist row for an exact SSID match, or None.
+
+        Used by rules.evaluate's watchlist_ssid branch when
+        rule.patterns is empty (delegation mode). Falsy ``ssid``
+        short-circuits to None — observations without a captured SSID
+        cannot match a watchlist_ssid row.
+        """
+        if not ssid:
+            return None
+        return self._lookup_simple_watchlist_match("ssid", ssid)
+
+    def resolve_matched_ble_uuid_for_eval(
+        self, uuids: tuple[str, ...] | list[str]
+    ) -> ResolvedWatchlistMatch | None:
+        """Watchlist row for the first watchlisted UUID in ``uuids``.
+
+        Iterates ``uuids`` in order and returns the first watchlist
+        row found, mirroring the existing in-memory ble_uuid branch
+        which also returns on the first match. Used by rules.evaluate's
+        ble_uuid branch when rule.patterns is empty (delegation mode).
+        Empty ``uuids`` short-circuits to None.
+        """
+        if not uuids:
+            return None
+        for uuid in uuids:
+            match = self._lookup_simple_watchlist_match("ble_uuid", uuid)
+            if match is not None:
+                return match
+        return None
 
     def get_recent_alert_for_rule_and_mac(
         self,
