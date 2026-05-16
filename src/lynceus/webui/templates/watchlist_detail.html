@@ -14,6 +14,16 @@
     {% if entry.description %}
       <p><strong>description:</strong> {{ entry.description }}</p>
     {% endif %}
+    {% if entry.pattern_type == "mac_range" and entry.mac_range_prefix_length %}
+      <p>
+        <strong>prefix length:</strong> /{{ entry.mac_range_prefix_length }}
+        {% if entry.mac_range_prefix_length == 28 %}
+          &middot; <small>MA-M block, 1,048,576 addresses</small>
+        {% elif entry.mac_range_prefix_length == 36 %}
+          &middot; <small>MA-S / IAB block, 4,096 addresses</small>
+        {% endif %}
+      </p>
+    {% endif %}
   </article>
 
   {% if has_metadata %}

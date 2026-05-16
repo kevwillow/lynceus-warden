@@ -862,6 +862,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "pattern_type": row["pattern_type"],
             "severity": row["severity"],
             "description": row["description"],
+            "mac_range_prefix": row.get("mac_range_prefix"),
+            "mac_range_prefix_length": row.get("mac_range_prefix_length"),
         }
         has_metadata = row.get("metadata_id") is not None
         metadata = None
