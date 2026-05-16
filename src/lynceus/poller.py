@@ -147,7 +147,7 @@ def poll_once(
                 # watchlist rule by adding the matching device — this INFO
                 # line gives them a journalctl trail. Cost is bounded by
                 # the allowlist size (operator-curated, typically small).
-                suppressed_hits = evaluate(ruleset, obs, is_new_device=is_new)
+                suppressed_hits = evaluate(ruleset, obs, is_new_device=is_new, db=db)
                 for sh in suppressed_hits:
                     if sh.rule_type == "new_non_randomized_device":
                         continue
@@ -158,7 +158,7 @@ def poll_once(
                         sh.severity,
                     )
                 continue
-            hits = evaluate(ruleset, obs, is_new_device=is_new)
+            hits = evaluate(ruleset, obs, is_new_device=is_new, db=db)
             matched_watchlist_id: int | None = None
             if any(h.rule_type != "new_non_randomized_device" for h in hits):
                 matched_watchlist_id = db.resolve_matched_watchlist_id(
