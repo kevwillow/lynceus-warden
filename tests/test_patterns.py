@@ -12,7 +12,11 @@ import logging
 
 import pytest
 
-from lynceus.patterns import normalize_pattern
+from lynceus.patterns import (
+    canonicalize_mac_range_pattern,
+    normalize_pattern,
+    parse_mac_range_pattern,
+)
 
 # ------------------------------ mac normalization ----------------------------
 
@@ -202,3 +206,119 @@ def test_normalize_unknown_pattern_type_does_not_raise():
     # No assertion target other than "no exception" — explicit guard
     # against a future refactor that defaults to raising.
     assert normalize_pattern("never_heard_of_this", "anything goes") == "anything goes"
+
+
+# ------------------------- mac_range parsing ---------------------------------
+#
+# parse_mac_range_pattern admits the two canonical CIDR shapes Argus emits
+# (snapshot exported_at 2026-05-14T22:34:07Z: ~64% /28, ~35% /36) plus the
+# 12 legacy bare-prefix rows the Argus engineer flagged as queued for
+# upstream canonicalization. Returns (cleaned hex prefix, length in bits)
+# for the watchlist columns; rejects every other shape loudly because a
+# new length surfacing means an Argus wire-contract change worth raising
+# on rather than silently accepting.
+
+
+def test_parse_mac_range_canonical_28_round_trip():
+    """Canonical /28: 'aa:bb:cc:d/28' → ('aabbccd', 28). The cleaned hex
+    fits the lowercase-no-separators form stored in watchlist.mac_range_prefix."""
+    prefix, length = parse_mac_range_pattern("aa:bb:cc:d/28")
+    assert prefix == "aabbccd"
+    assert length == 28
+    assert canonicalize_mac_range_pattern(prefix, length) == "aa:bb:cc:d/28"
+
+
+def test_parse_mac_range_canonical_36_round_trip():
+    """Canonical /36: 'aa:bb:cc:dd:e/36' → ('aabbccdde', 36)."""
+    prefix, length = parse_mac_range_pattern("aa:bb:cc:dd:e/36")
+    assert prefix == "aabbccdde"
+    assert length == 36
+    assert canonicalize_mac_range_pattern(prefix, length) == "aa:bb:cc:dd:e/36"
+
+
+def test_parse_mac_range_uppercase_input_lowercased():
+    """Argus has not historically uppercased mac_range but the parser
+    should be defensive — the lowercase invariant of mac_range_prefix
+    matters for the future poller's prefix-match SQL."""
+    prefix, length = parse_mac_range_pattern("AA:BB:CC:D/28")
+    assert prefix == "aabbccd"
+    assert length == 28
+
+
+def test_parse_mac_range_legacy_bare_prefix_28_infers_length():
+    """4-group bare-prefix 'aa:bb:cc:d' (no '/28' suffix) → /28, same
+    cleaned hex as the canonical equivalent. Accepted per the
+    Argus-engineer handoff (12 rows out of 22,532 in the live snapshot
+    are this shape, queued for upstream canonicalization)."""
+    bare_prefix, bare_length = parse_mac_range_pattern("aa:bb:cc:d")
+    canonical_prefix, canonical_length = parse_mac_range_pattern("aa:bb:cc:d/28")
+    assert bare_prefix == canonical_prefix == "aabbccd"
+    assert bare_length == canonical_length == 28
+
+
+def test_parse_mac_range_legacy_bare_prefix_36_infers_length():
+    """5-group bare-prefix 'aa:bb:cc:dd:e' → /36 with same cleaned hex
+    as the canonical equivalent."""
+    bare_prefix, bare_length = parse_mac_range_pattern("aa:bb:cc:dd:e")
+    canonical_prefix, canonical_length = parse_mac_range_pattern("aa:bb:cc:dd:e/36")
+    assert bare_prefix == canonical_prefix == "aabbccdde"
+    assert bare_length == canonical_length == 36
+
+
+@pytest.mark.parametrize("length", [24, 32, 40, 44, 48])
+def test_parse_mac_range_rejects_unsupported_length(length):
+    """Only /28 and /36 emit in current Argus traffic; /24 is identifier_type
+    'oui' by IEEE design (oui ↔ mac_range are disjoint). A new length
+    surfacing means an Argus contract change — raise loudly rather than
+    silently accept and quietly skew the partial-index population."""
+    with pytest.raises(ValueError, match=r"prefix length /\d+ is not supported"):
+        parse_mac_range_pattern(f"aa:bb:cc:d/{length}")
+
+
+def test_parse_mac_range_rejects_non_hex_characters():
+    with pytest.raises(ValueError, match="non-hex"):
+        parse_mac_range_pattern("zz:bb:cc:d/28")
+
+
+def test_parse_mac_range_rejects_3_groups():
+    """Wrong group count: 3 colon-separated groups cannot encode /28 or /36."""
+    with pytest.raises(ValueError, match="4 or 5 colon-separated groups"):
+        parse_mac_range_pattern("aa:bb:c")
+
+
+def test_parse_mac_range_rejects_6_groups():
+    """A full 6-octet MAC (e.g. accidentally pasted into the mac_range
+    column) must fail loudly, not be silently truncated."""
+    with pytest.raises(ValueError, match="4 or 5 colon-separated groups"):
+        parse_mac_range_pattern("aa:bb:cc:dd:ee:ff")
+
+
+def test_parse_mac_range_rejects_2_nibble_last_group_on_bare_prefix():
+    """Bare-prefix shape requires the last group to be exactly 1 nibble.
+    A 2-nibble last group 'aa:bb:cc:dd' could be ambiguously read as an
+    /32 (which Argus doesn't emit anyway) or a malformed /28. Reject."""
+    with pytest.raises(ValueError, match="exactly 1 hex"):
+        parse_mac_range_pattern("aa:bb:cc:dd")
+
+
+def test_parse_mac_range_rejects_length_mismatch_28_declared_36_shape():
+    """'aa:bb:cc:d/36' declares /36 but the 4-group shape (7 hex chars)
+    implies /28 — almost certainly an Argus bug. Reject loudly."""
+    with pytest.raises(ValueError, match=r"declared /36 but prefix shape implies /28"):
+        parse_mac_range_pattern("aa:bb:cc:d/36")
+
+
+def test_parse_mac_range_rejects_length_mismatch_36_declared_28_shape():
+    """Mirror of the above: 5-group shape declared /28."""
+    with pytest.raises(ValueError, match=r"declared /28 but prefix shape implies /36"):
+        parse_mac_range_pattern("aa:bb:cc:dd:e/28")
+
+
+def test_parse_mac_range_rejects_empty_string():
+    with pytest.raises(ValueError, match="empty"):
+        parse_mac_range_pattern("")
+
+
+def test_parse_mac_range_rejects_non_integer_cidr_length():
+    with pytest.raises(ValueError, match="CIDR length must be an integer"):
+        parse_mac_range_pattern("aa:bb:cc:d/twentyeight")
