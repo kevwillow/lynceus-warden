@@ -803,7 +803,7 @@ class Database:
 
     # --- watchlist_metadata (Argus side table) ----------------------------
 
-    _WATCHLIST_PATTERN_TYPES = ("mac", "oui", "ssid", "ble_uuid")
+    _WATCHLIST_PATTERN_TYPES = ("mac", "oui", "ssid", "ble_uuid", "mac_range")
     _METADATA_OPTIONAL_FIELDS = (
         "confidence",
         "vendor",
@@ -904,6 +904,7 @@ class Database:
         sql = (
             "SELECT "
             "w.id AS id, w.pattern, w.pattern_type, w.severity, w.description, "
+            "w.mac_range_prefix, w.mac_range_prefix_length, "
             "m.id AS metadata_id, m.argus_record_id, m.device_category, "
             "m.confidence, m.vendor, m.source, m.source_url, m.source_excerpt, "
             "m.fcc_id, m.geographic_scope, m.first_seen, m.last_verified, "

@@ -577,6 +577,119 @@ def test_xss_description_escaped_on_detail(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# mac_range rendering — list + detail surface canonical CIDR + prefix length.
+# ---------------------------------------------------------------------------
+
+
+def _add_mac_range_watchlist(
+    db: Database,
+    pattern: str,
+    prefix: str,
+    length: int,
+    severity: str = "low",
+    description: str | None = None,
+) -> int:
+    with db._conn:
+        cur = db._conn.execute(
+            "INSERT INTO watchlist("
+            "pattern, pattern_type, severity, description, "
+            "mac_range_prefix, mac_range_prefix_length) "
+            "VALUES (?, 'mac_range', ?, ?, ?, ?)",
+            (pattern, severity, description, prefix, length),
+        )
+        return int(cur.lastrowid)
+
+
+@pytest.mark.webui
+def test_watchlist_list_renders_mac_range_canonical_cidr(tmp_path):
+    """List page renders the canonical CIDR pattern verbatim from
+    the pattern column (post-Part 1 write-time canonicalization).
+    No per-type formatting; if pattern column rendered uniformly is
+    correct, this passes without template changes."""
+    app, db = _make_app(tmp_path)
+    try:
+        _add_mac_range_watchlist(
+            db,
+            "aa:bb:cc:d/28",
+            "aabbccd",
+            28,
+            description="Argus mac_range corpus row",
+        )
+        with TestClient(app) as client:
+            r = client.get("/watchlist")
+        assert r.status_code == 200
+        assert "aa:bb:cc:d/28" in r.text
+        assert "Argus mac_range corpus row" in r.text
+        assert "mac_range" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_detail_renders_mac_range_prefix_length(tmp_path):
+    """Detail page surfaces the prefix length explicitly for mac_range
+    entries, alongside the canonical CIDR pattern. Operators triaging
+    an alert tied to a mac_range row need the prefix length to
+    distinguish 'vendor /28 owns a million MACs' from 'specific
+    device identifier' — different operational responses."""
+    app, db = _make_app(tmp_path)
+    try:
+        wid = _add_mac_range_watchlist(
+            db,
+            "aa:bb:cc:dd:e/36",
+            "aabbccdde",
+            36,
+            severity="high",
+            description="MA-S /36 example",
+        )
+        with TestClient(app) as client:
+            r = client.get(f"/watchlist/{wid}")
+        assert r.status_code == 200
+        assert "aa:bb:cc:dd:e/36" in r.text
+        assert "/36" in r.text
+        # The block-size annotation for /36 is the MA-S / IAB hint.
+        assert "MA-S" in r.text or "IAB" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_detail_mac_range_28_shows_ma_m_annotation(tmp_path):
+    """The /28 detail page surfaces MA-M block-size context. The two
+    annotations (/28 → MA-M 1,048,576 addresses; /36 → MA-S / IAB
+    4,096 addresses) are presentational but help operators size the
+    blast radius of a watchlist hit at a glance."""
+    app, db = _make_app(tmp_path)
+    try:
+        wid = _add_mac_range_watchlist(db, "aa:bb:cc:d/28", "aabbccd", 28)
+        with TestClient(app) as client:
+            r = client.get(f"/watchlist/{wid}")
+        assert r.status_code == 200
+        assert "/28" in r.text
+        assert "MA-M" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_detail_non_mac_range_does_not_render_prefix_length(tmp_path):
+    """Regression guard: the new prefix-length block is gated on
+    pattern_type='mac_range'. A plain mac row must NOT render the
+    MA-M/MA-S annotations or a stray '/28' / '/36' marker."""
+    app, db = _make_app(tmp_path)
+    try:
+        wid = _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "high", "plain mac")
+        with TestClient(app) as client:
+            r = client.get(f"/watchlist/{wid}")
+        assert r.status_code == 200
+        assert "MA-M" not in r.text
+        assert "MA-S" not in r.text
+        assert "prefix length" not in r.text.lower()
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Smoke regression: existing v0.2 routes unaffected.
 # ---------------------------------------------------------------------------
 
