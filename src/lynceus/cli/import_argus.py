@@ -22,7 +22,11 @@ import yaml
 
 from .. import paths
 from ..db import Database
-from ..patterns import normalize_pattern
+from ..patterns import (
+    canonicalize_mac_range_pattern,
+    normalize_pattern,
+    parse_mac_range_pattern,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +56,7 @@ IDENTIFIER_TYPE_MAP: dict[str, str] = {
     "ssid_exact": "ssid",
     "ble_uuid": "ble_uuid",
     "ble_service": "ble_uuid",
+    "mac_range": "mac_range",
 }
 
 # Per-spec built-in severity defaults. Categories not listed default to "low".
@@ -390,21 +395,6 @@ def import_csv(
             # Allowlist keys are lowercase; normalize before the lookup so
             # uppercase rows aren't silently swallowed as dropped_unknown_type.
             argus_type = (row["identifier_type"] or "").strip().lower()
-            if argus_type == "mac_range":
-                report.dropped_mac_range += 1
-                # INFO not WARNING: these are expected drops per the
-                # Argus §4.4 contract, not anomalies. Operators who want
-                # silence can lift to WARN; the row-level forensic trail
-                # is for diagnosing Wave-G-style surprises without
-                # grepping the original CSV.
-                logger.info(
-                    "argus import: skipping row argus_record_id=%s "
-                    "identifier_type=%r reason=%s",
-                    argus_id,
-                    row["identifier_type"],
-                    "mac_range_unsupported",
-                )
-                continue
             if argus_type not in IDENTIFIER_TYPE_MAP:
                 report.dropped_unknown_type += 1
                 logger.info(
@@ -454,23 +444,60 @@ def import_csv(
                 report.dropped_severity_drop += 1
                 continue
 
-            pattern = row["identifier"]
-            if not pattern:
+            raw_pattern = row["identifier"]
+            if not raw_pattern:
                 raise ValueError("identifier is empty")
             # Normalize at write time (L-RULES-1). The poller normalizes its
             # observation MAC/UUID before the equality lookup against the
             # watchlist table; a row stored in non-canonical form silently
             # never matches and the alert loses its Argus metadata link.
-            try:
-                pattern = normalize_pattern(pattern_type, pattern)
-            except ValueError as exc:
-                report.normalization_failed += 1
-                logger.warning(
-                    "row argus_record_id=%r: rejected for normalization: %s",
-                    argus_id,
-                    exc,
+            #
+            # mac_range parses through a structured (prefix, length) pair
+            # rather than a single canonical string, so it takes a
+            # distinct path: parse_mac_range_pattern() validates and
+            # extracts the nibble metadata, and canonicalize_mac_range_pattern()
+            # re-renders to CIDR form for the watchlist.pattern column.
+            # Legacy bare-prefix shapes ('aa:bb:cc:d', 'aa:bb:cc:dd:e')
+            # are accepted dual-shape per the Argus-engineer handoff and
+            # logged so operators can watch the legacy count drop to zero
+            # once Argus canonicalizes upstream.
+            mac_range_prefix: str | None = None
+            mac_range_prefix_length: int | None = None
+            if pattern_type == "mac_range":
+                try:
+                    mac_range_prefix, mac_range_prefix_length = parse_mac_range_pattern(
+                        raw_pattern
+                    )
+                except ValueError as exc:
+                    report.normalization_failed += 1
+                    logger.warning(
+                        "row argus_record_id=%r: rejected for normalization: %s",
+                        argus_id,
+                        exc,
+                    )
+                    continue
+                pattern = canonicalize_mac_range_pattern(
+                    mac_range_prefix, mac_range_prefix_length
                 )
-                continue
+                if "/" not in raw_pattern:
+                    logger.info(
+                        "argus import: mac_range legacy bare-prefix %r "
+                        "canonicalized to %r argus_record_id=%s",
+                        raw_pattern,
+                        pattern,
+                        argus_id,
+                    )
+            else:
+                try:
+                    pattern = normalize_pattern(pattern_type, raw_pattern)
+                except ValueError as exc:
+                    report.normalization_failed += 1
+                    logger.warning(
+                        "row argus_record_id=%r: rejected for normalization: %s",
+                        argus_id,
+                        exc,
+                    )
+                    continue
             description = _empty_to_none(row["description"])
             new_metadata = _build_metadata_fields(row, confidence)
 
@@ -505,9 +532,18 @@ def import_csv(
                 if wl_row is None:
                     with db._conn:
                         cur = db._conn.execute(
-                            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
-                            "VALUES (?, ?, ?, ?)",
-                            (pattern, pattern_type, severity, description),
+                            "INSERT INTO watchlist("
+                            "pattern, pattern_type, severity, description, "
+                            "mac_range_prefix, mac_range_prefix_length) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (
+                                pattern,
+                                pattern_type,
+                                severity,
+                                description,
+                                mac_range_prefix,
+                                mac_range_prefix_length,
+                            ),
                         )
                         watchlist_id = int(cur.lastrowid)
                 else:

@@ -225,15 +225,112 @@ def test_uppercase_identifier_type_normalized_to_lowercase_allowlist(tmp_path, d
     assert row["pattern_type"] == "ble_uuid"
 
 
-def test_mac_range_identifier_type_dropped_increments_counter(tmp_path, db):
+def test_mac_range_canonical_28_imports_with_prefix_columns(tmp_path, db):
+    """Canonical /28 mac_range row lands in the watchlist with the
+    nibble-precision prefix metadata populated. Previously dropped via
+    dropped_mac_range; restored under the Argus 2026-05-14T22:34:07Z
+    wire contract."""
     path = _write_csv(
         tmp_path / "wl.csv",
-        [_row(argus_record_id="r1", identifier_type="mac_range")],
+        [
+            _row(
+                argus_record_id="mr-28",
+                identifier_type="mac_range",
+                identifier="aa:bb:cc:d/28",
+            )
+        ],
     )
     report = import_csv(db, path, OverrideConfig())
-    assert report.dropped_mac_range == 1
-    assert _wl_count(db) == 0
-    assert _md_count(db) == 0
+    assert report.imported_new == 1
+    assert report.dropped_mac_range == 0
+    assert report.normalization_failed == 0
+    row = db._conn.execute(
+        "SELECT pattern, pattern_type, mac_range_prefix, mac_range_prefix_length "
+        "FROM watchlist"
+    ).fetchone()
+    assert row["pattern_type"] == "mac_range"
+    assert row["pattern"] == "aa:bb:cc:d/28"
+    assert row["mac_range_prefix"] == "aabbccd"
+    assert row["mac_range_prefix_length"] == 28
+
+
+def test_mac_range_canonical_36_imports_with_prefix_columns(tmp_path, db):
+    """Canonical /36 mac_range row lands with 9-hex prefix metadata."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="mr-36",
+                identifier_type="mac_range",
+                identifier="aa:bb:cc:dd:e/36",
+            )
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    row = db._conn.execute(
+        "SELECT pattern, mac_range_prefix, mac_range_prefix_length FROM watchlist"
+    ).fetchone()
+    assert row["pattern"] == "aa:bb:cc:dd:e/36"
+    assert row["mac_range_prefix"] == "aabbccdde"
+    assert row["mac_range_prefix_length"] == 36
+
+
+def test_mac_range_legacy_bare_prefix_canonicalized_on_disk(tmp_path, db):
+    """Legacy bare-prefix shape ('aa:bb:cc:d', 5-group 'aa:bb:cc:dd:e')
+    is accepted dual-shape per the Argus-engineer handoff. On disk, the
+    pattern column is uniformly canonicalized to CIDR form so the
+    watchlist UI shows uniform shape regardless of input."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="mr-legacy-28",
+                identifier_type="mac_range",
+                identifier="aa:bb:cc:d",
+            ),
+            _row(
+                argus_record_id="mr-legacy-36",
+                identifier_type="mac_range",
+                identifier="aa:bb:cc:dd:e",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 2
+    rows = db._conn.execute(
+        "SELECT pattern, mac_range_prefix_length FROM watchlist ORDER BY id"
+    ).fetchall()
+    assert [r["pattern"] for r in rows] == ["aa:bb:cc:d/28", "aa:bb:cc:dd:e/36"]
+    assert [r["mac_range_prefix_length"] for r in rows] == [28, 36]
+
+
+def test_mac_range_malformed_pattern_routes_to_normalization_failed(tmp_path, db):
+    """A row whose mac_range pattern cannot be parsed (here: a full 6-byte
+    MAC declared as a range) lands in normalization_failed, not in a
+    generic errors bucket — same disposition as malformed MACs in the
+    L-RULES-1 path. The good row in the same import still lands."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="bad-range",
+                identifier_type="mac_range",
+                identifier="aa:bb:cc:dd:ee:ff",
+            ),
+            _row(
+                argus_record_id="good-range",
+                identifier_type="mac_range",
+                identifier="aa:bb:cc:d/28",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.normalization_failed == 1
+    assert report.imported_new == 1
+    assert report.errors == 0
+    rows = db._conn.execute("SELECT pattern FROM watchlist").fetchall()
+    assert [r["pattern"] for r in rows] == ["aa:bb:cc:d/28"]
 
 
 def test_unknown_identifier_type_dropped_increments_counter(tmp_path, db):
@@ -269,16 +366,59 @@ def _drop_log_records(caplog, argus_record_id: str, reason: str) -> list:
     ]
 
 
-def test_mac_range_drop_emits_info_log(tmp_path, db, caplog):
+def test_mac_range_legacy_bare_prefix_emits_canonicalization_info_log(
+    tmp_path, db, caplog
+):
+    """Legacy bare-prefix mac_range rows are accepted but log a per-row
+    INFO line carrying the raw input, the canonicalized form, and the
+    argus_record_id. Operators grep for this to watch the legacy count
+    drop to zero once Argus canonicalizes upstream."""
     path = _write_csv(
         tmp_path / "wl.csv",
-        [_row(argus_record_id="mr-logged", identifier_type="mac_range")],
+        [
+            _row(
+                argus_record_id="mr-legacy-logged",
+                identifier_type="mac_range",
+                identifier="aa:bb:cc:d",
+            )
+        ],
     )
     with caplog.at_level(_logging.INFO, logger="lynceus.cli.import_argus"):
         import_csv(db, path, OverrideConfig())
-    matches = _drop_log_records(caplog, "mr-logged", "mac_range_unsupported")
+    matches = [
+        r
+        for r in caplog.records
+        if r.levelno == _logging.INFO
+        and r.name == "lynceus.cli.import_argus"
+        and "mr-legacy-logged" in r.getMessage()
+        and "legacy bare-prefix" in r.getMessage()
+    ]
     assert len(matches) == 1
-    assert "'mac_range'" in matches[0].getMessage()  # identifier_type=%r
+    msg = matches[0].getMessage()
+    assert "'aa:bb:cc:d'" in msg  # raw shape, repr-quoted
+    assert "'aa:bb:cc:d/28'" in msg  # canonical shape
+
+
+def test_mac_range_canonical_emits_no_canonicalization_log(tmp_path, db, caplog):
+    """Guard: canonical CIDR rows must NOT emit the legacy-canonicalization
+    INFO line — that line is the only signal operators have for tracking
+    how many legacy rows remain in Argus's emission."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="mr-canon-noLog",
+                identifier_type="mac_range",
+                identifier="aa:bb:cc:d/28",
+            )
+        ],
+    )
+    with caplog.at_level(_logging.INFO, logger="lynceus.cli.import_argus"):
+        import_csv(db, path, OverrideConfig())
+    bare_prefix_msgs = [
+        r for r in caplog.records if "legacy bare-prefix" in r.getMessage()
+    ]
+    assert bare_prefix_msgs == []
 
 
 def test_ble_characteristic_drop_emits_info_log(tmp_path, db, caplog):
@@ -1787,9 +1927,28 @@ def _e2e_rows() -> list[dict[str, str]]:
             confidence="90",
             geographic_scope="us",
         ),
+        # Two additional keepers — mac_range /28 (canonical CIDR) and
+        # mac_range /36 (legacy bare-prefix, canonicalized on disk).
+        # Pre-mac_range plumbing these were dropped via dropped_mac_range
+        # (full 6-byte MACs were used as drop fixtures because mac_range
+        # parsing did not yet exist); both now land in the watchlist.
+        _row(
+            argus_record_id="k6",
+            identifier_type="mac_range",
+            identifier="aa:bb:cc:d/28",
+            device_category="alpr",
+            confidence="90",
+            geographic_scope="us",
+        ),
+        _row(
+            argus_record_id="k7",
+            identifier_type="mac_range",
+            identifier="11:22:33:44:e",
+            device_category="drone",
+            confidence="90",
+            geographic_scope="us",
+        ),
         # Drops:
-        _row(argus_record_id="d1", identifier_type="mac_range", identifier="aa:bb:cc:dd:00:00"),
-        _row(argus_record_id="d2", identifier_type="mac_range", identifier="11:22:33:44:00:00"),
         _row(argus_record_id="u1", identifier_type="fcc_id", identifier="A2B-XYZ123"),
         # Downgrade target: high default for alpr but low confidence -> med.
         _row(
@@ -1806,14 +1965,14 @@ def test_end_to_end_smoke_counts_match(tmp_path, db):
     path = _write_csv(tmp_path / "wl.csv", _e2e_rows())
     report = import_csv(db, path, OverrideConfig())
     assert report.total_rows == 9
-    assert report.imported_new == 6
-    assert report.dropped_mac_range == 2
+    assert report.imported_new == 8
+    assert report.dropped_mac_range == 0
     assert report.dropped_unknown_type == 1
     assert report.dropped_geographic_filter == 0
     assert report.dropped_severity_drop == 0
     assert report.errors == 0
-    assert _wl_count(db) == 6
-    assert _md_count(db) == 6
+    assert _wl_count(db) == 8
+    assert _md_count(db) == 8
 
 
 def test_end_to_end_smoke_severity_tiers_correct(tmp_path, db):
@@ -1840,15 +1999,17 @@ def test_end_to_end_smoke_idempotent(tmp_path, db):
     report = import_csv(db, path, OverrideConfig())
     assert report.imported_new == 0
     assert report.updated == 0
-    assert report.unchanged == 6
+    assert report.unchanged == 8
 
 
 def test_run_summary_line_formatted_correctly(tmp_path, db):
     path = _write_csv(tmp_path / "wl.csv", _e2e_rows())
     report = import_csv(db, path, OverrideConfig())
     text = report.render()
-    assert "imported 6 records, updated 0, dropped 3" in text
-    assert "2 mac_range" in text
+    assert "imported 8 records, updated 0, dropped 1" in text
+    # mac_range rows no longer drop — they land in the watchlist.
+    # The counter line still renders so the bucket is visible at 0.
+    assert "0 mac_range" in text
     assert "0 geographic_filter" in text
     assert "0 severity_drop" in text
     assert "1 unknown_type" in text
@@ -1920,6 +2081,25 @@ def test_cross_repo_live_argus_csv_imports_without_errors(tmp_path, db):
         + report.normalization_failed
         + report.errors
     )
+    # mac_range rows land in the watchlist as of the 011 migration.
+    # Argus's 2026-05-14T22:34:07Z snapshot carried ~17,798 mac_range
+    # rows (~64% /28 + ~35% /36 + ~12 legacy bare-prefix); the exact
+    # count drifts as Argus grows and as legacy rows are canonicalized
+    # upstream, so assert "substantially nonzero" rather than a fixed
+    # number. This is a dry_run import so we count via the report;
+    # the actual DB write path is covered by the per-row tests above.
+    assert report.imported_new > 1000, (
+        f"live Argus CSV imported only {report.imported_new} rows "
+        f"(<1000) — likely a regression in mac_range admission or a "
+        f"dramatic shrinkage in the upstream dataset"
+    )
+    assert report.dropped_mac_range == 0, (
+        f"live Argus CSV produced {report.dropped_mac_range} "
+        f"dropped_mac_range rows; with the 011 mac_range schema this "
+        f"counter should be 0 (rows now import). A nonzero value means "
+        f"the importer is still rejecting them somewhere."
+    )
+
     assert total_classified == report.total_rows, (
         f"row reconciliation mismatch: {total_classified} classified vs "
         f"{report.total_rows} total"
