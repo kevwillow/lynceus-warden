@@ -22,13 +22,24 @@ class ResolvedMacRangeMatch(NamedTuple):
     watchlist row id (for ``alerts.matched_watchlist_id`` stamping),
     the row's severity (sourced from the matched row, NOT from any
     rules.yaml entry — see ``rules.evaluate`` for the
-    severity-from-DB rationale), and the matched prefix length
-    (28 or 36, for downstream display / logging).
+    severity-from-DB rationale), the matched prefix length (28 or 36,
+    for downstream display / logging), and the matched row's
+    ``device_category`` from ``watchlist_metadata`` if present (NULL
+    for rows without a metadata row, e.g. the 63 bundled
+    default_watchlist rows that ship without device_category).
+
+    ``device_category`` powers the runtime severity-overrides layer
+    (``rules.RuntimeSeverityOverride``): the eval branch uses it to
+    look up per-category remap and suppression entries from
+    severity_overrides.yaml at alert time, on top of whatever
+    severity was baked at import time. NULL category means the row
+    has no metadata to key on; the runtime layer passes through.
     """
 
     watchlist_id: int
     severity: str
     prefix_length: int
+    device_category: str | None
 
 
 class ResolvedWatchlistMatch(NamedTuple):
@@ -42,13 +53,18 @@ class ResolvedWatchlistMatch(NamedTuple):
     rule's severity, so that imported per-row severities (e.g. the
     Argus device_category-derived defaults) survive into alerts.
 
-    Shape is deliberately the minimal pair of fields shared across
-    the four DB-delegated rule_types; mac_range carries an extra
-    ``prefix_length`` and so kept its own dedicated NamedTuple.
+    ``device_category`` is the matched row's ``watchlist_metadata.
+    device_category`` (or None when no metadata row exists), and
+    powers the runtime severity-overrides layer the same way
+    ``ResolvedMacRangeMatch.device_category`` does — see that
+    NamedTuple's docstring for the full rationale. NULL category
+    means the row has no metadata to key on; the runtime layer
+    passes through.
     """
 
     watchlist_id: int
     severity: str
+    device_category: str | None
 
 
 def _find_migrations_dir() -> Path:
@@ -269,9 +285,19 @@ class Database:
         Backs both ``resolve_matched_watchlist_id`` (annotation path,
         which only needs the row id) and the four
         ``resolve_matched_*_for_eval`` matchers (the DB-delegated
-        eval path, which needs id + severity). Sharing the SQL keeps
-        the two callers from drifting — adding a column projection
-        here flows to both at once.
+        eval path, which needs id + severity + device_category).
+        Sharing the SQL keeps the two callers from drifting — adding
+        a column projection here flows to both at once.
+
+        The LEFT JOIN onto ``watchlist_metadata`` surfaces
+        ``device_category`` for the runtime overrides layer. The JOIN
+        is single-row indexed on ``watchlist_id`` (FK target carries
+        an automatic index in SQLite); cost is negligible vs the
+        primary equality lookup on (pattern_type, pattern).
+        ``device_category`` is NULL for rows lacking a metadata row
+        (the 63 bundled default_watchlist rows that pre-date the
+        Argus metadata schema), which the runtime layer treats as
+        pass-through.
 
         Returns None for falsy ``pattern`` so callers can pass through
         unfiltered observation fields without pre-checking.
@@ -279,8 +305,11 @@ class Database:
         if not pattern:
             return None
         row = self._conn.execute(
-            "SELECT id, severity FROM watchlist "
-            "WHERE pattern_type = ? AND pattern = ? LIMIT 1",
+            "SELECT w.id AS id, w.severity AS severity, "
+            "m.device_category AS device_category "
+            "FROM watchlist w "
+            "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
+            "WHERE w.pattern_type = ? AND w.pattern = ? LIMIT 1",
             (pattern_type, pattern),
         ).fetchone()
         if row is None:
@@ -288,6 +317,9 @@ class Database:
         return ResolvedWatchlistMatch(
             watchlist_id=int(row["id"]),
             severity=str(row["severity"]),
+            device_category=(
+                str(row["device_category"]) if row["device_category"] is not None else None
+            ),
         )
 
     def resolve_matched_watchlist_id(
@@ -358,10 +390,13 @@ class Database:
             hex_chars = length // 4
             candidate = normalized[:hex_chars]
             row = self._conn.execute(
-                "SELECT id, severity FROM watchlist "
-                "WHERE pattern_type = 'mac_range' "
-                "AND mac_range_prefix_length = ? "
-                "AND mac_range_prefix = ? LIMIT 1",
+                "SELECT w.id AS id, w.severity AS severity, "
+                "m.device_category AS device_category "
+                "FROM watchlist w "
+                "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
+                "WHERE w.pattern_type = 'mac_range' "
+                "AND w.mac_range_prefix_length = ? "
+                "AND w.mac_range_prefix = ? LIMIT 1",
                 (length, candidate),
             ).fetchone()
             if row is not None:
@@ -370,6 +405,11 @@ class Database:
                         watchlist_id=int(row["id"]),
                         severity=str(row["severity"]),
                         prefix_length=length,
+                        device_category=(
+                            str(row["device_category"])
+                            if row["device_category"] is not None
+                            else None
+                        ),
                     )
                 )
         return matches

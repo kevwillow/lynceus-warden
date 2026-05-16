@@ -793,6 +793,24 @@ def test_resolve_matched_mac_range_28_hit(db):
     assert match.watchlist_id == wid
     assert match.severity == "high"
     assert match.prefix_length == 28
+    # No metadata row attached → device_category is None.
+    assert match.device_category is None
+
+
+def test_resolve_matched_mac_range_populates_device_category(db):
+    """LEFT JOIN onto watchlist_metadata surfaces device_category for
+    mac_range matches the same way it does for the simple matchers."""
+    wid = _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28, severity="high")
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist_metadata("
+            "watchlist_id, argus_record_id, device_category) "
+            "VALUES (?, ?, ?)",
+            (wid, f"argus-{wid}", "alpr"),
+        )
+    match = db.resolve_matched_mac_range("aa:bb:cc:d1:23:45")
+    assert match is not None
+    assert match.device_category == "alpr"
 
 
 def test_resolve_matched_mac_range_36_hit(db):
@@ -962,12 +980,49 @@ def _add_simple(
 # ---- resolve_matched_mac_for_eval ----
 
 
+def _attach_metadata(db: Database, watchlist_id: int, *, device_category: str, **extra) -> None:
+    """Attach a watchlist_metadata row to an existing watchlist row.
+
+    The runtime severity-overrides layer keys on
+    ``watchlist_metadata.device_category`` for per-category remap and
+    suppression. The LEFT JOIN in the lookup helpers surfaces this
+    field on ResolvedWatchlistMatch / ResolvedMacRangeMatch; the
+    helper below seeds it for tests.
+    """
+    payload = {"argus_record_id": f"argus-{watchlist_id}", "device_category": device_category}
+    payload.update(extra)
+    db.upsert_metadata(watchlist_id, payload)
+
+
 def test_resolve_matched_mac_for_eval_hit(db):
     wid = _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac", severity="high")
     match = db.resolve_matched_mac_for_eval("aa:bb:cc:dd:ee:ff")
     assert match is not None
     assert match.watchlist_id == wid
     assert match.severity == "high"
+    # No metadata row attached → device_category is None.
+    assert match.device_category is None
+
+
+def test_resolve_matched_mac_for_eval_populates_device_category(db):
+    """LEFT JOIN onto watchlist_metadata surfaces device_category on
+    the match. The runtime severity-overrides layer keys on this
+    field to look up per-category remap / suppression entries."""
+    wid = _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac", severity="high")
+    _attach_metadata(db, wid, device_category="alpr")
+    match = db.resolve_matched_mac_for_eval("aa:bb:cc:dd:ee:ff")
+    assert match is not None
+    assert match.device_category == "alpr"
+
+
+def test_resolve_matched_mac_for_eval_device_category_null_when_no_metadata(db):
+    """The 63 bundled default_watchlist rows ship without metadata
+    rows. Their device_category surfaces as None, which the runtime
+    layer treats as pass-through (no remap, no suppress applies)."""
+    _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac")
+    match = db.resolve_matched_mac_for_eval("aa:bb:cc:dd:ee:ff")
+    assert match is not None
+    assert match.device_category is None
 
 
 def test_resolve_matched_mac_for_eval_miss(db):
@@ -1001,6 +1056,15 @@ def test_resolve_matched_oui_for_eval_hit(db):
     assert match is not None
     assert match.watchlist_id == wid
     assert match.severity == "med"
+    assert match.device_category is None
+
+
+def test_resolve_matched_oui_for_eval_populates_device_category(db):
+    wid = _add_simple(db, "00:13:37", "oui", severity="high")
+    _attach_metadata(db, wid, device_category="hacking_tool")
+    match = db.resolve_matched_oui_for_eval("00:13:37:aa:bb:cc")
+    assert match is not None
+    assert match.device_category == "hacking_tool"
 
 
 def test_resolve_matched_oui_for_eval_miss(db):
@@ -1031,6 +1095,15 @@ def test_resolve_matched_ssid_for_eval_hit(db):
     assert match is not None
     assert match.watchlist_id == wid
     assert match.severity == "high"
+    assert match.device_category is None
+
+
+def test_resolve_matched_ssid_for_eval_populates_device_category(db):
+    wid = _add_simple(db, "FreeAirportWiFi", "ssid", severity="med")
+    _attach_metadata(db, wid, device_category="drone")
+    match = db.resolve_matched_ssid_for_eval("FreeAirportWiFi")
+    assert match is not None
+    assert match.device_category == "drone"
 
 
 def test_resolve_matched_ssid_for_eval_miss(db):
@@ -1068,6 +1141,15 @@ def test_resolve_matched_ble_uuid_for_eval_hit(db):
     assert match is not None
     assert match.watchlist_id == wid
     assert match.severity == "high"
+    assert match.device_category is None
+
+
+def test_resolve_matched_ble_uuid_for_eval_populates_device_category(db):
+    wid = _add_simple(db, _AIRTAG_UUID, "ble_uuid", severity="high")
+    _attach_metadata(db, wid, device_category="alpr")
+    match = db.resolve_matched_ble_uuid_for_eval([_AIRTAG_UUID])
+    assert match is not None
+    assert match.device_category == "alpr"
 
 
 def test_resolve_matched_ble_uuid_for_eval_miss(db):
