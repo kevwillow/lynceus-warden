@@ -51,3 +51,55 @@ rules:
   #   severity: low  # ignored — actual severity comes from the matched row
   #   patterns: []
   #   description: "Argus mac_range corpus — IEEE registry sub-allocations"
+
+  # ---- DB-delegation entries for the equality-shaped watchlist types ----
+  #
+  # The four entries below extend the empty-patterns-delegates-to-DB
+  # semantic from watchlist_mac_range to watchlist_mac, watchlist_oui,
+  # watchlist_ssid, and ble_uuid. Each enables alert-firing for every
+  # matching row of that pattern_type currently in the watchlist DB —
+  # the 63 rows shipped via the bundled default_watchlist.csv plus
+  # whatever lynceus-import-argus has populated. See the CHANGELOG
+  # entry for 0.4.0-rc4 ("watchlist delegation extension") and the
+  # Part 2 entry it builds on for the architectural background.
+  #
+  # Same contract as watchlist_mac_range: patterns: [] = delegate to
+  # the imported DB rows; the `severity` field below is IGNORED for
+  # the delegation case (the emitted alert's severity comes from the
+  # matched DB row's severity column, populated by the importer from
+  # device_category via DEFAULT_CATEGORY_SEVERITIES in import_argus.py
+  # — alpr / imsi_catcher / hacking_tool default to "high",
+  # body_cam / drone / gunshot_detect / in_vehicle_router to "med",
+  # and "unknown" / unspecified to "low"). Default is OFF; uncomment
+  # to enable.
+  #
+  # Backward compat: any pre-existing entry of these types with a
+  # non-empty `patterns:` list keeps its original in-memory match
+  # semantic (severity sourced from the rule). The empty-patterns
+  # idiom only activates the DB delegation path for new entries —
+  # existing operator deployments see zero behavioral change unless
+  # they deliberately uncomment one of the entries below.
+  #
+  # - name: argus_mac
+  #   rule_type: watchlist_mac
+  #   severity: low  # ignored — actual severity comes from the matched row
+  #   patterns: []
+  #   description: "Argus + bundled exact-MAC watchlist"
+  #
+  # - name: argus_oui
+  #   rule_type: watchlist_oui
+  #   severity: low  # ignored — actual severity comes from the matched row
+  #   patterns: []
+  #   description: "Argus + bundled OUI watchlist"
+  #
+  # - name: argus_ssid
+  #   rule_type: watchlist_ssid
+  #   severity: low  # ignored — actual severity comes from the matched row
+  #   patterns: []
+  #   description: "Argus + bundled SSID watchlist"
+  #
+  # - name: argus_ble_uuid
+  #   rule_type: ble_uuid
+  #   severity: low  # ignored — actual severity comes from the matched row
+  #   patterns: []
+  #   description: "Argus + bundled BLE service-UUID watchlist"
