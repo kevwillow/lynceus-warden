@@ -265,6 +265,131 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   empty-patterns idiom and the severity-from-row divergence; this
   bullet generalizes both as the convention.
 
+- **Runtime severity-overrides layer — `severity_overrides.yaml`
+  now applies at alert time, not just at import time.** Closes the
+  final Part 2 archaeology backlog item. Pre-this-rc, the wizard
+  scaffolded `severity_overrides.yaml` and `lynceus-import-argus
+  --override-file` consumed it (vendor_overrides, geographic_filter,
+  confidence_downgrade_threshold, device_category_severity), but
+  the daemon never read the file. Operators wanting to retune
+  severities after import had to re-import the entire Argus corpus
+  (~22,500 rows) to see the new severities applied. Now the poller
+  reads the same file at startup and applies a runtime transform
+  on DB-delegation matches at alert construction.
+
+  Two new behaviors. Both are runtime-layer-only — the import-time
+  consumer in `lynceus-import-argus` is unchanged.
+
+  - **`device_category_severity` (existing key, now BOTH layers).**
+    Import bakes the per-category remap into `watchlist.severity`
+    at write time (unchanged); runtime re-applies the same map at
+    alert time on top of whatever was baked. An operator changing
+    `unknown: med` in the file → daemon restart → the 17,786
+    IEEE-registry mac_range rows (baked `low`) fire at `med` on
+    the next poll cycle. No re-import. The same key flows
+    consistently to both layers.
+
+  - **`suppress_categories` (NEW key, runtime only).** A
+    delegation match whose `device_category` is in this list emits
+    no `RuleHit` — the alert is suppressed entirely (no row in
+    `alerts`, no ntfy push). The watchlist row stays present;
+    only alert emission is silenced. Useful when an operator wants
+    to retain enrichment metadata for a category without producing
+    alerts on it. An INFO log line per suppression names the rule,
+    category, and watchlist_id so operators have a forensic trail.
+
+  Three structural changes:
+
+  - `ResolvedMacRangeMatch` and `ResolvedWatchlistMatch` (the
+    delegation-match dataclasses) gain a `device_category: str |
+    None` field. Both private lookup helpers
+    (`_lookup_simple_watchlist_match`, `_lookup_mac_range_matches`)
+    LEFT JOIN onto `watchlist_metadata` to surface the category.
+    The JOIN is indexed on `watchlist_id`; cost is negligible
+    against the primary equality / prefix lookup. NULL category
+    (the 63 bundled `default_watchlist.csv` rows that ship without
+    metadata) means the runtime layer passes through — no remap,
+    no suppression applies.
+
+  - `rules.RuntimeSeverityOverride` is the runtime-side view of
+    `severity_overrides.yaml`. Reads only the two runtime-relevant
+    keys; pydantic `extra="ignore"` lets the parser tolerate the
+    full superset of keys the wizard's starter file documents — a
+    file containing only import-time keys yields an empty runtime
+    view that fast-paths through. `rules.load_runtime_severity_
+    overrides` is the loader: missing file → INFO + None; malformed
+    YAML / OSError / validation error → WARNING + None. The poller
+    never crashes because of a malformed override file.
+
+  - `rules.evaluate` gains a `severity_overrides:
+    RuntimeSeverityOverride | None = None` kwarg (mirror of the
+    Part 2 `db=` addition). All five DB-delegation eval branches
+    (mac_range + the four extension types) call a shared
+    `_apply_runtime_overrides` helper after the DB match and before
+    `RuleHit` construction. Precedence is documented as
+    suppress > remap > pass-through. Pass-through fast-path
+    short-circuits when overrides is None / `is_empty()` / the
+    match has no `device_category` — byte-identical RuleHits to
+    pre-this-rc behavior.
+
+  **Backward compatibility — verified end-to-end.**
+
+  - In-memory pattern rules (non-empty patterns) are unchanged;
+    severity stays rule-sourced. Runtime overrides apply only to
+    DB-delegation matches. Explicit regression test in
+    `test_rules.py`.
+  - The import-time `OverrideConfig` consumption in
+    `import_argus.py` is byte-identical pre/post (separate code
+    path, separate parser instance). `vendor_overrides`,
+    `geographic_filter`, and `confidence_downgrade_threshold`
+    remain import-time-only with their existing semantics.
+  - `DEFAULT_CATEGORY_SEVERITIES` at `import_argus.py:62-72` is
+    unchanged — still controls what gets baked at import time.
+    Runtime overrides apply on top.
+  - The full pre-this-rc test suite passes without modification
+    (modulo additive device_category assertions on the matchers,
+    which surface the new field without changing existing
+    behavior).
+
+  **Operator UX — what changed in `severity_overrides.yaml`.**
+
+  - The wizard's starter file now carries inline `# LAYER:` tags
+    on each section: `IMPORT-TIME` (re-import to apply),
+    `RUNTIME` (daemon restart applies live), or `BOTH`
+    (`device_category_severity` only). The user-facing explanation
+    block enumerates the two layers explicitly. Operators
+    reconfiguring see the per-layer effect of each section
+    inline rather than having to read source.
+  - The webui `/settings` severity-overrides card mirrors the
+    same wording — import-time keys vs runtime keys, with the
+    action required to apply changes.
+  - `Config` gains a `severity_overrides_path: str | None`
+    field. Defaults to None (opt-in for the runtime layer); set
+    to `paths.default_overrides_path(<scope>)` (the same path the
+    wizard scaffolds) to activate runtime overrides. The wizard
+    does NOT currently auto-persist this path into `lynceus.yaml`
+    — operators opt in by adding the line.
+
+  **Deliberate deferral — `vendor_overrides` at runtime.**
+  `vendor_overrides` stays import-time-only this rc. Its `"drop"`
+  sentinel today means "skip the row at import" — a runtime
+  interpretation would silently overload that meaning to mean
+  "suppress the alert" instead, which is a footgun worth
+  designing deliberately. A future `suppress_vendors` key (named
+  to avoid the `vendor_overrides`/`"drop"` semantic clash) is the
+  right shape, and that's a dedicated design pass, not a one-line
+  schema addition.
+
+  Cross-references Part 2 (`watchlist_mac_range`) and the
+  delegation extension bullet above as the prerequisite chain:
+  Part 2 introduced DB-delegated rule types; the delegation
+  extension generalized that to mac/oui/ssid/ble_uuid; this rc
+  adds the runtime severity layer that operators can tune
+  without re-importing. The Part 2 archaeology surfaced
+  `severity_overrides.yaml` as half-wired (created by the wizard,
+  read only at import time); this bullet makes the wizard's
+  framing accurate.
+
 ### Fixed
 
 - **`lynceus-import-argus --from-github` default `--repo` was
