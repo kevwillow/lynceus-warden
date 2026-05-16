@@ -392,6 +392,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`load_runtime_severity_overrides` now logs INFO at every load
+  outcome, not only on missing-file.** Surfaced during pre-smoke
+  review of the Kali live-validation runbook against the as-shipped
+  code. The runbook's Phase 3 step 8 promised "an INFO line
+  confirming the runtime severity-overrides file was loaded ...
+  grep for 'severity_override' or 'runtime override'" — but the
+  initial implementation logged INFO only on the missing-file
+  path. The successful-load path and the disabled-via-None path
+  (operator hadn't set `severity_overrides_path` in lynceus.yaml)
+  both returned silently. An operator running the smoke and
+  grepping journalctl at startup would have seen nothing and been
+  unable to tell whether the runtime layer was active, disabled,
+  or silently pass-through because of an unset config field —
+  exactly the diagnostic blind spot the runbook step was meant to
+  prevent.
+
+  Three new INFO lines now cover the three load outcomes that
+  return non-failure (the four failure modes — missing file,
+  unreadable file, malformed YAML, validation error — already
+  logged at WARNING and are unchanged):
+
+  - Active-keys path: `runtime severity overrides loaded from
+    <path>: N category remap(s), M suppressed category(ies). Edits
+    take effect on daemon restart.` Self-describing — an operator
+    who expected 3 remaps but sees 1 knows the parser was
+    selective. Counts at startup are the runbook's happy-path
+    grep target.
+  - Empty-keys path: `runtime severity overrides loaded from
+    <path> but contain no active runtime keys
+    (device_category_severity / suppress_categories); runtime
+    layer is effectively pass-through. Edit the file and restart
+    the daemon to activate.` Distinguishes a wizard-default-state
+    file (parses cleanly, no runtime keys uncommented) from one
+    where the operator's edits actually took effect.
+  - None path (severity_overrides_path unset): `severity_overrides
+    _path not set in lynceus.yaml; runtime override layer
+    disabled. Set the field to your severity_overrides.yaml path
+    (e.g. /etc/lynceus/severity_overrides.yaml under --system, or
+    ~/.config/lynceus/severity_overrides.yaml under --user) and
+    restart the daemon to enable.` Names the config field by
+    exact name + points at the canonical paths so an operator
+    who skipped the relevant lynceus.yaml edit sees the
+    actionable hint without grepping source.
+
+  All three are greppable via the literal `runtime severity
+  overrides` (the originally-promised `severity_override` /
+  `runtime override` shapes both match). One new test +
+  reframing of two existing parser tests cover the three new
+  paths. Backward compat: the four WARNING-level failure-mode
+  log lines are unchanged in content; only the previously-silent
+  success / disabled paths gained log entries. The new entries
+  are additive and have no functional impact on the runtime
+  override transform itself.
+
 - **`lynceus-import-argus --from-github` default `--repo` was
   pointing at a non-existent repository.** rc3 hard-coded
   `kevlattice/argus` as the default; the actual Argus repo is
