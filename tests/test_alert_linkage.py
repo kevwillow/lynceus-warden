@@ -609,6 +609,142 @@ def test_fk_does_not_cascade_delete_alerts(db):
 
 
 # ---------------------------------------------------------------------------
+# watchlist_mac_range — DB-delegated rule_type end-to-end.
+# ---------------------------------------------------------------------------
+
+
+def _add_mac_range_watchlist(
+    db: Database,
+    pattern: str,
+    prefix: str,
+    length: int,
+    severity: str = "low",
+    description: str | None = None,
+) -> int:
+    with db._conn:
+        cur = db._conn.execute(
+            "INSERT INTO watchlist("
+            "pattern, pattern_type, severity, description, "
+            "mac_range_prefix, mac_range_prefix_length) "
+            "VALUES (?, 'mac_range', ?, ?, ?, ?)",
+            (pattern, severity, description, prefix, length),
+        )
+        return int(cur.lastrowid)
+
+
+def test_watchlist_mac_range_rule_fires_e2e_severity_from_db(db, config, fake_client):
+    """End-to-end: a single empty-patterns watchlist_mac_range rule
+    enables alert-firing for a MAC inside a watchlisted /28. The
+    alert severity must match the matched DB row's severity (NOT
+    the rule's severity, which is 'low' below — proving the
+    DB-sourced-severity contract). matched_watchlist_id stamps the
+    correct row id."""
+    # a4:83:e7:11:22:33 is present in the kismet fixture; first 7 hex
+    # chars are a483e71, so a /28 row with that prefix covers it.
+    mac_range_id = _add_mac_range_watchlist(
+        db,
+        pattern="a4:83:e7:1/28",
+        prefix="a483e71",
+        length=28,
+        severity="high",
+        description="Argus mac_range corpus (synthetic)",
+    )
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac_range",
+                rule_type="watchlist_mac_range",
+                severity="low",  # ignored for this rule_type
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    alerts = [a for a in _alerts(db) if a["mac"] == "a4:83:e7:11:22:33"]
+    assert len(alerts) == 1
+    assert alerts[0]["matched_watchlist_id"] == mac_range_id
+    # Severity sourced from the matched DB row, not from rule.severity.
+    assert alerts[0]["severity"] == "high"
+
+
+def test_watchlist_mac_range_rule_e2e_miss_no_alert(db, config, fake_client):
+    """If no watchlist mac_range row covers any observed MAC, the
+    rule fires zero alerts even though it's enabled."""
+    # Plant a /28 row that does NOT cover any fixture MAC.
+    _add_mac_range_watchlist(
+        db,
+        pattern="de:ad:be:e/28",
+        prefix="deadbee",
+        length=28,
+        severity="high",
+    )
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac_range",
+                rule_type="watchlist_mac_range",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    assert _alerts(db) == []
+
+
+def test_watchlist_mac_range_rule_e2e_allowlist_audit_logs(db, config, fake_client, caplog):
+    """A MAC inside a watchlisted mac_range that is ALSO in the
+    allowlist must not fire an alert, but MUST emit the allowlist
+    audit INFO line. The audit pass exists to surface operator
+    misconfigurations where a watchlist hit is silently disabled
+    by allowlist coverage; mac_range hits get the same treatment
+    as every other watchlist_* type."""
+    import logging as _logging
+
+    from lynceus.allowlist import Allowlist, AllowlistEntry
+
+    _add_mac_range_watchlist(
+        db,
+        pattern="a4:83:e7:1/28",
+        prefix="a483e71",
+        length=28,
+        severity="high",
+    )
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac_range",
+                rule_type="watchlist_mac_range",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    allowlist = Allowlist(
+        entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")]
+    )
+    with caplog.at_level(_logging.INFO, logger="lynceus.poller"):
+        poll_once(
+            fake_client,
+            db,
+            config,
+            1700001000,
+            ruleset=rs,
+            allowlist=allowlist,
+        )
+    # No alert fired — allowlist suppressed.
+    apple_alerts = [a for a in _alerts(db) if a["mac"] == "a4:83:e7:11:22:33"]
+    assert apple_alerts == []
+    # But the audit pass logged the suppressed watchlist hit.
+    audit = [
+        r for r in caplog.records
+        if "Allowlist suppressed watchlist hit" in r.getMessage()
+        and "argus_mac_range" in r.getMessage()
+    ]
+    assert len(audit) == 1
+
+
+# ---------------------------------------------------------------------------
 # get_alert_with_match.
 # ---------------------------------------------------------------------------
 
