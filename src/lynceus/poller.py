@@ -14,7 +14,13 @@ from .db import Database
 from .evidence import capture_evidence, maybe_prune_evidence
 from .kismet import FakeKismetClient, KismetClient
 from .notify import Notifier, NullNotifier, build_metadata_suffix, build_notifier
-from .rules import Ruleset, evaluate, load_ruleset
+from .rules import (
+    Ruleset,
+    RuntimeSeverityOverride,
+    evaluate,
+    load_ruleset,
+    load_runtime_severity_overrides,
+)
 
 STATE_KEY_LAST_POLL = "last_poll_ts"
 
@@ -49,6 +55,7 @@ def poll_once(
     notifier: Notifier | None = None,
     source_allowlist: frozenset[str] | None = None,
     source_locations: dict[str, str] | None = None,
+    severity_overrides: RuntimeSeverityOverride | None = None,
 ) -> int:
     """Run one poll tick: fetch from Kismet, persist sightings, evaluate rules.
 
@@ -147,7 +154,13 @@ def poll_once(
                 # watchlist rule by adding the matching device — this INFO
                 # line gives them a journalctl trail. Cost is bounded by
                 # the allowlist size (operator-curated, typically small).
-                suppressed_hits = evaluate(ruleset, obs, is_new_device=is_new, db=db)
+                suppressed_hits = evaluate(
+                    ruleset,
+                    obs,
+                    is_new_device=is_new,
+                    db=db,
+                    severity_overrides=severity_overrides,
+                )
                 for sh in suppressed_hits:
                     if sh.rule_type == "new_non_randomized_device":
                         continue
@@ -158,7 +171,13 @@ def poll_once(
                         sh.severity,
                     )
                 continue
-            hits = evaluate(ruleset, obs, is_new_device=is_new, db=db)
+            hits = evaluate(
+                ruleset,
+                obs,
+                is_new_device=is_new,
+                db=db,
+                severity_overrides=severity_overrides,
+            )
             matched_watchlist_id: int | None = None
             if any(h.rule_type != "new_non_randomized_device" for h in hits):
                 matched_watchlist_id = db.resolve_matched_watchlist_id(
@@ -247,6 +266,16 @@ class Poller:
         self.allowlist = (
             load_allowlist(config.allowlist_path) if config.allowlist_path else Allowlist()
         )
+        # severity_overrides.yaml: runtime view (device_category_severity
+        # + suppress_categories). Failures (missing / unreadable /
+        # malformed) downgrade to None at the loader, never raise — the
+        # poller must not crash because the operator edited their
+        # override file into a malformed state. The import-time consumer
+        # in lynceus-import-argus is a separate code path with its own
+        # error handling and is unaffected by this load.
+        self.severity_overrides = load_runtime_severity_overrides(
+            config.severity_overrides_path
+        )
         self.notifier: Notifier = build_notifier(config)
         self._stop_flag = False
 
@@ -321,6 +350,7 @@ class Poller:
                         notifier=self.notifier,
                         source_allowlist=self._source_allowlist,
                         source_locations=self.config.kismet_source_locations,
+                        severity_overrides=self.severity_overrides,
                     )
                 except Exception:
                     logger.error("poll_once raised; continuing", exc_info=True)
@@ -340,6 +370,7 @@ class Poller:
                 notifier=self.notifier,
                 source_allowlist=self._source_allowlist,
                 source_locations=self.config.kismet_source_locations,
+                severity_overrides=self.severity_overrides,
             )
         finally:
             self.db.close()

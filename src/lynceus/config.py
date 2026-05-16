@@ -65,6 +65,16 @@ class Config(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     rules_path: str | None = None
     allowlist_path: str | None = None
+    # Path to severity_overrides.yaml — the same file lynceus-import-argus
+    # consumes via --override-file. The poller reads the runtime-relevant
+    # subset (device_category_severity, suppress_categories) at startup
+    # and applies overrides at alert time for DB-delegation matches.
+    # When None, the runtime override layer is disabled and delegation
+    # matches fire at their imported severities unchanged. The wizard
+    # scaffolds this file at paths.default_overrides_path(scope) but
+    # does NOT currently persist the path into lynceus.yaml — operators
+    # opting into runtime overrides set this field explicitly.
+    severity_overrides_path: str | None = None
     alert_dedup_window_seconds: int = 3600
     ntfy_url: str | None = None
     ntfy_topic: str | None = None

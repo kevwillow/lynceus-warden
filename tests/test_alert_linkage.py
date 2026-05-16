@@ -17,7 +17,7 @@ from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.kismet import FakeKismetClient
 from lynceus.poller import poll_once
-from lynceus.rules import Rule, Ruleset
+from lynceus.rules import Rule, Ruleset, RuntimeSeverityOverride
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "kismet_devices.json"
 
@@ -906,6 +906,165 @@ def test_ble_uuid_delegation_e2e_no_db_row_no_alert(db, config, fake_client):
     )
     poll_once(fake_client, db, config, 1700001000, ruleset=rs)
     assert _alerts(db) == []
+
+
+# ---------------------------------------------------------------------------
+# Runtime severity-overrides layer end-to-end. Full poll cycle with
+# the override transform applied at alert construction. The remapped
+# severity must land in the alert row's severity column; suppressed
+# categories must produce no alert row at all (the suppression is the
+# load-bearing distinction from "alert at lower severity").
+# ---------------------------------------------------------------------------
+
+
+def _add_metadata(db: Database, watchlist_id: int, device_category: str) -> None:
+    """Attach watchlist_metadata so the matcher's LEFT JOIN surfaces
+    device_category on the resolved match — the key the runtime
+    overrides layer reads."""
+    db.upsert_metadata(
+        watchlist_id,
+        {"argus_record_id": f"argus-{watchlist_id}", "device_category": device_category},
+    )
+
+
+def test_runtime_overrides_remap_e2e_alert_row_carries_overridden_severity(
+    db, config, fake_client
+):
+    """Full poll cycle: watchlist row at severity=low,
+    device_category=alpr. Runtime remap alpr→high. The written
+    alert row must have severity='high' — proving the runtime
+    transform lands on the persisted alert, not just on the
+    in-memory RuleHit."""
+    mac_id = _add_watchlist(db, _FIXTURE_MAC, "mac", "low")
+    _add_metadata(db, mac_id, "alpr")
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac",
+                rule_type="watchlist_mac",
+                severity="low",  # ignored — DB severity then runtime override
+                patterns=[],
+            )
+        ]
+    )
+    overrides = RuntimeSeverityOverride(device_category_severity={"alpr": "high"})
+    poll_once(
+        fake_client,
+        db,
+        config,
+        1700001000,
+        ruleset=rs,
+        severity_overrides=overrides,
+    )
+    alerts = [a for a in _alerts(db) if a["mac"] == _FIXTURE_MAC]
+    assert len(alerts) == 1
+    assert alerts[0]["matched_watchlist_id"] == mac_id
+    # Persisted alert row carries the OVERRIDDEN severity, not the
+    # row's baked-in "low".
+    assert alerts[0]["severity"] == "high"
+
+
+def test_runtime_overrides_suppress_e2e_no_alert_row_written(db, config, fake_client):
+    """Full poll cycle: a row that would normally produce an alert
+    via delegation gets suppressed by suppress_categories. No alert
+    row in the DB — the suppression is a true write-time skip, not
+    a downgrade. The watchlist row stays present (importer
+    unaffected); only alert emission is silenced."""
+    mac_id = _add_watchlist(db, _FIXTURE_MAC, "mac", "high")
+    _add_metadata(db, mac_id, "drone")
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac",
+                rule_type="watchlist_mac",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    overrides = RuntimeSeverityOverride(suppress_categories=frozenset({"drone"}))
+    poll_once(
+        fake_client,
+        db,
+        config,
+        1700001000,
+        ruleset=rs,
+        severity_overrides=overrides,
+    )
+    # No alert for the matched mac. (Other observations in the
+    # fixture might still produce alerts via other rules, but
+    # there are no other watchlist rows or rules here.)
+    assert _alerts(db) == []
+    # Watchlist row still present — the importer side of the
+    # severity_overrides.yaml is unaffected by the runtime
+    # suppress_categories key (separate layer, separate concern).
+    row = db._conn.execute(
+        "SELECT id FROM watchlist WHERE id = ?", (mac_id,)
+    ).fetchone()
+    assert row is not None
+
+
+def test_runtime_overrides_pass_through_when_no_metadata_e2e(db, config, fake_client):
+    """A watchlist row with no metadata row (the 63 bundled
+    default_watchlist rows). device_category surfaces as None on
+    the match; the runtime layer must pass through and the alert
+    fires at the row's baked severity even with a rich override
+    config present."""
+    mac_id = _add_watchlist(db, _FIXTURE_MAC, "mac", "med")
+    # NO metadata row attached. The matcher's LEFT JOIN yields
+    # device_category=None.
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac",
+                rule_type="watchlist_mac",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    overrides = RuntimeSeverityOverride(
+        device_category_severity={"alpr": "high"},
+        suppress_categories=frozenset({"alpr", "drone"}),
+    )
+    poll_once(
+        fake_client,
+        db,
+        config,
+        1700001000,
+        ruleset=rs,
+        severity_overrides=overrides,
+    )
+    alerts = [a for a in _alerts(db) if a["mac"] == _FIXTURE_MAC]
+    assert len(alerts) == 1
+    assert alerts[0]["matched_watchlist_id"] == mac_id
+    assert alerts[0]["severity"] == "med"  # row's baked severity, unaltered
+
+
+def test_runtime_overrides_none_pass_through_e2e_byte_identical_to_pre_overrides(
+    db, config, fake_client
+):
+    """Regression guard: poll_once with severity_overrides=None (the
+    default) produces the same alert row as poll_once before this
+    rc landed. The watchlist row has both a metadata row AND a
+    baked severity that an override COULD remap — but with no
+    overrides passed, none of that machinery activates."""
+    mac_id = _add_watchlist(db, _FIXTURE_MAC, "mac", "med")
+    _add_metadata(db, mac_id, "alpr")
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac",
+                rule_type="watchlist_mac",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    alerts = [a for a in _alerts(db) if a["mac"] == _FIXTURE_MAC]
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "med"  # baked severity, no override applied
 
 
 # ---------------------------------------------------------------------------
