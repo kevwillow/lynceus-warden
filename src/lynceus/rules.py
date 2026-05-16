@@ -45,29 +45,44 @@ class Rule(BaseModel):
         if not self.name:
             raise ValueError("rule name must be non-empty")
 
-        # watchlist_mac_range delegates matching to the watchlist DB,
-        # so per-rule patterns are not supported — patterns MUST be
-        # empty. The check goes before the generic startswith
-        # ("watchlist_") branch below so it doesn't get caught by the
-        # "non-empty required" rule that applies to every other
-        # watchlist_* type. Structural mirror of the
-        # new_non_randomized_device carve-out: a single rule entry
-        # enables alert-firing for every matching DB row.
+        # Per-rule_type empty/non-empty patterns admission. Each
+        # rule_type's policy is spelled out explicitly rather than
+        # falling through a generic startswith("watchlist_") branch:
+        # the four delegation-capable types accept BOTH shapes (empty
+        # patterns = delegate to DB, non-empty = in-memory match), and
+        # the two carve-out types (watchlist_mac_range and
+        # new_non_randomized_device) require empty patterns. Spelling
+        # each out independently means a future hypothetical
+        # watchlist_X type lands in an explicit branch instead of
+        # silently inheriting whichever default is most recent.
         if self.rule_type == "watchlist_mac_range":
+            # Part 2 carve-out: matching is exclusively delegated to
+            # the watchlist DB (no in-memory semantic possible for
+            # ranges — patterns are CIDR-shaped, not equality-shaped).
             if self.patterns:
                 raise ValueError(
                     f"rule {self.name!r}: watchlist_mac_range delegates matching "
                     "to the watchlist DB; per-rule patterns are not supported "
                     "(patterns must be empty)"
                 )
-        elif self.rule_type.startswith("watchlist_") or self.rule_type == "ble_uuid":
-            if not self.patterns:
-                raise ValueError(f"rule {self.name!r}: watchlist rules require non-empty patterns")
         elif self.rule_type == "new_non_randomized_device":
+            # Categorical, not pattern-based — patterns have no
+            # semantic for this rule_type.
             if self.patterns:
                 raise ValueError(
                     f"rule {self.name!r}: new_non_randomized_device must have empty patterns"
                 )
+        elif self.rule_type in ("watchlist_mac", "watchlist_oui", "watchlist_ssid", "ble_uuid"):
+            # Delegation-capable. Empty patterns = delegate matching
+            # to the watchlist DB at evaluate-time (severity sourced
+            # from the matched row); non-empty = legacy in-memory
+            # match against the listed patterns (severity sourced
+            # from the rule). Both shapes are valid; the
+            # rules.evaluate branch picks the path based on
+            # rule.patterns at call time. No assertion needed here.
+            pass
+        # No else: the RuleType Literal already constrains rule_type
+        # to a known set; pydantic rejects unknown values upstream.
 
         if self.rule_type == "watchlist_mac":
             normalized = [normalize_mac(p) for p in self.patterns]
@@ -133,12 +148,15 @@ def evaluate(
 ) -> list[RuleHit]:
     """Match an observation against the ruleset; emit one RuleHit per hit.
 
-    ``db`` is optional and only consulted by the ``watchlist_mac_range``
-    branch, which delegates matching to ``db.resolve_matched_mac_range``.
-    All other rule types match against ``rule.patterns`` in-memory and
-    ignore ``db``. Keyword-only on purpose so existing callers stay
-    source-compatible (poller already passes it positionally for the
-    other args; tests construct rulesets without a db).
+    ``db`` is consulted by the DB-delegated rule_types — currently
+    ``watchlist_mac_range`` (always) and ``watchlist_mac``,
+    ``watchlist_oui``, ``watchlist_ssid``, ``ble_uuid`` whenever
+    ``rule.patterns`` is empty (the empty-patterns-delegates-to-DB
+    semantic established by Part 2 and extended to the other four
+    types here). Rules with non-empty patterns continue to match
+    in-memory against ``rule.patterns`` and ignore ``db`` — backward
+    compat for pre-existing rules.yaml deployments. Keyword-only on
+    purpose so existing callers stay source-compatible.
     """
     hits: list[RuleHit] = []
     for rule in ruleset.rules:
@@ -146,22 +164,108 @@ def evaluate(
             continue
 
         if rule.rule_type == "watchlist_mac":
-            if obs.mac in rule.patterns:
-                msg = f"MAC {obs.mac} on watchlist: {rule.description or rule.name}"
+            if rule.patterns:
+                # In-memory match path — preserved unchanged for
+                # backward compat. Severity sourced from the rule.
+                if obs.mac in rule.patterns:
+                    msg = f"MAC {obs.mac} on watchlist: {rule.description or rule.name}"
+                    hits.append(
+                        RuleHit(
+                            rule_name=rule.name,
+                            rule_type=rule.rule_type,
+                            severity=rule.severity,
+                            message=msg,
+                            mac=obs.mac,
+                        )
+                    )
+            else:
+                # Delegation path — empty patterns means "match every
+                # watchlist mac row". Severity sourced from the
+                # matched DB row, NOT from rule.severity (mirror of
+                # the watchlist_mac_range divergence; see
+                # ResolvedWatchlistMatch and the watchlist_mac_range
+                # eval branch for the architectural rationale).
+                if db is None:
+                    logger.error(
+                        "delegation rule %r (watchlist_mac, empty patterns) "
+                        "evaluated without db; skipping. evaluate() must be "
+                        "called with db= when any delegation rule is in the "
+                        "ruleset.",
+                        rule.name,
+                    )
+                    continue
+                match = db.resolve_matched_mac_for_eval(obs.mac)
+                if match is None:
+                    continue
+                msg = (
+                    f"MAC {obs.mac} on watchlist "
+                    f"(watchlist_id={match.watchlist_id}): "
+                    f"{rule.description or rule.name}"
+                )
                 hits.append(
                     RuleHit(
                         rule_name=rule.name,
                         rule_type=rule.rule_type,
-                        severity=rule.severity,
+                        severity=match.severity,
                         message=msg,
                         mac=obs.mac,
                     )
                 )
         elif rule.rule_type == "watchlist_oui":
-            for p in rule.patterns:
-                if obs.mac.startswith(p + ":"):
+            if rule.patterns:
+                # In-memory match path — preserved unchanged.
+                # Severity sourced from the rule.
+                for p in rule.patterns:
+                    if obs.mac.startswith(p + ":"):
+                        msg = (
+                            f"OUI {obs.mac[:8]} on watchlist: "
+                            f"{rule.description or rule.name} (mac {obs.mac})"
+                        )
+                        hits.append(
+                            RuleHit(
+                                rule_name=rule.name,
+                                rule_type=rule.rule_type,
+                                severity=rule.severity,
+                                message=msg,
+                                mac=obs.mac,
+                            )
+                        )
+                        break
+            else:
+                # Delegation path. Severity sourced from the matched
+                # DB row — see the watchlist_mac branch above for the
+                # architectural rationale.
+                if db is None:
+                    logger.error(
+                        "delegation rule %r (watchlist_oui, empty patterns) "
+                        "evaluated without db; skipping.",
+                        rule.name,
+                    )
+                    continue
+                match = db.resolve_matched_oui_for_eval(obs.mac)
+                if match is None:
+                    continue
+                msg = (
+                    f"OUI {obs.mac[:8]} on watchlist "
+                    f"(watchlist_id={match.watchlist_id}): "
+                    f"{rule.description or rule.name} (mac {obs.mac})"
+                )
+                hits.append(
+                    RuleHit(
+                        rule_name=rule.name,
+                        rule_type=rule.rule_type,
+                        severity=match.severity,
+                        message=msg,
+                        mac=obs.mac,
+                    )
+                )
+        elif rule.rule_type == "watchlist_ssid":
+            if rule.patterns:
+                # In-memory match path — preserved unchanged.
+                # Severity sourced from the rule.
+                if obs.ssid is not None and obs.ssid in rule.patterns:
                     msg = (
-                        f"OUI {obs.mac[:8]} on watchlist: "
+                        f"SSID {obs.ssid!r} on watchlist: "
                         f"{rule.description or rule.name} (mac {obs.mac})"
                     )
                     hits.append(
@@ -173,18 +277,30 @@ def evaluate(
                             mac=obs.mac,
                         )
                     )
-                    break
-        elif rule.rule_type == "watchlist_ssid":
-            if obs.ssid is not None and obs.ssid in rule.patterns:
+            else:
+                # Delegation path. Severity sourced from the matched
+                # DB row — see the watchlist_mac branch above for the
+                # architectural rationale.
+                if db is None:
+                    logger.error(
+                        "delegation rule %r (watchlist_ssid, empty patterns) "
+                        "evaluated without db; skipping.",
+                        rule.name,
+                    )
+                    continue
+                match = db.resolve_matched_ssid_for_eval(obs.ssid)
+                if match is None:
+                    continue
                 msg = (
-                    f"SSID {obs.ssid!r} on watchlist: "
+                    f"SSID {obs.ssid!r} on watchlist "
+                    f"(watchlist_id={match.watchlist_id}): "
                     f"{rule.description or rule.name} (mac {obs.mac})"
                 )
                 hits.append(
                     RuleHit(
                         rule_name=rule.name,
                         rule_type=rule.rule_type,
-                        severity=rule.severity,
+                        severity=match.severity,
                         message=msg,
                         mac=obs.mac,
                     )
@@ -241,22 +357,58 @@ def evaluate(
                 )
             )
         elif rule.rule_type == "ble_uuid":
-            for p in rule.patterns:
-                if p in obs.ble_service_uuids:
-                    msg = (
-                        f"BLE service UUID {p} on watchlist: "
-                        f"{rule.description or rule.name} (mac {obs.mac})"
-                    )
-                    hits.append(
-                        RuleHit(
-                            rule_name=rule.name,
-                            rule_type=rule.rule_type,
-                            severity=rule.severity,
-                            message=msg,
-                            mac=obs.mac,
+            if rule.patterns:
+                # In-memory match path — preserved unchanged. Loops
+                # the rule's patterns and breaks on the first that
+                # appears in the observation. Severity sourced from
+                # the rule.
+                for p in rule.patterns:
+                    if p in obs.ble_service_uuids:
+                        msg = (
+                            f"BLE service UUID {p} on watchlist: "
+                            f"{rule.description or rule.name} (mac {obs.mac})"
                         )
+                        hits.append(
+                            RuleHit(
+                                rule_name=rule.name,
+                                rule_type=rule.rule_type,
+                                severity=rule.severity,
+                                message=msg,
+                                mac=obs.mac,
+                            )
+                        )
+                        break
+            else:
+                # Delegation path. The DB matcher iterates obs's UUIDs
+                # in order and returns the first whose UUID is in the
+                # ble_uuid watchlist — same first-match shape as the
+                # in-memory branch above, just driven by DB rows
+                # instead of rule.patterns. Severity sourced from the
+                # matched DB row.
+                if db is None:
+                    logger.error(
+                        "delegation rule %r (ble_uuid, empty patterns) "
+                        "evaluated without db; skipping.",
+                        rule.name,
                     )
-                    break
+                    continue
+                match = db.resolve_matched_ble_uuid_for_eval(obs.ble_service_uuids)
+                if match is None:
+                    continue
+                msg = (
+                    f"BLE service UUID on watchlist "
+                    f"(watchlist_id={match.watchlist_id}): "
+                    f"{rule.description or rule.name} (mac {obs.mac})"
+                )
+                hits.append(
+                    RuleHit(
+                        rule_name=rule.name,
+                        rule_type=rule.rule_type,
+                        severity=match.severity,
+                        message=msg,
+                        mac=obs.mac,
+                    )
+                )
         elif rule.rule_type == "new_non_randomized_device":
             if is_new_device and not obs.is_randomized:
                 msg = (

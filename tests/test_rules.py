@@ -67,9 +67,19 @@ def test_invalid_rule_type_rejected():
         )
 
 
-def test_watchlist_with_empty_patterns_rejected():
-    with pytest.raises(ValidationError):
-        Rule(name="empty", rule_type="watchlist_mac", severity="low", patterns=[])
+def test_watchlist_mac_range_with_empty_patterns_required_carve_out():
+    """The watchlist_mac_range carve-out: empty patterns is REQUIRED
+    here (the rule_type has no in-memory match semantic — patterns
+    are CIDR-shaped, not equality-shaped). Distinct from the four
+    delegation-capable types (mac/oui/ssid/ble_uuid) which accept
+    BOTH empty (delegate) and non-empty (in-memory) shapes."""
+    rule = Rule(
+        name="argus_mac_range",
+        rule_type="watchlist_mac_range",
+        severity="low",
+        patterns=[],
+    )
+    assert rule.patterns == []
 
 
 def test_new_non_randomized_device_with_patterns_rejected():
@@ -363,9 +373,15 @@ def test_ble_uuid_rule_rejects_malformed_pattern():
         )
 
 
-def test_ble_uuid_rule_empty_patterns_rejected():
-    with pytest.raises(ValidationError):
-        Rule(name="empty", rule_type="ble_uuid", severity="high", patterns=[])
+def test_ble_uuid_rule_empty_patterns_accepted_delegation_mode():
+    """Updated semantic (formerly rejected): ble_uuid joins the four
+    delegation-capable types — empty patterns is now valid and
+    activates the DB-delegation path. Mirrors the validator carve-out
+    structure exercised by the watchlist_{mac,oui,ssid} delegation
+    tests below."""
+    rule = Rule(name="empty", rule_type="ble_uuid", severity="high", patterns=[])
+    assert rule.patterns == []
+    assert rule.rule_type == "ble_uuid"
 
 
 def test_evaluate_ble_uuid_hit():
@@ -584,3 +600,401 @@ def test_evaluate_existing_rule_types_unaffected_by_optional_db_kwarg():
     hits = evaluate(rs, _obs(mac="a4:83:e7:11:22:33"), is_new_device=False)
     assert len(hits) == 1
     assert hits[0].severity == "high"
+
+
+# ---- watchlist delegation extension ----------------------------------------
+#
+# Extends the empty-patterns-delegates-to-DB semantic established by
+# watchlist_mac_range (Part 2) to watchlist_mac, watchlist_oui,
+# watchlist_ssid, and ble_uuid. The four blocks below mirror each
+# other deliberately — same validator-accepts-empty test, same
+# delegation-hit test (severity-from-DB assertion), same in-memory
+# regression test (severity-from-rule assertion preserves backward
+# compat), same db-None error-log test.
+
+
+@pytest.fixture
+def db_with_delegation_rows(tmp_path):
+    """Seed one watchlist row per delegation-capable pattern_type so
+    each rule_type has something to match against. Severities chosen
+    distinct from the rule severities below to make the
+    severity-from-DB assertion unambiguous."""
+    db_path = str(tmp_path / "rules_delegation.db")
+    db = Database(db_path)
+    with db._conn:
+        # mac row at high severity (rule severity below is "low" so the
+        # severity-from-DB contract is observable).
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, 'mac', 'high', 'delegated mac')",
+            ("a4:83:e7:11:22:33",),
+        )
+        # oui row at med severity.
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, 'oui', 'med', 'delegated oui')",
+            ("00:13:37",),
+        )
+        # ssid row at high severity.
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, 'ssid', 'high', 'delegated ssid')",
+            ("FreeAirportWiFi",),
+        )
+        # ble_uuid row at med severity.
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, 'ble_uuid', 'med', 'delegated ble')",
+            (_AIRTAG_UUID,),
+        )
+    yield db
+    db.close()
+
+
+# ---- watchlist_mac delegation ----
+
+
+def test_watchlist_mac_with_empty_patterns_accepted_delegation_mode():
+    """Validator: empty patterns is the delegation idiom. severity in
+    the rule is informational only — the consuming evaluate() branch
+    sources severity from the matched watchlist row."""
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    assert rule.patterns == []
+    assert rule.rule_type == "watchlist_mac"
+
+
+def test_watchlist_mac_with_non_empty_patterns_accepted_in_memory_mode():
+    """Validator regression: non-empty patterns continues to be
+    accepted (the in-memory match path that pre-existing rules.yaml
+    deployments rely on)."""
+    rule = Rule(
+        name="legacy_mac",
+        rule_type="watchlist_mac",
+        severity="high",
+        patterns=["a4:83:e7:11:22:33"],
+    )
+    assert rule.patterns == ["a4:83:e7:11:22:33"]
+
+
+def test_evaluate_watchlist_mac_delegation_hit_sources_severity_from_db(
+    db_with_delegation_rows,
+):
+    """Empty patterns + a matching DB row → hit with severity FROM
+    THE DB ROW (not from rule.severity, which is 'low' here). This is
+    the central invariant of the delegation semantic."""
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_delegation_rows,
+    )
+    assert len(hits) == 1
+    assert hits[0].rule_name == "del_mac"
+    assert hits[0].severity == "high"  # from DB, not "low"
+    assert hits[0].mac == "a4:83:e7:11:22:33"
+
+
+def test_evaluate_watchlist_mac_delegation_miss(db_with_delegation_rows):
+    """Empty patterns + no matching DB row → no hit."""
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="ff:ee:dd:cc:bb:aa"),
+        is_new_device=False,
+        db=db_with_delegation_rows,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_mac_in_memory_path_severity_from_rule_unchanged():
+    """Backward compat regression: non-empty patterns continues to
+    use the in-memory match path with severity sourced from the rule.
+    No DB consulted, no behavior change for pre-existing deployments."""
+    rule = Rule(
+        name="legacy_mac",
+        rule_type="watchlist_mac",
+        severity="high",
+        patterns=["a4:83:e7:11:22:33"],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(rs, _obs(mac="a4:83:e7:11:22:33"), is_new_device=False)
+    assert len(hits) == 1
+    assert hits[0].severity == "high"  # from rule
+
+
+def test_evaluate_watchlist_mac_delegation_without_db_logs_error(caplog):
+    """Defensive: empty patterns + db=None must log ERROR and skip
+    rather than silently dropping the hit."""
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.ERROR, logger="lynceus.rules"):
+        hits = evaluate(rs, _obs(mac="a4:83:e7:11:22:33"), is_new_device=False)
+    assert hits == []
+    errors = [
+        r for r in caplog.records
+        if r.levelno == logging.ERROR
+        and "watchlist_mac" in r.getMessage()
+        and "del_mac" in r.getMessage()
+    ]
+    assert len(errors) == 1
+
+
+# ---- watchlist_oui delegation ----
+
+
+def test_watchlist_oui_with_empty_patterns_accepted_delegation_mode():
+    rule = Rule(name="del_oui", rule_type="watchlist_oui", severity="low", patterns=[])
+    assert rule.patterns == []
+
+
+def test_watchlist_oui_with_non_empty_patterns_accepted_in_memory_mode():
+    """Backward compat: existing patterns-based watchlist_oui rules
+    continue to validate."""
+    rule = Rule(
+        name="legacy_oui",
+        rule_type="watchlist_oui",
+        severity="high",
+        patterns=["00:13:37"],
+    )
+    assert rule.patterns == ["00:13:37"]
+
+
+def test_evaluate_watchlist_oui_delegation_hit_sources_severity_from_db(
+    db_with_delegation_rows,
+):
+    """Empty patterns + observation MAC whose OUI matches a DB row →
+    hit with severity FROM THE DB ROW (the seeded oui row is 'med';
+    rule severity is 'low')."""
+    rule = Rule(name="del_oui", rule_type="watchlist_oui", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="00:13:37:aa:bb:cc"),
+        is_new_device=False,
+        db=db_with_delegation_rows,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"  # from DB
+    assert hits[0].mac == "00:13:37:aa:bb:cc"
+
+
+def test_evaluate_watchlist_oui_delegation_miss(db_with_delegation_rows):
+    rule = Rule(name="del_oui", rule_type="watchlist_oui", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="ff:ee:dd:cc:bb:aa"),
+        is_new_device=False,
+        db=db_with_delegation_rows,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_oui_in_memory_path_severity_from_rule_unchanged():
+    """Backward compat: non-empty patterns → in-memory match,
+    severity from rule."""
+    rule = Rule(
+        name="legacy_oui",
+        rule_type="watchlist_oui",
+        severity="high",
+        patterns=["00:13:37"],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(rs, _obs(mac="00:13:37:aa:bb:cc"), is_new_device=False)
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_watchlist_oui_delegation_without_db_logs_error(caplog):
+    rule = Rule(name="del_oui", rule_type="watchlist_oui", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.ERROR, logger="lynceus.rules"):
+        hits = evaluate(rs, _obs(mac="00:13:37:aa:bb:cc"), is_new_device=False)
+    assert hits == []
+    errors = [
+        r for r in caplog.records
+        if r.levelno == logging.ERROR and "watchlist_oui" in r.getMessage()
+    ]
+    assert len(errors) == 1
+
+
+# ---- watchlist_ssid delegation ----
+
+
+def test_watchlist_ssid_with_empty_patterns_accepted_delegation_mode():
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    assert rule.patterns == []
+
+
+def test_watchlist_ssid_with_non_empty_patterns_accepted_in_memory_mode():
+    rule = Rule(
+        name="legacy_ssid",
+        rule_type="watchlist_ssid",
+        severity="med",
+        patterns=["FreeAirportWiFi"],
+    )
+    assert rule.patterns == ["FreeAirportWiFi"]
+
+
+def test_evaluate_watchlist_ssid_delegation_hit_sources_severity_from_db(
+    db_with_delegation_rows,
+):
+    """Empty patterns + obs.ssid matching a DB row → hit with severity
+    from the DB row ('high'; rule severity is 'low')."""
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="FreeAirportWiFi"),
+        is_new_device=False,
+        db=db_with_delegation_rows,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_watchlist_ssid_delegation_miss(db_with_delegation_rows):
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="something_else"),
+        is_new_device=False,
+        db=db_with_delegation_rows,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_ssid_delegation_no_ssid_no_hit(db_with_delegation_rows):
+    """Observations without a captured SSID can't match a delegated
+    watchlist_ssid rule — same shape as the in-memory branch's
+    obs.ssid is None guard."""
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid=None),
+        is_new_device=False,
+        db=db_with_delegation_rows,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_ssid_in_memory_path_severity_from_rule_unchanged():
+    rule = Rule(
+        name="legacy_ssid",
+        rule_type="watchlist_ssid",
+        severity="med",
+        patterns=["FreeAirportWiFi"],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="FreeAirportWiFi"),
+        is_new_device=False,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_watchlist_ssid_delegation_without_db_logs_error(caplog):
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.ERROR, logger="lynceus.rules"):
+        hits = evaluate(
+            rs,
+            _obs(mac="aa:bb:cc:dd:ee:ff", ssid="FreeAirportWiFi"),
+            is_new_device=False,
+        )
+    assert hits == []
+    errors = [
+        r for r in caplog.records
+        if r.levelno == logging.ERROR and "watchlist_ssid" in r.getMessage()
+    ]
+    assert len(errors) == 1
+
+
+# ---- ble_uuid delegation ----
+
+
+def test_ble_uuid_with_non_empty_patterns_accepted_in_memory_mode():
+    rule = Rule(
+        name="legacy_ble",
+        rule_type="ble_uuid",
+        severity="high",
+        patterns=[_AIRTAG_UUID],
+    )
+    assert rule.patterns == [_AIRTAG_UUID]
+
+
+def test_evaluate_ble_uuid_delegation_hit_sources_severity_from_db(
+    db_with_delegation_rows,
+):
+    """Empty patterns + obs.ble_service_uuids containing a watchlisted
+    UUID → hit with severity from the DB row ('med'; rule severity
+    'low')."""
+    rule = Rule(name="del_ble", rule_type="ble_uuid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_obs(uuids=(_AIRTAG_UUID,)),
+        is_new_device=False,
+        db=db_with_delegation_rows,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_ble_uuid_delegation_miss(db_with_delegation_rows):
+    rule = Rule(name="del_ble", rule_type="ble_uuid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_obs(uuids=(_TILE_UUID,)),
+        is_new_device=False,
+        db=db_with_delegation_rows,
+    )
+    assert hits == []
+
+
+def test_evaluate_ble_uuid_delegation_no_uuids_no_hit(db_with_delegation_rows):
+    """Observations without service UUIDs cannot match a delegated
+    ble_uuid rule."""
+    rule = Rule(name="del_ble", rule_type="ble_uuid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_obs(uuids=()),
+        is_new_device=False,
+        db=db_with_delegation_rows,
+    )
+    assert hits == []
+
+
+def test_evaluate_ble_uuid_in_memory_path_severity_from_rule_unchanged():
+    rule = Rule(
+        name="legacy_ble",
+        rule_type="ble_uuid",
+        severity="high",
+        patterns=[_AIRTAG_UUID],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(rs, _ble_obs(uuids=(_AIRTAG_UUID,)), is_new_device=False)
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_ble_uuid_delegation_without_db_logs_error(caplog):
+    rule = Rule(name="del_ble", rule_type="ble_uuid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.ERROR, logger="lynceus.rules"):
+        hits = evaluate(rs, _ble_obs(uuids=(_AIRTAG_UUID,)), is_new_device=False)
+    assert hits == []
+    errors = [
+        r for r in caplog.records
+        if r.levelno == logging.ERROR and "ble_uuid" in r.getMessage()
+    ]
+    assert len(errors) == 1
