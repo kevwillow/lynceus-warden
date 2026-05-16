@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.0-rc4] - 2026-05-15
 
+### Added
+
+- **`identifier_type='mac_range'` rows from Argus now land in the
+  watchlist instead of being silently dropped.** Pre-rc4, every
+  mac_range row hit the `IDENTIFIER_TYPE_MAP` allowlist gate in
+  `lynceus-import-argus`, fell to the `dropped_mac_range` counter,
+  and never reached the DB. Argus's live `argus_export.csv` snapshot
+  at `exported_at=2026-05-14T22:34:07Z` carried ~17,798 mac_range
+  rows out of 22,532 total — ~64.49% as `/28` (MA-M, 7-hex prefix
+  e.g. `'aa:bb:cc:d/28'`), ~35.44% as `/36` (MA-S / IAB, 9-hex
+  prefix e.g. `'aa:bb:cc:dd:e/36'`), plus 12 legacy bare-prefix
+  rows (~0.07%) queued for upstream canonicalization. All of these
+  were missing from the Lynceus watchlist and could not contribute
+  to detections.
+
+  The new `migrations/011_watchlist_mac_range.sql` rebuilds the
+  `watchlist` table to relax the `pattern_type` CHECK constraint
+  (adding `'mac_range'` to the whitelist) and adds two
+  nibble-precision prefix columns — `mac_range_prefix` (lowercase
+  hex, no separators) and `mac_range_prefix_length` (28 or 36 in
+  current Argus emission) — both NULL for non-mac_range rows. A
+  partial index on `(prefix_length, prefix) WHERE pattern_type =
+  'mac_range'` keeps non-mac_range rows out of the index and leaves
+  oui equality lookups completely unaffected. SQLite cannot modify
+  a CHECK constraint via `ALTER TABLE`, so the migration does a
+  full table rebuild under `PRAGMA foreign_keys=OFF` per SQLite
+  docs §7; the inbound FKs from `alerts.matched_watchlist_id` and
+  `watchlist_metadata.watchlist_id` are preserved by-reference and
+  do not fire during the intermediate `DROP TABLE`.
+
+  The importer parses both Argus shapes via the new
+  `parse_mac_range_pattern` helper in `lynceus.patterns`. Canonical
+  CIDR (`'aa:bb:cc:d/28'`, `'aa:bb:cc:dd:e/36'`) round-trips
+  unchanged into `watchlist.pattern`; legacy bare-prefix
+  (`'aa:bb:cc:d'`, `'aa:bb:cc:dd:e'`) is accepted dual-shape per
+  the Argus-engineer handoff and canonicalized on disk so the
+  watchlist UI renders uniform shape regardless of input. Each
+  legacy row emits one per-row INFO log line
+  (`argus import: mac_range legacy bare-prefix '<raw>'
+  canonicalized to '<canonical>' argus_record_id=<id>`) so
+  operators can grep their import logs to watch the legacy count
+  drop to zero once Argus canonicalizes upstream. Unrecognized
+  shapes (wrong group count, non-hex characters, unsupported
+  prefix length like `/24`, mismatched declared-vs-shape length)
+  are rejected loudly and routed to the existing
+  `normalization_failed` counter rather than silently accepted —
+  a new length surfacing means an Argus wire-contract change worth
+  raising on.
+
+  **Intermediate state — runtime matching follows in a sibling
+  rc.** After this rc, mac_range rows appear in the watchlist
+  table and the watchlist UI, but the poller (`db.resolve_matched_
+  watchlist_id`) cannot yet match a sighted MAC against a
+  watchlisted range. Alerts on MACs inside watchlisted mac_range
+  prefixes will start firing once the follow-up rc lands runtime
+  prefix-matching against the new partial index. This intermediate
+  state is intentional and keeps the diff bisect-clean: the schema
+  + import path land first, the runtime match wires up second.
+
 ### Fixed
 
 - **`lynceus-import-argus --from-github` default `--repo` was
