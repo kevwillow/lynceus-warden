@@ -1,5 +1,6 @@
 """Tests for the SQLite persistence layer."""
 
+import logging
 import os
 import sqlite3
 import stat
@@ -762,6 +763,173 @@ def test_database_in_memory_path_does_not_create_dirs(tmp_path, monkeypatch):
         assert list(tmp_path.iterdir()) == cwd_before
     finally:
         d.close()
+
+
+# ---------------- mac_range matcher (resolve_matched_mac_range) -------------
+
+
+def _add_mac_range(
+    db: Database,
+    pattern: str,
+    prefix: str,
+    length: int,
+    severity: str = "low",
+) -> int:
+    with db._conn:
+        cur = db._conn.execute(
+            "INSERT INTO watchlist("
+            "pattern, pattern_type, severity, description, "
+            "mac_range_prefix, mac_range_prefix_length) "
+            "VALUES (?, 'mac_range', ?, NULL, ?, ?)",
+            (pattern, severity, prefix, length),
+        )
+        return int(cur.lastrowid)
+
+
+def test_resolve_matched_mac_range_28_hit(db):
+    wid = _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28, severity="high")
+    match = db.resolve_matched_mac_range("aa:bb:cc:d1:23:45")
+    assert match is not None
+    assert match.watchlist_id == wid
+    assert match.severity == "high"
+    assert match.prefix_length == 28
+
+
+def test_resolve_matched_mac_range_36_hit(db):
+    wid = _add_mac_range(db, "aa:bb:cc:dd:e/36", "aabbccdde", 36, severity="med")
+    match = db.resolve_matched_mac_range("aa:bb:cc:dd:e7:89")
+    assert match is not None
+    assert match.watchlist_id == wid
+    assert match.severity == "med"
+    assert match.prefix_length == 36
+
+
+def test_resolve_matched_mac_range_miss(db):
+    _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    assert db.resolve_matched_mac_range("11:22:33:44:55:66") is None
+
+
+def test_resolve_matched_mac_range_none_and_empty_mac(db):
+    _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    assert db.resolve_matched_mac_range(None) is None
+    assert db.resolve_matched_mac_range("") is None
+
+
+def test_resolve_matched_mac_range_is_case_insensitive(db):
+    """The watchlist mac_range_prefix is stored lowercase-hex per
+    Part 1's canonicalization (importer + parse_mac_range_pattern).
+    Observation MACs from Kismet are also lowercased by the poller
+    before reaching this layer, but the matcher hardens against
+    callers passing uppercase by lowering at the boundary —
+    a row-stored-as-lowercase / observation-as-uppercase mismatch
+    used to be the L-RULES-1 silent-no-match class of bug."""
+    wid = _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    match = db.resolve_matched_mac_range("AA:BB:CC:D1:23:45")
+    assert match is not None
+    assert match.watchlist_id == wid
+
+
+def test_resolve_matched_mac_range_36_wins_over_overlapping_28(db, caplog):
+    """/28 and /36 ranges covering the same MAC should never coexist
+    by IEEE design — this scenario is an Argus contract violation.
+    When it surfaces defensively, the more-specific /36 wins and a
+    WARNING is logged carrying both watchlist_ids so operators can
+    raise upstream."""
+    id_28 = _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28, severity="low")
+    id_36 = _add_mac_range(db, "aa:bb:cc:dd:e/36", "aabbccdde", 36, severity="high")
+    with caplog.at_level(logging.WARNING, logger="lynceus.db"):
+        match = db.resolve_matched_mac_range("aa:bb:cc:dd:e7:89")
+    assert match is not None
+    assert match.watchlist_id == id_36
+    assert match.severity == "high"
+    assert match.prefix_length == 36
+    overlap_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "mac_range overlap" in r.getMessage()
+    ]
+    assert len(overlap_warnings) == 1
+    msg = overlap_warnings[0].getMessage()
+    assert str(id_28) in msg and str(id_36) in msg
+
+
+def test_resolve_matched_mac_range_no_match_emits_no_warning(db, caplog):
+    """The overlap WARNING must fire only when two ranges actually
+    match — a no-match observation must not produce spurious noise
+    in the daemon log. Polling sees thousands of non-watchlisted
+    MACs per cycle; one log line per miss would flood journalctl."""
+    _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    with caplog.at_level(logging.WARNING, logger="lynceus.db"):
+        db.resolve_matched_mac_range("11:22:33:44:55:66")
+    overlap_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "mac_range overlap" in r.getMessage()
+    ]
+    assert overlap_warnings == []
+
+
+# ---- resolve_matched_watchlist_id mac_range annotation branch -----
+
+
+def test_resolve_matched_watchlist_id_mac_range_annotates(db):
+    """Annotation path: a MAC inside a watchlisted mac_range with no
+    overlapping mac/oui row returns the mac_range row id, so
+    matched_watchlist_id is correctly stamped on the alert."""
+    wid = _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    rid = db.resolve_matched_watchlist_id(mac="aa:bb:cc:d1:23:45")
+    assert rid == wid
+
+
+def test_resolve_matched_watchlist_id_mac_precedence_over_mac_range(db):
+    """Tiebreaker: an exact-MAC watchlist row outranks a mac_range
+    covering the same MAC. Operator-curated exact rules beat bulk
+    imports."""
+    _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    with db._conn:
+        cur = db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, 'mac', 'high', NULL)",
+            ("aa:bb:cc:d1:23:45",),
+        )
+        exact_id = int(cur.lastrowid)
+    rid = db.resolve_matched_watchlist_id(mac="aa:bb:cc:d1:23:45")
+    assert rid == exact_id
+
+
+def test_resolve_matched_watchlist_id_oui_precedence_over_mac_range(db):
+    """oui beats mac_range — IEEE design says they're disjoint for a
+    real MAC, but the tiebreaker is conservative so an operator-
+    curated oui rule isn't silently overridden by a bulk Argus
+    mac_range covering the same OUI."""
+    _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    with db._conn:
+        cur = db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, 'oui', 'high', NULL)",
+            ("aa:bb:cc",),
+        )
+        oui_id = int(cur.lastrowid)
+    rid = db.resolve_matched_watchlist_id(mac="aa:bb:cc:d1:23:45")
+    assert rid == oui_id
+
+
+def test_resolve_matched_watchlist_id_mac_range_does_not_double_warn(db, caplog):
+    """The annotation path uses the private _lookup_mac_range_matches
+    helper directly so the WARNING-on-overlap is not emitted twice
+    when the rules engine has already logged it for the same
+    observation. Without this contract every overlap would log
+    twice per poll cycle, defeating the signal."""
+    _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    _add_mac_range(db, "aa:bb:cc:dd:e/36", "aabbccdde", 36)
+    with caplog.at_level(logging.WARNING, logger="lynceus.db"):
+        db.resolve_matched_watchlist_id(mac="aa:bb:cc:dd:e7:89")
+    overlap_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "mac_range overlap" in r.getMessage()
+    ]
+    assert overlap_warnings == []
 
 
 # ---------------------------- file mode (POSIX) ----------------------------
