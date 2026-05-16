@@ -1,10 +1,12 @@
 """Tests for the detection rules engine."""
 
+import logging
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from lynceus.db import Database
 from lynceus.kismet import DeviceObservation
 from lynceus.rules import Rule, RuleHit, Ruleset, evaluate, load_ruleset
 
@@ -409,3 +411,176 @@ def test_evaluate_ble_uuid_message_format_includes_first_matched_uuid():
     assert hits[0].message == (
         f"BLE service UUID {_AIRTAG_UUID} on watchlist: Known trackers (mac 7a:bb:cc:dd:ee:ff)"
     )
+
+
+# -------------------- watchlist_mac_range (DB-delegated) --------------------
+#
+# The first DB-delegated rule_type in Lynceus. Two structural divergences
+# from every other watchlist_* rule type, tested explicitly:
+#
+#   1. Patterns MUST be empty (validator carve-out). A single rule entry
+#      enables alert-firing for every matching watchlist mac_range row.
+#   2. Severity sources from the matched DB row, not from rule.severity.
+#      The importer wrote per-row severity from device_category for a
+#      reason; reading it back is the only path that respects that data.
+
+
+@pytest.fixture
+def db_with_mac_range(tmp_path):
+    """Database fixture seeded with two mac_range rows (one /28 high,
+    one /36 low) — covers severity-from-DB assertion and prefix-length
+    coverage for the eval branch."""
+    db_path = str(tmp_path / "rules_macrange.db")
+    db = Database(db_path)
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist("
+            "pattern, pattern_type, severity, description, "
+            "mac_range_prefix, mac_range_prefix_length) "
+            "VALUES (?, 'mac_range', ?, NULL, ?, ?)",
+            ("aa:bb:cc:d/28", "high", "aabbccd", 28),
+        )
+        db._conn.execute(
+            "INSERT INTO watchlist("
+            "pattern, pattern_type, severity, description, "
+            "mac_range_prefix, mac_range_prefix_length) "
+            "VALUES (?, 'mac_range', ?, NULL, ?, ?)",
+            ("11:22:33:44:e/36", "low", "11223344e", 36),
+        )
+    yield db
+    db.close()
+
+
+def test_watchlist_mac_range_rule_rejects_non_empty_patterns():
+    """Validator carve-out: patterns must be empty for this rule_type.
+    The rules engine delegates matching to the watchlist DB; per-rule
+    patterns have no semantics here."""
+    with pytest.raises(ValidationError) as excinfo:
+        Rule(
+            name="bad_macrange",
+            rule_type="watchlist_mac_range",
+            severity="med",
+            patterns=["aa:bb:cc:d/28"],
+        )
+    assert "patterns must be empty" in str(excinfo.value)
+
+
+def test_watchlist_mac_range_rule_accepts_empty_patterns():
+    """Empty patterns is the required idiom. severity in the rule is
+    informational only — the consuming evaluate() branch sources
+    severity from the matched watchlist row, not the rule."""
+    rule = Rule(
+        name="argus_mac_range",
+        rule_type="watchlist_mac_range",
+        severity="low",
+        patterns=[],
+    )
+    assert rule.patterns == []
+    assert rule.rule_type == "watchlist_mac_range"
+
+
+def test_evaluate_watchlist_mac_range_28_hit_sources_severity_from_db(db_with_mac_range):
+    """A MAC inside a watchlisted /28 (severity 'high' in the DB row)
+    must produce a hit whose severity is 'high' — NOT the rule's
+    severity. This is the explicit divergence from the other
+    watchlist_* rule types and the central reason this rule_type
+    exists."""
+    rule = Rule(
+        name="argus_mac_range",
+        rule_type="watchlist_mac_range",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:d1:23:45"),
+        is_new_device=False,
+        db=db_with_mac_range,
+    )
+    assert len(hits) == 1
+    assert hits[0].rule_name == "argus_mac_range"
+    assert hits[0].severity == "high"
+    assert hits[0].mac == "aa:bb:cc:d1:23:45"
+    assert "watchlisted mac_range (/28" in hits[0].message
+
+
+def test_evaluate_watchlist_mac_range_36_hit_sources_severity_from_db(db_with_mac_range):
+    """The /36 fixture row has severity 'low'. The hit's severity must
+    match it, regardless of the rule's severity field."""
+    rule = Rule(
+        name="argus_mac_range",
+        rule_type="watchlist_mac_range",
+        severity="high",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="11:22:33:44:e7:89"),
+        is_new_device=False,
+        db=db_with_mac_range,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "low"
+    assert "watchlisted mac_range (/36" in hits[0].message
+
+
+def test_evaluate_watchlist_mac_range_miss(db_with_mac_range):
+    rule = Rule(
+        name="argus_mac_range",
+        rule_type="watchlist_mac_range",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="ff:ee:dd:cc:bb:aa"),
+        is_new_device=False,
+        db=db_with_mac_range,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_mac_range_without_db_logs_error(caplog):
+    """Defensive: evaluate() with a watchlist_mac_range rule in the
+    ruleset but db=None must log an ERROR and skip — silently
+    dropping the hit would be worse than a loud failure. The error
+    text names the rule and explains the contract."""
+    rule = Rule(
+        name="argus_mac_range",
+        rule_type="watchlist_mac_range",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.ERROR, logger="lynceus.rules"):
+        hits = evaluate(rs, _obs(mac="aa:bb:cc:d1:23:45"), is_new_device=False)
+    assert hits == []
+    errors = [
+        r for r in caplog.records
+        if r.levelno == logging.ERROR
+        and "watchlist_mac_range" in r.getMessage()
+        and "argus_mac_range" in r.getMessage()
+    ]
+    assert len(errors) == 1
+
+
+def test_evaluate_existing_rule_types_unaffected_by_optional_db_kwarg():
+    """Regression guard: the new optional db= kwarg must not break
+    callers that don't pass it. Pre-Part-2 test_rules callsites
+    (18 of them) all invoke evaluate(rs, obs, is_new_device=...)
+    positionally and they must continue to pass. This test mirrors
+    the canonical watchlist_mac hit shape — if the signature change
+    introduced a regression it would surface here loudly."""
+    rule = Rule(
+        name="hit",
+        rule_type="watchlist_mac",
+        severity="high",
+        patterns=["a4:83:e7:11:22:33"],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(rs, _obs(mac="a4:83:e7:11:22:33"), is_new_device=False)
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
