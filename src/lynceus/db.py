@@ -10,8 +10,25 @@ import sys
 import time
 from pathlib import Path
 from types import TracebackType
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
+
+
+class ResolvedMacRangeMatch(NamedTuple):
+    """A watchlist mac_range row that matched an observed MAC.
+
+    Returned by ``Database.resolve_matched_mac_range``. Carries the
+    watchlist row id (for ``alerts.matched_watchlist_id`` stamping),
+    the row's severity (sourced from the matched row, NOT from any
+    rules.yaml entry — see ``rules.evaluate`` for the
+    severity-from-DB rationale), and the matched prefix length
+    (28 or 36, for downstream display / logging).
+    """
+
+    watchlist_id: int
+    severity: str
+    prefix_length: int
 
 
 def _find_migrations_dir() -> Path:
@@ -233,8 +250,14 @@ class Database:
     ) -> int | None:
         """Pick the most-specific watchlist row matching this observation.
 
-        Tiebreaker order: mac > oui > ssid > ble_uuid. Returns the watchlist
-        row id, or None when no row matches.
+        Tiebreaker order: mac > oui > mac_range > ssid > ble_uuid. Returns
+        the watchlist row id, or None when no row matches.
+
+        mac_range falls after oui so an operator-curated oui rule still
+        takes precedence over a bulk-imported Argus mac_range covering
+        the same OUI — the IEEE design forbids the two overlapping for
+        the same MAC, so in practice oui and mac_range are disjoint,
+        but the ordering is conservative.
         """
         if mac is not None:
             row = self._conn.execute(
@@ -250,6 +273,13 @@ class Database:
             ).fetchone()
             if row is not None:
                 return int(row["id"])
+            # mac_range annotation: call the private helper directly
+            # rather than the public resolve_matched_mac_range so the
+            # WARNING-on-overlap is not emitted twice when the rules
+            # engine has already logged it for the same observation.
+            mac_range_matches = self._lookup_mac_range_matches(mac)
+            if mac_range_matches:
+                return mac_range_matches[0].watchlist_id
         if ssid:
             row = self._conn.execute(
                 "SELECT id FROM watchlist WHERE pattern_type = 'ssid' AND pattern = ? LIMIT 1",
@@ -265,6 +295,80 @@ class Database:
             if row is not None:
                 return int(row["id"])
         return None
+
+    def _lookup_mac_range_matches(self, mac: str | None) -> list[ResolvedMacRangeMatch]:
+        """Private indexed lookup for watchlisted mac_range rows covering ``mac``.
+
+        Hits the partial index from migration 011
+        (idx_watchlist_mac_range_prefix on
+        (mac_range_prefix_length, mac_range_prefix) WHERE
+        pattern_type='mac_range'), so each prefix-length query is
+        O(log n). Two queries worst case — /36 first, /28 second —
+        so the more-specific match sorts ahead of the less-specific
+        one in the returned list.
+
+        Returns an empty list for falsy ``mac`` (None / empty string).
+        Returns one match in the normal case (IEEE design makes /28
+        and /36 ranges disjoint for the same MAC); two matches
+        indicates an Argus contract violation, surfaced by the public
+        callers via WARNING rather than here so the noise stays one
+        log line per observation.
+        """
+        if not mac:
+            return []
+        normalized = mac.replace(":", "").lower()
+        matches: list[ResolvedMacRangeMatch] = []
+        for length in (36, 28):
+            hex_chars = length // 4
+            candidate = normalized[:hex_chars]
+            row = self._conn.execute(
+                "SELECT id, severity FROM watchlist "
+                "WHERE pattern_type = 'mac_range' "
+                "AND mac_range_prefix_length = ? "
+                "AND mac_range_prefix = ? LIMIT 1",
+                (length, candidate),
+            ).fetchone()
+            if row is not None:
+                matches.append(
+                    ResolvedMacRangeMatch(
+                        watchlist_id=int(row["id"]),
+                        severity=str(row["severity"]),
+                        prefix_length=length,
+                    )
+                )
+        return matches
+
+    def resolve_matched_mac_range(self, mac: str | None) -> ResolvedMacRangeMatch | None:
+        """Return the watchlist mac_range row matching ``mac``, or None.
+
+        Severity is sourced from the matched row, NOT from any
+        rules.yaml entry — the importer wrote per-row severity for a
+        reason (device_category-derived for Argus rows) and the
+        watchlist_mac_range rule_type in rules.evaluate uses this
+        severity directly for the emitted RuleHit. This is the first
+        DB-delegated rule_type in Lynceus and the first divergence
+        from the rule-sourced-severity convention; see the
+        watchlist_mac_range branch in ``rules.evaluate`` for the
+        consuming side.
+
+        /28 and /36 ranges are disjoint for any given MAC by IEEE
+        design. Overlap indicates an Argus contract violation; when
+        it surfaces, a WARNING is logged carrying both watchlist_ids
+        and the more-specific /36 row wins.
+        """
+        matches = self._lookup_mac_range_matches(mac)
+        if len(matches) > 1:
+            logger.warning(
+                "watchlist mac_range overlap for %s — watchlist_ids %s; "
+                "preferring /%d (most specific). /28 and /36 ranges "
+                "covering the same MAC should never coexist by IEEE "
+                "design; this indicates an Argus-side contract "
+                "violation worth raising upstream.",
+                mac,
+                [m.watchlist_id for m in matches],
+                matches[0].prefix_length,
+            )
+        return matches[0] if matches else None
 
     def get_recent_alert_for_rule_and_mac(
         self,
