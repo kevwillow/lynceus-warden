@@ -79,11 +79,21 @@ def test_frozen_immutable():
 # ---- load_runtime_severity_overrides --------------------------------------
 
 
-def test_load_none_path_returns_none():
+def test_load_none_path_returns_none_logs_info(caplog):
     """Caller (poller) treats None as 'runtime layer disabled'. The
     config field severity_overrides_path defaults to None and is
-    opt-in; this guard backs that default."""
-    assert load_runtime_severity_overrides(None) is None
+    opt-in; this guard backs that default. The INFO line names the
+    config field by exact name so an operator can grep for it in
+    journalctl and find the actionable hint."""
+    with caplog.at_level(logging.INFO, logger="lynceus.rules"):
+        assert load_runtime_severity_overrides(None) is None
+    info = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO
+        and "severity_overrides_path" in r.getMessage()
+        and "lynceus.yaml" in r.getMessage()
+    ]
+    assert len(info) == 1
 
 
 def test_load_missing_file_returns_none_logs_info(tmp_path, caplog):
@@ -100,16 +110,57 @@ def test_load_missing_file_returns_none_logs_info(tmp_path, caplog):
     assert len(info) == 1
 
 
-def test_load_empty_yaml_returns_empty_config(tmp_path):
+def test_load_empty_yaml_returns_empty_config_logs_info(tmp_path, caplog):
     """Empty file parses to an empty config — pass-through at eval
     time. Distinct from None: the file exists, just contains no
     runtime keys (the wizard's starter file is in this state until
-    operator uncomments something)."""
+    operator uncomments something). INFO line distinguishes this
+    from the active-keys case so an operator grepping the startup
+    log can tell at a glance whether the file is doing something."""
     p = tmp_path / "empty.yaml"
     p.write_text("", encoding="utf-8")
-    cfg = load_runtime_severity_overrides(p)
+    with caplog.at_level(logging.INFO, logger="lynceus.rules"):
+        cfg = load_runtime_severity_overrides(p)
     assert cfg is not None
     assert cfg.is_empty()
+    info = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO
+        and "loaded from" in r.getMessage()
+        and "no active runtime keys" in r.getMessage()
+        and str(p) in r.getMessage()
+    ]
+    assert len(info) == 1
+
+
+def test_load_active_keys_logs_info_with_counts(tmp_path, caplog):
+    """The 'layer is active' confirmation. The operator running the
+    live smoke greps for this line at daemon startup to verify the
+    file is being read. Counts (remap entries + suppressed
+    categories) make the log self-describing — an operator who
+    expected 3 remaps but sees 1 knows the file's parsing is
+    selective."""
+    p = tmp_path / "active.yaml"
+    p.write_text(
+        "device_category_severity:\n"
+        "  unknown: med\n"
+        "  alpr: high\n"
+        "suppress_categories:\n"
+        "  - drone\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.INFO, logger="lynceus.rules"):
+        cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert not cfg.is_empty()
+    info = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO
+        and "loaded from" in r.getMessage()
+        and "2 category remap" in r.getMessage()
+        and "1 suppressed category" in r.getMessage()
+    ]
+    assert len(info) == 1
 
 
 def test_load_import_only_keys_returns_empty_runtime_view(tmp_path):

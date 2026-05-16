@@ -204,30 +204,46 @@ def load_runtime_severity_overrides(
 
     Failure modes are all benign — the runtime override layer is
     additive; the poller must never crash because the operator
-    edited their override file into a malformed state.
+    edited their override file into a malformed state. Every
+    outcome — success and every failure mode — emits a log line at
+    the appropriate level so an operator running ``journalctl -u
+    lynceus.service`` at daemon startup can confirm the layer's
+    state without grepping the source.
 
-    - ``path`` is None: return None (caller treats as pass-through).
+    - ``path`` is None: INFO log (layer disabled because
+      ``severity_overrides_path`` is unset in lynceus.yaml) and
+      return None. Distinct from a missing file: the operator
+      deliberately did not opt in to runtime overrides.
     - File missing: INFO log + return None. Absence is normal — the
       operator may not have run the wizard, or may have intentionally
       removed the file.
+    - File present, runtime keys absent or empty: INFO log naming
+      the path + return an empty RuntimeSeverityOverride (which
+      fast-paths through at evaluate-time). Distinct from a file
+      with active runtime keys.
+    - File loaded with active runtime keys: INFO log naming the
+      path, the count of remap entries, and the count of suppressed
+      categories + return the populated RuntimeSeverityOverride.
     - File present but unreadable (PermissionError, OSError): WARNING
       log + return None.
     - YAML parse error: WARNING log + return None.
     - Pydantic validation error (e.g. invalid severity literal):
       WARNING log + return None.
-    - File parses but the runtime keys are absent/empty (e.g. a
-      file with only import-time keys): return a valid
-      RuntimeSeverityOverride whose ``is_empty()`` is True.
-      ``rules.evaluate`` fast-paths through.
 
-    Each WARNING names the path and the underlying error so an
-    operator scanning journalctl can fix the file without grepping
-    the source. The poller continues running with pass-through
-    semantics for the runtime layer; the import-time consumer in
-    ``import_argus.py`` is unaffected (separate code path, separate
-    error handling).
+    Every WARNING names the path and the underlying error. The
+    poller continues running with pass-through semantics for the
+    runtime layer; the import-time consumer in ``import_argus.py``
+    is unaffected (separate code path, separate error handling).
     """
     if path is None:
+        logger.info(
+            "severity_overrides_path not set in lynceus.yaml; runtime override "
+            "layer disabled. Set the field to your severity_overrides.yaml path "
+            "(e.g. /etc/lynceus/severity_overrides.yaml under --system, or "
+            "~/.config/lynceus/severity_overrides.yaml under --user) and restart "
+            "the daemon to enable. The import-time consumer in lynceus-import-argus "
+            "is unaffected by this field — it reads the file via --override-file."
+        )
         return None
     p = Path(path)
     if not p.exists():
@@ -264,7 +280,7 @@ def load_runtime_severity_overrides(
             s for s in raw["suppress_categories"] if isinstance(s, str)
         )
     try:
-        return RuntimeSeverityOverride(**runtime_kwargs)
+        overrides = RuntimeSeverityOverride(**runtime_kwargs)
     except Exception as exc:
         logger.warning(
             "severity overrides file %s failed validation (%s); runtime override "
@@ -273,6 +289,30 @@ def load_runtime_severity_overrides(
             exc,
         )
         return None
+    # Success path. Two log shapes so an operator grepping the
+    # startup output can tell at a glance whether the file is
+    # actually doing something (active runtime keys) or whether
+    # it parsed cleanly but has no runtime effect (e.g. a file
+    # containing only import-time keys — the wizard's default
+    # starter state until the operator uncomments a runtime key).
+    if overrides.is_empty():
+        logger.info(
+            "runtime severity overrides loaded from %s but contain no active "
+            "runtime keys (device_category_severity / suppress_categories); "
+            "runtime layer is effectively pass-through. Edit the file and "
+            "restart the daemon to activate.",
+            path,
+        )
+    else:
+        logger.info(
+            "runtime severity overrides loaded from %s: "
+            "%d category remap(s), %d suppressed category(ies). "
+            "Edits take effect on daemon restart.",
+            path,
+            len(overrides.device_category_severity),
+            len(overrides.suppress_categories),
+        )
+    return overrides
 
 
 def load_ruleset(path: str) -> Ruleset:
