@@ -141,8 +141,19 @@
       </dd>
     </dl>
     <p><small>
-      Edit the file directly to customize severity rules; rerun
-      <code>lynceus-import-argus</code> to apply.
+      Edit the file directly to customize severity rules. Two layers
+      read this file:
+      <ul>
+        <li><strong>Import-time</strong>
+          (<code>vendor_overrides</code>, <code>geographic_filter</code>,
+          <code>confidence_downgrade_threshold</code>): rerun
+          <code>lynceus-import-argus</code> to apply.</li>
+        <li><strong>Runtime</strong>
+          (<code>device_category_severity</code>,
+          <code>suppress_categories</code>): restart the daemon to apply
+          — already-imported rows pick up the new severity without
+          re-import.</li>
+      </ul>
     </small></p>
   </article>
 
