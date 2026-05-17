@@ -331,8 +331,13 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
       ``# meta:`` line, distinct from the surviving-after-filters
       count in the importer's stdout.
     - ``pattern_type_counts``: ``{mac, oui, ssid, ble_uuid,
-      mac_range}`` → int. Every type present even when zero so
-      the template renders a stable layout.
+      mac_range, ble_manufacturer_id, drone_id_prefix}`` → int.
+      Every type present even when zero so the template renders
+      a stable layout. Keys mirror ``Database._WATCHLIST_PATTERN_TYPES``;
+      adding a new pattern_type there requires extending the
+      ``settings.html`` breakdown line too — drift between the
+      two surfaces silently drops the new type from the operator
+      view (rc5 pre-smoke regression).
     - ``warn_days``: echoed back from config for the "Fresh
       (within N days)" / "Stale (older than N days)" labels.
     """
