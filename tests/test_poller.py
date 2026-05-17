@@ -16,6 +16,7 @@ from lynceus.poller import (
     STATE_KEY_LAST_POLL,
     Poller,
     build_kismet_client,
+    log_watchlist_staleness,
     main,
     poll_once,
 )
@@ -1126,3 +1127,166 @@ def test_poller_init_health_check_retry_logs_info(tmp_path, monkeypatch, caplog)
     assert "attempt 1/3" in info_lines[0]
     assert "attempt 2/3" in info_lines[1]
     assert "retrying in" in info_lines[0]
+
+
+# ---------------------------------------------------------------------------
+# log_watchlist_staleness — startup freshness signal.
+# ---------------------------------------------------------------------------
+#
+# Three branches: no imports recorded → INFO "no metadata"; fresh
+# (within threshold) → INFO with days+exported date; stale (over
+# threshold) → WARNING with refresh hint. Tests exercise each
+# directly via log_watchlist_staleness() — the Poller.__init__ wiring
+# is covered by smoke (any existing test that constructs a Poller
+# would hit the assertion if the call were broken).
+
+
+def _seed_watchlist_row(db: Database) -> None:
+    """Minimum to make row_count > 0 in the staleness log line."""
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('aa:bb:cc:dd:ee:01', 'mac', 'low', NULL)"
+        )
+
+
+def test_log_watchlist_staleness_no_imports_logs_info_no_metadata(db, caplog):
+    """Backward-compat invariant: an empty DB / no imports yet logs
+    a single INFO line saying so. No WARNING — a fresh install where
+    the operator hasn't run lynceus-import-argus yet would warn at
+    every startup otherwise, which is exactly the noise the prompt
+    called out as not-the-MVP."""
+    _seed_watchlist_row(db)
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        log_watchlist_staleness(db, 30, now_ts=1700000000)
+    msgs = [r for r in caplog.records if r.name == "lynceus.poller"]
+    assert len(msgs) == 1
+    assert msgs[0].levelno == logging.INFO
+    assert "no Argus import metadata recorded" in msgs[0].getMessage()
+    assert "1 rows total" in msgs[0].getMessage()
+
+
+def test_log_watchlist_staleness_fresh_logs_info(db, caplog):
+    """Within-threshold data logs INFO with row count + days + the
+    exported date. No refresh hint — operator action is not needed."""
+    _seed_watchlist_row(db)
+    # exported_at = 5 days before now_ts → well under default 30.
+    now_ts = 1700000000
+    five_days_ago = now_ts - 5 * 86400
+    db.record_import_run(
+        imported_at=five_days_ago,
+        exported_at=five_days_ago,
+        source="/x.csv",
+        record_count=1,
+    )
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        log_watchlist_staleness(db, 30, now_ts=now_ts)
+    msgs = [r for r in caplog.records if r.name == "lynceus.poller"]
+    assert len(msgs) == 1
+    assert msgs[0].levelno == logging.INFO
+    assert "5 days ago" in msgs[0].getMessage()
+    assert "1 rows total" in msgs[0].getMessage()
+    # No refresh hint on the INFO path — that's only on the WARNING.
+    assert "lynceus-import-argus --from-github" not in msgs[0].getMessage()
+
+
+def test_log_watchlist_staleness_stale_logs_warning_with_refresh_hint(db, caplog):
+    """Over-threshold data flips to WARNING with the refresh hint —
+    the load-bearing signal. An operator running journalctl can spot
+    the WARNING without grepping for a specific pattern, and the
+    hint names the exact command to run."""
+    _seed_watchlist_row(db)
+    now_ts = 1700000000
+    forty_days_ago = now_ts - 40 * 86400
+    db.record_import_run(
+        imported_at=forty_days_ago,
+        exported_at=forty_days_ago,
+        source="/x.csv",
+        record_count=1,
+    )
+    with caplog.at_level(logging.WARNING, logger="lynceus.poller"):
+        log_watchlist_staleness(db, 30, now_ts=now_ts)
+    msgs = [r for r in caplog.records if r.name == "lynceus.poller"]
+    assert len(msgs) == 1
+    assert msgs[0].levelno == logging.WARNING
+    assert "40 days ago" in msgs[0].getMessage()
+    assert "lynceus-import-argus --from-github" in msgs[0].getMessage()
+
+
+def test_log_watchlist_staleness_threshold_is_configurable(db, caplog):
+    """warn_days is operator-tunable per deployment cadence — kiosk /
+    air-gapped operators on a slower cadence configure a longer
+    threshold to avoid noisy WARNINGs. The same data that's INFO at
+    threshold=30 must flip to WARNING at threshold=5."""
+    _seed_watchlist_row(db)
+    now_ts = 1700000000
+    ten_days_ago = now_ts - 10 * 86400
+    db.record_import_run(
+        imported_at=ten_days_ago,
+        exported_at=ten_days_ago,
+        source="/x.csv",
+        record_count=1,
+    )
+    # threshold=30 → 10-day-old data is fresh.
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        log_watchlist_staleness(db, 30, now_ts=now_ts)
+    msgs_30 = [r for r in caplog.records if r.name == "lynceus.poller"]
+    assert len(msgs_30) == 1
+    assert msgs_30[0].levelno == logging.INFO
+
+    caplog.clear()
+    # threshold=5 → same data is stale.
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        log_watchlist_staleness(db, 5, now_ts=now_ts)
+    msgs_5 = [r for r in caplog.records if r.name == "lynceus.poller"]
+    assert len(msgs_5) == 1
+    assert msgs_5[0].levelno == logging.WARNING
+
+
+def test_log_watchlist_staleness_falls_back_to_imported_at_when_exported_at_null(
+    db, caplog
+):
+    """Legacy / free-form-meta imports land with exported_at=None.
+    The age calculation must fall back to imported_at rather than
+    crashing — the local-clock timestamp is a strict lower bound on
+    the data's age (data can be older than imported_at but never
+    newer)."""
+    _seed_watchlist_row(db)
+    now_ts = 1700000000
+    fifty_days_ago = now_ts - 50 * 86400
+    db.record_import_run(
+        imported_at=fifty_days_ago,
+        exported_at=None,  # legacy / unparseable meta
+        source="/legacy.csv",
+        record_count=None,
+    )
+    with caplog.at_level(logging.WARNING, logger="lynceus.poller"):
+        log_watchlist_staleness(db, 30, now_ts=now_ts)
+    msgs = [r for r in caplog.records if r.name == "lynceus.poller"]
+    assert len(msgs) == 1
+    assert msgs[0].levelno == logging.WARNING
+    assert "50 days ago" in msgs[0].getMessage()
+    # When exported_at is None, the rendered exported date falls
+    # through to "unknown" rather than guessing.
+    assert "exported unknown" in msgs[0].getMessage()
+
+
+def test_log_watchlist_staleness_fires_at_poller_init(tmp_path, caplog):
+    """Smoke wiring: constructing a Poller logs the staleness line
+    (here, the no-metadata branch). Belt to the suspenders of the
+    direct unit tests above — proves the call site in
+    Poller.__init__ is actually reached."""
+    cfg = Config(
+        kismet_fixture_path=str(FIXTURE_PATH),
+        db_path=str(tmp_path / "lynceus.db"),
+    )
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poller = Poller(cfg)
+    try:
+        msgs = [
+            r for r in caplog.records
+            if r.name == "lynceus.poller" and "watchlist:" in r.getMessage()
+        ]
+        assert len(msgs) == 1
+    finally:
+        poller.db.close()
