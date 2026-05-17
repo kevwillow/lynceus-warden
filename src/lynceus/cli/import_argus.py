@@ -314,9 +314,93 @@ def _validate_header(header: list[str]) -> None:
     raise ValueError("argus CSV header invalid — " + "; ".join(issues))
 
 
+def parse_argus_meta(path: str) -> dict[str, str | int | None]:
+    """Parse the ``# meta:`` comment line that prefixes every Argus CSV.
+
+    Returns a dict with shape::
+
+        {
+            "exported_at": <int Unix seconds> | None,
+            "record_count": <int> | None,
+            "schema_version": <str> | None,
+            "confidence_threshold": <int> | None,
+        }
+
+    All keys are always present in the returned dict; missing /
+    unparseable values land as None. The two callers (the importer's
+    ``record_import_run`` write, the eventual UI/log render) read by
+    key without presence checks.
+
+    Tolerant of upstream contract changes — Argus may add new
+    ``key=value`` pairs to the meta line over time and missing keys
+    must NOT crash the importer. A line that does not start with
+    ``# meta:`` is a hard error (raised by ``parse_argus_csv``'s
+    prefix validation, not here), but the body content is parsed
+    on a best-effort basis.
+
+    The canonical shape today is::
+
+        # meta: schema_version=8, exported_at=2026-05-07T20:17:59Z, \\
+                record_count=63, confidence_threshold=0
+
+    Re-opens the file (vs. threading meta through parse_argus_csv)
+    so the staleness signal stays a small additive helper rather
+    than a contract change to the existing parser API.
+    """
+    out: dict[str, str | int | None] = {
+        "exported_at": None,
+        "record_count": None,
+        "schema_version": None,
+        "confidence_threshold": None,
+    }
+    with open(path, encoding="utf-8", newline="") as f:
+        first = f.readline()
+    if not first.startswith("# meta:"):
+        return out  # parse_argus_csv's prefix check is the gate; we no-op
+    body = first[len("# meta:"):].strip()
+    if not body:
+        return out
+    for entry in body.split(","):
+        if "=" not in entry:
+            continue
+        key, _, raw = entry.partition("=")
+        key = key.strip()
+        raw = raw.strip()
+        if key == "exported_at":
+            if raw:
+                try:
+                    out["exported_at"] = _parse_date(raw)
+                except ValueError:
+                    # Malformed timestamp → leave as None. Per-field
+                    # tolerance: a bad exported_at must not lose the
+                    # other meta values we did parse, and the staleness
+                    # layer treats None as "no Argus-side freshness
+                    # signal" and falls back to imported_at.
+                    pass
+        elif key == "record_count":
+            try:
+                out["record_count"] = int(raw)
+            except ValueError:
+                pass
+        elif key == "schema_version":
+            out["schema_version"] = raw or None
+        elif key == "confidence_threshold":
+            try:
+                out["confidence_threshold"] = int(raw)
+            except ValueError:
+                pass
+    return out
+
+
 def parse_argus_csv(path: str) -> list[dict[str, str]]:
     """Read an Argus CSV. Skips the leading ``# meta:`` comment line, validates
     the header, and returns rows as dicts keyed by Argus column name.
+
+    The ``# meta:`` line's body is parsed separately by
+    ``parse_argus_meta(path)`` — kept as two small functions rather
+    than one merged API so existing callers (every test in
+    test_import_argus.py) continue to receive a plain ``list[dict]``
+    unchanged.
     """
     with open(path, encoding="utf-8", newline="") as f:
         first = f.readline()
@@ -381,8 +465,20 @@ def import_csv(
     *,
     dry_run: bool = False,
     min_confidence: int | None = None,
+    source: str | None = None,
 ) -> ImportReport:
+    """Parse + import an Argus CSV. Writes one ``import_runs`` row on
+    success (non-dry-run only), keyed by the CSV's ``# meta:`` line's
+    ``exported_at`` for the staleness signal at /settings and the
+    poller's startup log line.
+
+    ``source`` is a free-form forensic string identifying the import's
+    origin — absolute path for ``--input``, ``owner/repo@ref`` for
+    ``--from-github``. None for callers that don't propagate it
+    (existing tests); persisted verbatim, no normalization.
+    """
     rows = parse_argus_csv(csv_path)
+    meta = parse_argus_meta(csv_path)
     report = ImportReport(total_rows=len(rows), dry_run=dry_run)
 
     for row in rows:
@@ -578,6 +674,41 @@ def import_csv(
                 f"row argus_record_id={row.get('argus_record_id', '?')!r}: {exc}"
             )
 
+    if not dry_run:
+        # Record this import_run for the freshness signal at /settings
+        # and the poller's startup log. --dry-run wrote nothing to
+        # watchlist/watchlist_metadata, so it must not write to
+        # import_runs either — otherwise the staleness card would
+        # claim a recent refresh that never landed.
+        #
+        # exported_at falls through as None for malformed / missing
+        # meta lines (parse_argus_meta is tolerant); record_count
+        # comes from the meta line, NOT report.total_rows — the meta
+        # value is the Argus-side canonical count, distinct from
+        # rows-that-survived-filters which is on stdout via
+        # report.render(). Failure to record the run must not crash
+        # the importer — the watchlist write already succeeded and
+        # the staleness signal is observability-only.
+        try:
+            exported_at_value = meta.get("exported_at")
+            record_count_value = meta.get("record_count")
+            db.record_import_run(
+                imported_at=int(_dt.datetime.now(_dt.UTC).timestamp()),
+                exported_at=int(exported_at_value) if exported_at_value is not None else None,
+                source=source,
+                record_count=(
+                    int(record_count_value) if record_count_value is not None else None
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "argus import: failed to record import_runs row (%s); "
+                "watchlist data was imported successfully but the "
+                "staleness signal will not reflect this import. The "
+                "next successful import will recover the signal.",
+                exc,
+            )
+
     return report
 
 
@@ -622,8 +753,13 @@ def _resolve_ref(repo: str, ref: str | None) -> str:
     return tag
 
 
-def fetch_argus_export(repo: str, ref: str | None, cache_dir: Path) -> Path:
+def fetch_argus_export(repo: str, ref: str | None, cache_dir: Path) -> tuple[Path, str]:
     """Download an Argus CSV export from GitHub at ``ref`` (or latest tag).
+
+    Returns ``(cached_path, resolved_ref)``. The caller uses
+    ``resolved_ref`` for forensic surfaces (the import_runs.source
+    field, log lines) — passing it back through the return tuple
+    avoids a duplicate ``_resolve_ref`` call at the caller.
 
     The file lands in ``cache_dir`` named ``<resolved-ref>__argus_export.csv``
     so each pulled artifact is preserved alongside the ref it came from
@@ -649,7 +785,7 @@ def fetch_argus_export(repo: str, ref: str | None, cache_dir: Path) -> Path:
     resp.raise_for_status()
     dest.write_bytes(resp.content)
     logger.info("Cached %d bytes at %s", len(resp.content), dest)
-    return dest
+    return dest, resolved
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -776,11 +912,22 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         overrides = load_override_config(override_path)
+        # source: forensic identifier for the import — persisted to
+        # import_runs.source by import_csv() and rendered on the
+        # /settings freshness card. owner/repo@ref for --from-github
+        # (ref is the actually-resolved value, not args.ref which may
+        # be None pre-resolution); absolute path for --input.
+        source: str
         if args.from_github:
             cache_dir = paths.default_data_dir(args.scope) / "argus-cache"
-            input_path = str(fetch_argus_export(args.repo, args.ref, cache_dir))
+            cached_path, resolved_ref = fetch_argus_export(
+                args.repo, args.ref, cache_dir
+            )
+            input_path = str(cached_path)
+            source = f"{args.repo}@{resolved_ref}"
         else:
             input_path = args.input
+            source = str(Path(args.input).resolve())
 
         db = Database(str(db_path))
         try:
@@ -790,6 +937,7 @@ def main(argv: list[str] | None = None) -> int:
                 overrides,
                 dry_run=args.dry_run,
                 min_confidence=args.min_confidence,
+                source=source,
             )
         finally:
             db.close()
