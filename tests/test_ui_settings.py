@@ -636,15 +636,26 @@ def test_watchlist_freshness_card_pattern_type_breakdown_renders_counts(
     tmp_path, monkeypatch
 ):
     """Pattern-type breakdown on the card matches the underlying
-    watchlist_pattern_type_counts query. Operators on /settings see
-    the same per-type numbers the importer's summary surfaces."""
+    watchlist_pattern_type_counts query for every pattern_type the
+    schema admits. Operators on /settings see the same per-type
+    numbers the importer's summary surfaces.
+
+    Asserts all 7 pattern_types in ``Database._WATCHLIST_PATTERN_TYPES``
+    so drift between the DB layer and the template surface fails
+    loudly: rc5 shipped the two new types (ble_manufacturer_id,
+    drone_id_prefix) into the schema but the template line was
+    only extended to render five — operators saw the new rows in
+    the importer summary but a silent zero on /settings."""
     _stub_kismet_reachable(monkeypatch)
     app, db = _make_app(tmp_path)
     try:
-        # Seed 2 mac, 1 oui, 0 ssid, 0 ble_uuid, 1 mac_range rows.
+        # Seed 2 mac, 1 oui, 0 ssid, 0 ble_uuid, 1 mac_range,
+        # 1 ble_manufacturer_id, 1 drone_id_prefix.
         for pat in ("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"):
             _add_watchlist(db, pat, pattern_type="mac")
         _add_watchlist(db, "00:13:37", pattern_type="oui")
+        _add_watchlist(db, "004c", pattern_type="ble_manufacturer_id")
+        _add_watchlist(db, "21239ESA2", pattern_type="drone_id_prefix")
         with db._conn:
             db._conn.execute(
                 "INSERT INTO watchlist("
@@ -657,11 +668,13 @@ def test_watchlist_freshness_card_pattern_type_breakdown_renders_counts(
             r = client.get("/settings")
         assert r.status_code == 200
         text = r.text
-        # The breakdown line: "mac=2, oui=1, ssid=0, ble_uuid=0, mac_range=1".
+        # The breakdown line covers all 7 schema-admitted types.
         assert "mac=2" in text
         assert "oui=1" in text
         assert "ssid=0" in text
         assert "ble_uuid=0" in text
         assert "mac_range=1" in text
+        assert "ble_manufacturer_id=1" in text
+        assert "drone_id_prefix=1" in text
     finally:
         db.close()
