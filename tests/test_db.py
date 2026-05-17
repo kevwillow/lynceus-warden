@@ -181,6 +181,7 @@ def test_migrations_dir_lists_both_files(db):
         "010_normalize_watchlist_patterns.sql",
         "011_watchlist_mac_range.sql",
         "012_import_runs.sql",
+        "013_pattern_type_extension.sql",
     ]
 
 
@@ -1525,6 +1526,8 @@ def test_watchlist_pattern_type_counts_empty_returns_zero_for_each_type(db):
         "ssid": 0,
         "ble_uuid": 0,
         "mac_range": 0,
+        "ble_manufacturer_id": 0,
+        "drone_id_prefix": 0,
     }
 
 

@@ -3261,6 +3261,8 @@ def test_count_watchlist_by_pattern_type_missing_db_returns_zeros(tmp_path):
         "oui": 0,
         "ssid": 0,
         "ble_uuid": 0,
+        "ble_manufacturer_id": 0,
+        "drone_id_prefix": 0,
     }
 
 
@@ -3321,11 +3323,11 @@ def test_render_rules_yaml_one_active_keeps_others_commented():
     assert data["rules"][0]["patterns"] == []
 
 
-def test_render_rules_yaml_all_active_produces_five_rules():
+def test_render_rules_yaml_all_active_produces_all_rules():
     rule_types = {rt for (_n, rt, _pt, _l, _d) in wiz.DELEGATION_RULES}
     content = wiz.render_rules_yaml(rule_types)
     data = yaml.safe_load(content)
-    assert len(data["rules"]) == 5
+    assert len(data["rules"]) == len(wiz.DELEGATION_RULES)
     seen = {rule["rule_type"] for rule in data["rules"]}
     assert seen == rule_types
     # Every active entry uses the DB-delegation idiom: empty patterns.
