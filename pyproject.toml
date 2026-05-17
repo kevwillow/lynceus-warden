@@ -62,6 +62,7 @@ lynceus-import-argus = "lynceus.cli.import_argus:main"
 lynceus-ui = "lynceus.webui.server:main"
 lynceus-quickstart = "lynceus.cli.quickstart:main"
 lynceus-setup = "lynceus.cli.setup:main"
+lynceus-validate = "lynceus.cli.validate:main"
 
 [project.urls]
 Homepage = "https://github.com/kevwillow/lynceus-warden"

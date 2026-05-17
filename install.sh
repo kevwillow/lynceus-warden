@@ -42,6 +42,7 @@ CONSOLE_SCRIPTS=(
     lynceus-setup
     lynceus-seed-watchlist
     lynceus-import-argus
+    lynceus-validate
 )
 
 ACTION=install
