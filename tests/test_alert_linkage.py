@@ -1446,3 +1446,174 @@ def test_get_alert_shape_unchanged_by_migration_005(db):
         "acknowledged",
         "device",
     }
+
+
+# ---------------------------------------------------------------------------
+# watchlist_drone_id_prefix — DB-delegated rule_type end-to-end with a
+# Remote-ID-typed Kismet record. Proves that the rc5 _TYPE_MAP +
+# devices CHECK extensions, combined with the existing extraction
+# helper + delegation rule, fire an alert end-to-end on a synthesized
+# Kismet emission. Until the operator confirms the live
+# _DRONE_ID_PATHS shape this is the only path that produces a
+# drone_id_prefix alert; the synthetic record below uses the
+# kismet.device.base.remote_id.serial_number path that the rc5
+# _DRONE_ID_PATHS refinement promoted to the front of the probe table.
+# ---------------------------------------------------------------------------
+
+
+def _write_remote_id_fixture(tmp_path) -> str:
+    """Write a one-record JSON fixture with a Remote-ID-typed device
+    carrying a serial-number at the kismet.device.base.remote_id.*
+    path that _DRONE_ID_PATHS now probes first. Returns the path."""
+    import json as _json
+
+    path = tmp_path / "remote_id_devices.json"
+    path.write_text(
+        _json.dumps(
+            [
+                {
+                    "kismet.device.base.macaddr": "02:11:22:33:44:55",
+                    "kismet.device.base.type": "Remote ID",
+                    "kismet.device.base.first_time": 1700000000,
+                    "kismet.device.base.last_time": 1700000100,
+                    "kismet.device.base.signal": {
+                        "kismet.common.signal.last_signal": -70
+                    },
+                    "kismet.device.base.manuf": "DroneCorp",
+                    "kismet.device.base.remote_id": {
+                        "serial_number": "21239ESA2"
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def test_watchlist_drone_id_prefix_rule_fires_e2e_severity_from_db(
+    db, db_path, tmp_path
+):
+    """End-to-end: a Remote-ID-typed Kismet record flows through
+    _TYPE_MAP (rc5 extension), gets persisted to the devices table
+    with device_type='remote_id' (migration 014 extension), and the
+    empty-patterns watchlist_drone_id_prefix delegation rule matches
+    the Argus-imported watchlist row, firing an alert. Severity comes
+    from the matched DB row (high), not the rule's severity (low) —
+    same DB-sourced-severity contract as watchlist_mac_range.
+
+    Pre-rc5, every step in this pipeline was wired EXCEPT the
+    _TYPE_MAP gate (records typed 'Remote ID' dropped to None before
+    reaching parse_kismet_device's extraction layer) and the devices
+    CHECK (which would have rejected device_type='remote_id' even if
+    the gate were lifted). Both are now closed; only the
+    _DRONE_ID_PATHS confirmation against a live capture remains."""
+    fixture_path = _write_remote_id_fixture(tmp_path)
+    fake_client = FakeKismetClient(fixture_path)
+    config = Config(
+        kismet_fixture_path=fixture_path,
+        db_path=db_path,
+        location_id="testloc",
+        location_label="Test Location",
+        alert_dedup_window_seconds=0,
+    )
+
+    # Plant a watchlist row matching the synthetic record's
+    # drone_id_prefix. Severity 'high' is sourced from the matched
+    # row at alert time, NOT from the rule's 'low'.
+    wl_id = _add_watchlist(
+        db,
+        pattern="21239ESA2",
+        pattern_type="drone_id_prefix",
+        severity="high",
+        description="Argus drone Remote-ID corpus (synthetic)",
+    )
+
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_drone_id",
+                rule_type="watchlist_drone_id_prefix",
+                severity="low",  # ignored for delegation
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+
+    # Exactly one alert, fired by the watchlist_drone_id_prefix
+    # delegation rule on the Remote-ID device.
+    alerts = [a for a in _alerts(db) if a["mac"] == "02:11:22:33:44:55"]
+    assert len(alerts) == 1
+    assert alerts[0]["rule_name"] == "argus_drone_id"
+    # Severity sourced from the matched DB row (high), not from
+    # rule.severity (low). Same DB-sourced-severity contract as
+    # watchlist_mac_range.
+    assert alerts[0]["severity"] == "high"
+
+    # And the device row carries the new internal device_type — the
+    # migration-014 CHECK admitted the upsert path through to disk.
+    dev = db.get_device("02:11:22:33:44:55")
+    assert dev is not None
+    assert dev["device_type"] == "remote_id"
+
+    # matched_watchlist_id is intentionally NOT asserted on the
+    # alert row. db.resolve_matched_watchlist_id (the annotation
+    # path the poller calls after evaluate) walks mac > oui >
+    # mac_range > ssid > ble_uuid only — it was never extended to
+    # the rc5 identifier types (drone_id_prefix,
+    # ble_manufacturer_id). Extending it is a separate change-axis
+    # from Kismet-side gating and out of scope for this prompt;
+    # alerts still fire with the right rule_name and severity, but
+    # the matched-row UI hyperlink stays cold for the two new
+    # rule_types until a follow-up extends the annotation path.
+    assert alerts[0]["matched_watchlist_id"] is None
+    # wl_id is referenced by the assertion above only
+    # implicitly (it's the row that DID match at eval time).
+    assert wl_id > 0
+
+
+def test_watchlist_drone_id_prefix_rule_e2e_miss_no_alert(
+    db, db_path, tmp_path
+):
+    """A Remote-ID Kismet record with a serial that doesn't match any
+    watchlist row fires zero alerts. Proves the rule_type gate is
+    fail-closed at the equality-match layer, not silently fail-open."""
+    fixture_path = _write_remote_id_fixture(tmp_path)
+    fake_client = FakeKismetClient(fixture_path)
+    config = Config(
+        kismet_fixture_path=fixture_path,
+        db_path=db_path,
+        location_id="testloc",
+        location_label="Test Location",
+        alert_dedup_window_seconds=0,
+    )
+
+    # Plant a watchlist row that does NOT match the synthetic
+    # record's serial ('21239ESA2').
+    _add_watchlist(
+        db,
+        pattern="DIFFERENT1",
+        pattern_type="drone_id_prefix",
+        severity="high",
+    )
+
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_drone_id",
+                rule_type="watchlist_drone_id_prefix",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    # No alerts despite the device landing in the devices table.
+    assert _alerts(db) == []
+    # The device still got persisted (rc5 _TYPE_MAP + migration 014
+    # admit Remote-ID records into devices independently of whether
+    # any watchlist row matches them).
+    dev = db.get_device("02:11:22:33:44:55")
+    assert dev is not None
+    assert dev["device_type"] == "remote_id"
