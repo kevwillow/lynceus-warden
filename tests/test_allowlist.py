@@ -4,14 +4,17 @@ import logging
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from lynceus.allowlist import (
     Allowlist,
     AllowlistEntry,
     add_ui_entry,
+    bulk_remove_ui_entries,
     derive_ui_path,
     load_allowlist,
+    load_allowlist_with_source,
     remove_ui_entry,
 )
 from lynceus.kismet import DeviceObservation
@@ -405,6 +408,286 @@ def test_remove_ui_entry_on_missing_pattern_returns_false(tmp_path):
 def test_remove_ui_entry_on_absent_file_returns_false(tmp_path):
     ui = tmp_path / "does_not_exist.yaml"
     assert remove_ui_entry(ui, "anything", "mac") is False
+
+
+# --------------------------- new pattern_type canonicalization --------------
+
+
+def test_mac_range_legacy_bare_canonicalized_to_cidr():
+    """A bare 7-hex-char prefix is the legacy Argus shape; AllowlistEntry
+    stores it as the canonical /28 CIDR so the table/search surface sees
+    one uniform form regardless of input."""
+    e = AllowlistEntry(pattern="aa:bb:cc:d", pattern_type="mac_range")
+    assert e.pattern == "aa:bb:cc:d/28"
+
+
+def test_mac_range_canonical_cidr_round_trips():
+    e = AllowlistEntry(pattern="aa:bb:cc:dd:e/36", pattern_type="mac_range")
+    assert e.pattern == "aa:bb:cc:dd:e/36"
+
+
+def test_mac_range_invalid_group_count_rejected():
+    with pytest.raises(ValidationError):
+        AllowlistEntry(pattern="aa:bb:cc:dd:ee:ff", pattern_type="mac_range")
+
+
+def test_ble_uuid_uppercase_dehyphenated_canonicalized():
+    e = AllowlistEntry(
+        pattern="0000180F00001000800000805F9B34FB",
+        pattern_type="ble_uuid",
+    )
+    assert e.pattern == "0000180f-0000-1000-8000-00805f9b34fb"
+
+
+def test_ble_uuid_invalid_rejected():
+    with pytest.raises(ValidationError):
+        AllowlistEntry(pattern="not-a-uuid", pattern_type="ble_uuid")
+
+
+def test_ble_manufacturer_id_strips_0x_and_zero_pads():
+    e = AllowlistEntry(pattern="0x4C", pattern_type="ble_manufacturer_id")
+    assert e.pattern == "004c"
+
+
+def test_ble_manufacturer_id_too_long_rejected():
+    with pytest.raises(ValidationError):
+        AllowlistEntry(pattern="0x12345", pattern_type="ble_manufacturer_id")
+
+
+def test_drone_id_prefix_uppercased_and_bounds_checked():
+    e = AllowlistEntry(pattern="abc1234", pattern_type="drone_id_prefix")
+    assert e.pattern == "ABC1234"
+
+
+def test_drone_id_prefix_too_short_rejected():
+    with pytest.raises(ValidationError):
+        AllowlistEntry(pattern="ab", pattern_type="drone_id_prefix")
+
+
+def test_drone_id_prefix_non_alphanumeric_rejected():
+    with pytest.raises(ValidationError):
+        AllowlistEntry(pattern="ABC-123", pattern_type="drone_id_prefix")
+
+
+# --------------------------- is_allowed: new pattern_types -------------------
+
+
+def _ble_obs(
+    mac: str = "aa:bb:cc:dd:ee:ff",
+    *,
+    uuids: tuple[str, ...] = (),
+    manuf_id: str | None = None,
+) -> DeviceObservation:
+    return DeviceObservation(
+        mac=mac,
+        device_type="ble",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-50,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+        ble_service_uuids=uuids,
+        ble_manufacturer_id=manuf_id,
+    )
+
+
+def _remote_id_obs(prefix: str | None) -> DeviceObservation:
+    return DeviceObservation(
+        mac="aa:bb:cc:dd:ee:ff",
+        device_type="remote_id",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-50,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+        drone_id_prefix=prefix,
+    )
+
+
+def test_is_allowed_mac_range_matches_within_prefix():
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="aa:bb:cc:d", pattern_type="mac_range")]
+    )
+    # /28 covers aa:bb:cc:d0..df: aa:bb:cc:d5:ee:ff is inside.
+    matched = al.is_allowed(_obs("aa:bb:cc:d5:ee:ff"))
+    assert matched is not None
+    assert matched.pattern == "aa:bb:cc:d/28"
+
+
+def test_is_allowed_mac_range_does_not_match_outside_prefix():
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="aa:bb:cc:d", pattern_type="mac_range")]
+    )
+    # aa:bb:cc:e0:00:00 falls outside the /28 (5th nibble is 'e' not 'd').
+    assert al.is_allowed(_obs("aa:bb:cc:e0:00:00")) is None
+
+
+def test_is_allowed_mac_range_36_bit_prefix_matches():
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="aa:bb:cc:dd:e", pattern_type="mac_range")]
+    )
+    matched = al.is_allowed(_obs("aa:bb:cc:dd:e1:23"))
+    assert matched is not None
+    # /36 means first 9 nibbles must match: aa:bb:cc:dd:f1:23 → 9th nibble 'f'.
+    assert al.is_allowed(_obs("aa:bb:cc:dd:f1:23")) is None
+
+
+def test_is_allowed_ble_uuid_match():
+    uuid = "0000180f-0000-1000-8000-00805f9b34fb"
+    al = Allowlist(entries=[AllowlistEntry(pattern=uuid, pattern_type="ble_uuid")])
+    matched = al.is_allowed(_ble_obs(uuids=(uuid,)))
+    assert matched is not None
+    assert matched.pattern == uuid
+
+
+def test_is_allowed_ble_uuid_no_match_when_uuid_absent():
+    uuid = "0000180f-0000-1000-8000-00805f9b34fb"
+    al = Allowlist(entries=[AllowlistEntry(pattern=uuid, pattern_type="ble_uuid")])
+    assert al.is_allowed(_ble_obs(uuids=())) is None
+
+
+def test_is_allowed_ble_manufacturer_id_match():
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="0x004C", pattern_type="ble_manufacturer_id")]
+    )
+    matched = al.is_allowed(_ble_obs(manuf_id="004c"))
+    assert matched is not None
+    assert matched.pattern == "004c"
+
+
+def test_is_allowed_ble_manufacturer_id_no_match_when_field_none():
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="004c", pattern_type="ble_manufacturer_id")]
+    )
+    assert al.is_allowed(_ble_obs(manuf_id=None)) is None
+
+
+def test_is_allowed_drone_id_prefix_match():
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="abc1234", pattern_type="drone_id_prefix")]
+    )
+    matched = al.is_allowed(_remote_id_obs("ABC1234"))
+    assert matched is not None
+    assert matched.pattern == "ABC1234"
+
+
+def test_is_allowed_drone_id_prefix_no_match_when_field_none():
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="ABC1234", pattern_type="drone_id_prefix")]
+    )
+    assert al.is_allowed(_remote_id_obs(None)) is None
+
+
+# --------------------------- load_allowlist_with_source ----------------------
+
+
+def test_load_with_source_tags_primary_and_ui(tmp_path):
+    primary = tmp_path / "allowlist.yaml"
+    _write_yaml(
+        primary,
+        "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n",
+    )
+    ui = derive_ui_path(primary)
+    _write_yaml(
+        ui,
+        "entries:\n  - pattern: 11:22:33:44:55:66\n    pattern_type: mac\n"
+        "  - pattern: 77:88:99:aa:bb:cc\n    pattern_type: mac\n",
+    )
+    tagged = load_allowlist_with_source(str(primary))
+    assert len(tagged) == 3
+    # Primary entries come first, preserving file order.
+    assert tagged[0][0].pattern == "aa:bb:cc:dd:ee:ff"
+    assert tagged[0][1] == "primary"
+    assert {(e.pattern, src) for e, src in tagged[1:]} == {
+        ("11:22:33:44:55:66", "ui"),
+        ("77:88:99:aa:bb:cc", "ui"),
+    }
+
+
+def test_load_with_source_primary_only_yields_no_ui_tags(tmp_path):
+    primary = tmp_path / "allowlist.yaml"
+    _write_yaml(
+        primary,
+        "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n",
+    )
+    tagged = load_allowlist_with_source(str(primary))
+    assert [src for _, src in tagged] == ["primary"]
+
+
+def test_load_with_source_missing_primary_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_allowlist_with_source(str(tmp_path / "nope.yaml"))
+
+
+# --------------------------- bulk_remove_ui_entries --------------------------
+
+
+def test_bulk_remove_two_of_three_returns_two_and_single_write(tmp_path):
+    ui = tmp_path / "allowlist_ui.yaml"
+    for pat in ("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02", "aa:bb:cc:dd:ee:03"):
+        add_ui_entry(ui, AllowlistEntry(pattern=pat, pattern_type="mac"))
+    mtime_before = ui.stat().st_mtime
+    import os as _os
+    import time as _time
+
+    # Bump mtime so the post-bulk-remove stat is provably distinct from
+    # the post-add stat, even on filesystems with second-granularity
+    # mtimes that may otherwise collapse the two writes to one tick.
+    _os.utime(ui, (_time.time(), mtime_before - 5))
+    mtime_before = ui.stat().st_mtime
+    removed = bulk_remove_ui_entries(
+        ui,
+        [("aa:bb:cc:dd:ee:01", "mac"), ("aa:bb:cc:dd:ee:03", "mac")],
+    )
+    assert removed == 2
+    al = Allowlist(**yaml.safe_load(ui.read_text(encoding="utf-8")))
+    assert [e.pattern for e in al.entries] == ["aa:bb:cc:dd:ee:02"]
+    # Single atomic write happened: mtime moved exactly once relative
+    # to the manually-rewound baseline.
+    assert ui.stat().st_mtime != mtime_before
+
+
+def test_bulk_remove_no_matching_keys_returns_zero_and_no_write(tmp_path):
+    ui = tmp_path / "allowlist_ui.yaml"
+    add_ui_entry(ui, AllowlistEntry(pattern="aa:bb:cc:dd:ee:01", pattern_type="mac"))
+    mtime_before = ui.stat().st_mtime
+    import os as _os
+    import time as _time
+
+    _os.utime(ui, (_time.time(), mtime_before - 5))
+    mtime_before = ui.stat().st_mtime
+    removed = bulk_remove_ui_entries(ui, [("00:00:00:00:00:00", "mac")])
+    assert removed == 0
+    # No write: mtime unchanged from the manually-rewound baseline.
+    assert ui.stat().st_mtime == mtime_before
+
+
+def test_bulk_remove_distinguishes_pattern_type_in_composite_key(tmp_path):
+    """Same pattern under different pattern_types is a different key —
+    removing the mac entry must not touch the oui entry."""
+    ui = tmp_path / "allowlist_ui.yaml"
+    add_ui_entry(ui, AllowlistEntry(pattern="aa:bb:cc:dd:ee:ff", pattern_type="mac"))
+    add_ui_entry(ui, AllowlistEntry(pattern="aa:bb:cc", pattern_type="oui"))
+    removed = bulk_remove_ui_entries(ui, [("aa:bb:cc", "mac")])
+    assert removed == 0
+    removed = bulk_remove_ui_entries(ui, [("aa:bb:cc", "oui")])
+    assert removed == 1
+    al = Allowlist(**yaml.safe_load(ui.read_text(encoding="utf-8")))
+    assert len(al.entries) == 1
+    assert al.entries[0].pattern_type == "mac"
+
+
+def test_bulk_remove_empty_keys_is_noop(tmp_path):
+    ui = tmp_path / "allowlist_ui.yaml"
+    add_ui_entry(ui, AllowlistEntry(pattern="aa:bb:cc:dd:ee:01", pattern_type="mac"))
+    assert bulk_remove_ui_entries(ui, []) == 0
+
+
+def test_bulk_remove_absent_file_returns_zero(tmp_path):
+    ui = tmp_path / "does_not_exist.yaml"
+    assert bulk_remove_ui_entries(ui, [("aa:bb:cc:dd:ee:ff", "mac")]) == 0
 
 
 def test_writer_does_not_touch_primary_file(tmp_path):
