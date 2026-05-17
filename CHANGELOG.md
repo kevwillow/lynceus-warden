@@ -8,6 +8,121 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`lynceus-export-config` — operator-facing CLI that bundles config
+  (and optionally state) into a portable `tar.gz` archive.** Closes
+  the missing "save / share / backup my config" surface in the CLI
+  suite, complementing `lynceus-validate` (verify a config),
+  `lynceus-bootstrap-kismet` (initial Kismet install), and
+  `lynceus-setup` (interactive wizard). Four operator use cases are
+  in scope:
+
+  - backup before an upgrade,
+  - machine-to-machine migration,
+  - sharing a sanitized snapshot with the maintainer for support,
+  - template-sharing with another operator.
+
+  **Safe by default.** A bare invocation produces a config-only
+  archive with credentials redacted — `kismet_api_key`,
+  `ntfy_auth_token`, `ntfy_topic`, and `user:pass@` userinfo in
+  `ntfy_url` — so an operator who copy-pastes the bundle into a chat
+  or a support ticket does not leak secrets. The redactor lives in
+  `src/lynceus/redact.py` alongside the existing ntfy-topic shape
+  helpers; new `redact_yaml_config(filename, content)` returns the
+  redacted content plus the list of fields actually scrubbed (so the
+  manifest can record what was masked). Redaction is line-based and
+  preserves operator comments, key ordering, and whitespace; block-
+  scalar (`|`) and folded (`>`) forms of credential fields are not
+  produced by the wizard and are not specially recognized.
+
+  **Opt-outs are explicit, never default.**
+
+  - `--include-secrets` disables redaction. For personal backups
+    where the operator intends a full restore and is keeping the
+    archive on their own host. Never appropriate for an archive
+    being shared.
+  - `--include-state` adds the SQLite database (and any
+    `lynceus.db-shm` / `lynceus.db-wal` sidecars present) under
+    `state/` in the archive. Off by default because the DB can be
+    large and carries observed MAC addresses. State files are
+    NEVER redacted — they're observational data, not config, and
+    scrubbing them would defeat the purpose of `--include-state`.
+    Operators wanting an anonymized state export are a follow-up
+    (`--include-state-anonymized` is deferred, not promised).
+
+  **Self-describing archive.** The internal layout is:
+
+  ```
+  lynceus-export-<scope>-<UTC-timestamp>/
+    README.txt           # restore guide + redaction notes
+    manifest.json        # machine-readable inventory
+    config/<name>.yaml   # five config files (redacted by default)
+    state/               # only with --include-state
+      lynceus.db
+      lynceus.db-shm     # only when present on the source
+      lynceus.db-wal     # only when present on the source
+  ```
+
+  `manifest.json` records the Lynceus version, the UTC export
+  timestamp (ISO-8601), the resolved scope (`user` or `system`),
+  the originating exporter command, the redaction policy
+  (`redaction_applied: true|false`) and the full list of redacted
+  fields, plus one entry per bundled file with its `size_bytes`,
+  `sha256`, and `redacted` flag. Missing-on-source files are
+  enumerated under `missing`; unreadable files (permission denied,
+  etc.) under `errored`. Re-hashing a file on restore and comparing
+  to the manifest entry detects transport damage. `README.txt`
+  spells out the canonical restore paths for user and system scope
+  and tells the receiver to replace `<REDACTED>` placeholders
+  before the next daemon restart.
+
+  **Path resolution.** `--scope {user,system,auto}` defaults to
+  `auto`, which probes `paths.resolve_existing_config()` first and
+  falls back to `user` if neither scope has a `lynceus.yaml`. Config
+  files are read from the scope's canonical directory, except that
+  `rules_path` / `allowlist_path` / `severity_overrides_path`
+  settings inside `lynceus.yaml` are honored when present (the same
+  fields the daemon already follows). `allowlist_ui.yaml` is
+  derived via `allowlist.derive_ui_path()` so the daemon-managed UI
+  entries are bundled alongside the operator-curated primary.
+
+  **Output safety.**
+
+  - Refuses to overwrite an existing `--output` path; `--force` is
+    the explicit opt-in. Operators accidentally clobbering a prior
+    export is the failure mode this prevents.
+  - Refuses an `--output` that resolves to a directory.
+  - Refuses an `--output` whose parent directory does not exist
+    or is not writable.
+  - Default output filename: `lynceus-export-<scope>-<UTC-timestamp>.tar.gz`
+    in CWD. The compact `YYYYMMDDTHHMMSSZ` form sorts cleanly as a
+    filename and matches the archive's internal root directory name.
+
+  **Dry-run.** `--dry-run` prints the inventory (per-file path +
+  size, total count + bytes, scope, redaction state, included
+  fields) and produces no archive. Lets the operator sanity-check
+  before the real run, especially useful for confirming that the
+  redaction set covers what they expect to see.
+
+  **Cross-platform.** Implementation uses `tarfile` and `pathlib`
+  only — no shell calls — so the suite runs on both Linux (primary
+  target) and Windows (dev box). The new `tests/test_export_config.py`
+  exercises 21 cases: default redaction, missing inputs, flag
+  combinations (`--include-state`, `--include-secrets`, both),
+  `--dry-run` semantics, refuse-to-clobber + `--force`, directory /
+  missing-parent rejection, scope auto-resolution, byte-identical
+  state round-trip, and per-file SHA256 ↔ archive content
+  consistency.
+
+  **No network, no daemon dependency, read-only.** The CLI never
+  writes outside `--output`, never mutates a source file, and does
+  not require the daemon to be running. Operators who want to
+  confirm an archive before sharing can extract it on a fresh host
+  and run `lynceus-validate` against the restored configs.
+
+  Registered as a console script in both `pyproject.toml`
+  `[project.scripts]` and `install.sh` `CONSOLE_SCRIPTS`, matching
+  the pattern set by `lynceus-validate` and `lynceus-bootstrap-kismet`.
+
 - **Auto-refresh systemd timer for the Argus watchlist
   (`lynceus-refresh.service` + `lynceus-refresh.timer`).** Closes
   the loop with the rc5 staleness indicator: the indicator detects
