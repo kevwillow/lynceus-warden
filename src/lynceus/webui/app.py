@@ -267,6 +267,17 @@ def _watchlist_origin_breakdown(db: Database) -> dict:
     Discriminator: argus_record_id ``LIKE 'yaml-%'`` is yaml-seeded;
     other metadata rows are argus-imported; watchlist rows with no
     metadata row are bundled-or-other (matches Prompt 24's pattern).
+
+    The freshness signal that previously lived here as
+    ``last_imported_ts`` (a per-row proxy via ``MAX(updated_at)
+    FROM watchlist_metadata``) moved to the dedicated
+    ``_watchlist_freshness_card`` helper, which reads the canonical
+    per-import metadata from the ``import_runs`` table (migration
+    012). The proxy was misleading: re-importing the same stale CSV
+    flipped it to "now" while the underlying data was still months
+    old. The dedicated helper renders both Argus-side
+    ``exported_at`` and local-clock ``imported_at`` so operators
+    can spot that case.
     """
     conn = db._conn
     total = conn.execute("SELECT COUNT(*) AS c FROM watchlist").fetchone()["c"]
@@ -281,15 +292,80 @@ def _watchlist_origin_breakdown(db: Database) -> dict:
         "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
         "WHERE m.id IS NULL"
     ).fetchone()["c"]
-    last_imported = conn.execute("SELECT MAX(updated_at) AS ts FROM watchlist_metadata").fetchone()[
-        "ts"
-    ]
     return {
         "total": int(total),
         "argus": int(argus),
         "yaml": int(yaml_seeded),
         "bundled": int(bundled),
-        "last_imported_ts": last_imported,
+    }
+
+
+def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> dict:
+    """Compute the /settings 'Watchlist freshness' card payload.
+
+    Mirrors the data shape ``log_watchlist_staleness`` reads at
+    poller startup — the two surfaces are deliberately kept in
+    lockstep so an operator who sees a WARNING in journalctl can
+    open /settings and see the same numbers without reconciling.
+
+    Returns a dict with stable keys regardless of state (no
+    imports, fresh, stale) so the template doesn't need branching
+    on presence:
+
+    - ``has_import``: True iff ``import_runs`` carries at least one
+      row. When False, every other field below is None / 0 and the
+      template renders a "no Argus import metadata recorded" line.
+    - ``status``: ``"fresh"`` | ``"stale"`` | ``"unknown"``. Drives
+      the badge color. ``"unknown"`` only when ``has_import`` is
+      False.
+    - ``imported_at`` / ``exported_at``: int UTC seconds, or None.
+      Rendered via the existing ``unix_to_utc_human`` Jinja filter.
+    - ``age_days``: int days computed against ``exported_at`` when
+      present, else ``imported_at``. Identical fallback rule to the
+      log line — both surfaces must agree.
+    - ``source``: free-form string from ``import_runs.source``
+      (absolute path or ``owner/repo@ref``); rendered verbatim
+      with no decoration so a forensic copy-paste from /settings
+      drops cleanly into a shell.
+    - ``record_count``: canonical Argus-side row count from the
+      ``# meta:`` line, distinct from the surviving-after-filters
+      count in the importer's stdout.
+    - ``pattern_type_counts``: ``{mac, oui, ssid, ble_uuid,
+      mac_range}`` → int. Every type present even when zero so
+      the template renders a stable layout.
+    - ``warn_days``: echoed back from config for the "Fresh
+      (within N days)" / "Stale (older than N days)" labels.
+    """
+    pattern_type_counts = db.watchlist_pattern_type_counts()
+    latest = db.get_latest_import_run()
+    if latest is None:
+        return {
+            "has_import": False,
+            "status": "unknown",
+            "imported_at": None,
+            "exported_at": None,
+            "age_days": None,
+            "source": None,
+            "record_count": None,
+            "pattern_type_counts": pattern_type_counts,
+            "warn_days": warn_days,
+        }
+    reference_ts = latest["exported_at"] or latest["imported_at"]
+    age_days = max(0, (now_ts - int(reference_ts)) // 86400)
+    return {
+        "has_import": True,
+        "status": "stale" if age_days > warn_days else "fresh",
+        "imported_at": int(latest["imported_at"]),
+        "exported_at": (
+            int(latest["exported_at"]) if latest["exported_at"] is not None else None
+        ),
+        "age_days": age_days,
+        "source": latest["source"],
+        "record_count": (
+            int(latest["record_count"]) if latest["record_count"] is not None else None
+        ),
+        "pattern_type_counts": pattern_type_counts,
+        "warn_days": warn_days,
     }
 
 
@@ -341,6 +417,11 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             "configured": bool(config.ntfy_url and config.ntfy_topic),
         },
         "watchlist_stats": _watchlist_origin_breakdown(db),
+        "watchlist_freshness": _watchlist_freshness_card(
+            db,
+            config.watchlist_staleness_warn_days,
+            now_ts=int(time.time()),
+        ),
         "severity_overrides": {
             "path": str(overrides_path),
             "exists": overrides_path.exists(),
