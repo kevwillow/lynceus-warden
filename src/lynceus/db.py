@@ -1074,7 +1074,15 @@ class Database:
 
     # --- watchlist_metadata (Argus side table) ----------------------------
 
-    _WATCHLIST_PATTERN_TYPES = ("mac", "oui", "ssid", "ble_uuid", "mac_range")
+    _WATCHLIST_PATTERN_TYPES = (
+        "mac",
+        "oui",
+        "ssid",
+        "ble_uuid",
+        "mac_range",
+        "ble_manufacturer_id",
+        "drone_id_prefix",
+    )
     _METADATA_OPTIONAL_FIELDS = (
         "confidence",
         "vendor",
