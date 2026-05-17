@@ -1255,3 +1255,184 @@ def test_parse_kismet_device_both_new_fields_none_when_no_paths_resolve():
     assert obs is not None
     assert obs.ble_manufacturer_id is None
     assert obs.drone_id_prefix is None
+
+
+# ---- _TYPE_MAP: Remote-ID admission (migration 014 + rc5 _TYPE_MAP gate) ----
+#
+# The Kismet device_type strings below are UNVERIFIED guesses pending
+# operator smoke-time confirmation against a live Remote-ID capture
+# (see the comment block on _TYPE_MAP in kismet.py). These tests pin
+# the current admission set so a future operator update to the canonical
+# emission string is a one-line _TYPE_MAP edit + a one-line test edit.
+
+
+def test_type_map_admits_remote_id_string():
+    from lynceus.kismet import _TYPE_MAP
+
+    assert _TYPE_MAP["Remote ID"] == "remote_id"
+
+
+def test_type_map_admits_remote_id_drone_string():
+    from lynceus.kismet import _TYPE_MAP
+
+    assert _TYPE_MAP["Remote ID Drone"] == "remote_id"
+
+
+def test_type_map_unknown_string_still_returns_none():
+    """Defensive: the Remote-ID admission is additive — an unrelated
+    unknown kismet device_type string must still drop at the gate
+    (parse_kismet_device returns None when _TYPE_MAP.get returns None)."""
+    from lynceus.kismet import _TYPE_MAP
+
+    assert _TYPE_MAP.get("Cellular") is None
+    assert _TYPE_MAP.get("Zigbee") is None
+    assert _TYPE_MAP.get("") is None
+
+
+def test_type_map_existing_mappings_unchanged():
+    """Backward-compat: the four pre-rc5 mappings must continue to
+    resolve to their original internal types. A regression here would
+    re-categorize live Wi-Fi / BLE / Bluetooth observations."""
+    from lynceus.kismet import _TYPE_MAP
+
+    assert _TYPE_MAP["Wi-Fi AP"] == "wifi"
+    assert _TYPE_MAP["Wi-Fi Client"] == "wifi"
+    assert _TYPE_MAP["Wi-Fi Bridged"] == "wifi"
+    assert _TYPE_MAP["Wi-Fi Device"] == "wifi"
+    assert _TYPE_MAP["BTLE"] == "ble"
+    assert _TYPE_MAP["Bluetooth"] == "bt_classic"
+
+
+# ---- _DRONE_ID_PATHS: kismet.device.base.remote_id.* refinements -----------
+
+
+def test_extract_drone_id_prefix_kismet_base_remote_id_serial_number():
+    """The kismet.device.base.remote_id.serial_number path is the rc5
+    most-plausible canonical shape — first match wins in _DRONE_ID_PATHS,
+    so a record carrying this path resolves even when later fallback
+    paths also carry data."""
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    raw = {"kismet.device.base.remote_id": {"serial_number": "ABC123XYZ"}}
+    assert _extract_drone_id_prefix(raw) == "ABC123XYZ"
+
+
+def test_extract_drone_id_prefix_kismet_base_remote_id_uas_id():
+    """uas_id leaf under kismet.device.base.remote_id — the CAA
+    Registration / UAS UUID broadcast variant."""
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    raw = {"kismet.device.base.remote_id": {"uas_id": "REG12345"}}
+    assert _extract_drone_id_prefix(raw) == "REG12345"
+
+
+def test_extract_drone_id_prefix_kismet_base_path_wins_over_remoteid_fallback():
+    """Path order: kismet.device.base.remote_id.* matches before the
+    remoteid.device.basic_id.* fallbacks. First-match-wins lets the
+    operator promote the confirmed live path to the front of the tuple
+    without ambiguity when multiple paths coincidentally resolve."""
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    raw = {
+        "kismet.device.base.remote_id": {"serial_number": "PRIMARY1"},
+        "remoteid.device.basic_id": {"serial": "FALLBACK1"},
+    }
+    assert _extract_drone_id_prefix(raw) == "PRIMARY1"
+
+
+def test_extract_drone_id_prefix_falls_back_to_remoteid_basic_id():
+    """Backward-compat: the original remoteid.device.basic_id.* fallback
+    paths still resolve when the kismet.device.base.* path is absent."""
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    raw = {"remoteid.device.basic_id": {"serial_number": "FALLBACK2"}}
+    assert _extract_drone_id_prefix(raw) == "FALLBACK2"
+
+
+def test_extract_drone_id_prefix_empty_string_at_path_returns_none():
+    """An empty-string leaf at a valid path is treated as absent — falls
+    through coerce_drone_id_prefix's length check (3-32) to None."""
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    raw = {"kismet.device.base.remote_id": {"serial_number": ""}}
+    assert _extract_drone_id_prefix(raw) is None
+
+
+def test_extract_drone_id_prefix_none_leaf_returns_none():
+    """A None leaf at a valid path resolves to None without raising."""
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    raw = {"kismet.device.base.remote_id": {"serial_number": None}}
+    assert _extract_drone_id_prefix(raw) is None
+
+
+def test_extract_drone_id_prefix_missing_nested_dict_returns_none():
+    """Defensive: a missing intermediate dict at one path doesn't crash
+    the walk — it falls through to the next probe path, then None."""
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    # No kismet.device.base.remote_id key at all, no remoteid.device
+    # either — every path walks to None and the helper returns None.
+    raw = {"kismet.device.base.macaddr": "AA:BB:CC:DD:EE:FF"}
+    assert _extract_drone_id_prefix(raw) is None
+
+
+# ---- parse_kismet_device: Remote-ID typed records (rc5 _TYPE_MAP gate) -----
+
+
+def test_parse_kismet_device_produces_remote_id_device_type_for_remote_id_string():
+    """A Kismet record typed 'Remote ID' now flows through _TYPE_MAP →
+    DeviceObservation.device_type='remote_id'. Pre-rc5 this returned
+    None at the _TYPE_MAP gate (the explicit caveat in the rc5
+    CHANGELOG)."""
+    from lynceus.kismet import parse_kismet_device
+
+    raw = {
+        "kismet.device.base.macaddr": "AA:BB:CC:DD:EE:01",
+        "kismet.device.base.type": "Remote ID",
+        "kismet.device.base.first_time": 1000,
+        "kismet.device.base.last_time": 1001,
+        "kismet.device.base.remote_id": {"serial_number": "21239ESA2"},
+    }
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.device_type == "remote_id"
+    assert obs.drone_id_prefix == "21239ESA2"
+
+
+def test_parse_kismet_device_produces_remote_id_for_remote_id_drone_string():
+    """The 'Remote ID Drone' alias is admitted the same way."""
+    from lynceus.kismet import parse_kismet_device
+
+    raw = {
+        "kismet.device.base.macaddr": "AA:BB:CC:DD:EE:02",
+        "kismet.device.base.type": "Remote ID Drone",
+        "kismet.device.base.first_time": 1000,
+        "kismet.device.base.last_time": 1001,
+        "remoteid.device.basic_id": {"uas_id": "DRONE123"},
+    }
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.device_type == "remote_id"
+    assert obs.drone_id_prefix == "DRONE123"
+
+
+def test_parse_kismet_device_remote_id_typed_record_without_drone_id_field_still_admitted():
+    """The type-layer gate is independent of the field-extraction
+    layer: a Remote-ID-typed record with no resolvable drone_id_prefix
+    still produces a valid observation (drone_id_prefix=None). This
+    is the expected shape until the operator confirms the live
+    _DRONE_ID_PATHS field name; the observation lands in the devices
+    table and is visible in the UI even if the alert path stays cold."""
+    from lynceus.kismet import parse_kismet_device
+
+    raw = {
+        "kismet.device.base.macaddr": "AA:BB:CC:DD:EE:03",
+        "kismet.device.base.type": "Remote ID",
+        "kismet.device.base.first_time": 1000,
+        "kismet.device.base.last_time": 1001,
+    }
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.device_type == "remote_id"
+    assert obs.drone_id_prefix is None
