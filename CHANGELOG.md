@@ -8,6 +8,97 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/allowlist` management surface — search, filter, add-entry
+  form, and bulk remove.** Closes the "edit `allowlist_ui.yaml` by
+  hand to manage allowlists" gap that has existed since the
+  snooze/allowlist UI prompt added per-alert mutation routes but
+  left the management view read-only. Operators can now do the
+  full lifecycle from the browser without dropping to a shell.
+
+  **Filter bar.** GET-form on `/allowlist` accepts four query
+  parameters and round-trips them through the URL:
+
+  - `q=<substring>` — case-insensitive substring match against
+    `pattern` + `note`.
+  - `source=primary|ui|all` — discriminates entries by the file
+    they came from. Primary = operator-curated `allowlist.yaml`;
+    UI = daemon-managed `allowlist_ui.yaml`.
+  - `status=active|snoozed|expired|all` — `active` = no
+    `expires_at`; `snoozed` = future `expires_at`; `expired` =
+    past `expires_at`. Expired entries are no longer suppressing
+    alerts at poll time, but they stay rendered so operators can
+    bulk-clean them.
+  - `type=mac|oui|ssid|mac_range|ble_uuid|ble_manufacturer_id|drone_id_prefix|all`
+    — narrows by `pattern_type`.
+
+  All four AND together; an empty result set renders an inline
+  empty-state with a reset link. Filters are server-side over the
+  merged primary+UI in-memory list; no DB schema, no new indexes.
+
+  **Add-entry form.** Collapsible `<details>` section above the
+  table; expands automatically on a validation error so the
+  rejected input survives the round-trip with an inline error
+  message. Inputs pass through `lynceus.patterns.normalize_pattern`
+  (and `parse_mac_range_pattern` for `mac_range`) so an operator
+  pasting an uppercase MAC, a Cisco-dotted MAC, an `0x004C`-shaped
+  manufacturer id, or a legacy bare-prefix mac_range gets the same
+  canonical row the importer would write — and an invalid one
+  surfaces the validator's exception verbatim, never a write to
+  disk. Successful add redirects to `/allowlist?success=add` with a
+  one-shot flash.
+
+  **Bulk remove.** Checkboxes on UI-source rows only; the
+  per-row "Remove selected" form wraps the table and POSTs to
+  `/allowlist/bulk_remove`. The handler reads the UI file once,
+  filters in memory, and emits a single `os.replace` covering all
+  N selections — bulk operations land as exactly one mtime tick
+  for the poller's reload watcher rather than N. The single-entry
+  `remove_ui_entry` helper is left unchanged; bulk uses its own
+  `bulk_remove_ui_entries` path so the atomic-write contract is
+  obvious by name.
+
+  **Primary-source read-only protection (hard invariant).** The
+  daemon never writes to `allowlist.yaml`. The /allowlist surface
+  enforces this by construction:
+
+  - Primary rows render with a `[primary]` badge and a dash in the
+    checkbox cell — there is no DOM input to select them. The
+    bulk-remove form can't see them.
+  - The `POST /allowlist/bulk_remove` handler load-with-source on
+    every request and refuses the entire batch with HTTP 400 if
+    any submitted composite key matches a primary entry — no
+    partial removes. A hostile form submission that enlists a
+    primary key alongside legitimate UI keys fails atomically;
+    the UI rows are not silently deleted while the operator is
+    told the primary refused.
+  - `POST /allowlist/add` writes only to `allowlist_ui.yaml`. The
+    primary file's bytes (and mtime) are unchanged across the
+    request — verified by test fixture that snapshots an operator
+    comment + entry block round-trip.
+
+  **AllowlistEntry pattern_type extension (backend).** Previously
+  the allowlist only suppressed mac/oui/ssid alerts — the four
+  pattern types the watchlist gained later (`mac_range`,
+  `ble_uuid`, `ble_manufacturer_id`, `drone_id_prefix`) had no
+  allowlist counterpart, so an operator who wanted to silence an
+  alert keyed off one of them had to fall back to the device's
+  MAC and lose the broader-shape suppression. AllowlistEntry now
+  accepts all seven types; `is_allowed` matches each against the
+  same observation field the watchlist branch matches against, so
+  suppression and alerting see the same truth (no drift). The
+  validator routes every type through `lynceus.patterns` so the
+  canonical form stored in `allowlist_ui.yaml` is byte-identical
+  to the form stored in `watchlist.pattern` for the same input —
+  equality lookups stay direct.
+
+  **Pagination deferred.** Assumes small-to-medium allowlists
+  (<500 entries) where every entry fits on one screen. Pagination
+  will land as a unified webui-pagination prompt alongside
+  `/alerts` filtering later. Bulk operations are correspondingly
+  bounded by what fits in a single render rather than enforced
+  server-side; operators with thousands of allowlist entries are
+  out of scope for v1.
+
 - **`lynceus-bootstrap-kismet` — new operator-facing helper that
   takes a fresh Debian/Ubuntu/Kali host from "no Kismet installed"
   to "Kismet installed, capture interfaces configured, kismet
