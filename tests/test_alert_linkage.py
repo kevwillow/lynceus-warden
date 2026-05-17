@@ -367,6 +367,190 @@ def test_resolve_ble_uuid_when_no_other_match(db):
 
 
 # ---------------------------------------------------------------------------
+# resolve_matched_watchlist_id: ble_manufacturer_id + drone_id_prefix
+# annotation branches (rc5 walk extension to 7 pattern_types).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_ble_manufacturer_id_when_no_mac_or_oui(db):
+    """A ble_manufacturer_id watchlist row annotates the alert when
+    no stronger identifier (mac, oui) matches."""
+    mid_id = _add_watchlist(db, "004c", "ble_manufacturer_id", "med")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff",
+            ble_manufacturer_id="004c",
+        )
+        == mid_id
+    )
+
+
+def test_resolve_ble_manufacturer_id_returns_none_on_miss(db):
+    """A non-matching ble_manufacturer_id value walks through to None."""
+    _add_watchlist(db, "004c", "ble_manufacturer_id", "med")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff",
+            ble_manufacturer_id="09c8",
+        )
+        is None
+    )
+
+
+def test_resolve_ble_manufacturer_id_only_consulted_when_passed(db):
+    """Backward-compat: existing callers that don't pass the new
+    kwargs see the original 5-type walk. A planted
+    ble_manufacturer_id row in the DB doesn't accidentally surface
+    when the caller never passes the field."""
+    _add_watchlist(db, "004c", "ble_manufacturer_id", "med")
+    assert db.resolve_matched_watchlist_id(mac="aa:bb:cc:dd:ee:ff") is None
+
+
+def test_resolve_mac_wins_over_ble_manufacturer_id(db):
+    """A direct mac match outranks a vendor-level BLE company id —
+    stronger evidence for *this specific device* wins."""
+    mac_id = _add_watchlist(db, "aa:bb:cc:dd:ee:ff", "mac", "high")
+    _add_watchlist(db, "004c", "ble_manufacturer_id", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff",
+            ble_manufacturer_id="004c",
+        )
+        == mac_id
+    )
+
+
+def test_resolve_oui_wins_over_ble_manufacturer_id(db):
+    """oui outranks ble_manufacturer_id — both are vendor-level but
+    oui is the IEEE-side identifier whose 24 bits are a tighter
+    bound than the 16-bit BLE Company Identifier. Mirrors the
+    oui-before-mac_range precedence pattern."""
+    oui_id = _add_watchlist(db, "aa:bb:cc", "oui", "med")
+    _add_watchlist(db, "004c", "ble_manufacturer_id", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff",
+            ble_manufacturer_id="004c",
+        )
+        == oui_id
+    )
+
+
+def test_resolve_ble_manufacturer_id_wins_over_ssid(db):
+    """ble_manufacturer_id is a stronger identifier than ssid (a
+    free-form string an operator can re-broadcast at will), so it
+    wins when both would otherwise match."""
+    mid_id = _add_watchlist(db, "004c", "ble_manufacturer_id", "high")
+    _add_watchlist(db, "EvilSSID", "ssid", "med")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="11:22:33:44:55:66",  # no mac / oui row
+            ssid="EvilSSID",
+            ble_manufacturer_id="004c",
+        )
+        == mid_id
+    )
+
+
+def test_resolve_drone_id_prefix_when_no_other_match(db):
+    """A drone_id_prefix watchlist row annotates the alert when no
+    stronger identifier matches."""
+    drone_id = _add_watchlist(db, "21239ESA2", "drone_id_prefix", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff",
+            drone_id_prefix="21239ESA2",
+        )
+        == drone_id
+    )
+
+
+def test_resolve_drone_id_prefix_returns_none_on_miss(db):
+    """A non-matching drone_id_prefix value walks through to None."""
+    _add_watchlist(db, "21239ESA2", "drone_id_prefix", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff",
+            drone_id_prefix="DIFFERENT1",
+        )
+        is None
+    )
+
+
+def test_resolve_drone_id_prefix_only_consulted_when_passed(db):
+    """Backward-compat: drone_id_prefix planted in the DB doesn't
+    surface for callers that don't pass the kwarg."""
+    _add_watchlist(db, "21239ESA2", "drone_id_prefix", "high")
+    assert db.resolve_matched_watchlist_id(mac="aa:bb:cc:dd:ee:ff") is None
+
+
+def test_resolve_mac_range_wins_over_drone_id_prefix(db):
+    """A covered mac_range outranks a Remote-ID serial — a
+    curated mac_range catching the device's MAC is stronger
+    evidence than a broadcast serial that could be spoofed.
+    Mirrors the mac_range-before-drone_id_prefix placement in
+    the walk order."""
+    with db._conn:
+        cur = db._conn.execute(
+            "INSERT INTO watchlist("
+            "pattern, pattern_type, severity, description, "
+            "mac_range_prefix, mac_range_prefix_length) "
+            "VALUES ('aa:bb:cc:d/28', 'mac_range', 'high', NULL, "
+            "'aabbccd', 28)"
+        )
+        mr_id = int(cur.lastrowid)
+    _add_watchlist(db, "21239ESA2", "drone_id_prefix", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:d1:23:45",  # covered by the /28
+            drone_id_prefix="21239ESA2",
+        )
+        == mr_id
+    )
+
+
+def test_resolve_drone_id_prefix_wins_over_ssid(db):
+    """drone_id_prefix outranks ssid for the same reason
+    ble_manufacturer_id does — a serial-shaped identifier is
+    stronger evidence than a free-form SSID string."""
+    drone_id = _add_watchlist(db, "21239ESA2", "drone_id_prefix", "high")
+    _add_watchlist(db, "EvilSSID", "ssid", "med")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="11:22:33:44:55:66",
+            ssid="EvilSSID",
+            drone_id_prefix="21239ESA2",
+        )
+        == drone_id
+    )
+
+
+def test_resolve_full_walk_order_ble_manufacturer_then_mac_range_then_drone(db):
+    """All three rc5-extended branches at once: confirm the full
+    walk order. ble_manufacturer_id is preferred over the planted
+    mac_range / drone_id_prefix rows because it slots higher in
+    the walk than both."""
+    mid_id = _add_watchlist(db, "004c", "ble_manufacturer_id", "high")
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist("
+            "pattern, pattern_type, severity, description, "
+            "mac_range_prefix, mac_range_prefix_length) "
+            "VALUES ('aa:bb:cc:d/28', 'mac_range', 'high', NULL, "
+            "'aabbccd', 28)"
+        )
+    _add_watchlist(db, "21239ESA2", "drone_id_prefix", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:d1:23:45",  # also covered by the /28
+            ble_manufacturer_id="004c",
+            drone_id_prefix="21239ESA2",
+        )
+        == mid_id
+    )
+
+
+# ---------------------------------------------------------------------------
 # Rules engine integration via poll_once: matched_watchlist_id population.
 # ---------------------------------------------------------------------------
 
@@ -1557,20 +1741,10 @@ def test_watchlist_drone_id_prefix_rule_fires_e2e_severity_from_db(
     assert dev is not None
     assert dev["device_type"] == "remote_id"
 
-    # matched_watchlist_id is intentionally NOT asserted on the
-    # alert row. db.resolve_matched_watchlist_id (the annotation
-    # path the poller calls after evaluate) walks mac > oui >
-    # mac_range > ssid > ble_uuid only — it was never extended to
-    # the rc5 identifier types (drone_id_prefix,
-    # ble_manufacturer_id). Extending it is a separate change-axis
-    # from Kismet-side gating and out of scope for this prompt;
-    # alerts still fire with the right rule_name and severity, but
-    # the matched-row UI hyperlink stays cold for the two new
-    # rule_types until a follow-up extends the annotation path.
-    assert alerts[0]["matched_watchlist_id"] is None
-    # wl_id is referenced by the assertion above only
-    # implicitly (it's the row that DID match at eval time).
-    assert wl_id > 0
+    # matched_watchlist_id stamps the matched watchlist row —
+    # rc5 annotation-path extension walks all 7 pattern_types now,
+    # closing the gap noted when the type-layer gates landed.
+    assert alerts[0]["matched_watchlist_id"] == wl_id
 
 
 def test_watchlist_drone_id_prefix_rule_e2e_miss_no_alert(
@@ -1617,3 +1791,135 @@ def test_watchlist_drone_id_prefix_rule_e2e_miss_no_alert(
     dev = db.get_device("02:11:22:33:44:55")
     assert dev is not None
     assert dev["device_type"] == "remote_id"
+
+
+# ---------------------------------------------------------------------------
+# watchlist_ble_manufacturer_id — DB-delegated rule_type end-to-end with
+# a BLE record carrying a manufacturer-data company id. Parallel of the
+# watchlist_drone_id_prefix e2e block above; same fixture shape, same
+# delegation contract, same matched_watchlist_id annotation expectation
+# now that resolve_matched_watchlist_id walks the BLE company-id branch.
+# ---------------------------------------------------------------------------
+
+
+def _write_ble_manufacturer_id_fixture(tmp_path) -> str:
+    """Write a one-record JSON fixture with a BTLE device carrying
+    a manufacturer-data company id at the
+    kismet.device.base.advdata.manufacturer_data.company_id path
+    (the first path probed by _BLE_MANUFACTURER_ID_PATHS).
+    Returns the path."""
+    import json as _json
+
+    path = tmp_path / "ble_manufacturer_devices.json"
+    path.write_text(
+        _json.dumps(
+            [
+                {
+                    "kismet.device.base.macaddr": "06:aa:bb:cc:dd:ee",
+                    "kismet.device.base.type": "BTLE",
+                    "kismet.device.base.first_time": 1700000000,
+                    "kismet.device.base.last_time": 1700000100,
+                    "kismet.device.base.signal": {
+                        "kismet.common.signal.last_signal": -65
+                    },
+                    "kismet.device.base.manuf": "BleVendor",
+                    "kismet.device.base.advdata": {
+                        "manufacturer_data": {"company_id": 0x004C}
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def test_watchlist_ble_manufacturer_id_rule_fires_e2e_matched_id_populated(
+    db, db_path, tmp_path
+):
+    """End-to-end: a BTLE record carrying advertisement
+    manufacturer-data company id flows through parse_kismet_device
+    (extractor populates obs.ble_manufacturer_id='004c'), the
+    empty-patterns watchlist_ble_manufacturer_id delegation rule
+    matches the planted watchlist row, fires an alert with the
+    DB-sourced severity, and — closing the rc5 annotation-path
+    gap — stamps matched_watchlist_id with the matched row id."""
+    fixture_path = _write_ble_manufacturer_id_fixture(tmp_path)
+    fake_client = FakeKismetClient(fixture_path)
+    config = Config(
+        kismet_fixture_path=fixture_path,
+        db_path=db_path,
+        location_id="testloc",
+        location_label="Test Location",
+        alert_dedup_window_seconds=0,
+    )
+
+    wl_id = _add_watchlist(
+        db,
+        pattern="004c",
+        pattern_type="ble_manufacturer_id",
+        severity="high",
+        description="Argus BLE manufacturer id corpus (synthetic)",
+    )
+
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_ble_manuf",
+                rule_type="watchlist_ble_manufacturer_id",
+                severity="low",  # ignored for delegation
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+
+    alerts = [a for a in _alerts(db) if a["mac"] == "06:aa:bb:cc:dd:ee"]
+    assert len(alerts) == 1
+    assert alerts[0]["rule_name"] == "argus_ble_manuf"
+    # Severity sourced from the matched DB row, not from rule.severity.
+    assert alerts[0]["severity"] == "high"
+    # rc5 annotation-path extension: matched_watchlist_id now
+    # stamps the matched row.
+    assert alerts[0]["matched_watchlist_id"] == wl_id
+
+
+def test_watchlist_ble_manufacturer_id_rule_e2e_miss_no_alert(
+    db, db_path, tmp_path
+):
+    """A BLE record whose company id doesn't match any watchlist
+    row fires zero alerts. Confirms the rule_type gate is
+    fail-closed at the equality-match layer even after the
+    annotation-path extension."""
+    fixture_path = _write_ble_manufacturer_id_fixture(tmp_path)
+    fake_client = FakeKismetClient(fixture_path)
+    config = Config(
+        kismet_fixture_path=fixture_path,
+        db_path=db_path,
+        location_id="testloc",
+        location_label="Test Location",
+        alert_dedup_window_seconds=0,
+    )
+    # Plant a row that does NOT match the fixture's '004c'.
+    _add_watchlist(
+        db,
+        pattern="09c8",
+        pattern_type="ble_manufacturer_id",
+        severity="high",
+    )
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_ble_manuf",
+                rule_type="watchlist_ble_manufacturer_id",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1700001000, ruleset=rs)
+    assert _alerts(db) == []
+    # The BLE device is persisted regardless.
+    dev = db.get_device("06:aa:bb:cc:dd:ee")
+    assert dev is not None
+    assert dev["device_type"] == "ble"
