@@ -4,6 +4,149 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0-rc5] - 2026-05-17
+
+### Added
+
+- **`identifier_type='ble_manufacturer_id'` and
+  `identifier_type='drone_id_prefix'` rows from Argus now land in
+  the watchlist instead of being silently dropped.** Pre-rc5,
+  every row of these two types hit the `IDENTIFIER_TYPE_MAP`
+  allowlist gate in `lynceus-import-argus`, fell to the
+  `dropped_unknown_type` counter, and never reached the DB.
+  Against Argus's live `argus_export.csv` snapshot at
+  `exported_at=2026-05-14T22:34:07Z`:
+
+  - `ble_manufacturer_id`: 3,969 rows (Bluetooth SIG 16-bit
+    Company Identifiers, e.g. `0x004C` for Apple).
+  - `drone_id_prefix`: 427 rows (ANSI/CTA-2063-A Remote-ID
+    serial-number prefixes, e.g. `21239ESA2`).
+
+  The `dropped_unknown_type` counter for that snapshot moves
+  from 4,635 → 239 — a 4,396-row drop, exactly the sum of the
+  two new types. Residual types (`ble_company_id`,
+  `ble_service_uuid`, `chipset_codename`, `firmware_build_*`,
+  etc.) remain deferred to future prompts.
+
+  The new `migrations/013_pattern_type_extension.sql` rebuilds
+  the `watchlist` table to relax the `pattern_type` CHECK
+  constraint, mirroring migration 011's mac_range pattern: full
+  table rebuild under `PRAGMA foreign_keys=OFF` (SQLite cannot
+  modify a CHECK via `ALTER TABLE` per SQLite docs §7),
+  AUTOINCREMENT ROWIDs preserved, the `mac_range_prefix` /
+  `mac_range_prefix_length` columns and the partial index from
+  011 carried across unchanged. No new metadata columns: both
+  new types are equality-shaped at the string level and reuse
+  the existing `_lookup_simple_watchlist_match` SELECT in
+  `db.py`.
+
+  Two new canonicalizers in `lynceus.patterns`:
+
+  - `ble_manufacturer_id`: `'0x004C'` → `'004c'` (4-hex-char
+    lowercase, no `'0x'` prefix, zero-padded). Lowercase chosen
+    so the runtime equality lookup against a Kismet
+    advertisement-decoded field (most likely delivered as bare
+    hex) is a direct string compare. Defensive rejects: empty,
+    just-prefix, >4 hex chars (16-bit constraint is hard),
+    non-hex.
+  - `drone_id_prefix`: `'21239ESA2'` → `'21239ESA2'` (uppercase
+    ASCII alphanumeric, 3-32 chars). Uppercase mirrors Argus's
+    emission verbatim — ANSI/CTA-2063-A serials are
+    case-sensitive per the standard; lowercasing would silently
+    break equality against real serials. Defensive rejects:
+    empty, <3 or >32 chars, non-alphanumeric, non-ASCII.
+
+- **`watchlist_ble_manufacturer_id` and `watchlist_drone_id_prefix`
+  rule types — extends the rc4 delegation pattern to two more
+  identifier types.** Same empty-patterns-delegates-to-DB shape
+  established by `watchlist_mac` / `watchlist_oui` /
+  `watchlist_ssid` / `ble_uuid` in rc4: a single empty-patterns
+  rule of the new type enables alert-firing for every matching
+  row of that pattern_type in the watchlist DB; severity is
+  sourced from the matched DB row (not from `rule.severity`,
+  which is `IGNORED` for delegation, per the rc4 architectural
+  divergence documented under `watchlist_mac_range`); the
+  existing runtime override layer (`suppress_vendors`,
+  `suppress_categories`, `pattern_overrides`,
+  `device_category_severity`) applies transparently with no
+  changes.
+
+  Three additions land together:
+
+  - **`db.resolve_matched_ble_manufacturer_id_for_eval` and
+    `db.resolve_matched_drone_id_prefix_for_eval`** — both
+    delegate to the existing `_lookup_simple_watchlist_match`
+    so the SQL cannot drift from the annotation path that
+    `resolve_matched_watchlist_id` walks for
+    `matched_watchlist_id` stamping.
+
+  - **`rules.evaluate` admits the two new rule_types** and
+    extends the validator carve-out: both accept empty AND
+    non-empty patterns (the delegation-capable shape; no
+    required-empty constraint like `watchlist_mac_range`, since
+    equality match on a single canonical-string field is a
+    sensible in-memory shape too). Non-empty patterns are
+    normalized at load time through `patterns.normalize_pattern`
+    so an inline `0x004C` in rules.yaml matches the bare-hex
+    `004c` carried on the observation.
+
+  - **Wizard `DELEGATION_RULES` extends from a 5-tuple to a
+    7-tuple.** The `lynceus-setup` enable-alerting flow now
+    prompts for two more per-type entries, each gated by
+    `count_watchlist_by_pattern_type` — operators with an empty
+    pattern_type don't see the prompt. Operators who already
+    enabled alerting can re-run `lynceus-setup --reconfigure`
+    to add the new types; the existing rules.yaml
+    overwrite-protection (default N) stays in force.
+
+  **CAVEAT — runtime alerting depends on Kismet observation
+  surface work that is not yet verified.** `DeviceObservation`
+  gains two new optional fields (`ble_manufacturer_id`,
+  `drone_id_prefix`) and `parse_kismet_device` populates them
+  via two best-effort `_extract_*` helpers that walk a small
+  table of likely Kismet field paths
+  (`_BLE_MANUFACTURER_ID_PATHS`, `_DRONE_ID_PATHS`). These
+  paths are derived from public Kismet schema documentation,
+  NOT confirmed against a live capture — the Lynceus codebase
+  had no prior consumer of either surface. Until the paths are
+  confirmed and corrected against a real Kismet emission, both
+  fields read `None` on real hardware and the delegation rules
+  fire zero alerts. The import + DB + rules-engine + wizard
+  pipeline is load-bearing in the meantime: rows land in the
+  watchlist DB, appear in the `/watchlist` UI, and contribute
+  to the `/settings` count card; only the alert-time match
+  against a live observation is gated on the Kismet half being
+  wired up.
+
+  Drone Remote-ID has an additional gate: `kismet._TYPE_MAP`
+  currently admits only Wi-Fi / BTLE / Bluetooth device types,
+  so Kismet records typed `'Remote ID'` are dropped at
+  `parse_kismet_device` before reaching `_extract_drone_id_prefix`.
+  Operator follow-up: extend `_TYPE_MAP` (and the `devices`
+  table CHECK constraint from migration 001) once the live
+  emission shape is captured.
+
+  **Operator UX note for BT- and Remote-ID-capable
+  deployments.** Operators running Kismet with the BT scanner
+  enabled gain a watchlist of 3,969 BLE manufacturer
+  signatures the moment they re-import the Argus CSV. Once the
+  Kismet field-path verification lands, those signatures fire
+  alerts on every BLE advertisement carrying a watchlisted
+  manufacturer id — defensive coverage against
+  manufacturer-specific surveillance hardware that broadcasts
+  via BTLE. Equivalently for operators running Kismet with the
+  Remote-ID datasource enabled: 427 drone serial-prefix
+  signatures land in the watchlist and start firing once the
+  observation-surface gates are resolved.
+
+  Builds on the rc4 delegation extension (`watchlist_mac`,
+  `watchlist_oui`, `watchlist_ssid`, `ble_uuid` delegation
+  branches) and the rc4 Part 2 + Part 1 work
+  (`watchlist_mac_range` + the schema / importer foundation).
+  Each prompt has extended the same pattern to more identifier
+  types; this rc5 takes it to 7 of the 10 most-populous Argus
+  types.
+
 ## [0.4.0-rc4] - 2026-05-15
 
 ### Added
