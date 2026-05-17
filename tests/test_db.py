@@ -859,6 +859,35 @@ def test_resolve_matched_mac_range_manufacturer_null_when_vendor_unset(db):
     assert match.manufacturer is None
 
 
+def test_resolve_matched_mac_range_populates_argus_record_id(db):
+    """LEFT JOIN onto watchlist_metadata surfaces ``argus_record_id``
+    on the match. Powers the runtime ``pattern_overrides`` row-level
+    severity remap — operators key on the canonical Argus identifier
+    (16-hex SHA-256 prefix in production, but the column is plain
+    TEXT so the test uses an opaque sentinel)."""
+    wid = _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28, severity="high")
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist_metadata("
+            "watchlist_id, argus_record_id, device_category) "
+            "VALUES (?, ?, ?)",
+            (wid, "a1b2c3d4e5f60001", "alpr"),
+        )
+    match = db.resolve_matched_mac_range("aa:bb:cc:d1:23:45")
+    assert match is not None
+    assert match.argus_record_id == "a1b2c3d4e5f60001"
+
+
+def test_resolve_matched_mac_range_argus_record_id_null_when_no_metadata(db):
+    """No metadata row → argus_record_id is None. The runtime
+    pattern_overrides check skips entirely on None — these rows fall
+    through to the category layer."""
+    _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    match = db.resolve_matched_mac_range("aa:bb:cc:d1:23:45")
+    assert match is not None
+    assert match.argus_record_id is None
+
+
 def test_resolve_matched_mac_range_36_hit(db):
     wid = _add_mac_range(db, "aa:bb:cc:dd:e/36", "aabbccdde", 36, severity="med")
     match = db.resolve_matched_mac_range("aa:bb:cc:dd:e7:89")
@@ -1081,6 +1110,29 @@ def test_resolve_matched_mac_for_eval_manufacturer_null_when_no_metadata(db):
     assert match.manufacturer is None
 
 
+def test_resolve_matched_mac_for_eval_populates_argus_record_id(db):
+    """LEFT JOIN surfaces ``argus_record_id`` on the match. Powers
+    the runtime ``pattern_overrides`` row-level remap."""
+    wid = _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac", severity="high")
+    _attach_metadata(
+        db, wid, device_category="alpr", argus_record_id="0123456789abcdef"
+    )
+    match = db.resolve_matched_mac_for_eval("aa:bb:cc:dd:ee:ff")
+    assert match is not None
+    assert match.argus_record_id == "0123456789abcdef"
+
+
+def test_resolve_matched_mac_for_eval_argus_record_id_null_when_no_metadata(db):
+    """Rows without a metadata row (e.g. the 63 bundled defaults)
+    surface argus_record_id=None. The runtime pattern_overrides
+    check skips entirely on None — these rows are untargetable from
+    pattern_overrides and fall through to the category layer."""
+    _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac")
+    match = db.resolve_matched_mac_for_eval("aa:bb:cc:dd:ee:ff")
+    assert match is not None
+    assert match.argus_record_id is None
+
+
 def test_resolve_matched_mac_for_eval_device_category_null_when_no_metadata(db):
     """The 63 bundled default_watchlist rows ship without metadata
     rows. Their device_category surfaces as None, which the runtime
@@ -1141,6 +1193,16 @@ def test_resolve_matched_oui_for_eval_populates_manufacturer(db):
     assert match.manufacturer == "Hak5 LLC"
 
 
+def test_resolve_matched_oui_for_eval_populates_argus_record_id(db):
+    wid = _add_simple(db, "00:13:37", "oui", severity="high")
+    _attach_metadata(
+        db, wid, device_category="hacking_tool", argus_record_id="fedcba9876543210"
+    )
+    match = db.resolve_matched_oui_for_eval("00:13:37:aa:bb:cc")
+    assert match is not None
+    assert match.argus_record_id == "fedcba9876543210"
+
+
 def test_resolve_matched_oui_for_eval_miss(db):
     _add_simple(db, "aa:bb:cc", "oui")
     assert db.resolve_matched_oui_for_eval("11:22:33:44:55:66") is None
@@ -1186,6 +1248,16 @@ def test_resolve_matched_ssid_for_eval_populates_manufacturer(db):
     match = db.resolve_matched_ssid_for_eval("FreeAirportWiFi")
     assert match is not None
     assert match.manufacturer == "DJI Inc."
+
+
+def test_resolve_matched_ssid_for_eval_populates_argus_record_id(db):
+    wid = _add_simple(db, "FreeAirportWiFi", "ssid", severity="med")
+    _attach_metadata(
+        db, wid, device_category="drone", argus_record_id="1111222233334444"
+    )
+    match = db.resolve_matched_ssid_for_eval("FreeAirportWiFi")
+    assert match is not None
+    assert match.argus_record_id == "1111222233334444"
 
 
 def test_resolve_matched_ssid_for_eval_miss(db):
@@ -1240,6 +1312,16 @@ def test_resolve_matched_ble_uuid_for_eval_populates_manufacturer(db):
     match = db.resolve_matched_ble_uuid_for_eval([_AIRTAG_UUID])
     assert match is not None
     assert match.manufacturer == "Apple Inc."
+
+
+def test_resolve_matched_ble_uuid_for_eval_populates_argus_record_id(db):
+    wid = _add_simple(db, _AIRTAG_UUID, "ble_uuid", severity="high")
+    _attach_metadata(
+        db, wid, device_category="alpr", argus_record_id="abcdef0123456789"
+    )
+    match = db.resolve_matched_ble_uuid_for_eval([_AIRTAG_UUID])
+    assert match is not None
+    assert match.argus_record_id == "abcdef0123456789"
 
 
 def test_resolve_matched_ble_uuid_for_eval_miss(db):

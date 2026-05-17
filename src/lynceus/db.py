@@ -44,6 +44,16 @@ class ResolvedMacRangeMatch(NamedTuple):
     time, case-insensitive exact match. NULL manufacturer (no
     metadata row, or a metadata row with NULL vendor) means the
     runtime layer's vendor check passes through.
+
+    ``argus_record_id`` is the matched row's
+    ``watchlist_metadata.argus_record_id`` column — the stable
+    16-hex SHA-256 prefix Argus emits as its consumer-facing
+    identifier. Powers the runtime ``pattern_overrides`` key:
+    row-level severity remap by exact argus_record_id match. NULL
+    (no metadata row, e.g. the 63 bundled default_watchlist rows or
+    operator-seeded rows via ``lynceus-seed-watchlist``) means the
+    pattern_overrides check skips entirely — falls through to the
+    category-level layer.
     """
 
     watchlist_id: int
@@ -51,6 +61,7 @@ class ResolvedMacRangeMatch(NamedTuple):
     prefix_length: int
     device_category: str | None
     manufacturer: str | None
+    argus_record_id: str | None
 
 
 class ResolvedWatchlistMatch(NamedTuple):
@@ -75,12 +86,19 @@ class ResolvedWatchlistMatch(NamedTuple):
     ``manufacturer`` mirrors ``ResolvedMacRangeMatch.manufacturer``:
     sourced from ``watchlist_metadata.vendor``, Python-side name
     matches the Argus CSV column, powers ``suppress_vendors``.
+
+    ``argus_record_id`` mirrors
+    ``ResolvedMacRangeMatch.argus_record_id``: sourced directly from
+    ``watchlist_metadata.argus_record_id`` (no rename), powers the
+    runtime ``pattern_overrides`` row-level remap. NULL for rows
+    without a metadata row.
     """
 
     watchlist_id: int
     severity: str
     device_category: str | None
     manufacturer: str | None
+    argus_record_id: str | None
 
 
 def _find_migrations_dir() -> Path:
@@ -306,14 +324,15 @@ class Database:
         a column projection here flows to both at once.
 
         The LEFT JOIN onto ``watchlist_metadata`` surfaces
-        ``device_category`` and ``vendor`` (projected as
-        ``manufacturer``) for the runtime overrides layer. The JOIN
-        is single-row indexed on ``watchlist_id`` (FK target carries
-        an automatic index in SQLite); cost is negligible vs the
-        primary equality lookup on (pattern_type, pattern). Both are
-        NULL for rows lacking a metadata row (the 63 bundled
-        default_watchlist rows that pre-date the Argus metadata
-        schema), which the runtime layer treats as pass-through.
+        ``device_category``, ``vendor`` (projected as
+        ``manufacturer``), and ``argus_record_id`` for the runtime
+        overrides layer. The JOIN is single-row indexed on
+        ``watchlist_id`` (FK target carries an automatic index in
+        SQLite); cost is negligible vs the primary equality lookup
+        on (pattern_type, pattern). All three are NULL for rows
+        lacking a metadata row (the 63 bundled default_watchlist
+        rows that pre-date the Argus metadata schema), which the
+        runtime layer treats as pass-through.
 
         Returns None for falsy ``pattern`` so callers can pass through
         unfiltered observation fields without pre-checking.
@@ -323,7 +342,8 @@ class Database:
         row = self._conn.execute(
             "SELECT w.id AS id, w.severity AS severity, "
             "m.device_category AS device_category, "
-            "m.vendor AS manufacturer "
+            "m.vendor AS manufacturer, "
+            "m.argus_record_id AS argus_record_id "
             "FROM watchlist w "
             "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
             "WHERE w.pattern_type = ? AND w.pattern = ? LIMIT 1",
@@ -339,6 +359,9 @@ class Database:
             ),
             manufacturer=(
                 str(row["manufacturer"]) if row["manufacturer"] is not None else None
+            ),
+            argus_record_id=(
+                str(row["argus_record_id"]) if row["argus_record_id"] is not None else None
             ),
         )
 
@@ -412,7 +435,8 @@ class Database:
             row = self._conn.execute(
                 "SELECT w.id AS id, w.severity AS severity, "
                 "m.device_category AS device_category, "
-                "m.vendor AS manufacturer "
+                "m.vendor AS manufacturer, "
+                "m.argus_record_id AS argus_record_id "
                 "FROM watchlist w "
                 "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
                 "WHERE w.pattern_type = 'mac_range' "
@@ -434,6 +458,11 @@ class Database:
                         manufacturer=(
                             str(row["manufacturer"])
                             if row["manufacturer"] is not None
+                            else None
+                        ),
+                        argus_record_id=(
+                            str(row["argus_record_id"])
+                            if row["argus_record_id"] is not None
                             else None
                         ),
                     )
