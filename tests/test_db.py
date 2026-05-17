@@ -182,6 +182,7 @@ def test_migrations_dir_lists_both_files(db):
         "011_watchlist_mac_range.sql",
         "012_import_runs.sql",
         "013_pattern_type_extension.sql",
+        "014_devices_remote_id.sql",
     ]
 
 
@@ -1667,3 +1668,267 @@ def test_watchlist_pattern_type_counts_groups_by_type(db):
     assert counts["mac"] == 2
     assert counts["oui"] == 1
     assert counts["ssid"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Migration 014: devices.device_type CHECK extended to admit 'remote_id'.
+# ---------------------------------------------------------------------------
+
+
+def test_migration_014_file_present(db):
+    names = sorted(p.name for p in db._migrations_dir.glob("*.sql"))
+    assert "014_devices_remote_id.sql" in names
+
+
+def test_migration_014_applied_on_fresh_db(db):
+    rows = db._conn.execute(
+        "SELECT version FROM schema_migrations ORDER BY version"
+    ).fetchall()
+    assert 14 in [r[0] for r in rows]
+
+
+def test_migration_014_idempotent_second_open(db_path):
+    Database(db_path).close()
+    second = Database(db_path)
+    rows = second._conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 14"
+    ).fetchone()
+    assert rows[0] == 1
+    second.close()
+
+
+def test_migration_014_devices_check_admits_remote_id(db):
+    """The whole point of the migration: a row with device_type='remote_id'
+    inserts cleanly. Pre-rc5 the CHECK constraint rejected this."""
+    db.upsert_device("aa:bb:cc:dd:ee:01", "remote_id", "DroneCorp", 0, 1000)
+    row = db.get_device("aa:bb:cc:dd:ee:01")
+    assert row is not None
+    assert row["device_type"] == "remote_id"
+
+
+def test_migration_014_devices_check_still_rejects_unknown(db):
+    """CHECK enforcement intact — additive admission of 'remote_id'
+    must not relax the constraint for arbitrary unknown values.
+    Mirrors the existing test_invalid_device_type_rejected test that
+    pins 'cellular' as still-rejected."""
+    with pytest.raises(sqlite3.IntegrityError):
+        db.upsert_device("aa:bb:cc:dd:ee:02", "zigbee", None, 0, 1000)
+
+
+def test_migration_014_preserves_existing_columns(db):
+    """The migration rebuilds the devices table — every column from
+    migration 001 plus the additive columns from migration 006
+    (probe_ssids, ble_name) must survive. A missed column in the
+    INSERT staging step would silently drop data."""
+    cols = {
+        row[1]
+        for row in db._conn.execute("PRAGMA table_info(devices)").fetchall()
+    }
+    assert cols == {
+        "mac",
+        "device_type",
+        "first_seen",
+        "last_seen",
+        "sighting_count",
+        "oui_vendor",
+        "is_randomized",
+        "notes",
+        "probe_ssids",
+        "ble_name",
+    }
+
+
+def test_migration_014_preserves_existing_rows_through_rebuild(tmp_path):
+    """Stand up a v0.4.0-rc4-shaped DB (migrations 001-013 applied,
+    014 not yet) carrying a representative spread of device rows
+    plus a probe_ssids / ble_name payload, then open with the
+    rc5 codepath (014 applies on the second open) and confirm
+    every row survives the rebuild verbatim — including the
+    additive migration-006 columns and the sighting_count counter
+    that the upsert path would otherwise reset."""
+    db_path = str(tmp_path / "rc4_shaped.db")
+
+    # First open: apply all migrations through 014. We'll then
+    # manually rewind by deleting the 014 schema_migrations row and
+    # restoring the pre-014 devices table shape, so we can prove
+    # the migration runner picks 014 up cleanly on the second open
+    # with pre-existing rows in place.
+    first = Database(db_path)
+    first.ensure_location("loc", "Lab")
+    first.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 1000)
+    first.upsert_device("aa:bb:cc:dd:ee:02", "ble", "BleVendor", 1, 1100)
+    first.upsert_device("aa:bb:cc:dd:ee:03", "bt_classic", "BTVendor", 0, 1200)
+    # Touch each device twice so sighting_count > 1 — proves the
+    # counter is carried verbatim, not reset by the rebuild.
+    first.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 1010)
+    first.upsert_device("aa:bb:cc:dd:ee:02", "ble", "BleVendor", 1, 1110)
+    # Plant a probe_ssids JSON + ble_name so the migration-006
+    # columns are non-trivially exercised through the rebuild.
+    first._conn.execute(
+        "UPDATE devices SET probe_ssids = ?, ble_name = ? WHERE mac = ?",
+        ('["CafeWifi","HomeNet"]', "PixelBuds", "aa:bb:cc:dd:ee:02"),
+    )
+    first._conn.commit()
+    first.close()
+
+    # Rewind: remove the 014 row from schema_migrations AND swap
+    # the devices table back to the pre-014 shape (without
+    # 'remote_id' in the CHECK). This simulates a DB on disk that
+    # was last opened by a pre-rc5 build.
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.execute("PRAGMA foreign_keys = OFF")
+        raw.execute("DELETE FROM schema_migrations WHERE version = 14")
+        raw.executescript(
+            """
+            CREATE TABLE devices_pre014(
+              mac TEXT PRIMARY KEY,
+              device_type TEXT NOT NULL CHECK(device_type IN ('wifi','ble','bt_classic')),
+              first_seen INTEGER NOT NULL,
+              last_seen INTEGER NOT NULL,
+              sighting_count INTEGER NOT NULL DEFAULT 0,
+              oui_vendor TEXT,
+              is_randomized INTEGER NOT NULL CHECK(is_randomized IN (0,1)),
+              notes TEXT,
+              probe_ssids TEXT,
+              ble_name TEXT
+            );
+            INSERT INTO devices_pre014 SELECT
+              mac, device_type, first_seen, last_seen, sighting_count,
+              oui_vendor, is_randomized, notes, probe_ssids, ble_name
+            FROM devices;
+            DROP TABLE devices;
+            ALTER TABLE devices_pre014 RENAME TO devices;
+            """
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+    # Second open: 014 must apply cleanly, rebuilding the table
+    # in place. Every row survives.
+    second = Database(db_path)
+    try:
+        rows = {
+            r["mac"]: dict(r)
+            for r in second._conn.execute(
+                "SELECT mac, device_type, first_seen, last_seen, "
+                "sighting_count, oui_vendor, is_randomized, notes, "
+                "probe_ssids, ble_name FROM devices ORDER BY mac"
+            ).fetchall()
+        }
+        assert set(rows) == {
+            "aa:bb:cc:dd:ee:01",
+            "aa:bb:cc:dd:ee:02",
+            "aa:bb:cc:dd:ee:03",
+        }
+        # device_type / vendor / randomized survive
+        assert rows["aa:bb:cc:dd:ee:01"]["device_type"] == "wifi"
+        assert rows["aa:bb:cc:dd:ee:01"]["oui_vendor"] == "Acme"
+        assert rows["aa:bb:cc:dd:ee:01"]["is_randomized"] == 0
+        assert rows["aa:bb:cc:dd:ee:02"]["device_type"] == "ble"
+        assert rows["aa:bb:cc:dd:ee:02"]["is_randomized"] == 1
+        assert rows["aa:bb:cc:dd:ee:03"]["device_type"] == "bt_classic"
+        # Sighting counters survive (>1 proves the rebuild kept the
+        # counter, not just the row).
+        assert rows["aa:bb:cc:dd:ee:01"]["sighting_count"] == 2
+        assert rows["aa:bb:cc:dd:ee:02"]["sighting_count"] == 2
+        # First-seen / last-seen survive verbatim.
+        assert rows["aa:bb:cc:dd:ee:01"]["first_seen"] == 1000
+        assert rows["aa:bb:cc:dd:ee:01"]["last_seen"] == 1010
+        # Migration-006 columns survive.
+        assert rows["aa:bb:cc:dd:ee:02"]["probe_ssids"] == '["CafeWifi","HomeNet"]'
+        assert rows["aa:bb:cc:dd:ee:02"]["ble_name"] == "PixelBuds"
+        # And the new device_type is now insertable.
+        second.upsert_device("aa:bb:cc:dd:ee:04", "remote_id", "DroneCorp", 0, 2000)
+        new_row = second.get_device("aa:bb:cc:dd:ee:04")
+        assert new_row is not None
+        assert new_row["device_type"] == "remote_id"
+    finally:
+        second.close()
+
+
+def test_migration_014_preserves_fk_from_sightings_to_devices(db):
+    """sightings.mac REFERENCES devices(mac) — must survive the
+    rebuild. Insert a remote_id device, attach a sighting, confirm
+    the FK fires when the parent row is missing."""
+    db.ensure_location("loc", "Lab")
+    db.upsert_device("aa:bb:cc:dd:ee:01", "remote_id", "DroneCorp", 0, 1000)
+    # FK target present → insert succeeds.
+    db.insert_sighting("aa:bb:cc:dd:ee:01", 1000, -55, None, "loc")
+    # FK target absent → insert raises.
+    with pytest.raises(sqlite3.IntegrityError):
+        db.insert_sighting("aa:bb:cc:dd:ee:99", 1001, -55, None, "loc")
+
+
+def test_migration_014_preserves_fk_from_alerts_to_devices(db):
+    """alerts.mac REFERENCES devices(mac) — must survive the rebuild.
+    Same shape as the sightings FK check but exercises the second
+    inbound FK."""
+    db.ensure_location("loc", "Lab")
+    db.upsert_device("aa:bb:cc:dd:ee:01", "remote_id", "DroneCorp", 0, 1000)
+    # FK target present → insert succeeds.
+    db.add_alert(
+        ts=1000, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="m", severity="low"
+    )
+    # FK target absent → insert raises.
+    with pytest.raises(sqlite3.IntegrityError):
+        db.add_alert(
+            ts=1001,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:99",
+            message="m",
+            severity="low",
+        )
+
+
+def test_migration_014_sql_replay_is_safe_rebuild(db_path):
+    """Replaying 014's SQL directly via executescript (bypassing the
+    runner's version-tracking short-circuit) is a safe full rebuild:
+    every row carried in the staging-table INSERT survives, no
+    column projection drops data, the CHECK constraint is the
+    extended one. This guards the narrow recovery path for a DB
+    where 014's row in schema_migrations is missing but the table
+    has already been rebuilt (interrupted runner, crash mid-script).
+    The broader migration-runner atomicity work (L-MIG-1/7) stays
+    deferred."""
+    db = Database(db_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 1000)
+        db.upsert_device("aa:bb:cc:dd:ee:02", "remote_id", "DroneCorp", 0, 1100)
+        sql_path = db._migrations_dir / "014_devices_remote_id.sql"
+        sql = sql_path.read_text(encoding="utf-8")
+        db._conn.executescript(sql)
+        # Both rows present after the replay rebuild.
+        rows = {
+            r["mac"]: dict(r)
+            for r in db._conn.execute(
+                "SELECT mac, device_type FROM devices ORDER BY mac"
+            ).fetchall()
+        }
+        assert rows["aa:bb:cc:dd:ee:01"]["device_type"] == "wifi"
+        assert rows["aa:bb:cc:dd:ee:02"]["device_type"] == "remote_id"
+        # And the table still rejects unknown device_types — the
+        # extended CHECK is intact after the replay.
+        with pytest.raises(sqlite3.IntegrityError):
+            db.upsert_device("aa:bb:cc:dd:ee:03", "zigbee", None, 0, 1200)
+    finally:
+        db.close()
+
+
+def test_db_device_types_tuple_admits_remote_id(db):
+    """db._DEVICE_TYPES is the validator the read-only web UI
+    queries (list_devices, count_devices) use to reject bogus filter
+    params. Extending it to admit 'remote_id' lets operators filter
+    the /devices page by Remote-ID broadcaster type. Backward-compat:
+    the existing four types still validate."""
+    assert "remote_id" in Database._DEVICE_TYPES
+    # The pre-rc5 set is still admitted.
+    for existing in ("wifi", "ble", "bt_classic"):
+        assert existing in Database._DEVICE_TYPES
+    # And the validator accepts a remote_id filter without raising.
+    assert db.list_devices(device_type="remote_id") == []
+    assert db.count_devices(device_type="remote_id") == 0
+    # Unknown types still rejected.
+    with pytest.raises(ValueError):
+        db.list_devices(device_type="zigbee")

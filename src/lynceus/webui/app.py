@@ -818,7 +818,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
         page: int = Query(default=1),
         page_size: int = Query(default=50),
     ):
-        if device_type is not None and device_type not in ("wifi", "ble", "bt_classic"):
+        if device_type is not None and device_type not in (
+            "wifi", "ble", "bt_classic", "remote_id"
+        ):
             raise HTTPException(status_code=400, detail="invalid device_type")
         rand_bool = _parse_bool_str(randomized, "randomized")
         if page < 1:
