@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from lynceus.redact import redact_ntfy_topic, redact_topic_in_url
+from lynceus.redact import (
+    REDACTED_PLACEHOLDER,
+    redact_ntfy_topic,
+    redact_topic_in_url,
+    redact_yaml_config,
+)
 
 # ---------- redact_ntfy_topic ----------------------------------------------
 
@@ -149,3 +154,154 @@ def test_redact_url_never_contains_raw_topic(url):
     out = redact_topic_in_url(url)
     assert "lynceus-supersecret" not in out
     assert "supersecret" not in out
+
+
+# ---------- redact_yaml_config ---------------------------------------------
+
+
+def test_redact_yaml_only_lynceus_yaml_is_inspected():
+    # Other config files have no secret-bearing fields; pass through.
+    body = "rules:\n  - name: x\n    secret_token: nope\n"
+    redacted, fields = redact_yaml_config("rules.yaml", body)
+    assert redacted == body
+    assert fields == []
+
+
+def test_redact_yaml_passes_path_basename():
+    # Caller may pass a full path; only the basename governs the decision.
+    body = "kismet_api_key: leaked\n"
+    redacted, fields = redact_yaml_config("/etc/lynceus/lynceus.yaml", body)
+    assert "leaked" not in redacted
+    assert REDACTED_PLACEHOLDER in redacted
+    assert fields == ["kismet_api_key"]
+
+
+def test_redact_yaml_masks_kismet_api_key():
+    body = (
+        "kismet_url: http://127.0.0.1:2501\n"
+        "kismet_api_key: deadbeefcafe1234\n"
+        "location_id: home\n"
+    )
+    redacted, fields = redact_yaml_config("lynceus.yaml", body)
+    assert "deadbeefcafe1234" not in redacted
+    assert f"kismet_api_key: {REDACTED_PLACEHOLDER}\n" in redacted
+    assert "kismet_url: http://127.0.0.1:2501\n" in redacted
+    assert "location_id: home\n" in redacted
+    assert fields == ["kismet_api_key"]
+
+
+def test_redact_yaml_masks_ntfy_auth_token_and_topic():
+    body = (
+        "ntfy_url: https://ntfy.sh\n"
+        "ntfy_topic: lynceus-supersecret\n"
+        "ntfy_auth_token: tk_abcdef\n"
+    )
+    redacted, fields = redact_yaml_config("lynceus.yaml", body)
+    assert "lynceus-supersecret" not in redacted
+    assert "tk_abcdef" not in redacted
+    # ntfy_url has no userinfo and no path-embedded topic -> unchanged.
+    assert "ntfy_url: https://ntfy.sh\n" in redacted
+    assert fields == ["ntfy_topic", "ntfy_auth_token"]
+
+
+def test_redact_yaml_preserves_quoted_value():
+    # Quoted scalars are still recognized; the value (with quotes) is
+    # replaced wholesale by the placeholder.
+    body = 'kismet_api_key: "deadbeefcafe1234"\n'
+    redacted, fields = redact_yaml_config("lynceus.yaml", body)
+    assert "deadbeefcafe1234" not in redacted
+    assert fields == ["kismet_api_key"]
+
+
+def test_redact_yaml_empty_value_passes_through():
+    # An empty / null secret value is not a secret — leave it alone so
+    # the receiver can tell "operator didn't set this" apart from
+    # "operator set this and we scrubbed it".
+    body = (
+        "kismet_api_key:\n"
+        "ntfy_auth_token: null\n"
+        "ntfy_topic: ~\n"
+    )
+    redacted, fields = redact_yaml_config("lynceus.yaml", body)
+    assert redacted == body
+    assert fields == []
+
+
+def test_redact_yaml_preserves_comments_and_blank_lines():
+    # The line-based redactor must not eat operator comments or whitespace.
+    body = (
+        "# Top comment\n"
+        "\n"
+        "kismet_url: http://127.0.0.1:2501  # broker\n"
+        "kismet_api_key: secrettoken\n"
+        "\n"
+        "# trailing notes\n"
+    )
+    redacted, _ = redact_yaml_config("lynceus.yaml", body)
+    assert "# Top comment\n" in redacted
+    assert "# trailing notes\n" in redacted
+    assert "kismet_url: http://127.0.0.1:2501  # broker\n" in redacted
+    assert "secrettoken" not in redacted
+
+
+def test_redact_yaml_indented_lookalike_not_redacted():
+    # Schema forbids nested kismet_api_key, but a nested key in a comment
+    # block or a manual mistake must not be silently mistaken for a top-
+    # level secret. Top-level only — indented lines pass through.
+    body = (
+        "kismet_url: http://127.0.0.1:2501\n"
+        "  kismet_api_key: not-a-real-field\n"
+    )
+    redacted, fields = redact_yaml_config("lynceus.yaml", body)
+    assert redacted == body
+    assert fields == []
+
+
+def test_redact_yaml_strips_ntfy_url_userinfo():
+    body = "ntfy_url: https://user:pass@ntfy.example/\n"
+    redacted, fields = redact_yaml_config("lynceus.yaml", body)
+    assert "user:pass" not in redacted
+    assert "https://ntfy.example/" in redacted
+    assert fields == ["ntfy_url:userinfo"]
+
+
+def test_redact_yaml_ntfy_url_without_userinfo_unchanged():
+    body = "ntfy_url: https://ntfy.sh\n"
+    redacted, fields = redact_yaml_config("lynceus.yaml", body)
+    assert redacted == body
+    assert fields == []
+
+
+def test_redact_yaml_preserves_crlf_line_endings():
+    body = "kismet_api_key: secrettoken\r\nlocation_id: home\r\n"
+    redacted, fields = redact_yaml_config("lynceus.yaml", body)
+    assert "secrettoken" not in redacted
+    # Both lines keep their CRLF endings.
+    assert redacted.endswith("\r\n")
+    assert "\r\n" in redacted.split(REDACTED_PLACEHOLDER, 1)[1]
+    assert fields == ["kismet_api_key"]
+
+
+def test_redact_yaml_idempotent():
+    # Running the redactor twice yields the same result and reports the
+    # field already-redacted as still redacted (the placeholder is not in
+    # the empty-token set, so it's masked again to itself).
+    body = "kismet_api_key: secrettoken\n"
+    once, fields1 = redact_yaml_config("lynceus.yaml", body)
+    twice, fields2 = redact_yaml_config("lynceus.yaml", once)
+    assert twice == once
+    assert fields1 == ["kismet_api_key"]
+    # Second pass replaces "<REDACTED>" with "<REDACTED>" — semantically
+    # a no-op but the field is still reported, which is fine and harmless.
+    assert fields2 == ["kismet_api_key"]
+
+
+def test_redact_yaml_multiple_fields_reported_in_file_order():
+    body = (
+        "kismet_api_key: a\n"
+        "location_id: home\n"
+        "ntfy_topic: b\n"
+        "ntfy_auth_token: c\n"
+    )
+    _, fields = redact_yaml_config("lynceus.yaml", body)
+    assert fields == ["kismet_api_key", "ntfy_topic", "ntfy_auth_token"]
