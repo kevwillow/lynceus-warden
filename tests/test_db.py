@@ -1404,6 +1404,124 @@ def test_resolve_matched_eval_matchers_share_lookup_with_annotation_path(db):
     )
 
 
+# ---- resolve_matched_ble_manufacturer_id_for_eval ----
+
+
+def test_resolve_matched_ble_manufacturer_id_for_eval_hit(db):
+    wid = _add_simple(db, "004c", "ble_manufacturer_id", severity="med")
+    match = db.resolve_matched_ble_manufacturer_id_for_eval("004c")
+    assert match is not None
+    assert match.watchlist_id == wid
+    assert match.severity == "med"
+    assert match.device_category is None
+
+
+def test_resolve_matched_ble_manufacturer_id_for_eval_populates_metadata(db):
+    wid = _add_simple(db, "004c", "ble_manufacturer_id", severity="high")
+    _attach_metadata(
+        db, wid, device_category="hacking_tool", vendor="Apple, Inc."
+    )
+    match = db.resolve_matched_ble_manufacturer_id_for_eval("004c")
+    assert match is not None
+    assert match.device_category == "hacking_tool"
+    assert match.manufacturer == "Apple, Inc."
+    assert match.argus_record_id == f"argus-{wid}"
+
+
+def test_resolve_matched_ble_manufacturer_id_for_eval_null_metadata_fields(db):
+    """A row without a metadata side carries None for device_category /
+    manufacturer / argus_record_id — the runtime overrides layer
+    pass-throughs cleanly on each None."""
+    _add_simple(db, "09c8", "ble_manufacturer_id")
+    match = db.resolve_matched_ble_manufacturer_id_for_eval("09c8")
+    assert match is not None
+    assert match.device_category is None
+    assert match.manufacturer is None
+    assert match.argus_record_id is None
+
+
+def test_resolve_matched_ble_manufacturer_id_for_eval_miss(db):
+    _add_simple(db, "004c", "ble_manufacturer_id")
+    assert db.resolve_matched_ble_manufacturer_id_for_eval("ffff") is None
+
+
+def test_resolve_matched_ble_manufacturer_id_for_eval_none_and_empty(db):
+    _add_simple(db, "004c", "ble_manufacturer_id")
+    assert db.resolve_matched_ble_manufacturer_id_for_eval(None) is None
+    assert db.resolve_matched_ble_manufacturer_id_for_eval("") is None
+
+
+def test_resolve_matched_ble_manufacturer_id_for_eval_only_matches_own_pattern_type(db):
+    """A '004c' MAC-typed row must not be returned by the
+    ble_manufacturer_id matcher — pattern_type is part of the natural key."""
+    _add_simple(db, "004c", "mac", severity="high")
+    assert db.resolve_matched_ble_manufacturer_id_for_eval("004c") is None
+
+
+# ---- resolve_matched_drone_id_prefix_for_eval ----
+
+
+def test_resolve_matched_drone_id_prefix_for_eval_hit(db):
+    wid = _add_simple(db, "21239ESA2", "drone_id_prefix", severity="med")
+    match = db.resolve_matched_drone_id_prefix_for_eval("21239ESA2")
+    assert match is not None
+    assert match.watchlist_id == wid
+    assert match.severity == "med"
+    assert match.device_category is None
+
+
+def test_resolve_matched_drone_id_prefix_for_eval_populates_metadata(db):
+    wid = _add_simple(db, "178852", "drone_id_prefix", severity="med")
+    _attach_metadata(db, wid, device_category="drone", vendor="Vision Aerial")
+    match = db.resolve_matched_drone_id_prefix_for_eval("178852")
+    assert match is not None
+    assert match.device_category == "drone"
+    assert match.manufacturer == "Vision Aerial"
+    assert match.argus_record_id == f"argus-{wid}"
+
+
+def test_resolve_matched_drone_id_prefix_for_eval_null_metadata_fields(db):
+    _add_simple(db, "2137FDE1", "drone_id_prefix")
+    match = db.resolve_matched_drone_id_prefix_for_eval("2137FDE1")
+    assert match is not None
+    assert match.device_category is None
+    assert match.manufacturer is None
+    assert match.argus_record_id is None
+
+
+def test_resolve_matched_drone_id_prefix_for_eval_miss(db):
+    _add_simple(db, "21239ESA2", "drone_id_prefix")
+    assert db.resolve_matched_drone_id_prefix_for_eval("OTHER123") is None
+
+
+def test_resolve_matched_drone_id_prefix_for_eval_none_and_empty(db):
+    _add_simple(db, "21239ESA2", "drone_id_prefix")
+    assert db.resolve_matched_drone_id_prefix_for_eval(None) is None
+    assert db.resolve_matched_drone_id_prefix_for_eval("") is None
+
+
+def test_resolve_matched_drone_id_prefix_for_eval_case_sensitive():
+    """Both pattern_type matchers are exact-equality SQL — the canonical
+    is uppercase so lowercase observations must be normalized at the
+    boundary by callers (kismet._coerce_drone_id_prefix). This guards
+    against a regression where someone adds LOWER() to the SQL."""
+
+
+def test_resolve_matched_drone_id_prefix_for_eval_case_sensitive_in_sql(db):
+    _add_simple(db, "21239ESA2", "drone_id_prefix")
+    # Uppercase canonical hits.
+    assert db.resolve_matched_drone_id_prefix_for_eval("21239ESA2") is not None
+    # Lowercase does not hit — caller is responsible for canonicalizing.
+    assert db.resolve_matched_drone_id_prefix_for_eval("21239esa2") is None
+
+
+def test_resolve_matched_drone_id_prefix_for_eval_only_matches_own_pattern_type(db):
+    """An 'ABCD1234' ssid-typed row must not be returned by the
+    drone_id_prefix matcher."""
+    _add_simple(db, "ABCD1234", "ssid", severity="high")
+    assert db.resolve_matched_drone_id_prefix_for_eval("ABCD1234") is None
+
+
 # ---------------------------- file mode (POSIX) ----------------------------
 
 

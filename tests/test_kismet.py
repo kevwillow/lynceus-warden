@@ -1000,3 +1000,258 @@ def test_h5_all_three_methods_use_self_session():
     )
     # Each of the three HTTP-issuing methods must hit self._session.get.
     assert body.count("self._session.get(") == 3
+
+
+# ---- DeviceObservation: ble_manufacturer_id + drone_id_prefix fields -------
+
+
+def _build_obs(**overrides):
+    from lynceus.kismet import DeviceObservation
+
+    kwargs = dict(
+        mac="aa:bb:cc:dd:ee:ff",
+        device_type="ble",
+        first_seen=1,
+        last_seen=2,
+        rssi=None,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+    )
+    kwargs.update(overrides)
+    return DeviceObservation(**kwargs)
+
+
+def test_observation_accepts_canonical_ble_manufacturer_id():
+    """Canonical 4-lowercase-hex form passes validation."""
+    obs = _build_obs(ble_manufacturer_id="004c")
+    assert obs.ble_manufacturer_id == "004c"
+
+
+def test_observation_rejects_uppercase_ble_manufacturer_id():
+    """Canonical form is lowercase; uppercase would break equality
+    against the lowercase-stored watchlist row."""
+    with pytest.raises(Exception, match="invalid ble_manufacturer_id"):
+        _build_obs(ble_manufacturer_id="004C")
+
+
+def test_observation_rejects_oxprefix_ble_manufacturer_id():
+    """The observation field stores the bare-hex form; '0x004c' is the
+    Argus emission shape, not the observation shape."""
+    with pytest.raises(Exception, match="invalid ble_manufacturer_id"):
+        _build_obs(ble_manufacturer_id="0x004c")
+
+
+def test_observation_accepts_canonical_drone_id_prefix():
+    obs = _build_obs(drone_id_prefix="21239ESA2")
+    assert obs.drone_id_prefix == "21239ESA2"
+
+
+def test_observation_rejects_lowercase_drone_id_prefix():
+    """Canonical is uppercase; lowercase would silently miss equality
+    against an uppercase Argus row."""
+    with pytest.raises(Exception, match="invalid drone_id_prefix"):
+        _build_obs(drone_id_prefix="21239esa2")
+
+
+def test_observation_rejects_too_short_drone_id_prefix():
+    with pytest.raises(Exception, match="invalid drone_id_prefix"):
+        _build_obs(drone_id_prefix="AB")
+
+
+def test_observation_rejects_non_alphanumeric_drone_id_prefix():
+    with pytest.raises(Exception, match="invalid drone_id_prefix"):
+        _build_obs(drone_id_prefix="ABC-12")
+
+
+def test_observation_defaults_both_new_fields_to_none():
+    """Both new fields default to None so existing callers / fixtures
+    that don't pass them keep working."""
+    obs = _build_obs()
+    assert obs.ble_manufacturer_id is None
+    assert obs.drone_id_prefix is None
+
+
+# ---- _extract_ble_manufacturer_id field-path probing -----------------------
+
+
+def test_extract_ble_manufacturer_id_int_company_id():
+    """The BLE spec native shape is int; coercion must zero-pad to 4 hex."""
+    from lynceus.kismet import _extract_ble_manufacturer_id
+
+    raw = {"kismet.device.base.advdata": {"manufacturer_data": {"company_id": 0x004C}}}
+    assert _extract_ble_manufacturer_id(raw) == "004c"
+
+
+def test_extract_ble_manufacturer_id_hex_string_with_prefix():
+    """Some decoders emit the human-readable hex form with '0x' prefix."""
+    from lynceus.kismet import _extract_ble_manufacturer_id
+
+    raw = {"kismet.device.base.advdata": {"manufacturer_data": {"company_id": "0x09C8"}}}
+    assert _extract_ble_manufacturer_id(raw) == "09c8"
+
+
+def test_extract_ble_manufacturer_id_walks_alternate_field_path():
+    """Several probe paths; a second-tier path resolves when the first
+    isn't present."""
+    from lynceus.kismet import _extract_ble_manufacturer_id
+
+    raw = {"bluetooth.device.adv_data": {"manufacturer_data": {"company_id": 76}}}
+    assert _extract_ble_manufacturer_id(raw) == "004c"
+
+
+def test_extract_ble_manufacturer_id_walks_into_list_of_dicts():
+    """Manufacturer data is sometimes a list of dicts (one entry per
+    advertised company); the first entry's company id wins."""
+    from lynceus.kismet import _extract_ble_manufacturer_id
+
+    raw = {
+        "kismet.device.base.advdata": {
+            "manufacturer_data": [{"company_id": 0x09C8}, {"company_id": 0x004C}]
+        }
+    }
+    assert _extract_ble_manufacturer_id(raw) == "09c8"
+
+
+def test_extract_ble_manufacturer_id_missing_returns_none():
+    """No probe path resolves -> None (the expected state until field paths
+    are confirmed against a live Kismet capture)."""
+    from lynceus.kismet import _extract_ble_manufacturer_id
+
+    assert _extract_ble_manufacturer_id({}) is None
+
+
+def test_extract_ble_manufacturer_id_out_of_range_int_rejected():
+    """An int outside 0-65535 means we walked into the wrong leaf."""
+    from lynceus.kismet import _extract_ble_manufacturer_id
+
+    raw = {"kismet.device.base.advdata": {"manufacturer_data": {"company_id": 999999}}}
+    assert _extract_ble_manufacturer_id(raw) is None
+
+
+def test_extract_ble_manufacturer_id_bool_leaf_rejected():
+    """bool is an int subclass; a True/False leaf at the company_id path
+    means we walked into a flag field, not the company id."""
+    from lynceus.kismet import _extract_ble_manufacturer_id
+
+    raw = {"kismet.device.base.advdata": {"manufacturer_data": {"company_id": True}}}
+    assert _extract_ble_manufacturer_id(raw) is None
+
+
+# ---- _extract_drone_id_prefix field-path probing ---------------------------
+
+
+def test_extract_drone_id_prefix_serial_path():
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    raw = {"remoteid.device.basic_id": {"serial": "21239ESA2"}}
+    assert _extract_drone_id_prefix(raw) == "21239ESA2"
+
+
+def test_extract_drone_id_prefix_uas_id_alternate_path():
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    raw = {"remoteid.device.basic_id": {"uas_id": "2137FDE1"}}
+    assert _extract_drone_id_prefix(raw) == "2137FDE1"
+
+
+def test_extract_drone_id_prefix_lowercase_input_uppercased():
+    """Coercion uppercases — Argus stores uppercase, observation must
+    match equality."""
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    raw = {"remoteid.device.basic_id": {"serial": "abc123"}}
+    assert _extract_drone_id_prefix(raw) == "ABC123"
+
+
+def test_extract_drone_id_prefix_missing_returns_none():
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    assert _extract_drone_id_prefix({}) is None
+
+
+def test_extract_drone_id_prefix_too_short_rejected():
+    """Coercion rejects 1-2 char fragments — likely garbage."""
+    from lynceus.kismet import _extract_drone_id_prefix
+
+    raw = {"remoteid.device.basic_id": {"serial": "AB"}}
+    assert _extract_drone_id_prefix(raw) is None
+
+
+# ---- parse_kismet_device integration ---------------------------------------
+
+
+def test_parse_kismet_device_populates_ble_manufacturer_id_on_ble_record():
+    """A BLE record carrying advertisement manufacturer-data company id
+    surfaces on the parsed observation."""
+    from lynceus.kismet import parse_kismet_device
+
+    raw = {
+        "kismet.device.base.macaddr": "AA:BB:CC:DD:EE:FF",
+        "kismet.device.base.type": "BTLE",
+        "kismet.device.base.first_time": 1000,
+        "kismet.device.base.last_time": 1001,
+        "kismet.device.base.advdata": {
+            "manufacturer_data": {"company_id": 0x004C},
+        },
+    }
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.ble_manufacturer_id == "004c"
+
+
+def test_parse_kismet_device_ble_manufacturer_id_only_on_ble_type():
+    """Wi-Fi records don't carry a 16-bit company id in their adverts —
+    the probe is skipped for non-ble types so a stray field with the
+    same name in a Wi-Fi record can't accidentally surface."""
+    from lynceus.kismet import parse_kismet_device
+
+    raw = {
+        "kismet.device.base.macaddr": "AA:BB:CC:DD:EE:FF",
+        "kismet.device.base.type": "Wi-Fi AP",
+        "kismet.device.base.first_time": 1000,
+        "kismet.device.base.last_time": 1001,
+        "kismet.device.base.advdata": {
+            "manufacturer_data": {"company_id": 0x004C},
+        },
+    }
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.ble_manufacturer_id is None
+
+
+def test_parse_kismet_device_populates_drone_id_prefix_when_present():
+    """A record carrying a Remote-ID serial surfaces on the parsed
+    observation. (Kismet's RID datasource may emit under a device type
+    that _TYPE_MAP doesn't currently admit; this fakes a BTLE-typed
+    record to exercise the population path independently of the type
+    gate.)"""
+    from lynceus.kismet import parse_kismet_device
+
+    raw = {
+        "kismet.device.base.macaddr": "AA:BB:CC:DD:EE:FF",
+        "kismet.device.base.type": "BTLE",
+        "kismet.device.base.first_time": 1000,
+        "kismet.device.base.last_time": 1001,
+        "remoteid.device.basic_id": {"serial": "21239ESA2"},
+    }
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.drone_id_prefix == "21239ESA2"
+
+
+def test_parse_kismet_device_both_new_fields_none_when_no_paths_resolve():
+    """Expected state for nearly every observation until the Kismet
+    field paths are confirmed against a live capture: both fields None."""
+    from lynceus.kismet import parse_kismet_device
+
+    raw = {
+        "kismet.device.base.macaddr": "AA:BB:CC:DD:EE:FF",
+        "kismet.device.base.type": "BTLE",
+        "kismet.device.base.first_time": 1000,
+        "kismet.device.base.last_time": 1001,
+    }
+    obs = parse_kismet_device(raw)
+    assert obs is not None
+    assert obs.ble_manufacturer_id is None
+    assert obs.drone_id_prefix is None

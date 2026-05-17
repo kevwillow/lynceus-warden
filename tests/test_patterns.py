@@ -322,3 +322,108 @@ def test_parse_mac_range_rejects_empty_string():
 def test_parse_mac_range_rejects_non_integer_cidr_length():
     with pytest.raises(ValueError, match="CIDR length must be an integer"):
         parse_mac_range_pattern("aa:bb:cc:d/twentyeight")
+
+
+# ---------------------- ble_manufacturer_id normalization --------------------
+
+
+def test_normalize_ble_manufacturer_id_argus_canonical_form():
+    """Argus's emission shape '0xNNNN' canonicalizes to bare lowercase hex."""
+    assert normalize_pattern("ble_manufacturer_id", "0x004C") == "004c"
+    assert normalize_pattern("ble_manufacturer_id", "0X09C8") == "09c8"
+
+
+def test_normalize_ble_manufacturer_id_bare_hex_accepted():
+    """Bare-hex (no 0x prefix) is the expected runtime observation shape."""
+    assert normalize_pattern("ble_manufacturer_id", "004C") == "004c"
+    assert normalize_pattern("ble_manufacturer_id", "09c8") == "09c8"
+
+
+def test_normalize_ble_manufacturer_id_short_form_zero_padded():
+    """Defensive: '4c' becomes '004c' so a stripped-zero input still
+    matches an Argus-stored '0x004C' row."""
+    assert normalize_pattern("ble_manufacturer_id", "4c") == "004c"
+    assert normalize_pattern("ble_manufacturer_id", "0x4C") == "004c"
+
+
+def test_normalize_ble_manufacturer_id_already_canonical_idempotent():
+    assert normalize_pattern("ble_manufacturer_id", "004c") == "004c"
+
+
+def test_normalize_ble_manufacturer_id_strips_surrounding_whitespace():
+    assert normalize_pattern("ble_manufacturer_id", "  0x004C  ") == "004c"
+
+
+def test_normalize_ble_manufacturer_id_rejects_empty():
+    with pytest.raises(ValueError, match="empty"):
+        normalize_pattern("ble_manufacturer_id", "")
+
+
+def test_normalize_ble_manufacturer_id_rejects_just_prefix():
+    with pytest.raises(ValueError, match="empty after stripping"):
+        normalize_pattern("ble_manufacturer_id", "0x")
+
+
+def test_normalize_ble_manufacturer_id_rejects_too_long():
+    """16-bit company id is at most 4 hex chars; 5+ is a hard error."""
+    with pytest.raises(ValueError, match="at most 4"):
+        normalize_pattern("ble_manufacturer_id", "0x12345")
+
+
+def test_normalize_ble_manufacturer_id_rejects_non_hex():
+    with pytest.raises(ValueError, match="non-hex characters"):
+        normalize_pattern("ble_manufacturer_id", "0xZZZZ")
+
+
+# ---------------------- drone_id_prefix normalization ------------------------
+
+
+def test_normalize_drone_id_prefix_argus_canonical_form_round_trips():
+    """Uppercase ASCII alphanumeric is Argus's emission and the canonical
+    form — round-trips unchanged."""
+    assert normalize_pattern("drone_id_prefix", "178852") == "178852"
+    assert normalize_pattern("drone_id_prefix", "2137FDE1") == "2137FDE1"
+    assert normalize_pattern("drone_id_prefix", "21239ESA2") == "21239ESA2"
+
+
+def test_normalize_drone_id_prefix_lowercase_input_uppercased():
+    """Case-sensitive per ANSI/CTA-2063-A but uppercase is the canonical;
+    lowercase observation must still match an uppercase Argus row."""
+    assert normalize_pattern("drone_id_prefix", "abc123") == "ABC123"
+
+
+def test_normalize_drone_id_prefix_strips_surrounding_whitespace():
+    assert normalize_pattern("drone_id_prefix", "  178852  ") == "178852"
+
+
+def test_normalize_drone_id_prefix_rejects_empty():
+    with pytest.raises(ValueError, match="empty"):
+        normalize_pattern("drone_id_prefix", "")
+
+
+def test_normalize_drone_id_prefix_rejects_too_short():
+    """The shortest Argus row is 3 chars; 2 chars is rejected."""
+    with pytest.raises(ValueError, match="out of range"):
+        normalize_pattern("drone_id_prefix", "AB")
+
+
+def test_normalize_drone_id_prefix_rejects_too_long():
+    """Defensive 32-char upper bound — Argus max in current snapshot is
+    20, so 33 chars is well outside the expected range."""
+    with pytest.raises(ValueError, match="out of range"):
+        normalize_pattern("drone_id_prefix", "A" * 33)
+
+
+def test_normalize_drone_id_prefix_rejects_non_alphanumeric():
+    """Hyphens, dots, spaces inside the prefix are not part of the
+    ANSI/CTA-2063-A serial format."""
+    with pytest.raises(ValueError, match="ASCII alphanumeric"):
+        normalize_pattern("drone_id_prefix", "ABC-123")
+    with pytest.raises(ValueError, match="ASCII alphanumeric"):
+        normalize_pattern("drone_id_prefix", "ABC 123")
+
+
+def test_normalize_drone_id_prefix_rejects_non_ascii():
+    """Non-ASCII characters are not valid ANSI/CTA-2063-A serial chars."""
+    with pytest.raises(ValueError, match="ASCII alphanumeric"):
+        normalize_pattern("drone_id_prefix", "ABCDé")
