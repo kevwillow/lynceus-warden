@@ -1390,3 +1390,247 @@ def test_poller_init_logs_no_rules_path_configured(tmp_path, caplog):
         assert poller.ruleset.rules == []
     finally:
         poller.db.close()
+
+
+# ----------------------- allowlist mtime watch + audit-line ------------------
+
+
+def _write(path: Path, body: str) -> None:
+    path.write_text(body, encoding="utf-8")
+
+
+def test_allowlist_mtime_watch_reloads_on_primary_change(tmp_path, caplog):
+    """Editing the operator-curated primary file is picked up at the next
+    poll tick without a daemon restart."""
+    primary = tmp_path / "allowlist.yaml"
+    _write(primary, "entries: []\n")
+    cfg = Config(
+        kismet_fixture_path=str(FIXTURE_PATH),
+        db_path=str(tmp_path / "lynceus.db"),
+        location_id="testloc",
+        location_label="Test Location",
+        allowlist_path=str(primary),
+    )
+    poller = Poller(cfg)
+    try:
+        assert poller.allowlist.entries == []
+        _write(
+            primary,
+            "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n",
+        )
+        # Force mtime to differ; on a fast filesystem the second write may
+        # land in the same st_mtime tick as the first.
+        import os as _os
+
+        st = primary.stat()
+        _os.utime(primary, (st.st_atime, st.st_mtime + 1))
+        with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+            poller._maybe_reload_allowlist()
+        assert len(poller.allowlist.entries) == 1
+        assert poller.allowlist.entries[0].pattern == "aa:bb:cc:dd:ee:ff"
+        assert any(
+            "allowlist reloaded" in r.getMessage()
+            and "1 operator entries" in r.getMessage()
+            and "0 UI entries" in r.getMessage()
+            for r in caplog.records
+            if r.name == "lynceus.poller"
+        )
+    finally:
+        poller.db.close()
+
+
+def test_allowlist_mtime_watch_reloads_on_ui_file_appearance(tmp_path):
+    """A UI sibling appearing for the first time (e.g., first /alerts/<id>/snooze
+    button click) trips a reload on the next tick — daemon needs no restart."""
+    primary = tmp_path / "allowlist.yaml"
+    _write(primary, "entries: []\n")
+    cfg = Config(
+        kismet_fixture_path=str(FIXTURE_PATH),
+        db_path=str(tmp_path / "lynceus.db"),
+        location_id="testloc",
+        location_label="Test Location",
+        allowlist_path=str(primary),
+    )
+    poller = Poller(cfg)
+    try:
+        assert poller.allowlist.entries == []
+        from lynceus.allowlist import AllowlistEntry as _Entry
+        from lynceus.allowlist import add_ui_entry as _add
+        from lynceus.allowlist import derive_ui_path as _derive
+
+        _add(
+            _derive(primary),
+            _Entry(
+                pattern="11:22:33:44:55:66",
+                pattern_type="mac",
+                added_at=1_799_000_000,
+            ),
+        )
+        poller._maybe_reload_allowlist()
+        assert len(poller.allowlist.entries) == 1
+        assert poller.allowlist.entries[0].pattern == "11:22:33:44:55:66"
+    finally:
+        poller.db.close()
+
+
+def test_allowlist_mtime_watch_no_change_no_reload(tmp_path, caplog):
+    """Steady-state cost guarantee: a tick with no file change does not
+    re-parse YAML or emit the reload INFO line."""
+    primary = tmp_path / "allowlist.yaml"
+    _write(
+        primary,
+        "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n",
+    )
+    cfg = Config(
+        kismet_fixture_path=str(FIXTURE_PATH),
+        db_path=str(tmp_path / "lynceus.db"),
+        location_id="testloc",
+        location_label="Test Location",
+        allowlist_path=str(primary),
+    )
+    poller = Poller(cfg)
+    try:
+        # The init-time load already happened; mtime cache is populated.
+        first_id = id(poller.allowlist)
+        with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+            poller._maybe_reload_allowlist()
+            poller._maybe_reload_allowlist()
+        assert id(poller.allowlist) == first_id  # same object, no reload
+        assert not any(
+            "allowlist reloaded" in r.getMessage()
+            for r in caplog.records
+            if r.name == "lynceus.poller"
+        )
+    finally:
+        poller.db.close()
+
+
+def test_allowlist_mtime_watch_handles_deleted_primary(tmp_path, caplog):
+    """If the operator deletes the primary file mid-run (rename in progress,
+    fat-fingered ``rm``), the daemon retains its last-known-good allowlist
+    rather than emptying suppression. A WARNING is logged. The next tick
+    will reload when the file reappears."""
+    primary = tmp_path / "allowlist.yaml"
+    _write(
+        primary,
+        "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n",
+    )
+    cfg = Config(
+        kismet_fixture_path=str(FIXTURE_PATH),
+        db_path=str(tmp_path / "lynceus.db"),
+        location_id="testloc",
+        location_label="Test Location",
+        allowlist_path=str(primary),
+    )
+    poller = Poller(cfg)
+    try:
+        assert len(poller.allowlist.entries) == 1
+        primary.unlink()
+        with caplog.at_level(logging.WARNING, logger="lynceus.poller"):
+            poller._maybe_reload_allowlist()
+        # Entries retained.
+        assert len(poller.allowlist.entries) == 1
+        assert any(
+            "vanished" in r.getMessage()
+            for r in caplog.records
+            if r.name == "lynceus.poller"
+        )
+    finally:
+        poller.db.close()
+
+
+def test_allowlist_mtime_watch_noop_when_no_allowlist_path(tmp_path):
+    """Configs without ``allowlist_path`` skip the mtime check entirely."""
+    cfg = Config(
+        kismet_fixture_path=str(FIXTURE_PATH),
+        db_path=str(tmp_path / "lynceus.db"),
+        location_id="testloc",
+        location_label="Test Location",
+        # No allowlist_path.
+    )
+    poller = Poller(cfg)
+    try:
+        poller._maybe_reload_allowlist()
+        assert poller.allowlist.entries == []
+    finally:
+        poller.db.close()
+
+
+def test_audit_line_includes_expires_suffix_for_snooze_entry(db, config, fake_client, caplog):
+    """An entry with non-None ``expires_at`` is a snooze; the audit line
+    must annotate the expiry so operators reading journalctl can tell
+    temporary suppression apart from permanent allowlisting."""
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    expires_ts = 1_900_000_000
+    al = Allowlist(
+        entries=[
+            AllowlistEntry(
+                pattern="a4:83:e7:11:22:33",
+                pattern_type="mac",
+                expires_at=expires_ts,
+                added_at=1_800_000_000,
+            )
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poll_once(fake_client, db, config, 1_800_000_000, ruleset=rs, allowlist=al)
+    # The audit line still fires, AND it includes the expires suffix in ISO form.
+    assert "Allowlist suppressed watchlist hit:" in caplog.text
+    assert "(expires 2030-03-17T17:46:40Z)" in caplog.text
+
+
+def test_audit_line_no_expires_suffix_for_permanent_entry(db, config, fake_client, caplog):
+    """A permanent entry (no ``expires_at``) keeps the pre-rc5 audit-line
+    shape so operators grepping for the existing prefix are unaffected."""
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="a4:83:e7:11:22:33", pattern_type="mac")]
+    )
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poll_once(fake_client, db, config, 1_800_000_000, ruleset=rs, allowlist=al)
+    assert "Allowlist suppressed watchlist hit:" in caplog.text
+    assert "(expires" not in caplog.text
+
+
+def test_expired_entry_does_not_suppress_in_poll(db, config, fake_client):
+    """An expired snooze entry is silently skipped at poll time; the
+    watchlist hit fires normally."""
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=["a4:83:e7:11:22:33"],
+            )
+        ]
+    )
+    al = Allowlist(
+        entries=[
+            AllowlistEntry(
+                pattern="a4:83:e7:11:22:33",
+                pattern_type="mac",
+                expires_at=1_700_000_000,
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1_800_000_000, ruleset=rs, allowlist=al)
+    assert _alerts_count(db) == 1

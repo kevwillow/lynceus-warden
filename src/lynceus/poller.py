@@ -7,9 +7,15 @@ import datetime as _dt
 import logging
 import signal
 import time
+from pathlib import Path
 
 from . import __version__
-from .allowlist import Allowlist, load_allowlist
+from .allowlist import (
+    Allowlist,
+    _load_allowlist_with_counts,
+    derive_ui_path,
+    load_allowlist,
+)
 from .config import Config, load_config
 from .db import Database
 from .evidence import capture_evidence, maybe_prune_evidence
@@ -147,7 +153,8 @@ def poll_once(
                 location_id=effective_location_id,
             )
             processed += 1
-            if allowlist.is_allowed(obs):
+            matched_allowlist_entry = allowlist.is_allowed(obs, now_ts=now_ts)
+            if matched_allowlist_entry is not None:
                 logger.debug("allowlisted, suppressing alerts: %s", obs.mac)
                 # Audit pass: re-evaluate rules ONLY to record any watchlist
                 # hits the allowlist just suppressed. Operators with write
@@ -162,14 +169,26 @@ def poll_once(
                     db=db,
                     severity_overrides=severity_overrides,
                 )
+                # Snooze entries carry an ``expires_at`` so the audit line
+                # makes it obvious in journalctl which suppressions are
+                # temporary vs permanent. Operators grepping for the
+                # existing "Allowlist suppressed watchlist hit:" prefix
+                # still get a match — the suffix appends after severity.
+                expires_suffix = ""
+                if matched_allowlist_entry.expires_at is not None:
+                    expires_iso = _dt.datetime.fromtimestamp(
+                        matched_allowlist_entry.expires_at, tz=_dt.UTC
+                    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    expires_suffix = f" (expires {expires_iso})"
                 for sh in suppressed_hits:
                     if sh.rule_type == "new_non_randomized_device":
                         continue
                     logger.info(
-                        "Allowlist suppressed watchlist hit: rule=%s mac=%s severity=%s",
+                        "Allowlist suppressed watchlist hit: rule=%s mac=%s severity=%s%s",
                         sh.rule_name,
                         obs.mac,
                         sh.severity,
+                        expires_suffix,
                     )
                 continue
             hits = evaluate(
@@ -377,9 +396,25 @@ class Poller:
             logger.info(
                 "no rules_path configured; ruleset is empty — no alerts will fire"
             )
-        self.allowlist = (
-            load_allowlist(config.allowlist_path) if config.allowlist_path else Allowlist()
+        # Allowlist load + mtime cache for the per-tick reload watch.
+        # Both files (operator-curated primary + daemon-managed UI sibling)
+        # are stat()ed at every poll and reloaded when either has moved;
+        # missing files map to sentinel mtime 0.0 so a file appearing or
+        # disappearing both count as changes that trigger a reload.
+        self._allowlist_primary_path: Path | None = (
+            Path(config.allowlist_path) if config.allowlist_path else None
         )
+        self._allowlist_ui_path: Path | None = (
+            derive_ui_path(self._allowlist_primary_path)
+            if self._allowlist_primary_path is not None
+            else None
+        )
+        self._allowlist_mtimes: dict[Path, float] = {}
+        if self._allowlist_primary_path is not None:
+            self.allowlist = load_allowlist(str(self._allowlist_primary_path))
+            self._allowlist_mtimes = self._current_allowlist_mtimes()
+        else:
+            self.allowlist = Allowlist()
         # severity_overrides.yaml: runtime view (device_category_severity
         # + suppress_categories). Failures (missing / unreadable /
         # malformed) downgrade to None at the loader, never raise — the
@@ -395,6 +430,63 @@ class Poller:
         )
         self.notifier: Notifier = build_notifier(config)
         self._stop_flag = False
+
+    def _current_allowlist_mtimes(self) -> dict[Path, float]:
+        """Return current mtimes for both allowlist files, sentinel 0.0 if absent.
+
+        A missing file maps to 0.0 deliberately: the same sentinel for
+        "doesn't exist yet" and "deleted by the operator", so the first
+        appearance of a UI sibling (its mtime moving from 0.0 to a real
+        timestamp) and the disappearance of either file (real timestamp
+        moving to 0.0) both register as changes that trip a reload.
+        """
+        result: dict[Path, float] = {}
+        for p in (self._allowlist_primary_path, self._allowlist_ui_path):
+            if p is None:
+                continue
+            try:
+                result[p] = p.stat().st_mtime if p.exists() else 0.0
+            except OSError:
+                result[p] = 0.0
+        return result
+
+    def _maybe_reload_allowlist(self) -> None:
+        """Reload the allowlist if either file's mtime has moved.
+
+        Called before every poll tick. The stat() pair is cheap; the
+        merged-load only runs on mtime change. Without this, the daemon
+        would need a restart for every operator edit to allowlist.yaml
+        and every UI button click that writes to allowlist_ui.yaml —
+        precisely the operator-comfort outcome this prompt closes.
+        """
+        if self._allowlist_primary_path is None:
+            return
+        current = self._current_allowlist_mtimes()
+        if current == self._allowlist_mtimes:
+            return
+        try:
+            merged, primary_count, ui_count = _load_allowlist_with_counts(
+                str(self._allowlist_primary_path)
+            )
+        except FileNotFoundError:
+            # Operator deleted the primary file mid-run. Hold the
+            # last-known good allowlist rather than emptying it — a
+            # half-typed config move shouldn't blow open every
+            # suppression at once. Update the mtime cache so the next
+            # tick re-checks; the file reappearing trips a reload.
+            logger.warning(
+                "allowlist primary file %s vanished; retaining last-known entries",
+                self._allowlist_primary_path,
+            )
+            self._allowlist_mtimes = current
+            return
+        self.allowlist = merged
+        self._allowlist_mtimes = current
+        logger.info(
+            "allowlist reloaded: %d operator entries + %d UI entries",
+            primary_count,
+            ui_count,
+        )
 
     def _startup_health_check(self) -> None:
         """Probe Kismet at startup, retrying transient failures with backoff.
@@ -457,6 +549,7 @@ class Poller:
                 # work cleanly — the outer ``finally`` still runs and closes
                 # the DB before the signal is re-raised.
                 try:
+                    self._maybe_reload_allowlist()
                     poll_once(
                         self.client,
                         self.db,
@@ -477,6 +570,7 @@ class Poller:
 
     def run_once(self) -> int:
         try:
+            self._maybe_reload_allowlist()
             return poll_once(
                 self.client,
                 self.db,
