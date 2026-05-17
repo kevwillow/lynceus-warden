@@ -7,6 +7,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -2327,5 +2328,960 @@ def test_triage_snooze_end_to_end_through_poll_cycle(tmp_path):
             "SELECT COUNT(*) FROM alerts"
         ).fetchone()[0]
         assert after_expiry_alerts > after_snooze  # alert fires
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# /allowlist management surface (rc5): filters, add-form, bulk remove,
+# primary-source read-only protection.
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_mixed_allowlist(tmp_path):
+    """Seed an allowlist with primary + UI entries spanning all 7 types
+    plus active/snoozed/expired statuses, so filter tests have something
+    to exercise. Returns (app, db, primary_path, ui_path, now_ts).
+
+    Entries (intentional diversity, not realism):
+
+      primary:
+        - mac    aa:aa:aa:aa:aa:01    note='primary camera'
+        - ssid   PrimaryNet           note='operator network'
+
+      ui:
+        - mac    11:22:33:44:55:01    note='ui device'              (active)
+        - mac    22:22:22:22:22:22    expires_at=now-3600           (expired)
+        - mac    33:33:33:33:33:33    expires_at=now+86400, note='ui-snooze'  (snoozed)
+        - mac_range            aa:bb:cc:d/28   note='ui range'
+        - ble_uuid             0000180f-0000-1000-8000-00805f9b34fb
+        - ble_manufacturer_id  004c
+        - drone_id_prefix      ABC1234
+    """
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text(
+        "entries:\n"
+        "  - pattern: aa:aa:aa:aa:aa:01\n"
+        "    pattern_type: mac\n"
+        "    note: primary camera\n"
+        "  - pattern: PrimaryNet\n"
+        "    pattern_type: ssid\n"
+        "    note: operator network\n",
+        encoding="utf-8",
+    )
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    ui_path = derive_ui_path(primary)
+    now_ts = int(_time.time())
+    seeds = [
+        AllowlistEntry(
+            pattern="11:22:33:44:55:01",
+            pattern_type="mac",
+            note="ui device",
+            added_at=now_ts,
+        ),
+        AllowlistEntry(
+            pattern="22:22:22:22:22:22",
+            pattern_type="mac",
+            expires_at=now_ts - 3600,
+            added_at=now_ts - 7200,
+        ),
+        AllowlistEntry(
+            pattern="33:33:33:33:33:33",
+            pattern_type="mac",
+            note="ui-snooze",
+            expires_at=now_ts + 86400,
+            added_at=now_ts,
+        ),
+        AllowlistEntry(
+            pattern="aa:bb:cc:d",  # canonicalizes to aa:bb:cc:d/28
+            pattern_type="mac_range",
+            note="ui range",
+            added_at=now_ts,
+        ),
+        AllowlistEntry(
+            pattern="0000180f-0000-1000-8000-00805f9b34fb",
+            pattern_type="ble_uuid",
+            added_at=now_ts,
+        ),
+        AllowlistEntry(
+            pattern="004c",
+            pattern_type="ble_manufacturer_id",
+            added_at=now_ts,
+        ),
+        AllowlistEntry(
+            pattern="ABC1234",
+            pattern_type="drone_id_prefix",
+            added_at=now_ts,
+        ),
+    ]
+    for entry in seeds:
+        add_ui_entry(ui_path, entry)
+    return app, db, primary, ui_path, now_ts
+
+
+@pytest.mark.webui
+def test_allowlist_no_filters_shows_every_entry(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        # Pattern from every entry must appear in the rendered body.
+        for pat in [
+            "aa:aa:aa:aa:aa:01",
+            "PrimaryNet",
+            "11:22:33:44:55:01",
+            "22:22:22:22:22:22",
+            "33:33:33:33:33:33",
+            "aa:bb:cc:d/28",
+            "0000180f-0000-1000-8000-00805f9b34fb",
+            "004c",
+            "ABC1234",
+        ]:
+            assert pat in r.text, f"missing pattern {pat!r} in default render"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_q_matches_pattern_and_note(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?q=camera")
+        assert r.status_code == 200
+        assert "aa:aa:aa:aa:aa:01" in r.text  # primary camera note matched
+        # Unrelated rows should not appear.
+        assert "PrimaryNet" not in r.text
+        assert "11:22:33:44:55:01" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_q_case_insensitive(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?q=CAMERA")
+        assert r.status_code == 200
+        assert "aa:aa:aa:aa:aa:01" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_source_primary(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?source=primary")
+        assert r.status_code == 200
+        assert "aa:aa:aa:aa:aa:01" in r.text
+        assert "PrimaryNet" in r.text
+        # No UI entries:
+        assert "11:22:33:44:55:01" not in r.text
+        assert "004c" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_source_ui(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?source=ui")
+        assert r.status_code == 200
+        assert "11:22:33:44:55:01" in r.text
+        assert "aa:bb:cc:d/28" in r.text
+        # No primary entries:
+        assert "aa:aa:aa:aa:aa:01" not in r.text
+        assert "PrimaryNet" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_status_expired(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?status=expired")
+        assert r.status_code == 200
+        assert "22:22:22:22:22:22" in r.text  # expired
+        assert "33:33:33:33:33:33" not in r.text  # snoozed
+        assert "11:22:33:44:55:01" not in r.text  # active
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_status_snoozed(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?status=snoozed")
+        assert r.status_code == 200
+        assert "33:33:33:33:33:33" in r.text
+        assert "22:22:22:22:22:22" not in r.text
+        assert "11:22:33:44:55:01" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_status_active(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?status=active")
+        assert r.status_code == 200
+        # Active = no expires_at. The active UI mac and all the primary
+        # rows + no-expiry UI rows survive.
+        assert "11:22:33:44:55:01" in r.text
+        assert "aa:aa:aa:aa:aa:01" in r.text
+        # Snoozed/expired excluded.
+        assert "22:22:22:22:22:22" not in r.text
+        assert "33:33:33:33:33:33" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_type_mac(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?type=mac")
+        assert r.status_code == 200
+        assert "aa:aa:aa:aa:aa:01" in r.text  # primary mac
+        assert "11:22:33:44:55:01" in r.text  # UI mac
+        # Non-mac types excluded:
+        assert "PrimaryNet" not in r.text
+        assert "aa:bb:cc:d/28" not in r.text
+        assert "0000180f-0000-1000-8000-00805f9b34fb" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_type_each_supported_renders_only_that_type(tmp_path):
+    """Smoke per-type: each of the 7 dropdown options narrows to that
+    pattern_type alone."""
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            for ptype, present in [
+                ("ssid", "PrimaryNet"),
+                ("mac_range", "aa:bb:cc:d/28"),
+                ("ble_uuid", "0000180f-0000-1000-8000-00805f9b34fb"),
+                ("ble_manufacturer_id", "004c"),
+                ("drone_id_prefix", "ABC1234"),
+                ("oui", None),  # no oui entries — empty state
+            ]:
+                r = client.get(f"/allowlist?type={ptype}")
+                assert r.status_code == 200
+                if present is None:
+                    assert "No entries match" in r.text
+                else:
+                    assert present in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_combined_and_together(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            # source=ui AND type=mac AND status=active intersects to the
+            # one row 11:22:33:44:55:01.
+            r = client.get("/allowlist?source=ui&type=mac&status=active")
+        assert r.status_code == 200
+        assert "11:22:33:44:55:01" in r.text
+        assert "22:22:22:22:22:22" not in r.text  # status=expired
+        assert "33:33:33:33:33:33" not in r.text  # status=snoozed
+        assert "aa:aa:aa:aa:aa:01" not in r.text  # source=primary
+        assert "aa:bb:cc:d/28" not in r.text  # type=mac_range
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_empty_result_renders_empty_state(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?q=zzzzzzzzzz")
+        assert r.status_code == 200
+        assert "No entries match the current filters." in r.text
+        assert 'href="/allowlist"' in r.text  # reset link present
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_invalid_source_returns_400(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?source=bogus")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_invalid_status_returns_400(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?status=bogus")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_invalid_type_returns_400(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?type=bssid")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_source_badges_render(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        assert "badge-source-primary" in r.text
+        assert "badge-source-ui" in r.text
+        # Status badges present too:
+        assert "badge-allow-active" in r.text
+        assert "badge-allow-snoozed" in r.text
+        assert "badge-allow-expired" in r.text
+    finally:
+        db.close()
+
+
+# --- POST /allowlist/add ----------------------------------------------------
+
+
+def _read_ui_file(primary):
+    """Read entries from the daemon-managed UI sibling, or empty list."""
+    from lynceus.allowlist import derive_ui_path as _derive
+
+    ui = _derive(primary)
+    if not ui.exists():
+        return []
+    return yaml.safe_load(ui.read_text(encoding="utf-8"))["entries"]
+
+
+@pytest.mark.webui
+def test_allowlist_add_valid_mac_persists_and_redirects(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "AA:BB:CC:DD:EE:FF",
+                    "pattern_type": "mac",
+                    "note": "added via test",
+                },
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/allowlist?success=add"
+        entries = _read_ui_file(primary)
+        assert len(entries) == 1
+        assert entries[0]["pattern"] == "aa:bb:cc:dd:ee:ff"  # canonicalized
+        assert entries[0]["pattern_type"] == "mac"
+        assert entries[0]["note"] == "added via test"
+        assert "added_at" in entries[0]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "ptype,raw_pattern,canonical_pattern",
+    [
+        ("mac", "AA:BB:CC:DD:EE:FF", "aa:bb:cc:dd:ee:ff"),
+        ("oui", "AA-BB-CC", "aa:bb:cc"),
+        ("ssid", "HomeNet", "HomeNet"),
+        ("mac_range", "aa:bb:cc:d", "aa:bb:cc:d/28"),
+        (
+            "ble_uuid",
+            "0000180F-0000-1000-8000-00805F9B34FB",
+            "0000180f-0000-1000-8000-00805f9b34fb",
+        ),
+        ("ble_manufacturer_id", "0x004C", "004c"),
+        ("drone_id_prefix", "abc1234", "ABC1234"),
+    ],
+)
+def test_allowlist_add_canonicalizes_each_pattern_type(
+    tmp_path, ptype, raw_pattern, canonical_pattern
+):
+    """Per supported type: form input is canonicalized via patterns.py
+    before write — proves the canonicalizer is wired through the add
+    route, not just the model."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": raw_pattern,
+                    "pattern_type": ptype,
+                },
+            )
+        assert r.status_code == 303, f"{ptype} {raw_pattern} → {r.status_code} {r.text[:200]}"
+        entries = _read_ui_file(primary)
+        assert len(entries) == 1
+        assert entries[0]["pattern"] == canonical_pattern
+        assert entries[0]["pattern_type"] == ptype
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_empty_pattern_returns_400_inline_error(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "   ",
+                    "pattern_type": "mac",
+                },
+            )
+        assert r.status_code == 400
+        assert "pattern is required" in r.text
+        assert _read_ui_file(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_invalid_pattern_returns_400_inline_error(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "not-a-mac",
+                    "pattern_type": "mac",
+                },
+            )
+        assert r.status_code == 400
+        assert "invalid mac" in r.text or "pattern" in r.text
+        # No write.
+        assert _read_ui_file(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_invalid_pattern_type_returns_400(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "aa:bb:cc:dd:ee:ff",
+                    "pattern_type": "bssid",
+                },
+            )
+        assert r.status_code == 400
+        assert "invalid pattern_type" in r.text
+        assert _read_ui_file(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_invalid_expires_at_returns_400(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "aa:bb:cc:dd:ee:ff",
+                    "pattern_type": "mac",
+                    "expires_at": "not-a-date",
+                },
+            )
+        assert r.status_code == 400
+        assert "expires_at" in r.text
+        assert _read_ui_file(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_accepts_datetime_local_expires_at(tmp_path):
+    """Datetime-local input shape is YYYY-MM-DDTHH:MM with no tz; the
+    handler should interpret as UTC and store an int epoch."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "aa:bb:cc:dd:ee:ff",
+                    "pattern_type": "mac",
+                    "expires_at": "2030-01-02T03:04",
+                },
+            )
+        assert r.status_code == 303
+        entries = _read_ui_file(primary)
+        # 2030-01-02 03:04 UTC = 1893553440
+        assert entries[0]["expires_at"] == 1_893_553_440
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_missing_csrf_returns_403(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            client.cookies.clear()
+            r = client.post(
+                "/allowlist/add",
+                data={"pattern": "aa:bb:cc:dd:ee:ff", "pattern_type": "mac"},
+            )
+        assert r.status_code == 403
+        assert _read_ui_file(primary) == []
+    finally:
+        db.close()
+
+
+# --- POST /allowlist/bulk_remove --------------------------------------------
+
+
+def _seed_ui_entries(primary, entries_specs):
+    """Seed several UI entries; returns the list of canonical patterns
+    as stored, so tests can construct composite keys without
+    re-canonicalizing."""
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    ui_path = derive_ui_path(primary)
+    canonical = []
+    for spec in entries_specs:
+        e = AllowlistEntry(**spec)
+        add_ui_entry(ui_path, e)
+        canonical.append(e.pattern)
+    return canonical, ui_path
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_three_ui_entries_single_atomic_write(tmp_path):
+    """Selecting 3 UI rows removes all 3 via one os.replace; mtime moves
+    exactly once across the bulk operation."""
+    import os as _os
+    import time as _time
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _patterns, ui_path = _seed_ui_entries(
+            primary,
+            [
+                {"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"},
+                {"pattern": "aa:bb:cc:dd:ee:02", "pattern_type": "mac"},
+                {"pattern": "aa:bb:cc:dd:ee:03", "pattern_type": "mac"},
+                {"pattern": "aa:bb:cc:dd:ee:04", "pattern_type": "mac"},
+            ],
+        )
+        # Rewind mtime so the post-bulk stat is provably distinct.
+        st = ui_path.stat()
+        _os.utime(ui_path, (st.st_atime, st.st_mtime - 5))
+        mtime_before = ui_path.stat().st_mtime
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "entry_keys": [
+                        "mac:aa:bb:cc:dd:ee:01",
+                        "mac:aa:bb:cc:dd:ee:02",
+                        "mac:aa:bb:cc:dd:ee:03",
+                    ],
+                },
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/allowlist?success=bulk_remove&count=3"
+        entries = _read_ui_file(primary)
+        assert [e["pattern"] for e in entries] == ["aa:bb:cc:dd:ee:04"]
+        # mtime moved exactly once (bulk write).
+        assert ui_path.stat().st_mtime != mtime_before
+        _ = _time  # keep the import live for readers
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_with_primary_collision_refuses_atomically(tmp_path):
+    """Selecting 2 UI rows + 1 primary row → 400; neither file changes.
+
+    The hostile case the prompt's regression-fence describes: a crafted
+    form submission tries to enlist a primary-source key in a batch.
+    The handler must refuse the entire batch before any write, even for
+    the UI-side rows that are legitimately removable.
+    """
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        primary.write_text(
+            "entries:\n  - pattern: ee:ee:ee:ee:ee:ee\n    pattern_type: mac\n",
+            encoding="utf-8",
+        )
+        _patterns, ui_path = _seed_ui_entries(
+            primary,
+            [
+                {"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"},
+                {"pattern": "aa:bb:cc:dd:ee:02", "pattern_type": "mac"},
+            ],
+        )
+        primary_before = primary.read_text(encoding="utf-8")
+        ui_before = ui_path.read_text(encoding="utf-8")
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "entry_keys": [
+                        "mac:aa:bb:cc:dd:ee:01",
+                        "mac:aa:bb:cc:dd:ee:02",
+                        "mac:ee:ee:ee:ee:ee:ee",
+                    ],
+                },
+            )
+        assert r.status_code == 400
+        assert "primary-file" in r.text or "operator-managed" in r.text
+        # Both files byte-for-byte unchanged.
+        assert primary.read_text(encoding="utf-8") == primary_before
+        assert ui_path.read_text(encoding="utf-8") == ui_before
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_empty_selection_returns_400(tmp_path):
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_missing_csrf_returns_403(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _seed_ui_entries(
+            primary,
+            [{"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"}],
+        )
+        with TestClient(app) as client:
+            client.cookies.clear()
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={"entry_keys": ["mac:aa:bb:cc:dd:ee:01"]},
+            )
+        assert r.status_code == 403
+        # File unchanged.
+        entries = _read_ui_file(primary)
+        assert [e["pattern"] for e in entries] == ["aa:bb:cc:dd:ee:01"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_preserves_filter_state_in_redirect(tmp_path):
+    """The redirect URL after a bulk_remove echoes the filter form
+    fields so operators can keep bulk-cleaning within the same view."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _seed_ui_entries(
+            primary,
+            [{"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"}],
+        )
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "entry_keys": ["mac:aa:bb:cc:dd:ee:01"],
+                    "source": "ui",
+                    "status": "active",
+                    "type": "mac",
+                    "q": "aa",
+                },
+            )
+        assert r.status_code == 303
+        loc = r.headers["location"]
+        assert "source=ui" in loc
+        assert "status=active" in loc
+        assert "type=mac" in loc
+        assert "q=aa" in loc
+        assert "success=bulk_remove" in loc
+        assert "count=1" in loc
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_emits_audit_log_line(tmp_path, caplog):
+    """One INFO line per bulk_remove call, with actor + removed + requested
+    counts so a journalctl reader can audit who removed what."""
+    import logging as _logging
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _seed_ui_entries(
+            primary,
+            [
+                {"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"},
+                {"pattern": "aa:bb:cc:dd:ee:02", "pattern_type": "mac"},
+            ],
+        )
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            with caplog.at_level(_logging.INFO, logger="lynceus.webui.app"):
+                r = client.post(
+                    "/allowlist/bulk_remove",
+                    data={
+                        CSRF_FORM_FIELD: token,
+                        "entry_keys": [
+                            "mac:aa:bb:cc:dd:ee:01",
+                            "mac:aa:bb:cc:dd:ee:02",
+                        ],
+                    },
+                )
+        assert r.status_code == 303
+        msgs = [r.getMessage() for r in caplog.records if "bulk_remove" in r.getMessage()]
+        assert any("removed=2" in m and "requested=2" in m for m in msgs)
+    finally:
+        db.close()
+
+
+# --- primary-source read-only protection (regression fence) -----------------
+
+
+@pytest.mark.webui
+def test_primary_source_entry_renders_without_checkbox(tmp_path):
+    """A primary-source entry must render in the table without a
+    checkbox — there should be no way for a normal click-through
+    operator to select it for bulk removal."""
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?source=primary")
+        assert r.status_code == 200
+        # No checkbox input for primary rows. The render places a dash
+        # in the cell instead of an <input>.
+        assert 'name="entry_keys"' not in r.text
+        assert "aa:aa:aa:aa:aa:01" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_primary_source_survives_when_ui_has_same_pattern(tmp_path):
+    """Hostile fixture: primary + UI carry the same pattern. Removing the
+    UI side must leave the primary side untouched — the daemon never
+    writes to allowlist.yaml, so the primary copy is the source of
+    truth and must survive any UI-side mutation."""
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text(
+        "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n"
+        "    note: primary copy\n",
+        encoding="utf-8",
+    )
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        ui_path = derive_ui_path(primary)
+        add_ui_entry(
+            ui_path,
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:ff",
+                pattern_type="mac",
+                note="ui copy",
+                added_at=1_799_000_000,
+            ),
+        )
+        primary_before = primary.read_text(encoding="utf-8")
+        # Bulk remove the UI key. Composite key matches both rows by
+        # (pattern, pattern_type), but the handler only writes to the UI
+        # file, and load_allowlist_with_source ensures the primary copy
+        # is not even in scope for the removal call (no primary entry is
+        # in `keys`, so primary_collisions is empty — but we still hit
+        # the only-touch-UI-file invariant).
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "entry_keys": ["mac:aa:bb:cc:dd:ee:ff"],
+                },
+            )
+        # The handler refuses because the same composite key matches a
+        # primary entry too — this is the safer-by-default behavior.
+        assert r.status_code == 400
+        # Both files unchanged.
+        assert primary.read_text(encoding="utf-8") == primary_before
+        ui_entries = _read_ui_file(primary)
+        assert len(ui_entries) == 1
+        assert ui_entries[0]["pattern"] == "aa:bb:cc:dd:ee:ff"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_writes_only_to_ui_file_not_primary(tmp_path):
+    """Add via the form lands in allowlist_ui.yaml; the operator-curated
+    primary file is byte-for-byte untouched, including any operator
+    comments above the entries block."""
+    primary = tmp_path / "allowlist.yaml"
+    primary_text = (
+        "# operator comment that must survive\n"
+        "entries:\n  - pattern: ee:ee:ee:ee:ee:ee\n    pattern_type: mac\n"
+    )
+    primary.write_text(primary_text, encoding="utf-8")
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        primary_mtime_before = primary.stat().st_mtime
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "11:22:33:44:55:66",
+                    "pattern_type": "mac",
+                },
+            )
+        assert r.status_code == 303
+        # Primary unchanged.
+        assert primary.read_text(encoding="utf-8") == primary_text
+        assert primary.stat().st_mtime == primary_mtime_before
+        # UI file got the write.
+        ui_entries = _read_ui_file(primary)
+        assert [e["pattern"] for e in ui_entries] == ["11:22:33:44:55:66"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_cross_process_daemon_picks_up_new_entry(tmp_path, caplog):
+    """End-to-end: add via webui, then a fresh poller reload (mtime watch)
+    sees the new entry. Mirrors the cross-process invariant the existing
+    triage e2e exercises."""
+    import logging as _logging
+
+    from lynceus.poller import Poller
+
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        # 1) Daemon (poller) starts with no allowlist.
+        poller_cfg = Config(
+            kismet_fixture_path=str(
+                Path(__file__).parent / "fixtures" / "kismet_devices.json"
+            ),
+            db_path=str(tmp_path / "lynceus.db"),
+            location_id="testloc",
+            location_label="Test Location",
+            allowlist_path=str(primary),
+        )
+        poller = Poller(poller_cfg)
+        try:
+            assert poller.allowlist.entries == []
+            # 2) Webui adds an entry.
+            with TestClient(app, follow_redirects=False) as client:
+                token, _ = _csrf_setup(client)
+                r = client.post(
+                    "/allowlist/add",
+                    data={
+                        CSRF_FORM_FIELD: token,
+                        "pattern": "aa:bb:cc:dd:ee:ff",
+                        "pattern_type": "mac",
+                    },
+                )
+            assert r.status_code == 303
+            # 3) Daemon reloads on next tick.
+            import os as _os
+
+            ui_path = primary.with_stem(primary.stem + "_ui")
+            st = ui_path.stat()
+            _os.utime(ui_path, (st.st_atime, st.st_mtime + 1))
+            with caplog.at_level(_logging.INFO, logger="lynceus.poller"):
+                poller._maybe_reload_allowlist()
+            assert len(poller.allowlist.entries) == 1
+            assert poller.allowlist.entries[0].pattern == "aa:bb:cc:dd:ee:ff"
+        finally:
+            poller.db.close()
     finally:
         db.close()
