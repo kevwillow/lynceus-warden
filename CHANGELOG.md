@@ -8,6 +8,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Auto-refresh systemd timer for the Argus watchlist
+  (`lynceus-refresh.service` + `lynceus-refresh.timer`).** Closes
+  the loop with the rc5 staleness indicator: the indicator detects
+  stale data; the timer prevents it from going stale in the first
+  place. Default cadence is `OnCalendar=weekly` with
+  `RandomizedDelaySec=30min` (spreads load across deployments) and
+  `Persistent=true` (catches up missed runs after reboots),
+  comfortably faster than the default 30-day
+  `watchlist_staleness_warn_days` threshold so the `/settings`
+  "stale" badge stays cold once the timer is enabled. The oneshot
+  service re-runs `lynceus-import-argus --scope system
+  --from-github` and runs as the same `User=lynceus` with the same
+  hardening posture as `lynceus.service` (NoNewPrivileges,
+  ProtectSystem=strict, restricted address families).
+
+  **Default-off — operator opt-in only.** `install.sh --system`
+  copies both unit files to `/etc/systemd/system/` and runs
+  `daemon-reload`, but does NOT enable the timer. Enabling the
+  timer is the only Lynceus surface that opts the host into a
+  recurring outbound network call, so it stays an explicit
+  operator decision — `install.sh`'s offline-invariant header
+  comment holds. The post-install summary, the `lynceus-setup
+  --system` closing pointer, and the README under "Bundled threat
+  data → Auto-refresh" all surface the one-liner:
+
+  ```sh
+  sudo systemctl enable --now lynceus-refresh.timer
+  ```
+
+  Operators wanting a different cadence (daily, monthly, custom
+  `OnCalendar` spec) use a drop-in override via `sudo systemctl
+  edit lynceus-refresh.timer` — kept out-of-band from `talos.yaml`
+  on purpose. Lynceus config does not own timer cadence; mixing
+  the two would create overlapping config surfaces with no
+  single-source-of-truth answer for which wins.
+
+  Failure semantics: a transient GitHub outage, network blip, or
+  malformed export fails the oneshot run; systemd journals it
+  under `journalctl -u lynceus-refresh.service`; the next
+  scheduled fire retries. No `Restart=` directive — tight retry
+  loops on a sustained outage burn through the GitHub API budget
+  and never resolve. The daemon is unaffected: SQLite WAL mode
+  tolerates the concurrent reader/writer between the importer's
+  oneshot write and the daemon's continuous read/write loop.
+
+  `uninstall.sh` removes both new unit files alongside the daemon
+  + UI units; a `--purge` run also wipes `/var/lib/lynceus`
+  (which holds the `argus-cache/` subdirectory the refresh
+  populates). User-scope installs do not ship the timer (no
+  systemd integration on `--user`); the bundled-watchlist +
+  on-demand `lynceus-import-argus --from-github` story is
+  unchanged for that scope.
+
 - **`/alerts` filter bar grows `rule_type` / `q` / `window`, and
   `/alerts` + `/allowlist` share a unified pagination model.**
   Fulfills the "pagination deferred" promise from the

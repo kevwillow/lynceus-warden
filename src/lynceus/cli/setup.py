@@ -1831,6 +1831,11 @@ and enter the topic exactly as written.
     if scope == "system":
         print("  sudo lynceus-import-argus --scope system --from-github         # network")
         print("  sudo lynceus-import-argus --scope system --input <path-to-csv> # air-gapped")
+        # Auto-refresh hint is system-scope only. The lynceus-refresh
+        # units only ship via install.sh --system; a --user install has
+        # no systemd integration and the operator would hit a
+        # "Failed to enable unit" if we suggested the command here.
+        print("  sudo systemctl enable --now lynceus-refresh.timer              # weekly auto-refresh")
     else:
         print("  lynceus-import-argus --from-github            # latest from GitHub")
         print("  lynceus-import-argus --input <path-to-csv>    # air-gapped")
