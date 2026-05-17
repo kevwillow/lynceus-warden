@@ -3674,3 +3674,160 @@ def test_alerts_list_ack_all_visible_form_carries_new_filter_state(tmp_path):
         assert 'value="24h"' in r.text
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# /allowlist -- unified pagination via the same PaginationParams helper
+# /alerts uses. Filter dimensions are unchanged in this prompt; tests
+# below cover only the pagination addition.
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_many_ui_allowlist_entries(tmp_path, n: int):
+    """Seed an allowlist with N UI entries (active mac patterns) so
+    pagination tests have something to slice. Returns (app, db, ui_path).
+    """
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    ui_path = derive_ui_path(primary)
+    now_ts = int(_time.time())
+    for i in range(n):
+        # Distinct 1-byte tail so the patterns are unique. Mac
+        # validator wants 6 lowercase hex octets joined by colons.
+        tail = f"{i & 0xff:02x}"
+        entry = AllowlistEntry(
+            pattern=f"aa:bb:cc:dd:{(i >> 8) & 0xff:02x}:{tail}",
+            pattern_type="mac",
+            note=f"seed-{i:03d}",
+            added_at=now_ts + i,
+        )
+        add_ui_entry(ui_path, entry)
+    return app, db, ui_path
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_three_pages_at_per_page_25(tmp_path):
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 75)
+    try:
+        with TestClient(app) as client:
+            r1 = client.get("/allowlist?page_size=25&page=1")
+            r2 = client.get("/allowlist?page_size=25&page=2")
+            r3 = client.get("/allowlist?page_size=25&page=3")
+        for r in (r1, r2, r3):
+            assert r.status_code == 200
+        # Footer literal mirrors /alerts.
+        assert "Page 1 of 3" in r1.text
+        assert "75 total" in r1.text
+        assert "per_page=25" in r1.text
+        assert "Page 2 of 3" in r2.text
+        assert "Page 3 of 3" in r3.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_page_above_total_clamps_to_last(tmp_path):
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 30)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?page_size=25&page=999")
+        assert r.status_code == 200
+        assert "Page 2 of 2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_single_page_shows_disabled_nav(tmp_path):
+    # 10 entries, default per_page=50 -> one page. prev/next must
+    # render as disabled rather than 404 links.
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 10)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        assert "Page 1 of 1" in r.text
+        # Disabled prev/next render in <span class="dim">.
+        assert 'class="dim"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_invalid_per_page_falls_back(tmp_path):
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 60)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?page_size=37")
+        assert r.status_code == 200
+        assert "per_page=50" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_filter_plus_pagination_combined(tmp_path):
+    # Filter narrows the set; pagination math operates on the filtered
+    # list, not the raw list. Single source of truth for "total."
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 60)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?q=seed-005&page_size=25")
+        assert r.status_code == 200
+        # q=seed-005 matches exactly one entry (seed-005). Note that
+        # seed-050..seed-059 contain "seed-05" so substring match on
+        # "seed-005" is exact -- one row.
+        assert "Page 1 of 1" in r.text
+        assert "1 total" in r.text
+        assert "seed-005" in r.text
+        assert "seed-050" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_next_link_preserves_filter_state(tmp_path):
+    # Filter-narrowed set still has enough entries to be paginated.
+    # q=seed matches all 60 rows; type=mac matches all 60; status=active
+    # matches all 60 -- so filtered=60 and pagination still produces
+    # multiple pages.
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 60)
+    try:
+        with TestClient(app) as client:
+            r = client.get(
+                "/allowlist?q=seed&status=active&page_size=25&page=1"
+            )
+        assert r.status_code == 200
+        # Next-page link round-trips q + status + page_size.
+        assert "page=2" in r.text
+        assert "q=seed" in r.text
+        assert "status=active" in r.text
+        assert "page_size=25" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_empty_filtered_set_no_nav_404(tmp_path):
+    # 60 entries; filter produces 0 matches. Empty-state renders.
+    # Pagination footer still coherent ("Page 1 of 1, 0 total").
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 60)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?q=nonexistent-substring-xyz")
+        assert r.status_code == 200
+        assert "No entries match" in r.text
+        assert "Page 1 of 1" in r.text
+        assert "0 total" in r.text
+    finally:
+        db.close()
