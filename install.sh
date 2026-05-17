@@ -43,6 +43,7 @@ CONSOLE_SCRIPTS=(
     lynceus-seed-watchlist
     lynceus-import-argus
     lynceus-validate
+    lynceus-bootstrap-kismet
 )
 
 ACTION=install
