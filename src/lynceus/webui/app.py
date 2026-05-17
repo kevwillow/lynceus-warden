@@ -19,6 +19,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from lynceus import __version__, kismet, paths
+from typing import get_args as _typing_get_args
+
 from lynceus import allowlist as allowlist_mod
 from lynceus import rules as rules_mod
 from lynceus.allowlist import (
@@ -33,6 +35,7 @@ from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
+from lynceus.webui.pagination import build_pagination, parse_pagination
 
 # Fixed snooze duration. Custom durations are intentionally out of scope —
 # operators wanting a non-24h window edit allowlist.yaml directly.
@@ -89,6 +92,32 @@ def _total_pages(total_count: int, page_size: int) -> int:
     if total_count <= 0:
         return 1
     return max(1, ceil(total_count / page_size))
+
+
+# Authoritative set of rule_type literals for the /alerts filter
+# dropdown. Pulled from rules.RuleType at module load so a new
+# rule_type added to that Literal surfaces here automatically --
+# no manual edit required.
+_ALERTS_RULE_TYPES: tuple[str, ...] = tuple(_typing_get_args(rules_mod.RuleType))
+
+# Allowed per_page set + default for the /alerts page. Shared
+# convention for the /allowlist page below; both use the same
+# PaginationParams helper. The values match the unified
+# webui-pagination spec (rc5).
+_ALERTS_PER_PAGE_ALLOWED: tuple[int, ...] = (25, 50, 100, 200)
+_ALERTS_PER_PAGE_DEFAULT: int = 50
+
+# Relative window dropdown for /alerts. Resolved to an absolute
+# since_ts at request time so URLs stay shareable ("recent" means
+# the same recency to any operator opening the link, anchored to
+# their open-time clock). "all" means no window constraint.
+_ALERTS_WINDOW_SECONDS: dict[str, int | None] = {
+    "1h": 3600,
+    "24h": 86400,
+    "7d": 7 * 86400,
+    "30d": 30 * 86400,
+    "all": None,
+}
 
 
 def _parse_date_to_ts(value: str, *, end_of_day: bool, name: str) -> int:
@@ -920,47 +949,107 @@ def create_app(config: Config, db: Database) -> FastAPI:
         request: Request,
         severity: str | None = Query(default=None),
         acknowledged: str | None = Query(default=None),
-        page: int = Query(default=1),
-        page_size: int = Query(default=50),
+        page: str | None = Query(default=None),
+        page_size: str | None = Query(default=None),
         since: str | None = Query(default=None),
         until: str | None = Query(default=None),
         search: str | None = Query(default=None),
+        rule_type: str | None = Query(default=None),
+        q: str | None = Query(default=None),
+        window: str | None = Query(default=None),
     ):
+        # severity / acknowledged / since / until / search are the
+        # pre-rc5 filters and stay byte-identical -- bookmarked URLs
+        # keep working. rule_type / q / window are new in rc5
+        # alongside the unified-pagination upgrade.
         if severity is not None and severity not in ("low", "med", "high"):
             raise HTTPException(status_code=400, detail="invalid severity")
         ack_bool = _parse_bool_str(acknowledged, "acknowledged")
-        if page < 1:
-            raise HTTPException(status_code=400, detail="page must be >= 1")
-        if page_size < 10 or page_size > 200:
-            raise HTTPException(status_code=400, detail="page_size must be in [10, 200]")
         if search is not None and len(search) > 100:
             raise HTTPException(status_code=400, detail="search must be <= 100 chars")
-        since_ts = _parse_date_to_ts(since, end_of_day=False, name="since") if since else None
-        until_ts = _parse_date_to_ts(until, end_of_day=True, name="until") if until else None
+        if q is not None and len(q) > 100:
+            raise HTTPException(status_code=400, detail="q must be <= 100 chars")
+        since_ts = (
+            _parse_date_to_ts(since, end_of_day=False, name="since") if since else None
+        )
+        until_ts = (
+            _parse_date_to_ts(until, end_of_day=True, name="until") if until else None
+        )
         search_clean = search if search else None
+        q_clean = q if q else None
 
-        offset = (page - 1) * page_size
+        # rule_type: invalid value silently falls back to "all" (the
+        # operator probably hit a stale URL after a rules.RuleType
+        # extension). Treats "" and "all" identically.
+        if rule_type is not None and rule_type not in _ALERTS_RULE_TYPES:
+            rule_type = None
+        rule_type_for_db = rule_type or None
+
+        # window: invalid value silently falls back to "all". Treats
+        # "" identically. Resolved server-side to anchor "what does
+        # this URL show" to the operator's open-time clock.
+        if window is not None and window not in _ALERTS_WINDOW_SECONDS:
+            window = None
+        window_seconds = _ALERTS_WINDOW_SECONDS.get(window) if window else None
+        now_ts = int(time.time())
+        window_since_ts = (now_ts - window_seconds) if window_seconds else None
+
+        # If both absolute since and relative window are provided,
+        # combine them by taking the tighter lower bound. The DB
+        # gets a single since_ts -- both intent paths roll into the
+        # same a.ts >= ? predicate.
+        effective_since_ts = since_ts
+        if window_since_ts is not None:
+            if effective_since_ts is None:
+                effective_since_ts = window_since_ts
+            else:
+                effective_since_ts = max(effective_since_ts, window_since_ts)
+
+        # Parse + clamp pagination via the shared helper. Invalid
+        # per_page -> default; invalid page -> 1 (final clamp
+        # against total_pages happens once we know the total).
+        requested_page, per_page = parse_pagination(
+            page,
+            page_size,
+            allowed_per_page=_ALERTS_PER_PAGE_ALLOWED,
+            default_per_page=_ALERTS_PER_PAGE_DEFAULT,
+        )
+
         total_count = db.count_alerts(
             severity=severity,
             acknowledged=ack_bool,
-            since_ts=since_ts,
+            since_ts=effective_since_ts,
             until_ts=until_ts,
             search=search_clean,
+            rule_type=rule_type_for_db,
+            q=q_clean,
         )
+
+        pagination = build_pagination(requested_page, per_page, total_count)
+
         alerts = db.list_alerts_with_match(
             {
-                "limit": page_size,
-                "offset": offset,
+                "limit": pagination.per_page,
+                "offset": pagination.offset,
                 "severity": severity,
                 "acknowledged": ack_bool,
-                "since_ts": since_ts,
+                "since_ts": effective_since_ts,
                 "until_ts": until_ts,
                 "search": search_clean,
+                "rule_type": rule_type_for_db,
+                "q": q_clean,
             }
         )
         _enrich_alerts_with_devices(db, alerts)
         filters_active = bool(
-            severity or ack_bool is not None or since or until or (search and search != "")
+            severity
+            or ack_bool is not None
+            or since
+            or until
+            or (search and search != "")
+            or rule_type
+            or (q and q != "")
+            or window
         )
         return app.state.templates.TemplateResponse(
             request=request,
@@ -970,14 +1059,21 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "active": "alerts",
                 "alerts": alerts,
                 "total_count": total_count,
-                "page": page,
-                "page_size": page_size,
-                "total_pages": _total_pages(total_count, page_size),
+                "page": pagination.page,
+                "page_size": pagination.per_page,
+                "total_pages": pagination.total_pages,
+                "pagination": pagination,
                 "severity": severity,
                 "acknowledged": ack_bool,
                 "since": since or "",
                 "until": until or "",
                 "search": search or "",
+                "rule_type": rule_type or "",
+                "q": q or "",
+                "window": window or "",
+                "rule_types": _ALERTS_RULE_TYPES,
+                "per_page_options": _ALERTS_PER_PAGE_ALLOWED,
+                "window_options": tuple(_ALERTS_WINDOW_SECONDS.keys()),
                 "filters_active": filters_active,
             },
         )
@@ -1103,27 +1199,56 @@ def create_app(config: Config, db: Database) -> FastAPI:
         since: str | None = Form(default=None),
         until: str | None = Form(default=None),
         search: str | None = Form(default=None),
+        rule_type: str | None = Form(default=None),
+        q: str | None = Form(default=None),
+        window: str | None = Form(default=None),
         note: str | None = Form(default=None),
     ):
+        # The filter set MUST mirror /alerts GET exactly. If a filter
+        # is on the page but missing here, "ack all matching" acks
+        # alerts the operator can't see -- the worst class of bug
+        # for an operation that writes silently in bulk.
         sev = severity if severity else None
         if sev is not None and sev not in ("low", "med", "high"):
             raise HTTPException(status_code=400, detail="invalid severity")
         ack_bool = _parse_bool_str(acknowledged if acknowledged else None, "acknowledged")
         if search is not None and len(search) > 100:
             raise HTTPException(status_code=400, detail="search must be <= 100 chars")
+        if q is not None and len(q) > 100:
+            raise HTTPException(status_code=400, detail="q must be <= 100 chars")
         since_ts = _parse_date_to_ts(since, end_of_day=False, name="since") if since else None
         until_ts = _parse_date_to_ts(until, end_of_day=True, name="until") if until else None
         search_clean = search if search else None
+        q_clean = q if q else None
         note = _normalize_optional_note(note)
+
+        if rule_type is not None and rule_type not in _ALERTS_RULE_TYPES:
+            rule_type = None
+        rule_type_for_db = rule_type or None
+
+        if window is not None and window not in _ALERTS_WINDOW_SECONDS:
+            window = None
+        window_seconds = _ALERTS_WINDOW_SECONDS.get(window) if window else None
+        now_ts = int(time.time())
+        window_since_ts = (now_ts - window_seconds) if window_seconds else None
+
+        effective_since_ts = since_ts
+        if window_since_ts is not None:
+            if effective_since_ts is None:
+                effective_since_ts = window_since_ts
+            else:
+                effective_since_ts = max(effective_since_ts, window_since_ts)
 
         # Overflow guard runs BEFORE any write so a too-broad filter cannot
         # silently ack thousands of records. count_alerts() is read-only.
         total = db.count_alerts(
             severity=sev,
             acknowledged=ack_bool,
-            since_ts=since_ts,
+            since_ts=effective_since_ts,
             until_ts=until_ts,
             search=search_clean,
+            rule_type=rule_type_for_db,
+            q=q_clean,
         )
         if total > 1000:
             raise HTTPException(
@@ -1138,9 +1263,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
             offset=0,
             severity=sev,
             acknowledged=ack_bool,
-            since_ts=since_ts,
+            since_ts=effective_since_ts,
             until_ts=until_ts,
             search=search_clean,
+            rule_type=rule_type_for_db,
+            q=q_clean,
         )
         ids = [a["id"] for a in candidate_alerts]
         actor = request.client.host if request.client else "unknown"

@@ -14,6 +14,14 @@
           <option value="high" {% if severity == 'high' %}selected{% endif %}>high</option>
         </select>
       </label>
+      <label>type
+        <select name="rule_type">
+          <option value="" {% if not rule_type %}selected{% endif %}>any</option>
+          {% for rt in rule_types %}
+            <option value="{{ rt }}" {% if rule_type == rt %}selected{% endif %}>{{ rt }}</option>
+          {% endfor %}
+        </select>
+      </label>
       <label>acknowledged
         <select name="acknowledged">
           <option value="" {% if acknowledged is none %}selected{% endif %}>any</option>
@@ -21,20 +29,35 @@
           <option value="true" {% if acknowledged is sameas true %}selected{% endif %}>yes</option>
         </select>
       </label>
-      <label>page size
+      <label>per page
         <select name="page_size">
-          {% for n in [10, 25, 50, 100, 200] %}
+          {% for n in per_page_options %}
             <option value="{{ n }}" {% if n == page_size %}selected{% endif %}>{{ n }}</option>
           {% endfor %}
         </select>
       </label>
     </fieldset>
     <fieldset class="grid">
+      <label>recent
+        <select name="window">
+          <option value="" {% if not window %}selected{% endif %}>any time</option>
+          {% for w in window_options %}
+            {% if w != 'all' %}
+              <option value="{{ w }}" {% if window == w %}selected{% endif %}>last {{ w }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      </label>
       <label>since
         <input type="date" name="since" value="{{ since }}">
       </label>
       <label>until
         <input type="date" name="until" value="{{ until }}">
+      </label>
+    </fieldset>
+    <fieldset class="grid">
+      <label>q
+        <input type="text" name="q" value="{{ q }}" maxlength="100" placeholder="mac / ssid / vendor substring">
       </label>
       <label>search
         <input type="text" name="search" value="{{ search }}" maxlength="100" placeholder="rule name or message">
@@ -46,7 +69,7 @@
     {% endif %}
   </form>
 
-  <p><small>{{ total_count }} alert(s) total &middot; page {{ page }} of {{ total_pages }}</small></p>
+  <p><small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small></p>
 
   {% if alerts %}
     <form method="post" action="/alerts/ack-all-visible">
@@ -57,6 +80,9 @@
       {% if since %}<input type="hidden" name="since" value="{{ since }}">{% endif %}
       {% if until %}<input type="hidden" name="until" value="{{ until }}">{% endif %}
       {% if search %}<input type="hidden" name="search" value="{{ search }}">{% endif %}
+      {% if rule_type %}<input type="hidden" name="rule_type" value="{{ rule_type }}">{% endif %}
+      {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+      {% if window %}<input type="hidden" name="window" value="{{ window }}">{% endif %}
       <details>
         <summary>acknowledge all matching</summary>
         <p><small>(this acknowledges all alerts matching your current filters, up to 1000)</small></p>
@@ -129,7 +155,12 @@
       </div>
     </form>
   {% else %}
-    <p><em>No alerts match the current filter.</em></p>
+    <p>
+      <em>No alerts match the current filters.</em>
+      {% if filters_active %}
+        <a class="reset-filters" href="/alerts">reset filters</a>
+      {% endif %}
+    </p>
   {% endif %}
 
   <nav>
@@ -140,24 +171,27 @@
     {% if since %}{% set _ = qs.append('since=' ~ since) %}{% endif %}
     {% if until %}{% set _ = qs.append('until=' ~ until) %}{% endif %}
     {% if search %}{% set _ = qs.append('search=' ~ search) %}{% endif %}
-    {% set _ = qs.append('page_size=' ~ page_size) %}
+    {% if rule_type %}{% set _ = qs.append('rule_type=' ~ rule_type) %}{% endif %}
+    {% if q %}{% set _ = qs.append('q=' ~ q) %}{% endif %}
+    {% if window %}{% set _ = qs.append('window=' ~ window) %}{% endif %}
+    {% set _ = qs.append('page_size=' ~ pagination.per_page) %}
     {% set base_qs = qs | join('&') %}
     <ul>
       <li>
-        {% if page > 1 %}
-          <a href="/alerts?{{ base_qs }}&page={{ page - 1 }}">&larr; prev</a>
+        {% if pagination.has_prev %}
+          <a href="/alerts?{{ base_qs }}&page={{ pagination.page - 1 }}">&larr; prev</a>
         {% else %}
           <span class="dim">&larr; prev</span>
         {% endif %}
       </li>
     </ul>
     <ul>
-      <li><small>page {{ page }} of {{ total_pages }}</small></li>
+      <li><small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small></li>
     </ul>
     <ul>
       <li>
-        {% if page < total_pages %}
-          <a href="/alerts?{{ base_qs }}&page={{ page + 1 }}">next &rarr;</a>
+        {% if pagination.has_next %}
+          <a href="/alerts?{{ base_qs }}&page={{ pagination.page + 1 }}">next &rarr;</a>
         {% else %}
           <span class="dim">next &rarr;</span>
         {% endif %}
