@@ -6,7 +6,7 @@ weekend?"
 
 ## Current version
 
-**0.2** — feature-complete, awaiting first real-hardware deployment.
+**0.4.0-rc5** — feature-complete for the v0.4 cycle (Argus integration, Tier-1 enrichment, read-only `/settings`, `/allowlist` management, `/alerts` filter+pagination, auto-refresh timer, `lynceus-export-config`), with hardware shakedown still in progress.
 
 ## What's shipped
 
@@ -50,10 +50,10 @@ weekend?"
 
 **Configuration**
 
-22 fields covering Kismet connection, polling cadence, source filtering,
-RSSI floor, location mapping, alert dedup window, ntfy delivery, web UI
-binding, and rules/allowlist paths. Full reference in
-[CONFIGURATION.md](CONFIGURATION.md).
+Fields cover Kismet connection, polling cadence, source filtering,
+RSSI floor, location mapping, alert dedup window, evidence capture,
+ntfy delivery, web UI binding, and rules/allowlist/severity-override
+paths. Full reference in [CONFIGURATION.md](CONFIGURATION.md).
 
 ## What's deferred
 
@@ -73,25 +73,7 @@ The headlines:
 
 ## Test coverage at a glance
 
-**437 tests across 15 modules.**
-
-| Module | Tests |
-|---|---|
-| test_webui.py | 113 |
-| test_kismet.py | 65 |
-| test_db.py | 64 |
-| test_poller.py | 41 |
-| test_notify.py | 31 |
-| test_config.py | 30 |
-| test_rules.py | 30 |
-| test_allowlist.py | 17 |
-| test_csrf.py | 13 |
-| test_seed_watchlist.py | 10 |
-| test_integration.py | 9 |
-| test_seeds.py | 7 |
-| test_static_assets.py | 4 |
-| test_smoke.py | 2 |
-| test_packaging.py | 1 (slow) |
+**1973 tests** across the suite as of v0.4.0-rc5, up from 888 at v0.3.0-rc1 and 437 at v0.2. Coverage spans the daemon, the UI, the rules engine, the notifier, the database layer, the watchlist + Argus import path, the setup wizard, install.sh, and packaging.
 
 The `slow` mark is a wheel-build round-trip. Skip with
 `pytest -v -m "not slow"` for fast iteration; run the full suite before
@@ -128,13 +110,14 @@ Things lynceus explicitly does not do today:
 ## Hardware tested vs untested
 
 - **Tested.** Full pipeline runs on Windows and Linux dev environments
-  using the `FakeKismetClient` against a JSON fixture. The 437-test
+  using the `FakeKismetClient` against a JSON fixture. The 1973-test
   suite covers the daemon, the UI, the rules engine, the notifier, the
-  database layer, and packaging.
-- **Untested.** End-to-end run on a real Raspberry Pi against a real
-  Kismet capture from a real adapter. v0.2 is the snapshot you'd
-  install for that first run; v0.3 work will be informed by what the
-  first deployment turns up.
+  database layer, the Argus import path, the setup wizard, install.sh,
+  and packaging.
+- **Untested at v0.4-rc5.** End-to-end run on a real Raspberry Pi
+  against a real Kismet capture from a real adapter (the shakedown is
+  still in progress on Kali). Tag promotion from rc5 to 0.4.0 is gated
+  on completing that smoke run.
 
 ## Should you deploy this today?
 
