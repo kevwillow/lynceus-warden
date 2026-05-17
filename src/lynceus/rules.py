@@ -194,22 +194,41 @@ class RuntimeSeverityOverride(BaseModel):
       import-time ``vendor_overrides``, which keeps its
       skip-at-import ``"drop"`` semantic unchanged.
 
-    - ``pattern_overrides`` (RUNTIME only — NEW key). Row-level
-      severity remap keyed by ``argus_record_id`` — the stable
-      16-hex SHA-256 prefix Argus emits as its consumer-facing
-      identifier and Lynceus stores in
-      ``watchlist_metadata.argus_record_id``. Matches whose
-      ``argus_record_id`` appears as a key get their severity
-      remapped to the value (``"low"`` / ``"med"`` / ``"high"``).
-      Closes the runtime severity-tuning matrix at row × category ×
-      vendor: operators can carve a specific row out of a
-      category-level default (e.g. "alpr → high in general, but
-      THIS specific Flock camera → high too — or some other tier").
-      Keys normalized to lowercase at load time. Only rows with a
-      metadata row carrying an ``argus_record_id`` can be targeted;
-      operator-seeded rows via ``lynceus-seed-watchlist`` without
-      metadata fall through to the category-level layer (use the
-      allowlist for per-row suppression of non-Argus rows).
+    - ``pattern_overrides`` (RUNTIME only). Row-level severity
+      remap keyed by ``argus_record_id`` — the stable 16-hex
+      SHA-256 prefix Argus emits as its consumer-facing identifier
+      and Lynceus stores in ``watchlist_metadata.argus_record_id``.
+      Matches whose ``argus_record_id`` appears as a key get their
+      severity remapped to the value (``"low"`` / ``"med"`` /
+      ``"high"``). Closes the runtime severity-tuning matrix at row
+      × category × vendor: operators can carve a specific row out
+      of a category-level default (e.g. "alpr → high in general,
+      but THIS specific Flock camera → high too — or some other
+      tier"). Keys normalized to lowercase at load time. Only rows
+      with a metadata row carrying an ``argus_record_id`` can be
+      targeted; operator-seeded rows via ``lynceus-seed-watchlist``
+      without metadata fall through to the category-level layer
+      (use the allowlist for per-row suppression of non-Argus
+      rows).
+
+    - ``vendor_severity`` (RUNTIME only — NEW key). Vendor-level
+      severity remap keyed by manufacturer string. Matches whose
+      matched-row ``vendor`` (projected as ``manufacturer`` on
+      Resolved*Match) appears as a key get their severity remapped
+      to the value (``"low"`` / ``"med"`` / ``"high"``). The
+      runtime remap counterpart to ``suppress_vendors`` —
+      vendor-level severity tuning without per-row enumeration.
+      Keys normalized at load time (lowercase + strip) and stored
+      in that form; the eval-time check normalizes
+      ``match.manufacturer`` the same way before comparison.
+      Comparison is case-insensitive exact match — mirrors
+      ``suppress_vendors``. The deliberate non-overlap with
+      import-time ``vendor_overrides``, whose ``"drop"`` sentinel
+      means skip-at-import, stays intact: ``vendor_severity`` is a
+      separate runtime key so the ``"drop"`` semantic divergence
+      between layers can't accidentally surface as a runtime
+      footgun. Closes the override matrix to remap × {category,
+      vendor, row} + suppress × {category, vendor}.
 
     Other ``OverrideConfig`` keys (``vendor_overrides``,
     ``geographic_filter``, ``confidence_downgrade_threshold``)
@@ -232,6 +251,7 @@ class RuntimeSeverityOverride(BaseModel):
     suppress_categories: frozenset[str] = frozenset()
     suppress_vendors: frozenset[str] = frozenset()
     pattern_overrides: dict[str, Severity] = {}
+    vendor_severity: dict[str, Severity] = {}
 
     @model_validator(mode="after")
     def _validate(self) -> RuntimeSeverityOverride:
@@ -245,6 +265,12 @@ class RuntimeSeverityOverride(BaseModel):
             if sev not in _VALID_SEVERITIES:
                 raise ValueError(
                     f"pattern_overrides[{arid!r}] = {sev!r}: "
+                    f"expected one of {_VALID_SEVERITIES}"
+                )
+        for vendor, sev in self.vendor_severity.items():
+            if sev not in _VALID_SEVERITIES:
+                raise ValueError(
+                    f"vendor_severity[{vendor!r}] = {sev!r}: "
                     f"expected one of {_VALID_SEVERITIES}"
                 )
         return self
@@ -265,6 +291,7 @@ class RuntimeSeverityOverride(BaseModel):
             and not self.suppress_categories
             and not self.suppress_vendors
             and not self.pattern_overrides
+            and not self.vendor_severity
         )
 
 
@@ -428,6 +455,48 @@ def load_runtime_severity_overrides(
                 continue
             normalized_overrides[normalized_key] = raw_value
         runtime_kwargs["pattern_overrides"] = normalized_overrides
+    if isinstance(raw.get("vendor_severity"), dict):
+        # Operator-supplied vendor-level severity remap, keyed by
+        # manufacturer string. Mirrors suppress_vendors' load-time
+        # key normalization (lowercase + strip) so the eval-time
+        # comparison is a single dict lookup. Per-entry validation
+        # mirrors pattern_overrides: keys must be non-empty strings
+        # after normalization, values must be a known severity
+        # literal. One malformed entry never disables the layer — a
+        # WARNING is logged and the rest of the dict parses normally.
+        normalized_vendor_overrides: dict[str, str] = {}
+        for raw_key, raw_value in raw["vendor_severity"].items():
+            if not isinstance(raw_key, str):
+                logger.warning(
+                    "severity overrides file %s: vendor_severity key "
+                    "%r is not a string; dropping. Other entries still apply.",
+                    path,
+                    raw_key,
+                )
+                continue
+            normalized_key = raw_key.strip().lower()
+            if not normalized_key:
+                logger.warning(
+                    "severity overrides file %s: vendor_severity key "
+                    "%r is empty after stripping whitespace; dropping. "
+                    "Other entries still apply.",
+                    path,
+                    raw_key,
+                )
+                continue
+            if not isinstance(raw_value, str) or raw_value not in _VALID_SEVERITIES:
+                logger.warning(
+                    "severity overrides file %s: vendor_severity[%r] = "
+                    "%r is not a valid severity literal (expected one of "
+                    "%s); dropping. Other entries still apply.",
+                    path,
+                    raw_key,
+                    raw_value,
+                    _VALID_SEVERITIES,
+                )
+                continue
+            normalized_vendor_overrides[normalized_key] = raw_value
+        runtime_kwargs["vendor_severity"] = normalized_vendor_overrides
     try:
         overrides = RuntimeSeverityOverride(**runtime_kwargs)
     except Exception as exc:
@@ -448,22 +517,23 @@ def load_runtime_severity_overrides(
         logger.info(
             "runtime severity overrides loaded from %s but contain no active "
             "runtime keys (device_category_severity / suppress_categories / "
-            "suppress_vendors / pattern_overrides); runtime layer is "
-            "effectively pass-through. Edit the file and restart the daemon "
-            "to activate.",
+            "suppress_vendors / pattern_overrides / vendor_severity); runtime "
+            "layer is effectively pass-through. Edit the file and restart the "
+            "daemon to activate.",
             path,
         )
     else:
         logger.info(
             "runtime severity overrides loaded from %s: "
             "%d category remap(s), %d suppressed category(ies), "
-            "%d suppressed vendor(s), %d pattern override(s). "
-            "Edits take effect on daemon restart.",
+            "%d suppressed vendor(s), %d pattern override(s), "
+            "%d vendor remap(s). Edits take effect on daemon restart.",
             path,
             len(overrides.device_category_severity),
             len(overrides.suppress_categories),
             len(overrides.suppress_vendors),
             len(overrides.pattern_overrides),
+            len(overrides.vendor_severity),
         )
     return overrides
 
@@ -521,15 +591,20 @@ def _apply_runtime_overrides(
     2. Category suppression: category in ``suppress_categories``
        → return None. INFO-log with rule_name, category, and
        watchlist_id.
-    3. Pattern override (NEW, row-level remap):
+    3. Pattern override (row-level remap):
        ``match_argus_record_id`` in ``pattern_overrides`` → return
-       the remapped severity. More specific than the category
-       remap below; no INFO log (symmetric with
+       the remapped severity. More specific than the vendor /
+       category remaps below; no INFO log (symmetric with
        device_category_severity — the alert itself surfaces the
        effective severity).
-    4. Category remap: category in ``device_category_severity``
+    4. Vendor remap (NEW): normalized ``match_manufacturer`` in
+       ``vendor_severity`` → return the remapped severity. More
+       specific than the category remap below; less specific than
+       the row-level remap above. No INFO log (symmetric with
+       pattern_overrides / device_category_severity).
+    5. Category remap: category in ``device_category_severity``
        → return the remapped severity.
-    5. Default: no rule applies → return ``match_severity``
+    6. Default: no rule applies → return ``match_severity``
        unchanged.
 
     Vendor wins over category because manufacturer is the more
@@ -570,6 +645,16 @@ def _apply_runtime_overrides(
         and match_argus_record_id in overrides.pattern_overrides
     ):
         return overrides.pattern_overrides[match_argus_record_id]
+    if match_manufacturer is not None:
+        # Reuse the same normalization shape as the suppress_vendors
+        # gate above (strip + lower); the load-time normalization
+        # stored keys in that form, so a single dict lookup suffices.
+        # NULL manufacturer skips this check entirely and falls
+        # through to the category remap, mirroring the suppress
+        # gate's NULL handling.
+        normalized_vendor_remap = match_manufacturer.strip().lower()
+        if normalized_vendor_remap in overrides.vendor_severity:
+            return overrides.vendor_severity[normalized_vendor_remap]
     if (
         match_device_category is not None
         and match_device_category in overrides.device_category_severity

@@ -177,9 +177,9 @@ Two layers read this file:
     downgrade_threshold): applied by lynceus-import-argus when data
     is brought in. Edits take effect after the next re-import.
   - RUNTIME (device_category_severity, suppress_categories,
-    suppress_vendors, pattern_overrides): applied by the poller at
-    alert time. Edits take effect on daemon restart — no re-import
-    required.
+    suppress_vendors, pattern_overrides, vendor_severity): applied
+    by the poller at alert time. Edits take effect on daemon
+    restart — no re-import required.
 
 A starter file with explanatory comments will be created at the path
 below. You can edit it any time. Press Enter to accept the default.
@@ -193,10 +193,10 @@ SEVERITY_OVERRIDES_TEMPLATE = """\
 #     Edits require re-importing to apply.
 #
 #   RUNTIME (the poller / daemon): keys device_category_severity,
-#     suppress_categories, suppress_vendors, pattern_overrides.
-#     Edits require only a daemon restart; already-imported rows
-#     fire at the new severity (or are suppressed) without
-#     re-importing.
+#     suppress_categories, suppress_vendors, pattern_overrides,
+#     vendor_severity. Edits require only a daemon restart;
+#     already-imported rows fire at the new severity (or are
+#     suppressed) without re-importing.
 #
 # Each section is optional. Uncomment and edit only what you want to change.
 # Each section below carries an inline `# LAYER:` tag so it's clear which
@@ -207,9 +207,34 @@ SEVERITY_OVERRIDES_TEMPLATE = """\
 #   # IMPORT time. Use the literal string "drop" to skip records from a
 #   # vendor entirely — that "drop" is import-skip semantics (the row
 #   # never lands in the DB). For RUNTIME-only vendor suppression on
-#   # already-imported rows, use suppress_vendors below instead.
+#   # already-imported rows, use suppress_vendors below instead; for
+#   # RUNTIME-only vendor severity tuning, use vendor_severity below.
 #   "ACME Surveillance Inc": high
 #   "Hobbyist Drone Co":     drop
+
+# vendor_severity:            # LAYER: RUNTIME — daemon restart applies live
+#   # Vendor-level severity remap. Maps manufacturer strings
+#   # (case-insensitive exact match on the watchlist row's
+#   # manufacturer, same comparison shape as suppress_vendors below)
+#   # to a severity literal (low / med / high). The runtime remap
+#   # counterpart to suppress_vendors: tune severity across every
+#   # device from a vendor without enumerating individual rows.
+#   #
+#   # Precedence: more specific than device_category_severity (a
+#   # vendor remap on an alpr device wins over alpr → med); less
+#   # specific than pattern_overrides (a row-level remap on the same
+#   # row wins over the vendor remap). Suppression at either layer
+#   # (suppress_vendors / suppress_categories) always wins — vendor
+#   # remap is not an UNSUPPRESS knob.
+#   #
+#   # Distinct from import-time vendor_overrides above: that key's
+#   # "drop" sentinel means skip-at-import. vendor_severity is a
+#   # separate RUNTIME key so the "drop" semantic stays unambiguous.
+#   #
+#   # Example: bump every surveillance camera vendor to high
+#   # regardless of category:
+#   #   "Axon Enterprise, Inc.": high
+#   #   "Flock Safety":          high
 
 # device_category_severity:   # LAYER: BOTH — daemon restart applies live
 #   # Remap the severity for an Argus device_category.
