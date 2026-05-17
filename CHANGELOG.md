@@ -8,6 +8,91 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/alerts` filter bar grows `rule_type` / `q` / `window`, and
+  `/alerts` + `/allowlist` share a unified pagination model.**
+  Fulfills the "pagination deferred" promise from the
+  `/allowlist` management surface bullet below: rather than two
+  divergent paginators, both pages now route through a single
+  `PaginationParams` helper (`src/lynceus/webui/pagination.py`)
+  with the same allowed `per_page` set (`{25, 50, 100, 200}`,
+  default `50`), the same footer copy
+  (`Page N of M · K total · per_page=PP`), and the same
+  clamp-silently semantics for out-of-range inputs. New `/alerts`
+  filter dimensions:
+
+  - `rule_type=<literal>` — narrows by `RuleHit.rule_type`. The
+    full set is derived at module load from
+    `typing.get_args(rules.RuleType)` so a new literal added to
+    that `Literal` automatically appears in the dropdown — no
+    manual list to drift. Invalid value falls back to "any"
+    rather than 400 (stale URLs survive a `RuleType` extension).
+  - `q=<substring>` — case-insensitive substring against MAC,
+    message, and manufacturer (via the existing
+    `watchlist_metadata` LEFT JOIN; `COALESCE` NULL-safety for
+    alerts without a `mac` or without a matched watchlist row).
+    Distinct from the pre-existing `search` filter (which
+    matches `rule_name` + `message`); both apply alongside if
+    both are set.
+  - `window=1h|24h|7d|30d` — relative time window resolved
+    server-side at request time. Anchors "what does this URL
+    show" to the recipient's open-time clock so a shared link
+    means the same recency to any operator. Combines with the
+    pre-existing absolute `since` / `until` by taking the
+    tighter (more-recent) lower bound on the timestamp axis.
+
+  Pre-rc5 query params on `/alerts` (`severity`, `acknowledged`,
+  `since`, `until`, `search`, `page`, `page_size`) keep
+  byte-identical semantics — bookmarked URLs from earlier
+  versions resolve unchanged. The pre-existing `page_size`
+  validation widens slightly: invalid values now silently fall
+  back to the default (`50`) rather than 400; the allowed set
+  drops `10` (operators relying on dense renders move to `25`).
+
+  **Schema change: `alerts.rule_type TEXT`** (migration 015).
+  `RuleHit.rule_type` has been carried in-memory since the
+  project started but `db.add_alert` dropped it on the floor;
+  the new filter forced persistence. Historical rows pre-rc5
+  carry `NULL` (the `rule_name -> rule_type` mapping requires
+  the loaded ruleset and isn't recoverable retroactively); the
+  filter default ("any") includes them and a specific
+  `rule_type=...` filter excludes them — the honest answer for
+  "unknown type." No new index: `rule_type` filtering composes
+  with the existing `ts DESC + LIMIT` slice and the `ts` index
+  dominates in practice. A `(rule_type, ts)` composite is a
+  future optimization gated on combined-filter `COUNT(*)`
+  latency.
+
+  **`/alerts/ack-all-visible` filter set mirrors the page GET
+  byte-identical.** The bulk-write surface MUST see the same
+  filtered set the operator sees on the page; a divergence
+  (e.g. a new filter wired to GET but not to the POST) would
+  silently ack alerts the operator can't see — worst-class bug
+  class for a non-reversible bulk operation. Every new filter
+  is plumbed through both surfaces in the same commit.
+
+  **`/allowlist` pagination.** Reuses the same
+  `PaginationParams` helper with the same per_page set, default,
+  and footer copy. Implementation note: pagination is applied
+  in Python on the already-filtered list because the allowlist
+  lives in YAML on disk, not a DB table — the math is identical
+  to `/alerts`, only the slice substrate differs. Filter
+  dimensions are unchanged in this bullet (only pagination
+  added).
+
+  **Out-of-range behavior is "clamp silently" rather than
+  "raise 4xx."** Operator UX wins for an entirely non-mutating
+  GET surface: `?page=999` lands on the last valid page;
+  `?per_page=37` falls back to default; `?rule_type=bogus`
+  ignores the filter rather than 400. Stale bookmarks survive a
+  rule-set extension, a per_page set change, or a typo.
+
+  **Single source of truth for filters across `COUNT(*)` and the
+  page query.** `count_alerts` and `list_alerts_with_match`
+  share `_alert_filter_clauses` and `_ALERTS_FROM_FOR_FILTERS`
+  so the "K total" the footer prints can't drift from the rows
+  actually rendered — otherwise the pagination math becomes a
+  lie. Same shape on `/allowlist` (one filter pass, one slice).
+
 - **`/allowlist` management surface — search, filter, add-entry
   form, and bulk remove.** Closes the "edit `allowlist_ui.yaml` by
   hand to manage allowlists" gap that has existed since the
