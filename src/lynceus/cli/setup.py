@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import importlib.resources
+import json
 import logging
 import os
 import re
@@ -555,6 +556,149 @@ def _format_source_label(source: dict) -> str:
     if parts:
         return f"{name}  ({', '.join(parts)})"
     return name
+
+
+# --- Kismet API key auto-locate --------------------------------------------
+#
+# Kismet persists its API keys to ``~/.kismet/session.db`` — despite the
+# ``.db`` extension this is a JSON array of objects shaped like
+# ``{"token", "name", "role", "created", "accessed", "expires"}``. There is
+# no system-wide token file; ``/etc/kismet/kismet_httpd.conf`` only ever
+# carries the ``httpd_session_db=`` *pointer*. Storage scheme has been
+# stable since the 2022-08 Boost.Beast HTTP-server rewrite (see
+# kis_net_beast_httpd.cc::store_auth / kis_net_beast_auth::as_json).
+#
+# Lynceus only needs read access to device endpoints, so when multiple
+# keys exist we prefer (in order): a key named "lynceus", a "readonly"
+# role key, an "admin" role key, or the first non-empty token.
+#
+# Auto-locate is best-effort and additive: every failure mode — missing
+# file, unreadable file, malformed JSON, no usable entry — silently falls
+# through to the manual entry path. Operator-visible output is limited
+# to "found a key" / "no existing key found"; permission denials, parse
+# errors, and path details never reach the operator.
+
+
+_KISMET_KEY_PREFERRED_NAME = "lynceus"
+_KISMET_KEY_PREFERRED_ROLES = ("readonly", "admin")
+
+
+def _kismet_api_key_candidate_paths(scope: str) -> list[Path]:
+    """Return ordered candidate file paths for Kismet's session.db, scope-aware.
+
+    Most-specific first. ``user`` scope checks the current operator's
+    ``~/.kismet/session.db``. ``system`` scope (typically reached via
+    ``sudo lynceus-setup --system``) prefers the invoking operator's
+    ``~/.kismet/`` over root's, because Kismet is most often launched as
+    the operator's own user rather than as root.
+
+    Returns an empty list on Windows — Kismet is Linux/macOS-first and
+    no canonical Windows install layout exists for the wizard to
+    inspect.
+    """
+    if _is_windows():
+        return []
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(p: Path) -> None:
+        if p not in seen:
+            seen.add(p)
+            candidates.append(p)
+
+    if scope == "system":
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user:
+            try:
+                import pwd
+
+                home = Path(pwd.getpwnam(sudo_user).pw_dir)
+                _add(home / ".kismet" / "session.db")
+            except (KeyError, ImportError):
+                pass
+        _add(Path("/root") / ".kismet" / "session.db")
+        _add(Path.home() / ".kismet" / "session.db")
+    else:
+        _add(Path.home() / ".kismet" / "session.db")
+    return candidates
+
+
+def _read_kismet_api_key(path: Path) -> tuple[str, str] | None:
+    """Read a usable API key from a Kismet session.db file.
+
+    Returns ``(token, name)`` on success, ``None`` on any failure
+    (missing file, unreadable, malformed JSON, no usable entry). The
+    caller treats ``None`` as "fall through to manual entry"; we never
+    raise.
+
+    Selection priority when multiple entries exist:
+      1. entry whose ``name`` equals ``"lynceus"``
+      2. entry whose ``role`` is ``"readonly"``
+      3. entry whose ``role`` is ``"admin"``
+      4. first entry with a non-empty ``token``
+
+    Lynceus only needs read access to device endpoints, so ``readonly``
+    is preferred over ``admin`` when both exist — the principle-of-
+    least-privilege fallback. A ``lynceus``-named key created by the
+    operator takes precedence over either default.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        entries = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(entries, list):
+        return None
+
+    def _token_of(entry: object) -> tuple[str, str] | None:
+        if not isinstance(entry, dict):
+            return None
+        token = entry.get("token")
+        if not isinstance(token, str) or not token.strip():
+            return None
+        name = entry.get("name") if isinstance(entry.get("name"), str) else ""
+        return token, name
+
+    by_name = None
+    by_role: dict[str, tuple[str, str]] = {}
+    first = None
+    for entry in entries:
+        result = _token_of(entry)
+        if result is None:
+            continue
+        if first is None:
+            first = result
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            role = entry.get("role")
+            if by_name is None and isinstance(name, str) and name == _KISMET_KEY_PREFERRED_NAME:
+                by_name = result
+            if isinstance(role, str) and role not in by_role:
+                by_role[role] = result
+
+    if by_name is not None:
+        return by_name
+    for role in _KISMET_KEY_PREFERRED_ROLES:
+        if role in by_role:
+            return by_role[role]
+    return first
+
+
+def _redact_kismet_api_key(key: str) -> str:
+    """Render a Kismet API key as a short head/tail preview.
+
+    Format: ``"abc1...wxyz"`` — 4 chars head, ellipsis, 4 chars tail.
+    Keys shorter than ~12 chars (unusual for Kismet) are collapsed to a
+    fully-redacted placeholder so the preview never approximates the
+    full key.
+    """
+    s = key.strip()
+    if len(s) < 12:
+        return "***"
+    return f"{s[:4]}...{s[-4:]}"
 
 
 # --- Wireless interface enumeration ----------------------------------------
@@ -1226,13 +1370,41 @@ this wizard — the probe will fail soft and you can re-run
             file=sys.stderr,
         )
         return 1
-    # (b) Kismet token
+    # (b) Kismet token — auto-locate from Kismet's session.db first, then
+    # fall through to the walkthrough + manual prompt on miss / decline.
     print()
     print("Kismet API Key")
     print("─" * len("Kismet API Key"))
     print()
-    _print_context(
-        """
+    print("Searching for an existing API key on disk...")
+    located: tuple[str, str, Path] | None = None
+    for candidate in _kismet_api_key_candidate_paths(scope):
+        found = _read_kismet_api_key(candidate)
+        if found is not None:
+            token, _name = found
+            located = (token, _name, candidate)
+            break
+
+    use_located = False
+    if located is not None:
+        token, name, path = located
+        preview = _redact_kismet_api_key(token)
+        print(f"Found a key in {path}.")
+        if name:
+            print(f"Preview: {preview}  (name: {name})")
+        else:
+            print(f"Preview: {preview}")
+        print()
+        use_located = prompt_yes_no("Use this key?", default=True, input_fn=in_fn)
+
+    if use_located and located is not None:
+        answers["kismet_api_key"] = located[0]
+    else:
+        if located is None:
+            print("no existing key found.")
+        print()
+        _print_context(
+            """
 Where to find your API key (one-time setup in Kismet):
   1. Open the Kismet web UI in your browser (the URL above).
   2. Log in. On first launch Kismet prompts you to set a password.
@@ -1246,8 +1418,10 @@ If you don't have a key yet, you can press Ctrl-C, set one up,
 and re-run lynceus-setup. The wizard will not store the key
 anywhere except your generated lynceus.yaml.
 """
-    )
-    answers["kismet_api_key"] = prompt_secret("Kismet API token (input hidden)", getpass_fn=gp_fn)
+        )
+        answers["kismet_api_key"] = prompt_secret(
+            "Kismet API token (input hidden)", getpass_fn=gp_fn
+        )
 
     # (c) Kismet probe — also queries the configured datasource list when
     # reachable, so we can offer the operator the actual source NAMES the
