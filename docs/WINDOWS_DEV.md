@@ -12,8 +12,8 @@ You do **not** need: Linux, a Pi, a real Kismet, a monitor-mode adapter, or Blue
 ## Setup
 
 ```powershell
-git clone <your-fork-or-mirror> lynceus
-cd lynceus
+git clone <your-fork-or-mirror> lynceus-warden
+cd lynceus-warden
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -e ".[dev]"
@@ -69,7 +69,7 @@ Open `http://127.0.0.1:8765/` in your browser. You should see the index with hea
 ## Iteration tips
 
 - Edit fixtures to test new scenarios. [tests/fixtures/dev_kismet.json](../tests/fixtures/dev_kismet.json) and the `integration_kismet_*.json` files are good templates. The Kismet device shape is documented inline in [src/lynceus/kismet.py](../src/lynceus/kismet.py) (`parse_kismet_device`).
-- Edit `rules.yaml` and `allowlist.yaml` on disk; restart the daemon to pick up changes. (Live reload is on the v0.3 backlog — see [BACKLOG.md](../BACKLOG.md).)
+- Edit `rules.yaml` and `allowlist.yaml` on disk; restart the daemon to pick up changes. (Live reload is deferred — see [BACKLOG.md](../BACKLOG.md) under "Web UI editing for rules and allowlist"; no version target.)
 - Use the fast test loop while iterating:
 
   ```powershell
