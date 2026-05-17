@@ -8,6 +8,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`lynceus-validate` CLI — read-only configuration validator.**
+  Catches typos, schema errors, malformed values, and missing
+  referenced paths at edit time instead of at the next daemon
+  restart. Wraps the existing loaders (`load_config`,
+  `load_ruleset`, `load_runtime_severity_overrides`,
+  `load_allowlist`) so the diagnoses are exactly what the daemon
+  would hit — no separate validation logic to drift.
+
+  Covers the five files an operator may maintain:
+
+  - `lynceus.yaml` — Pydantic schema check; missing-file ERROR
+    for each populated `*_path` reference.
+  - `rules.yaml` — surfaces `load_ruleset`'s errors (duplicate
+    names, invalid `rule_type`, malformed patterns,
+    delegation-shape violations); empty ruleset is a WARNING.
+  - `severity_overrides.yaml` — louder at edit time than the
+    daemon. The runtime loader is lenient by design (malformed
+    values land as WARNING + pass-through so the poller never
+    crashes); the validator promotes those to ERROR. Adds
+    edit-time-only checks: unknown top-level keys get a
+    Levenshtein-distance hint (`'supress_categories' -- did you
+    mean 'suppress_categories'?`), unknown Argus device
+    categories warn, `pattern_overrides` keys not matching the
+    16-hex `argus_record_id` shape error.
+  - `allowlist.yaml` — Pydantic validation; entries with
+    `expires_at` in the past WARN ("it will never match --
+    consider removing").
+  - `allowlist_ui.yaml` — same shape; missing file is normal
+    (no UI writes yet).
+
+  Exit-code contract is stable for CI / pre-commit hook use:
+
+  - `0` — no errors (warnings may exist).
+  - `1` — errors found.
+  - `2` — tool-level failure (config dir unreachable).
+
+  Scope handling matches the existing `lynceus-import-argus`
+  convention: `--scope user` (default) or `--scope system`. The
+  validator never modifies any file — pure read-only. Output is
+  plain ASCII (no ANSI color, no emoji) so operators can grep /
+  awk it from scripts. `--quiet` suppresses OK and WARNING lines
+  for CI usage where only ERRORs matter.
+
+  Example invocation:
+
+      sudo lynceus-validate --scope system
+
+  Example output:
+
+      Validating Lynceus configuration (scope: system)
+
+      /etc/lynceus/lynceus.yaml
+        OK (schema valid; all referenced paths exist)
+
+      /etc/lynceus/severity_overrides.yaml
+        ERROR (line 8): invalid severity 'medium' for category
+                        'unknown' -- must be one of: low, med, high
+        ERROR (line 14): unknown key 'supress_categories' -- did
+                         you mean 'suppress_categories'?
+
+      Summary: 2 errors, 0 warnings across 2 files
+
+  Cross-file checks against live DB state (e.g. validating that
+  `pattern_overrides` keys correspond to real `argus_record_id`
+  values in the watchlist) are deliberately out of scope for v1;
+  the validator never opens the DB. Future `--check-db` flag
+  could add that.
+
 - **Alert detail page gains triage buttons: Allowlist, Snooze 24h,
   Remove.** Operators triaging a false-positive alert no longer
   need to edit `allowlist.yaml` and restart the daemon — one click
