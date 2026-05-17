@@ -16,6 +16,7 @@ from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 
 from lynceus import __version__, kismet, paths
 from lynceus import allowlist as allowlist_mod
@@ -23,7 +24,9 @@ from lynceus import rules as rules_mod
 from lynceus.allowlist import (
     AllowlistEntry,
     add_ui_entry,
+    bulk_remove_ui_entries,
     derive_ui_path,
+    load_allowlist_with_source,
     remove_ui_entry,
 )
 from lynceus.config import Config
@@ -97,6 +100,128 @@ def _parse_date_to_ts(value: str, *, end_of_day: bool, name: str) -> int:
     if end_of_day:
         base = base.replace(hour=23, minute=59, second=59)
     return int(base.timestamp())
+
+
+# Mirror of allowlist.AllowlistPatternType, exposed as a tuple so
+# the /allowlist filter validator and the add-form dropdown can
+# iterate in display order without re-deriving from typing.get_args.
+ALLOWLIST_PATTERN_TYPES: tuple[str, ...] = (
+    "mac",
+    "oui",
+    "ssid",
+    "mac_range",
+    "ble_uuid",
+    "ble_manufacturer_id",
+    "drone_id_prefix",
+)
+
+
+def _validate_allowlist_filters(*, source: str, status: str, type_: str) -> None:
+    if source not in ("all", "primary", "ui"):
+        raise HTTPException(status_code=400, detail=f"invalid source: {source!r}")
+    if status not in ("all", "active", "snoozed", "expired"):
+        raise HTTPException(status_code=400, detail=f"invalid status: {status!r}")
+    if type_ != "all" and type_ not in ALLOWLIST_PATTERN_TYPES:
+        raise HTTPException(status_code=400, detail=f"invalid type: {type_!r}")
+
+
+def _entry_status_label(entry, now_ts: int) -> str:
+    if entry.expires_at is None:
+        return "active"
+    if entry.expires_at > now_ts:
+        return "snoozed"
+    return "expired"
+
+
+def _filter_allowlist_entries(
+    tagged: list,
+    *,
+    q: str | None,
+    source: str,
+    status: str,
+    type_: str,
+    now_ts: int,
+) -> list[dict]:
+    """Apply the q/source/status/type filters and project to template rows.
+
+    Returns a list of dicts (one per surviving entry) carrying every
+    field the template renders. ``composite_key`` is populated only
+    for UI entries — the template uses its truthiness as the
+    "render a checkbox" flag, since primary-source entries are
+    not bulk-removable.
+    """
+    q_lower = (q or "").strip().lower()
+    rows: list[dict] = []
+    for entry, src in tagged:
+        if source != "all" and src != source:
+            continue
+        if type_ != "all" and entry.pattern_type != type_:
+            continue
+        status_label = _entry_status_label(entry, now_ts)
+        if status != "all" and status_label != status:
+            continue
+        if q_lower:
+            haystack = f"{entry.pattern} {entry.note or ''}".lower()
+            if q_lower not in haystack:
+                continue
+        rows.append(
+            {
+                "pattern": entry.pattern,
+                "pattern_type": entry.pattern_type,
+                "note": entry.note or "",
+                "expires_at": entry.expires_at,
+                "added_at": entry.added_at,
+                "source": src,
+                "status": status_label,
+                "composite_key": (
+                    f"{entry.pattern_type}:{entry.pattern}" if src == "ui" else None
+                ),
+            }
+        )
+    return rows
+
+
+def _parse_form_expires_at(value: str | None) -> int | None:
+    """Parse the add-form ``expires_at`` field to a UTC epoch int.
+
+    Empty / whitespace → None (permanent entry). HTML datetime-local
+    inputs send ``YYYY-MM-DDTHH:MM`` with no timezone — interpreted
+    as UTC. Trailing ``Z`` (full ISO-8601) is accepted. Anything
+    else raises ValueError; the caller surfaces it inline on the
+    add-form re-render.
+    """
+    if value is None or not value.strip():
+        return None
+    s = value.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = _dt.datetime.fromisoformat(s)
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid expires_at {value!r}: expected ISO-8601 / datetime-local"
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_dt.UTC)
+    return int(dt.timestamp())
+
+
+def _first_validation_error(exc: ValidationError) -> str:
+    """Extract the first error message from a Pydantic ValidationError.
+
+    The add-form surfaces a single sentence so the operator can see
+    the cause without scrolling through pydantic's structured dump.
+    Falls back to ``str(exc)`` if the errors list is unexpectedly
+    empty.
+    """
+    errs = exc.errors()
+    if not errs:
+        return str(exc)
+    msg = errs[0].get("msg", "invalid input")
+    loc = errs[0].get("loc") or ()
+    if loc:
+        return f"{loc[-1]}: {msg}"
+    return msg
 
 
 def _normalize_optional_note(note: str | None) -> str | None:
@@ -1370,27 +1495,261 @@ def create_app(config: Config, db: Database) -> FastAPI:
             },
         )
 
-    @app.get("/allowlist", response_class=HTMLResponse)
-    def allowlist_view(request: Request):
-        allowlist = None
-        notice = None
+    def _render_allowlist(
+        request: Request,
+        *,
+        q: str | None,
+        source: str,
+        status: str,
+        type_: str,
+        success: str | None = None,
+        count: int | None = None,
+        add_form: dict | None = None,
+        add_error: str | None = None,
+        http_status: int = 200,
+    ) -> HTMLResponse:
+        """Shared renderer for /allowlist and the add-form error path.
+
+        Loads the merged primary+UI allowlist, applies filters
+        server-side, and builds the template context. The add-form
+        error path re-renders the same page with ``add_form`` /
+        ``add_error`` populated so the operator's input survives
+        the round-trip — filters are reset on the error render so
+        the operator can see the full current state alongside their
+        rejected input.
+        """
         allowlist_path = app.state.config.allowlist_path
-        if not allowlist_path:
+        notice: str | None = None
+        entries_rows: list[dict] = []
+        primary_count = 0
+        ui_count = 0
+        configured = bool(allowlist_path)
+        if not configured:
             notice = "No allowlist_path configured. Set allowlist_path in lynceus.yaml."
         else:
             try:
-                allowlist = allowlist_mod.load_allowlist(allowlist_path)
+                tagged = load_allowlist_with_source(allowlist_path)
             except FileNotFoundError:
                 notice = f"Allowlist file not found at {allowlist_path}."
+                tagged = []
+            primary_count = sum(1 for _, src in tagged if src == "primary")
+            ui_count = sum(1 for _, src in tagged if src == "ui")
+            entries_rows = _filter_allowlist_entries(
+                tagged,
+                q=q,
+                source=source,
+                status=status,
+                type_=type_,
+                now_ts=int(time.time()),
+            )
+        filters_active = bool(
+            (q and q.strip())
+            or source != "all"
+            or status != "all"
+            or type_ != "all"
+        )
         return app.state.templates.TemplateResponse(
             request=request,
             name="allowlist_list.html",
+            status_code=http_status,
             context={
                 "version": __version__,
                 "active": "allowlist",
-                "allowlist": allowlist,
                 "notice": notice,
+                "configured": configured,
+                "entries": entries_rows,
+                "primary_count": primary_count,
+                "ui_count": ui_count,
+                "filters": {
+                    "q": q or "",
+                    "source": source,
+                    "status": status,
+                    "type": type_,
+                },
+                "filters_active": filters_active,
+                "supported_pattern_types": ALLOWLIST_PATTERN_TYPES,
+                "success": success,
+                "success_count": count,
+                "add_form": add_form or {},
+                "add_error": add_error,
             },
+        )
+
+    @app.get("/allowlist", response_class=HTMLResponse)
+    def allowlist_view(
+        request: Request,
+        q: str | None = Query(default=None),
+        source: str = Query(default="all"),
+        status: str = Query(default="all"),
+        type: str = Query(default="all"),
+        success: str | None = Query(default=None),
+        count: int | None = Query(default=None),
+    ):
+        _validate_allowlist_filters(source=source, status=status, type_=type)
+        return _render_allowlist(
+            request,
+            q=q,
+            source=source,
+            status=status,
+            type_=type,
+            success=success,
+            count=count,
+        )
+
+    @app.post("/allowlist/add")
+    def allowlist_add(
+        request: Request,
+        pattern: str = Form(default=""),
+        pattern_type: str = Form(default=""),
+        note: str | None = Form(default=None),
+        expires_at: str | None = Form(default=None),
+    ):
+        if not app.state.config.allowlist_path:
+            raise HTTPException(
+                status_code=400,
+                detail="allowlist_path is not configured; nothing to write to",
+            )
+        echo = {
+            "pattern": pattern,
+            "pattern_type": pattern_type,
+            "note": note or "",
+            "expires_at": expires_at or "",
+        }
+        pattern_stripped = pattern.strip()
+        if not pattern_stripped:
+            return _render_allowlist(
+                request,
+                q=None, source="all", status="all", type_="all",
+                add_form=echo,
+                add_error="pattern is required.",
+                http_status=400,
+            )
+        if pattern_type not in ALLOWLIST_PATTERN_TYPES:
+            return _render_allowlist(
+                request,
+                q=None, source="all", status="all", type_="all",
+                add_form=echo,
+                add_error=f"invalid pattern_type: {pattern_type!r}.",
+                http_status=400,
+            )
+        try:
+            expires_int = _parse_form_expires_at(expires_at)
+        except ValueError as exc:
+            return _render_allowlist(
+                request,
+                q=None, source="all", status="all", type_="all",
+                add_form=echo,
+                add_error=str(exc),
+                http_status=400,
+            )
+        note_clean = (note or "").strip() or None
+        if note_clean is not None and len(note_clean) > 500:
+            return _render_allowlist(
+                request,
+                q=None, source="all", status="all", type_="all",
+                add_form=echo,
+                add_error="note must be 500 characters or fewer.",
+                http_status=400,
+            )
+        try:
+            entry = AllowlistEntry(
+                pattern=pattern_stripped,
+                pattern_type=pattern_type,
+                note=note_clean,
+                expires_at=expires_int,
+                added_at=int(time.time()),
+            )
+        except ValidationError as exc:
+            return _render_allowlist(
+                request,
+                q=None, source="all", status="all", type_="all",
+                add_form=echo,
+                add_error=_first_validation_error(exc),
+                http_status=400,
+            )
+        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
+        add_ui_entry(ui_path, entry)
+        actor = request.client.host if request.client else "unknown"
+        logger.info(
+            "allowlist UI add: actor=%s pattern_type=%s pattern=%s expires_at=%s",
+            actor, entry.pattern_type, entry.pattern, entry.expires_at,
+        )
+        return RedirectResponse("/allowlist?success=add", status_code=303)
+
+    @app.post("/allowlist/bulk_remove")
+    def allowlist_bulk_remove(
+        request: Request,
+        entry_keys: list[str] | None = Form(default=None),
+        q: str | None = Form(default=None),
+        source: str = Form(default="all"),
+        status: str = Form(default="all"),
+        type: str = Form(default="all"),
+    ):
+        if not app.state.config.allowlist_path:
+            raise HTTPException(
+                status_code=400,
+                detail="allowlist_path is not configured; nothing to write to",
+            )
+        if not entry_keys:
+            raise HTTPException(
+                status_code=400,
+                detail="no entries selected for bulk remove",
+            )
+        keys: list[tuple[str, str]] = []
+        for ek in entry_keys:
+            ptype, sep, pat = ek.partition(":")
+            if not sep or not ptype or not pat:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"malformed entry_key: {ek!r}",
+                )
+            keys.append((pat, ptype))
+        try:
+            tagged = load_allowlist_with_source(app.state.config.allowlist_path)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=400,
+                detail="allowlist primary file not found",
+            ) from None
+        primary_pairs = {(e.pattern, e.pattern_type) for e, src in tagged if src == "primary"}
+        primary_collisions = [k for k in keys if k in primary_pairs]
+        if primary_collisions:
+            # No partial removes. Either every selection is UI-removable
+            # or the whole batch fails — otherwise an operator who
+            # crafted a hostile form (or hit a stale row that moved into
+            # the primary file mid-session) would silently delete the UI
+            # rows and only learn about the primary refusal in the error
+            # message, by which point the UI rows are gone.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"refusing to bulk-remove {len(primary_collisions)} "
+                    "operator-managed (primary-file) entries via the UI; "
+                    "edit allowlist.yaml directly to remove those rows."
+                ),
+            )
+        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
+        removed = bulk_remove_ui_entries(ui_path, keys)
+        actor = request.client.host if request.client else "unknown"
+        logger.info(
+            "allowlist UI bulk_remove: actor=%s removed=%d requested=%d",
+            actor, removed, len(keys),
+        )
+        params: dict[str, str] = {}
+        if q and q.strip():
+            params["q"] = q
+        if source != "all":
+            params["source"] = source
+        if status != "all":
+            params["status"] = status
+        if type != "all":
+            params["type"] = type
+        params["success"] = "bulk_remove"
+        params["count"] = str(removed)
+        from urllib.parse import urlencode as _urlencode
+        return RedirectResponse(
+            f"/allowlist?{_urlencode(params)}",
+            status_code=303,
         )
 
     return app

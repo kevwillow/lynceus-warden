@@ -148,6 +148,15 @@ details > summary { cursor: pointer; }
 .badge-privacy-warning { background: var(--lyn-badge-warning-bg);  color: var(--lyn-badge-warning-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; font-weight: 600; }
 .badge-status-ok       { background: var(--lyn-badge-positive-bg); color: var(--lyn-badge-positive-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .badge-status-error    { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+/* Allowlist management surface: source + entry-status pills. The
+   primary/UI split is rendered as a badge per row; status (active /
+   snoozed / expired) reuses the calm-warning-negative tier the rest
+   of the app uses. */
+.badge-source-primary  { background: var(--lyn-badge-positive-bg); color: var(--lyn-badge-positive-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-source-ui       { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-allow-active    { background: var(--lyn-badge-positive-bg); color: var(--lyn-badge-positive-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-allow-snoozed   { background: var(--lyn-badge-warning-bg);  color: var(--lyn-badge-warning-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-allow-expired   { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .settings-card         { margin-bottom: 1em; }
 
 /* Horizontal scroll wrapper for tables that may exceed container width.

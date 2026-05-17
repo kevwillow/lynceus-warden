@@ -8,22 +8,163 @@
     <article><p><em>{{ notice }}</em></p></article>
   {% endif %}
 
-  {% if allowlist and allowlist.entries %}
-    <table>
-      <thead>
-        <tr><th>type</th><th>pattern</th><th>note</th></tr>
-      </thead>
-      <tbody>
-        {% for e in allowlist.entries %}
-          <tr>
-            <td>{{ e.pattern_type }}</td>
-            <td><code>{{ e.pattern }}</code></td>
-            <td>{{ e.note or "" }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% elif not notice %}
-    <p><em>No allowlist entries.</em></p>
+  {% if success == "add" %}
+    <article><p><em>Entry added.</em></p></article>
+  {% elif success == "bulk_remove" %}
+    <article><p><em>Removed {{ success_count }} {% if success_count == 1 %}entry{% else %}entries{% endif %}.</em></p></article>
+  {% endif %}
+
+  {% if configured %}
+    <p><small>
+      {{ primary_count }} operator entries (allowlist.yaml) &middot;
+      {{ ui_count }} UI entries (allowlist_ui.yaml)
+    </small></p>
+
+    <form method="get" action="/allowlist">
+      <fieldset class="grid">
+        <label>search
+          <input type="text" name="q" value="{{ filters.q }}" maxlength="200" placeholder="pattern or note">
+        </label>
+        <label>source
+          <select name="source">
+            <option value="all" {% if filters.source == 'all' %}selected{% endif %}>any</option>
+            <option value="primary" {% if filters.source == 'primary' %}selected{% endif %}>primary</option>
+            <option value="ui" {% if filters.source == 'ui' %}selected{% endif %}>ui</option>
+          </select>
+        </label>
+        <label>status
+          <select name="status">
+            <option value="all" {% if filters.status == 'all' %}selected{% endif %}>any</option>
+            <option value="active" {% if filters.status == 'active' %}selected{% endif %}>active</option>
+            <option value="snoozed" {% if filters.status == 'snoozed' %}selected{% endif %}>snoozed</option>
+            <option value="expired" {% if filters.status == 'expired' %}selected{% endif %}>expired</option>
+          </select>
+        </label>
+        <label>type
+          <select name="type">
+            <option value="all" {% if filters.type == 'all' %}selected{% endif %}>any</option>
+            {% for t in supported_pattern_types %}
+              <option value="{{ t }}" {% if filters.type == t %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">filter</button>
+      </fieldset>
+      {% if filters_active %}
+        <p><a class="reset-filters" href="/allowlist">reset filters</a></p>
+      {% endif %}
+    </form>
+
+    <details {% if add_error %}open{% endif %}>
+      <summary>Add allowlist entry</summary>
+      <form method="post" action="/allowlist/add">
+        <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+        {% if add_error %}
+          <article><p><strong>error:</strong> {{ add_error }}</p></article>
+        {% endif %}
+        <fieldset class="grid">
+          <label>pattern
+            <input type="text" name="pattern" value="{{ add_form.pattern or '' }}" maxlength="200" required>
+          </label>
+          <label>type
+            <select name="pattern_type" required>
+              {% for t in supported_pattern_types %}
+                <option value="{{ t }}" {% if add_form.pattern_type == t %}selected{% endif %}>{{ t }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </fieldset>
+        <label>note (optional)
+          <textarea name="note" maxlength="500" rows="2">{{ add_form.note or '' }}</textarea>
+        </label>
+        <label>expires at (optional, UTC; leave blank for permanent)
+          <input type="datetime-local" name="expires_at" value="{{ add_form.expires_at or '' }}">
+        </label>
+        <button type="submit">Add entry</button>
+      </form>
+    </details>
+
+    {% if entries %}
+      <form method="post" action="/allowlist/bulk_remove">
+        <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+        {% if filters.q %}<input type="hidden" name="q" value="{{ filters.q }}">{% endif %}
+        {% if filters.source != 'all' %}<input type="hidden" name="source" value="{{ filters.source }}">{% endif %}
+        {% if filters.status != 'all' %}<input type="hidden" name="status" value="{{ filters.status }}">{% endif %}
+        {% if filters.type != 'all' %}<input type="hidden" name="type" value="{{ filters.type }}">{% endif %}
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="select-all-noop" disabled title="select rows individually"></th>
+                <th>type</th>
+                <th>pattern</th>
+                <th>source</th>
+                <th>status</th>
+                <th>note</th>
+                <th>expires</th>
+                <th>added</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for e in entries %}
+                <tr>
+                  <td>
+                    {% if e.composite_key %}
+                      <input type="checkbox" name="entry_keys" value="{{ e.composite_key }}">
+                    {% else %}
+                      <span title="operator-managed; edit allowlist.yaml directly">&mdash;</span>
+                    {% endif %}
+                  </td>
+                  <td>{{ e.pattern_type }}</td>
+                  <td><code>{{ e.pattern }}</code></td>
+                  <td>
+                    {% if e.source == 'primary' %}
+                      <span class="badge-source-primary">primary</span>
+                    {% else %}
+                      <span class="badge-source-ui">ui</span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if e.status == 'active' %}
+                      <span class="badge-allow-active">active</span>
+                    {% elif e.status == 'snoozed' %}
+                      <span class="badge-allow-snoozed">snoozed</span>
+                    {% else %}
+                      <span class="badge-allow-expired">expired</span>
+                    {% endif %}
+                  </td>
+                  <td>{{ e.note }}</td>
+                  <td>
+                    {% if e.expires_at %}
+                      <time datetime="{{ e.expires_at | unix_to_iso }}">{{ e.expires_at | unix_to_utc_human }}</time>
+                    {% else %}
+                      &mdash;
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if e.added_at %}
+                      <time datetime="{{ e.added_at | unix_to_iso }}">{{ e.added_at | unix_to_utc_human }}</time>
+                    {% else %}
+                      &mdash;
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if ui_count > 0 %}
+          <p><button type="submit">Remove selected</button>
+            <small>(UI entries only; primary entries are read-only)</small>
+          </p>
+        {% endif %}
+      </form>
+    {% else %}
+      {% if filters_active %}
+        <p><em>No entries match the current filters.</em> <a href="/allowlist">reset filters</a></p>
+      {% elif not notice %}
+        <p><em>No allowlist entries.</em></p>
+      {% endif %}
+    {% endif %}
   {% endif %}
 {% endblock %}
