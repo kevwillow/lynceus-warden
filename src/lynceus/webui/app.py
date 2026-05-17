@@ -20,11 +20,20 @@ from fastapi.templating import Jinja2Templates
 from lynceus import __version__, kismet, paths
 from lynceus import allowlist as allowlist_mod
 from lynceus import rules as rules_mod
-from lynceus.allowlist import AllowlistEntry, derive_ui_path
+from lynceus.allowlist import (
+    AllowlistEntry,
+    add_ui_entry,
+    derive_ui_path,
+    remove_ui_entry,
+)
 from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
+
+# Fixed snooze duration. Custom durations are intentionally out of scope —
+# operators wanting a non-24h window edit allowlist.yaml directly.
+SNOOZE_DEFAULT_SECONDS = 86400
 
 logger = logging.getLogger(__name__)
 
@@ -894,6 +903,97 @@ def create_app(config: Config, db: Database) -> FastAPI:
             )
         target = _safe_redirect_target(request, default="/alerts")
         return RedirectResponse(target, status_code=303)
+
+    def _load_alert_for_triage(alert_id: int, request: Request):
+        """Shared validation for the three triage routes.
+
+        Returns the alert dict on success, or a Response (404 / 400) the
+        caller should return directly. Common-validation duplication
+        elsewhere in this module is avoided here because the gates
+        differ slightly per route — but the three triage routes share
+        a structurally identical set, so factoring saves three copies.
+        """
+        if alert_id < 1:
+            raise HTTPException(status_code=400, detail="alert_id must be positive")
+        alert = db.get_alert(alert_id)
+        if alert is None:
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "alerts",
+                    "message": f"Alert {alert_id} not found.",
+                },
+                status_code=404,
+            )
+        if not alert.get("mac"):
+            raise HTTPException(
+                status_code=400,
+                detail="alert has no MAC; cannot apply MAC-keyed allowlist action",
+            )
+        if not app.state.config.allowlist_path:
+            raise HTTPException(
+                status_code=400,
+                detail="allowlist_path is not configured; nothing to write to",
+            )
+        return alert
+
+    def _write_ui_allowlist(alert: dict, *, snooze: bool, now_ts: int) -> None:
+        """Construct + persist the UI-managed entry for ``alert``.
+
+        Permanent and snooze share the same code path because the only
+        difference is ``expires_at`` and the note prefix. Centralizing
+        keeps the note format consistent — operators reading
+        allowlist_ui.yaml directly should see the same provenance
+        string for every webui-originated entry.
+        """
+        iso = unix_to_iso(now_ts)
+        if snooze:
+            note = f"snoozed 24h via webui at {iso}"
+            expires_at: int | None = now_ts + SNOOZE_DEFAULT_SECONDS
+        else:
+            note = f"added via webui at {iso}"
+            expires_at = None
+        entry = AllowlistEntry(
+            pattern=alert["mac"],
+            pattern_type="mac",
+            note=note,
+            added_at=now_ts,
+            expires_at=expires_at,
+        )
+        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
+        add_ui_entry(ui_path, entry)
+
+    @app.post("/alerts/{alert_id}/allowlist")
+    def allowlist_alert_post(request: Request, alert_id: int):
+        result = _load_alert_for_triage(alert_id, request)
+        if not isinstance(result, dict):
+            return result
+        _write_ui_allowlist(result, snooze=False, now_ts=int(time.time()))
+        return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
+
+    @app.post("/alerts/{alert_id}/snooze")
+    def snooze_alert_post(request: Request, alert_id: int):
+        result = _load_alert_for_triage(alert_id, request)
+        if not isinstance(result, dict):
+            return result
+        _write_ui_allowlist(result, snooze=True, now_ts=int(time.time()))
+        return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
+
+    @app.post("/alerts/{alert_id}/allowlist/remove")
+    def remove_allowlist_alert_post(request: Request, alert_id: int):
+        result = _load_alert_for_triage(alert_id, request)
+        if not isinstance(result, dict):
+            return result
+        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
+        # Idempotent: return value discarded. Operators clicking Cancel
+        # twice (or removing an entry that's actually in the primary
+        # operator file) get the same 303 back to /alerts/<id>. The
+        # template re-renders against the current state and shows the
+        # truth, which is more useful than a stale error message.
+        remove_ui_entry(ui_path, result["mac"], "mac")
+        return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
 
     @app.get("/devices", response_class=HTMLResponse)
     def devices_list(
