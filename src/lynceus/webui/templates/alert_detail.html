@@ -96,6 +96,52 @@
     </article>
   {% endif %}
 
+  {% if allowlist_configured and alert.mac %}
+    <article>
+      <header><strong>triage</strong></header>
+      {% if allowlist_match is none %}
+        <p>This device is not on the allowlist. Choose how to handle future alerts for <code>{{ alert.mac }}</code>:</p>
+        <form method="post" action="/alerts/{{ alert.id }}/allowlist"
+              onsubmit="return confirm('Permanently allowlist {{ alert.mac }}? Future alerts for this device will be suppressed.');">
+          <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+          <button type="submit">Allowlist this device</button>
+        </form>
+        <form method="post" action="/alerts/{{ alert.id }}/snooze"
+              onsubmit="return confirm('Snooze alerts for {{ alert.mac }} for 24 hours?');">
+          <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+          <button type="submit">Snooze for 24h</button>
+        </form>
+      {% elif allowlist_match.expires_at is none %}
+        <p class="status">
+          Allowlisted{% if allowlist_match.added_at %} (added <time datetime="{{ allowlist_match.added_at | unix_to_iso }}">{{ allowlist_match.added_at | unix_to_utc_human }}</time>){% endif %}.
+        </p>
+        {% if allowlist_match_removable %}
+          <form method="post" action="/alerts/{{ alert.id }}/allowlist/remove"
+                onsubmit="return confirm('Remove {{ alert.mac }} from the allowlist?');">
+            <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+            <button type="submit">Remove from allowlist</button>
+          </form>
+        {% else %}
+          <p class="dim"><em>Configured in <code>allowlist.yaml</code> (operator-managed); edit that file directly to remove.</em></p>
+        {% endif %}
+      {% else %}
+        <p class="status">
+          Snoozed until <time datetime="{{ allowlist_match.expires_at | unix_to_iso }}">{{ allowlist_match.expires_at | unix_to_utc_human }}</time>
+          {% if snooze_hours_remaining is not none %} ({{ snooze_hours_remaining }} hour{{ '' if snooze_hours_remaining == 1 else 's' }} remaining){% endif %}.
+        </p>
+        {% if allowlist_match_removable %}
+          <form method="post" action="/alerts/{{ alert.id }}/allowlist/remove"
+                onsubmit="return confirm('Cancel snooze for {{ alert.mac }}?');">
+            <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+            <button type="submit">Cancel snooze</button>
+          </form>
+        {% else %}
+          <p class="dim"><em>Snooze configured in <code>allowlist.yaml</code> (operator-managed); edit that file directly to cancel.</em></p>
+        {% endif %}
+      {% endif %}
+    </article>
+  {% endif %}
+
   <article>
     <header><strong>actions</strong></header>
     {% if alert.acknowledged %}

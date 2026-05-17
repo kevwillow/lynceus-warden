@@ -1858,3 +1858,197 @@ def test_base_html_uses_container_fluid():
     assert 'class="container-fluid"' in content
     # The non-fluid variant must be gone — guard against an accidental revert.
     assert 'class="container"' not in content
+
+
+# ---------------------------------------------------------------------------
+# rc5: alert-detail triage buttons (Allowlist / Snooze 24h / Remove).
+# Depends on the allowlist backend reshape from the preceding prompt:
+# expires_at + added_at on AllowlistEntry, split-storage loader, atomic
+# writers, mtime watch.
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_allowlist(tmp_path):
+    """App with an empty operator-curated primary allowlist.yaml configured.
+
+    The triage routes refuse to write when allowlist_path is unset; tests
+    that exercise the success path need a configured primary even when
+    its contents are intentionally empty.
+    """
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    return app, db, primary
+
+
+def _ui_path_for(primary: Path) -> Path:
+    from lynceus.allowlist import derive_ui_path as _derive
+
+    return _derive(primary)
+
+
+def _read_ui_entries(primary: Path):
+    """Read entries from the daemon-managed UI sibling, or empty list."""
+    import yaml as _yaml
+
+    ui_path = _ui_path_for(primary)
+    if not ui_path.exists():
+        return []
+    data = _yaml.safe_load(ui_path.read_text(encoding="utf-8")) or {}
+    return data.get("entries", [])
+
+
+def _seed_alert_with_mac(db, mac: str, *, ts: int = 100, severity: str = "med") -> int:
+    """Insert a device row + an alert row pointing at it.
+
+    ``alerts.mac`` has a FOREIGN KEY → ``devices.mac``, so an alert with
+    a non-null MAC requires the device to exist first.
+    """
+    db.upsert_device(mac, "wifi", None, 0, ts)
+    return db.add_alert(
+        ts=ts, rule_name="r", mac=mac, message="m", severity=severity
+    )
+
+
+
+# --- template render states -----------------------------------------------
+
+
+@pytest.mark.webui
+def test_alert_detail_state1_renders_both_buttons_and_csrf(tmp_path):
+    """No matching allowlist entry: both action forms appear with CSRF."""
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Allowlist this device" in r.text
+        assert "Snooze for 24h" in r.text
+        assert f'action="/alerts/{aid}/allowlist"' in r.text
+        assert f'action="/alerts/{aid}/snooze"' in r.text
+        # Both forms must carry the CSRF token.
+        assert r.text.count(f'name="{CSRF_FORM_FIELD}"') >= 2
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_state2_renders_status_and_remove_button(tmp_path):
+    """Permanently allowlisted via UI: status text + Remove button."""
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        add_ui_entry(
+            _ui_path_for(primary),
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:ff",
+                pattern_type="mac",
+                added_at=1_799_000_000,
+            ),
+        )
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Allowlisted" in r.text
+        assert "Remove from allowlist" in r.text
+        # The "added" timestamp renders in human form.
+        assert "2027-01-03 18:13 UTC" in r.text  # 1_799_000_000 → 2027-01-03 18:13 UTC
+        # No State-1 buttons present.
+        assert "Snooze for 24h" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_state3_renders_countdown_and_cancel_button(tmp_path):
+    """Snoozed via UI: countdown + Cancel button."""
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        now = int(_time.time())
+        add_ui_entry(
+            _ui_path_for(primary),
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:ff",
+                pattern_type="mac",
+                added_at=now,
+                expires_at=now + 12 * 3600,  # 12h remaining
+            ),
+        )
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Snoozed until" in r.text
+        assert "hours remaining" in r.text
+        assert "Cancel snooze" in r.text
+        # State-1/2 controls absent.
+        assert "Allowlist this device" not in r.text
+        assert "Remove from allowlist" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_state2_primary_match_shows_no_button(tmp_path):
+    """An entry living in the operator-curated primary file is not
+    UI-removable; the section shows status and a hint, no button."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        primary.write_text(
+            "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n",
+            encoding="utf-8",
+        )
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Allowlisted" in r.text
+        assert "Remove from allowlist" not in r.text
+        assert "operator-managed" in r.text
+        assert "allowlist.yaml" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_triage_hidden_when_allowlist_path_not_configured(tmp_path):
+    """No allowlist_path: the whole triage section is omitted."""
+    config = Config(db_path=str(tmp_path / "ui.db"))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "<strong>triage</strong>" not in r.text
+        assert "Snooze for 24h" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_triage_hidden_when_alert_has_no_mac(tmp_path):
+    """An alert without a MAC has nothing to allowlist; section is hidden."""
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="med")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "<strong>triage</strong>" not in r.text
+    finally:
+        db.close()
+
