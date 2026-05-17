@@ -8,6 +8,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`GET /healthz.json` — machine-readable health endpoint for
+  monitoring integration.** Returns JSON with overall status plus
+  per-check details (DB reachability, daemon liveness, watchlist
+  freshness, ruleset count, alert counts). Read-only, no auth,
+  derived entirely from existing DB + filesystem state — no new
+  tables, no heartbeat infrastructure, no daemon-side changes.
+
+  HTTP semantics follow the standard monitoring convention: 200
+  when the top-level status is `ok`, 503 when it is `error`.
+  Currently only the DB-reachable check can flip the top-level
+  status; the other checks return `status: ok` with values the
+  monitoring tool can apply its own thresholds against. When the
+  DB is unreachable the response carries only the `db` check (the
+  others can't be computed without DB access).
+
+  Response shape:
+
+      {
+        "status": "ok" | "error",
+        "version": "0.4.0rc5",
+        "checks": {
+          "db":        {"status": ..., "detail": ... | null},
+          "poller":    {"status": ..., "last_poll_at": ...,
+                        "seconds_since_poll": ...,
+                        "last_observation_at": ...,
+                        "seconds_since_observation": ...},
+          "watchlist": {"status": ..., "total_rows": ...,
+                        "by_pattern_type": {...},
+                        "last_imported_at": ...,
+                        "days_since_import": ..., "stale": ...},
+          "ruleset":   {"status": ..., "active_rules": ...,
+                        "rules_path_configured": ...},
+          "alerts":    {"status": ..., "total": ...,
+                        "last_hour": ...}
+        }
+      }
+
+  The `poller` check carries two signals — `last_poll_at` (from
+  `poller_state.last_poll_ts`, written by the daemon every tick,
+  proxies "daemon process alive") and `last_observation_at`
+  (`MAX(sightings.ts)`, proxies "Kismet returning data"). Both
+  are index-backed single-row lookups; sub-second response on a
+  populated DB. The `watchlist.stale` boolean uses the same
+  `config.watchlist_staleness_warn_days` threshold the startup
+  log line and /settings card already use.
+
+  **Shape-stability commitment:** existing keys never disappear
+  in future releases; future releases only add keys. Monitoring
+  tools can pin against this shape without expecting churn.
+
+  **Path choice — new sibling, not replacement.** The existing
+  `/healthz` HTML page (linked from `_topnav.html`, grep'd by
+  `docs/SMOKE.md`, polled for HTTP 200 by `lynceus-quickstart`)
+  is kept unchanged. The JSON endpoint lives at `/healthz.json`
+  so the human-facing nav, the smoke runbook, and the quickstart
+  readiness probe all stay untouched. Content-negotiation
+  single-path design was considered and rejected: a `curl`
+  without `Accept: application/json` would get HTML, which
+  monitoring tools then try to parse as JSON — fragile against
+  the shape-stability commitment.
+
+  Example invocation:
+
+      curl -sS http://127.0.0.1:8765/healthz.json | jq .
+
+  Operator-UX framing: enables uptime monitoring, dashboarding,
+  and alerting integration without requiring access to the daemon
+  process directly. Polling at the typical 30s cadence adds no
+  measurable load — every query is index-backed.
+
+  Out of scope for v1 (future polish): authentication, Prometheus
+  text-format exposition at `/metrics`, response caching,
+  configurable thresholds, top-level status flips on non-DB
+  failures, daemon-side heartbeat infrastructure.
+
 - **`lynceus-validate` CLI — read-only configuration validator.**
   Catches typos, schema errors, malformed values, and missing
   referenced paths at edit time instead of at the next daemon
