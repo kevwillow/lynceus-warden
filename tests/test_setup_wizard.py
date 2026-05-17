@@ -14,6 +14,31 @@ import yaml
 
 from lynceus.cli import setup as wiz
 
+# Stash the real Kismet-API-key auto-locate resolver before the autouse
+# fixture below replaces it with a no-op. Unit tests of the resolver
+# call this reference directly so they're not short-circuited by the
+# default stub.
+_REAL_KISMET_CANDIDATE_PATHS = wiz._kismet_api_key_candidate_paths
+
+
+# ---- autouse: default-stub the Kismet API key auto-locator -----------------
+
+
+@pytest.fixture(autouse=True)
+def _disable_kismet_key_autolocate(monkeypatch):
+    """Default the Kismet API key auto-locator to a miss for every test.
+
+    The wizard's auto-locate step (rc5) reads ``~/.kismet/session.db`` —
+    if the developer happens to have a real Kismet install on the test
+    host, the wizard would otherwise hit it and ask "Use this key?"
+    which is an unscripted prompt that would consume the next ``input``
+    answer and break every wizard test. Tests that exercise the
+    auto-locate flow itself override this stub explicitly; the resolver
+    unit tests use ``_REAL_KISMET_CANDIDATE_PATHS`` to bypass it.
+    """
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [])
+
+
 # ---- helpers ---------------------------------------------------------------
 
 
@@ -463,11 +488,15 @@ def _stub_path_resolution(monkeypatch, tmp_path):
 
     Also stubs ``enumerate_bluetooth_adapters`` to ``None`` so the wizard
     silently skips the BT section by default — tests that exercise the BT
-    flow override this stub.
+    flow override this stub. The Kismet API key auto-locator is forced
+    to return an empty candidate list so existing tests don't
+    accidentally hit a real ``~/.kismet/session.db`` on the developer's
+    machine; tests that exercise the auto-locate flow override this.
     """
     target = tmp_path / "lynceus.yaml"
     monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
     monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [])
     return target
 
 
@@ -3925,6 +3954,405 @@ def test_enable_alerting_does_not_overwrite_existing_rules_path_in_config(
     assert data["rules_path"] == "/operator/hand-picked/rules.yaml"
     # The new rules.yaml was still written at the wizard-chosen path.
     assert (config_dir / "rules.yaml").exists()
+
+
+# ---- Kismet API key auto-locate (rc5) --------------------------------------
+
+
+def _write_session_db(path: Path, entries: list[dict]) -> Path:
+    import json as _json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps(entries), encoding="utf-8")
+    return path
+
+
+def test_kismet_api_key_candidate_paths_user_scope(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.Path, "home", staticmethod(lambda: tmp_path / "alice"))
+    paths = _REAL_KISMET_CANDIDATE_PATHS("user")
+    assert paths == [tmp_path / "alice" / ".kismet" / "session.db"]
+
+
+def test_kismet_api_key_candidate_paths_system_scope_prefers_sudo_user(
+    monkeypatch, tmp_path
+):
+    """Under --system (typically via sudo), the invoking operator's home
+    takes priority over root's — Kismet is more commonly launched by the
+    operator than by root."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setenv("SUDO_USER", "alice")
+    # Fake out pwd.getpwnam so we don't depend on the test host having an
+    # 'alice' account.
+    fake_pwd = MagicMock()
+    fake_pwd.getpwnam.return_value = MagicMock(pw_dir=str(tmp_path / "home" / "alice"))
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "pwd", fake_pwd)
+    monkeypatch.setattr(wiz.Path, "home", staticmethod(lambda: tmp_path / "root"))
+
+    paths = _REAL_KISMET_CANDIDATE_PATHS("system")
+    assert paths[0] == tmp_path / "home" / "alice" / ".kismet" / "session.db"
+    # /root and Path.home() are also present (Path.home() may equal /root
+    # in real sudo runs, so dedup is exercised here).
+    assert Path("/root") / ".kismet" / "session.db" in paths
+
+
+def test_kismet_api_key_candidate_paths_system_scope_no_sudo_user(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setattr(wiz.Path, "home", staticmethod(lambda: tmp_path / "root"))
+    paths = _REAL_KISMET_CANDIDATE_PATHS("system")
+    # No SUDO_USER means we fall back to /root and Path.home().
+    assert Path("/root") / ".kismet" / "session.db" in paths
+    assert tmp_path / "root" / ".kismet" / "session.db" in paths
+
+
+def test_kismet_api_key_candidate_paths_windows_returns_empty(monkeypatch):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    assert _REAL_KISMET_CANDIDATE_PATHS("user") == []
+    assert _REAL_KISMET_CANDIDATE_PATHS("system") == []
+
+
+def test_read_kismet_api_key_returns_first_when_single_entry(tmp_path):
+    p = _write_session_db(
+        tmp_path / "session.db",
+        [{"token": "deadbeefcafebabe1234", "name": "web logon", "role": "admin"}],
+    )
+    assert wiz._read_kismet_api_key(p) == ("deadbeefcafebabe1234", "web logon")
+
+
+def test_read_kismet_api_key_prefers_lynceus_named_entry(tmp_path):
+    p = _write_session_db(
+        tmp_path / "session.db",
+        [
+            {"token": "AAAA1111", "name": "web logon", "role": "admin"},
+            {"token": "BBBB2222", "name": "lynceus", "role": "readonly"},
+            {"token": "CCCC3333", "name": "other", "role": "readonly"},
+        ],
+    )
+    assert wiz._read_kismet_api_key(p) == ("BBBB2222", "lynceus")
+
+
+def test_read_kismet_api_key_prefers_readonly_over_admin(tmp_path):
+    p = _write_session_db(
+        tmp_path / "session.db",
+        [
+            {"token": "AAAA1111", "name": "web logon", "role": "admin"},
+            {"token": "BBBB2222", "name": "scanner", "role": "readonly"},
+        ],
+    )
+    assert wiz._read_kismet_api_key(p) == ("BBBB2222", "scanner")
+
+
+def test_read_kismet_api_key_falls_back_to_admin_when_no_readonly(tmp_path):
+    p = _write_session_db(
+        tmp_path / "session.db",
+        [
+            {"token": "ZZZ", "name": "scanreport", "role": "scanreport"},
+            {"token": "AAA", "name": "web logon", "role": "admin"},
+        ],
+    )
+    assert wiz._read_kismet_api_key(p) == ("AAA", "web logon")
+
+
+def test_read_kismet_api_key_returns_none_for_missing_file(tmp_path):
+    assert wiz._read_kismet_api_key(tmp_path / "does-not-exist") is None
+
+
+def test_read_kismet_api_key_returns_none_for_unreadable_file(tmp_path, monkeypatch):
+    """Simulate a permission-denied read — the parser must absorb the
+    OSError silently and return None so the wizard falls through to the
+    manual entry path."""
+    p = tmp_path / "session.db"
+    p.write_text("[]")
+
+    def _raise(*a, **kw):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(wiz.Path, "read_text", _raise)
+    assert wiz._read_kismet_api_key(p) is None
+
+
+def test_read_kismet_api_key_returns_none_for_malformed_json(tmp_path):
+    p = tmp_path / "session.db"
+    p.write_text("not-json{{{")
+    assert wiz._read_kismet_api_key(p) is None
+
+
+def test_read_kismet_api_key_returns_none_for_non_list_root(tmp_path):
+    p = tmp_path / "session.db"
+    p.write_text('{"token": "x", "name": "y"}')  # object, not list
+    assert wiz._read_kismet_api_key(p) is None
+
+
+def test_read_kismet_api_key_returns_none_for_empty_file(tmp_path):
+    p = tmp_path / "session.db"
+    p.write_text("")
+    assert wiz._read_kismet_api_key(p) is None
+
+
+def test_read_kismet_api_key_returns_none_for_empty_array(tmp_path):
+    p = _write_session_db(tmp_path / "session.db", [])
+    assert wiz._read_kismet_api_key(p) is None
+
+
+def test_read_kismet_api_key_skips_entries_with_empty_token(tmp_path):
+    p = _write_session_db(
+        tmp_path / "session.db",
+        [
+            {"token": "", "name": "ignored", "role": "readonly"},
+            {"token": "   ", "name": "also ignored", "role": "readonly"},
+            {"token": "REAL", "name": "real", "role": "admin"},
+        ],
+    )
+    assert wiz._read_kismet_api_key(p) == ("REAL", "real")
+
+
+def test_redact_kismet_api_key_format():
+    assert wiz._redact_kismet_api_key("abcd-this-is-a-long-token-wxyz") == "abcd...wxyz"
+
+
+def test_redact_kismet_api_key_short_input_collapses_to_placeholder():
+    """A pathologically short key must not approximate itself in the
+    preview — head+tail of a 6-char key would reveal the whole thing."""
+    assert wiz._redact_kismet_api_key("short") == "***"
+
+
+def test_redact_kismet_api_key_strips_whitespace():
+    assert wiz._redact_kismet_api_key("  abcd-mid-content-wxyz  ") == "abcd...wxyz"
+
+
+def test_run_wizard_autolocate_hit_yes_skips_manual_prompt(monkeypatch, tmp_path, capsys):
+    """Auto-locate finds a key; operator answers Y; the manual prompt
+    must be skipped and the located key persisted into the config."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    session_db = _write_session_db(
+        tmp_path / "alice" / ".kismet" / "session.db",
+        [{"token": "AUTOLOCATEDKEY1234567", "name": "lynceus", "role": "readonly"}],
+    )
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [session_db])
+
+    inputs = [
+        "",  # kismet URL default
+        "y",  # use the located key
+        "wlan0",  # capture interface (freeform)
+        "",  # probe_ssids default
+        "",  # ble_friendly_names default
+        "https://ntfy.sh",
+        "lynceus-feedface",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate default
+    ]
+
+    # The getpass list is intentionally empty — auto-locate-hit + Y must
+    # mean prompt_secret is never called, so any getpass call would
+    # error out and fail this test.
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq([]),
+    )
+    assert rc == 0
+
+    target = tmp_path / "lynceus.yaml"
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_api_key"] == "AUTOLOCATEDKEY1234567"
+
+    out = capsys.readouterr().out
+    assert "Searching for an existing API key on disk" in out
+    assert "Found a key in" in out
+    assert "AUTO...4567" in out  # redacted preview format
+    # The full key MUST NOT appear anywhere in stdout.
+    assert "AUTOLOCATEDKEY1234567" not in out
+
+
+def test_run_wizard_autolocate_hit_no_falls_through_to_manual(monkeypatch, tmp_path, capsys):
+    """Auto-locate finds a key; operator answers N; the Piece 1
+    walkthrough + manual prompt run unchanged, and the manually-entered
+    key (not the located one) ends up in the config."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    session_db = _write_session_db(
+        tmp_path / "alice" / ".kismet" / "session.db",
+        [{"token": "REJECTEDKEY1234567890", "name": "lynceus", "role": "readonly"}],
+    )
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [session_db])
+
+    inputs = [
+        "",  # kismet URL default
+        "n",  # reject the located key
+        "wlan0",
+        "",
+        "",
+        "https://ntfy.sh",
+        "lynceus-feedface",
+        "",
+        "",
+        "",
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["MANUALLYTYPEDKEY"]),
+    )
+    assert rc == 0
+
+    target = tmp_path / "lynceus.yaml"
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_api_key"] == "MANUALLYTYPEDKEY"
+
+    out = capsys.readouterr().out
+    # Piece 1 walkthrough renders unchanged on the fall-through path.
+    assert "Where to find your API key" in out
+    assert "API Keys" in out
+    # Located key never echoed in full.
+    assert "REJECTEDKEY1234567890" not in out
+    # Manually-typed key likewise never echoed in any path.
+    assert "MANUALLYTYPEDKEY" not in out
+
+
+def test_run_wizard_autolocate_miss_renders_piece1_walkthrough_unchanged(
+    monkeypatch, tmp_path, capsys
+):
+    """No candidate path readable → the Piece 1 walkthrough + manual
+    prompt run exactly as before. Regression guard against accidentally
+    making auto-locate non-additive."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # Default autouse stub already returns [], but make the intent explicit:
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [])
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["manualkey"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Searching for an existing API key on disk" in out
+    assert "no existing key found" in out
+    # Piece 1 walkthrough still rendered.
+    assert "Where to find your API key" in out
+    # No false-positive "Found a key" line.
+    assert "Found a key in" not in out
+
+
+def test_run_wizard_autolocate_unreadable_file_falls_through_silently(
+    monkeypatch, tmp_path, capsys
+):
+    """A candidate path that exists but can't be parsed must result in a
+    silent miss — no permission-denied or parse-error noise reaches the
+    operator."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # Lay down a malformed session.db on the first candidate path.
+    bad = tmp_path / "alice" / ".kismet" / "session.db"
+    bad.parent.mkdir(parents=True)
+    bad.write_text("not-json{{{")
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [bad])
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["manualkey"]),
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    out = captured.out
+    err = captured.err
+    assert "no existing key found" in out
+    # Errors must NOT bubble up to the operator.
+    assert "JSON" not in out and "json" not in out
+    assert "parse" not in out.lower()
+    assert "permission" not in out.lower()
+    assert err == ""
+
+
+def test_run_wizard_autolocate_redacted_preview_never_leaks_full_key(
+    monkeypatch, tmp_path, capsys
+):
+    """End-to-end redaction contract: the full located key must not
+    appear in stdout, stderr, or the wizard's summary block under any
+    flow, including the accept-the-key path where the key is the one
+    written into lynceus.yaml."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    sentinel = "SECRETSECRETSECRET99"
+    session_db = _write_session_db(
+        tmp_path / "alice" / ".kismet" / "session.db",
+        [{"token": sentinel, "name": "lynceus", "role": "readonly"}],
+    )
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [session_db])
+
+    inputs = [
+        "",  # kismet URL default
+        "",  # accept the located key (Y is default)
+        "wlan0",
+        "",
+        "",
+        "https://ntfy.sh",
+        "lynceus-feedface",
+        "",
+        "",
+        "",
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq([]),
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out
+    assert sentinel not in captured.err
+
+
+def test_run_wizard_autolocate_walks_multiple_candidates_until_hit(
+    monkeypatch, tmp_path
+):
+    """Candidate list is consulted in order; an absent or unreadable
+    first entry doesn't short-circuit the second."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    missing = tmp_path / "missing" / "session.db"  # absent
+    hit = _write_session_db(
+        tmp_path / "alice" / ".kismet" / "session.db",
+        [{"token": "SECONDCANDIDATEKEY99", "name": "lynceus", "role": "readonly"}],
+    )
+    monkeypatch.setattr(
+        wiz, "_kismet_api_key_candidate_paths", lambda scope: [missing, hit]
+    )
+
+    inputs = [
+        "",  # kismet URL default
+        "y",  # accept located key
+        "wlan0",
+        "",
+        "",
+        "https://ntfy.sh",
+        "lynceus-feedface",
+        "",
+        "",
+        "",
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq([]),
+    )
+    assert rc == 0
+    target = tmp_path / "lynceus.yaml"
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_api_key"] == "SECONDCANDIDATEKEY99"
 
 
 # Suppress the unused-import warning for sys (used by helpers above).
