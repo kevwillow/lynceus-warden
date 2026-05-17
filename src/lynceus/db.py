@@ -821,23 +821,33 @@ class Database:
         since_ts: int | None = None,
         until_ts: int | None = None,
         search: str | None = None,
+        rule_type: str | None = None,
+        q: str | None = None,
     ) -> list[dict]:
         self._validate_pagination(limit, offset)
         if severity is not None and severity not in self._ALERT_SEVERITIES:
             raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
 
+        # list_alerts is the lighter sibling of list_alerts_with_match
+        # (no watchlist join columns in the result). Filter shape stays
+        # identical so /alerts ack-all-visible can mirror the page's
+        # filter set exactly -- "ack all matching" must not diverge
+        # from "I can see these on the page."
         clauses, params = self._alert_filter_clauses(
             severity=severity,
             acknowledged=acknowledged,
             since_ts=since_ts,
             until_ts=until_ts,
             search=search,
+            rule_type=rule_type,
+            q=q,
+            alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = (
-            "SELECT id, ts, rule_name, rule_type, mac, message, severity, "
-            f"acknowledged FROM alerts {where} "
-            "ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?"
+            "SELECT a.id, a.ts, a.rule_name, a.rule_type, a.mac, a.message, "
+            f"a.severity, a.acknowledged {self._ALERTS_FROM_FOR_FILTERS} "
+            f"{where} ORDER BY a.ts DESC, a.id DESC LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])
         rows = self._conn.execute(sql, params).fetchall()
@@ -851,7 +861,14 @@ class Database:
         since_ts: int | None = None,
         until_ts: int | None = None,
         search: str | None = None,
+        rule_type: str | None = None,
+        q: str | None = None,
     ) -> int:
+        # COUNT and the page query (list_alerts_with_match) must
+        # apply the same filters or "K total" is a lie and the
+        # pagination math breaks. Both call _alert_filter_clauses
+        # with alias="a" and use the same _ALERTS_FROM_FOR_FILTERS
+        # FROM clause -- single source of truth.
         if severity is not None and severity not in self._ALERT_SEVERITIES:
             raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
         clauses, params = self._alert_filter_clauses(
@@ -860,10 +877,25 @@ class Database:
             since_ts=since_ts,
             until_ts=until_ts,
             search=search,
+            rule_type=rule_type,
+            q=q,
+            alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = f"SELECT COUNT(*) FROM alerts {where}"
+        sql = f"SELECT COUNT(*) {self._ALERTS_FROM_FOR_FILTERS} {where}"
         return int(self._conn.execute(sql, params).fetchone()[0])
+
+    # Shared FROM clause for count_alerts + list_alerts_with_match.
+    # The LEFT JOINs are unconditional because the q-substring
+    # filter touches m.vendor; even when q is unset the JOINs cost
+    # one indexed lookup per matched row (negligible at our scale)
+    # and the cost of an inconsistent COUNT-vs-page filter shape
+    # would be much worse (pagination math becomes a lie).
+    _ALERTS_FROM_FOR_FILTERS = (
+        "FROM alerts a "
+        "LEFT JOIN watchlist w ON w.id = a.matched_watchlist_id "
+        "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id"
+    )
 
     @staticmethod
     def _alert_filter_clauses(
@@ -873,6 +905,8 @@ class Database:
         since_ts: int | None,
         until_ts: int | None,
         search: str | None,
+        rule_type: str | None = None,
+        q: str | None = None,
         alias: str = "",
     ) -> tuple[list[str], list]:
         prefix = f"{alias}." if alias else ""
@@ -892,8 +926,27 @@ class Database:
             params.append(until_ts)
         if search is not None and search != "":
             like = f"%{search.lower()}%"
-            clauses.append(f"(LOWER({prefix}message) LIKE ? OR LOWER({prefix}rule_name) LIKE ?)")
+            clauses.append(
+                f"(LOWER({prefix}message) LIKE ? OR LOWER({prefix}rule_name) LIKE ?)"
+            )
             params.extend([like, like])
+        if rule_type is not None and rule_type != "":
+            # NULL-rule_type rows (alerts written pre-migration-015)
+            # are excluded from any rule_type=<specific> filter -- the
+            # honest answer for "we don't know what type this was."
+            clauses.append(f"{prefix}rule_type = ?")
+            params.append(rule_type)
+        if q is not None and q != "":
+            # q matches MAC + message (catches SSID for ssid-typed
+            # rules whose message embeds the SSID) + manufacturer
+            # (via the watchlist_metadata JOIN, alias m).
+            qlike = f"%{q.lower()}%"
+            clauses.append(
+                f"(LOWER(COALESCE({prefix}mac, '')) LIKE ? "
+                f"OR LOWER({prefix}message) LIKE ? "
+                "OR LOWER(COALESCE(m.vendor, '')) LIKE ?)"
+            )
+            params.extend([qlike, qlike, qlike])
         return clauses, params
 
     def get_alert(self, alert_id: int) -> dict | None:
@@ -922,6 +975,8 @@ class Database:
         "since_ts",
         "until_ts",
         "search",
+        "rule_type",
+        "q",
     )
 
     _ALERT_WITH_MATCH_SELECT = (
@@ -1084,6 +1139,8 @@ class Database:
             since_ts=filters.get("since_ts"),
             until_ts=filters.get("until_ts"),
             search=filters.get("search"),
+            rule_type=filters.get("rule_type"),
+            q=filters.get("q"),
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
