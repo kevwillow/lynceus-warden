@@ -1,0 +1,23 @@
+[Unit]
+Description=Lynceus Argus watchlist refresh timer
+Documentation=https://github.com/kevwillow/lynceus-warden
+Requires=lynceus-refresh.service
+
+[Timer]
+# Weekly cadence is comfortably below the default 30-day staleness
+# threshold (config.watchlist_staleness_warn_days), so operators on
+# the default tune rarely see the /settings "stale" badge once the
+# timer is enabled. Operators wanting a different cadence drop in
+# their own override via:  sudo systemctl edit lynceus-refresh.timer
+OnCalendar=weekly
+# Catch up on missed runs after reboots or extended downtime, so a
+# host that was off for the scheduled window still refreshes on
+# next boot rather than waiting another full week.
+Persistent=true
+# Stagger deployments so we don't hammer GitHub's raw endpoint at the
+# same moment of every Monday — 30min is wide enough to spread real
+# usage while still landing each refresh well inside the same day.
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,43 @@
+[Unit]
+Description=Lynceus Argus watchlist refresh
+Documentation=https://github.com/kevwillow/lynceus-warden
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=lynceus
+Group=lynceus
+# --scope system is mandatory here: the daemon user has --no-create-home,
+# so the importer's default --scope user would try to resolve
+# ~lynceus/.local/share/lynceus/argus-cache/ and fail. --scope system
+# routes writes to /var/lib/lynceus (database + argus-cache/) which is
+# the same surface the daemon already owns.
+ExecStart=/opt/lynceus/.venv/bin/lynceus-import-argus --scope system --from-github
+StandardOutput=journal
+StandardError=journal
+# 10min is comfortably above the importer's combined GitHub API + raw
+# timeouts (15s + 30s) plus a generous floor for slow links. A failure
+# here is logged by systemd and the next scheduled OnCalendar fire
+# retries — no Restart= directive on purpose: tight retry loops on a
+# sustained outage are worse than the missed window.
+TimeoutStartSec=10min
+
+# Hardening mirrors lynceus.service so the refresh runs with the same
+# posture as the daemon. /var/lib/lynceus is in ReadWritePaths because
+# the importer writes to lynceus.db (WAL mode tolerates the concurrent
+# daemon writer) and caches the pulled CSV under argus-cache/.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/lynceus /var/log/lynceus
+
+[Install]
+WantedBy=multi-user.target

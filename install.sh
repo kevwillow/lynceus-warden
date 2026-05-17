@@ -347,8 +347,16 @@ install_system() {
     run chmod 0750 /etc/lynceus
     run chown -R lynceus:lynceus /var/lib/lynceus /var/log/lynceus
 
-    run install -m 0644 "$SYSTEMD_SRC_DIR/lynceus.service"    "$SYSTEMD_DEST_DIR/lynceus.service"
-    run install -m 0644 "$SYSTEMD_SRC_DIR/lynceus-ui.service" "$SYSTEMD_DEST_DIR/lynceus-ui.service"
+    run install -m 0644 "$SYSTEMD_SRC_DIR/lynceus.service"         "$SYSTEMD_DEST_DIR/lynceus.service"
+    run install -m 0644 "$SYSTEMD_SRC_DIR/lynceus-ui.service"      "$SYSTEMD_DEST_DIR/lynceus-ui.service"
+    # lynceus-refresh.{service,timer} ship installed-but-NOT-enabled,
+    # the same posture install.sh applies to lynceus.service. Enabling
+    # the timer is the only Lynceus surface that opts the host into a
+    # recurring outbound network call (--from-github), so it stays an
+    # explicit operator decision — install.sh's offline invariant
+    # holds.
+    run install -m 0644 "$SYSTEMD_SRC_DIR/lynceus-refresh.service" "$SYSTEMD_DEST_DIR/lynceus-refresh.service"
+    run install -m 0644 "$SYSTEMD_SRC_DIR/lynceus-refresh.timer"   "$SYSTEMD_DEST_DIR/lynceus-refresh.timer"
     run systemctl daemon-reload
 
     log ""
@@ -361,6 +369,11 @@ install_system() {
     log "  Bundled watchlist auto-imports on first 'sudo lynceus-setup --system' run."
     log "  Refresh later: sudo lynceus-import-argus --scope system --from-github         # network"
     log "                 sudo lynceus-import-argus --scope system --input <path-to-csv> # air-gapped"
+    log ""
+    log "Auto-refresh (weekly, default off):"
+    log "  Enable:        sudo systemctl enable --now lynceus-refresh.timer"
+    log "  Change cadence (drop-in override):"
+    log "                 sudo systemctl edit lynceus-refresh.timer"
     log ""
     log "Kismet (the data source Lynceus polls):"
     log "  Need Kismet installed?  sudo lynceus-bootstrap-kismet"
@@ -420,7 +433,7 @@ uninstall_system() {
 
     log "Uninstalling Lynceus systemd integration"
 
-    for unit in lynceus.service lynceus-ui.service; do
+    for unit in lynceus.service lynceus-ui.service lynceus-refresh.timer lynceus-refresh.service; do
         if systemctl is-enabled "$unit" >/dev/null 2>&1; then
             run systemctl disable "$unit" || true
         fi
