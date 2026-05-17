@@ -268,6 +268,44 @@ def test_prompt_numbered_choice_rejects_non_integer(capsys):
     assert val == "b"
 
 
+# ---- section / context helpers --------------------------------------------
+
+
+def test_print_section_emits_title_with_underline(capsys):
+    """``_print_section`` prints a blank line, the title, a ``═`` underline
+    matching the title's length, and a trailing blank line. This is the
+    visual scaffolding the Kismet + ntfy sections rely on; if the
+    underline gets out of sync with the title the section header looks
+    broken on a real terminal."""
+    wiz._print_section("Kismet Connection")
+    out = capsys.readouterr().out
+    lines = out.split("\n")
+    assert lines[0] == ""
+    assert lines[1] == "Kismet Connection"
+    assert lines[2] == "═" * len("Kismet Connection")
+    assert lines[3] == ""
+
+
+def test_print_context_strips_outer_whitespace_and_emits_blank_trailer(capsys):
+    """A triple-quoted literal with a leading newline and trailing
+    blank line is the natural way to write a context block. The helper
+    must strip the outer whitespace so the block renders flush-left,
+    then add one blank line after for separation from the prompt."""
+    wiz._print_context(
+        """
+First line.
+Second line.
+"""
+    )
+    out = capsys.readouterr().out
+    lines = out.split("\n")
+    # First line of output is the first real line of context (no leading blank),
+    # then the rest, then a single blank line separating from the prompt.
+    assert lines[0] == "First line."
+    assert lines[1] == "Second line."
+    assert lines[2] == ""
+
+
 # ---- wireless interface enumeration ----------------------------------------
 
 
@@ -2524,7 +2562,7 @@ def test_setup_py_no_longer_uses_write_text_then_chmod_pattern():
     readable. After the S2 fix, the pattern must not exist anywhere
     in setup.py — every secrets-bearing write goes through
     ``_atomic_write``."""
-    setup_py = Path(wiz.__file__).read_text()
+    setup_py = Path(wiz.__file__).read_text(encoding="utf-8")
     # No top-level write_text on a yaml/conf path immediately followed
     # by a chmod. Search for the most concrete witness: a chmod 0o600
     # call. Pre-fix code had two; post-fix code has none.

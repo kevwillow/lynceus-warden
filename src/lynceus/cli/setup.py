@@ -487,6 +487,33 @@ def prompt_yes_no(question: str, *, default: bool, input_fn=None) -> bool:
         print("Please answer y or n.")
 
 
+def _print_section(title: str) -> None:
+    """Print a wizard section header with a ``═`` underline.
+
+    Used to break the Kismet and ntfy wizard sections out visually so a
+    first-time operator can tell where one ask ends and the next begins.
+    The underline is plain box-drawing — no emoji, no ANSI color, no new
+    dependency — so the output still looks fine when tee'd into a log.
+    """
+    print()
+    print(title)
+    print("═" * len(title))
+    print()
+
+
+def _print_context(text: str) -> None:
+    """Print a multi-line context block above a prompt.
+
+    Leading / trailing whitespace is stripped from ``text`` so the
+    caller can use a triple-quoted literal without worrying about the
+    indentation of the first line, then a single trailing blank line
+    separates the block from the prompt that follows.
+    """
+    for line in text.strip().split("\n"):
+        print(line)
+    print()
+
+
 def prompt_numbered_choice(question: str, options: list[str], *, input_fn=None) -> str:
     in_fn = input_fn or input
     print(question)
@@ -1172,6 +1199,19 @@ def run_wizard(
     answers: dict = {}
 
     # (a) Kismet URL — validated for scheme + host before any probe touches it.
+    _print_section("Kismet Connection")
+    _print_context(
+        """
+Lynceus reads device observations from Kismet via its REST API.
+You'll need two things:
+  - The Kismet web UI URL (default below works for a local Kismet)
+  - An API key (set up in the next prompt)
+
+If Kismet isn't installed or running yet, you can still complete
+this wizard — the probe will fail soft and you can re-run
+`lynceus-setup --reconfigure` after Kismet is up.
+"""
+    )
     try:
         answers["kismet_url"] = prompt_url(
             "Kismet API URL",
@@ -1187,6 +1227,26 @@ def run_wizard(
         )
         return 1
     # (b) Kismet token
+    print()
+    print("Kismet API Key")
+    print("─" * len("Kismet API Key"))
+    print()
+    _print_context(
+        """
+Where to find your API key (one-time setup in Kismet):
+  1. Open the Kismet web UI in your browser (the URL above).
+  2. Log in. On first launch Kismet prompts you to set a password.
+  3. Open the menu (top-right) → Settings → Login Configuration.
+  4. Under "API Keys", create a new key:
+       Name:  lynceus
+       Role:  readonly
+  5. Copy the generated key and paste it below. Input is hidden.
+
+If you don't have a key yet, you can press Ctrl-C, set one up,
+and re-run lynceus-setup. The wizard will not store the key
+anywhere except your generated lynceus.yaml.
+"""
+    )
     answers["kismet_api_key"] = prompt_secret("Kismet API token (input hidden)", getpass_fn=gp_fn)
 
     # (c) Kismet probe — also queries the configured datasource list when
@@ -1317,9 +1377,27 @@ def run_wizard(
 
     # (g) ntfy URL — empty input skips ntfy entirely. When non-empty, the same
     # scheme-and-host validation runs before any probe.
+    _print_section("Push Notifications (ntfy)")
+    _print_context(
+        f"""
+ntfy is a free push notification service (https://ntfy.sh).
+Lynceus publishes alerts to a 'topic' you choose; you subscribe to
+that topic from your phone (ntfy mobile app) or desktop browser.
+
+Two prompts follow:
+  1. ntfy broker URL — the default ({DEFAULT_NTFY_BROKER}) is the
+     public service. Set this to your own URL if you self-host.
+  2. ntfy topic — a name you pick. Anyone who knows the topic can
+     read AND publish to it, so treat it like a password.
+
+To skip ntfy entirely (no push notifications), press Enter at the
+URL prompt below. You can wire it up later with
+`lynceus-setup --reconfigure`.
+"""
+    )
     try:
         ntfy_url_input = prompt_url(
-            f"ntfy broker URL (Enter to skip notifications, e.g. {DEFAULT_NTFY_BROKER})",
+            f"ntfy broker URL (Enter to skip, e.g. {DEFAULT_NTFY_BROKER})",
             default=None,
             required=False,
             input_fn=in_fn,
@@ -1344,6 +1422,22 @@ def run_wizard(
         # suggested random topic*, not skip; the skip-ntfy path is the URL
         # prompt above. Invalid input re-prompts up to NTFY_TOPIC_MAX_ATTEMPTS
         # times before SetupError aborts.
+        print()
+        print("ntfy Topic")
+        print("─" * len("ntfy Topic"))
+        print()
+        _print_context(
+            """
+Pick a topic name that's hard to guess. The topic IS the shared
+secret — anyone who knows it can see your alerts and impersonate
+the publisher.
+
+A random suggested topic is shown at the prompt below; press Enter
+to accept it, or type your own (6-64 chars, letters/digits/_/-).
+To subscribe on your phone: install the ntfy app, tap the + button,
+and enter the topic exactly as written.
+"""
+        )
         try:
             answers["ntfy_topic"] = _prompt_ntfy_topic(input_fn=in_fn)
         except SetupError as exc:
