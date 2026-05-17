@@ -57,6 +57,8 @@ IDENTIFIER_TYPE_MAP: dict[str, str] = {
     "ble_uuid": "ble_uuid",
     "ble_service": "ble_uuid",
     "mac_range": "mac_range",
+    "ble_manufacturer_id": "ble_manufacturer_id",
+    "drone_id_prefix": "drone_id_prefix",
 }
 
 # Per-spec built-in severity defaults. Categories not listed default to "low".
