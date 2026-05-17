@@ -219,6 +219,91 @@ def canonicalize_mac_range_pattern(prefix_hex: str, length_bits: int) -> str:
     raise ValueError(f"unsupported mac_range length: {length_bits}")
 
 
+# ble_manufacturer_id parsing. Argus emits the Bluetooth SIG 16-bit
+# Company Identifier (Assigned Numbers, §2.1) in the canonical
+# '0x'-prefixed uppercase 4-hex-char form, e.g. '0x004C' (Apple) or
+# '0x09C8' (XUNTONG). Verified against the 2026-05-14T22:34:07Z
+# argus_export.csv snapshot: 100% of the 3,969 rows are exactly 6
+# characters in that '0x'-prefixed shape.
+#
+# Canonical persistent form is 4-hex-char lowercase, no prefix —
+# 'apple' becomes '004c'. The bare-hex form (no 0x prefix) is the
+# shape a Kismet observation will most likely surface in its
+# advertisement-decoded fields, so storing in that form keeps the
+# runtime equality lookup a direct string compare. Accepts:
+#
+#   '0x004C' / '0X004C'         → '004c'      (Argus canonical)
+#   '004c' / '004C'             → '004c'      (bare hex, both cases)
+#   '4c'                        → '004c'      (zero-padded short form)
+#   '0x4C' / '4C' / '76'        → '004c'      (defensive — short / mixed)
+#
+# Rejects: empty after strip, non-hex chars after stripping '0x',
+# more than 4 hex chars (the 16-bit constraint is hard).
+def _normalize_ble_manufacturer_id(pattern: str) -> str:
+    if not isinstance(pattern, str):
+        raise ValueError(
+            f"ble_manufacturer_id pattern must be a string, "
+            f"got {type(pattern).__name__}"
+        )
+    raw = pattern.strip().lower()
+    if not raw:
+        raise ValueError("ble_manufacturer_id pattern is empty")
+    if raw.startswith("0x"):
+        raw = raw[2:]
+    if not raw:
+        raise ValueError(
+            f"ble_manufacturer_id pattern {pattern!r}: empty after stripping '0x'"
+        )
+    if len(raw) > 4:
+        raise ValueError(
+            f"ble_manufacturer_id pattern {pattern!r}: too long after stripping "
+            f"'0x' ({len(raw)} hex chars, expected at most 4 for 16-bit company id)"
+        )
+    if not _HEX_RE.match(raw):
+        raise ValueError(
+            f"ble_manufacturer_id pattern {pattern!r}: non-hex characters "
+            f"after stripping '0x'"
+        )
+    return raw.zfill(4)
+
+
+# drone_id_prefix parsing. Argus emits ANSI/CTA-2063-A (Remote-ID
+# serial number) prefixes — typically 4-char manufacturer code plus
+# variable-length serial fragment, uppercase ASCII alphanumeric.
+# Verified against the 2026-05-14T22:34:07Z argus_export.csv
+# snapshot: all 427 rows are 3-20 chars, 100% alphanumeric, all
+# uppercase.
+#
+# Canonical persistent form is uppercase ASCII alphanumeric. The
+# uppercase choice matches the Argus emission verbatim — Remote-ID
+# serial numbers are case-sensitive per the standard (lowercasing a
+# real serial 'ABCDE' to 'abcde' would silently break equality
+# lookups against a Kismet observation that decoded the uppercase
+# form from the RID payload). Defensive bounds (3-32 chars) catch
+# stray whitespace / one-char fragments without rejecting any of
+# the observed Argus shapes.
+def _normalize_drone_id_prefix(pattern: str) -> str:
+    if not isinstance(pattern, str):
+        raise ValueError(
+            f"drone_id_prefix pattern must be a string, "
+            f"got {type(pattern).__name__}"
+        )
+    raw = pattern.strip().upper()
+    if not raw:
+        raise ValueError("drone_id_prefix pattern is empty")
+    if len(raw) < 3 or len(raw) > 32:
+        raise ValueError(
+            f"drone_id_prefix pattern {pattern!r}: length {len(raw)} "
+            f"out of range (expected 3-32 chars; Argus emits 3-20 today)"
+        )
+    if not raw.isascii() or not raw.isalnum():
+        raise ValueError(
+            f"drone_id_prefix pattern {pattern!r}: must be ASCII "
+            f"alphanumeric (A-Z, 0-9)"
+        )
+    return raw
+
+
 def normalize_pattern(pattern_type: str, pattern: str) -> str:
     """Return the canonical persistent form of ``pattern`` for ``pattern_type``.
 
@@ -233,6 +318,10 @@ def normalize_pattern(pattern_type: str, pattern: str) -> str:
         return _normalize_oui(pattern)
     if pattern_type == "ble_uuid":
         return _normalize_ble_uuid(pattern)
+    if pattern_type == "ble_manufacturer_id":
+        return _normalize_ble_manufacturer_id(pattern)
+    if pattern_type == "drone_id_prefix":
+        return _normalize_drone_id_prefix(pattern)
     if pattern_type == "ssid":
         # SSIDs are case-sensitive per 802.11; do not normalize.
         return pattern
