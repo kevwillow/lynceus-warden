@@ -371,17 +371,41 @@ class Database:
         mac: str | None,
         ssid: str | None = None,
         ble_service_uuids: tuple[str, ...] = (),
+        ble_manufacturer_id: str | None = None,
+        drone_id_prefix: str | None = None,
     ) -> int | None:
         """Pick the most-specific watchlist row matching this observation.
 
-        Tiebreaker order: mac > oui > mac_range > ssid > ble_uuid. Returns
-        the watchlist row id, or None when no row matches.
+        Tiebreaker order:
+          mac > oui > ble_manufacturer_id > mac_range >
+          drone_id_prefix > ssid > ble_uuid
+
+        Returns the watchlist row id, or None when no row matches.
 
         mac_range falls after oui so an operator-curated oui rule still
         takes precedence over a bulk-imported Argus mac_range covering
         the same OUI — the IEEE design forbids the two overlapping for
         the same MAC, so in practice oui and mac_range are disjoint,
         but the ordering is conservative.
+
+        ble_manufacturer_id slots between oui and mac_range — same
+        "vendor-level identifier" specificity tier as oui (the BLE
+        Company Identifier is the BLE-side analogue of the IEEE OUI,
+        16-bit instead of 24-bit), and only meaningful on BLE
+        observations where the upstream extractor populated it. A
+        mac/oui hit always wins because both are stronger evidence
+        for *this specific device* than a vendor-wide BLE company id.
+
+        drone_id_prefix slots between mac_range and ssid — a device
+        serial prefix is more identifier-specific than a free-form
+        SSID but less so than a covered MAC range; falling after
+        mac_range mirrors the oui-before-mac_range pattern (a
+        curated mac_range catching the device's MAC takes
+        precedence over a Remote-ID serial that may have been
+        spoofed). Both new branches are no-op when the observation
+        carries None for the corresponding field, which is the
+        default for every code path that doesn't go through
+        kismet.parse_kismet_device's extraction layer.
         """
         if mac is not None:
             match = self._lookup_simple_watchlist_match("mac", mac)
@@ -390,6 +414,13 @@ class Database:
             match = self._lookup_simple_watchlist_match("oui", mac[:8])
             if match is not None:
                 return match.watchlist_id
+        if ble_manufacturer_id:
+            match = self._lookup_simple_watchlist_match(
+                "ble_manufacturer_id", ble_manufacturer_id
+            )
+            if match is not None:
+                return match.watchlist_id
+        if mac is not None:
             # mac_range annotation: call the private helper directly
             # rather than the public resolve_matched_mac_range so the
             # WARNING-on-overlap is not emitted twice when the rules
@@ -397,6 +428,12 @@ class Database:
             mac_range_matches = self._lookup_mac_range_matches(mac)
             if mac_range_matches:
                 return mac_range_matches[0].watchlist_id
+        if drone_id_prefix:
+            match = self._lookup_simple_watchlist_match(
+                "drone_id_prefix", drone_id_prefix
+            )
+            if match is not None:
+                return match.watchlist_id
         if ssid:
             match = self._lookup_simple_watchlist_match("ssid", ssid)
             if match is not None:
