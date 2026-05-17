@@ -44,6 +44,7 @@ CONSOLE_SCRIPTS=(
     lynceus-import-argus
     lynceus-validate
     lynceus-bootstrap-kismet
+    lynceus-export-config
 )
 
 ACTION=install
