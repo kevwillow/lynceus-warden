@@ -302,12 +302,29 @@ class Database:
         message: str,
         severity: str,
         matched_watchlist_id: int | None = None,
+        rule_type: str | None = None,
     ) -> int:
+        # rule_type is the categorical RuleHit.rule_type literal
+        # ('watchlist_mac', 'watchlist_oui', ...). Migration 015
+        # added the column NULL-able; rows written pre-rc5 carry
+        # NULL, which is honest about their unknown rule_type --
+        # the rule_name -> rule_type mapping requires the loaded
+        # ruleset and isn't recoverable retroactively. Always
+        # passed from poller.py for new alerts.
         with self._conn:
             cur = self._conn.execute(
-                "INSERT INTO alerts(ts, rule_name, mac, message, severity, matched_watchlist_id) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (ts, rule_name, mac, message, severity, matched_watchlist_id),
+                "INSERT INTO alerts(ts, rule_name, mac, message, severity, "
+                "matched_watchlist_id, rule_type) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ts,
+                    rule_name,
+                    mac,
+                    message,
+                    severity,
+                    matched_watchlist_id,
+                    rule_type,
+                ),
             )
             return cur.lastrowid
 
@@ -818,8 +835,9 @@ class Database:
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = (
-            "SELECT id, ts, rule_name, mac, message, severity, acknowledged "
-            f"FROM alerts {where} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?"
+            "SELECT id, ts, rule_name, rule_type, mac, message, severity, "
+            f"acknowledged FROM alerts {where} "
+            "ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])
         rows = self._conn.execute(sql, params).fetchall()
@@ -880,8 +898,8 @@ class Database:
 
     def get_alert(self, alert_id: int) -> dict | None:
         row = self._conn.execute(
-            "SELECT id, ts, rule_name, mac, message, severity, acknowledged "
-            "FROM alerts WHERE id = ?",
+            "SELECT id, ts, rule_name, rule_type, mac, message, severity, "
+            "acknowledged FROM alerts WHERE id = ?",
             (alert_id,),
         ).fetchone()
         if row is None:
@@ -908,7 +926,8 @@ class Database:
 
     _ALERT_WITH_MATCH_SELECT = (
         "SELECT "
-        "a.id AS id, a.ts AS ts, a.rule_name AS rule_name, a.mac AS mac, "
+        "a.id AS id, a.ts AS ts, a.rule_name AS rule_name, "
+        "a.rule_type AS rule_type, a.mac AS mac, "
         "a.message AS message, a.severity AS severity, "
         "a.acknowledged AS acknowledged, "
         "a.matched_watchlist_id AS matched_watchlist_id, "
@@ -934,6 +953,7 @@ class Database:
             "id": row["id"],
             "ts": row["ts"],
             "rule_name": row["rule_name"],
+            "rule_type": row["rule_type"],
             "mac": row["mac"],
             "message": row["message"],
             "severity": row["severity"],
