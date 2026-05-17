@@ -594,6 +594,119 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   vendors (`suppress_vendors`), all at alert time, all with a
   daemon restart, no re-import.
 
+- **`pattern_overrides` — runtime row-level severity remap keyed
+  by `argus_record_id` on `severity_overrides.yaml`.** Closes the
+  runtime severity-tuning matrix at the row axis. The three
+  preceding bullets gave operators category-level remap, category-
+  level suppress, and vendor-level suppress. This bullet adds the
+  finest-grained knob: target a single specific watchlist row by
+  its stable Argus identifier and assign a per-row severity.
+
+  Use case: "the specific Flock camera at my workplace → high;
+  everything else in alpr → low." Without `pattern_overrides` an
+  operator could only set `alpr → low` and lose the workplace
+  signal, or set `alpr → high` and over-alert on every camera in
+  the corpus. The new key carves the specific row out of the
+  category default.
+
+  **Schema.** `pattern_overrides: dict[str, severity]`. Keys are
+  the 16-hex SHA-256 prefix Argus emits as its consumer-facing
+  identifier and Lynceus stores in
+  `watchlist_metadata.argus_record_id` (column from migration
+  004). Values are severity literals (`"low"` / `"med"` /
+  `"high"`). Keys are normalized to lowercase at load time so
+  case-of-paste doesn't matter — the production shape is lowercase
+  but the web UI and DB inspection surfaces render the value
+  verbatim, and a copy-paste from either could land in mixed case.
+
+  **Precedence in `_apply_runtime_overrides` (most-specific
+  wins).** Slotted between the suppression gates and the category
+  remap:
+  1. `suppress_vendors` — manufacturer suppress.
+  2. `suppress_categories` — category suppress.
+  3. `pattern_overrides` (NEW) — row-level remap.
+  4. `device_category_severity` — category-level remap.
+
+  Suppression at either layer always wins over the row-level
+  remap — per-row UNSUPPRESS is explicitly NOT a feature, by
+  design. An operator who wants a vendor or category alert to fire
+  again on a specific row must lift the suppression at the layer
+  it was set. (A symmetric per-row suppression knob is also out of
+  scope; the existing allowlist mechanism handles per-row alert
+  suppression for both Argus and non-Argus rows.)
+
+  **Limitation: Argus-imported rows only.** Only rows that carry
+  an `argus_record_id` in `watchlist_metadata` can be targeted via
+  `pattern_overrides`. The 63 bundled `default_watchlist.csv` rows
+  and any rows operators add via `lynceus-seed-watchlist` without
+  metadata have no stable identifier to key on; their
+  `pattern_overrides` check skips entirely and they fall through
+  to the category layer. For non-Argus row-level severity tuning,
+  use `device_category_severity` (category granularity) or the
+  allowlist mechanism (per-row suppression).
+
+  **Load-time validation.** Per-entry tolerant parsing: a key
+  that isn't exactly 16 hex chars after normalization is dropped
+  with a WARNING; a value that isn't a known severity literal
+  (including non-string YAML scalars) is dropped with a WARNING;
+  one malformed entry never disables the rest of the dict.
+  Whether the `argus_record_id` corresponds to a real row in the
+  DB is NOT checked at load time — operators may legitimately
+  carry a stale entry across a re-import (the row will be re-added
+  and the override will start applying again). The eval-time
+  check is a simple dict-membership test that pass-throughs on
+  miss.
+
+  **Structural changes.**
+
+  - `ResolvedMacRangeMatch` and `ResolvedWatchlistMatch` gain an
+    `argus_record_id: str | None` field. Both private lookup
+    helpers extend their LEFT JOIN to project
+    `watchlist_metadata.argus_record_id` (no rename — the Python
+    field matches the column name 1:1; cost is negligible against
+    the primary equality / prefix lookup).
+  - `rules.RuntimeSeverityOverride` gains
+    `pattern_overrides: dict[str, Severity]` and includes it in
+    `is_empty()` so a file populated only with row-level remaps
+    does not short-circuit to the pass-through fast-path. The
+    dataclass-level validator rejects out-of-band severity
+    literals (the loader's per-entry validation is a separate,
+    tolerant layer).
+  - `rules._apply_runtime_overrides` adds a fourth tier between
+    category suppress and category remap. The per-match
+    `argus_record_id is None` gate skips the row-level check
+    independently of the other two metadata gates
+    (`manufacturer is None`, `device_category is None`).
+  - The load-time INFO line names all four runtime keys for
+    grep-ability and adds a `%d pattern override(s)` count so an
+    operator running `journalctl -u lynceus.service` at daemon
+    startup can confirm the file is parsing as expected.
+  - The wizard's `severity_overrides.yaml` starter template gains
+    a `pattern_overrides:` block adjacent to
+    `device_category_severity` (both are remaps) with the
+    `# LAYER: RUNTIME` tag and an inline SQL query operators can
+    paste to find an `argus_record_id` for a row of interest.
+  - The `/settings` web UI card lists `pattern_overrides` in the
+    runtime-keys group.
+
+  **Deliberate non-scope.** No DB schema changes. No per-row
+  suppression (allowlist handles that). No raw-pattern-keyed
+  overrides (pattern + pattern_type tuple). No DB-validity check
+  on `argus_record_id` keys at load time. In-memory pattern rules
+  (non-empty `patterns`) keep their rule-sourced severity and are
+  unaffected — runtime overrides apply only to DB-delegation
+  matches.
+
+  Cross-references the delegation extension, the runtime
+  severity-overrides bullet, and the `suppress_vendors` bullet
+  above as the prerequisite chain: the extension landed the rule
+  types whose matches now carry an `argus_record_id`; the runtime
+  overrides layer is what `pattern_overrides` plugs into;
+  `suppress_vendors` established the per-match metadata-gate
+  pattern this bullet extends to a third axis. Together the four
+  bullets close the severity-tuning matrix at remap × {category,
+  row} + suppress × {category, vendor}.
+
 ### Fixed
 
 - **`load_runtime_severity_overrides` now logs INFO at every load
