@@ -707,6 +707,130 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bullets close the severity-tuning matrix at remap × {category,
   row} + suppress × {category, vendor}.
 
+- **Watchlist staleness indicator — startup WARNING + /settings
+  freshness card.** Surfaces the age of imported Argus data so an
+  operator who hasn't refreshed in months sees a clear signal
+  before alerts fire on stale threat intel. Pre-rc4 the daemon
+  ran silently against whatever was last imported; an operator
+  who booted a system that had been off for two months had no
+  way to tell their threat data was 60+ days behind without
+  manually checking. The settings page's existing "last imported"
+  field was misleading on this front: it surfaced
+  ``MAX(updated_at) FROM watchlist_metadata`` (a per-row local-
+  clock proxy that flipped to "now" whenever an operator
+  re-imported a stale CSV) rather than the Argus-side
+  ``exported_at``.
+
+  **Three surfaces, one source of truth.** A new ``import_runs``
+  table (migration 012) persists one row per successful
+  ``lynceus-import-argus`` write: the local-clock
+  ``imported_at``, the Argus-side ``exported_at`` parsed from the
+  CSV's ``# meta:`` line, the canonical Argus-side
+  ``record_count``, and a free-form ``source`` (absolute path
+  for ``--input``, ``owner/repo@ref`` for ``--from-github``).
+  The poller's ``log_watchlist_staleness`` reads the most-recent
+  row at startup; the /settings ``_watchlist_freshness_card``
+  reads it on every render. Both surfaces agree by construction —
+  an operator who sees a WARNING in journalctl can open
+  /settings and see the same numbers without reconciling.
+
+  **Startup log line, three shapes.**
+  - Within threshold: ``INFO watchlist: N rows total, most recent
+    Argus import D days ago (exported YYYY-MM-DD)``.
+  - Over threshold: ``WARNING watchlist: N rows total, most recent
+    Argus import D days ago (exported YYYY-MM-DD); consider
+    'lynceus-import-argus --from-github' to refresh``.
+  - No imports recorded (fresh install, never ran the importer):
+    ``INFO watchlist: N rows total, no Argus import metadata
+    recorded``. Deliberately NOT a WARNING — a fresh install
+    where the operator hasn't run lynceus-import-argus yet is the
+    expected state right after lynceus-setup, and warning would
+    be noise.
+
+  **Configurable threshold.** New ``watchlist_staleness_warn_days:
+  int = 30`` config field. 30 days matches Argus's nominal
+  release cadence; kiosk / air-gapped operators on a slower
+  cadence tune via this field. Validated as ``>= 1`` (a 0-day
+  threshold would WARN at every startup). The wizard doesn't
+  prompt for it — operators tune via manual ``lynceus.yaml``
+  edit, in line with other operability fields like
+  ``alert_dedup_window_seconds``.
+
+  **/settings 'Watchlist freshness' card.** New card alongside
+  the existing watchlist data card. Renders:
+  - Status badge — fresh (within N days) / stale (older than N
+    days), using the existing card-status visual conventions
+    (``badge-status-ok`` / ``badge-status-error``).
+  - Argus exported date, locally imported date, age in days,
+    source string, Argus-side record count.
+  - Pattern-type breakdown (mac / oui / ssid / ble_uuid /
+    mac_range counts) — rendered in both has-import and no-
+    import branches because it reflects the LIVE watchlist
+    contents, not the import metadata. Same numbers operators
+    see in the importer's stdout summary.
+  - Refresh hint with the exact command, surfaced only in the
+    stale branch. Read-only — no "Force refresh" button; the
+    boundary stands.
+
+  **Replaces the misleading proxy.** The
+  ``last_imported_ts = MAX(updated_at)`` field on the existing
+  "watchlist data" card is removed — the new card renders both
+  Argus-side ``exported_at`` and local-clock ``imported_at`` so
+  the re-import-of-stale-CSV case is forensically clear instead
+  of ambiguous.
+
+  **Importer changes.**
+  - New ``parse_argus_meta(path)`` helper parses the
+    ``# meta: key=value, ...`` line that prefixes every Argus
+    CSV. Per-field tolerant: malformed
+    ``exported_at`` / ``record_count`` lands as None for just
+    that field; unknown keys (Argus adds new pairs over time)
+    are ignored; a free-form meta line (the rc2-era shape) parses
+    to all-Nones cleanly. The parser is additive — the existing
+    ``parse_argus_csv`` API is unchanged, so the six call sites
+    in ``test_import_argus.py`` continue to receive a plain
+    ``list[dict]`` without modification.
+  - ``import_csv`` gains a keyword-only ``source: str | None``
+    parameter and writes one ``import_runs`` row on every
+    successful (non-``--dry-run``) import. Failure to record the
+    run downgrades to a WARNING; the watchlist write already
+    succeeded and the staleness signal is observability-only.
+  - ``fetch_argus_export`` now returns ``(cached_path,
+    resolved_ref)`` so the caller can build the
+    ``owner/repo@ref`` source string without a duplicate
+    ``_resolve_ref`` call (the latter is a network round-trip
+    on the default ``--ref``-unspecified path).
+
+  **DB layer.**
+  - Migration 012 (``012_import_runs.sql``). One table
+    ``import_runs(id, imported_at INT NOT NULL, exported_at INT,
+    source TEXT, record_count INTEGER)`` plus an index on
+    ``imported_at DESC`` for the single-row most-recent lookup.
+    No FK out to watchlist/watchlist_metadata — an import run is
+    a standalone event, not bound to any specific row.
+  - New ``db.record_import_run(...)``, ``db.get_latest_import_run()``,
+    and ``db.watchlist_pattern_type_counts()`` helpers.
+
+  **Test coverage.** 27 new tests across four files —
+  parser-shape tolerance (canonical / free-form / unknown-keys /
+  unparseable-timestamp / missing-prefix), DB
+  read/write/most-recent-wins/null-fields, importer write-
+  through (source path / owner/repo@ref / dry-run skip /
+  legacy-meta null exported_at), the three startup-log branches
+  + threshold-configurability + null-exported_at fall-back +
+  Poller.__init__ smoke wiring, and four /settings card render
+  states (no-import / fresh / stale-with-hint / pattern-type
+  breakdown). Backward compat: all 1446 pre-existing tests pass
+  unchanged.
+
+  **Deliberate non-scope.** No ntfy push for staleness (future
+  polish; startup WARNING + /settings card is the MVP). No
+  periodic re-check at runtime (startup-only). No "Force
+  refresh" button on /settings (read-only UI boundary). No
+  retroactive backfill — imports from before migration 012
+  landed don't appear on the card; the next refresh starts the
+  signal cleanly.
+
 ### Fixed
 
 - **`load_runtime_severity_overrides` now logs INFO at every load
