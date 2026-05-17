@@ -34,12 +34,23 @@ class ResolvedMacRangeMatch(NamedTuple):
     severity_overrides.yaml at alert time, on top of whatever
     severity was baked at import time. NULL category means the row
     has no metadata to key on; the runtime layer passes through.
+
+    ``manufacturer`` is the matched row's ``watchlist_metadata.vendor``
+    column (named ``manufacturer`` on the Python side to mirror the
+    Argus CSV column it ultimately sources from; see
+    ``import_argus.py``'s mapping of CSV ``manufacturer`` → DB
+    ``vendor``). Powers the runtime ``suppress_vendors`` key on the
+    same RuntimeSeverityOverride: vendor-level suppression at alert
+    time, case-insensitive exact match. NULL manufacturer (no
+    metadata row, or a metadata row with NULL vendor) means the
+    runtime layer's vendor check passes through.
     """
 
     watchlist_id: int
     severity: str
     prefix_length: int
     device_category: str | None
+    manufacturer: str | None
 
 
 class ResolvedWatchlistMatch(NamedTuple):
@@ -60,11 +71,16 @@ class ResolvedWatchlistMatch(NamedTuple):
     NamedTuple's docstring for the full rationale. NULL category
     means the row has no metadata to key on; the runtime layer
     passes through.
+
+    ``manufacturer`` mirrors ``ResolvedMacRangeMatch.manufacturer``:
+    sourced from ``watchlist_metadata.vendor``, Python-side name
+    matches the Argus CSV column, powers ``suppress_vendors``.
     """
 
     watchlist_id: int
     severity: str
     device_category: str | None
+    manufacturer: str | None
 
 
 def _find_migrations_dir() -> Path:
@@ -290,14 +306,14 @@ class Database:
         a column projection here flows to both at once.
 
         The LEFT JOIN onto ``watchlist_metadata`` surfaces
-        ``device_category`` for the runtime overrides layer. The JOIN
+        ``device_category`` and ``vendor`` (projected as
+        ``manufacturer``) for the runtime overrides layer. The JOIN
         is single-row indexed on ``watchlist_id`` (FK target carries
         an automatic index in SQLite); cost is negligible vs the
-        primary equality lookup on (pattern_type, pattern).
-        ``device_category`` is NULL for rows lacking a metadata row
-        (the 63 bundled default_watchlist rows that pre-date the
-        Argus metadata schema), which the runtime layer treats as
-        pass-through.
+        primary equality lookup on (pattern_type, pattern). Both are
+        NULL for rows lacking a metadata row (the 63 bundled
+        default_watchlist rows that pre-date the Argus metadata
+        schema), which the runtime layer treats as pass-through.
 
         Returns None for falsy ``pattern`` so callers can pass through
         unfiltered observation fields without pre-checking.
@@ -306,7 +322,8 @@ class Database:
             return None
         row = self._conn.execute(
             "SELECT w.id AS id, w.severity AS severity, "
-            "m.device_category AS device_category "
+            "m.device_category AS device_category, "
+            "m.vendor AS manufacturer "
             "FROM watchlist w "
             "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
             "WHERE w.pattern_type = ? AND w.pattern = ? LIMIT 1",
@@ -319,6 +336,9 @@ class Database:
             severity=str(row["severity"]),
             device_category=(
                 str(row["device_category"]) if row["device_category"] is not None else None
+            ),
+            manufacturer=(
+                str(row["manufacturer"]) if row["manufacturer"] is not None else None
             ),
         )
 
@@ -391,7 +411,8 @@ class Database:
             candidate = normalized[:hex_chars]
             row = self._conn.execute(
                 "SELECT w.id AS id, w.severity AS severity, "
-                "m.device_category AS device_category "
+                "m.device_category AS device_category, "
+                "m.vendor AS manufacturer "
                 "FROM watchlist w "
                 "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
                 "WHERE w.pattern_type = 'mac_range' "
@@ -408,6 +429,11 @@ class Database:
                         device_category=(
                             str(row["device_category"])
                             if row["device_category"] is not None
+                            else None
+                        ),
+                        manufacturer=(
+                            str(row["manufacturer"])
+                            if row["manufacturer"] is not None
                             else None
                         ),
                     )
