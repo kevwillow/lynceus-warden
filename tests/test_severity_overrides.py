@@ -42,14 +42,28 @@ def test_suppress_only_is_not_empty():
     assert "drone" in cfg.suppress_categories
 
 
+def test_suppress_vendors_only_is_not_empty():
+    """is_empty() must include suppress_vendors in its definition;
+    otherwise a file populated only with vendor suppressions would
+    short-circuit to the pass-through fast-path in
+    ``_apply_runtime_overrides`` and never apply."""
+    cfg = RuntimeSeverityOverride(
+        suppress_vendors=frozenset({"mitsubishi electric us, inc."})
+    )
+    assert not cfg.is_empty()
+    assert "mitsubishi electric us, inc." in cfg.suppress_vendors
+
+
 def test_combined_remap_and_suppress():
     cfg = RuntimeSeverityOverride(
         device_category_severity={"unknown": "med", "alpr": "high"},
         suppress_categories=frozenset({"drone"}),
+        suppress_vendors=frozenset({"acme corp"}),
     )
     assert not cfg.is_empty()
     assert cfg.device_category_severity["alpr"] == "high"
     assert "drone" in cfg.suppress_categories
+    assert "acme corp" in cfg.suppress_vendors
 
 
 def test_remap_rejects_invalid_severity():
@@ -137,16 +151,19 @@ def test_load_active_keys_logs_info_with_counts(tmp_path, caplog):
     """The 'layer is active' confirmation. The operator running the
     live smoke greps for this line at daemon startup to verify the
     file is being read. Counts (remap entries + suppressed
-    categories) make the log self-describing — an operator who
-    expected 3 remaps but sees 1 knows the file's parsing is
-    selective."""
+    categories + suppressed vendors) make the log self-describing —
+    an operator who expected 3 remaps but sees 1 knows the file's
+    parsing is selective."""
     p = tmp_path / "active.yaml"
     p.write_text(
         "device_category_severity:\n"
         "  unknown: med\n"
         "  alpr: high\n"
         "suppress_categories:\n"
-        "  - drone\n",
+        "  - drone\n"
+        "suppress_vendors:\n"
+        "  - \"Mitsubishi Electric US, Inc.\"\n"
+        "  - \"Acme Corp\"\n",
         encoding="utf-8",
     )
     with caplog.at_level(logging.INFO, logger="lynceus.rules"):
@@ -159,6 +176,7 @@ def test_load_active_keys_logs_info_with_counts(tmp_path, caplog):
         and "loaded from" in r.getMessage()
         and "2 category remap" in r.getMessage()
         and "1 suppressed category" in r.getMessage()
+        and "2 suppressed vendor" in r.getMessage()
     ]
     assert len(info) == 1
 
@@ -320,3 +338,125 @@ def test_load_unreadable_file_returns_none_logs_warning(tmp_path, caplog):
     # On Windows opening a directory raises PermissionError; on POSIX
     # IsADirectoryError. Both should downgrade cleanly.
     assert result is None
+
+
+# ---- suppress_vendors parsing & normalization -----------------------------
+
+
+def test_load_suppress_vendors_only(tmp_path):
+    """A file with only suppress_vendors parses to a non-empty
+    runtime view. The other two runtime keys remain at their
+    defaults."""
+    p = tmp_path / "vendors.yaml"
+    p.write_text(
+        "suppress_vendors:\n"
+        "  - \"Mitsubishi Electric US, Inc.\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert not cfg.is_empty()
+    assert cfg.suppress_vendors == frozenset({"mitsubishi electric us, inc."})
+    assert cfg.device_category_severity == {}
+    assert cfg.suppress_categories == frozenset()
+
+
+def test_load_suppress_vendors_normalizes_case_and_whitespace(tmp_path):
+    """Entries are normalized at load time (lowercase + strip)
+    so the eval-time comparison is a single frozenset lookup. An
+    operator-typed ``"  Acme CORP  "`` lands in the dataclass as
+    ``"acme corp"``."""
+    p = tmp_path / "mixed_case.yaml"
+    p.write_text(
+        "suppress_vendors:\n"
+        "  - \"  Acme CORP  \"\n"
+        "  - \"DJI Inc.\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.suppress_vendors == frozenset({"acme corp", "dji inc."})
+
+
+def test_load_suppress_vendors_dedupes_after_normalization(tmp_path):
+    """Two entries that differ only in case / whitespace collapse to
+    one entry in the frozenset. Operator can't break the
+    runtime-layer count budget by listing the same vendor twice
+    with different casing."""
+    p = tmp_path / "dupes.yaml"
+    p.write_text(
+        "suppress_vendors:\n"
+        "  - \"Acme Corp\"\n"
+        "  - \"acme corp\"\n"
+        "  - \"  ACME CORP\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.suppress_vendors == frozenset({"acme corp"})
+
+
+def test_load_suppress_vendors_drops_empty_and_non_string_with_warning(tmp_path, caplog):
+    """Per-entry validation: non-string and empty-after-strip
+    entries get WARNING-logged and dropped; the rest of the list
+    still parses. The whole layer must not be disabled by a single
+    malformed entry."""
+    p = tmp_path / "malformed_entries.yaml"
+    p.write_text(
+        "suppress_vendors:\n"
+        "  - \"Acme Corp\"\n"
+        "  - \"\"\n"          # empty string
+        "  - \"   \"\n"        # whitespace only — empty after strip
+        "  - 42\n"             # non-string
+        "  - \"DJI Inc.\"\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger="lynceus.rules"):
+        cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.suppress_vendors == frozenset({"acme corp", "dji inc."})
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "suppress_vendors" in r.getMessage()
+    ]
+    # One WARN per dropped entry: "" + "   " + 42 → 3.
+    assert len(warnings) == 3
+
+
+def test_load_suppress_vendors_non_list_is_ignored(tmp_path):
+    """Tolerant of operator typos: a scalar ``suppress_vendors:
+    "Acme"`` (rather than a YAML list) is silently dropped — the
+    eval layer pass-throughs uncovered vendors, so a dropped key
+    just means 'no vendor suppression' (the conservative default)."""
+    p = tmp_path / "scalar.yaml"
+    p.write_text(
+        "device_category_severity:\n"
+        "  unknown: med\n"
+        "suppress_vendors: \"Acme Corp\"\n",  # operator typo
+        encoding="utf-8",
+    )
+    cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.device_category_severity == {"unknown": "med"}
+    assert cfg.suppress_vendors == frozenset()
+
+
+def test_load_all_three_runtime_keys_combined(tmp_path):
+    """A file mixing every runtime key. Each lands in its own
+    field; counts in the INFO log line up across three categories."""
+    p = tmp_path / "all_three.yaml"
+    p.write_text(
+        "device_category_severity:\n"
+        "  unknown: med\n"
+        "  alpr: high\n"
+        "suppress_categories:\n"
+        "  - drone\n"
+        "suppress_vendors:\n"
+        "  - \"Mitsubishi Electric US, Inc.\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.device_category_severity == {"unknown": "med", "alpr": "high"}
+    assert cfg.suppress_categories == frozenset({"drone"})
+    assert cfg.suppress_vendors == frozenset({"mitsubishi electric us, inc."})

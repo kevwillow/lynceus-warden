@@ -136,7 +136,7 @@ _VALID_SEVERITIES = ("low", "med", "high")
 class RuntimeSeverityOverride(BaseModel):
     """Runtime-layer view of severity_overrides.yaml.
 
-    Reads two keys from the same file the import-time
+    Reads three keys from the same file the import-time
     ``OverrideConfig`` in ``import_argus.py`` consumes, but exposes
     only the runtime-relevant subset:
 
@@ -147,22 +147,31 @@ class RuntimeSeverityOverride(BaseModel):
       restart picks it up → already-imported rows fire at the new
       severity without re-importing the 17,786-row Argus corpus.
 
-    - ``suppress_categories`` (RUNTIME only — NEW key). Delegation
-      matches whose ``device_category`` is in this list emit no
-      RuleHit (alert suppressed entirely). The import-time layer
-      has no equivalent; this is the closest runtime cousin of
+    - ``suppress_categories`` (RUNTIME only). Delegation matches
+      whose ``device_category`` is in this list emit no RuleHit
+      (alert suppressed entirely). The import-time layer has no
+      equivalent; this is the closest runtime cousin of
       vendor_overrides' ``"drop"`` sentinel, but at category
       granularity instead of vendor.
+
+    - ``suppress_vendors`` (RUNTIME only — NEW key). Delegation
+      matches whose matched row's ``vendor`` (projected as
+      ``manufacturer`` on Resolved*Match) is in this list emit no
+      RuleHit. Case-insensitive exact match — entries are
+      normalized at load time (lowercase + strip) and stored in
+      that form; the eval-time check normalizes ``match.manufacturer``
+      the same way before comparison. The deliberate runtime
+      counterpart to import-time ``vendor_overrides``, which keeps
+      its skip-at-import ``"drop"`` semantic unchanged.
 
     Other ``OverrideConfig`` keys (``vendor_overrides``,
     ``geographic_filter``, ``confidence_downgrade_threshold``)
     remain consumed by the importer's existing code path and have
     NO runtime effect — they shape what gets imported, not what
-    gets alerted on. ``vendor_overrides`` at runtime is a deliberate
-    deferral; its ``"drop"`` sentinel means "skip-at-import" today,
-    and a runtime interpretation would silently overload that
-    meaning. A future ``suppress_vendors`` key designed
-    deliberately is the right path.
+    gets alerted on. ``vendor_overrides`` stays import-time-only by
+    design: its ``"drop"`` sentinel means "skip-at-import" and a
+    runtime interpretation would silently overload it.
+    ``suppress_vendors`` is the cleanly-designed runtime cousin.
 
     The frozen+extra-ignore config lets the parser tolerate the
     full superset of keys the wizard's starter file documents —
@@ -174,6 +183,7 @@ class RuntimeSeverityOverride(BaseModel):
 
     device_category_severity: dict[str, Severity] = {}
     suppress_categories: frozenset[str] = frozenset()
+    suppress_vendors: frozenset[str] = frozenset()
 
     @model_validator(mode="after")
     def _validate(self) -> RuntimeSeverityOverride:
@@ -189,12 +199,17 @@ class RuntimeSeverityOverride(BaseModel):
         """No remap and no suppression → fast-path pass-through.
 
         ``rules.evaluate`` short-circuits the override block when the
-        config is None OR empty by this definition; the
-        ``match.device_category is None`` check is the second tier
-        of the pass-through fast-path (a match without metadata
-        has nothing to key on, regardless of config richness).
+        config is None OR empty by this definition; the per-match
+        ``device_category is None`` / ``manufacturer is None`` checks
+        in ``_apply_runtime_overrides`` are the second tier of the
+        pass-through fast-path (a match without that metadata has
+        nothing to key on, regardless of config richness).
         """
-        return not self.device_category_severity and not self.suppress_categories
+        return (
+            not self.device_category_severity
+            and not self.suppress_categories
+            and not self.suppress_vendors
+        )
 
 
 def load_runtime_severity_overrides(
@@ -279,6 +294,36 @@ def load_runtime_severity_overrides(
         runtime_kwargs["suppress_categories"] = frozenset(
             s for s in raw["suppress_categories"] if isinstance(s, str)
         )
+    if isinstance(raw.get("suppress_vendors"), list):
+        # Normalize at load time (lowercase + strip) so the eval-time
+        # check is a single frozenset lookup. Comparison is
+        # case-insensitive exact match; trimming makes the parser
+        # tolerant of operator whitespace typos. Per-entry validation
+        # drops non-string and empty-after-strip entries with a
+        # WARNING — the rest of the file still parses; one malformed
+        # entry must not disable the whole layer.
+        normalized: set[str] = set()
+        for entry in raw["suppress_vendors"]:
+            if not isinstance(entry, str):
+                logger.warning(
+                    "severity overrides file %s: suppress_vendors entry "
+                    "%r is not a string; dropping. Other entries still apply.",
+                    path,
+                    entry,
+                )
+                continue
+            stripped = entry.strip().lower()
+            if not stripped:
+                logger.warning(
+                    "severity overrides file %s: suppress_vendors entry "
+                    "%r is empty after stripping whitespace; dropping. "
+                    "Other entries still apply.",
+                    path,
+                    entry,
+                )
+                continue
+            normalized.add(stripped)
+        runtime_kwargs["suppress_vendors"] = frozenset(normalized)
     try:
         overrides = RuntimeSeverityOverride(**runtime_kwargs)
     except Exception as exc:
@@ -298,19 +343,21 @@ def load_runtime_severity_overrides(
     if overrides.is_empty():
         logger.info(
             "runtime severity overrides loaded from %s but contain no active "
-            "runtime keys (device_category_severity / suppress_categories); "
-            "runtime layer is effectively pass-through. Edit the file and "
-            "restart the daemon to activate.",
+            "runtime keys (device_category_severity / suppress_categories / "
+            "suppress_vendors); runtime layer is effectively pass-through. "
+            "Edit the file and restart the daemon to activate.",
             path,
         )
     else:
         logger.info(
             "runtime severity overrides loaded from %s: "
-            "%d category remap(s), %d suppressed category(ies). "
+            "%d category remap(s), %d suppressed category(ies), "
+            "%d suppressed vendor(s). "
             "Edits take effect on daemon restart.",
             path,
             len(overrides.device_category_severity),
             len(overrides.suppress_categories),
+            len(overrides.suppress_vendors),
         )
     return overrides
 
@@ -328,6 +375,7 @@ def _apply_runtime_overrides(
     *,
     match_severity: str,
     match_device_category: str | None,
+    match_manufacturer: str | None,
     match_watchlist_id: int,
     rule_name: str,
     overrides: RuntimeSeverityOverride | None,
@@ -342,24 +390,48 @@ def _apply_runtime_overrides(
     behavior — when any of:
     - ``overrides`` is None (no file loaded, or file disabled the
       layer per ``load_runtime_severity_overrides`` failure modes).
-    - ``overrides.is_empty()`` (file parsed but neither runtime key
+    - ``overrides.is_empty()`` (file parsed but no runtime key
       populated — e.g. a file containing only import-time keys).
-    - ``match_device_category`` is None (matched row has no
-      watchlist_metadata row, so there is nothing to key on).
 
-    Precedence when the layer is active and the match has a
-    category:
-    1. Suppression wins: category in ``suppress_categories`` →
-       return None. INFO-log the suppression with rule_name,
-       category, and watchlist_id so operators have a forensic
-       trail (the suppressed alert never reaches the DB / ntfy).
-    2. Remap: category in ``device_category_severity`` → return
-       the remapped severity.
-    3. Default: no rule for this category → return
-       ``match_severity`` unchanged.
+    The two per-match metadata fields gate which checks run:
+    - ``match_manufacturer`` is None → the vendor check is skipped
+      (the matched row has no metadata, or a metadata row with
+      NULL vendor). Falls through to the category-driven checks.
+    - ``match_device_category`` is None → category-driven checks
+      are skipped (the matched row has no metadata to key on).
+      Falls through to the default.
+
+    Precedence is most-specific-wins:
+    1. Vendor suppression (NEW): normalized ``match_manufacturer``
+       in ``suppress_vendors`` → return None. INFO-log the
+       suppression with rule_name, the un-normalized manufacturer
+       string from the row (so operators see exactly what was on
+       the row), and watchlist_id.
+    2. Category suppression: category in ``suppress_categories``
+       → return None. INFO-log with rule_name, category, and
+       watchlist_id.
+    3. Category remap: category in ``device_category_severity``
+       → return the remapped severity.
+    4. Default: no rule applies → return ``match_severity``
+       unchanged.
+
+    Vendor wins over category because manufacturer is the more
+    specific axis. Suppression at either layer never reaches the
+    DB / ntfy — only the INFO log carries the forensic trail.
     """
     if overrides is None or overrides.is_empty():
         return match_severity
+    if match_manufacturer is not None:
+        normalized_vendor = match_manufacturer.strip().lower()
+        if normalized_vendor in overrides.suppress_vendors:
+            logger.info(
+                "runtime override: suppressing manufacturer=%r alert for "
+                "watchlist_id=%d (rule=%s)",
+                match_manufacturer,
+                match_watchlist_id,
+                rule_name,
+            )
+            return None
     if match_device_category is None:
         return match_severity
     if match_device_category in overrides.suppress_categories:
@@ -401,10 +473,12 @@ def evaluate(
     the five DB-delegation branches consult it; in-memory pattern
     matches keep their rule-sourced severity unchanged. None or
     empty config short-circuits to pass-through — byte-identical
-    RuleHits to the pre-overrides behavior. The transform applies
-    only when the match also has a non-None ``device_category``
-    (rows without metadata pass through with their imported
-    severity).
+    RuleHits to the pre-overrides behavior. The vendor-suppress
+    check (``suppress_vendors``) applies when the match has a
+    non-None ``manufacturer``; the category-driven checks
+    (``suppress_categories``, ``device_category_severity``) apply
+    when the match has a non-None ``device_category``. Rows with
+    neither pass through unchanged.
     """
     hits: list[RuleHit] = []
     for rule in ruleset.rules:
@@ -448,6 +522,7 @@ def evaluate(
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
                     match_device_category=match.device_category,
+                    match_manufacturer=match.manufacturer,
                     match_watchlist_id=match.watchlist_id,
                     rule_name=rule.name,
                     overrides=severity_overrides,
@@ -505,6 +580,7 @@ def evaluate(
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
                     match_device_category=match.device_category,
+                    match_manufacturer=match.manufacturer,
                     match_watchlist_id=match.watchlist_id,
                     rule_name=rule.name,
                     overrides=severity_overrides,
@@ -560,6 +636,7 @@ def evaluate(
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
                     match_device_category=match.device_category,
+                    match_manufacturer=match.manufacturer,
                     match_watchlist_id=match.watchlist_id,
                     rule_name=rule.name,
                     overrides=severity_overrides,
@@ -620,6 +697,7 @@ def evaluate(
             effective_severity = _apply_runtime_overrides(
                 match_severity=match.severity,
                 match_device_category=match.device_category,
+                match_manufacturer=match.manufacturer,
                 match_watchlist_id=match.watchlist_id,
                 rule_name=rule.name,
                 overrides=severity_overrides,
@@ -682,6 +760,7 @@ def evaluate(
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
                     match_device_category=match.device_category,
+                    match_manufacturer=match.manufacturer,
                     match_watchlist_id=match.watchlist_id,
                     rule_name=rule.name,
                     overrides=severity_overrides,

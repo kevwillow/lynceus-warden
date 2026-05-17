@@ -1384,3 +1384,274 @@ def test_evaluate_in_memory_pattern_rule_ignores_runtime_overrides(db_with_categ
     )
     assert len(hits) == 1
     assert hits[0].severity == "high"  # from rule, not from DB or override
+
+
+# ---- suppress_vendors (runtime vendor suppression) -------------------------
+#
+# Vendor suppression keys on watchlist_metadata.vendor (projected as
+# ``manufacturer`` on the resolved match). Per the documented
+# precedence, the vendor check runs BEFORE the category-driven
+# checks — vendor is the more specific axis. Match comparison is
+# normalized lowercase + strip on both sides.
+
+
+def _attach_vendor(db: Database, watchlist_id: int, vendor: str) -> None:
+    """Set vendor on an already-attached metadata row. The fixture's
+    _attach_category call creates the metadata row; this one fills
+    in the vendor column the LEFT JOIN projects as manufacturer."""
+    with db._conn:
+        db._conn.execute(
+            "UPDATE watchlist_metadata SET vendor = ? WHERE watchlist_id = ?",
+            (vendor, watchlist_id),
+        )
+
+
+@pytest.fixture
+def db_with_vendored_rows(db_with_categorized_rows):
+    """Extends ``db_with_categorized_rows`` by attaching canonical
+    vendor strings to each of the five seeded watchlist rows. Each
+    row keeps its existing device_category so precedence tests
+    (vendor vs category) can fire on the same row.
+
+    Vendor strings are intentionally mixed-case + punctuated to
+    exercise the load-time normalization (lowercase + strip) end-
+    to-end."""
+    db = db_with_categorized_rows
+    rows = db._conn.execute(
+        "SELECT id, pattern_type FROM watchlist"
+    ).fetchall()
+    vendor_by_pattern_type = {
+        "mac": "Mitsubishi Electric US, Inc.",
+        "oui": "Hak5 LLC",
+        "ssid": "DJI Inc.",
+        "ble_uuid": "Apple Inc.",
+        "mac_range": "Acme Surveillance Corp",
+    }
+    for row in rows:
+        _attach_vendor(db, int(row["id"]), vendor_by_pattern_type[row["pattern_type"]])
+    return db
+
+
+def _vendors(*names: str) -> frozenset[str]:
+    """Build a suppress_vendors set in the normalized form (lowercase
+    + strip) that load_runtime_severity_overrides would produce. Lets
+    the per-branch tests construct overrides without re-implementing
+    the parser's normalization."""
+    return frozenset(n.strip().lower() for n in names)
+
+
+def test_evaluate_runtime_suppress_vendor_watchlist_mac(db_with_vendored_rows, caplog):
+    """Vendor-suppress on the watchlist_mac delegation branch. Match
+    has manufacturer="Mitsubishi Electric US, Inc." (set by fixture);
+    override suppresses that vendor → no RuleHit + INFO log."""
+    overrides = RuntimeSeverityOverride(
+        suppress_vendors=_vendors("Mitsubishi Electric US, Inc.")
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.INFO, logger="lynceus.rules"):
+        hits = evaluate(
+            rs,
+            _obs(mac="a4:83:e7:11:22:33"),
+            is_new_device=False,
+            db=db_with_vendored_rows,
+            severity_overrides=overrides,
+        )
+    assert hits == []
+    info = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO
+        and "suppressing manufacturer=" in r.getMessage()
+        and "Mitsubishi Electric US, Inc." in r.getMessage()
+        and "del_mac" in r.getMessage()
+    ]
+    assert len(info) == 1
+
+
+def test_evaluate_runtime_suppress_vendor_watchlist_oui(db_with_vendored_rows):
+    overrides = RuntimeSeverityOverride(suppress_vendors=_vendors("Hak5 LLC"))
+    rule = Rule(name="del_oui", rule_type="watchlist_oui", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="00:13:37:aa:bb:cc"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+def test_evaluate_runtime_suppress_vendor_watchlist_ssid(db_with_vendored_rows):
+    overrides = RuntimeSeverityOverride(suppress_vendors=_vendors("DJI Inc."))
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="FreeAirportWiFi"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+def test_evaluate_runtime_suppress_vendor_ble_uuid(db_with_vendored_rows):
+    overrides = RuntimeSeverityOverride(suppress_vendors=_vendors("Apple Inc."))
+    rule = Rule(name="del_ble", rule_type="ble_uuid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_obs(uuids=(_AIRTAG_UUID,)),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+def test_evaluate_runtime_suppress_vendor_watchlist_mac_range(db_with_vendored_rows):
+    """The 17,786 IEEE-registry mac_range rows ship under a single
+    Argus-registered manufacturer string. An operator wanting them
+    in the DB for annotation but not for alerts can suppress that
+    vendor at runtime without re-importing."""
+    overrides = RuntimeSeverityOverride(
+        suppress_vendors=_vendors("Acme Surveillance Corp")
+    )
+    rule = Rule(
+        name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[]
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:d1:23:45"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+def test_evaluate_runtime_suppress_vendor_case_insensitive(db_with_vendored_rows):
+    """Match's manufacturer is stored on the row exactly as Argus
+    exported it (mixed case + punctuation). The override entry is
+    normalized at load time. The eval-time check normalizes the
+    match the same way, so any case / whitespace variant of the same
+    vendor string in the override file matches the row."""
+    # Row carries "Mitsubishi Electric US, Inc." — override loaded
+    # via _vendors() with assorted casing all collapses to the same
+    # frozenset member.
+    overrides = RuntimeSeverityOverride(
+        suppress_vendors=_vendors("  MITSUBISHI electric us, INC.  ")
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+def test_evaluate_runtime_suppress_vendor_different_vendor_passes_through(
+    db_with_vendored_rows,
+):
+    """Negative-match regression: an override listing a vendor OTHER
+    than the row's manufacturer must NOT suppress the alert. The
+    runtime layer falls through to the category-driven checks (or
+    pass-through if those also don't apply)."""
+    overrides = RuntimeSeverityOverride(suppress_vendors=_vendors("Pineapple Computing"))
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "low"  # row severity, untouched
+
+
+def test_evaluate_runtime_suppress_vendor_null_manufacturer_falls_through(
+    db_with_categorized_rows,
+):
+    """A row with NO vendor on the metadata row (manufacturer=None)
+    causes the suppress_vendors check to skip entirely and fall
+    through to the category-driven checks. Here the category check
+    is configured to remap, and that remap must apply."""
+    # db_with_categorized_rows has metadata rows attached but no
+    # vendor — manufacturer comes back as None.
+    overrides = RuntimeSeverityOverride(
+        suppress_vendors=_vendors("Mitsubishi Electric US, Inc."),
+        device_category_severity={"alpr": "high"},
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),  # category=alpr, no vendor
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    # Vendor check skipped (manufacturer is None); category remap applies.
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_runtime_suppress_vendor_wins_over_category_remap(
+    db_with_vendored_rows,
+):
+    """Documented precedence: vendor suppress > category suppress >
+    category remap. A row with both a vendor-suppress and a
+    category-remap entry → suppressed (no RuleHit)."""
+    overrides = RuntimeSeverityOverride(
+        suppress_vendors=_vendors("Mitsubishi Electric US, Inc."),
+        device_category_severity={"alpr": "high"},  # would remap if vendor didn't win
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+def test_evaluate_runtime_suppress_vendor_wins_over_category_suppress(
+    db_with_vendored_rows, caplog
+):
+    """When both vendor and category would suppress the same match,
+    the INFO log line names the VENDOR (the more specific axis)
+    rather than the category — operators inspecting the log can
+    tell which key drove the suppression. Forensic precision
+    matters when an operator has both keys populated and wants to
+    debug why an alert was dropped."""
+    overrides = RuntimeSeverityOverride(
+        suppress_vendors=_vendors("Mitsubishi Electric US, Inc."),
+        suppress_categories=frozenset({"alpr"}),
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.INFO, logger="lynceus.rules"):
+        hits = evaluate(
+            rs,
+            _obs(mac="a4:83:e7:11:22:33"),
+            is_new_device=False,
+            db=db_with_vendored_rows,
+            severity_overrides=overrides,
+        )
+    assert hits == []
+    info = [r for r in caplog.records if r.levelno == logging.INFO]
+    vendor_lines = [r for r in info if "suppressing manufacturer=" in r.getMessage()]
+    category_lines = [r for r in info if "suppressing category=" in r.getMessage()]
+    assert len(vendor_lines) == 1
+    assert category_lines == []  # vendor check returned first; category never ran

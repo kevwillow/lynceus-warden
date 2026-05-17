@@ -917,14 +917,23 @@ def test_ble_uuid_delegation_e2e_no_db_row_no_alert(db, config, fake_client):
 # ---------------------------------------------------------------------------
 
 
-def _add_metadata(db: Database, watchlist_id: int, device_category: str) -> None:
+def _add_metadata(
+    db: Database,
+    watchlist_id: int,
+    device_category: str,
+    *,
+    vendor: str | None = None,
+) -> None:
     """Attach watchlist_metadata so the matcher's LEFT JOIN surfaces
-    device_category on the resolved match — the key the runtime
-    overrides layer reads."""
-    db.upsert_metadata(
-        watchlist_id,
-        {"argus_record_id": f"argus-{watchlist_id}", "device_category": device_category},
-    )
+    device_category (and optionally vendor, projected as manufacturer
+    on the resolved match) for the runtime overrides layer to key on."""
+    fields = {
+        "argus_record_id": f"argus-{watchlist_id}",
+        "device_category": device_category,
+    }
+    if vendor is not None:
+        fields["vendor"] = vendor
+    db.upsert_metadata(watchlist_id, fields)
 
 
 def test_runtime_overrides_remap_e2e_alert_row_carries_overridden_severity(
@@ -1002,6 +1011,92 @@ def test_runtime_overrides_suppress_e2e_no_alert_row_written(db, config, fake_cl
         "SELECT id FROM watchlist WHERE id = ?", (mac_id,)
     ).fetchone()
     assert row is not None
+
+
+def test_runtime_overrides_suppress_vendor_e2e_no_alert_row_written(
+    db, config, fake_client
+):
+    """Full poll cycle: a row that would normally produce an alert
+    via delegation gets suppressed by suppress_vendors. No alert
+    row in the DB — vendor suppression is a true write-time skip,
+    not a downgrade. Mirror of the suppress_categories e2e but on
+    the vendor axis."""
+    mac_id = _add_watchlist(db, _FIXTURE_MAC, "mac", "high")
+    _add_metadata(
+        db, mac_id, "alpr", vendor="Mitsubishi Electric US, Inc."
+    )
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac",
+                rule_type="watchlist_mac",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    overrides = RuntimeSeverityOverride(
+        suppress_vendors=frozenset({"mitsubishi electric us, inc."}),
+    )
+    poll_once(
+        fake_client,
+        db,
+        config,
+        1700001000,
+        ruleset=rs,
+        severity_overrides=overrides,
+    )
+    assert _alerts(db) == []
+    # Watchlist row + metadata row still present — runtime
+    # suppress_vendors is layered on top of the import-time consumer
+    # (vendor_overrides "drop" semantic), which is untouched here.
+    row = db._conn.execute(
+        "SELECT id FROM watchlist WHERE id = ?", (mac_id,)
+    ).fetchone()
+    assert row is not None
+    md = db.get_metadata_by_watchlist_id(mac_id)
+    assert md is not None
+    assert md["vendor"] == "Mitsubishi Electric US, Inc."
+
+
+def test_runtime_overrides_suppress_vendor_case_insensitive_e2e(
+    db, config, fake_client
+):
+    """End-to-end normalization regression: a vendor string on the
+    metadata row exactly as Argus exported it (mixed case +
+    punctuation) is matched against an override entry written in
+    a different case. The load-time + eval-time normalization
+    (lowercase + strip) makes the match succeed regardless of how
+    the operator typed the override entry."""
+    mac_id = _add_watchlist(db, _FIXTURE_MAC, "mac", "high")
+    _add_metadata(
+        db, mac_id, "alpr", vendor="Mitsubishi Electric US, Inc."
+    )
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac",
+                rule_type="watchlist_mac",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    # Override entry must be supplied in normalized form when
+    # constructing RuntimeSeverityOverride directly (the load_*
+    # helper does this; tests have to mirror it).
+    overrides = RuntimeSeverityOverride(
+        suppress_vendors=frozenset({"  mitsubishi electric us, inc.  ".strip().lower()}),
+    )
+    poll_once(
+        fake_client,
+        db,
+        config,
+        1700001000,
+        ruleset=rs,
+        severity_overrides=overrides,
+    )
+    assert _alerts(db) == []
 
 
 def test_runtime_overrides_pass_through_when_no_metadata_e2e(db, config, fake_client):
