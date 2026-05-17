@@ -744,7 +744,7 @@ class Database:
     # have to know about the row factory.
 
     _ALERT_SEVERITIES = ("low", "med", "high")
-    _DEVICE_TYPES = ("wifi", "ble", "bt_classic")
+    _DEVICE_TYPES = ("wifi", "ble", "bt_classic", "remote_id")
 
     @staticmethod
     def _validate_pagination(limit: int, offset: int, *, max_limit: int = 1000) -> None:
