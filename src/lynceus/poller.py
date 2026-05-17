@@ -185,6 +185,8 @@ def poll_once(
                     mac=obs.mac,
                     ssid=obs.ssid,
                     ble_service_uuids=obs.ble_service_uuids,
+                    ble_manufacturer_id=obs.ble_manufacturer_id,
+                    drone_id_prefix=obs.drone_id_prefix,
                 )
             for hit in hits:
                 if config.alert_dedup_window_seconds > 0:
