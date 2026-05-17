@@ -1043,6 +1043,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   types; this rc5 takes it to 7 of the 10 most-populous Argus
   types.
 
+### Documentation
+
+- **Doc-rot sweep across operator-visible docs.** SECURITY.md
+  version refreshed from 0.3.0-rc1 to 0.4.0-rc5 (two occurrences).
+  PROJECT_STATUS.md refreshed for 0.4 reality: current-version line,
+  test count (437 → 1973, with the per-module table dropped),
+  hardware-tested section reworded to describe the rc5 shakedown
+  rather than the v0.3 forward look. SMOKE.md header drops its
+  stale `(v0.2)` pin (the checklist still applies through 0.4).
+  WINDOWS_DEV.md drops the "live reload is on the v0.3 backlog"
+  promise — live reload remains deferred without a version target
+  per BACKLOG.md, and the example `git clone` command targets the
+  current `lynceus-warden` name. CONFIGURATION.md webui-routes
+  tables grow `/watchlist`, `/settings`, `/healthz.json`, the rc5
+  `/alerts` filter additions (`rule_type` / `q` / `window`), the
+  `/allowlist` management surface (`/allowlist/add`,
+  `/allowlist/bulk_remove`), and the per-alert allowlist + snooze
+  mutations. No prose rewritten for stylistic reasons; only
+  confirmed rot fixed.
+
 ### Changed
 
 - **`lynceus-setup` Kismet + ntfy sections now ship with inline
