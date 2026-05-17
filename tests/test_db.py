@@ -720,6 +720,137 @@ def test_count_alerts_search_matches_list(db):
     assert db.count_alerts(since_ts=101, search="world") == 1
 
 
+def test_list_alerts_filter_by_rule_type(db):
+    db.add_alert(
+        ts=100, rule_name="r", mac=None, message="m",
+        severity="low", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=101, rule_name="r", mac=None, message="m",
+        severity="low", rule_type="watchlist_oui",
+    )
+    db.add_alert(
+        ts=102, rule_name="r", mac=None, message="m",
+        severity="low", rule_type="watchlist_ssid",
+    )
+    rows = db.list_alerts(rule_type="watchlist_oui")
+    assert [r["rule_type"] for r in rows] == ["watchlist_oui"]
+    assert db.count_alerts(rule_type="watchlist_oui") == 1
+
+
+def test_list_alerts_filter_by_rule_type_excludes_null_rule_type(db):
+    # Honest exclusion of legacy NULL-rule_type rows from any
+    # specific type filter. rule_type=None is the "any" default and
+    # includes them.
+    db.add_alert(
+        ts=100, rule_name="r", mac=None, message="m",
+        severity="low", rule_type=None,
+    )
+    db.add_alert(
+        ts=101, rule_name="r", mac=None, message="m",
+        severity="low", rule_type="watchlist_mac",
+    )
+    rows = db.list_alerts(rule_type="watchlist_mac")
+    assert len(rows) == 1
+    rows_all = db.list_alerts()
+    assert len(rows_all) == 2
+
+
+def test_list_alerts_filter_by_q_matches_mac(db):
+    db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
+    db.upsert_device("11:22:33:44:55:66", "wifi", "Acme", 0, 100)
+    db.add_alert(
+        ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:ff",
+        message="m", severity="low",
+    )
+    db.add_alert(
+        ts=101, rule_name="r", mac="11:22:33:44:55:66",
+        message="m", severity="low",
+    )
+    rows = db.list_alerts(q="aa:bb")
+    assert [r["mac"] for r in rows] == ["aa:bb:cc:dd:ee:ff"]
+    # Case-insensitive.
+    rows = db.list_alerts(q="AA:BB")
+    assert [r["mac"] for r in rows] == ["aa:bb:cc:dd:ee:ff"]
+
+
+def test_list_alerts_filter_by_q_matches_message_substring(db):
+    db.add_alert(
+        ts=100, rule_name="r", mac=None,
+        message="SSID 'MySSID' on watchlist", severity="low",
+    )
+    db.add_alert(
+        ts=101, rule_name="r", mac=None,
+        message="MAC aa:bb:cc on watchlist", severity="low",
+    )
+    rows = db.list_alerts(q="myssid")
+    assert len(rows) == 1
+    assert "MySSID" in rows[0]["message"]
+
+
+def test_list_alerts_filter_by_q_matches_manufacturer_via_join(db):
+    # q substring matches against watchlist_metadata.vendor. Forces
+    # both the LEFT JOIN and the COALESCE NULL-safety in the
+    # filter clause to be exercised.
+    db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
+    wl_id = db._conn.execute(
+        "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+        "VALUES (?, ?, ?, ?)",
+        ("aa:bb:cc:dd:ee:ff", "mac", "high", "Apple device"),
+    ).lastrowid
+    db._conn.execute(
+        "INSERT INTO watchlist_metadata("
+        "watchlist_id, argus_record_id, device_category, vendor) "
+        "VALUES (?, ?, ?, ?)",
+        (wl_id, "argus-1", "phone", "Apple Inc."),
+    )
+    db._conn.commit()
+    db.add_alert(
+        ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:ff",
+        message="generic", severity="low",
+        matched_watchlist_id=wl_id,
+    )
+    db.add_alert(
+        ts=101, rule_name="r", mac=None,
+        message="generic", severity="low",
+    )
+    rows = db.list_alerts(q="apple")
+    assert len(rows) == 1
+    assert rows[0]["mac"] == "aa:bb:cc:dd:ee:ff"
+    assert db.count_alerts(q="apple") == 1
+
+
+def test_count_alerts_and_list_alerts_apply_same_filter(db):
+    # Single-source-of-truth invariant: count and page query must
+    # report the same set under identical filters. Drift here is the
+    # pagination-math-is-a-lie bug class.
+    for i, sev in enumerate(["low", "med", "high", "low", "high"]):
+        db.add_alert(
+            ts=100 + i, rule_name=f"r{i}", mac=None, message=f"m{i}",
+            severity=sev, rule_type="watchlist_mac" if i < 3 else "watchlist_oui",
+        )
+    filters = {
+        "severity": "low",
+        "rule_type": "watchlist_mac",
+    }
+    page = db.list_alerts(limit=100, offset=0, **filters)
+    total = db.count_alerts(**filters)
+    assert len(page) == total
+
+
+def test_list_alerts_with_match_accepts_rule_type_and_q(db):
+    # Confirms _ALERT_WITH_MATCH_FILTER_KEYS admits the new keys.
+    db.add_alert(
+        ts=100, rule_name="r", mac=None, message="m",
+        severity="low", rule_type="watchlist_mac",
+    )
+    rows = db.list_alerts_with_match({"rule_type": "watchlist_mac"})
+    assert len(rows) == 1
+    assert rows[0]["rule_type"] == "watchlist_mac"
+    rows = db.list_alerts_with_match({"q": "m"})
+    assert len(rows) == 1
+
+
 # ---------------------------------------------------------------------------
 # device_seen_counts and latest_poll_ts (UI dashboard helpers).
 # ---------------------------------------------------------------------------
