@@ -11,6 +11,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from lynceus.kismet import DeviceObservation, normalize_mac, normalize_uuid
+from lynceus.patterns import normalize_pattern
 
 if TYPE_CHECKING:
     from lynceus.db import Database
@@ -25,6 +26,8 @@ RuleType = Literal[
     "watchlist_ssid",
     "watchlist_mac_range",
     "ble_uuid",
+    "watchlist_ble_manufacturer_id",
+    "watchlist_drone_id_prefix",
     "new_non_randomized_device",
 ]
 Severity = Literal["low", "med", "high"]
@@ -81,6 +84,17 @@ class Rule(BaseModel):
             # rules.evaluate branch picks the path based on
             # rule.patterns at call time. No assertion needed here.
             pass
+        elif self.rule_type in (
+            "watchlist_ble_manufacturer_id",
+            "watchlist_drone_id_prefix",
+        ):
+            # Same delegation-capable shape as the four types above.
+            # Empty patterns = delegate to the watchlist DB; non-empty
+            # = in-memory equality match against rule.patterns (the
+            # observation field carries the canonical string form
+            # populated at parse_kismet_device time, so equality is
+            # the right shape). No carve-out — both modes are valid.
+            pass
         # No else: the RuleType Literal already constrains rule_type
         # to a known set; pydantic rejects unknown values upstream.
 
@@ -98,6 +112,22 @@ class Rule(BaseModel):
         elif self.rule_type == "ble_uuid":
             try:
                 normalized = [normalize_uuid(p) for p in self.patterns]
+            except ValueError as e:
+                raise ValueError(f"rule {self.name!r}: {e}") from e
+            object.__setattr__(self, "patterns", normalized)
+        elif self.rule_type == "watchlist_ble_manufacturer_id":
+            try:
+                normalized = [
+                    normalize_pattern("ble_manufacturer_id", p) for p in self.patterns
+                ]
+            except ValueError as e:
+                raise ValueError(f"rule {self.name!r}: {e}") from e
+            object.__setattr__(self, "patterns", normalized)
+        elif self.rule_type == "watchlist_drone_id_prefix":
+            try:
+                normalized = [
+                    normalize_pattern("drone_id_prefix", p) for p in self.patterns
+                ]
             except ValueError as e:
                 raise ValueError(f"rule {self.name!r}: {e}") from e
             object.__setattr__(self, "patterns", normalized)
@@ -875,6 +905,139 @@ def evaluate(
                     continue
                 msg = (
                     f"BLE service UUID on watchlist "
+                    f"(watchlist_id={match.watchlist_id}): "
+                    f"{rule.description or rule.name} (mac {obs.mac})"
+                )
+                hits.append(
+                    RuleHit(
+                        rule_name=rule.name,
+                        rule_type=rule.rule_type,
+                        severity=effective_severity,
+                        message=msg,
+                        mac=obs.mac,
+                    )
+                )
+        elif rule.rule_type == "watchlist_ble_manufacturer_id":
+            # Equality-shape delegation, mirroring watchlist_mac. The
+            # observation's ble_manufacturer_id is None for non-BLE
+            # records and for BLE records where the Kismet field paths
+            # in kismet._BLE_MANUFACTURER_ID_PATHS did not resolve — both
+            # short-circuit to no match. See the kismet.py docstring for
+            # the field-path uncertainty caveat.
+            if obs.ble_manufacturer_id is None:
+                continue
+            if rule.patterns:
+                # In-memory match path. Severity sourced from the rule.
+                if obs.ble_manufacturer_id in rule.patterns:
+                    msg = (
+                        f"BLE manufacturer 0x{obs.ble_manufacturer_id} on "
+                        f"watchlist: {rule.description or rule.name} "
+                        f"(mac {obs.mac})"
+                    )
+                    hits.append(
+                        RuleHit(
+                            rule_name=rule.name,
+                            rule_type=rule.rule_type,
+                            severity=rule.severity,
+                            message=msg,
+                            mac=obs.mac,
+                        )
+                    )
+            else:
+                # Delegation path. Severity sourced from the matched
+                # DB row — see the watchlist_mac branch above for the
+                # architectural rationale.
+                if db is None:
+                    logger.error(
+                        "delegation rule %r (watchlist_ble_manufacturer_id, "
+                        "empty patterns) evaluated without db; skipping.",
+                        rule.name,
+                    )
+                    continue
+                match = db.resolve_matched_ble_manufacturer_id_for_eval(
+                    obs.ble_manufacturer_id
+                )
+                if match is None:
+                    continue
+                effective_severity = _apply_runtime_overrides(
+                    match_severity=match.severity,
+                    match_device_category=match.device_category,
+                    match_manufacturer=match.manufacturer,
+                    match_argus_record_id=match.argus_record_id,
+                    match_watchlist_id=match.watchlist_id,
+                    rule_name=rule.name,
+                    overrides=severity_overrides,
+                )
+                if effective_severity is None:
+                    continue
+                msg = (
+                    f"BLE manufacturer 0x{obs.ble_manufacturer_id} on "
+                    f"watchlist (watchlist_id={match.watchlist_id}): "
+                    f"{rule.description or rule.name} (mac {obs.mac})"
+                )
+                hits.append(
+                    RuleHit(
+                        rule_name=rule.name,
+                        rule_type=rule.rule_type,
+                        severity=effective_severity,
+                        message=msg,
+                        mac=obs.mac,
+                    )
+                )
+        elif rule.rule_type == "watchlist_drone_id_prefix":
+            # Equality-shape delegation, mirroring watchlist_mac. The
+            # observation's drone_id_prefix is None until both
+            # kismet._DRONE_ID_PATHS field-path verification AND
+            # _TYPE_MAP extension to admit Remote-ID device records
+            # land — see the kismet.py docstring for the dual caveat.
+            if obs.drone_id_prefix is None:
+                continue
+            if rule.patterns:
+                # In-memory match path. Severity sourced from the rule.
+                if obs.drone_id_prefix in rule.patterns:
+                    msg = (
+                        f"Drone Remote-ID {obs.drone_id_prefix} on "
+                        f"watchlist: {rule.description or rule.name} "
+                        f"(mac {obs.mac})"
+                    )
+                    hits.append(
+                        RuleHit(
+                            rule_name=rule.name,
+                            rule_type=rule.rule_type,
+                            severity=rule.severity,
+                            message=msg,
+                            mac=obs.mac,
+                        )
+                    )
+            else:
+                # Delegation path. Severity sourced from the matched
+                # DB row — see the watchlist_mac branch above for the
+                # architectural rationale.
+                if db is None:
+                    logger.error(
+                        "delegation rule %r (watchlist_drone_id_prefix, "
+                        "empty patterns) evaluated without db; skipping.",
+                        rule.name,
+                    )
+                    continue
+                match = db.resolve_matched_drone_id_prefix_for_eval(
+                    obs.drone_id_prefix
+                )
+                if match is None:
+                    continue
+                effective_severity = _apply_runtime_overrides(
+                    match_severity=match.severity,
+                    match_device_category=match.device_category,
+                    match_manufacturer=match.manufacturer,
+                    match_argus_record_id=match.argus_record_id,
+                    match_watchlist_id=match.watchlist_id,
+                    rule_name=rule.name,
+                    overrides=severity_overrides,
+                )
+                if effective_severity is None:
+                    continue
+                msg = (
+                    f"Drone Remote-ID {obs.drone_id_prefix} on watchlist "
                     f"(watchlist_id={match.watchlist_id}): "
                     f"{rule.description or rule.name} (mac {obs.mac})"
                 )
