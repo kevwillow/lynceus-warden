@@ -110,19 +110,86 @@
       <dd>{{ watchlist_stats.yaml }}</dd>
       <dt>bundled-or-other</dt>
       <dd>{{ watchlist_stats.bundled }}</dd>
-      <dt>last imported</dt>
-      <dd>
-        {% if watchlist_stats.last_imported_ts %}
-          {{ watchlist_stats.last_imported_ts | unix_to_utc_human }}
-        {% else %}
-          <em>(never)</em>
-        {% endif %}
-      </dd>
     </dl>
     <p><a href="/watchlist">view watchlist entries &rarr;</a></p>
     <p><small>
       To add data, run <code>lynceus-import-argus --input &lt;path&gt;</code> or
       <code>lynceus-seed-watchlist --yaml &lt;path&gt;</code>.
+    </small></p>
+  </article>
+
+  <article class="settings-card">
+    <header><strong>watchlist freshness</strong></header>
+    {% if watchlist_freshness.has_import %}
+      <p>
+        status:
+        {% if watchlist_freshness.status == "fresh" %}
+          <span class="badge-status-ok">fresh (within {{ watchlist_freshness.warn_days }} days)</span>
+        {% else %}
+          <span class="badge-status-error">stale (older than {{ watchlist_freshness.warn_days }} days)</span>
+        {% endif %}
+      </p>
+      <dl class="metadata-grid">
+        <dt>argus exported</dt>
+        <dd>
+          {% if watchlist_freshness.exported_at %}
+            {{ watchlist_freshness.exported_at | unix_to_utc_human }}
+          {% else %}
+            <em>(unknown &mdash; CSV had no parseable <code>exported_at</code>)</em>
+          {% endif %}
+        </dd>
+        <dt>imported locally</dt>
+        <dd>{{ watchlist_freshness.imported_at | unix_to_utc_human }}</dd>
+        <dt>age</dt>
+        <dd>{{ watchlist_freshness.age_days }} days</dd>
+        <dt>source</dt>
+        <dd>
+          {% if watchlist_freshness.source %}
+            <code>{{ watchlist_freshness.source }}</code>
+          {% else %}
+            <em>(unrecorded)</em>
+          {% endif %}
+        </dd>
+        <dt>record count (argus)</dt>
+        <dd>
+          {% if watchlist_freshness.record_count is not none %}
+            {{ watchlist_freshness.record_count }}
+          {% else %}
+            <em>(not recorded)</em>
+          {% endif %}
+        </dd>
+      </dl>
+      {% if watchlist_freshness.status == "stale" %}
+        <p><small>
+          To refresh, run <code>lynceus-import-argus --from-github</code>
+          (or <code>--input &lt;path&gt;</code> for air-gapped) and
+          restart the daemon.
+        </small></p>
+      {% endif %}
+    {% else %}
+      <p><em>No Argus import metadata recorded.</em></p>
+      <p><small>
+        Run <code>lynceus-import-argus --from-github</code> (online) or
+        <code>lynceus-import-argus --input &lt;path&gt;</code>
+        (air-gapped) to populate this card. Existing imports from
+        before migration 012 landed don&rsquo;t appear here &mdash;
+        the next refresh will.
+      </small></p>
+    {% endif %}
+    {# pattern-type breakdown is about the LIVE watchlist contents,
+       not the import metadata — render in both branches so an
+       operator on a fresh install sees the bundled-row breakdown. #}
+    <p><strong>pattern types:</strong>
+      mac={{ watchlist_freshness.pattern_type_counts.mac }},
+      oui={{ watchlist_freshness.pattern_type_counts.oui }},
+      ssid={{ watchlist_freshness.pattern_type_counts.ssid }},
+      ble_uuid={{ watchlist_freshness.pattern_type_counts.ble_uuid }},
+      mac_range={{ watchlist_freshness.pattern_type_counts.mac_range }}
+    </p>
+    <p><small>
+      Staleness threshold is
+      <code>watchlist_staleness_warn_days</code> in
+      <code>lynceus.yaml</code> (default 30).
     </small></p>
   </article>
 

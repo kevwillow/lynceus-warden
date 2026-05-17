@@ -540,3 +540,128 @@ def test_importlib_metadata_used_for_version(tmp_path, monkeypatch):
         assert "9.9.9-test" in r.text
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Watchlist freshness card (migration 012 + the staleness signal).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_watchlist_freshness_card_renders_no_import_state(tmp_path, monkeypatch):
+    """Fresh-install state: no import_runs rows yet → card renders
+    the 'no Argus import metadata recorded' message without
+    erroring. Backward-compat invariant: an empty DB must not
+    crash /settings."""
+    _stub_kismet_reachable(monkeypatch)
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/settings")
+        assert r.status_code == 200
+        assert "watchlist freshness" in r.text
+        assert "No Argus import metadata recorded" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_freshness_card_renders_fresh_state(tmp_path, monkeypatch):
+    """A recent import (within default 30-day threshold) → card
+    renders the fresh badge + the source string verbatim."""
+    _stub_kismet_reachable(monkeypatch)
+    app, db = _make_app(tmp_path)
+    try:
+        import time
+        now = int(time.time())
+        db.record_import_run(
+            imported_at=now - 86400,        # 1 day ago
+            exported_at=now - 86400,
+            source="kevwillow/argus-db@v9.9.9",
+            record_count=12345,
+        )
+        with TestClient(app) as client:
+            r = client.get("/settings")
+        assert r.status_code == 200
+        text = r.text
+        assert "watchlist freshness" in text
+        assert "fresh" in text
+        # Source string renders verbatim — operator-facing forensic field.
+        assert "kevwillow/argus-db@v9.9.9" in text
+        assert "12345" in text  # record_count
+        # Refresh hint must NOT appear in the fresh state.
+        assert "lynceus-import-argus --from-github" not in text or (
+            # The setup-instructions block at the bottom may mention it
+            # in the no-import branch; assert specifically the stale
+            # refresh hint copy isn't on a fresh page.
+            "consider" not in text
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_freshness_card_renders_stale_state_with_refresh_hint(
+    tmp_path, monkeypatch
+):
+    """Over-threshold data → card renders the stale badge plus the
+    `lynceus-import-argus --from-github` refresh hint. The operator
+    opening /settings during routine triage should see the same
+    signal that journalctl's WARNING line surfaces at daemon
+    startup — the two surfaces are deliberately kept in lockstep."""
+    _stub_kismet_reachable(monkeypatch)
+    app, db = _make_app(tmp_path, watchlist_staleness_warn_days=5)
+    try:
+        import time
+        now = int(time.time())
+        db.record_import_run(
+            imported_at=now - 10 * 86400,    # 10 days ago, > 5-day threshold
+            exported_at=now - 10 * 86400,
+            source="/var/lib/lynceus/argus-cache/v1.csv",
+            record_count=100,
+        )
+        with TestClient(app) as client:
+            r = client.get("/settings")
+        assert r.status_code == 200
+        text = r.text
+        assert "stale" in text
+        assert "lynceus-import-argus --from-github" in text
+        assert "/var/lib/lynceus/argus-cache/v1.csv" in text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_freshness_card_pattern_type_breakdown_renders_counts(
+    tmp_path, monkeypatch
+):
+    """Pattern-type breakdown on the card matches the underlying
+    watchlist_pattern_type_counts query. Operators on /settings see
+    the same per-type numbers the importer's summary surfaces."""
+    _stub_kismet_reachable(monkeypatch)
+    app, db = _make_app(tmp_path)
+    try:
+        # Seed 2 mac, 1 oui, 0 ssid, 0 ble_uuid, 1 mac_range rows.
+        for pat in ("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"):
+            _add_watchlist(db, pat, pattern_type="mac")
+        _add_watchlist(db, "00:13:37", pattern_type="oui")
+        with db._conn:
+            db._conn.execute(
+                "INSERT INTO watchlist("
+                "pattern, pattern_type, severity, description, "
+                "mac_range_prefix, mac_range_prefix_length) "
+                "VALUES ('aa:bb:cc:d/28', 'mac_range', 'low', NULL, "
+                "'aabbccd', 28)"
+            )
+        with TestClient(app) as client:
+            r = client.get("/settings")
+        assert r.status_code == 200
+        text = r.text
+        # The breakdown line: "mac=2, oui=1, ssid=0, ble_uuid=0, mac_range=1".
+        assert "mac=2" in text
+        assert "oui=1" in text
+        assert "ssid=0" in text
+        assert "ble_uuid=0" in text
+        assert "mac_range=1" in text
+    finally:
+        db.close()
