@@ -176,8 +176,9 @@ Two layers read this file:
     downgrade_threshold): applied by lynceus-import-argus when data
     is brought in. Edits take effect after the next re-import.
   - RUNTIME (device_category_severity, suppress_categories,
-    suppress_vendors): applied by the poller at alert time. Edits
-    take effect on daemon restart — no re-import required.
+    suppress_vendors, pattern_overrides): applied by the poller at
+    alert time. Edits take effect on daemon restart — no re-import
+    required.
 
 A starter file with explanatory comments will be created at the path
 below. You can edit it any time. Press Enter to accept the default.
@@ -191,9 +192,10 @@ SEVERITY_OVERRIDES_TEMPLATE = """\
 #     Edits require re-importing to apply.
 #
 #   RUNTIME (the poller / daemon): keys device_category_severity,
-#     suppress_categories, suppress_vendors. Edits require only a
-#     daemon restart; already-imported rows fire at the new severity
-#     (or are suppressed) without re-importing.
+#     suppress_categories, suppress_vendors, pattern_overrides.
+#     Edits require only a daemon restart; already-imported rows
+#     fire at the new severity (or are suppressed) without
+#     re-importing.
 #
 # Each section is optional. Uncomment and edit only what you want to change.
 # Each section below carries an inline `# LAYER:` tag so it's clear which
@@ -219,6 +221,29 @@ SEVERITY_OVERRIDES_TEMPLATE = """\
 #   #   unknown=low.
 #   imsi_catcher: high
 #   drone: low
+
+# pattern_overrides:          # LAYER: RUNTIME — daemon restart applies live
+#   # Row-level severity remap keyed by argus_record_id (16-hex
+#   # stable Argus identifier on watchlist_metadata.argus_record_id).
+#   # More specific than device_category_severity above — carves
+#   # individual rows out of the category-level default. Less
+#   # specific than suppress_categories / suppress_vendors above:
+#   # if either suppression layer fires for a row, this remap is
+#   # never consulted (per-row UNSUPPRESS is not a feature). Only
+#   # rows imported from Argus have argus_record_id populated;
+#   # operator-supplied rows seeded via lynceus-seed-watchlist
+#   # without metadata fall through to the category layer.
+#   #
+#   # Find an argus_record_id for a row of interest with:
+#   #   sqlite3 lynceus.db "SELECT m.argus_record_id, w.pattern,
+#   #                              w.severity, m.vendor
+#   #                       FROM watchlist w
+#   #                       JOIN watchlist_metadata m
+#   #                         ON w.id = m.watchlist_id
+#   #                       LIMIT 5;"
+#   #
+#   # Example: bump a specific row from baked low → high.
+#   #   "a1b2c3d4e5f60718": high
 
 # suppress_categories:        # LAYER: RUNTIME — daemon restart applies live
 #   # Categories listed here produce NO alerts at runtime, even if
