@@ -540,6 +540,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   types; this rc5 takes it to 7 of the 10 most-populous Argus
   types.
 
+### Changed
+
+- **`lynceus-setup` Kismet + ntfy sections now ship with inline
+  context blocks for first-time operators.** Pre-rc5, the wizard
+  asked `Kismet API token (input hidden):` with no preceding
+  explanation — an operator who had just installed Kismet had to
+  go elsewhere to figure out where API keys live, what role to
+  pick, and what the topic in the ntfy prompt was even for. After
+  this change each section opens with a `═══`-underlined header,
+  a short explanation of what the value is and why Lynceus needs
+  it, and (for the Kismet API key) a step-by-step walkthrough of
+  where to generate one in the Kismet web UI. The ntfy section
+  also calls out the topic-as-shared-secret property up front so
+  the operator picks something unguessable rather than reading
+  the warning after the fact in the generated lynceus.yaml.
+
+  No prompts were added, removed, or reordered. Default values
+  are unchanged. Existing operators who already know the answers
+  tab through at the same pace as before — the context blocks
+  render above each prompt but never block input. The output is
+  plain ASCII + box-drawing characters (no emoji, no ANSI color,
+  no new dependency), so it still looks right when tee'd into an
+  install log.
+
+  Closes the documented gap from the rc5 "anything else deferred"
+  sweep: the wizard prompts are now genuinely user-friendly for a
+  first-time operator who has never set up Kismet or ntfy before.
+
 ### Fixed
 
 - **Poller now logs a grep-able INFO line on every ruleset load.**
