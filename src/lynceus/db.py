@@ -596,6 +596,71 @@ class Database:
         ).fetchone()
         return dict(row) if row else None
 
+    # ---- import_runs (per-import freshness metadata) ----------------
+
+    def record_import_run(
+        self,
+        *,
+        imported_at: int,
+        exported_at: int | None,
+        source: str | None,
+        record_count: int | None,
+    ) -> int:
+        """Persist one row to ``import_runs`` for a successful import.
+
+        Powers the staleness signal — the startup log line + the
+        /settings card both read the most-recent row from this table.
+        Called by ``lynceus-import-argus`` after a successful write
+        (NOT on --dry-run; nothing wrote, so nothing to record).
+
+        ``exported_at`` is the Argus-side timestamp parsed from the
+        CSV's ``# meta:`` line; ``None`` when the meta line is
+        absent or unparseable. ``imported_at`` is the local-clock
+        moment of write — always set; the integer Unix epoch matches
+        the rest of the schema's timestamp convention.
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO import_runs(imported_at, exported_at, source, record_count) "
+                "VALUES (?, ?, ?, ?)",
+                (imported_at, exported_at, source, record_count),
+            )
+            return int(cur.lastrowid)
+
+    def get_latest_import_run(self) -> dict | None:
+        """Return the most-recent ``import_runs`` row, or ``None``
+        when no imports have been recorded.
+
+        Selection is by descending ``imported_at`` (the local clock
+        moment of write), NOT by ``exported_at`` — an operator who
+        re-imports an older CSV on top of a newer one is
+        deliberately reverting to the older corpus, and the
+        "freshness" indicator should reflect the active import. The
+        index ``idx_import_runs_imported_at`` from migration 012
+        makes this a single-row lookup.
+        """
+        row = self._conn.execute(
+            "SELECT id, imported_at, exported_at, source, record_count "
+            "FROM import_runs ORDER BY imported_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def watchlist_pattern_type_counts(self) -> dict[str, int]:
+        """Return ``{pattern_type: count}`` for all rows in
+        ``watchlist``. Every pattern_type the schema admits appears
+        as a key (zero when no rows of that type exist) so callers
+        can render a stable layout without per-type presence
+        checks."""
+        counts = {pt: 0 for pt in self._WATCHLIST_PATTERN_TYPES}
+        rows = self._conn.execute(
+            "SELECT pattern_type, COUNT(*) AS c FROM watchlist GROUP BY pattern_type"
+        ).fetchall()
+        for row in rows:
+            pt = row["pattern_type"]
+            if pt in counts:
+                counts[pt] = int(row["c"])
+        return counts
+
     def get_state(self, key: str) -> str | None:
         row = self._conn.execute("SELECT value FROM poller_state WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None

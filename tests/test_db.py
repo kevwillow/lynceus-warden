@@ -180,6 +180,7 @@ def test_migrations_dir_lists_both_files(db):
         "009_evidence_do_not_publish.sql",
         "010_normalize_watchlist_patterns.sql",
         "011_watchlist_mac_range.sql",
+        "012_import_runs.sql",
     ]
 
 
@@ -1436,3 +1437,112 @@ def test_reopening_database_preserves_existing_mode(tmp_path):
         assert mode == 0o640, f"expected 0o640 preserved, got {oct(mode)}"
     finally:
         d.close()
+
+
+# ---- import_runs (migration 012) ------------------------------------------
+#
+# Per-import metadata table. Powers the staleness signal at /settings
+# and the poller's startup log line. record_import_run writes one row
+# per successful import; get_latest_import_run reads the most recent
+# by imported_at (NOT exported_at — see method docstring).
+
+
+def test_get_latest_import_run_empty_returns_none(db):
+    """Fresh DB has no import runs recorded → None. Backward-compat
+    invariant: an empty DB / no imports yet must not crash the
+    staleness signal, just say so cleanly."""
+    assert db.get_latest_import_run() is None
+
+
+def test_record_and_get_latest_import_run_roundtrip(db):
+    """The basic write/read shape. Every column populates."""
+    rid = db.record_import_run(
+        imported_at=1700001000,
+        exported_at=1699900000,
+        source="/var/lib/lynceus/argus-cache/v1.2.3__argus_export.csv",
+        record_count=17786,
+    )
+    assert rid > 0
+    latest = db.get_latest_import_run()
+    assert latest is not None
+    assert latest["imported_at"] == 1700001000
+    assert latest["exported_at"] == 1699900000
+    assert latest["source"] == "/var/lib/lynceus/argus-cache/v1.2.3__argus_export.csv"
+    assert latest["record_count"] == 17786
+
+
+def test_record_import_run_accepts_null_exported_at_and_source(db):
+    """exported_at is nullable: legacy CSVs without a parseable
+    `# meta:` line land here as None. source / record_count are
+    similarly nullable for the same defensive reason."""
+    db.record_import_run(
+        imported_at=1700001000,
+        exported_at=None,
+        source=None,
+        record_count=None,
+    )
+    latest = db.get_latest_import_run()
+    assert latest is not None
+    assert latest["exported_at"] is None
+    assert latest["source"] is None
+    assert latest["record_count"] is None
+
+
+def test_get_latest_import_run_returns_most_recent_by_imported_at(db):
+    """Tiebreaker is descending imported_at, NOT exported_at — an
+    operator re-importing an older CSV on top of a newer one is
+    deliberately reverting and the freshness card must show the
+    active import."""
+    # Earlier import with a NEWER export.
+    db.record_import_run(
+        imported_at=1700001000,
+        exported_at=1799999999,  # far future export
+        source="newer-export.csv",
+        record_count=100,
+    )
+    # Later import with an OLDER export.
+    db.record_import_run(
+        imported_at=1700002000,
+        exported_at=1699000000,
+        source="older-export.csv",
+        record_count=50,
+    )
+    latest = db.get_latest_import_run()
+    assert latest is not None
+    # The later-imported row wins, even though its export is older.
+    assert latest["source"] == "older-export.csv"
+    assert latest["imported_at"] == 1700002000
+
+
+def test_watchlist_pattern_type_counts_empty_returns_zero_for_each_type(db):
+    """Empty watchlist returns zero for every pattern_type the schema
+    admits — stable shape lets the /settings template render without
+    branching on per-type presence."""
+    counts = db.watchlist_pattern_type_counts()
+    assert counts == {
+        "mac": 0,
+        "oui": 0,
+        "ssid": 0,
+        "ble_uuid": 0,
+        "mac_range": 0,
+    }
+
+
+def test_watchlist_pattern_type_counts_groups_by_type(db):
+    """Counts are per-pattern_type, not total — the operator-facing
+    breakdown."""
+    with db._conn:
+        for pattern in ("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"):
+            db._conn.execute(
+                "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+                "VALUES (?, 'mac', 'low', NULL)",
+                (pattern,),
+            )
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('00:13:37', 'oui', 'low', NULL)"
+        )
+    counts = db.watchlist_pattern_type_counts()
+    assert counts["mac"] == 2
+    assert counts["oui"] == 1
+    assert counts["ssid"] == 0
