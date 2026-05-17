@@ -147,6 +147,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   types; this rc5 takes it to 7 of the 10 most-populous Argus
   types.
 
+### Fixed
+
+- **Poller now logs a grep-able INFO line on every ruleset load.**
+  Pre-rc5 the poller silently called `load_ruleset` at `__init__`,
+  leaving operators no startup signal that `rules.yaml` had
+  actually been read. Symmetric with the `watchlist:` staleness
+  line (rc4) and the `runtime severity overrides loaded` line
+  (rc4 pre-smoke fix at 75a0b86) — every operator-configurable
+  startup load now ships with a deterministic literal:
+
+      loaded ruleset from <path>: N active rules
+      loaded ruleset from <path>: N active rules (M disabled)
+      no rules_path configured; ruleset is empty — no alerts will fire
+
+  `active` mirrors `rules.py`'s existing `rule.enabled` gate (a
+  disabled rule is loaded into the `Ruleset` but never evaluated).
+  The empty-state line catches the failure mode where the wizard
+  wrote `rules.yaml` but `rules_path` was never wired in
+  `lynceus.yaml` — pre-fix the daemon would run with no alerting
+  and no log line explaining why.
+
+- **`/settings` watchlist-freshness card breakdown extends to
+  all 7 pattern_types.** rc5 landed `ble_manufacturer_id` and
+  `drone_id_prefix` in `Database._WATCHLIST_PATTERN_TYPES` and
+  in the importer, but the template line on the freshness card
+  was never extended past the five rc4 types. Operators saw the
+  new rows in `lynceus-import-argus` stdout and could `SELECT`
+  them out of SQLite, but the /settings card silently rendered
+  zero for both. The data was correct in the backing dict
+  (`db.watchlist_pattern_type_counts` returns all 7 keys); only
+  the Jinja was stale. Caught pre-smoke during runbook
+  verification against `settings.html`.
+
+  The `_watchlist_freshness_card` docstring now enumerates all
+  7 keys and flags the DB/template coupling so the next
+  pattern_type addition gets the template extension too. The
+  test in `test_ui_settings.py` seeds rows of every type and
+  asserts each appears in the rendered line.
+
 ## [0.4.0-rc4] - 2026-05-15
 
 ### Added
