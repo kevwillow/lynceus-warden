@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 _MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_BLE_MANUF_ID_RE = re.compile(r"^[0-9a-f]{4}$")
+_DRONE_ID_RE = re.compile(r"^[A-Z0-9]{3,32}$")
 
 _TYPE_MAP: dict[str, Literal["wifi", "ble", "bt_classic"]] = {
     "Wi-Fi AP": "wifi",
@@ -42,6 +44,23 @@ class DeviceObservation(BaseModel):
     seen_by_sources: tuple[str, ...] = ()
     probe_ssids: tuple[str, ...] | None = None
     ble_name: str | None = None
+    # Canonical persistent form of the Bluetooth SIG 16-bit Company
+    # Identifier extracted from the BTLE advertisement payload — 4
+    # lowercase hex chars, no '0x' prefix (e.g. '004c' for Apple).
+    # Matches the form stored in watchlist.pattern for pattern_type
+    # 'ble_manufacturer_id' so rules.evaluate's watchlist_ble_
+    # manufacturer_id branch can equality-lookup directly. None
+    # when not present in the Kismet record — see _extract_ble_
+    # manufacturer_id for the field-path uncertainty caveat.
+    ble_manufacturer_id: str | None = None
+    # Canonical persistent form of an ANSI/CTA-2063-A Remote-ID
+    # serial-number prefix extracted from a drone Remote-ID
+    # broadcast — uppercase ASCII alphanumeric, 3-32 chars (e.g.
+    # '21239ESA2'). Matches the form stored in watchlist.pattern
+    # for pattern_type 'drone_id_prefix'. None when not present in
+    # the Kismet record — see _extract_drone_id_prefix for the
+    # field-path uncertainty caveat.
+    drone_id_prefix: str | None = None
     # Carries the original Kismet device record so the alert path can hand
     # it to evidence capture without a second REST call. Only populated by
     # parse_kismet_device — test stubs that build observations directly
@@ -95,6 +114,30 @@ class DeviceObservation(BaseModel):
         if self.last_seen < self.first_seen:
             raise ValueError("last_seen must be >= first_seen")
         return self
+
+    @field_validator("ble_manufacturer_id")
+    @classmethod
+    def _validate_ble_manufacturer_id(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not _BLE_MANUF_ID_RE.match(v):
+            raise ValueError(
+                f"invalid ble_manufacturer_id: {v!r} "
+                f"(expected 4 lowercase hex chars, no '0x' prefix)"
+            )
+        return v
+
+    @field_validator("drone_id_prefix")
+    @classmethod
+    def _validate_drone_id_prefix(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not _DRONE_ID_RE.match(v):
+            raise ValueError(
+                f"invalid drone_id_prefix: {v!r} "
+                f"(expected 3-32 uppercase ASCII alphanumeric chars)"
+            )
+        return v
 
     @model_validator(mode="after")
     def _drop_uuids_for_non_ble(self) -> DeviceObservation:
@@ -165,6 +208,161 @@ def _extract_ble_name(raw: dict) -> str | None:
     name = raw.get(_BLE_NAME_FIELD)
     if isinstance(name, str) and name:
         return name
+    return None
+
+
+# Kismet field-path table for BLE manufacturer-specific advertisement
+# data. UNVERIFIED against a live Kismet capture as of 2026-05-17 —
+# the Lynceus codebase had no prior consumer of this surface, so the
+# paths here are derived from public Kismet schema documentation
+# rather than confirmed against an emission. Each entry is a
+# dotted-key sequence walked depth-first; the first path that
+# resolves to a parseable 16-bit company id wins.
+#
+# Operators verifying this against a live deployment:
+#   1. Capture one BTLE device record JSON (Kismet REST
+#      /devices/by-mac/<mac>/device.json).
+#   2. Identify the field name carrying the manufacturer-data
+#      company id (often nested under an advertising_data / adv_data
+#      structure with a 'company' / 'company_id' / 'cid' leaf).
+#   3. Add the confirmed path to the front of this tuple; remove the
+#      stale guesses behind it.
+#
+# Until then the resolver returns None for nearly every observation,
+# the watchlist_ble_manufacturer_id delegation rule fires zero
+# alerts on real hardware, and the import + DB pipeline is the only
+# half of the feature that's load-bearing.
+_BLE_MANUFACTURER_ID_PATHS: tuple[tuple[str, ...], ...] = (
+    ("kismet.device.base.advdata", "manufacturer_data", "company_id"),
+    ("kismet.device.base.advdata", "manufacturer_data", "company"),
+    ("kismet.device.base.advdata", "company_id"),
+    ("bluetooth.device.adv_data", "manufacturer_data", "company_id"),
+    ("bluetooth.device.adv_data", "manufacturer_data", "company"),
+    ("bluetooth.device", "manufacturer", "company_id"),
+)
+
+
+def _walk(raw: dict, path: tuple[str, ...]) -> object:
+    cursor: object = raw
+    for key in path:
+        if isinstance(cursor, dict):
+            cursor = cursor.get(key)
+        elif isinstance(cursor, list) and cursor and isinstance(cursor[0], dict):
+            # Manufacturer data is sometimes a list of dicts (one per
+            # advertised company). Walk the first entry — multi-company
+            # advertisements are vanishingly rare and the watchlist
+            # equality lookup keys off a single company id anyway.
+            cursor = cursor[0].get(key)
+        else:
+            return None
+        if cursor is None:
+            return None
+    return cursor
+
+
+def _coerce_ble_manufacturer_id(value: object) -> str | None:
+    """Normalize a Kismet manufacturer-data company id to canonical form.
+
+    Accepts int (BLE spec native shape) or hex/decimal-string (some
+    decoders emit the human-readable hex form). Returns the canonical
+    4-lowercase-hex-char string, or None for any value that can't be
+    coerced cleanly (None, empty string, out-of-range int, non-hex).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        # bool is an int subclass; reject explicitly. A true/false leaf
+        # at one of the probe paths means we walked into a flag, not
+        # the company id field.
+        return None
+    if isinstance(value, int):
+        if not 0 <= value <= 0xFFFF:
+            return None
+        return f"{value:04x}"
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if not s:
+            return None
+        if s.startswith("0x"):
+            s = s[2:]
+        if not s or len(s) > 4 or not all(c in "0123456789abcdef" for c in s):
+            return None
+        return s.zfill(4)
+    return None
+
+
+def _extract_ble_manufacturer_id(raw: dict) -> str | None:
+    """Best-effort extraction of the BLE company id from a Kismet record.
+
+    See _BLE_MANUFACTURER_ID_PATHS for the field-path caveat. Returns
+    None when no path resolves to a coercible value, which is the
+    expected state until the paths are confirmed against a live
+    capture.
+    """
+    for path in _BLE_MANUFACTURER_ID_PATHS:
+        coerced = _coerce_ble_manufacturer_id(_walk(raw, path))
+        if coerced is not None:
+            return coerced
+    return None
+
+
+# Kismet field-path table for Remote-ID drone serial-number prefixes.
+# Same UNVERIFIED caveat as _BLE_MANUFACTURER_ID_PATHS — Kismet's
+# Remote-ID datasource (uavmon / similar) is a separate optional
+# module and the Lynceus codebase had no prior consumer of its
+# emission. Paths derived from public schema documentation; first
+# match wins. The serial-number field typically lives under a
+# remoteid.device.basic_id structure with leaves named 'serial',
+# 'serial_number', or 'uas_id' depending on the broadcast variant
+# (ANSI/CTA-2063-A Serial vs. CAA Registration vs. UAS UUID).
+#
+# Even with correct paths, this resolver only fires when Kismet's
+# Remote-ID datasource is enabled AND the device record reaches
+# parse_kismet_device — see the _TYPE_MAP gate at the top of this
+# module, which currently admits only Wi-Fi / BTLE / Bluetooth
+# device types. Devices typed 'Remote ID' (or whatever Kismet's
+# RID emission uses) are dropped before they reach this helper.
+# Operator follow-up: extend _TYPE_MAP and the devices CHECK
+# constraint (migration 001) once the live emission is captured.
+_DRONE_ID_PATHS: tuple[tuple[str, ...], ...] = (
+    ("remoteid.device.basic_id", "serial"),
+    ("remoteid.device.basic_id", "serial_number"),
+    ("remoteid.device.basic_id", "uas_id"),
+    ("remoteid.device", "basic_id", "serial"),
+    ("remoteid.device", "basic_id", "uas_id"),
+)
+
+
+def _coerce_drone_id_prefix(value: object) -> str | None:
+    """Normalize a Kismet Remote-ID serial-number to canonical form.
+
+    Accepts string; uppercases + strips. Returns the canonical
+    uppercase ASCII alphanumeric string (3-32 chars), or None for
+    any value that fails the shape check.
+    """
+    if not isinstance(value, str):
+        return None
+    s = value.strip().upper()
+    if not (3 <= len(s) <= 32):
+        return None
+    if not s.isascii() or not s.isalnum():
+        return None
+    return s
+
+
+def _extract_drone_id_prefix(raw: dict) -> str | None:
+    """Best-effort extraction of a Remote-ID drone serial prefix.
+
+    See _DRONE_ID_PATHS for the field-path caveat. Returns None
+    when no path resolves to a coercible value, which is the
+    expected state until the paths are confirmed against a live
+    capture AND _TYPE_MAP is extended to admit Remote-ID device
+    records.
+    """
+    for path in _DRONE_ID_PATHS:
+        coerced = _coerce_drone_id_prefix(_walk(raw, path))
+        if coerced is not None:
+            return coerced
     return None
 
 
@@ -249,6 +447,18 @@ def parse_kismet_device(
     if capture_ble_name and device_type == "ble":
         ble_name = _extract_ble_name(raw)
 
+    # BLE manufacturer id is BLE-specific. Probe the advertisement
+    # data only on ble records — Wi-Fi devices don't have a 16-bit
+    # company id in their adverts. Drone Remote-ID is type-agnostic
+    # at the probe layer (Kismet's RID datasource may carry the
+    # serial on records typed as 'Wi-Fi Device' for OCABS
+    # transmitters or 'BTLE' for BT-RID, depending on broadcast
+    # variant), so it runs on every record that reaches this point.
+    ble_manufacturer_id: str | None = None
+    if device_type == "ble":
+        ble_manufacturer_id = _extract_ble_manufacturer_id(raw)
+    drone_id_prefix = _extract_drone_id_prefix(raw)
+
     return DeviceObservation(
         mac=mac,
         device_type=device_type,
@@ -262,6 +472,8 @@ def parse_kismet_device(
         seen_by_sources=seen_by_sources,
         probe_ssids=probe_ssids,
         ble_name=ble_name,
+        ble_manufacturer_id=ble_manufacturer_id,
+        drone_id_prefix=drone_id_prefix,
         # Only carry the full Kismet record forward when evidence
         # capture is enabled. Each record is tens of KB; for a poll
         # batch of hundreds of devices, holding all of them in memory
