@@ -3285,3 +3285,392 @@ def test_allowlist_cross_process_daemon_picks_up_new_entry(tmp_path, caplog):
             poller.db.close()
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# /alerts -- rc5 filter additions (rule_type, q, window) and unified
+# pagination via PaginationParams. Existing severity / acknowledged /
+# since / until / search / page_size tests above cover the pre-rc5
+# filter set; the section below covers the new dimensions + the
+# pagination-helper integration end-to-end through the route.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_rule_type(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r", mac=None, message="mac-msg",
+            severity="low", rule_type="watchlist_mac",
+        )
+        db.add_alert(
+            ts=101, rule_name="r", mac=None, message="oui-msg",
+            severity="low", rule_type="watchlist_oui",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?rule_type=watchlist_oui")
+        assert r.status_code == 200
+        assert "oui-msg" in r.text
+        assert "mac-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_invalid_rule_type_falls_back_silently(tmp_path):
+    # Invalid rule_type ignored (per the prompt's "ignore the invalid
+    # value, fall back to default. Don't 400."). Returns the same view
+    # as no rule_type filter.
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r", mac=None, message="mac-msg",
+            severity="low", rule_type="watchlist_mac",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?rule_type=bogus")
+        assert r.status_code == 200
+        assert "mac-msg" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_q_matches_mac(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
+        db.upsert_device("11:22:33:44:55:66", "wifi", "Acme", 0, 100)
+        db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:ff",
+            message="mac-alpha", severity="low",
+        )
+        db.add_alert(
+            ts=101, rule_name="r", mac="11:22:33:44:55:66",
+            message="mac-beta", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?q=aa:bb")
+        assert r.status_code == 200
+        assert "mac-alpha" in r.text
+        assert "mac-beta" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_q_matches_ssid_via_message(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r", mac=None,
+            message="SSID 'MySSID' on watchlist", severity="low",
+        )
+        db.add_alert(
+            ts=101, rule_name="r", mac=None,
+            message="MAC aa:bb:cc on watchlist", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?q=myssid")
+        assert r.status_code == 200
+        assert "MySSID" in r.text
+        assert "aa:bb:cc" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_q_too_long_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?q=" + "x" * 200)
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_window_relative_resolves_server_side(tmp_path, monkeypatch):
+    # Fix a clock so "last 1h" has a deterministic bound.
+    import time as _t
+    fixed_now = 10_000_000
+    monkeypatch.setattr(_t, "time", lambda: fixed_now)
+
+    app, db = _make_app(tmp_path)
+    try:
+        # 3 alerts: 5 min ago, 2 hours ago, 2 days ago.
+        db.add_alert(
+            ts=fixed_now - 300, rule_name="r", mac=None,
+            message="recent-msg", severity="low",
+        )
+        db.add_alert(
+            ts=fixed_now - 7200, rule_name="r", mac=None,
+            message="older-msg", severity="low",
+        )
+        db.add_alert(
+            ts=fixed_now - 2 * 86400, rule_name="r", mac=None,
+            message="oldest-msg", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?window=1h")
+        assert r.status_code == 200
+        assert "recent-msg" in r.text
+        assert "older-msg" not in r.text
+        assert "oldest-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_window_24h(tmp_path, monkeypatch):
+    import time as _t
+    fixed_now = 10_000_000
+    monkeypatch.setattr(_t, "time", lambda: fixed_now)
+
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=fixed_now - 3600, rule_name="r", mac=None,
+            message="hourago-msg", severity="low",
+        )
+        db.add_alert(
+            ts=fixed_now - 2 * 86400, rule_name="r", mac=None,
+            message="twodaysago-msg", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?window=24h")
+        assert "hourago-msg" in r.text
+        assert "twodaysago-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_invalid_window_falls_back_silently(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r", mac=None, message="m",
+            severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?window=lol")
+        assert r.status_code == 200
+        assert "m" in r.text
+    finally:
+        db.close()
+
+
+# --- pagination via PaginationParams helper ---------------------------------
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_four_pages_at_per_page_25(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        # 100 alerts, per_page=25 -> 4 pages.
+        for i in range(100):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"alert-{i:03d}", severity="low",
+                rule_type="watchlist_mac",
+            )
+        with TestClient(app) as client:
+            r1 = client.get("/alerts?page_size=25&page=1")
+            r2 = client.get("/alerts?page_size=25&page=2")
+            r4 = client.get("/alerts?page_size=25&page=4")
+        # Page 1 carries the newest 25 (alert-075..alert-099).
+        assert "alert-099" in r1.text
+        assert "alert-075" in r1.text
+        # Page 2 carries the next 25 (alert-050..alert-074).
+        assert "alert-074" in r2.text
+        assert "alert-050" in r2.text
+        # Footer says "Page N of M ... K total ... per_page=PP".
+        assert "Page 1 of 4" in r1.text
+        assert "100 total" in r1.text
+        assert "per_page=25" in r1.text
+        # Page 4 carries the oldest 25 (alert-000..alert-024).
+        assert "alert-000" in r4.text
+        assert "alert-024" in r4.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_page_above_total_clamps_to_last(tmp_path):
+    # Per-prompt: page=999 with only 4 pages -> clamp to 4. Don't 404.
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(100):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"a{i:03d}", severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts?page_size=25&page=999")
+        assert r.status_code == 200
+        assert "Page 4 of 4" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_negative_page_clamps_to_one(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?page=-1")
+        assert r.status_code == 200
+        assert "Page 1 of 1" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_invalid_per_page_falls_back_to_default(tmp_path):
+    # Per-prompt: per_page=999 -> clamp to default 50.
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"a{i}", severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts?page_size=999")
+        assert r.status_code == 200
+        assert "per_page=50" in r.text
+
+
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_non_allowed_per_page_falls_back(tmp_path):
+    # Per-prompt: per_page=37 (non-allowed) -> default 50.
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"a{i}", severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts?page_size=37")
+        assert r.status_code == 200
+        assert "per_page=50" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_empty_dataset_renders_empty_state(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "Page 1 of 1" in r.text
+        assert "0 total" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_plus_pagination_combined(tmp_path):
+    # 50 alerts; rule_type filter narrows to 10. per_page=25, page=1 ->
+    # 10 rows, "Page 1 of 1 ... 10 total".
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(40):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"oui-{i}", severity="low",
+                rule_type="watchlist_oui",
+            )
+        for i in range(10):
+            db.add_alert(
+                ts=500 + i, rule_name="r", mac=None,
+                message=f"mac-{i}", severity="low",
+                rule_type="watchlist_mac",
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts?rule_type=watchlist_mac&page_size=25")
+        assert r.status_code == 200
+        assert "Page 1 of 1" in r.text
+        assert "10 total" in r.text
+        for i in range(10):
+            assert f"mac-{i}" in r.text
+        assert "oui-0" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_next_link_preserves_filter_state(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"a{i:02d}", severity="high",
+                rule_type="watchlist_mac",
+            )
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?rule_type=watchlist_mac&severity=high&page=1&page_size=25"
+            )
+        assert r.status_code == 200
+        # Next-page link must round-trip both filters.
+        assert "page=2" in r.text
+        assert "severity=high" in r.text
+        assert "rule_type=watchlist_mac" in r.text
+        assert "page_size=25" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_reset_link_when_new_filters_active(tmp_path):
+    # rule_type / q / window each individually activate filters_active.
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r_type = client.get("/alerts?rule_type=watchlist_mac")
+            r_q = client.get("/alerts?q=anything")
+            r_w = client.get("/alerts?window=1h")
+        for r in (r_type, r_q, r_w):
+            assert "reset filters" in r.text or 'class="reset-filters"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_ack_all_visible_form_carries_new_filter_state(tmp_path):
+    # The bulk-write filter set MUST mirror the GET filter set or the
+    # operator silently acks alerts they can't see.
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r", mac=None, message="m",
+            severity="low", rule_type="watchlist_mac",
+        )
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?rule_type=watchlist_mac&q=foo&window=24h"
+            )
+        assert r.status_code == 200
+        # Hidden inputs reflect the filter values.
+        assert 'name="rule_type"' in r.text
+        assert 'value="watchlist_mac"' in r.text
+        assert 'name="q"' in r.text
+        assert 'value="foo"' in r.text
+        assert 'name="window"' in r.text
+        assert 'value="24h"' in r.text
+    finally:
+        db.close()
