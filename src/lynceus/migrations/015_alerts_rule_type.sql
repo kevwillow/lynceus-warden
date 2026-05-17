@@ -1,0 +1,39 @@
+-- Add rule_type column to alerts to enable type-axis filtering on
+-- the /alerts management page.
+--
+-- Background. RuleHit (rules.py) has carried rule_type for the
+-- full life of the project as a Literal categorical
+-- ('watchlist_mac', 'watchlist_oui', 'watchlist_ssid',
+-- 'watchlist_mac_range', 'ble_uuid',
+-- 'watchlist_ble_manufacturer_id', 'watchlist_drone_id_prefix',
+-- 'new_non_randomized_device') but the column was never persisted
+-- on the alerts row -- db.add_alert dropped it on the floor. The
+-- web UI's filter bar is the first surface that wants to narrow by
+-- rule_type, which forces persistence.
+--
+-- New column shape. TEXT NULL. Old rows pre-migration have no
+-- recoverable rule_type -- rule_name is operator-defined and the
+-- mapping rule_name -> rule_type lives only in the loaded ruleset,
+-- which the migration runner does not have access to. Leaving the
+-- column NULL on historical rows is the honest answer:
+-- filter type=X excludes NULL-rule_type rows, filter type=all
+-- (the UI default) includes them. The daemon writes the column on
+-- every new alert from this version forward; historical rows
+-- gradually age out through normal acknowledgement and retention.
+--
+-- No CHECK constraint. The set of valid rule_types lives in
+-- rules.py:RuleType and grows over time (mac_range was added in
+-- rc4, ble_manufacturer_id + drone_id_prefix in rc4). A CHECK
+-- constraint here would require a full table rebuild every time
+-- a new rule_type literal lands -- migration 013 already showed
+-- the cost. The daemon-side Literal type is the source of truth;
+-- the DB column just stores the string.
+--
+-- No index. The /alerts filter bar applies the type filter as one
+-- of several AND clauses; in practice the ts DESC + LIMIT slice
+-- caps the scan. If COUNT(*) latency under combined filters
+-- becomes a problem (deferred from this migration; out of scope
+-- per the pagination prompt's "no new indexes" framing), a
+-- composite (rule_type, ts) index lands in a follow-up.
+
+ALTER TABLE alerts ADD COLUMN rule_type TEXT;

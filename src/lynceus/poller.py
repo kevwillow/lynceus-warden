@@ -227,6 +227,7 @@ def poll_once(
                         message=hit.message,
                         severity=hit.severity,
                         matched_watchlist_id=hit_match_id,
+                        rule_type=hit.rule_type,
                     )
                 except Exception as e:
                     logger.warning("Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e)
