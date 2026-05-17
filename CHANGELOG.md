@@ -99,32 +99,109 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     to add the new types; the existing rules.yaml
     overwrite-protection (default N) stays in force.
 
-  **CAVEAT — runtime alerting depends on Kismet observation
-  surface work that is not yet verified.** `DeviceObservation`
-  gains two new optional fields (`ble_manufacturer_id`,
-  `drone_id_prefix`) and `parse_kismet_device` populates them
-  via two best-effort `_extract_*` helpers that walk a small
-  table of likely Kismet field paths
-  (`_BLE_MANUFACTURER_ID_PATHS`, `_DRONE_ID_PATHS`). These
-  paths are derived from public Kismet schema documentation,
-  NOT confirmed against a live capture — the Lynceus codebase
-  had no prior consumer of either surface. Until the paths are
-  confirmed and corrected against a real Kismet emission, both
-  fields read `None` on real hardware and the delegation rules
-  fire zero alerts. The import + DB + rules-engine + wizard
-  pipeline is load-bearing in the meantime: rows land in the
-  watchlist DB, appear in the `/watchlist` UI, and contribute
-  to the `/settings` count card; only the alert-time match
-  against a live observation is gated on the Kismet half being
-  wired up.
+  **CAVEAT — runtime alerting depends on Kismet probe-path
+  verification at smoke time.** `DeviceObservation` gains two
+  new optional fields (`ble_manufacturer_id`, `drone_id_prefix`)
+  and `parse_kismet_device` populates them via two best-effort
+  `_extract_*` helpers that walk a small table of likely Kismet
+  field paths (`_BLE_MANUFACTURER_ID_PATHS`, `_DRONE_ID_PATHS`).
+  These paths are derived from public Kismet schema
+  documentation, NOT confirmed against a live capture — the
+  Lynceus codebase had no prior consumer of either surface.
+  Until the paths are confirmed and corrected against a real
+  Kismet emission, both fields read `None` on real hardware and
+  the delegation rules fire zero alerts. The import + DB +
+  rules-engine + wizard pipeline is load-bearing in the
+  meantime: rows land in the watchlist DB, appear in the
+  `/watchlist` UI, and contribute to the `/settings` count
+  card; only the alert-time match against a live observation
+  is gated on the Kismet half being wired up.
 
-  Drone Remote-ID has an additional gate: `kismet._TYPE_MAP`
-  currently admits only Wi-Fi / BTLE / Bluetooth device types,
-  so Kismet records typed `'Remote ID'` are dropped at
-  `parse_kismet_device` before reaching `_extract_drone_id_prefix`.
-  Operator follow-up: extend `_TYPE_MAP` (and the `devices`
-  table CHECK constraint from migration 001) once the live
-  emission shape is captured.
+  Both `ble_manufacturer_id` and `drone_id_prefix` pipelines
+  are now functionally complete; the remaining work is
+  empirical probe-path verification against live Kismet,
+  captured during operator smoke. Until verified, both
+  rule_types may produce zero alerts on real hardware.
+
+  **Drone Remote-ID type-layer gates closed (mid-rc5).** The
+  initial rc5 cut shipped with two structural gates that
+  blocked Remote-ID observations independently of the
+  probe-path uncertainty: `kismet._TYPE_MAP` admitted only
+  Wi-Fi / BTLE / Bluetooth device types, dropping records
+  typed `'Remote ID'` before they reached
+  `_extract_drone_id_prefix`; and the `devices.device_type`
+  CHECK constraint from migration 001 would have rejected
+  the corresponding internal category even if the type-map
+  gate were lifted. Both are now closed:
+
+  - **`migrations/014_devices_remote_id.sql`** rebuilds the
+    `devices` table to extend the `device_type` CHECK from
+    `('wifi','ble','bt_classic')` to add `'remote_id'`,
+    mirroring migration 011 / 013's full-table-rebuild
+    discipline (SQLite cannot modify a CHECK via `ALTER TABLE`
+    per SQLite docs §7; `PRAGMA foreign_keys=OFF` during the
+    rebuild so the inbound FKs from `sightings.mac` and
+    `alerts.mac` don't fire during the intermediate
+    `DROP TABLE`; the additive migration-006 columns
+    `probe_ssids` and `ble_name` are carried across verbatim).
+    The new internal category name matches the existing
+    lowercase-with-underscores convention used by
+    `'bt_classic'`. Naming axis is intentionally distinct
+    from the watchlist `pattern_type` (`'drone_id_prefix'`,
+    admitted by migration 013): the watchlist type names
+    *what is matched* (a serial prefix), the device_type
+    names *what category of device emitted it* (a Remote-ID
+    broadcaster, conceptually a peer of wifi / ble /
+    bt_classic at the radio-source layer).
+
+  - **`kismet._TYPE_MAP` extension.** Two Remote-ID Kismet
+    device-type strings now map to the new `'remote_id'`
+    internal category: `'Remote ID'` and `'Remote ID Drone'`.
+    Defensive multi-alias coverage — Kismet's exact emission
+    for ASTM F3411 Remote-ID devices varies by version +
+    datasource configuration, so the specific live string is
+    confirmed at operator smoke time and adding the live
+    string is a one-line `_TYPE_MAP` edit + a one-line test
+    edit. The existing four mappings are unchanged.
+
+  - **`_DRONE_ID_PATHS` refinement.** The probe table is
+    re-anchored on the canonical `kismet.device.base.*`
+    convention that every other top-level Kismet field uses
+    (`kismet.device.base.type`,
+    `kismet.device.base.signal`,
+    `kismet.device.base.advdata`, …). Two new probe paths
+    take the front of the table —
+    `kismet.device.base.remote_id.serial_number` and
+    `kismet.device.base.remote_id.uas_id` — with the original
+    `remoteid.device.basic_id.*` paths retained as fallbacks
+    for older / alternate Kismet RID datasources. First match
+    wins; promoting the confirmed live path to the front is
+    a one-line `_DRONE_ID_PATHS` edit.
+
+  - **`db._DEVICE_TYPES`** and the corresponding
+    hard-coded validator on the
+    `/devices?device_type=...` query handler in
+    `webui.app` admit the new `'remote_id'` value so the
+    DB-level filter API and the UI route are in sync. The
+    `/devices` filter dropdown template is unchanged and
+    still lists only the original three types; operators who
+    want a Remote-ID-only view can pass the query parameter
+    directly. Adding the dropdown option is a separate UI
+    polish item, tracked outside this caveat.
+
+  The four touches together collapse the rc5 caveat from
+  "two structural gates AND probe-path verification" to
+  "probe-path verification at smoke time" for both
+  `drone_id_prefix` and `ble_manufacturer_id`. **The
+  annotation path `db.resolve_matched_watchlist_id` is NOT
+  yet extended to the two new identifier types** — alerts
+  fire correctly with the right `rule_name` and DB-sourced
+  severity, but the alert row's `matched_watchlist_id`
+  column stays NULL for `watchlist_drone_id_prefix` and
+  `watchlist_ble_manufacturer_id` rule hits, so the
+  matched-row UI hyperlink stays cold for these two
+  rule_types only. Separate change-axis from Kismet-side
+  gating; tracked as a follow-up.
 
   **Operator UX note for BT- and Remote-ID-capable
   deployments.** Operators running Kismet with the BT scanner
