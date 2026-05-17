@@ -192,16 +192,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The four touches together collapse the rc5 caveat from
   "two structural gates AND probe-path verification" to
   "probe-path verification at smoke time" for both
-  `drone_id_prefix` and `ble_manufacturer_id`. **The
-  annotation path `db.resolve_matched_watchlist_id` is NOT
-  yet extended to the two new identifier types** — alerts
-  fire correctly with the right `rule_name` and DB-sourced
-  severity, but the alert row's `matched_watchlist_id`
-  column stays NULL for `watchlist_drone_id_prefix` and
-  `watchlist_ble_manufacturer_id` rule hits, so the
-  matched-row UI hyperlink stays cold for these two
-  rule_types only. Separate change-axis from Kismet-side
-  gating; tracked as a follow-up.
+  `drone_id_prefix` and `ble_manufacturer_id`.
+
+- **Annotation-path closure for `ble_manufacturer_id` and
+  `drone_id_prefix` (rc5 in-flight).** Surfaced during the
+  type-layer gate work: the rc4 annotation path
+  `db.resolve_matched_watchlist_id` walked only the original
+  five pattern_types (`mac > oui > mac_range > ssid >
+  ble_uuid`), so alerts fired by the two new delegation rule
+  types (`watchlist_ble_manufacturer_id`,
+  `watchlist_drone_id_prefix`) landed with
+  `matched_watchlist_id=NULL`. The right `rule_name` and
+  DB-sourced severity flowed through, but the alert →
+  watchlist-row click-through, ntfy enrichment, and the
+  audit trail all keyed off `matched_watchlist_id` and went
+  cold for these two rule_types.
+
+  The walk now covers all seven pattern_types in tiebreaker
+  order:
+
+      mac > oui > ble_manufacturer_id > mac_range >
+      drone_id_prefix > ssid > ble_uuid
+
+  `ble_manufacturer_id` slots between `oui` and `mac_range`
+  (same vendor-level specificity tier as `oui`, 16-bit BLE
+  Company Identifier instead of the 24-bit IEEE OUI — a
+  direct `mac`/`oui` hit on the same observation outranks
+  the vendor-wide BLE company id). `drone_id_prefix` slots
+  between `mac_range` and `ssid` (a serial-shaped device
+  identifier is stronger evidence than a free-form SSID
+  string, weaker than a curated mac_range catching the
+  device's MAC). Both new branches are no-op when the
+  observation carries `None` for the corresponding field,
+  preserving the existing 5-type behavior for every caller
+  that doesn't pass the new kwargs.
+
+  `poller.poll_once` is updated in lockstep to pass
+  `obs.ble_manufacturer_id` and `obs.drone_id_prefix`
+  through to the annotation call, so alerts for the two new
+  rule_types now stamp `matched_watchlist_id` correctly.
+  No DB schema change — the existing
+  `_lookup_simple_watchlist_match` already returns
+  `watchlist_id` in its projection (added when the
+  `resolve_matched_*_for_eval` matchers landed in F1/F2).
+  Test coverage extends the existing `resolve_matched_*`
+  tiebreaker block with hit / miss / precedence cases for
+  both new branches, and the existing
+  `watchlist_drone_id_prefix` e2e test flips from
+  `matched_watchlist_id is None` to asserting the actual
+  matched row id; a parallel
+  `watchlist_ble_manufacturer_id` e2e test is added.
 
   **Operator UX note for BT- and Remote-ID-capable
   deployments.** Operators running Kismet with the BT scanner
