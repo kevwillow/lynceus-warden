@@ -390,6 +390,93 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read only at import time); this bullet makes the wizard's
   framing accurate.
 
+- **`lynceus-setup` enable-alerting flow — operator path from
+  `sudo lynceus-setup` to alerts-firing is now wizard-driven.**
+  Closes the deployment-UX gap surfaced by the Kali live-smoke
+  runbook. Pre-this-bullet, an operator who ran the wizard got a
+  configured daemon with the bundled watchlist imported but no
+  alerts fired — they had to (1) copy `config/rules.yaml` to the
+  scope-appropriate path, (2) uncomment the right delegation
+  entries by hand, and (3) edit `lynceus.yaml` to add `rules_path`.
+  The runbook called all three out as manual Phase 1 steps because
+  the wizard did not. Now the wizard's closing arc, between the
+  bundled-watchlist auto-import and the "Setup complete" hint
+  block, drives an interactive flow that lands all three artefacts
+  on the operator's behalf.
+
+  Three things happen when the operator opts in:
+
+  - **Top-level gate.** `Enable Argus-backed alerting? [y/N]`
+    appears once. Default is NO. An operator who answers no — or
+    just hits Enter — completes the wizard in the exact behavioral
+    state Lynceus has today: no `rules.yaml` created, `rules_path`
+    unset, daemon runs with an empty `Ruleset`. The pre-bullet
+    behavior is preserved as the default; the new flow is
+    strictly additive.
+
+  - **Per-rule_type prompts.** For each of the five delegation
+    types (`watchlist_mac_range`, `watchlist_mac`, `watchlist_oui`,
+    `watchlist_ssid`, `ble_uuid`) the wizard prompts once with the
+    current DB row count for context — e.g. `Enable
+    watchlist_mac_range (17,786 MAC ranges)? [y/N]`. Default is
+    NO. Types whose count is zero have their prompt skipped
+    entirely; an operator with no data of that type sees no
+    misleading prompt and gets no empty rule emitted. Counts come
+    from a `SELECT pattern_type, COUNT(*) FROM watchlist GROUP BY
+    pattern_type` against the canonical `default_db_path(scope)`
+    — read-only, no migrations run.
+
+  - **`rules.yaml` write + `rules_path` wire.** When at least one
+    type is enabled the wizard writes a fresh `rules.yaml` at
+    `paths.default_config_dir(scope) / "rules.yaml"` — under
+    `--system` that's `/etc/lynceus/rules.yaml` (atomic, 0640
+    root:lynceus, same contract as `lynceus.yaml`); under `--user`
+    it's `~/.config/lynceus/rules.yaml` (atomic, 0600). Selected
+    entries are active; the others ship as commented-out
+    templates the operator can enable later by hand. The file
+    parses cleanly through `lynceus.rules.load_ruleset`. The
+    wizard then appends `rules_path: "<path>"` to the
+    already-written `lynceus.yaml` (append-mode preserves the
+    atomic-write file mode set during the original render).
+
+  **Idempotency for re-runs.** `--reconfigure` alone is NOT
+  authorization to clobber an existing `rules.yaml` — the wizard
+  treats hand-edits as sacred. When the target `rules.yaml`
+  already exists, a separate `Overwrite? [y/N]` prompt fires
+  (default NO). If the operator declines, the file is left
+  untouched but `rules_path` is still wired in `lynceus.yaml`
+  when previously unset — this recovers the "I manually copied
+  the file but never wired it up" case that the runbook had as a
+  separate hand-edit step. If the operator confirms overwrite,
+  the new selections replace the file.
+
+  **Defaults are NO at every prompt** — gate, per-type, and
+  overwrite. This matches Lynceus's existing privacy-conservative
+  posture (probe SSID capture defaults off, severity overrides
+  empty by default, ntfy URL blank skips notifications entirely).
+  An operator who runs the wizard with all defaults gets a
+  Lynceus that observes but does not alert, same as pre-rc4.
+  Alerts are explicitly opt-in.
+
+  **Out of scope.** The flow only covers the five delegation
+  rule types — `new_non_randomized_device` and any custom
+  pattern-bearing rules continue to require manual `rules.yaml`
+  edits. The bundled `config/rules.yaml` template stays as-is;
+  the wizard generates a derived file at the scope-appropriate
+  path rather than copying the template verbatim.
+
+  Cross-references the Part 2 (`watchlist_mac_range`), delegation
+  extension (the other four DB-delegated types), and runtime
+  severity-overrides bullets above as the prerequisite chain:
+  Part 2 + the extension landed the rule types the wizard now
+  enables; the runtime severity-overrides layer is what makes
+  the resulting alerts tunable without re-importing. Together
+  with that prior bullet, this bullet closes the
+  operator-deployment loop for the whole Argus integration arc
+  — `sudo lynceus-setup` → answer the prompts → alerts fire on
+  the next poll, no manual file edits required for the common
+  case.
+
 ### Fixed
 
 - **`load_runtime_severity_overrides` now logs INFO at every load
