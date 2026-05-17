@@ -8,6 +8,139 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Alert detail page gains triage buttons: Allowlist, Snooze 24h,
+  Remove.** Operators triaging a false-positive alert no longer
+  need to edit `allowlist.yaml` and restart the daemon — one click
+  on `/alerts/<id>` writes a MAC-keyed entry to the daemon-managed
+  `allowlist_ui.yaml` sibling, the poller picks it up on its next
+  tick via the mtime watch, and future alerts for that device are
+  suppressed immediately. Builds on the allowlist backend reshape
+  (`expires_at` + `added_at`, split storage, runtime reload, atomic
+  writers) that landed earlier in this rc.
+
+  Three FastAPI POST routes under `/alerts/{id}`:
+
+  - `/allowlist` — writes a permanent (no `expires_at`) entry,
+    note prefix `added via webui at <ISO>`.
+  - `/snooze` — writes an entry with `expires_at = now + 86400`
+    seconds, note prefix `snoozed 24h via webui at <ISO>`. Fixed
+    24h window is the only operator-comfort cadence available
+    from the UI; custom durations are deliberately out of scope
+    (operators wanting non-24h windows edit the YAML directly).
+  - `/allowlist/remove` — idempotent removal by MAC. Returns 303
+    whether the entry existed or not; the redirect re-renders the
+    truth, which is more useful than a stale error.
+
+  All three routes share `_load_alert_for_triage` for the common
+  validation set: alert exists (404 otherwise), alert carries a
+  MAC (400 otherwise — alerts without a MAC, e.g. per-source-count
+  rules, can't be triaged this way), `allowlist_path` is
+  configured (400 otherwise — there's no file to write to). CSRF
+  protection is the standard `_csrf` form field plus
+  `lynceus_csrf` cookie that the existing middleware enforces;
+  forged POSTs return 403.
+
+  The `alert_detail.html` template renders one of three states
+  in a new `triage` article, distinct from the existing
+  `actions` (ack/unack) article so the two concerns stay
+  visually separate:
+
+  - **State 1 (not allowlisted):** Allowlist + Snooze 24h
+    buttons. Vanilla `window.confirm()` on submit — no modal
+    framework, no JS dependency.
+  - **State 2 (permanently allowlisted):** "Allowlisted (added
+    YYYY-MM-DD HH:MM UTC)" status. Remove button if the match
+    came from the daemon-managed UI sibling; an explanatory
+    hint pointing at `allowlist.yaml` if the match came from
+    the operator-curated primary (the daemon cannot edit that
+    file, so a button there would silently no-op).
+  - **State 3 (snoozed):** "Snoozed until YYYY-MM-DD HH:MM UTC
+    (N hours remaining)" status. Cancel snooze button on
+    UI-sibling matches; same primary-file hint otherwise.
+    Hours-remaining is computed against the request's
+    `now_ts` and rounded up so a partial hour shows >= 1.
+
+  The triage section is omitted entirely when `allowlist_path`
+  is unset or when the alert carries no MAC. The existing
+  /alerts/<id> render path is otherwise unchanged.
+
+  **Closes the documented limitation in the `pattern_overrides`
+  note** that pointed operators at allowlist edits for
+  non-Argus row suppression. The allowlist remains the right
+  tool for that case; the YAML-edit-and-restart friction is
+  now gone.
+
+- **Allowlist now supports temporary entries via `expires_at`, and
+  the daemon picks up edits without a restart.** Three operator-
+  facing changes land together to set up the operator-comfort UI
+  work tracked separately:
+
+  - `AllowlistEntry` gains two optional fields: `expires_at` (Unix
+    epoch seconds; `None` means permanent) and `added_at` (Unix
+    epoch seconds at which the entry was created). Both default
+    to `None` so existing operator-curated `allowlist.yaml` files
+    parse unchanged. Entries whose `expires_at` is at or before
+    the evaluation clock are silently skipped at poll time —
+    that is the "snooze expired" path.
+
+  - The poller stat()s the allowlist file(s) before every poll
+    tick and reloads the in-memory `Allowlist` when either mtime
+    has moved. Daemon restart is no longer required for allowlist
+    edits. A missing file maps to sentinel mtime 0.0, so a file
+    appearing for the first time and a file being deleted both
+    register as changes — except that a deleted primary triggers
+    a WARNING and the daemon retains its last-known-good entries
+    rather than dropping every suppression at once (defends
+    against the operator-mid-rename / fat-fingered-rm case).
+    Each reload emits a single INFO line of the form
+    `allowlist reloaded: N operator entries + M UI entries`.
+
+  - Allowlist storage splits into two YAML files. `allowlist.yaml`
+    (the operator-curated primary, path set via
+    `Config.allowlist_path`) is read-only from the daemon's
+    perspective — Lynceus never writes to it, so hand-formatting,
+    comments, and key ordering are preserved indefinitely. A
+    sibling `allowlist_ui.yaml` (path derived by inserting `_ui`
+    before the suffix, e.g. `/etc/lynceus/allowlist.yaml` →
+    `/etc/lynceus/allowlist_ui.yaml`) is daemon-managed: created
+    on first write by the forthcoming UI mutation routes, and
+    merged into the in-memory allowlist transparently at load.
+    Absent UI file is the normal pre-first-write state and is
+    not an error; a malformed UI file logs WARNING and is
+    treated as empty so a corrupt sibling cannot cripple
+    suppression. A malformed primary logs ERROR and is treated
+    as empty — the startup ERROR line in journalctl is the
+    surfacing path for an operator's syntax slip; pre-rc5
+    behavior would have crashed `Poller.__init__`.
+
+  Two writer helpers ship in `allowlist.py` so the UI route prompt
+  has a stable API to call: `add_ui_entry(ui_path, entry)` appends
+  to the daemon-managed file (creating it on first call, atomic
+  via tmpfile + `os.replace`) and `remove_ui_entry(ui_path,
+  pattern, pattern_type)` removes a matching entry by canonical
+  pattern, returning `True` on removal / `False` on no-match.
+  Concurrent UI writes are last-write-wins by file mtime — the
+  cadence is operator-driven (manual button clicks) so locking
+  is not warranted at this scale.
+
+  The existing `Allowlist.is_allowed(obs)` signature gains an
+  optional `now_ts: int | None = None` parameter (default to wall
+  clock) and the return type changes from `bool` to
+  `AllowlistEntry | None` — the matched entry's `expires_at`
+  is what lets the poller annotate the suppression audit line.
+  Callers that only needed a boolean keep working because `None`
+  is falsy and `AllowlistEntry` is truthy; the four in-tree tests
+  that asserted strict `is True` / `is False` identity were
+  updated to `is not None` / `is None`.
+
+  The existing audit INFO line at the allowlist-suppression site
+  in `poller.poll_once` keeps its `Allowlist suppressed watchlist
+  hit: rule=… mac=… severity=…` prefix verbatim — operators
+  grepping for it across journalctl history are unaffected — and
+  appends ` (expires <ISO>)` only when the matched entry carries
+  a non-None `expires_at`. Permanent suppressions emit the same
+  line they always did.
+
 - **`identifier_type='ble_manufacturer_id'` and
   `identifier_type='drone_id_prefix'` rows from Argus now land in
   the watchlist instead of being silently dropped.** Pre-rc5,
