@@ -136,7 +136,7 @@ _VALID_SEVERITIES = ("low", "med", "high")
 class RuntimeSeverityOverride(BaseModel):
     """Runtime-layer view of severity_overrides.yaml.
 
-    Reads three keys from the same file the import-time
+    Reads four keys from the same file the import-time
     ``OverrideConfig`` in ``import_argus.py`` consumes, but exposes
     only the runtime-relevant subset:
 
@@ -154,15 +154,32 @@ class RuntimeSeverityOverride(BaseModel):
       vendor_overrides' ``"drop"`` sentinel, but at category
       granularity instead of vendor.
 
-    - ``suppress_vendors`` (RUNTIME only — NEW key). Delegation
-      matches whose matched row's ``vendor`` (projected as
-      ``manufacturer`` on Resolved*Match) is in this list emit no
-      RuleHit. Case-insensitive exact match — entries are
-      normalized at load time (lowercase + strip) and stored in
-      that form; the eval-time check normalizes ``match.manufacturer``
-      the same way before comparison. The deliberate runtime
-      counterpart to import-time ``vendor_overrides``, which keeps
-      its skip-at-import ``"drop"`` semantic unchanged.
+    - ``suppress_vendors`` (RUNTIME only). Delegation matches whose
+      matched row's ``vendor`` (projected as ``manufacturer`` on
+      Resolved*Match) is in this list emit no RuleHit.
+      Case-insensitive exact match — entries are normalized at load
+      time (lowercase + strip) and stored in that form; the
+      eval-time check normalizes ``match.manufacturer`` the same
+      way before comparison. The deliberate runtime counterpart to
+      import-time ``vendor_overrides``, which keeps its
+      skip-at-import ``"drop"`` semantic unchanged.
+
+    - ``pattern_overrides`` (RUNTIME only — NEW key). Row-level
+      severity remap keyed by ``argus_record_id`` — the stable
+      16-hex SHA-256 prefix Argus emits as its consumer-facing
+      identifier and Lynceus stores in
+      ``watchlist_metadata.argus_record_id``. Matches whose
+      ``argus_record_id`` appears as a key get their severity
+      remapped to the value (``"low"`` / ``"med"`` / ``"high"``).
+      Closes the runtime severity-tuning matrix at row × category ×
+      vendor: operators can carve a specific row out of a
+      category-level default (e.g. "alpr → high in general, but
+      THIS specific Flock camera → high too — or some other tier").
+      Keys normalized to lowercase at load time. Only rows with a
+      metadata row carrying an ``argus_record_id`` can be targeted;
+      operator-seeded rows via ``lynceus-seed-watchlist`` without
+      metadata fall through to the category-level layer (use the
+      allowlist for per-row suppression of non-Argus rows).
 
     Other ``OverrideConfig`` keys (``vendor_overrides``,
     ``geographic_filter``, ``confidence_downgrade_threshold``)
@@ -184,6 +201,7 @@ class RuntimeSeverityOverride(BaseModel):
     device_category_severity: dict[str, Severity] = {}
     suppress_categories: frozenset[str] = frozenset()
     suppress_vendors: frozenset[str] = frozenset()
+    pattern_overrides: dict[str, Severity] = {}
 
     @model_validator(mode="after")
     def _validate(self) -> RuntimeSeverityOverride:
@@ -193,6 +211,12 @@ class RuntimeSeverityOverride(BaseModel):
                     f"device_category_severity[{cat!r}] = {sev!r}: "
                     f"expected one of {_VALID_SEVERITIES}"
                 )
+        for arid, sev in self.pattern_overrides.items():
+            if sev not in _VALID_SEVERITIES:
+                raise ValueError(
+                    f"pattern_overrides[{arid!r}] = {sev!r}: "
+                    f"expected one of {_VALID_SEVERITIES}"
+                )
         return self
 
     def is_empty(self) -> bool:
@@ -200,8 +224,9 @@ class RuntimeSeverityOverride(BaseModel):
 
         ``rules.evaluate`` short-circuits the override block when the
         config is None OR empty by this definition; the per-match
-        ``device_category is None`` / ``manufacturer is None`` checks
-        in ``_apply_runtime_overrides`` are the second tier of the
+        ``device_category is None`` / ``manufacturer is None`` /
+        ``argus_record_id is None`` checks in
+        ``_apply_runtime_overrides`` are the second tier of the
         pass-through fast-path (a match without that metadata has
         nothing to key on, regardless of config richness).
         """
@@ -209,6 +234,7 @@ class RuntimeSeverityOverride(BaseModel):
             not self.device_category_severity
             and not self.suppress_categories
             and not self.suppress_vendors
+            and not self.pattern_overrides
         )
 
 
@@ -324,6 +350,54 @@ def load_runtime_severity_overrides(
                 continue
             normalized.add(stripped)
         runtime_kwargs["suppress_vendors"] = frozenset(normalized)
+    if isinstance(raw.get("pattern_overrides"), dict):
+        # Operator-supplied row-level severity remap keyed by
+        # argus_record_id (16-hex SHA-256 prefix per the Argus
+        # contract). Per-entry validation: keys must be 16 hex chars
+        # after lowercase-normalization, values must be a known
+        # severity literal. One malformed entry never disables the
+        # layer — a WARNING is logged and the rest of the dict
+        # parses normally. Whether the argus_record_id corresponds
+        # to a real row in the DB is NOT checked at load time: an
+        # operator may legitimately carry a stale entry across a
+        # re-import (the row will be re-added and the override will
+        # start applying again), and the runtime check is a simple
+        # dict membership test that pass-throughs on miss.
+        normalized_overrides: dict[str, str] = {}
+        for raw_key, raw_value in raw["pattern_overrides"].items():
+            if not isinstance(raw_key, str):
+                logger.warning(
+                    "severity overrides file %s: pattern_overrides key "
+                    "%r is not a string; dropping. Other entries still apply.",
+                    path,
+                    raw_key,
+                )
+                continue
+            normalized_key = raw_key.strip().lower()
+            if len(normalized_key) != 16 or not all(
+                c in "0123456789abcdef" for c in normalized_key
+            ):
+                logger.warning(
+                    "severity overrides file %s: pattern_overrides key "
+                    "%r is not a 16-hex argus_record_id; dropping. "
+                    "Other entries still apply.",
+                    path,
+                    raw_key,
+                )
+                continue
+            if not isinstance(raw_value, str) or raw_value not in _VALID_SEVERITIES:
+                logger.warning(
+                    "severity overrides file %s: pattern_overrides[%r] = "
+                    "%r is not a valid severity literal (expected one of "
+                    "%s); dropping. Other entries still apply.",
+                    path,
+                    raw_key,
+                    raw_value,
+                    _VALID_SEVERITIES,
+                )
+                continue
+            normalized_overrides[normalized_key] = raw_value
+        runtime_kwargs["pattern_overrides"] = normalized_overrides
     try:
         overrides = RuntimeSeverityOverride(**runtime_kwargs)
     except Exception as exc:
@@ -344,20 +418,22 @@ def load_runtime_severity_overrides(
         logger.info(
             "runtime severity overrides loaded from %s but contain no active "
             "runtime keys (device_category_severity / suppress_categories / "
-            "suppress_vendors); runtime layer is effectively pass-through. "
-            "Edit the file and restart the daemon to activate.",
+            "suppress_vendors / pattern_overrides); runtime layer is "
+            "effectively pass-through. Edit the file and restart the daemon "
+            "to activate.",
             path,
         )
     else:
         logger.info(
             "runtime severity overrides loaded from %s: "
             "%d category remap(s), %d suppressed category(ies), "
-            "%d suppressed vendor(s). "
+            "%d suppressed vendor(s), %d pattern override(s). "
             "Edits take effect on daemon restart.",
             path,
             len(overrides.device_category_severity),
             len(overrides.suppress_categories),
             len(overrides.suppress_vendors),
+            len(overrides.pattern_overrides),
         )
     return overrides
 
@@ -376,6 +452,7 @@ def _apply_runtime_overrides(
     match_severity: str,
     match_device_category: str | None,
     match_manufacturer: str | None,
+    match_argus_record_id: str | None,
     match_watchlist_id: int,
     rule_name: str,
     overrides: RuntimeSeverityOverride | None,
@@ -393,31 +470,45 @@ def _apply_runtime_overrides(
     - ``overrides.is_empty()`` (file parsed but no runtime key
       populated — e.g. a file containing only import-time keys).
 
-    The two per-match metadata fields gate which checks run:
+    The three per-match metadata fields gate which checks run
+    independently:
     - ``match_manufacturer`` is None → the vendor check is skipped
       (the matched row has no metadata, or a metadata row with
-      NULL vendor). Falls through to the category-driven checks.
+      NULL vendor). Falls through to the next tier.
+    - ``match_argus_record_id`` is None → the row-level
+      pattern_overrides check is skipped (the matched row has no
+      metadata, so there is no stable identifier to key on). Falls
+      through to the category-driven checks.
     - ``match_device_category`` is None → category-driven checks
       are skipped (the matched row has no metadata to key on).
       Falls through to the default.
 
     Precedence is most-specific-wins:
-    1. Vendor suppression (NEW): normalized ``match_manufacturer``
-       in ``suppress_vendors`` → return None. INFO-log the
-       suppression with rule_name, the un-normalized manufacturer
-       string from the row (so operators see exactly what was on
-       the row), and watchlist_id.
+    1. Vendor suppression: normalized ``match_manufacturer`` in
+       ``suppress_vendors`` → return None. INFO-log the suppression
+       with rule_name, the un-normalized manufacturer string from
+       the row, and watchlist_id.
     2. Category suppression: category in ``suppress_categories``
        → return None. INFO-log with rule_name, category, and
        watchlist_id.
-    3. Category remap: category in ``device_category_severity``
+    3. Pattern override (NEW, row-level remap):
+       ``match_argus_record_id`` in ``pattern_overrides`` → return
+       the remapped severity. More specific than the category
+       remap below; no INFO log (symmetric with
+       device_category_severity — the alert itself surfaces the
+       effective severity).
+    4. Category remap: category in ``device_category_severity``
        → return the remapped severity.
-    4. Default: no rule applies → return ``match_severity``
+    5. Default: no rule applies → return ``match_severity``
        unchanged.
 
     Vendor wins over category because manufacturer is the more
-    specific axis. Suppression at either layer never reaches the
-    DB / ntfy — only the INFO log carries the forensic trail.
+    specific axis; suppression always wins over remap because
+    "no alert" is a stronger statement than "different severity"
+    and the operator opted in to it deliberately. Per-row
+    UNSUPPRESSION is explicitly NOT a feature — a vendor or
+    category suppression cannot be overridden by listing a row's
+    argus_record_id in ``pattern_overrides``.
     """
     if overrides is None or overrides.is_empty():
         return match_severity
@@ -432,9 +523,10 @@ def _apply_runtime_overrides(
                 rule_name,
             )
             return None
-    if match_device_category is None:
-        return match_severity
-    if match_device_category in overrides.suppress_categories:
+    if (
+        match_device_category is not None
+        and match_device_category in overrides.suppress_categories
+    ):
         logger.info(
             "runtime override: suppressing category=%s alert for "
             "watchlist_id=%d (rule=%s)",
@@ -443,7 +535,15 @@ def _apply_runtime_overrides(
             rule_name,
         )
         return None
-    if match_device_category in overrides.device_category_severity:
+    if (
+        match_argus_record_id is not None
+        and match_argus_record_id in overrides.pattern_overrides
+    ):
+        return overrides.pattern_overrides[match_argus_record_id]
+    if (
+        match_device_category is not None
+        and match_device_category in overrides.device_category_severity
+    ):
         return overrides.device_category_severity[match_device_category]
     return match_severity
 
@@ -473,12 +573,13 @@ def evaluate(
     the five DB-delegation branches consult it; in-memory pattern
     matches keep their rule-sourced severity unchanged. None or
     empty config short-circuits to pass-through — byte-identical
-    RuleHits to the pre-overrides behavior. The vendor-suppress
-    check (``suppress_vendors``) applies when the match has a
-    non-None ``manufacturer``; the category-driven checks
-    (``suppress_categories``, ``device_category_severity``) apply
-    when the match has a non-None ``device_category``. Rows with
-    neither pass through unchanged.
+    RuleHits to the pre-overrides behavior. The three per-match
+    metadata-driven checks each gate independently: vendor-suppress
+    (``suppress_vendors``) applies when ``manufacturer`` is
+    non-None; pattern_overrides applies when ``argus_record_id`` is
+    non-None; category-driven checks (``suppress_categories``,
+    ``device_category_severity``) apply when ``device_category`` is
+    non-None. Rows with no metadata at all pass through unchanged.
     """
     hits: list[RuleHit] = []
     for rule in ruleset.rules:
@@ -523,6 +624,7 @@ def evaluate(
                     match_severity=match.severity,
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
+                    match_argus_record_id=match.argus_record_id,
                     match_watchlist_id=match.watchlist_id,
                     rule_name=rule.name,
                     overrides=severity_overrides,
@@ -581,6 +683,7 @@ def evaluate(
                     match_severity=match.severity,
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
+                    match_argus_record_id=match.argus_record_id,
                     match_watchlist_id=match.watchlist_id,
                     rule_name=rule.name,
                     overrides=severity_overrides,
@@ -637,6 +740,7 @@ def evaluate(
                     match_severity=match.severity,
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
+                    match_argus_record_id=match.argus_record_id,
                     match_watchlist_id=match.watchlist_id,
                     rule_name=rule.name,
                     overrides=severity_overrides,
@@ -698,6 +802,7 @@ def evaluate(
                 match_severity=match.severity,
                 match_device_category=match.device_category,
                 match_manufacturer=match.manufacturer,
+                match_argus_record_id=match.argus_record_id,
                 match_watchlist_id=match.watchlist_id,
                 rule_name=rule.name,
                 overrides=severity_overrides,
@@ -761,6 +866,7 @@ def evaluate(
                     match_severity=match.severity,
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
+                    match_argus_record_id=match.argus_record_id,
                     match_watchlist_id=match.watchlist_id,
                     rule_name=rule.name,
                     overrides=severity_overrides,

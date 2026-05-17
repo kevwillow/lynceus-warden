@@ -151,9 +151,9 @@ def test_load_active_keys_logs_info_with_counts(tmp_path, caplog):
     """The 'layer is active' confirmation. The operator running the
     live smoke greps for this line at daemon startup to verify the
     file is being read. Counts (remap entries + suppressed
-    categories + suppressed vendors) make the log self-describing —
-    an operator who expected 3 remaps but sees 1 knows the file's
-    parsing is selective."""
+    categories + suppressed vendors + pattern overrides) make the
+    log self-describing — an operator who expected 3 remaps but
+    sees 1 knows the file's parsing is selective."""
     p = tmp_path / "active.yaml"
     p.write_text(
         "device_category_severity:\n"
@@ -163,7 +163,9 @@ def test_load_active_keys_logs_info_with_counts(tmp_path, caplog):
         "  - drone\n"
         "suppress_vendors:\n"
         "  - \"Mitsubishi Electric US, Inc.\"\n"
-        "  - \"Acme Corp\"\n",
+        "  - \"Acme Corp\"\n"
+        "pattern_overrides:\n"
+        "  \"a1b2c3d4e5f60001\": high\n",
         encoding="utf-8",
     )
     with caplog.at_level(logging.INFO, logger="lynceus.rules"):
@@ -177,6 +179,7 @@ def test_load_active_keys_logs_info_with_counts(tmp_path, caplog):
         and "2 category remap" in r.getMessage()
         and "1 suppressed category" in r.getMessage()
         and "2 suppressed vendor" in r.getMessage()
+        and "1 pattern override" in r.getMessage()
     ]
     assert len(info) == 1
 
@@ -460,3 +463,222 @@ def test_load_all_three_runtime_keys_combined(tmp_path):
     assert cfg.device_category_severity == {"unknown": "med", "alpr": "high"}
     assert cfg.suppress_categories == frozenset({"drone"})
     assert cfg.suppress_vendors == frozenset({"mitsubishi electric us, inc."})
+
+
+# ---- pattern_overrides parsing & normalization ----------------------------
+#
+# Row-level severity remap keyed by argus_record_id (16-hex SHA-256
+# prefix per the Argus contract). Load-time validation drops malformed
+# keys/values with a WARNING; whether the argus_record_id corresponds
+# to an actual row in the DB is NOT checked here (stale entries are a
+# legitimate state — the row may have been removed and will be
+# re-added on next import).
+
+
+def test_pattern_overrides_only_is_not_empty():
+    """is_empty() must include pattern_overrides in its definition;
+    otherwise a file populated only with row-level remaps would
+    short-circuit to the pass-through fast-path in
+    ``_apply_runtime_overrides`` and never apply."""
+    cfg = RuntimeSeverityOverride(
+        pattern_overrides={"a1b2c3d4e5f60001": "high"}
+    )
+    assert not cfg.is_empty()
+    assert cfg.pattern_overrides == {"a1b2c3d4e5f60001": "high"}
+
+
+def test_pattern_overrides_rejects_invalid_severity():
+    """Severity values must be in (low, med, high) — same constraint
+    as device_category_severity. The dataclass-level validator
+    rejects out-of-band literals; the loader's per-entry validation
+    is a separate layer (tolerant: WARN + drop)."""
+    with pytest.raises(ValueError):
+        RuntimeSeverityOverride(
+            pattern_overrides={"a1b2c3d4e5f60001": "critical"}
+        )
+
+
+def test_load_pattern_overrides_only(tmp_path):
+    """A file with only pattern_overrides parses to a non-empty
+    runtime view. The other three runtime keys remain at their
+    defaults."""
+    p = tmp_path / "patterns.yaml"
+    p.write_text(
+        "pattern_overrides:\n"
+        "  \"a1b2c3d4e5f60001\": high\n",
+        encoding="utf-8",
+    )
+    cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert not cfg.is_empty()
+    assert cfg.pattern_overrides == {"a1b2c3d4e5f60001": "high"}
+    assert cfg.device_category_severity == {}
+    assert cfg.suppress_categories == frozenset()
+    assert cfg.suppress_vendors == frozenset()
+
+
+def test_load_pattern_overrides_normalizes_case(tmp_path):
+    """Argus emits argus_record_id as a lowercase 16-hex SHA-256
+    prefix, but an operator copy-pasting from a different surface
+    (e.g. the web UI which renders the value verbatim) could end up
+    with mixed casing. Load-time normalization makes the eval-time
+    lookup case-insensitive without paying the cost of a normalize
+    at every match."""
+    p = tmp_path / "mixed_case.yaml"
+    p.write_text(
+        "pattern_overrides:\n"
+        "  \"A1B2C3D4E5F60001\": high\n"
+        "  \"  fedcba9876543210  \": med\n",
+        encoding="utf-8",
+    )
+    cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.pattern_overrides == {
+        "a1b2c3d4e5f60001": "high",
+        "fedcba9876543210": "med",
+    }
+
+
+def test_load_pattern_overrides_drops_malformed_key_format_with_warning(
+    tmp_path, caplog
+):
+    """A key that isn't 16 hex chars after normalization is dropped
+    with a WARNING; the rest of the dict still parses. One bad key
+    must not disable the whole layer."""
+    p = tmp_path / "malformed_keys.yaml"
+    p.write_text(
+        "pattern_overrides:\n"
+        "  \"a1b2c3d4e5f60001\": high\n"           # valid
+        "  \"a1b2\": med\n"                          # too short
+        "  \"a1b2c3d4e5f60001abcdef\": med\n"        # too long
+        "  \"g1b2c3d4e5f60001\": med\n"              # non-hex char
+        "  \"fedcba9876543210\": low\n",             # valid
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger="lynceus.rules"):
+        cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.pattern_overrides == {
+        "a1b2c3d4e5f60001": "high",
+        "fedcba9876543210": "low",
+    }
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "pattern_overrides" in r.getMessage()
+    ]
+    # One WARN per malformed key: too-short + too-long + non-hex → 3.
+    assert len(warnings) == 3
+
+
+def test_load_pattern_overrides_drops_invalid_severity_with_warning(
+    tmp_path, caplog
+):
+    """A valid 16-hex key paired with a non-severity value is dropped
+    with a WARNING — the entry would crash the dataclass validator
+    if it slipped through, so per-entry drop is the only way to keep
+    the layer alive in the presence of an operator typo."""
+    p = tmp_path / "bad_severity.yaml"
+    p.write_text(
+        "pattern_overrides:\n"
+        "  \"a1b2c3d4e5f60001\": high\n"
+        "  \"fedcba9876543210\": critical\n"   # not a valid severity
+        "  \"1111222233334444\": 5\n",          # not a string
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger="lynceus.rules"):
+        cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.pattern_overrides == {"a1b2c3d4e5f60001": "high"}
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "pattern_overrides" in r.getMessage()
+    ]
+    assert len(warnings) == 2
+
+
+def test_load_pattern_overrides_drops_non_string_keys_with_warning(
+    tmp_path, caplog
+):
+    """A non-string key (e.g. YAML auto-converted an unquoted bare
+    word to an integer) is dropped with a WARNING. Per-entry
+    tolerance: the surrounding dict still parses normally."""
+    p = tmp_path / "non_string_keys.yaml"
+    # YAML auto-converts ``42`` to an int when unquoted; the loader
+    # must defend against that even though the operator probably
+    # meant something else.
+    p.write_text(
+        "pattern_overrides:\n"
+        "  42: high\n"
+        "  \"a1b2c3d4e5f60001\": med\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger="lynceus.rules"):
+        cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.pattern_overrides == {"a1b2c3d4e5f60001": "med"}
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "pattern_overrides" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+
+
+def test_load_pattern_overrides_empty_dict_pass_through(tmp_path):
+    """An empty ``pattern_overrides: {}`` (the wizard starter's
+    default) parses without error and leaves the field at its
+    default empty dict. is_empty() returns True when this is the
+    only key present — the runtime layer fast-paths through."""
+    p = tmp_path / "empty_patterns.yaml"
+    p.write_text("pattern_overrides: {}\n", encoding="utf-8")
+    cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.pattern_overrides == {}
+    assert cfg.is_empty()
+
+
+def test_load_pattern_overrides_non_dict_is_ignored(tmp_path):
+    """Tolerant of operator typos: a list-shaped value (rather than
+    a dict) is silently dropped — same defensive shape as the
+    suppress_* loaders. The eval layer pass-throughs uncovered keys,
+    so a dropped key just means 'no pattern overrides' (the
+    conservative default)."""
+    p = tmp_path / "list_shape.yaml"
+    p.write_text(
+        "device_category_severity:\n"
+        "  unknown: med\n"
+        "pattern_overrides:\n"
+        "  - \"a1b2c3d4e5f60001\"\n",  # operator typo: list, not dict
+        encoding="utf-8",
+    )
+    cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.device_category_severity == {"unknown": "med"}
+    assert cfg.pattern_overrides == {}
+
+
+def test_load_all_four_runtime_keys_combined(tmp_path):
+    """A file mixing every runtime key. Each lands in its own field;
+    counts in the INFO log line up across all four categories."""
+    p = tmp_path / "all_four.yaml"
+    p.write_text(
+        "device_category_severity:\n"
+        "  unknown: med\n"
+        "  alpr: high\n"
+        "suppress_categories:\n"
+        "  - drone\n"
+        "suppress_vendors:\n"
+        "  - \"Mitsubishi Electric US, Inc.\"\n"
+        "pattern_overrides:\n"
+        "  \"a1b2c3d4e5f60001\": high\n"
+        "  \"fedcba9876543210\": low\n",
+        encoding="utf-8",
+    )
+    cfg = load_runtime_severity_overrides(p)
+    assert cfg is not None
+    assert cfg.device_category_severity == {"unknown": "med", "alpr": "high"}
+    assert cfg.suppress_categories == frozenset({"drone"})
+    assert cfg.suppress_vendors == frozenset({"mitsubishi electric us, inc."})
+    assert cfg.pattern_overrides == {
+        "a1b2c3d4e5f60001": "high",
+        "fedcba9876543210": "low",
+    }

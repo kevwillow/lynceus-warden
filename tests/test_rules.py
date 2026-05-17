@@ -1655,3 +1655,288 @@ def test_evaluate_runtime_suppress_vendor_wins_over_category_suppress(
     category_lines = [r for r in info if "suppressing category=" in r.getMessage()]
     assert len(vendor_lines) == 1
     assert category_lines == []  # vendor check returned first; category never ran
+
+
+# ---- pattern_overrides (runtime row-level remap) ---------------------------
+#
+# Row-level severity remap keyed by argus_record_id (the stable Argus
+# identifier projected onto Resolved*Match via Touch 1's LEFT JOIN).
+# Per the documented precedence, the row-level remap runs AFTER both
+# suppression gates (vendor + category) and BEFORE the category-level
+# remap (device_category_severity). The 16-hex format validation is a
+# load-time concern (covered in test_severity_overrides.py); at
+# eval-time the check is a simple dict-membership test on the
+# already-normalized key.
+
+
+# Per-pattern_type canonical argus_record_ids for the fixture rows.
+# 16-hex strings to mirror the Argus production shape, but the
+# eval-time check does not require this format — it just looks up
+# match.argus_record_id in overrides.pattern_overrides. Using realistic
+# shapes here documents the production contract for future readers.
+_ARID_MAC = "a1b2c3d4e5f60001"
+_ARID_OUI = "a1b2c3d4e5f60002"
+_ARID_SSID = "a1b2c3d4e5f60003"
+_ARID_BLE = "a1b2c3d4e5f60004"
+_ARID_MAC_RANGE = "a1b2c3d4e5f60005"
+
+
+@pytest.fixture
+def db_with_argus_record_ids(db_with_categorized_rows):
+    """Extends ``db_with_categorized_rows`` by rewriting
+    ``argus_record_id`` on each of the five seeded watchlist rows to
+    a real 16-hex value. The parent fixture's
+    ``_attach_category`` writes a placeholder (``argus-<wid>``) which
+    is fine for category-driven tests but not a realistic key for
+    pattern_overrides. Each row keeps its existing device_category so
+    precedence tests (pattern_override vs category remap) can fire on
+    the same row."""
+    db = db_with_categorized_rows
+    rows = db._conn.execute("SELECT id, pattern_type FROM watchlist").fetchall()
+    arid_by_pattern_type = {
+        "mac": _ARID_MAC,
+        "oui": _ARID_OUI,
+        "ssid": _ARID_SSID,
+        "ble_uuid": _ARID_BLE,
+        "mac_range": _ARID_MAC_RANGE,
+    }
+    with db._conn:
+        for row in rows:
+            db._conn.execute(
+                "UPDATE watchlist_metadata SET argus_record_id = ? "
+                "WHERE watchlist_id = ?",
+                (arid_by_pattern_type[row["pattern_type"]], int(row["id"])),
+            )
+    return db
+
+
+def test_evaluate_runtime_pattern_overrides_watchlist_mac(db_with_argus_record_ids):
+    """watchlist_mac delegation hit on argus_record_id=_ARID_MAC;
+    pattern_overrides remap → row severity flips from baked "low" to
+    "high" at alert time. Mirror of the category-remap branch but
+    keyed on the more-specific row identifier."""
+    overrides = RuntimeSeverityOverride(pattern_overrides={_ARID_MAC: "high"})
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_argus_record_ids,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_runtime_pattern_overrides_watchlist_oui(db_with_argus_record_ids):
+    overrides = RuntimeSeverityOverride(pattern_overrides={_ARID_OUI: "med"})
+    rule = Rule(name="del_oui", rule_type="watchlist_oui", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="00:13:37:aa:bb:cc"),
+        is_new_device=False,
+        db=db_with_argus_record_ids,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_runtime_pattern_overrides_watchlist_ssid(db_with_argus_record_ids):
+    overrides = RuntimeSeverityOverride(pattern_overrides={_ARID_SSID: "high"})
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="FreeAirportWiFi"),
+        is_new_device=False,
+        db=db_with_argus_record_ids,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_runtime_pattern_overrides_ble_uuid(db_with_argus_record_ids):
+    overrides = RuntimeSeverityOverride(pattern_overrides={_ARID_BLE: "med"})
+    rule = Rule(name="del_ble", rule_type="ble_uuid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_obs(uuids=(_AIRTAG_UUID,)),
+        is_new_device=False,
+        db=db_with_argus_record_ids,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_runtime_pattern_overrides_watchlist_mac_range(db_with_argus_record_ids):
+    """An operator can carve a single MAC range out of the
+    bulk-imported IEEE-registry corpus and tune just that one row's
+    severity — exactly the use case the matrix is designed for."""
+    overrides = RuntimeSeverityOverride(pattern_overrides={_ARID_MAC_RANGE: "high"})
+    rule = Rule(
+        name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[]
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:d1:23:45"),
+        is_new_device=False,
+        db=db_with_argus_record_ids,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_runtime_pattern_overrides_unknown_arid_passes_through(
+    db_with_argus_record_ids,
+):
+    """Negative-match regression: an override targeting a different
+    argus_record_id must NOT remap the row. The runtime layer falls
+    through to the category remap (or pass-through if none). Stale
+    pattern_overrides entries — a legitimate state per the load-time
+    contract — must behave this way."""
+    overrides = RuntimeSeverityOverride(
+        pattern_overrides={"deadbeefcafef00d": "high"}  # not on any row
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_argus_record_ids,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "low"  # row severity, untouched
+
+
+def test_evaluate_runtime_pattern_overrides_null_arid_falls_through(tmp_path):
+    """A watchlist row with no metadata row → argus_record_id=None
+    on the match (LEFT JOIN). The pattern_overrides check skips
+    entirely and the runtime layer falls through to the
+    category-driven checks — which here also skip (no metadata =
+    device_category also None), so the alert fires at the row's
+    baked severity.
+
+    Per migration 004, watchlist_metadata.argus_record_id is NOT
+    NULL UNIQUE; the only way for argus_record_id to surface as
+    None on a Resolved*Match is the LEFT-JOIN-against-missing-
+    metadata path. So device_category and argus_record_id are
+    always None together for non-Argus rows — the
+    pattern_overrides skip and the category-layer skip are joined
+    at the hip, by design. This is the limitation called out in
+    the CHANGELOG: only Argus-imported rows are targetable from
+    pattern_overrides."""
+    db_path = str(tmp_path / "no_meta.db")
+    db = Database(db_path)
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('a4:83:e7:11:22:33', 'mac', 'low', NULL)"
+        )
+    try:
+        overrides = RuntimeSeverityOverride(
+            pattern_overrides={_ARID_MAC: "high"},
+            device_category_severity={"alpr": "high"},
+        )
+        rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+        rs = Ruleset(rules=[rule])
+        hits = evaluate(
+            rs,
+            _obs(mac="a4:83:e7:11:22:33"),
+            is_new_device=False,
+            db=db,
+            severity_overrides=overrides,
+        )
+        assert len(hits) == 1
+        assert hits[0].severity == "low"  # arid=None, category=None → pass-through
+    finally:
+        db.close()
+
+
+def test_evaluate_runtime_pattern_overrides_wins_over_category_remap(
+    db_with_argus_record_ids,
+):
+    """Documented precedence: pattern_overrides > device_category_
+    severity. The row is in category=alpr; both the pattern_overrides
+    entry (row → med) and the category remap (alpr → high) would
+    apply, but the more-specific row-level remap wins."""
+    overrides = RuntimeSeverityOverride(
+        pattern_overrides={_ARID_MAC: "med"},
+        device_category_severity={"alpr": "high"},
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_argus_record_ids,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"  # pattern_overrides wins
+
+
+def test_evaluate_runtime_pattern_overrides_loses_to_suppress_vendors(
+    db_with_argus_record_ids,
+):
+    """Suppression always wins over remap — vendor suppress is a
+    deliberate "no alert from this manufacturer" statement that
+    pattern_overrides cannot override. Tests the load-bearing
+    invariant from the prompt's "What NOT to do" list (per-row
+    UNSUPPRESS is not a feature)."""
+    # First attach a vendor to the fixture's mac row so the
+    # suppress_vendors check has something to key on.
+    db = db_with_argus_record_ids
+    with db._conn:
+        db._conn.execute(
+            "UPDATE watchlist_metadata SET vendor = ? "
+            "WHERE argus_record_id = ?",
+            ("Mitsubishi Electric US, Inc.", _ARID_MAC),
+        )
+    overrides = RuntimeSeverityOverride(
+        suppress_vendors=frozenset({"mitsubishi electric us, inc."}),
+        pattern_overrides={_ARID_MAC: "high"},  # would remap if vendor didn't win
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db,
+        severity_overrides=overrides,
+    )
+    assert hits == []  # vendor suppression wins; no remap applied
+
+
+def test_evaluate_runtime_pattern_overrides_loses_to_suppress_categories(
+    db_with_argus_record_ids,
+):
+    """Symmetric to the vendor-suppress precedence test: category
+    suppress also wins over a pattern_overrides remap on the same
+    row. Suppression at either layer is a stronger statement than
+    remap at the row layer."""
+    overrides = RuntimeSeverityOverride(
+        suppress_categories=frozenset({"alpr"}),
+        pattern_overrides={_ARID_MAC: "high"},
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_argus_record_ids,
+        severity_overrides=overrides,
+    )
+    assert hits == []

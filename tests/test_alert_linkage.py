@@ -1099,6 +1099,55 @@ def test_runtime_overrides_suppress_vendor_case_insensitive_e2e(
     assert _alerts(db) == []
 
 
+def test_runtime_overrides_pattern_override_e2e_alert_row_carries_overridden_severity(
+    db, config, fake_client
+):
+    """Full poll cycle: watchlist row at severity=low,
+    device_category=alpr, argus_record_id set. Runtime
+    pattern_overrides maps that exact argus_record_id → high. The
+    written alert row carries the per-row overridden severity —
+    proving the row-level remap lands on the persisted alert."""
+    mac_id = _add_watchlist(db, _FIXTURE_MAC, "mac", "low")
+    _add_metadata(db, mac_id, "alpr")
+    # The _add_metadata helper writes argus_record_id="argus-<wid>"
+    # by default — that placeholder is fine for category-driven tests
+    # but pattern_overrides needs a real key. Rewrite it directly so
+    # this test exercises the same eval path the production loader
+    # produces (load-time format validation lives in
+    # test_severity_overrides; not re-tested here).
+    arid = "a1b2c3d4e5f60001"
+    with db._conn:
+        db._conn.execute(
+            "UPDATE watchlist_metadata SET argus_record_id = ? WHERE watchlist_id = ?",
+            (arid, mac_id),
+        )
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac",
+                rule_type="watchlist_mac",
+                severity="low",  # ignored — DB severity then runtime override
+                patterns=[],
+            )
+        ]
+    )
+    overrides = RuntimeSeverityOverride(pattern_overrides={arid: "high"})
+    poll_once(
+        fake_client,
+        db,
+        config,
+        1700001000,
+        ruleset=rs,
+        severity_overrides=overrides,
+    )
+    alerts = [a for a in _alerts(db) if a["mac"] == _FIXTURE_MAC]
+    assert len(alerts) == 1
+    assert alerts[0]["matched_watchlist_id"] == mac_id
+    # Persisted alert row carries the row-level OVERRIDDEN severity,
+    # not the row's baked-in "low".
+    assert alerts[0]["severity"] == "high"
+
+
 def test_runtime_overrides_pass_through_when_no_metadata_e2e(db, config, fake_client):
     """A watchlist row with no metadata row (the 63 bundled
     default_watchlist rows). device_category surfaces as None on
