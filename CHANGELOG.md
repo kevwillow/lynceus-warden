@@ -727,6 +727,130 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sweep: the wizard prompts are now genuinely user-friendly for a
   first-time operator who has never set up Kismet or ntfy before.
 
+- **`vendor_severity` — runtime vendor-level severity remap on
+  `severity_overrides.yaml`.** Closes the runtime override matrix at
+  vendor × remap. The three earlier rc5 bullets shipped category
+  remap, vendor suppression, and row-level remap; this bullet adds
+  the missing cell — vendor-level severity tuning without
+  enumerating individual rows. Operator UX: "all devices from this
+  vendor should be high" is now a single line in the override file
+  instead of N entries under `pattern_overrides` or a manual sweep
+  across `device_category_severity` entries.
+
+  The override matrix closes to a coherent shape: **remap ×
+  {category, vendor, row} + suppress × {category, vendor}**.
+
+  **Schema.** `vendor_severity: dict[str, severity]`. Keys are
+  manufacturer strings — the same canonical vendor string the
+  watchlist row carries on `watchlist_metadata.vendor`, projected as
+  `manufacturer` on the Resolved*Match (same naming asymmetry as
+  `suppress_vendors`). Values are severity literals (`"low"` /
+  `"med"` / `"high"`). Keys normalized at load time (lowercase +
+  strip) so casing and accidental whitespace don't matter — same
+  normalization shape as `suppress_vendors`, applied to both sides
+  of the comparison at eval time.
+
+  **Comparison is case-insensitive exact match.** Mirrors
+  `suppress_vendors`. So `"  Axon Enterprise, Inc.  "`, `"axon
+  enterprise, inc."`, and `"AXON ENTERPRISE, INC."` all match the
+  same row. Substring / regex matching is deliberately NOT supported
+  — `"Apple"` would otherwise match `"Pineapple Computing"` (use
+  individual entries; for the per-row carve-out case, use
+  `pattern_overrides`).
+
+  **Precedence in `_apply_runtime_overrides` (most-specific wins).**
+  Inserted between `pattern_overrides` and `device_category_severity`:
+
+  1. `suppress_vendors` — vendor suppress.
+  2. `suppress_categories` — category suppress.
+  3. `pattern_overrides` — row-level remap.
+  4. `vendor_severity` (NEW) — vendor-level remap.
+  5. `device_category_severity` — category-level remap.
+
+  Vendor remap wins over category remap because manufacturer is the
+  more specific axis. Row remap wins over vendor remap because a
+  specific row is more specific than a vendor. Suppression at either
+  layer always wins over any remap — per-row UNSUPPRESS is
+  explicitly NOT a feature, and the same holds at the vendor axis.
+  NULL manufacturer (no metadata, or metadata with NULL vendor)
+  skips the vendor remap check entirely and falls through to the
+  category remap — same gating shape as `suppress_vendors`.
+
+  **No INFO log on remap application.** Symmetric with
+  `pattern_overrides` and `device_category_severity`: the alert's
+  effective severity is the operator-visible evidence; an INFO line
+  per remapped match would be noisy. Suppression keys still log on
+  hit (they delete observable state — the alert that didn't fire —
+  and need a forensic breadcrumb).
+
+  **Why a separate key rather than extending `vendor_overrides`
+  at runtime.** `vendor_overrides`' `"drop"` sentinel means
+  skip-at-import; a runtime interpretation would silently overload
+  the meaning and produce a footgun. `suppress_vendors` (rc5) and
+  `vendor_severity` (this bullet) are the cleanly-designed runtime
+  cousins. `vendor_overrides` stays import-time-only by design.
+
+  **Per-entry tolerant parsing.** Same posture as `pattern_overrides`:
+  non-string keys, empty-after-strip keys, and invalid severity
+  values each drop with a WARNING; the rest of the dict parses
+  normally. One malformed entry must never disable the whole layer.
+
+  **Structural changes.**
+
+  - `rules.RuntimeSeverityOverride` gains
+    `vendor_severity: dict[str, Severity]` and includes it in
+    `is_empty()` so a file populated only with vendor remaps does
+    not short-circuit to the pass-through fast-path. The dataclass-
+    level validator rejects out-of-band severity literals (the
+    loader's per-entry validation is a separate, tolerant layer).
+  - `rules._apply_runtime_overrides` gains a fourth-tier check
+    between `pattern_overrides` and `device_category_severity`. The
+    per-match `manufacturer is None` gate skips the vendor remap
+    check independently of the row-level and category gates.
+  - The load-time INFO line names all five runtime keys for
+    grep-ability and adds a `%d vendor remap(s)` count so an
+    operator running `journalctl -u lynceus.service` at daemon
+    startup can confirm the new key is parsing as expected.
+  - The wizard's `severity_overrides.yaml` starter template gains a
+    `vendor_severity:` block adjacent to `vendor_overrides` for
+    logical grouping with other vendor-keyed entries, with the
+    `# LAYER: RUNTIME` tag and a worked example targeting
+    surveillance-camera vendors.
+  - The `/settings` web UI card lists `vendor_severity` in the
+    runtime-keys group alongside the four existing runtime keys.
+
+  **Deliberate non-scope.**
+
+  - `vendor_overrides` is UNCHANGED — its import-time `"drop"`
+    sentinel keeps its skip-at-import semantic.
+  - `suppress_vendors` semantics are UNCHANGED — vendor suppression
+    stays as the gate it is today.
+  - No DB schema changes. The `watchlist_metadata.vendor` column has
+    been carried since migration 004 and was already surfaced
+    through the eval path by the `suppress_vendors` bullet — this
+    bullet plugs the existing field into a new transform.
+  - In-memory pattern rules (rules with non-empty `patterns`)
+    continue to source severity from the rule and are unaffected by
+    `vendor_severity` — runtime overrides apply only to
+    DB-delegation matches.
+  - No substring or regex matching. Case-insensitive exact match
+    only, mirroring `suppress_vendors`.
+  - No per-vendor UNSUPPRESS knob. Suppression at either layer is a
+    deliberate operator statement that the vendor remap cannot
+    override.
+
+  Cross-references the `suppress_vendors` and `pattern_overrides`
+  bullets above as the prerequisite chain: `suppress_vendors`
+  projected `manufacturer` onto Resolved*Match and established the
+  vendor-axis comparison shape; `pattern_overrides` established the
+  per-match-metadata-gate pattern this bullet extends to the
+  vendor remap. Together with those two bullets and the original
+  runtime severity-overrides + `suppress_categories` work, the
+  matrix now reads as a tidy 2×3 grid: severity tuning at row,
+  vendor, or category × {remap, suppress} — with the suppress-row
+  cell deliberately left empty (the allowlist mechanism handles
+  per-row suppression for both Argus and non-Argus rows).
+
 ### Fixed
 
 - **Poller now logs a grep-able INFO line on every ruleset load.**
