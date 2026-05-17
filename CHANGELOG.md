@@ -8,6 +8,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`lynceus-setup` Kismet API key prompt now auto-locates an
+  existing key from disk before falling through to the manual
+  copy-paste flow.** The wizard reads Kismet's per-user
+  `~/.kismet/session.db` (under `--system` it also checks the
+  invoking operator's `SUDO_USER` home, then `/root/.kismet/`),
+  parses the JSON array of `{token, name, role, ...}` objects
+  Kismet has written there since the 2022-08 Boost.Beast server
+  rewrite, and picks the best match: a key named `lynceus`, else a
+  `readonly` key, else `admin`, else the first non-empty token.
+
+  On hit, the wizard shows the source path, a redacted preview
+  (first 4 chars + ellipsis + last 4 chars — short keys collapse
+  to a `***` placeholder), and asks `Use this key? [Y/n]`. Y
+  stores the key and skips the manual prompt + walkthrough. N
+  falls through to the existing Piece 1 walkthrough + manual
+  prompt unchanged.
+
+  Auto-locate is purely additive — every failure mode (missing
+  file, unreadable, malformed JSON, no usable entry, Windows
+  host) results in a silent fall-through to the existing manual
+  flow. The operator only ever sees `Searching for an existing
+  API key on disk...` followed by `Found a key in <path>` or `no
+  existing key found`; permission denials, parse errors, and
+  filesystem paths beyond the located one are never surfaced.
+
+  **Redaction contract:** the located key is never echoed in
+  full — only the head/tail preview. Tests assert the sentinel
+  key value never appears in captured stdout or stderr under any
+  flow, including the accept-the-key path where the key ends up
+  in the generated `lynceus.yaml`.
+
+  Operator-UX framing: closes the "where do I find this?"
+  friction the rc5 Piece 1 walkthrough explained but didn't
+  eliminate. An operator with a working Kismet install no longer
+  has to log into the web UI to copy-paste a key the wizard
+  could read for them.
+
+  No new dependencies, no new config fields (candidate paths are
+  hardcoded per scope), no network calls. Read-only — the wizard
+  never writes to Kismet's config files.
+
 - **`GET /healthz.json` — machine-readable health endpoint for
   monitoring integration.** Returns JSON with overall status plus
   per-check details (DB reachability, daemon liveness, watchlist
