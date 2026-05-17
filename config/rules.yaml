@@ -1,7 +1,9 @@
 # Lynceus detection rules.
 # Each rule is evaluated against every supported device observation. See README
 # for the schema; rule_type is one of watchlist_mac, watchlist_oui,
-# watchlist_ssid, watchlist_mac_range, ble_uuid, or new_non_randomized_device.
+# watchlist_ssid, watchlist_mac_range, ble_uuid,
+# watchlist_ble_manufacturer_id, watchlist_drone_id_prefix, or
+# new_non_randomized_device.
 rules:
   # Hak5 WiFi Pineapple uses a recognizable OUI prefix — flag it on sight.
   - name: hak5_pineapple_oui
@@ -103,3 +105,33 @@ rules:
   #   severity: low  # ignored — actual severity comes from the matched row
   #   patterns: []
   #   description: "Argus + bundled BLE service-UUID watchlist"
+
+  # ---- Two newer delegation entries (rc5+) ----
+  #
+  # ble_manufacturer_id matches the Bluetooth SIG 16-bit Company
+  # Identifier extracted from BTLE advertisement payloads (e.g.
+  # 0x004C for Apple). drone_id_prefix matches ANSI/CTA-2063-A
+  # Remote-ID serial prefixes broadcast by drones operating under
+  # FAA / EU Remote-ID rules.
+  #
+  # CAVEAT: both rule_types depend on Kismet observation surface
+  # that is currently unverified against a live capture. Until the
+  # Kismet field paths in src/lynceus/kismet.py (probe tables
+  # _BLE_MANUFACTURER_ID_PATHS and _DRONE_ID_PATHS) are confirmed
+  # to match a real Kismet emission, observations will carry None
+  # for these fields and the rules below will fire zero alerts on
+  # real hardware. The watchlist data still lands in the DB and
+  # appears in the /watchlist UI; alerting will start firing once
+  # the Kismet half is wired up. See the rc5 CHANGELOG entry.
+  #
+  # - name: argus_ble_manufacturer_id
+  #   rule_type: watchlist_ble_manufacturer_id
+  #   severity: low  # ignored — actual severity comes from the matched row
+  #   patterns: []
+  #   description: "Argus BLE manufacturer-ID watchlist (Bluetooth SIG company IDs)"
+  #
+  # - name: argus_drone_id_prefix
+  #   rule_type: watchlist_drone_id_prefix
+  #   severity: low  # ignored — actual severity comes from the matched row
+  #   patterns: []
+  #   description: "Argus drone Remote-ID prefix watchlist (ANSI/CTA-2063-A)"
