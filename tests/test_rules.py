@@ -2389,3 +2389,289 @@ def test_evaluate_runtime_pattern_overrides_loses_to_suppress_categories(
         severity_overrides=overrides,
     )
     assert hits == []
+
+
+# ---- vendor_severity (runtime vendor-level remap) -------------------------
+#
+# Vendor-level severity remap keyed on watchlist_metadata.vendor
+# (projected as ``manufacturer`` on the resolved match). Mirrors
+# suppress_vendors' case-insensitive exact match shape but transforms
+# severity instead of dropping the alert. Per the documented
+# precedence, vendor_severity runs AFTER suppression gates and
+# pattern_overrides (row-level remap) and BEFORE
+# device_category_severity (category-level remap).
+
+
+def _vendor_remap(vendor: str, severity: str) -> dict[str, str]:
+    """Build a vendor_severity dict in the normalized form
+    (lowercase + strip) that load_runtime_severity_overrides
+    produces. Lets the per-branch tests construct overrides without
+    re-implementing the parser's normalization."""
+    return {vendor.strip().lower(): severity}
+
+
+def test_evaluate_runtime_vendor_severity_watchlist_mac(db_with_vendored_rows):
+    """Vendor remap on the watchlist_mac delegation branch. Match has
+    manufacturer="Mitsubishi Electric US, Inc." (set by fixture);
+    override remaps that vendor → "high" → row severity flips from
+    baked "low" to "high"."""
+    overrides = RuntimeSeverityOverride(
+        vendor_severity=_vendor_remap("Mitsubishi Electric US, Inc.", "high")
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_runtime_vendor_severity_watchlist_oui(db_with_vendored_rows):
+    overrides = RuntimeSeverityOverride(
+        vendor_severity=_vendor_remap("Hak5 LLC", "med")
+    )
+    rule = Rule(name="del_oui", rule_type="watchlist_oui", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="00:13:37:aa:bb:cc"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_runtime_vendor_severity_watchlist_ssid(db_with_vendored_rows):
+    overrides = RuntimeSeverityOverride(
+        vendor_severity=_vendor_remap("DJI Inc.", "high")
+    )
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="FreeAirportWiFi"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_runtime_vendor_severity_ble_uuid(db_with_vendored_rows):
+    overrides = RuntimeSeverityOverride(
+        vendor_severity=_vendor_remap("Apple Inc.", "med")
+    )
+    rule = Rule(name="del_ble", rule_type="ble_uuid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_obs(uuids=(_AIRTAG_UUID,)),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_runtime_vendor_severity_watchlist_mac_range(db_with_vendored_rows):
+    """The 17,786 IEEE-registry mac_range rows ship under a single
+    Argus-registered manufacturer string; vendor_severity lets an
+    operator tune severity across the whole IEEE corpus without
+    enumerating each /28 range as a row-level override."""
+    overrides = RuntimeSeverityOverride(
+        vendor_severity=_vendor_remap("Acme Surveillance Corp", "high")
+    )
+    rule = Rule(
+        name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[]
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:d1:23:45"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_runtime_vendor_severity_case_insensitive(db_with_vendored_rows):
+    """Match's manufacturer is stored on the row exactly as Argus
+    exported it (mixed case + punctuation). The override entry is
+    normalized at load time (lowercase + strip). The eval-time check
+    normalizes the match the same way, so any case / whitespace
+    variant of the same vendor string in the override file matches
+    the row."""
+    overrides = RuntimeSeverityOverride(
+        vendor_severity=_vendor_remap("  MITSUBISHI electric us, INC.  ", "high")
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_runtime_vendor_severity_different_vendor_passes_through(
+    db_with_vendored_rows,
+):
+    """Negative-match regression: an override targeting a vendor
+    OTHER than the row's manufacturer must NOT remap the alert. The
+    runtime layer falls through to the category-level remap (or
+    pass-through if none)."""
+    overrides = RuntimeSeverityOverride(
+        vendor_severity=_vendor_remap("Pineapple Computing", "high")
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "low"  # row severity, untouched
+
+
+def test_evaluate_runtime_vendor_severity_null_manufacturer_falls_through(
+    db_with_categorized_rows,
+):
+    """A row with NO vendor on the metadata row (manufacturer=None)
+    causes the vendor_severity check to skip entirely and fall
+    through to the category remap. Here the category remap is
+    configured and must apply — proving the vendor remap's
+    independent gate."""
+    overrides = RuntimeSeverityOverride(
+        vendor_severity=_vendor_remap("Mitsubishi Electric US, Inc.", "med"),
+        device_category_severity={"alpr": "high"},
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),  # category=alpr, no vendor
+        is_new_device=False,
+        db=db_with_categorized_rows,
+        severity_overrides=overrides,
+    )
+    # Vendor check skipped (manufacturer is None); category remap applies.
+    assert len(hits) == 1
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_runtime_vendor_severity_wins_over_category_remap(
+    db_with_vendored_rows,
+):
+    """Documented precedence: vendor_severity > device_category_
+    severity. The row is in category=alpr; both the vendor_severity
+    entry (vendor → high) and the category remap (alpr → med) would
+    apply, but the more-specific vendor-level remap wins."""
+    overrides = RuntimeSeverityOverride(
+        vendor_severity=_vendor_remap("Mitsubishi Electric US, Inc.", "high"),
+        device_category_severity={"alpr": "med"},
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"  # vendor_severity wins
+
+
+def test_evaluate_runtime_vendor_severity_loses_to_pattern_overrides(
+    db_with_argus_record_ids,
+):
+    """Documented precedence: pattern_overrides (row-level remap) >
+    vendor_severity. Both target the same row — the row-level remap
+    is the more specific axis and wins. Attach a vendor to the
+    fixture's mac row so vendor_severity has something to key on."""
+    db = db_with_argus_record_ids
+    with db._conn:
+        db._conn.execute(
+            "UPDATE watchlist_metadata SET vendor = ? WHERE argus_record_id = ?",
+            ("Mitsubishi Electric US, Inc.", _ARID_MAC),
+        )
+    overrides = RuntimeSeverityOverride(
+        pattern_overrides={_ARID_MAC: "med"},
+        vendor_severity=_vendor_remap("Mitsubishi Electric US, Inc.", "high"),
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"  # pattern_overrides wins
+
+
+def test_evaluate_runtime_vendor_severity_loses_to_suppress_vendors(
+    db_with_vendored_rows,
+):
+    """Suppression at the vendor layer always wins over the vendor
+    remap on the same row — "no alert" is a stronger statement than
+    "remapped severity". Tests the load-bearing invariant: per-row
+    UNSUPPRESSION is not a feature, and the same holds at the vendor
+    axis."""
+    overrides = RuntimeSeverityOverride(
+        suppress_vendors=_vendors("Mitsubishi Electric US, Inc."),
+        vendor_severity=_vendor_remap("Mitsubishi Electric US, Inc.", "high"),
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []  # vendor suppression wins; no remap applied
+
+
+def test_evaluate_runtime_vendor_severity_loses_to_suppress_categories(
+    db_with_vendored_rows,
+):
+    """Symmetric to the suppress_vendors precedence test: category
+    suppression also wins over a vendor_severity remap on the same
+    row. Suppression at either layer is the stronger statement."""
+    overrides = RuntimeSeverityOverride(
+        suppress_categories=frozenset({"alpr"}),
+        vendor_severity=_vendor_remap("Mitsubishi Electric US, Inc.", "high"),
+    )
+    rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="a4:83:e7:11:22:33"),
+        is_new_device=False,
+        db=db_with_vendored_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []

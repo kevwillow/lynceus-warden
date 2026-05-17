@@ -1369,6 +1369,45 @@ def test_runtime_overrides_pass_through_when_no_metadata_e2e(db, config, fake_cl
     assert alerts[0]["severity"] == "med"  # row's baked severity, unaltered
 
 
+def test_runtime_overrides_vendor_severity_e2e_alert_row_carries_overridden_severity(
+    db, config, fake_client
+):
+    """Full poll cycle: watchlist row at severity=low,
+    device_category=alpr, vendor="Axon Enterprise, Inc.". Runtime
+    vendor_severity remaps that vendor → high. The written alert row
+    carries the vendor-level overridden severity — proving the
+    vendor remap lands on the persisted alert."""
+    mac_id = _add_watchlist(db, _FIXTURE_MAC, "mac", "low")
+    _add_metadata(db, mac_id, "alpr", vendor="Axon Enterprise, Inc.")
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="argus_mac",
+                rule_type="watchlist_mac",
+                severity="low",
+                patterns=[],
+            )
+        ]
+    )
+    overrides = RuntimeSeverityOverride(
+        vendor_severity={"axon enterprise, inc.": "high"}
+    )
+    poll_once(
+        fake_client,
+        db,
+        config,
+        1700001000,
+        ruleset=rs,
+        severity_overrides=overrides,
+    )
+    alerts = [a for a in _alerts(db) if a["mac"] == _FIXTURE_MAC]
+    assert len(alerts) == 1
+    assert alerts[0]["matched_watchlist_id"] == mac_id
+    # Persisted alert row carries the VENDOR-OVERRIDDEN severity, not
+    # the row's baked-in "low" and not the category baseline.
+    assert alerts[0]["severity"] == "high"
+
+
 def test_runtime_overrides_none_pass_through_e2e_byte_identical_to_pre_overrides(
     db, config, fake_client
 ):
