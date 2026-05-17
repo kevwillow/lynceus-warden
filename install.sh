@@ -304,6 +304,10 @@ install_user() {
     log "  Bundled watchlist auto-imports on first 'lynceus-setup' run."
     log "  Refresh later: lynceus-import-argus --from-github           # network"
     log "                 lynceus-import-argus --input <path-to-csv>   # air-gapped"
+    log ""
+    log "Kismet (the data source Lynceus polls):"
+    log "  Need Kismet installed?  sudo lynceus-bootstrap-kismet"
+    log "  Already have Kismet?    lynceus-setup"
 }
 
 install_system() {
@@ -357,6 +361,10 @@ install_system() {
     log "  Bundled watchlist auto-imports on first 'sudo lynceus-setup --system' run."
     log "  Refresh later: sudo lynceus-import-argus --scope system --from-github         # network"
     log "                 sudo lynceus-import-argus --scope system --input <path-to-csv> # air-gapped"
+    log ""
+    log "Kismet (the data source Lynceus polls):"
+    log "  Need Kismet installed?  sudo lynceus-bootstrap-kismet"
+    log "  Already have Kismet?    sudo lynceus-setup --system"
 }
 
 uninstall_user() {
