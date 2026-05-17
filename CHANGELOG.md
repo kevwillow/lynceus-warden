@@ -477,6 +477,123 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the next poll, no manual file edits required for the common
   case.
 
+- **`suppress_vendors` — runtime manufacturer-level alert
+  suppression on `severity_overrides.yaml`.** Closes the runtime
+  severity-tuning story end-to-end. The runtime severity-overrides
+  bullet above explicitly deferred runtime vendor suppression
+  because overloading `vendor_overrides`' import-time `"drop"`
+  sentinel would silently change its meaning — that bullet named
+  `suppress_vendors` as the right path, and this bullet ships it.
+
+  The new key sits adjacent to `suppress_categories` on the same
+  RUNTIME layer: a delegation alert whose matched watchlist row
+  carries a manufacturer in the list emits no `RuleHit` (no DB
+  alert row, no ntfy push). The matching watchlist row stays in
+  the DB; only alert emission is silenced. Operator UX is the
+  same as `suppress_categories`: edit the file, restart the
+  daemon, no re-import.
+
+  **Comparison is case-insensitive exact match.** Entries are
+  normalized at load time (lowercase + strip) and stored in that
+  form; the eval-time check normalizes the matched row's
+  manufacturer the same way before comparison. So
+  `"  Mitsubishi Electric US, Inc.  "`, `"mitsubishi electric us,
+  inc."`, and `"MITSUBISHI ELECTRIC US, INC."` all match the same
+  row. Substring / regex matching was considered and rejected: an
+  entry like `"Apple"` would otherwise match `"Pineapple
+  Computing"`. Operators configure with the canonical vendor
+  string from the watchlist row — the same string the Argus CSV
+  exports in its `manufacturer` column.
+
+  **Manufacturer source.** Sourced from
+  `watchlist_metadata.vendor` (named `manufacturer` on the Python
+  side to mirror the Argus CSV column the value ultimately comes
+  from — same naming asymmetry as `import_argus.py`'s
+  `manufacturer` kwarg → `vendor` DB column mapping). NULL
+  manufacturer (rows without a metadata row, or with a metadata
+  row whose vendor is NULL) → the `suppress_vendors` check skips
+  entirely and the match falls through to the category-driven
+  checks.
+
+  **Precedence in `_apply_runtime_overrides` (most-specific
+  wins).** Inserted as the FIRST check:
+  1. `suppress_vendors` (NEW) — normalized manufacturer match →
+     suppress.
+  2. `suppress_categories` — `device_category` match → suppress.
+  3. `device_category_severity` — `device_category` remap.
+
+  Vendor wins over category because manufacturer is the more
+  specific axis. When both keys would suppress the same match,
+  the INFO log line names the vendor (forensic precision for
+  operators debugging dropped alerts).
+
+  **Per-entry tolerant parsing.** Non-string entries and entries
+  that are empty after whitespace-strip get a WARNING and are
+  dropped from the loaded set; the rest of the list still parses.
+  One malformed entry must never disable the whole runtime layer.
+  This matches the loader's existing posture: every failure mode
+  for the runtime layer is benign (the importer's separate code
+  path stays unaffected; the poller continues with pass-through
+  semantics).
+
+  **Structural changes.**
+
+  - `ResolvedMacRangeMatch` and `ResolvedWatchlistMatch` gain a
+    `manufacturer: str | None` field. Both private lookup helpers
+    extend their LEFT JOIN to also project
+    `watchlist_metadata.vendor AS manufacturer` (single JOIN, no
+    extra round-trip — cost is negligible against the primary
+    equality / prefix lookup).
+  - `rules.RuntimeSeverityOverride` gains
+    `suppress_vendors: frozenset[str]` and includes it in
+    `is_empty()` so a file populated only with vendor
+    suppressions does not short-circuit to the pass-through
+    fast-path.
+  - `rules._apply_runtime_overrides` restructures the fast-path
+    so the vendor check runs even when `device_category` is None
+    (some rows have vendor but no category). The
+    `match.manufacturer is None` and `match.device_category is
+    None` checks each independently skip their own tier.
+  - The load-time INFO line names all three runtime keys for
+    grep-ability and adds a `%d suppressed vendor(s)` count so
+    an operator running `journalctl -u lynceus.service` at daemon
+    startup can confirm the file is parsing as expected.
+
+  **Deliberate non-scope.**
+
+  - `vendor_overrides` is UNCHANGED — its import-time `"drop"`
+    sentinel keeps its skip-at-import semantic. `suppress_vendors`
+    is strictly additive at runtime. The wizard's starter
+    template now points operators at `suppress_vendors` for
+    runtime suppression on already-imported rows; the
+    "future-key" disclaimer on `vendor_overrides` is dropped (no
+    longer future).
+  - No `suppress_vendors_severity` remap key. Vendor-level
+    severity adjustment is a future prompt; designing it properly
+    is a separate pass — same reasoning as the original
+    deferral of runtime vendor suppression.
+  - No substring or regex matching. Exact case-insensitive only.
+  - No DB schema changes. The `watchlist_metadata.vendor` column
+    has been in place since migration 004; this bullet just
+    surfaces it through the eval path.
+  - In-memory pattern rules (rules with non-empty `patterns`)
+    continue to source severity from the rule and are unaffected
+    by `suppress_vendors` — runtime overrides apply only to
+    DB-delegation matches. Explicit regression test in
+    `test_rules.py`.
+
+  Cross-references the delegation extension (the four other
+  DB-delegated rule types beyond `watchlist_mac_range`) and the
+  runtime severity-overrides bullets above as the prerequisite
+  chain: the extension landed the rule types whose matches now
+  carry a manufacturer; the runtime overrides layer is what
+  `suppress_vendors` plugs into. Together with those bullets the
+  runtime severity-tuning story closes: an operator can now
+  reassign severity by category (`device_category_severity`),
+  silence categories (`suppress_categories`), or silence
+  vendors (`suppress_vendors`), all at alert time, all with a
+  daemon restart, no re-import.
+
 ### Fixed
 
 - **`load_runtime_severity_overrides` now logs INFO at every load
