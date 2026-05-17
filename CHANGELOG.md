@@ -8,6 +8,124 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`lynceus-bootstrap-kismet` — new operator-facing helper that
+  takes a fresh Debian/Ubuntu/Kali host from "no Kismet installed"
+  to "Kismet installed, capture interfaces configured, kismet
+  group set up, ready for the operator to open the web UI, set a
+  password, and generate the API key `lynceus-setup` will pick
+  up." Closes the "what do I do before running lynceus-setup?"
+  gap for new operators.
+
+  Scope is bounded by Kismet's apt-repo coverage:
+  Debian (`bookworm`, `trixie`), Ubuntu (`focal`, `jammy`,
+  `noble`, `plucky`), and Kali. On any other distro, the script
+  prints a pointer to <https://www.kismetwireless.net/packages/>
+  and exits 0 — the operator isn't broken, they just need to
+  install Kismet by hand.
+
+  What it actually does, in order:
+
+  1. Refuses to run if not root, exits 2.
+  2. Reads `/etc/os-release` to gate on supported distro.
+  3. If `kismet` is not on PATH and `--skip-install` not passed:
+     downloads the Kismet GPG key (via stdlib `urllib`, no `wget`
+     dependency), dearmors it through `gpg --dearmor` to
+     `/usr/share/keyrings/kismet-archive-keyring.gpg`, writes the
+     codename-specific `deb [signed-by=…] https://www.kismetwireless.net/repos/apt/release/<codename> <codename> main`
+     line to `/etc/apt/sources.list.d/kismet.list`, runs `apt-get
+     update`, and runs `DEBIAN_FRONTEND=noninteractive apt-get
+     install -y kismet`. The noninteractive frontend matters —
+     Kismet's postinst defaults to prompting for "Install with
+     suid root?" and would hang an unattended run.
+  4. Detects Wi-Fi monitor-mode-capable interfaces via `iw dev`
+     + `iw phy <phy> info` parsing (looking for the `* monitor`
+     bullet in `Supported interface modes:`), and Bluetooth
+     controllers via `/sys/class/bluetooth/hci*` (sysfs is the
+     canonical source — works regardless of whether `bluetoothctl`
+     is installed). Per interface, asks Y/n with default Y so
+     the common-case operator hits Enter through.
+  5. Patches `/etc/kismet/kismet_site.conf` append-only: each
+     selected Wi-Fi interface gets a
+     `source=<iface>:type=linuxwifi` line, each BT controller
+     gets `source=<iface>:type=linuxbluetooth`. Idempotent — an
+     interface that already heads an existing `source=` line is
+     skipped regardless of suffix, so operator customisations
+     (`name=…`, `channel_list=…`) are preserved. Atomic write
+     via `tempfile.mkstemp` + `os.replace` so a Kismet daemon
+     reading the file mid-update never sees a partial write.
+  6. Adds the invoking operator (`$SUDO_USER`) to the `kismet`
+     group if not already a member. If the group does not exist
+     — the .deb's postinst should create it — the script does
+     NOT silently `groupadd`. It surfaces the missing-group as
+     an error pointing back to the package install, because a
+     missing group is a signal that `apt install kismet` didn't
+     behave as expected and adding the operator to a hand-rolled
+     group would not give them capture capabilities.
+  7. Prints the closing block: log out + back in (group
+     membership doesn't propagate to running shells), how to
+     start Kismet (`systemctl start kismet` or foreground for
+     first-launch password setup), the web-UI URL, the API-key
+     creation walkthrough (`Settings → API Keys → Create`,
+     `Name: lynceus, Role: readonly`), and `sudo lynceus-setup`.
+
+  **`install.sh` stays offline.** This script is the one that
+  uses the network for apt operations; the boundary is preserved
+  intentionally. The threat-model invariant that an operator can
+  read `install.sh` before running it without that script then
+  curling third parties is unchanged.
+
+  **Idempotent on every step.** Re-running on a partially-set-up
+  host: already-installed Kismet → "kismet binary already on
+  PATH", skip apt install (or re-run if the operator says Y);
+  already-configured apt source → skip add-source, just `apt-get
+  update`; pre-existing `kismet_site.conf` → diff and append
+  missing lines only; operator already in `kismet` group → skip
+  `usermod`. Second run is safe to invoke from any partially-
+  successful first run.
+
+  Flags:
+
+  - `--skip-install` — Kismet is already present (manual build,
+    different package, etc.); skip the apt steps but still do
+    interface config + permissions.
+  - `--interface <name>` (repeatable) — bypass auto-detection
+    and configure these interfaces explicitly. Pairs with
+    `--interface-type {wifi,bt}` (default `wifi`).
+  - `--no-network` — refuse any apt / network operation. Implies
+    `--skip-install`. For operators who installed Kismet from
+    air-gapped media.
+  - `--dry-run` — print every command + file write, but execute
+    nothing. Operator prompts still appear so the preview
+    reflects the choices that would actually be made.
+  - `--yes` — accept every Y/n prompt with its default (most
+    are Y; the "re-install on top of existing Kismet?" prompt
+    defaults to N). For scripted bootstrap.
+
+  Exit codes: 0 success or unsupported-distro, 1 recoverable
+  failure (operator action: fix + re-run), 2 tool-level failure
+  (not root, not Linux).
+
+  Wired into `install.sh`'s `CONSOLE_SCRIPTS` symlink layer
+  (same pattern the `lynceus-validate` addition followed) and
+  into `pyproject.toml`'s `[project.scripts]`. `install.sh`'s
+  post-install hint block now mentions
+  `sudo lynceus-bootstrap-kismet` alongside `lynceus-setup`, and
+  the `lynceus-setup` wizard's "If Kismet isn't installed or
+  running yet" context block points operators at it as a
+  concrete option.
+
+  Tests are unit-level with mocked subprocess + filesystem
+  (30 cases): `/etc/os-release` parsing for kali, debian
+  bookworm/trixie, ubuntu noble, and an unsupported-version
+  ubuntu (bionic) edge case; `iw dev` and `iw phy info` parser
+  fixtures with and without monitor mode; sysfs-based BT
+  enumeration; `kismet_site.conf` patcher idempotency,
+  operator-customisation preservation, dry-run no-write,
+  no-changes-needed case; non-root exit (code 2), unsupported
+  distro exit (code 0 + pointer URL), missing kismet group
+  exit (code 1). End-to-end testing requires a fresh
+  Debian/Ubuntu/Kali VM and is manual-smoke territory.
+
 - **`lynceus-setup` Kismet API key prompt now auto-locates an
   existing key from disk before falling through to the manual
   copy-paste flow.** The wizard reads Kismet's per-user
