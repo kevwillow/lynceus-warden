@@ -576,6 +576,51 @@ class Database:
                 return match
         return None
 
+    def resolve_matched_ble_manufacturer_id_for_eval(
+        self, company_id: str | None
+    ) -> ResolvedWatchlistMatch | None:
+        """Watchlist row for an exact BLE manufacturer (company) ID match, or None.
+
+        ``company_id`` is the Bluetooth SIG 16-bit Company Identifier
+        in the canonical persistent form (lowercase 4-hex-char, no
+        '0x' prefix — see patterns._normalize_ble_manufacturer_id).
+        Callers passing an observation field should normalize it
+        through normalize_pattern('ble_manufacturer_id', value)
+        before calling — same write-time-canonical contract the
+        other equality-shaped matchers rely on. Used by
+        rules.evaluate's watchlist_ble_manufacturer_id branch when
+        rule.patterns is empty (delegation mode). Falsy
+        ``company_id`` short-circuits to None.
+        """
+        if not company_id:
+            return None
+        return self._lookup_simple_watchlist_match("ble_manufacturer_id", company_id)
+
+    def resolve_matched_drone_id_prefix_for_eval(
+        self, drone_id: str | None
+    ) -> ResolvedWatchlistMatch | None:
+        """Watchlist row for an exact drone Remote-ID prefix match, or None.
+
+        ``drone_id`` is the ANSI/CTA-2063-A serial-number prefix in
+        the canonical persistent form (uppercase ASCII alphanumeric —
+        see patterns._normalize_drone_id_prefix). Callers passing an
+        observation field should normalize through
+        normalize_pattern('drone_id_prefix', value) first.
+
+        Matching is exact-equality on the prefix string. The Argus
+        rows are themselves prefixes (3-20 chars in the
+        2026-05-14 snapshot), so an operator who wants
+        startswith-style matching against a longer observed serial
+        number would need a separate range/prefix matcher — that is
+        future work, not in scope for this commit. Used by
+        rules.evaluate's watchlist_drone_id_prefix branch when
+        rule.patterns is empty (delegation mode). Falsy
+        ``drone_id`` short-circuits to None.
+        """
+        if not drone_id:
+            return None
+        return self._lookup_simple_watchlist_match("drone_id_prefix", drone_id)
+
     def get_recent_alert_for_rule_and_mac(
         self,
         rule_name: str,
