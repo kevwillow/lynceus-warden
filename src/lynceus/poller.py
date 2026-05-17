@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import logging
 import signal
 import time
@@ -252,6 +253,96 @@ def poll_once(
     return processed
 
 
+def log_watchlist_staleness(
+    db: Database, warn_days: int, *, now_ts: int
+) -> None:
+    """Log a single startup line describing the watchlist's age.
+
+    Three outcomes, mirroring the three states the operator can be in:
+
+    - Imports recorded AND most-recent import is within ``warn_days``:
+      one INFO line with row count + days-since + exported date.
+    - Imports recorded AND most-recent import is older than
+      ``warn_days``: one WARNING line, same fields plus a refresh hint
+      naming ``lynceus-import-argus --from-github``. The WARNING is
+      the load-bearing signal — an operator running ``journalctl -u
+      lynceus.service`` can spot it without grepping for a specific
+      pattern.
+    - No imports recorded (fresh install, never ran the importer): one
+      INFO line stating so. Deliberately NOT a WARNING — a fresh
+      install where the operator hasn't run lynceus-import-argus yet
+      is the expected state right after lynceus-setup; warning would
+      be noise.
+
+    Age is computed against ``exported_at`` when present (Argus-side
+    timestamp on the CSV's ``# meta:`` line), falling back to
+    ``imported_at`` (local clock at write time). Falling back rather
+    than logging "unknown age" keeps a useful signal for the
+    pre-meta-parsing imports that ship NULL exported_at — the local
+    clock is a strict lower bound on the data's age (data can be
+    older than imported_at but never newer).
+
+    Failures (db error, sqlite contention) downgrade to a single
+    WARNING line; the poller continues. Observability-only by
+    design — a broken staleness signal must NOT block startup.
+    """
+    try:
+        row_count = int(
+            db._conn.execute("SELECT COUNT(*) AS c FROM watchlist").fetchone()["c"]
+        )
+        latest = db.get_latest_import_run()
+    except Exception as exc:
+        logger.warning(
+            "watchlist: staleness check failed (%s); continuing without "
+            "freshness signal at startup. /settings will surface the "
+            "same data if the DB recovers.",
+            exc,
+        )
+        return
+
+    if latest is None:
+        logger.info(
+            "watchlist: %d rows total, no Argus import metadata recorded "
+            "(no lynceus-import-argus run yet, or runs predate the import_runs "
+            "table from migration 012)",
+            row_count,
+        )
+        return
+
+    # Prefer Argus-side exported_at; fall back to imported_at when the
+    # meta line was unparseable. ``age_seconds`` ≥ 0 in practice; a
+    # negative value would mean the timestamp is in the future
+    # (clock skew). We clamp to >= 0 for the days arithmetic but
+    # surface the raw timestamp for forensic clarity.
+    reference_ts = latest["exported_at"] or latest["imported_at"]
+    age_seconds = max(0, now_ts - int(reference_ts))
+    age_days = age_seconds // 86400
+    exported_at = latest["exported_at"]
+    exported_iso = (
+        _dt.datetime.fromtimestamp(int(exported_at), tz=_dt.UTC).strftime("%Y-%m-%d")
+        if exported_at is not None
+        else "unknown"
+    )
+
+    if age_days > warn_days:
+        logger.warning(
+            "watchlist: %d rows total, most recent Argus import %d days "
+            "ago (exported %s); consider 'lynceus-import-argus "
+            "--from-github' to refresh",
+            row_count,
+            age_days,
+            exported_iso,
+        )
+    else:
+        logger.info(
+            "watchlist: %d rows total, most recent Argus import %d days "
+            "ago (exported %s)",
+            row_count,
+            age_days,
+            exported_iso,
+        )
+
+
 class Poller:
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -275,6 +366,9 @@ class Poller:
         # error handling and is unaffected by this load.
         self.severity_overrides = load_runtime_severity_overrides(
             config.severity_overrides_path
+        )
+        log_watchlist_staleness(
+            self.db, config.watchlist_staleness_warn_days, now_ts=int(time.time())
         )
         self.notifier: Notifier = build_notifier(config)
         self._stop_flag = False

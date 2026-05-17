@@ -90,6 +90,15 @@ class Config(BaseModel):
     capture: CaptureConfig = CaptureConfig()
     evidence_capture_enabled: bool = True
     evidence_retention_days: int = 90
+    # Watchlist staleness threshold for the startup log line + the
+    # /settings freshness card. An imported Argus corpus older than
+    # this many days flips the startup line from INFO to WARNING
+    # with a `lynceus-import-argus --from-github` refresh hint, and
+    # the settings card surfaces a stale-status indicator. 30 days
+    # matches Argus's nominal release cadence; operators on a
+    # different cadence (kiosk deployments, air-gapped refreshes)
+    # tune via this field.
+    watchlist_staleness_warn_days: int = 30
     # GPS coordinates in evidence rows are the OPERATOR's location at
     # alert time (Kismet sources the geopoint from the receiver's GPS
     # fix, not the observed device's). Opt-in by default so an operator
@@ -202,6 +211,17 @@ class Config(BaseModel):
     def _validate_evidence_retention_days(cls, v: int) -> int:
         if v < 1 or v > 3650:
             raise ValueError("evidence_retention_days must be in [1, 3650]")
+        return v
+
+    @field_validator("watchlist_staleness_warn_days")
+    @classmethod
+    def _validate_watchlist_staleness_warn_days(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(
+                "watchlist_staleness_warn_days must be >= 1 (a 0-day "
+                "threshold would WARN at every startup; the threshold is "
+                "tunable per operator cadence)"
+            )
         return v
 
     @model_validator(mode="after")
