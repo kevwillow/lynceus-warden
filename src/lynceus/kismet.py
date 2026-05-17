@@ -19,13 +19,31 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 _BLE_MANUF_ID_RE = re.compile(r"^[0-9a-f]{4}$")
 _DRONE_ID_RE = re.compile(r"^[A-Z0-9]{3,32}$")
 
-_TYPE_MAP: dict[str, Literal["wifi", "ble", "bt_classic"]] = {
+_TYPE_MAP: dict[str, Literal["wifi", "ble", "bt_classic", "remote_id"]] = {
     "Wi-Fi AP": "wifi",
     "Wi-Fi Client": "wifi",
     "Wi-Fi Bridged": "wifi",
     "Wi-Fi Device": "wifi",
     "BTLE": "ble",
     "Bluetooth": "bt_classic",
+    # Remote-ID Kismet device-type strings — UNVERIFIED guesses
+    # against a live Kismet capture as of 2026-05-17. The Lynceus
+    # codebase had no prior consumer of Remote-ID records, and
+    # Kismet's exact emission for ASTM F3411 Remote-ID devices
+    # varies by version + datasource configuration. The two
+    # forms below cover the most plausible canonical shapes
+    # (Kismet's general convention is "Hyphenated Title Case" for
+    # the radio family, but Remote-ID-specific docs sometimes
+    # use the bare "Remote ID" string).
+    #
+    # Operator follow-up: capture a live Remote-ID record from
+    # /devices/views/all/devices.json and confirm the actual
+    # kismet.device.base.type value. Add the confirmed string to
+    # the front of this map; remove any stale guesses behind it.
+    # See the rc5 CHANGELOG caveat for the residual probe-path
+    # verification step.
+    "Remote ID": "remote_id",
+    "Remote ID Drone": "remote_id",
 }
 
 
@@ -33,7 +51,7 @@ class DeviceObservation(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mac: str
-    device_type: Literal["wifi", "ble", "bt_classic"]
+    device_type: Literal["wifi", "ble", "bt_classic", "remote_id"]
     first_seen: int
     last_seen: int
     rssi: int | None
@@ -314,22 +332,41 @@ def _extract_ble_manufacturer_id(raw: dict) -> str | None:
 # match wins. The serial-number field typically lives under a
 # remoteid.device.basic_id structure with leaves named 'serial',
 # 'serial_number', or 'uas_id' depending on the broadcast variant
-# (ANSI/CTA-2063-A Serial vs. CAA Registration vs. UAS UUID).
+# (ANSI/CTA-2063-A Serial vs. CAA Registration vs. UAS UUID), or
+# under the canonical Kismet kismet.device.base.* prefix that
+# every other Kismet field uses.
 #
-# Even with correct paths, this resolver only fires when Kismet's
-# Remote-ID datasource is enabled AND the device record reaches
-# parse_kismet_device — see the _TYPE_MAP gate at the top of this
-# module, which currently admits only Wi-Fi / BTLE / Bluetooth
-# device types. Devices typed 'Remote ID' (or whatever Kismet's
-# RID emission uses) are dropped before they reach this helper.
-# Operator follow-up: extend _TYPE_MAP and the devices CHECK
-# constraint (migration 001) once the live emission is captured.
+# As of rc5 (migration 014 + _TYPE_MAP extension landing in the
+# same commit) Remote-ID-typed records are admitted by _TYPE_MAP
+# and devices.device_type, so a record reaching this helper has
+# already cleared the type-layer gate. Drone Remote-ID can also
+# arrive on records typed as 'Wi-Fi Device' (OCABS transmitters)
+# or 'BTLE' (BT-RID broadcast variants), which is why this helper
+# runs on every observation regardless of device_type — see the
+# control-flow comment in parse_kismet_device.
+#
+# Operator follow-up: capture a live Remote-ID record from
+# /devices/views/all/devices.json and confirm which path actually
+# resolves; add the confirmed path to the front of this tuple and
+# remove any stale guesses behind it. See the rc5 CHANGELOG
+# caveat for the residual probe-path verification step.
 _DRONE_ID_PATHS: tuple[tuple[str, ...], ...] = (
+    # kismet.device.base.* prefix matches the convention every
+    # other top-level Kismet field uses (kismet.device.base.type,
+    # kismet.device.base.signal, kismet.device.base.advdata, …).
+    # Most plausible canonical shape for the Remote-ID payload.
+    ("kismet.device.base.remote_id", "serial_number"),
+    ("kismet.device.base.remote_id", "uas_id"),
+    # remoteid.device.basic_id — the structure name mirrors the
+    # ASTM F3411 message-type field ("Basic ID"); leaves named
+    # 'serial', 'serial_number', or 'uas_id' cover the broadcast
+    # variants (ANSI/CTA-2063-A Serial, CAA Registration, UAS
+    # UUID). Retained as fallbacks for older / alternate Kismet
+    # RID datasources that may not use the kismet.device.base.*
+    # prefix.
     ("remoteid.device.basic_id", "serial"),
     ("remoteid.device.basic_id", "serial_number"),
     ("remoteid.device.basic_id", "uas_id"),
-    ("remoteid.device", "basic_id", "serial"),
-    ("remoteid.device", "basic_id", "uas_id"),
 )
 
 
