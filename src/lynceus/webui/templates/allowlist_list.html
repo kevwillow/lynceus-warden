@@ -48,6 +48,13 @@
             {% endfor %}
           </select>
         </label>
+        <label>per page
+          <select name="page_size">
+            {% for n in per_page_options %}
+              <option value="{{ n }}" {% if n == pagination.per_page %}selected{% endif %}>{{ n }}</option>
+            {% endfor %}
+          </select>
+        </label>
         <button type="submit">filter</button>
       </fieldset>
       {% if filters_active %}
@@ -165,6 +172,39 @@
       {% elif not notice %}
         <p><em>No allowlist entries.</em></p>
       {% endif %}
+    {% endif %}
+
+    {% if pagination %}
+      <nav>
+        {% set qs = [] %}
+        {% if filters.q %}{% set _ = qs.append('q=' ~ filters.q) %}{% endif %}
+        {% if filters.source != 'all' %}{% set _ = qs.append('source=' ~ filters.source) %}{% endif %}
+        {% if filters.status != 'all' %}{% set _ = qs.append('status=' ~ filters.status) %}{% endif %}
+        {% if filters.type != 'all' %}{% set _ = qs.append('type=' ~ filters.type) %}{% endif %}
+        {% set _ = qs.append('page_size=' ~ pagination.per_page) %}
+        {% set base_qs = qs | join('&') %}
+        <ul>
+          <li>
+            {% if pagination.has_prev %}
+              <a href="/allowlist?{{ base_qs }}&page={{ pagination.page - 1 }}">&larr; prev</a>
+            {% else %}
+              <span class="dim">&larr; prev</span>
+            {% endif %}
+          </li>
+        </ul>
+        <ul>
+          <li><small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small></li>
+        </ul>
+        <ul>
+          <li>
+            {% if pagination.has_next %}
+              <a href="/allowlist?{{ base_qs }}&page={{ pagination.page + 1 }}">next &rarr;</a>
+            {% else %}
+              <span class="dim">next &rarr;</span>
+            {% endif %}
+          </li>
+        </ul>
+      </nav>
     {% endif %}
   {% endif %}
 {% endblock %}

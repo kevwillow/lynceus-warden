@@ -119,6 +119,13 @@ _ALERTS_WINDOW_SECONDS: dict[str, int | None] = {
     "all": None,
 }
 
+# /allowlist pagination shares the same per_page set / default as
+# /alerts. Allowlists are typically smaller (the prompt notes the
+# rc5 management surface assumed <500 entries), but the unified
+# helper means the two pages render the same footer copy.
+_ALLOWLIST_PER_PAGE_ALLOWED: tuple[int, ...] = (25, 50, 100, 200)
+_ALLOWLIST_PER_PAGE_DEFAULT: int = 50
+
 
 def _parse_date_to_ts(value: str, *, end_of_day: bool, name: str) -> int:
     try:
@@ -1629,6 +1636,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         source: str,
         status: str,
         type_: str,
+        page: str | None = None,
+        page_size: str | None = None,
         success: str | None = None,
         count: int | None = None,
         add_form: dict | None = None,
@@ -1638,16 +1647,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
         """Shared renderer for /allowlist and the add-form error path.
 
         Loads the merged primary+UI allowlist, applies filters
-        server-side, and builds the template context. The add-form
-        error path re-renders the same page with ``add_form`` /
-        ``add_error`` populated so the operator's input survives
-        the round-trip — filters are reset on the error render so
-        the operator can see the full current state alongside their
-        rejected input.
+        server-side, then slices into a paginated window via the
+        shared PaginationParams helper. The add-form error path
+        re-renders the same page with ``add_form`` / ``add_error``
+        populated so the operator's input survives the round-trip
+        — filters are reset on the error render so the operator can
+        see the full current state alongside their rejected input.
         """
         allowlist_path = app.state.config.allowlist_path
         notice: str | None = None
-        entries_rows: list[dict] = []
+        filtered_rows: list[dict] = []
         primary_count = 0
         ui_count = 0
         configured = bool(allowlist_path)
@@ -1661,7 +1670,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 tagged = []
             primary_count = sum(1 for _, src in tagged if src == "primary")
             ui_count = sum(1 for _, src in tagged if src == "ui")
-            entries_rows = _filter_allowlist_entries(
+            filtered_rows = _filter_allowlist_entries(
                 tagged,
                 q=q,
                 source=source,
@@ -1669,6 +1678,21 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 type_=type_,
                 now_ts=int(time.time()),
             )
+
+        # Pagination is applied in Python on the already-filtered list
+        # rather than via SQL because the allowlist sits in YAML on
+        # disk, not a DB table. The same PaginationParams helper used
+        # by /alerts handles the math identically.
+        requested_page, per_page = parse_pagination(
+            page,
+            page_size,
+            allowed_per_page=_ALLOWLIST_PER_PAGE_ALLOWED,
+            default_per_page=_ALLOWLIST_PER_PAGE_DEFAULT,
+        )
+        total = len(filtered_rows)
+        pagination = build_pagination(requested_page, per_page, total)
+        page_rows = filtered_rows[pagination.offset : pagination.offset + pagination.per_page]
+
         filters_active = bool(
             (q and q.strip())
             or source != "all"
@@ -1684,7 +1708,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "active": "allowlist",
                 "notice": notice,
                 "configured": configured,
-                "entries": entries_rows,
+                "entries": page_rows,
                 "primary_count": primary_count,
                 "ui_count": ui_count,
                 "filters": {
@@ -1699,6 +1723,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "success_count": count,
                 "add_form": add_form or {},
                 "add_error": add_error,
+                "pagination": pagination,
+                "per_page_options": _ALLOWLIST_PER_PAGE_ALLOWED,
             },
         )
 
@@ -1709,6 +1735,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         source: str = Query(default="all"),
         status: str = Query(default="all"),
         type: str = Query(default="all"),
+        page: str | None = Query(default=None),
+        page_size: str | None = Query(default=None),
         success: str | None = Query(default=None),
         count: int | None = Query(default=None),
     ):
@@ -1719,6 +1747,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
             source=source,
             status=status,
             type_=type,
+            page=page,
+            page_size=page_size,
             success=success,
             count=count,
         )
