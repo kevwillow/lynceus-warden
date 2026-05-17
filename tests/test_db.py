@@ -813,6 +813,52 @@ def test_resolve_matched_mac_range_populates_device_category(db):
     assert match.device_category == "alpr"
 
 
+def test_resolve_matched_mac_range_populates_manufacturer(db):
+    """LEFT JOIN onto watchlist_metadata surfaces ``vendor`` projected
+    as ``manufacturer`` (Argus CSV column → DB ``vendor`` column →
+    Python field ``manufacturer``). Powers the runtime
+    ``suppress_vendors`` check."""
+    wid = _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28, severity="high")
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist_metadata("
+            "watchlist_id, argus_record_id, device_category, vendor) "
+            "VALUES (?, ?, ?, ?)",
+            (wid, f"argus-{wid}", "alpr", "Mitsubishi Electric US, Inc."),
+        )
+    match = db.resolve_matched_mac_range("aa:bb:cc:d1:23:45")
+    assert match is not None
+    assert match.manufacturer == "Mitsubishi Electric US, Inc."
+
+
+def test_resolve_matched_mac_range_manufacturer_null_when_no_metadata(db):
+    """No metadata row → manufacturer is None. Mirrors the
+    device_category-NULL pass-through used for the 63 bundled
+    default_watchlist rows."""
+    _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    match = db.resolve_matched_mac_range("aa:bb:cc:d1:23:45")
+    assert match is not None
+    assert match.manufacturer is None
+
+
+def test_resolve_matched_mac_range_manufacturer_null_when_vendor_unset(db):
+    """A metadata row that omits ``vendor`` (NULL) → manufacturer
+    surfaces as None, not the empty string. The runtime suppress_vendors
+    check skips entirely when manufacturer is None — vendor-NULL is a
+    valid state for any non-Argus metadata row."""
+    wid = _add_mac_range(db, "aa:bb:cc:d/28", "aabbccd", 28)
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist_metadata("
+            "watchlist_id, argus_record_id, device_category) "
+            "VALUES (?, ?, ?)",
+            (wid, f"argus-{wid}", "alpr"),
+        )
+    match = db.resolve_matched_mac_range("aa:bb:cc:d1:23:45")
+    assert match is not None
+    assert match.manufacturer is None
+
+
 def test_resolve_matched_mac_range_36_hit(db):
     wid = _add_mac_range(db, "aa:bb:cc:dd:e/36", "aabbccdde", 36, severity="med")
     match = db.resolve_matched_mac_range("aa:bb:cc:dd:e7:89")
@@ -1015,6 +1061,26 @@ def test_resolve_matched_mac_for_eval_populates_device_category(db):
     assert match.device_category == "alpr"
 
 
+def test_resolve_matched_mac_for_eval_populates_manufacturer(db):
+    """LEFT JOIN projects ``watchlist_metadata.vendor`` as
+    ``manufacturer`` on the match. Powers ``suppress_vendors``."""
+    wid = _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac", severity="high")
+    _attach_metadata(db, wid, device_category="alpr", vendor="Acme Surveillance Corp")
+    match = db.resolve_matched_mac_for_eval("aa:bb:cc:dd:ee:ff")
+    assert match is not None
+    assert match.manufacturer == "Acme Surveillance Corp"
+
+
+def test_resolve_matched_mac_for_eval_manufacturer_null_when_no_metadata(db):
+    """The 63 bundled default_watchlist rows ship without metadata
+    rows. Their manufacturer surfaces as None — runtime
+    suppress_vendors check skips entirely (pass-through)."""
+    _add_simple(db, "aa:bb:cc:dd:ee:ff", "mac")
+    match = db.resolve_matched_mac_for_eval("aa:bb:cc:dd:ee:ff")
+    assert match is not None
+    assert match.manufacturer is None
+
+
 def test_resolve_matched_mac_for_eval_device_category_null_when_no_metadata(db):
     """The 63 bundled default_watchlist rows ship without metadata
     rows. Their device_category surfaces as None, which the runtime
@@ -1067,6 +1133,14 @@ def test_resolve_matched_oui_for_eval_populates_device_category(db):
     assert match.device_category == "hacking_tool"
 
 
+def test_resolve_matched_oui_for_eval_populates_manufacturer(db):
+    wid = _add_simple(db, "00:13:37", "oui", severity="high")
+    _attach_metadata(db, wid, device_category="hacking_tool", vendor="Hak5 LLC")
+    match = db.resolve_matched_oui_for_eval("00:13:37:aa:bb:cc")
+    assert match is not None
+    assert match.manufacturer == "Hak5 LLC"
+
+
 def test_resolve_matched_oui_for_eval_miss(db):
     _add_simple(db, "aa:bb:cc", "oui")
     assert db.resolve_matched_oui_for_eval("11:22:33:44:55:66") is None
@@ -1104,6 +1178,14 @@ def test_resolve_matched_ssid_for_eval_populates_device_category(db):
     match = db.resolve_matched_ssid_for_eval("FreeAirportWiFi")
     assert match is not None
     assert match.device_category == "drone"
+
+
+def test_resolve_matched_ssid_for_eval_populates_manufacturer(db):
+    wid = _add_simple(db, "FreeAirportWiFi", "ssid", severity="med")
+    _attach_metadata(db, wid, device_category="drone", vendor="DJI Inc.")
+    match = db.resolve_matched_ssid_for_eval("FreeAirportWiFi")
+    assert match is not None
+    assert match.manufacturer == "DJI Inc."
 
 
 def test_resolve_matched_ssid_for_eval_miss(db):
@@ -1150,6 +1232,14 @@ def test_resolve_matched_ble_uuid_for_eval_populates_device_category(db):
     match = db.resolve_matched_ble_uuid_for_eval([_AIRTAG_UUID])
     assert match is not None
     assert match.device_category == "alpr"
+
+
+def test_resolve_matched_ble_uuid_for_eval_populates_manufacturer(db):
+    wid = _add_simple(db, _AIRTAG_UUID, "ble_uuid", severity="high")
+    _attach_metadata(db, wid, device_category="alpr", vendor="Apple Inc.")
+    match = db.resolve_matched_ble_uuid_for_eval([_AIRTAG_UUID])
+    assert match is not None
+    assert match.manufacturer == "Apple Inc."
 
 
 def test_resolve_matched_ble_uuid_for_eval_miss(db):
