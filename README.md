@@ -135,6 +135,21 @@ Lynceus ships a default watchlist as package data inside the wheel: `src/lynceus
 
   `--from-github` and `--input` are mutually exclusive; pass exactly one. The importer is idempotent and metadata-aware in both modes — re-running against the same input is safe. `lynceus-import-argus` is the only Lynceus CLI that touches the network; `install.sh` and the daemon stay offline.
 
+- **Auto-refresh (system installs, opt-in).** `install.sh --system` ships `lynceus-refresh.timer` + `lynceus-refresh.service` to `/etc/systemd/system/` but does **not** enable them — the timer is the only Lynceus surface that opts the host into a recurring outbound call, so it stays an explicit operator decision (keeps the `install.sh` offline invariant intact). Once enabled, the timer re-runs `lynceus-import-argus --scope system --from-github` weekly, comfortably faster than the default 30-day staleness threshold so the `/settings` "watchlist stale" badge stays cold:
+
+  ```sh
+  # Enable (weekly, default off):
+  sudo systemctl enable --now lynceus-refresh.timer
+
+  # Customize cadence — opens a drop-in override:
+  sudo systemctl edit lynceus-refresh.timer
+
+  # Disable:
+  sudo systemctl disable --now lynceus-refresh.timer
+  ```
+
+  Failures (network outage, transient GitHub error) are logged via `journalctl -u lynceus-refresh.service`; the next scheduled fire retries. The oneshot does not `Restart=` — tight retry loops on a sustained outage are worse than a missed window.
+
 ## Running Lynceus
 
 **Production (Linux + systemd).** Two services:
