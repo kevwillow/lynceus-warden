@@ -893,6 +893,20 @@ DELEGATION_RULES: tuple[tuple[str, str, str, str, str], ...] = (
         "BLE UUIDs",
         "Argus + bundled BLE service-UUID watchlist",
     ),
+    (
+        "argus_ble_manufacturer_id",
+        "watchlist_ble_manufacturer_id",
+        "ble_manufacturer_id",
+        "BLE manufacturer IDs",
+        "Argus BLE manufacturer-ID watchlist (Bluetooth SIG company IDs)",
+    ),
+    (
+        "argus_drone_id_prefix",
+        "watchlist_drone_id_prefix",
+        "drone_id_prefix",
+        "drone Remote-ID prefixes",
+        "Argus drone Remote-ID prefix watchlist (ANSI/CTA-2063-A)",
+    ),
 )
 
 
