@@ -183,6 +183,7 @@ def test_migrations_dir_lists_both_files(db):
         "012_import_runs.sql",
         "013_pattern_type_extension.sql",
         "014_devices_remote_id.sql",
+        "015_alerts_rule_type.sql",
     ]
 
 
@@ -304,6 +305,65 @@ def test_get_alert_with_null_mac_has_no_device(db):
     assert alert is not None
     assert alert["mac"] is None
     assert alert["device"] is None
+
+
+def test_add_alert_persists_rule_type(db):
+    db.upsert_device(MAC, "wifi", "Acme", 0, 100)
+    aid = db.add_alert(
+        ts=500,
+        rule_name="r",
+        mac=MAC,
+        message="m",
+        severity="med",
+        rule_type="watchlist_mac",
+    )
+    alert = db.get_alert(aid)
+    assert alert is not None
+    assert alert["rule_type"] == "watchlist_mac"
+
+
+def test_add_alert_rule_type_defaults_to_null(db):
+    # Backward-compat: callers that don't pass rule_type (e.g. legacy
+    # tests, or any code path that pre-dates migration 015) still
+    # work. The column stays NULL, which the /alerts filter treats
+    # as "unknown type" and excludes from any type=<specific> filter.
+    db.upsert_device(MAC, "wifi", "Acme", 0, 100)
+    aid = db.add_alert(ts=500, rule_name="r", mac=MAC, message="m", severity="med")
+    alert = db.get_alert(aid)
+    assert alert is not None
+    assert alert["rule_type"] is None
+
+
+def test_add_alert_rule_type_round_trips_all_literals(db):
+    # Every RuleType literal currently emitted by the daemon round-
+    # trips byte-identical through the column. New literals added to
+    # rules.RuleType in the future are expected to land in this list
+    # so any drift surfaces here.
+    expected_types = [
+        "watchlist_mac",
+        "watchlist_oui",
+        "watchlist_ssid",
+        "watchlist_mac_range",
+        "ble_uuid",
+        "watchlist_ble_manufacturer_id",
+        "watchlist_drone_id_prefix",
+        "new_non_randomized_device",
+    ]
+    db.upsert_device(MAC, "wifi", "Acme", 0, 100)
+    ids = {}
+    for i, rt in enumerate(expected_types):
+        ids[rt] = db.add_alert(
+            ts=500 + i,
+            rule_name=f"r_{rt}",
+            mac=MAC,
+            message=f"m_{rt}",
+            severity="low",
+            rule_type=rt,
+        )
+    for rt, aid in ids.items():
+        alert = db.get_alert(aid)
+        assert alert is not None
+        assert alert["rule_type"] == rt
 
 
 def test_list_devices_orders_by_last_seen_desc(db):

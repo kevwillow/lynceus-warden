@@ -1620,7 +1620,11 @@ def test_list_alerts_with_match_validates_pagination(db):
 # ---------------------------------------------------------------------------
 
 
-def test_list_alerts_shape_unchanged_by_migration_005(db):
+def test_list_alerts_shape_through_migrations(db):
+    # Migration 005 added matched_watchlist_id but kept it off
+    # list_alerts' public shape on purpose. Migration 015 added
+    # rule_type and surfaces it on list_alerts. The watchlist join
+    # columns still do not leak.
     wl = _add_watchlist(db, "aa:bb:cc:dd:ee:ff")
     db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
     db.add_alert(
@@ -1630,6 +1634,7 @@ def test_list_alerts_shape_unchanged_by_migration_005(db):
         message="m",
         severity="low",
         matched_watchlist_id=wl,
+        rule_type="watchlist_mac",
     )
     rows = db.list_alerts()
     assert len(rows) == 1
@@ -1637,6 +1642,7 @@ def test_list_alerts_shape_unchanged_by_migration_005(db):
         "id",
         "ts",
         "rule_name",
+        "rule_type",
         "mac",
         "message",
         "severity",
@@ -1644,7 +1650,10 @@ def test_list_alerts_shape_unchanged_by_migration_005(db):
     }
 
 
-def test_get_alert_shape_unchanged_by_migration_005(db):
+def test_get_alert_shape_through_migrations(db):
+    # Same shape contract as list_alerts. rule_type (migration 015)
+    # is surfaced; matched_watchlist_id and the watchlist join
+    # still belong to get_alert_with_match, not get_alert.
     wl = _add_watchlist(db, "aa:bb:cc:dd:ee:ff")
     db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
     aid = db.add_alert(
@@ -1654,15 +1663,15 @@ def test_get_alert_shape_unchanged_by_migration_005(db):
         message="m",
         severity="low",
         matched_watchlist_id=wl,
+        rule_type="watchlist_mac",
     )
     alert = db.get_alert(aid)
     assert alert is not None
-    # Existing keys: id, ts, rule_name, mac, message, severity, acknowledged, device.
-    # No watchlist or matched_watchlist_id keys leak into the v0.2 shape.
     assert set(alert.keys()) == {
         "id",
         "ts",
         "rule_name",
+        "rule_type",
         "mac",
         "message",
         "severity",
