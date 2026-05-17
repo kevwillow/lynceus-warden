@@ -761,9 +761,14 @@ def test_severity_overrides_created_when_missing(tmp_path):
     assert created is True
     assert p.exists()
     text = p.read_text()
-    # Template should mention each known override section.
+    # Template should mention each known override section. Runtime
+    # keys (suppress_categories, suppress_vendors) plus import-time
+    # keys (vendor_overrides, geographic_filter, ...) and the BOTH-
+    # layer remap (device_category_severity).
     assert "vendor_overrides" in text
     assert "device_category_severity" in text
+    assert "suppress_categories" in text
+    assert "suppress_vendors" in text
     assert "geographic_filter" in text
 
 

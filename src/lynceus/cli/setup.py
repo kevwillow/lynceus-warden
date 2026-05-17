@@ -175,9 +175,9 @@ Two layers read this file:
   - IMPORT-TIME (vendor_overrides, geographic_filter, confidence_
     downgrade_threshold): applied by lynceus-import-argus when data
     is brought in. Edits take effect after the next re-import.
-  - RUNTIME (device_category_severity, suppress_categories): applied
-    by the poller at alert time. Edits take effect on daemon restart
-    — no re-import required.
+  - RUNTIME (device_category_severity, suppress_categories,
+    suppress_vendors): applied by the poller at alert time. Edits
+    take effect on daemon restart — no re-import required.
 
 A starter file with explanatory comments will be created at the path
 below. You can edit it any time. Press Enter to accept the default.
@@ -191,19 +191,20 @@ SEVERITY_OVERRIDES_TEMPLATE = """\
 #     Edits require re-importing to apply.
 #
 #   RUNTIME (the poller / daemon): keys device_category_severity,
-#     suppress_categories. Edits require only a daemon restart;
-#     already-imported rows fire at the new severity.
+#     suppress_categories, suppress_vendors. Edits require only a
+#     daemon restart; already-imported rows fire at the new severity
+#     (or are suppressed) without re-importing.
 #
 # Each section is optional. Uncomment and edit only what you want to change.
 # Each section below carries an inline `# LAYER:` tag so it's clear which
 # layer (and what action) the change requires.
 
 # vendor_overrides:           # LAYER: IMPORT-TIME — re-import to apply
-#   # Force a specific severity for any record from this manufacturer.
-#   # Use the literal string "drop" to skip records from a vendor entirely.
-#   # NOTE: vendor_overrides has no runtime effect today; the "drop" sentinel
-#   # is import-skip semantics. A future suppress_vendors key may add a
-#   # runtime equivalent — until then, vendor tuning is import-time only.
+#   # Force a specific severity for any record from this manufacturer at
+#   # IMPORT time. Use the literal string "drop" to skip records from a
+#   # vendor entirely — that "drop" is import-skip semantics (the row
+#   # never lands in the DB). For RUNTIME-only vendor suppression on
+#   # already-imported rows, use suppress_vendors below instead.
 #   "ACME Surveillance Inc": high
 #   "Hobbyist Drone Co":     drop
 
@@ -227,6 +228,21 @@ SEVERITY_OVERRIDES_TEMPLATE = """\
 #   # Useful when an operator wants to keep enrichment metadata for
 #   # a category without producing alerts on it.
 #   # - some_category
+
+# suppress_vendors:           # LAYER: RUNTIME — daemon restart applies live
+#   # Manufacturers listed here produce NO alerts at runtime, even if
+#   # delegation rules in rules.yaml are active for the matched
+#   # pattern_type. Comparison is case-insensitive exact match
+#   # (lowercase + whitespace-trim normalization applied to both sides),
+#   # so casing and accidental leading/trailing spaces do not matter —
+#   # but partial substrings do NOT match (use vendor_overrides above
+#   # for import-time skip-by-substring).
+#   # Use the canonical vendor string from the watchlist row (the same
+#   # string the Argus CSV exports in the `manufacturer` column).
+#   # Runtime cousin of vendor_overrides' "drop" sentinel; the watchlist
+#   # row stays in the DB, only alert emission is silenced. Vendor
+#   # suppression takes precedence over the category-driven keys above.
+#   # - "Mitsubishi Electric US, Inc."
 
 # geographic_filter:          # LAYER: IMPORT-TIME — re-import to apply
 #   # Only import records whose geographic_scope matches one of these values
