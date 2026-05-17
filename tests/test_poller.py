@@ -1290,3 +1290,103 @@ def test_log_watchlist_staleness_fires_at_poller_init(tmp_path, caplog):
         assert len(msgs) == 1
     finally:
         poller.db.close()
+
+
+# -----------------------------------------------------------------------------
+# Ruleset-load startup log. Counterpart to the watchlist staleness signal
+# and the runtime severity overrides log: every startup-time load the
+# operator can configure ships with a grep-able INFO line so a smoke
+# runbook can deterministically verify the layer is wired.
+# -----------------------------------------------------------------------------
+
+
+def test_poller_init_logs_loaded_ruleset_all_enabled(tmp_path, caplog):
+    """rules_path set, every rule enabled → INFO log emits the bare
+    'N active rules' form (no '(M disabled)' parenthetical). Exact
+    literal is a live-smoke runbook grep target."""
+    rules_path = tmp_path / "rules.yaml"
+    rules_path.write_text(
+        "rules:\n"
+        "  - name: r1\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: med\n"
+        "  - name: r2\n"
+        "    rule_type: watchlist_oui\n"
+        "    severity: low\n",
+        encoding="utf-8",
+    )
+    cfg = Config(
+        kismet_fixture_path=str(FIXTURE_PATH),
+        db_path=str(tmp_path / "lynceus.db"),
+        rules_path=str(rules_path),
+    )
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poller = Poller(cfg)
+    try:
+        msgs = [
+            r.getMessage() for r in caplog.records
+            if r.name == "lynceus.poller" and "loaded ruleset" in r.getMessage()
+        ]
+        assert len(msgs) == 1
+        assert msgs[0] == f"loaded ruleset from {rules_path}: 2 active rules"
+    finally:
+        poller.db.close()
+
+
+def test_poller_init_logs_loaded_ruleset_with_disabled(tmp_path, caplog):
+    """rules_path set with mixed enabled/disabled → log emits
+    '(M disabled)' parenthetical so the operator sees the gap."""
+    rules_path = tmp_path / "rules.yaml"
+    rules_path.write_text(
+        "rules:\n"
+        "  - name: r1\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: med\n"
+        "  - name: r2\n"
+        "    rule_type: watchlist_oui\n"
+        "    severity: low\n"
+        "    enabled: false\n",
+        encoding="utf-8",
+    )
+    cfg = Config(
+        kismet_fixture_path=str(FIXTURE_PATH),
+        db_path=str(tmp_path / "lynceus.db"),
+        rules_path=str(rules_path),
+    )
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poller = Poller(cfg)
+    try:
+        msgs = [
+            r.getMessage() for r in caplog.records
+            if r.name == "lynceus.poller" and "loaded ruleset" in r.getMessage()
+        ]
+        assert len(msgs) == 1
+        assert msgs[0] == (
+            f"loaded ruleset from {rules_path}: 1 active rules (1 disabled)"
+        )
+    finally:
+        poller.db.close()
+
+
+def test_poller_init_logs_no_rules_path_configured(tmp_path, caplog):
+    """rules_path unset → INFO log makes the empty-ruleset state
+    explicit so the operator doesn't silently run with no alerting."""
+    cfg = Config(
+        kismet_fixture_path=str(FIXTURE_PATH),
+        db_path=str(tmp_path / "lynceus.db"),
+    )
+    assert cfg.rules_path is None
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poller = Poller(cfg)
+    try:
+        msgs = [
+            r.getMessage() for r in caplog.records
+            if r.name == "lynceus.poller" and "rules_path" in r.getMessage()
+        ]
+        assert len(msgs) == 1
+        assert msgs[0] == (
+            "no rules_path configured; ruleset is empty — no alerts will fire"
+        )
+        assert poller.ruleset.rules == []
+    finally:
+        poller.db.close()
