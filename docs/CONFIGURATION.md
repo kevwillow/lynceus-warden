@@ -200,13 +200,17 @@ Read-only views:
 | Path | What it shows |
 | --- | --- |
 | `/` | Index: severity counts (24h / 7d / 30d), 30-day sparkline, recent unacknowledged alerts, recent devices, Kismet reachability. |
-| `/alerts` | Paginated alerts list with filters for severity, ack state, date range, and free-text search. |
+| `/alerts` | Paginated alerts list with filters for severity, ack state, absolute date range (`since`/`until`), relative time `window` (1h/24h/7d/30d), `rule_type`, free-text `search` (rule name + message), and free-text `q` (MAC + message + manufacturer). |
 | `/alerts/{id}` | Alert detail with action history (ack/unack audit trail). |
 | `/devices` | Paginated devices list with filters for device type and randomization state. |
 | `/devices/{mac}` | Device detail with sighting history. |
 | `/rules` | Current ruleset (rendered from `rules_path`, read-only). |
-| `/allowlist` | Current allowlist (rendered from `allowlist_path`, read-only). |
-| `/healthz` | Schema version, table counts, last poll timestamp. |
+| `/watchlist` | Bundled + imported watchlist entries (vendor / category / confidence from Argus metadata). |
+| `/watchlist/{id}` | Watchlist entry detail. |
+| `/allowlist` | Allowlist management surface: paginated list, search + filter by `pattern_type`, add-one form, bulk-remove form. Mutation endpoints listed below. |
+| `/settings` | Read-only capture state, Kismet/ntfy connectivity, watchlist origin breakdown, system info. Sensitive values redacted server-side. |
+| `/healthz` | Schema version, table counts, last poll timestamp (HTML). |
+| `/healthz.json` | Same as `/healthz` in machine-readable JSON. |
 
 Mutation endpoints (POST, redirect on success):
 
@@ -214,8 +218,13 @@ Mutation endpoints (POST, redirect on success):
 | --- | --- |
 | `/alerts/{id}/ack` | Acknowledge a single alert; records actor and optional note. |
 | `/alerts/{id}/unack` | Reverse a prior acknowledgement; records actor and optional note. |
+| `/alerts/{id}/snooze` | Snooze a single alert (suppresses future hits for the same `(rule, target)` pair until expiry). |
+| `/alerts/{id}/allowlist` | Promote the alert's MAC to a new allowlist entry (operator confirms `pattern_type` and adds an optional note). |
+| `/alerts/{id}/allowlist/remove` | Reverse a prior allowlist promotion. |
 | `/alerts/bulk-ack` | Acknowledge a list of alert IDs (form field `alert_ids`, capped at 1000). |
 | `/alerts/ack-all-visible` | Acknowledge everything matching the current `/alerts` filter (capped at 1000; the cap is enforced via a count read before any write). |
+| `/allowlist/add` | Add a single allowlist entry (`pattern`, `pattern_type`, optional `note`). Validated against the seven supported `pattern_type` values. |
+| `/allowlist/bulk_remove` | Remove a list of allowlist entries by composite key (`pattern_type` + `pattern`). |
 
 All POST routes require the CSRF token: a cookie set on the first GET, plus the matching token in a hidden form field. The token has an 8-hour TTL and rotates with the cookie. The included templates wire this up automatically; if you build your own forms, see [src/lynceus/webui/csrf.py](../src/lynceus/webui/csrf.py) for the protocol.
 
