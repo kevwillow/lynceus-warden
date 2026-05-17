@@ -1007,6 +1007,455 @@ def test_evaluate_ble_uuid_delegation_without_db_logs_error(caplog):
     assert len(errors) == 1
 
 
+# ---- watchlist_ble_manufacturer_id delegation ------------------------------
+
+
+def _ble_manuf_obs(
+    mac: str = "aa:bb:cc:dd:ee:ff",
+    ble_manufacturer_id: str | None = None,
+) -> DeviceObservation:
+    return DeviceObservation(
+        mac=mac,
+        device_type="ble",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-60,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+        ble_manufacturer_id=ble_manufacturer_id,
+    )
+
+
+def test_watchlist_ble_manufacturer_id_empty_patterns_accepted_delegation_mode():
+    rule = Rule(
+        name="del_blm",
+        rule_type="watchlist_ble_manufacturer_id",
+        severity="low",
+        patterns=[],
+    )
+    assert rule.patterns == []
+
+
+def test_watchlist_ble_manufacturer_id_non_empty_patterns_accepted_in_memory_mode():
+    """Non-empty patterns is the legacy / inline-rule shape; normalized
+    at load time so the in-memory equality check matches the canonical
+    observation field."""
+    rule = Rule(
+        name="apple",
+        rule_type="watchlist_ble_manufacturer_id",
+        severity="high",
+        patterns=["0x004C"],
+    )
+    assert rule.patterns == ["004c"]
+
+
+def test_watchlist_ble_manufacturer_id_rejects_malformed_pattern():
+    with pytest.raises(ValidationError):
+        Rule(
+            name="bad",
+            rule_type="watchlist_ble_manufacturer_id",
+            severity="low",
+            patterns=["ZZZZZ"],
+        )
+
+
+@pytest.fixture
+def db_with_ble_manuf_row(tmp_path):
+    db_path = str(tmp_path / "rules_blemanuf.db")
+    db = Database(db_path)
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('004c', 'ble_manufacturer_id', 'high', 'apple manuf')"
+        )
+    yield db
+    db.close()
+
+
+def test_evaluate_watchlist_ble_manufacturer_id_delegation_hit_sources_severity_from_db(
+    db_with_ble_manuf_row,
+):
+    """Empty patterns + obs.ble_manufacturer_id matching a DB row →
+    hit with severity FROM THE DB ROW (the seeded row is 'high'; rule
+    severity is 'low')."""
+    rule = Rule(
+        name="del_blm",
+        rule_type="watchlist_ble_manufacturer_id",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_manuf_obs(ble_manufacturer_id="004c"),
+        is_new_device=False,
+        db=db_with_ble_manuf_row,
+    )
+    assert len(hits) == 1
+    assert hits[0].rule_name == "del_blm"
+    assert hits[0].severity == "high"  # from DB, not "low"
+
+
+def test_evaluate_watchlist_ble_manufacturer_id_delegation_miss(
+    db_with_ble_manuf_row,
+):
+    rule = Rule(
+        name="del_blm",
+        rule_type="watchlist_ble_manufacturer_id",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_manuf_obs(ble_manufacturer_id="ffff"),
+        is_new_device=False,
+        db=db_with_ble_manuf_row,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_ble_manufacturer_id_no_field_no_hit(
+    db_with_ble_manuf_row,
+):
+    """Observations without an extracted BLE manufacturer id (i.e. nearly
+    every observation until the Kismet field paths are confirmed)
+    short-circuit at the obs.ble_manufacturer_id is None guard."""
+    rule = Rule(
+        name="del_blm",
+        rule_type="watchlist_ble_manufacturer_id",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_manuf_obs(ble_manufacturer_id=None),
+        is_new_device=False,
+        db=db_with_ble_manuf_row,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_ble_manufacturer_id_in_memory_path_severity_from_rule():
+    """Non-empty patterns → in-memory match, severity from rule.
+    Backward compat with rules.yaml entries that list inline patterns
+    rather than delegating."""
+    rule = Rule(
+        name="apple_inline",
+        rule_type="watchlist_ble_manufacturer_id",
+        severity="med",
+        patterns=["0x004C"],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(rs, _ble_manuf_obs(ble_manufacturer_id="004c"), is_new_device=False)
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_watchlist_ble_manufacturer_id_delegation_without_db_logs_error(caplog):
+    rule = Rule(
+        name="del_blm",
+        rule_type="watchlist_ble_manufacturer_id",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.ERROR, logger="lynceus.rules"):
+        hits = evaluate(
+            rs,
+            _ble_manuf_obs(ble_manufacturer_id="004c"),
+            is_new_device=False,
+        )
+    assert hits == []
+    errors = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR
+        and "watchlist_ble_manufacturer_id" in r.getMessage()
+    ]
+    assert len(errors) == 1
+
+
+# ---- watchlist_drone_id_prefix delegation ----------------------------------
+
+
+def _drone_obs(
+    mac: str = "aa:bb:cc:dd:ee:ff",
+    drone_id_prefix: str | None = None,
+) -> DeviceObservation:
+    return DeviceObservation(
+        mac=mac,
+        device_type="ble",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-60,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+        drone_id_prefix=drone_id_prefix,
+    )
+
+
+def test_watchlist_drone_id_prefix_empty_patterns_accepted_delegation_mode():
+    rule = Rule(
+        name="del_drone",
+        rule_type="watchlist_drone_id_prefix",
+        severity="low",
+        patterns=[],
+    )
+    assert rule.patterns == []
+
+
+def test_watchlist_drone_id_prefix_non_empty_patterns_accepted_in_memory_mode():
+    """Non-empty patterns is the inline-rule shape; load-time
+    normalization uppercases so a lowercase rules.yaml entry still
+    matches the uppercase observation field."""
+    rule = Rule(
+        name="vision_aerial",
+        rule_type="watchlist_drone_id_prefix",
+        severity="high",
+        patterns=["178852"],
+    )
+    assert rule.patterns == ["178852"]
+
+
+def test_watchlist_drone_id_prefix_rejects_malformed_pattern():
+    with pytest.raises(ValidationError):
+        Rule(
+            name="bad",
+            rule_type="watchlist_drone_id_prefix",
+            severity="low",
+            patterns=["AB"],  # too short
+        )
+
+
+@pytest.fixture
+def db_with_drone_row(tmp_path):
+    db_path = str(tmp_path / "rules_drone.db")
+    db = Database(db_path)
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('21239ESA2', 'drone_id_prefix', 'high', 'drone prefix')"
+        )
+    yield db
+    db.close()
+
+
+def test_evaluate_watchlist_drone_id_prefix_delegation_hit_sources_severity_from_db(
+    db_with_drone_row,
+):
+    rule = Rule(
+        name="del_drone",
+        rule_type="watchlist_drone_id_prefix",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _drone_obs(drone_id_prefix="21239ESA2"),
+        is_new_device=False,
+        db=db_with_drone_row,
+    )
+    assert len(hits) == 1
+    assert hits[0].rule_name == "del_drone"
+    assert hits[0].severity == "high"  # from DB
+
+
+def test_evaluate_watchlist_drone_id_prefix_delegation_miss(db_with_drone_row):
+    rule = Rule(
+        name="del_drone",
+        rule_type="watchlist_drone_id_prefix",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _drone_obs(drone_id_prefix="OTHER123"),
+        is_new_device=False,
+        db=db_with_drone_row,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_drone_id_prefix_no_field_no_hit(db_with_drone_row):
+    """Same shape as the BLE manufacturer no-field case — the obs field
+    is None for non-Remote-ID observations and stays None until both
+    field-path verification AND _TYPE_MAP extension land in kismet.py."""
+    rule = Rule(
+        name="del_drone",
+        rule_type="watchlist_drone_id_prefix",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _drone_obs(drone_id_prefix=None),
+        is_new_device=False,
+        db=db_with_drone_row,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_drone_id_prefix_in_memory_path_severity_from_rule():
+    rule = Rule(
+        name="vision_inline",
+        rule_type="watchlist_drone_id_prefix",
+        severity="med",
+        patterns=["178852"],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(rs, _drone_obs(drone_id_prefix="178852"), is_new_device=False)
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_watchlist_drone_id_prefix_delegation_without_db_logs_error(caplog):
+    rule = Rule(
+        name="del_drone",
+        rule_type="watchlist_drone_id_prefix",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.ERROR, logger="lynceus.rules"):
+        hits = evaluate(
+            rs,
+            _drone_obs(drone_id_prefix="21239ESA2"),
+            is_new_device=False,
+        )
+    assert hits == []
+    errors = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR
+        and "watchlist_drone_id_prefix" in r.getMessage()
+    ]
+    assert len(errors) == 1
+
+
+# ---- runtime override smoke for the two new delegation branches ------------
+
+
+@pytest.fixture
+def db_with_new_categorized_rows(tmp_path):
+    """One ble_manufacturer_id row (category=hacking_tool) + one
+    drone_id_prefix row (category=drone), each with watchlist_metadata
+    attached so the runtime overrides layer has something to key on."""
+    db_path = str(tmp_path / "rules_new_overrides.db")
+    db = Database(db_path)
+    with db._conn:
+        cur = db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('004c', 'ble_manufacturer_id', 'low', NULL)"
+        )
+        blm_id = int(cur.lastrowid)
+        cur = db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('21239ESA2', 'drone_id_prefix', 'low', NULL)"
+        )
+        drone_id = int(cur.lastrowid)
+    _attach_category(db, blm_id, "hacking_tool")
+    _attach_category(db, drone_id, "drone")
+    yield db
+    db.close()
+
+
+def test_evaluate_runtime_remap_watchlist_ble_manufacturer_id(
+    db_with_new_categorized_rows,
+):
+    overrides = RuntimeSeverityOverride(
+        device_category_severity={"hacking_tool": "high"}
+    )
+    rule = Rule(
+        name="del_blm",
+        rule_type="watchlist_ble_manufacturer_id",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_manuf_obs(ble_manufacturer_id="004c"),
+        is_new_device=False,
+        db=db_with_new_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "high"  # remapped from "low"
+
+
+def test_evaluate_runtime_remap_watchlist_drone_id_prefix(
+    db_with_new_categorized_rows,
+):
+    overrides = RuntimeSeverityOverride(device_category_severity={"drone": "med"})
+    rule = Rule(
+        name="del_drone",
+        rule_type="watchlist_drone_id_prefix",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _drone_obs(drone_id_prefix="21239ESA2"),
+        is_new_device=False,
+        db=db_with_new_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_runtime_suppress_category_watchlist_ble_manufacturer_id(
+    db_with_new_categorized_rows,
+):
+    """Category suppression cuts the alert entirely — no RuleHit. Closes
+    the parity check that suppress_categories applies to the new branch."""
+    overrides = RuntimeSeverityOverride(suppress_categories=frozenset({"hacking_tool"}))
+    rule = Rule(
+        name="del_blm",
+        rule_type="watchlist_ble_manufacturer_id",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_manuf_obs(ble_manufacturer_id="004c"),
+        is_new_device=False,
+        db=db_with_new_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
+def test_evaluate_runtime_suppress_category_watchlist_drone_id_prefix(
+    db_with_new_categorized_rows,
+):
+    overrides = RuntimeSeverityOverride(suppress_categories=frozenset({"drone"}))
+    rule = Rule(
+        name="del_drone",
+        rule_type="watchlist_drone_id_prefix",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _drone_obs(drone_id_prefix="21239ESA2"),
+        is_new_device=False,
+        db=db_with_new_categorized_rows,
+        severity_overrides=overrides,
+    )
+    assert hits == []
+
+
 # ---- runtime severity overrides --------------------------------------------
 #
 # Per-branch coverage that the runtime override layer applies at the

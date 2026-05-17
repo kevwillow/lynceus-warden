@@ -344,6 +344,117 @@ def test_unknown_identifier_type_dropped_increments_counter(tmp_path, db):
     assert _wl_count(db) == 0
 
 
+def test_ble_manufacturer_id_identifier_type_imports_canonicalized(tmp_path, db):
+    """Argus emits '0xNNNN'; the importer canonicalizes to bare lowercase
+    hex via patterns.normalize_pattern so the runtime equality lookup
+    against the kismet observation field works without per-call
+    normalization."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="blm1",
+                identifier_type="ble_manufacturer_id",
+                identifier="0x004C",
+            )
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    assert report.dropped_unknown_type == 0
+    row = db._conn.execute(
+        "SELECT pattern, pattern_type FROM watchlist"
+    ).fetchone()
+    assert row["pattern_type"] == "ble_manufacturer_id"
+    assert row["pattern"] == "004c"
+
+
+def test_drone_id_prefix_identifier_type_imports_uppercase_canonical(tmp_path, db):
+    """Argus emits uppercase ASCII alphanumeric; canonical persistent
+    form is also uppercase (ANSI/CTA-2063-A serials are case-sensitive
+    by spec)."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="dr1",
+                identifier_type="drone_id_prefix",
+                identifier="21239ESA2",
+            )
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    assert report.dropped_unknown_type == 0
+    row = db._conn.execute(
+        "SELECT pattern, pattern_type FROM watchlist"
+    ).fetchone()
+    assert row["pattern_type"] == "drone_id_prefix"
+    assert row["pattern"] == "21239ESA2"
+
+
+def test_ble_manufacturer_id_no_longer_falls_to_unknown_type(tmp_path, db):
+    """Regression: pre-rc5 these rows hit dropped_unknown_type. Confirm
+    a mixed CSV with both new types lands them as imported, not dropped."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="blm-mix",
+                identifier_type="ble_manufacturer_id",
+                identifier="0x09C8",
+            ),
+            _row(
+                argus_record_id="dr-mix",
+                identifier_type="drone_id_prefix",
+                identifier="2137FDE1",
+            ),
+            _row(
+                argus_record_id="still-unknown",
+                identifier_type="rf_channel",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 2
+    assert report.dropped_unknown_type == 1  # rf_channel still dropped
+
+
+def test_ble_manufacturer_id_malformed_lands_in_normalization_failed(tmp_path, db):
+    """Defensive: a malformed ble_manufacturer_id value (>4 hex chars)
+    routes through normalization_failed, not unknown_type — matches
+    the mac_range malformed-row counter convention."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="blm-bad",
+                identifier_type="ble_manufacturer_id",
+                identifier="0x12345",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.normalization_failed == 1
+    assert report.imported_new == 0
+
+
+def test_drone_id_prefix_too_short_lands_in_normalization_failed(tmp_path, db):
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="dr-bad",
+                identifier_type="drone_id_prefix",
+                identifier="AB",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.normalization_failed == 1
+    assert report.imported_new == 0
+
+
 # ---------------------------------------------------------------------------
 # Drop-bucket per-row logging (audit-3).
 # Counter-only drops left operators with no forensic trail; each drop

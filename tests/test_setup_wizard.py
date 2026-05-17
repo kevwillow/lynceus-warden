@@ -3486,7 +3486,12 @@ def test_enable_alerting_one_type_writes_rules_yaml_and_wires_rules_path(
 
 def test_enable_alerting_all_types_writes_five_active_rules(monkeypatch, tmp_path):
     """Touch 6 case: gate Y + Y to all types → rules.yaml written with
-    all five delegation entries active."""
+    all five delegation entries active.
+
+    Stubs only the rc4 5-key count map. The rc5 additions
+    (ble_manufacturer_id, drone_id_prefix) are absent from the map, so
+    they get count==0 from .get(...) and their prompts are skipped — the
+    rc4 user journey is unchanged."""
     target = _stub_path_resolution(monkeypatch, tmp_path)
     config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
     _stub_bundled_import(monkeypatch)
@@ -3525,6 +3530,107 @@ def test_enable_alerting_all_types_writes_five_active_rules(monkeypatch, tmp_pat
     }
     data = yaml.safe_load(target.read_text(encoding="utf-8"))
     assert data["rules_path"] == str(rules_file)
+
+
+def test_enable_alerting_all_seven_types_writes_seven_active_rules(
+    monkeypatch, tmp_path
+):
+    """rc5 case: all 7 delegation pattern_types present in the DB,
+    operator answers Y at every prompt → rules.yaml carries all 7
+    delegation entries active. Names verified against DELEGATION_RULES."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 5,
+            "oui": 2,
+            "ssid": 1,
+            "ble_uuid": 3,
+            "ble_manufacturer_id": 3969,
+            "drone_id_prefix": 427,
+        },
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(
+                gate="y",
+                type_answers=["y", "y", "y", "y", "y", "y", "y"],
+            )
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    rule_types = {rule["rule_type"] for rule in rules_data["rules"]}
+    assert rule_types == {rt for (_n, rt, _pt, _l, _d) in wiz.DELEGATION_RULES}
+    assert len(rules_data["rules"]) == 7
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data["rules_path"] == str(rules_file)
+
+
+def test_enable_alerting_only_new_rc5_types_writes_two_active_rules(
+    monkeypatch, tmp_path
+):
+    """rc5 user journey: operator with an Argus-loaded DB picks only the
+    two new types (N to mac_range / mac / oui / ssid / ble_uuid, Y to
+    ble_manufacturer_id and drone_id_prefix). The active rules.yaml
+    contains exactly those two by name."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 5,
+            "oui": 2,
+            "ssid": 1,
+            "ble_uuid": 3,
+            "ble_manufacturer_id": 3969,
+            "drone_id_prefix": 427,
+        },
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(
+                gate="y",
+                type_answers=["n", "n", "n", "n", "n", "y", "y"],
+            )
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    rule_names = {rule["name"] for rule in rules_data["rules"]}
+    assert rule_names == {"argus_ble_manufacturer_id", "argus_drone_id_prefix"}
+
+
+def test_delegation_rules_contains_two_new_rc5_entries():
+    """Source-of-truth check: DELEGATION_RULES carries both rc5 entries
+    with the right (rule_type, pattern_type) pairs. Any drift between
+    this tuple, the rules.py RuleType Literal, the db.py
+    _WATCHLIST_PATTERN_TYPES, or the migration 013 CHECK constraint
+    surfaces here."""
+    by_name = {n: (rt, pt) for (n, rt, pt, _l, _d) in wiz.DELEGATION_RULES}
+    assert by_name["argus_ble_manufacturer_id"] == (
+        "watchlist_ble_manufacturer_id",
+        "ble_manufacturer_id",
+    )
+    assert by_name["argus_drone_id_prefix"] == (
+        "watchlist_drone_id_prefix",
+        "drone_id_prefix",
+    )
 
 
 def test_enable_alerting_zero_count_type_skips_prompt(monkeypatch, tmp_path):
