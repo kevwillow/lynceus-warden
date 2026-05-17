@@ -1911,6 +1911,7 @@ def test_run_wizard_uses_kismet_source_name_when_probe_succeeds(monkeypatch, tmp
         "probe_kismet_sources",
         lambda *a, **kw: [_wifi_source(name="external_wifi")],
     )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
     inputs = [
         "",  # kismet URL default
         "1",  # pick the only Kismet wifi source
@@ -1956,6 +1957,7 @@ def test_run_wizard_presents_kismet_source_names_not_iw_interfaces(monkeypatch, 
         "probe_kismet_sources",
         lambda *a, **kw: [_wifi_source(name="external_wifi")],
     )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
     # iw enumeration is set up too — if the wizard fell back to it
     # (the bug), the test would observe wlan0/wlan1 in the output.
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
@@ -2034,6 +2036,7 @@ def test_run_wizard_falls_back_to_iw_with_warning_when_list_sources_fails(
     _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
     monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
     inputs = [
         "",  # kismet URL default
@@ -2170,6 +2173,7 @@ def test_run_wizard_with_bt_source_offers_kismet_bt_prompt(monkeypatch, tmp_path
             _bt_source(name="local_bt"),
         ],
     )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
     inputs = [
         "",  # kismet URL default
         "1",  # pick the wifi source
@@ -2207,6 +2211,7 @@ def test_run_wizard_no_bt_source_in_kismet_skips_with_note(monkeypatch, tmp_path
     monkeypatch.setattr(
         wiz, "probe_kismet_sources", lambda *a, **kw: [_wifi_source(name="external_wifi")]
     )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
     inputs = [
         "",  # kismet URL default
         "1",  # pick the wifi source
@@ -2247,6 +2252,7 @@ def test_run_wizard_multiple_bt_sources_picks_by_number(monkeypatch, tmp_path):
             _bt_source(name="usb_bt", interface="hci1", capture_interface="hci1"),
         ],
     )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
     inputs = [
         "",  # kismet URL default
         "1",  # pick the wifi source
@@ -2281,6 +2287,7 @@ def test_run_wizard_kismet_bt_decline_keeps_wifi_only(monkeypatch, tmp_path):
         "probe_kismet_sources",
         lambda *a, **kw: [_wifi_source(name="external_wifi"), _bt_source(name="local_bt")],
     )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
     inputs = [
         "",  # kismet URL default
         "1",  # pick the wifi source
