@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -537,6 +537,147 @@ def _resolve_allowlist_match(
     return None, False, True
 
 
+# --- /healthz.json per-check helpers ---------------------------------------
+#
+# Each helper returns a small dict with a stable shape. The shape is the
+# project's public contract with monitoring tools (Prometheus blackbox,
+# Nagios, uptime bots) — existing keys MUST NEVER disappear in future
+# releases; future releases add keys only. Tests in
+# tests/test_healthz_json.py pin the key set.
+#
+# All helpers are read-only and derive from existing data sources only.
+# No new tables, no daemon-side heartbeat infrastructure: ``last_poll_at``
+# already exists in the ``poller_state`` table (written every poll tick),
+# ``last_observation_at`` derives from ``MAX(sightings.ts)`` (index-backed
+# via ``idx_sightings_ts``), and the watchlist + alerts checks reuse the
+# helpers that back the /settings and / pages today.
+
+
+def _check_db(db: Database) -> dict:
+    """Return ``{"status": "ok", "detail": None}`` on a healthy connection,
+    or ``{"status": "error", "detail": "<exception>"}`` when the connection
+    is dead. The minimal ``SELECT 1`` round-trip is the fastest way to
+    confirm the SQLite file is open + the connection alive without paying
+    for any COUNT scans."""
+    try:
+        db._conn.execute("SELECT 1").fetchone()
+    except Exception as exc:  # noqa: BLE001 — surface the actual driver error
+        return {"status": "error", "detail": str(exc)}
+    return {"status": "ok", "detail": None}
+
+
+def _check_poller(db: Database, *, now_ts: int) -> dict:
+    """Two daemon-liveness signals, both index-backed single-row lookups:
+
+    - ``last_poll_at`` — from ``poller_state.last_poll_ts`` (written by the
+      daemon every poll tick, regardless of whether Kismet returned any
+      devices). Proxies "daemon process alive".
+    - ``last_observation_at`` — ``MAX(sightings.ts)``. Proxies "Kismet is
+      returning device data".
+
+    Monitoring tools apply their own thresholds (the prompt's stability
+    commitment is to the keys, not to interpretation)."""
+    last_poll_at = db.latest_poll_ts()
+    row = db._conn.execute("SELECT MAX(ts) FROM sightings").fetchone()
+    last_observation_at = row[0] if row and row[0] is not None else None
+
+    def _delta(value: int | None) -> int | None:
+        return (now_ts - int(value)) if value is not None else None
+
+    return {
+        "status": "ok",
+        "last_poll_at": unix_to_iso(last_poll_at) or None,
+        "seconds_since_poll": _delta(last_poll_at),
+        "last_observation_at": (
+            unix_to_iso(last_observation_at) or None
+            if last_observation_at is not None
+            else None
+        ),
+        "seconds_since_observation": _delta(last_observation_at),
+    }
+
+
+def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
+    """Reuses ``db.watchlist_pattern_type_counts()`` (already powers
+    /settings) for the per-type counts. ``total_rows`` is the sum so a
+    consumer reading only the top-level number does not need to add
+    them. The staleness boolean compares ``days_since_import`` against
+    ``config.watchlist_staleness_warn_days`` — the same threshold the
+    startup log line and the /settings card use."""
+    by_pattern_type = db.watchlist_pattern_type_counts()
+    total_rows = sum(by_pattern_type.values())
+    latest = db.get_latest_import_run()
+    if latest is not None and latest.get("imported_at") is not None:
+        imported_at = int(latest["imported_at"])
+        last_imported_at_iso: str | None = unix_to_iso(imported_at) or None
+        days_since_import: int | None = max(0, (now_ts - imported_at) // 86400)
+    else:
+        last_imported_at_iso = None
+        days_since_import = None
+    stale = bool(
+        days_since_import is not None
+        and days_since_import > config.watchlist_staleness_warn_days
+    )
+    return {
+        "status": "ok",
+        "total_rows": int(total_rows),
+        "by_pattern_type": {k: int(v) for k, v in by_pattern_type.items()},
+        "last_imported_at": last_imported_at_iso,
+        "days_since_import": days_since_import,
+        "stale": stale,
+    }
+
+
+def _check_ruleset(config: Config) -> dict:
+    """Loads ``rules.yaml`` on each call (cheap — the file is small and
+    operators rarely poll /healthz.json at sub-second cadence). When the
+    loader raises (missing file, parse error, validation error), the
+    check stays ``status: ok`` per the prompt's contract — only the DB
+    check controls top-level status. ``active_rules`` falls to 0 so the
+    monitoring tool can see the file is broken via a separate signal
+    (a non-zero ``rules_path_configured`` paired with zero
+    ``active_rules`` is the canonical "wired but broken" pattern)."""
+    if not config.rules_path:
+        return {
+            "status": "ok",
+            "active_rules": 0,
+            "rules_path_configured": False,
+        }
+    try:
+        ruleset = rules_mod.load_ruleset(config.rules_path)
+        active = sum(1 for r in ruleset.rules if r.enabled)
+    except Exception as exc:  # noqa: BLE001 — broken-but-configured is observable
+        logger.warning(
+            "/healthz.json: rules_path=%r failed to load (%s); "
+            "reporting active_rules=0",
+            config.rules_path,
+            exc,
+        )
+        active = 0
+    return {
+        "status": "ok",
+        "active_rules": int(active),
+        "rules_path_configured": True,
+    }
+
+
+def _check_alerts(db: Database, *, now_ts: int) -> dict:
+    """``total`` is a full scan of ``alerts`` (small table; the row count
+    is bounded by operator-driven alert traffic, not by sightings).
+    ``last_hour`` uses ``idx_alerts_ts`` for an index-backed range
+    count."""
+    total_row = db._conn.execute("SELECT COUNT(*) FROM alerts").fetchone()
+    last_hour_row = db._conn.execute(
+        "SELECT COUNT(*) FROM alerts WHERE ts >= ?",
+        (now_ts - 3600,),
+    ).fetchone()
+    return {
+        "status": "ok",
+        "total": int(total_row[0]),
+        "last_hour": int(last_hour_row[0]),
+    }
+
+
 def create_app(config: Config, db: Database) -> FastAPI:
     """App factory. Takes a live Config and Database. Used by both the production
     server entry point and the test client. Does NOT open the DB itself — that's the
@@ -574,6 +715,53 @@ def create_app(config: Config, db: Database) -> FastAPI:
             request=request,
             name="healthz.html",
             context={"health": health, "version": __version__},
+        )
+
+    @app.get("/healthz.json")
+    async def healthz_json() -> JSONResponse:
+        """Machine-readable health endpoint for monitoring integration.
+
+        Returns HTTP 200 + ``status: "ok"`` when the DB is reachable;
+        HTTP 503 + ``status: "error"`` when it is not. Per-check sub-
+        sections under ``checks`` are stable: existing keys never
+        disappear in future releases (additions only). See
+        ``_check_db`` / ``_check_poller`` / ``_check_watchlist`` /
+        ``_check_ruleset`` / ``_check_alerts`` for the per-check shape
+        contracts.
+
+        Read-only and unauthenticated by design — /healthz.json is the
+        standard monitoring-facing surface. Sibling to the existing
+        HTML /healthz page; both are kept so the nav link, smoke
+        runbook, and quickstart UI-readiness probe stay unchanged.
+        """
+        db_check = _check_db(db)
+        if db_check["status"] == "error":
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "version": __version__,
+                    "checks": {"db": db_check},
+                },
+            )
+        now_ts = int(time.time())
+        checks = {
+            "db": db_check,
+            "poller": _check_poller(db, now_ts=now_ts),
+            "watchlist": _check_watchlist(db, config, now_ts=now_ts),
+            "ruleset": _check_ruleset(config),
+            "alerts": _check_alerts(db, now_ts=now_ts),
+        }
+        overall = (
+            "ok" if all(c["status"] == "ok" for c in checks.values()) else "error"
+        )
+        return JSONResponse(
+            status_code=200 if overall == "ok" else 503,
+            content={
+                "status": overall,
+                "version": __version__,
+                "checks": checks,
+            },
         )
 
     @app.get("/", response_class=HTMLResponse)
