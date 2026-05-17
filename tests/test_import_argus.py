@@ -18,6 +18,7 @@ from lynceus.cli.import_argus import (
     load_override_config,
     main,
     parse_argus_csv,
+    parse_argus_meta,
     resolve_severity,
 )
 from lynceus.db import Database
@@ -1684,9 +1685,15 @@ def test_fetch_argus_export_writes_cache_file_with_resolved_ref(tmp_path, monkey
 
     monkeypatch.setattr(import_argus.requests, "get", _fake_get)
     cache = tmp_path / "argus-cache"
-    out = import_argus.fetch_argus_export("kevwillow/argus-db", "v1.2.3", cache)
+    out, resolved = import_argus.fetch_argus_export(
+        "kevwillow/argus-db", "v1.2.3", cache
+    )
     assert out == cache / "v1.2.3__argus_export.csv"
     assert out.read_bytes() == payload
+    # Caller-passed ref propagates back as the resolved value so
+    # main() can use it for the import_runs.source forensic field
+    # without re-calling _resolve_ref.
+    assert resolved == "v1.2.3"
     # raw.githubusercontent.com URL with the resolved ref + the
     # repo-internal export path.
     assert captured["url"] == (
@@ -1708,7 +1715,9 @@ def test_fetch_argus_export_sanitizes_slash_in_ref(tmp_path, monkeypatch):
 
     monkeypatch.setattr(import_argus.requests, "get", lambda *a, **kw: _FakeResp())
     cache = tmp_path / "argus-cache"
-    out = import_argus.fetch_argus_export("kevwillow/argus-db", "release/v1.2", cache)
+    out, _resolved = import_argus.fetch_argus_export(
+        "kevwillow/argus-db", "release/v1.2", cache
+    )
     # Filename has the slash collapsed; no surprise subdirectory created.
     assert out.parent == cache
     assert "release_v1.2" in out.name
@@ -1757,7 +1766,10 @@ def test_main_from_github_invokes_fetch_and_imports(tmp_path, db_path, monkeypat
         captured["repo"] = repo
         captured["ref"] = ref
         captured["cache_dir"] = cache_dir
-        return Path(fixture)
+        # Return tuple matches the post-refactor contract: caller
+        # uses the resolved-ref string for the import_runs.source
+        # forensic field, avoiding a duplicate _resolve_ref call.
+        return Path(fixture), ref or "main"
 
     monkeypatch.setattr(import_argus, "fetch_argus_export", _fake_fetch)
     rc = main(
@@ -2104,3 +2116,266 @@ def test_cross_repo_live_argus_csv_imports_without_errors(tmp_path, db):
         f"row reconciliation mismatch: {total_classified} classified vs "
         f"{report.total_rows} total"
     )
+
+
+# ---------------------------------------------------------------------------
+# parse_argus_meta — # meta: line key=value parser for the staleness signal.
+# ---------------------------------------------------------------------------
+#
+# Canonical Argus shape today (from src/lynceus/data/default_watchlist.csv):
+#   # meta: schema_version=8, exported_at=2026-05-07T20:17:59Z, \
+#           record_count=63, confidence_threshold=0
+# Parser is tolerant of additions / omissions per the Argus contract —
+# upstream may add keys without coordinating a Lynceus release.
+
+
+def _write_csv_with_meta(path: Path, meta_line: str, rows: list[dict[str, str]]) -> str:
+    """Like _write_csv, but with an operator-supplied # meta: line so
+    parse_argus_meta tests can exercise specific shapes."""
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(meta_line if meta_line.endswith("\n") else meta_line + "\n")
+        writer = csv.writer(f)
+        writer.writerow(EXPECTED_HEADER)
+        for row in rows:
+            writer.writerow([row.get(c, "") for c in EXPECTED_HEADER])
+    return str(path)
+
+
+def test_parse_argus_meta_canonical_shape(tmp_path):
+    """The shape Argus ships in production. All four keys extract;
+    exported_at parses through _parse_date to a Unix epoch int."""
+    path = _write_csv_with_meta(
+        tmp_path / "canonical.csv",
+        "# meta: schema_version=8, exported_at=2026-05-07T20:17:59Z, "
+        "record_count=63, confidence_threshold=0",
+        [],
+    )
+    meta = parse_argus_meta(path)
+    assert meta["schema_version"] == "8"
+    # 2026-05-07T20:17:59Z → confirmed via _parse_date; the exact int
+    # is the contract, not just "non-None".
+    import datetime as _dt
+    expected = int(
+        _dt.datetime(2026, 5, 7, 20, 17, 59, tzinfo=_dt.UTC).timestamp()
+    )
+    assert meta["exported_at"] == expected
+    assert meta["record_count"] == 63
+    assert meta["confidence_threshold"] == 0
+
+
+def test_parse_argus_meta_missing_keys_land_as_none(tmp_path):
+    """Tolerant of upstream removing keys (or shipping a free-form
+    meta line — the rc2-era META_LINE shape ``# meta: argus_export v3
+    (CP11)`` parses to all-Nones cleanly)."""
+    path = _write_csv_with_meta(
+        tmp_path / "free_form.csv",
+        "# meta: argus_export v3 (CP11)",
+        [],
+    )
+    meta = parse_argus_meta(path)
+    assert meta == {
+        "exported_at": None,
+        "record_count": None,
+        "schema_version": None,
+        "confidence_threshold": None,
+    }
+
+
+def test_parse_argus_meta_unknown_keys_are_ignored(tmp_path):
+    """Tolerant of upstream ADDING keys — the parser must not crash
+    on `new_field=value` it doesn't recognize. Lynceus releases can
+    lag Argus releases."""
+    path = _write_csv_with_meta(
+        tmp_path / "with_unknown.csv",
+        "# meta: schema_version=9, exported_at=2026-05-07T20:17:59Z, "
+        "new_field_argus_will_add=42, record_count=63",
+        [],
+    )
+    meta = parse_argus_meta(path)
+    assert meta["schema_version"] == "9"
+    assert meta["exported_at"] is not None
+    assert meta["record_count"] == 63
+    # No surprise key on the returned dict.
+    assert set(meta.keys()) == {
+        "exported_at",
+        "record_count",
+        "schema_version",
+        "confidence_threshold",
+    }
+
+
+def test_parse_argus_meta_unparseable_exported_at_falls_through_to_none(tmp_path):
+    """Malformed exported_at (e.g. a corrupted timestamp) → None for
+    just that field, not a crash for the whole parser. The staleness
+    layer treats None as 'no Argus-side freshness signal' and falls
+    back to imported_at."""
+    path = _write_csv_with_meta(
+        tmp_path / "bad_ts.csv",
+        "# meta: exported_at=not-a-timestamp, record_count=63",
+        [],
+    )
+    meta = parse_argus_meta(path)
+    assert meta["exported_at"] is None
+    assert meta["record_count"] == 63
+
+
+def test_parse_argus_meta_malformed_record_count_falls_through_to_none(tmp_path):
+    """Per-field tolerance: a bad record_count doesn't lose the
+    exported_at signal we did manage to parse."""
+    path = _write_csv_with_meta(
+        tmp_path / "bad_count.csv",
+        "# meta: exported_at=2026-05-07T20:17:59Z, record_count=not-an-int",
+        [],
+    )
+    meta = parse_argus_meta(path)
+    assert meta["exported_at"] is not None
+    assert meta["record_count"] is None
+
+
+def test_parse_argus_meta_missing_prefix_returns_all_nones(tmp_path):
+    """parse_argus_meta is defensive — a file whose first line lacks
+    the `# meta:` prefix returns all-Nones (and parse_argus_csv
+    separately raises a clear ValueError for the same condition).
+    Splitting the two responsibilities means parse_argus_meta is safe
+    to call alongside parse_argus_csv without re-validating."""
+    p = tmp_path / "no_meta.csv"
+    p.write_text("header,row\n", encoding="utf-8")
+    meta = parse_argus_meta(str(p))
+    assert meta == {
+        "exported_at": None,
+        "record_count": None,
+        "schema_version": None,
+        "confidence_threshold": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# import_csv writes import_runs rows (the staleness signal's source).
+# ---------------------------------------------------------------------------
+
+
+def test_import_csv_writes_import_runs_row_with_meta_fields(tmp_path, db):
+    """A successful import writes one row to import_runs carrying the
+    parsed exported_at, the operator-supplied source string, and the
+    record_count from the CSV's `# meta:` line. The staleness signal
+    reads from here at startup + /settings."""
+    path = _write_csv_with_meta(
+        tmp_path / "with_meta.csv",
+        "# meta: schema_version=8, exported_at=2026-05-07T20:17:59Z, "
+        "record_count=1, confidence_threshold=0",
+        [_row(argus_record_id="x1", identifier="aa:bb:cc:dd:ee:01")],
+    )
+    overrides = OverrideConfig()
+    report = import_csv(
+        db, path, overrides, source="kevwillow/argus-db@v9.9.9"
+    )
+    assert report.imported_new == 1
+    latest = db.get_latest_import_run()
+    assert latest is not None
+    assert latest["source"] == "kevwillow/argus-db@v9.9.9"
+    assert latest["record_count"] == 1
+    import datetime as _dt
+    expected = int(
+        _dt.datetime(2026, 5, 7, 20, 17, 59, tzinfo=_dt.UTC).timestamp()
+    )
+    assert latest["exported_at"] == expected
+    # imported_at is the local-clock write moment; assert it's recent
+    # (within an hour, generous for slow CI runners) rather than
+    # pinning a specific value.
+    import time
+    assert abs(latest["imported_at"] - int(time.time())) < 3600
+
+
+def test_import_csv_dry_run_does_not_write_import_runs_row(tmp_path, db):
+    """--dry-run wrote nothing to watchlist/watchlist_metadata, so it
+    must not write to import_runs either — otherwise the staleness
+    card would claim a recent refresh that never landed."""
+    path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="dr-1")])
+    overrides = OverrideConfig()
+    import_csv(db, path, overrides, dry_run=True, source="/path/to/wl.csv")
+    assert db.get_latest_import_run() is None
+
+
+def test_import_csv_legacy_free_form_meta_records_null_exported_at(tmp_path, db):
+    """A CSV with the rc2-era free-form meta line still imports
+    cleanly and writes an import_runs row — just with exported_at as
+    None. The startup log line then falls back to imported_at for
+    the age calculation."""
+    # The default _write_csv helper writes "# meta: argus_export v3 (CP11)"
+    # — free-form, no key=value pairs.
+    path = _write_csv(tmp_path / "legacy.csv", [_row(argus_record_id="leg-1")])
+    overrides = OverrideConfig()
+    import_csv(db, path, overrides, source="/legacy.csv")
+    latest = db.get_latest_import_run()
+    assert latest is not None
+    assert latest["exported_at"] is None
+    assert latest["record_count"] is None
+    assert latest["source"] == "/legacy.csv"
+
+
+def test_main_input_records_absolute_source_path(tmp_path, db_path):
+    """--input writes the absolute CSV path to import_runs.source so
+    /settings can render where the import came from."""
+    csv_path = _write_csv(tmp_path / "wl.csv", [_row(argus_record_id="abs-1")])
+    rc = main(
+        [
+            "--db",
+            db_path,
+            "--input",
+            csv_path,
+            "--override-file",
+            str(tmp_path / "missing.yaml"),
+        ]
+    )
+    assert rc == 0
+    db = Database(db_path)
+    try:
+        latest = db.get_latest_import_run()
+        assert latest is not None
+        # source must be an absolute path, regardless of how the
+        # operator-typed --input value was shaped.
+        assert Path(latest["source"]).is_absolute()
+        assert latest["source"].endswith("wl.csv")
+    finally:
+        db.close()
+
+
+def test_main_from_github_records_owner_repo_at_ref_source(
+    tmp_path, db_path, monkeypatch
+):
+    """--from-github writes ``owner/repo@ref`` to import_runs.source
+    — the operator-facing identifier the /settings card renders.
+    Ref is the RESOLVED value (not args.ref pre-resolution), so a
+    --from-github without --ref still gets a concrete tag/branch."""
+    fixture = _write_csv(
+        tmp_path / "fetched.csv",
+        [_row(argus_record_id="gh-src-1", identifier="aa:bb:cc:dd:ee:01")],
+    )
+
+    def _fake_fetch(repo, ref, cache_dir):
+        # Mimic fetch_argus_export's resolved-ref return: if the
+        # caller passes a ref, return it verbatim; otherwise resolve
+        # to a tag (we stub to "v2.0.0" for the test).
+        resolved = ref or "v2.0.0"
+        return Path(fixture), resolved
+
+    monkeypatch.setattr(import_argus, "fetch_argus_export", _fake_fetch)
+    rc = main(
+        [
+            "--db",
+            db_path,
+            "--from-github",
+            "--repo",
+            "someone/argus-fork",
+            "--override-file",
+            str(tmp_path / "missing.yaml"),
+        ]
+    )
+    assert rc == 0
+    db = Database(db_path)
+    try:
+        latest = db.get_latest_import_run()
+        assert latest is not None
+        assert latest["source"] == "someone/argus-fork@v2.0.0"
+    finally:
+        db.close()
