@@ -353,7 +353,28 @@ class Poller:
         self._source_allowlist: frozenset[str] | None = (
             frozenset(config.kismet_sources) if config.kismet_sources else None
         )
-        self.ruleset = load_ruleset(config.rules_path) if config.rules_path else Ruleset()
+        if config.rules_path:
+            self.ruleset = load_ruleset(config.rules_path)
+            active = sum(1 for r in self.ruleset.rules if r.enabled)
+            total = len(self.ruleset.rules)
+            if active == total:
+                logger.info(
+                    "loaded ruleset from %s: %d active rules",
+                    config.rules_path,
+                    active,
+                )
+            else:
+                logger.info(
+                    "loaded ruleset from %s: %d active rules (%d disabled)",
+                    config.rules_path,
+                    active,
+                    total - active,
+                )
+        else:
+            self.ruleset = Ruleset()
+            logger.info(
+                "no rules_path configured; ruleset is empty — no alerts will fire"
+            )
         self.allowlist = (
             load_allowlist(config.allowlist_path) if config.allowlist_path else Allowlist()
         )
