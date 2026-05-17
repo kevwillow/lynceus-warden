@@ -1915,6 +1915,185 @@ def _seed_alert_with_mac(db, mac: str, *, ts: int = 100, severity: str = "med") 
     )
 
 
+# --- routes ----------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_triage_allowlist_post_writes_entry_and_redirects(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/allowlist",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/alerts/{aid}"
+        entries = _read_ui_entries(primary)
+        assert len(entries) == 1
+        assert entries[0]["pattern"] == "aa:bb:cc:dd:ee:ff"
+        assert entries[0]["pattern_type"] == "mac"
+        assert "expires_at" not in entries[0]  # permanent
+        assert "added_at" in entries[0]
+        assert "added via webui" in entries[0]["note"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_triage_snooze_post_writes_entry_with_expiry(tmp_path):
+    import time as _time
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        before = int(_time.time())
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/snooze",
+                data={CSRF_FORM_FIELD: token},
+            )
+        after = int(_time.time())
+        assert r.status_code == 303
+        entries = _read_ui_entries(primary)
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["pattern"] == "aa:bb:cc:dd:ee:ff"
+        # 86400 second window from "now" — bounded by before/after to
+        # tolerate the second the request straddled.
+        assert before + 86400 <= e["expires_at"] <= after + 86400
+        assert "snoozed 24h via webui" in e["note"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_triage_remove_post_drops_existing_entry(tmp_path):
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        # Seed a UI entry so /remove has something to delete.
+        add_ui_entry(
+            _ui_path_for(primary),
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:ff",
+                pattern_type="mac",
+                added_at=1_799_000_000,
+            ),
+        )
+        assert len(_read_ui_entries(primary)) == 1
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/allowlist/remove",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        assert _read_ui_entries(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_triage_remove_post_idempotent_when_nothing_to_remove(tmp_path):
+    """Clicking Remove twice (or against a primary-side entry the UI
+    can't delete) must not 500; the redirect re-renders the truth."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/allowlist/remove",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        assert _read_ui_entries(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize("path_suffix", ["allowlist", "snooze", "allowlist/remove"])
+def test_triage_routes_return_404_for_missing_alert(tmp_path, path_suffix):
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/9999/{path_suffix}",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 404
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize("path_suffix", ["allowlist", "snooze", "allowlist/remove"])
+def test_triage_routes_reject_without_csrf(tmp_path, path_suffix):
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app) as client:
+            client.cookies.clear()
+            r = client.post(f"/alerts/{aid}/{path_suffix}")
+        assert r.status_code == 403
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize("path_suffix", ["allowlist", "snooze", "allowlist/remove"])
+def test_triage_routes_return_400_when_allowlist_not_configured(tmp_path, path_suffix):
+    """No allowlist_path → there is no file to write to. The UI hides
+    the buttons in this case, but a forged POST (e.g. an operator who
+    enabled triage then disabled allowlist_path) must not silently no-op."""
+    config = Config(db_path=str(tmp_path / "ui.db"))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/{path_suffix}",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize("path_suffix", ["allowlist", "snooze", "allowlist/remove"])
+def test_triage_routes_return_400_when_alert_has_no_mac(tmp_path, path_suffix):
+    """Alerts without a MAC (e.g. rules that fire on per-source counts)
+    can't be triaged by MAC. Surface the mismatch with 400."""
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = db.add_alert(
+            ts=100,
+            rule_name="r",
+            mac=None,
+            message="m",
+            severity="med",
+        )
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/{path_suffix}",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
 
 # --- template render states -----------------------------------------------
 
@@ -2052,3 +2231,101 @@ def test_alert_detail_triage_hidden_when_alert_has_no_mac(tmp_path):
     finally:
         db.close()
 
+
+# --- end-to-end: snooze → no alert → expire → alert again ------------------
+
+
+@pytest.mark.webui
+def test_triage_snooze_end_to_end_through_poll_cycle(tmp_path):
+    """The load-bearing operator-comfort claim: a UI snooze suppresses the
+    next poll without daemon restart, then expires cleanly.
+
+    Synthesizes a watchlist hit observation, POSTs /snooze through the
+    webui, runs poll_once → confirms zero alerts; then fast-forwards
+    ``now_ts`` past the snooze expiry and runs poll_once again →
+    confirms the alert fires.
+    """
+    from lynceus.allowlist import load_allowlist
+    from lynceus.kismet import FakeKismetClient
+    from lynceus.poller import poll_once
+    from lynceus.rules import Rule, Ruleset
+
+    fixture = Path(__file__).parent / "fixtures" / "kismet_devices.json"
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    config = Config(
+        kismet_fixture_path=str(fixture),
+        db_path=str(tmp_path / "ui.db"),
+        location_id="testloc",
+        location_label="Test Location",
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    target_mac = "a4:83:e7:11:22:33"  # present in the fixture
+    try:
+        aid = _seed_alert_with_mac(db, target_mac, severity="high")
+        # 1. Operator clicks Snooze for 24h on the alert detail page.
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/snooze",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        # 2. Next poll: same watchlist rule fires on the same MAC. With
+        #    snooze active, the audit-log line should fire but no new
+        #    alert row should be written.
+        rs = Ruleset(
+            rules=[
+                Rule(
+                    name="apple_mac",
+                    rule_type="watchlist_mac",
+                    severity="high",
+                    patterns=[target_mac],
+                )
+            ]
+        )
+        # Reload merges the new UI entry — same path the daemon takes
+        # via mtime watch.
+        allowlist = load_allowlist(config.allowlist_path)
+        snooze_entry = next(
+            e for e in allowlist.entries if e.pattern == target_mac
+        )
+        assert snooze_entry.expires_at is not None
+        snooze_expiry = snooze_entry.expires_at
+        # Use an unambiguously-before-expiry timestamp.
+        before_expiry = snooze_expiry - 1
+        fake_client = FakeKismetClient(str(fixture))
+        baseline_alerts = db._conn.execute(
+            "SELECT COUNT(*) FROM alerts"
+        ).fetchone()[0]
+        poll_once(
+            fake_client,
+            db,
+            config,
+            before_expiry,
+            ruleset=rs,
+            allowlist=allowlist,
+        )
+        after_snooze = db._conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+        assert after_snooze == baseline_alerts  # no new alert
+        # 3. Fast-forward past expiry: same observation, same rules, but
+        #    now the entry is past expires_at and is_allowed skips it.
+        after_expiry = snooze_expiry + 1
+        db.set_state("last_poll_ts", "0")  # reset so the fake client returns devices again
+        fake_client2 = FakeKismetClient(str(fixture))
+        poll_once(
+            fake_client2,
+            db,
+            config,
+            after_expiry,
+            ruleset=rs,
+            allowlist=allowlist,
+        )
+        after_expiry_alerts = db._conn.execute(
+            "SELECT COUNT(*) FROM alerts"
+        ).fetchone()[0]
+        assert after_expiry_alerts > after_snooze  # alert fires
+    finally:
+        db.close()
