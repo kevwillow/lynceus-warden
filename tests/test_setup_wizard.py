@@ -83,6 +83,7 @@ def _full_input_sequence(*, interface=None, ntfy_topic="lynceus-deadbeef"):
         ntfy_topic,  # ntfy topic
         "",  # RSSI: accept default
         "",  # severity overrides path: accept default
+        "",  # enable-alerting gate: default (N -> skip rules.yaml flow)
     ]
     return seq
 
@@ -399,6 +400,7 @@ def test_wizard_probe_failure_redacts_ntfy_topic(monkeypatch, tmp_path, capsys):
         "y",  # continue after ntfy fail
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -459,6 +461,7 @@ def test_run_wizard_kismet_probe_fail_continue_yes(monkeypatch, tmp_path, capsys
         "lynceus-deadbeef",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -533,6 +536,7 @@ def test_run_wizard_ntfy_probe_fail_continue_yes(monkeypatch, tmp_path, capsys):
         "y",  # continue after ntfy fail
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -582,6 +586,7 @@ def test_run_wizard_capture_interface_numbered_selection(monkeypatch, tmp_path):
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(),
@@ -606,6 +611,7 @@ def test_run_wizard_capture_interface_freeform_when_enumeration_unavailable(monk
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(_args(), input_fn=_input_seq(inputs), getpass_fn=_getpass_seq(["tok"]))
     assert rc == 0
@@ -789,6 +795,7 @@ def test_run_wizard_end_to_end_smoke(monkeypatch, tmp_path, capsys):
         "lynceus-feedface",
         "-80",  # custom rssi
         "",  # severity overrides default path
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=True),
@@ -1429,6 +1436,7 @@ def test_run_wizard_bluetooth_adapter_chosen_appends_to_kismet_sources(monkeypat
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(),
@@ -1455,6 +1463,7 @@ def test_run_wizard_bluetooth_declined_keeps_wifi_only(monkeypatch, tmp_path):
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(_args(), input_fn=_input_seq(inputs), getpass_fn=_getpass_seq(["tok"]))
     assert rc == 0
@@ -1498,6 +1507,7 @@ def test_run_wizard_severity_overrides_rejects_garbage_then_accepts_path(
         "na",  # rejected
         "skip",  # rejected
         accepted_path,  # accepted (contains separator + .yaml)
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(_args(), input_fn=_input_seq(inputs), getpass_fn=_getpass_seq(["tok"]))
     assert rc == 0
@@ -1560,6 +1570,7 @@ def test_run_wizard_ntfy_url_empty_skips_ntfy_and_probe(monkeypatch, tmp_path, c
         "",  # ntfy URL: empty → skip; no topic prompt should follow
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -1594,6 +1605,7 @@ def test_run_wizard_ntfy_url_set_topic_empty_uses_suggested(monkeypatch, tmp_pat
         "",  # topic empty → accepts suggested
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=True),
@@ -1835,6 +1847,7 @@ def test_run_wizard_uses_kismet_source_name_when_probe_succeeds(monkeypatch, tmp
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -1883,6 +1896,7 @@ def test_run_wizard_presents_kismet_source_names_not_iw_interfaces(monkeypatch, 
             "lynceus-cafe",
             "",  # rssi default
             "",  # severity overrides default
+            "",  # enable-alerting gate: default (N)
         ]
     )
     rc = wiz.run_wizard(
@@ -1957,6 +1971,7 @@ def test_run_wizard_falls_back_to_iw_with_warning_when_list_sources_fails(
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -2002,6 +2017,7 @@ def test_run_wizard_kismet_probe_fail_continue_y_shows_warning(monkeypatch, tmp_
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -2092,6 +2108,7 @@ def test_run_wizard_with_bt_source_offers_kismet_bt_prompt(monkeypatch, tmp_path
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -2127,6 +2144,7 @@ def test_run_wizard_no_bt_source_in_kismet_skips_with_note(monkeypatch, tmp_path
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -2167,6 +2185,7 @@ def test_run_wizard_multiple_bt_sources_picks_by_number(monkeypatch, tmp_path):
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -2199,6 +2218,7 @@ def test_run_wizard_kismet_bt_decline_keeps_wifi_only(monkeypatch, tmp_path):
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -2312,6 +2332,7 @@ def test_run_wizard_re_prompts_on_scheme_less_kismet_url(monkeypatch, tmp_path, 
         "",  # ntfy URL — skip
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=True),
@@ -2340,6 +2361,7 @@ def test_run_wizard_re_prompts_on_scheme_less_ntfy_url(monkeypatch, tmp_path, ca
         "lynceus-test",  # ntfy topic
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=True),
@@ -2385,6 +2407,7 @@ def test_run_wizard_kismet_probe_never_sees_scheme_less_url(monkeypatch, tmp_pat
         "",  # skip ntfy
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=False),
@@ -2627,6 +2650,7 @@ def _system_scope_inputs():
         "lynceus-cafe",
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate default (N)
     ]
 
 
@@ -2983,6 +3007,7 @@ def test_run_wizard_re_prompts_on_invalid_ntfy_topic_with_clear_error(
         "lynceus-real01",  # valid topic accepted on retry
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=True),
@@ -3019,6 +3044,7 @@ def test_run_wizard_accepts_ntfy_topic_on_4th_attempt_after_3_invalid(monkeypatc
         "lynceus-finalshot",  # valid on 4th try
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=True),
@@ -3078,6 +3104,7 @@ def test_run_wizard_ntfy_blank_topic_accepts_suggested_default(monkeypatch, tmp_
         "",  # topic blank → accept suggested
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=True),
@@ -3108,6 +3135,7 @@ def test_run_wizard_ntfy_blank_topic_does_not_disable_ntfy(monkeypatch, tmp_path
         "",  # topic blank
         "",  # rssi default
         "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=True),
@@ -3118,6 +3146,633 @@ def test_run_wizard_ntfy_blank_topic_does_not_disable_ntfy(monkeypatch, tmp_path
     data = yaml.safe_load(target.read_text())
     assert data["ntfy_url"] == "https://ntfy.sh"
     assert data["ntfy_topic"], "ntfy_topic must be non-empty when URL is set"
+
+
+# ---- Enable-alerting flow --------------------------------------------------
+#
+# The wizard's closing-arc opt-in flow that writes rules.yaml and wires
+# ``rules_path`` into lynceus.yaml. Default is NO at every prompt: alerts
+# are opt-in. Tests below exercise the gate, the per-rule_type prompts,
+# the overwrite-confirm path for an existing rules.yaml, and the
+# scope-aware path resolution.
+
+
+def _seed_watchlist_db(db_path: Path, counts: dict[str, int]) -> None:
+    """Write a minimal watchlist DB with ``counts`` rows of each pattern_type.
+
+    Uses raw sqlite — the wizard's count helper only needs the
+    ``watchlist`` table and a row count per pattern_type. We bypass the
+    real ``Database`` class so the test doesn't drag the full migration
+    machinery in.
+    """
+    import sqlite3 as _sqlite3
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = _sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE watchlist ("
+            "id INTEGER PRIMARY KEY, "
+            "pattern TEXT NOT NULL, "
+            "pattern_type TEXT NOT NULL, "
+            "severity TEXT, "
+            "description TEXT)"
+        )
+        next_id = 1
+        for pattern_type, n in counts.items():
+            for i in range(n):
+                conn.execute(
+                    "INSERT INTO watchlist(id, pattern, pattern_type, severity) "
+                    "VALUES (?, ?, ?, ?)",
+                    (next_id, f"{pattern_type}-{i}", pattern_type, "low"),
+                )
+                next_id += 1
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _stub_alerting_paths(monkeypatch, tmp_path):
+    """Force the wizard's enable-alerting flow to write rules.yaml under
+    ``tmp_path`` regardless of scope. Returns the directory rules.yaml
+    will land in (next to lynceus.yaml).
+
+    The flow resolves ``paths.default_config_dir(scope) / 'rules.yaml'``,
+    so we patch ``paths.default_config_dir`` to return the same dir
+    ``resolve_config_path`` points lynceus.yaml at. ``_stub_path_resolution``
+    must be called first so the config path is fixed.
+    """
+    from lynceus import paths as paths_mod
+
+    config_dir = tmp_path
+    monkeypatch.setattr(paths_mod, "default_config_dir", lambda scope: config_dir)
+    return config_dir
+
+
+def _alerting_inputs(*, gate, type_answers=None, overwrite=None):
+    """Build the trailing input sequence for the enable-alerting flow.
+
+    ``gate``: "y" / "n" / "" — top-level gate answer.
+    ``type_answers``: iterable of ("y"/"n"/"") strings, one per delegation
+                       type prompt the flow will issue. Empty/None → no
+                       per-type prompts (e.g. when the DB is empty).
+    ``overwrite``: ``None`` when no overwrite prompt is expected;
+                    "y"/"n"/"" when rules.yaml already exists.
+    """
+    seq = [gate]
+    if type_answers:
+        seq.extend(type_answers)
+    if overwrite is not None:
+        seq.append(overwrite)
+    return seq
+
+
+def _alerting_full_inputs(*, gate, type_answers=None, overwrite=None):
+    """Compose ``_full_input_sequence`` (minus its trailing gate "") with
+    explicit enable-alerting answers.
+
+    The default ``_full_input_sequence`` answers N at the gate so the rest
+    of the wizard tests don't care about the flow. The enable-alerting
+    tests need to drive the flow explicitly, so we strip the helper's
+    default gate answer (the last "") and substitute the full alerting
+    sequence.
+    """
+    base = _full_input_sequence()
+    assert base[-1] == "", "expected _full_input_sequence to end with default gate input"
+    return base[:-1] + _alerting_inputs(
+        gate=gate, type_answers=type_answers, overwrite=overwrite
+    )
+
+
+# ---- count_watchlist_by_pattern_type --------------------------------------
+
+
+def test_count_watchlist_by_pattern_type_missing_db_returns_zeros(tmp_path):
+    counts = wiz.count_watchlist_by_pattern_type(str(tmp_path / "nonexistent.db"))
+    assert counts == {
+        "mac_range": 0,
+        "mac": 0,
+        "oui": 0,
+        "ssid": 0,
+        "ble_uuid": 0,
+    }
+
+
+def test_count_watchlist_by_pattern_type_returns_per_type_counts(tmp_path):
+    db = tmp_path / "wl.db"
+    _seed_watchlist_db(db, {"mac_range": 17786, "mac": 5, "oui": 2, "ssid": 1, "ble_uuid": 0})
+    counts = wiz.count_watchlist_by_pattern_type(str(db))
+    assert counts["mac_range"] == 17786
+    assert counts["mac"] == 5
+    assert counts["oui"] == 2
+    assert counts["ssid"] == 1
+    assert counts["ble_uuid"] == 0
+
+
+def test_count_watchlist_by_pattern_type_missing_table_returns_zeros(tmp_path):
+    """A DB that exists but has no watchlist table (mid-init) must not
+    crash the wizard — every prompt is skipped and the flow ends cleanly."""
+    import sqlite3 as _sqlite3
+
+    db = tmp_path / "empty.db"
+    conn = _sqlite3.connect(str(db))
+    conn.close()
+    counts = wiz.count_watchlist_by_pattern_type(str(db))
+    assert all(v == 0 for v in counts.values())
+
+
+# ---- render_rules_yaml ----------------------------------------------------
+
+
+def test_render_rules_yaml_all_disabled_has_only_commented_entries():
+    content = wiz.render_rules_yaml(set())
+    # Header comment must explain the file purpose.
+    assert "generated by lynceus-setup" in content
+    # Every delegation rule appears, but all commented out.
+    for (name, _rt, _pt, _label, _desc) in wiz.DELEGATION_RULES:
+        assert f"# - name: {name}" in content
+        # No active variant of any rule.
+        assert f"\n  - name: {name}" not in content
+    # YAML still parses (commented entries become an empty rules list).
+    data = yaml.safe_load(content)
+    assert data == {"rules": None}
+
+
+def test_render_rules_yaml_one_active_keeps_others_commented():
+    content = wiz.render_rules_yaml({"watchlist_mac_range"})
+    # mac_range active.
+    assert "\n  - name: argus_mac_range" in content
+    assert "\n    rule_type: watchlist_mac_range" in content
+    assert "    patterns: []" in content
+    # Others commented.
+    for rule_name in ("argus_mac", "argus_oui", "argus_ssid", "argus_ble_uuid"):
+        assert f"# - name: {rule_name}" in content
+    # YAML round-trips with one rule.
+    data = yaml.safe_load(content)
+    assert isinstance(data.get("rules"), list)
+    assert len(data["rules"]) == 1
+    assert data["rules"][0]["rule_type"] == "watchlist_mac_range"
+    assert data["rules"][0]["patterns"] == []
+
+
+def test_render_rules_yaml_all_active_produces_five_rules():
+    rule_types = {rt for (_n, rt, _pt, _l, _d) in wiz.DELEGATION_RULES}
+    content = wiz.render_rules_yaml(rule_types)
+    data = yaml.safe_load(content)
+    assert len(data["rules"]) == 5
+    seen = {rule["rule_type"] for rule in data["rules"]}
+    assert seen == rule_types
+    # Every active entry uses the DB-delegation idiom: empty patterns.
+    for rule in data["rules"]:
+        assert rule["patterns"] == []
+
+
+def test_render_rules_yaml_parses_through_real_ruleset_loader(tmp_path):
+    """The generated file must load cleanly via lynceus.rules.load_ruleset.
+    Otherwise the daemon would crash on startup with a freshly-wizard'd
+    deployment."""
+    from lynceus import rules as rules_mod
+
+    rules_file = tmp_path / "rules.yaml"
+    rules_file.write_text(
+        wiz.render_rules_yaml({"watchlist_mac_range", "ble_uuid"}),
+        encoding="utf-8",
+    )
+    ruleset = rules_mod.load_ruleset(str(rules_file))
+    rule_types = {rule.rule_type for rule in ruleset.rules}
+    assert rule_types == {"watchlist_mac_range", "ble_uuid"}
+
+
+# ---- run_wizard: enable-alerting flow integration -------------------------
+
+
+def test_enable_alerting_gate_n_writes_no_rules_yaml_and_no_rules_path(
+    monkeypatch, tmp_path
+):
+    """Touch 6 case: operator answers N at the top-level gate → no
+    rules.yaml created, lynceus.yaml's rules_path remains unset, completes
+    normally."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_alerting_full_inputs(gate="n")),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert not (config_dir / "rules.yaml").exists()
+    data = yaml.safe_load(target.read_text())
+    assert data.get("rules_path") is None
+
+
+def test_enable_alerting_gate_y_but_no_db_data_skips_silently(
+    monkeypatch, tmp_path, capsys
+):
+    """Touch 6 case: operator answers Y at gate but the watchlist DB is
+    empty → every per-type prompt is skipped, no rules.yaml is written,
+    rules_path stays unset, wizard ends with the informational line."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # Force the count helper to report no data — equivalent to "DB
+    # doesn't exist yet" without having to plumb default_db_path.
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {pt: 0 for (_n, _rt, pt, _l, _d) in wiz.DELEGATION_RULES},
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_alerting_full_inputs(gate="y")),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No rule_types enabled" in out
+    assert not (config_dir / "rules.yaml").exists()
+    data = yaml.safe_load(target.read_text())
+    assert data.get("rules_path") is None
+
+
+def test_enable_alerting_gate_y_all_types_n_writes_no_rules_yaml(
+    monkeypatch, tmp_path, capsys
+):
+    """Touch 6 case: gate Y + N to every per-type prompt → no rules.yaml
+    written (no point writing an all-commented file), rules_path not set,
+    completes normally with informational line."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 5,
+            "oui": 2,
+            "ssid": 1,
+            "ble_uuid": 3,
+        },
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(gate="y", type_answers=["n"] * 5)
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No rule_types enabled" in out
+    assert not (config_dir / "rules.yaml").exists()
+    data = yaml.safe_load(target.read_text())
+    assert data.get("rules_path") is None
+
+
+def test_enable_alerting_one_type_writes_rules_yaml_and_wires_rules_path(
+    monkeypatch, tmp_path
+):
+    """Touch 6 case: gate Y + Y to watchlist_mac_range only → rules.yaml
+    written with that one entry active, rules_path set in lynceus.yaml."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 5,
+            "oui": 2,
+            "ssid": 1,
+            "ble_uuid": 3,
+        },
+    )
+    # Type answers in DELEGATION_RULES order: mac_range, mac, oui, ssid, ble_uuid.
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(
+                gate="y",
+                type_answers=["y", "n", "n", "n", "n"],
+            )
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    assert rules_file.exists()
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    assert len(rules_data["rules"]) == 1
+    assert rules_data["rules"][0]["rule_type"] == "watchlist_mac_range"
+    assert rules_data["rules"][0]["patterns"] == []
+    # And lynceus.yaml's rules_path now points at the new file.
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data["rules_path"] == str(rules_file)
+
+
+def test_enable_alerting_all_types_writes_five_active_rules(monkeypatch, tmp_path):
+    """Touch 6 case: gate Y + Y to all types → rules.yaml written with
+    all five delegation entries active."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 1,
+            "mac": 1,
+            "oui": 1,
+            "ssid": 1,
+            "ble_uuid": 1,
+        },
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(
+                gate="y",
+                type_answers=["y", "y", "y", "y", "y"],
+            )
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    rule_types = {rule["rule_type"] for rule in rules_data["rules"]}
+    assert rule_types == {
+        "watchlist_mac_range",
+        "watchlist_mac",
+        "watchlist_oui",
+        "watchlist_ssid",
+        "ble_uuid",
+    }
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data["rules_path"] == str(rules_file)
+
+
+def test_enable_alerting_zero_count_type_skips_prompt(monkeypatch, tmp_path):
+    """Touch 6 case: a pattern_type with zero rows in the DB has its
+    per-type prompt skipped entirely. The remaining types' prompts are
+    presented in order; only the inputs for the visible prompts are
+    consumed."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 5,
+            "mac": 0,  # skipped
+            "oui": 7,
+            "ssid": 0,  # skipped
+            "ble_uuid": 2,
+        },
+    )
+    # Three visible prompts: mac_range, oui, ble_uuid. Operator answers
+    # Y to all three. mac and ssid prompts must NOT be issued — if they
+    # were, the input sequence would run out and the test would crash
+    # with an AssertionError in the recording input function.
+    fn, prompts = _recording_input(
+        _alerting_full_inputs(
+            gate="y",
+            type_answers=["y", "y", "y"],
+        )
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    enable_prompts = [p for p in prompts if p.startswith("Enable ")]
+    assert any("watchlist_mac_range" in p for p in enable_prompts)
+    assert any("watchlist_oui" in p for p in enable_prompts)
+    assert any("ble_uuid" in p for p in enable_prompts)
+    # The zero-count types must NOT have appeared as prompts. Match the
+    # exact rule_type name with a trailing space so watchlist_mac doesn't
+    # collide with watchlist_mac_range.
+    assert not any("watchlist_mac " in p for p in enable_prompts)
+    assert not any("watchlist_ssid" in p for p in enable_prompts)
+    rules_file = config_dir / "rules.yaml"
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    rule_types = {rule["rule_type"] for rule in rules_data["rules"]}
+    assert rule_types == {"watchlist_mac_range", "watchlist_oui", "ble_uuid"}
+
+
+def test_enable_alerting_existing_rules_yaml_overwrite_n_leaves_file(
+    monkeypatch, tmp_path, capsys
+):
+    """Touch 6 case: rules.yaml already exists; operator answers N to the
+    overwrite prompt → rules.yaml is untouched, but rules_path is still
+    wired in lynceus.yaml (recovers the "manually copied, never wired"
+    case)."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 0,
+            "oui": 0,
+            "ssid": 0,
+            "ble_uuid": 0,
+        },
+    )
+    original = "# operator's hand-tuned rules.yaml\nrules: []\n"
+    existing = config_dir / "rules.yaml"
+    existing.write_text(original)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(gate="y", type_answers=["y"], overwrite="n")
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    # File untouched.
+    assert existing.read_text(encoding="utf-8") == original
+    out = capsys.readouterr().out
+    assert "untouched" in out
+    # rules_path wired up anyway (the recovery case).
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data["rules_path"] == str(existing)
+
+
+def test_enable_alerting_existing_rules_yaml_overwrite_y_replaces_file(
+    monkeypatch, tmp_path
+):
+    """Touch 6 case: rules.yaml already exists; operator answers Y to the
+    overwrite prompt → rules.yaml is replaced with the new selections."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 0,
+            "mac": 0,
+            "oui": 17,
+            "ssid": 0,
+            "ble_uuid": 0,
+        },
+    )
+    existing = config_dir / "rules.yaml"
+    existing.write_text("# old content the operator is willing to clobber\nrules: []\n")
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(gate="y", type_answers=["y"], overwrite="y")
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_data = yaml.safe_load(existing.read_text(encoding="utf-8"))
+    # The replacement file has exactly the one selected rule active.
+    assert len(rules_data["rules"]) == 1
+    assert rules_data["rules"][0]["rule_type"] == "watchlist_oui"
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data["rules_path"] == str(existing)
+
+
+def test_enable_alerting_system_scope_chowns_rules_yaml(
+    _stub_perms, monkeypatch, tmp_path
+):
+    """System scope: a freshly written rules.yaml inherits the same
+    root:lynceus 0640 contract as lynceus.yaml. Same chown/chmod pair the
+    config and severity-overrides files get."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    # rules.yaml will land in the same dir as the (stubbed) lynceus.yaml.
+    config_dir = paths_d["target"].parent
+    from lynceus import paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "default_config_dir", lambda scope: config_dir)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 0,
+            "oui": 0,
+            "ssid": 0,
+            "ble_uuid": 0,
+        },
+    )
+    # System scope input shape + alerting answers (gate Y, mac_range Y).
+    inputs = _system_scope_inputs()
+    assert inputs[-1] == "", "expected _system_scope_inputs to end with default gate input"
+    inputs = inputs[:-1] + ["y", "y"]  # gate + mac_range prompt
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    assert rules_file.exists()
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    chmod_pairs = {(p, m) for (p, m) in _stub_perms["chmod_calls"]}
+    assert (str(rules_file), 0, 2000) in chown_pairs
+    assert (str(rules_file), 0o640) in chmod_pairs
+
+
+def test_enable_alerting_user_scope_writes_0600_rules_yaml(monkeypatch, tmp_path):
+    """User scope: rules.yaml lands at the user config dir with 0600
+    (atomic-write contract). No chown is called — user-scope perms stay
+    consistent with how lynceus.yaml is treated."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 0,
+            "oui": 0,
+            "ssid": 0,
+            "ble_uuid": 0,
+        },
+    )
+    chown_calls: list = []
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: chown_calls.append(a), raising=False)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(gate="y", type_answers=["y"])
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    assert rules_file.exists()
+    assert chown_calls == [], "user-scope rules.yaml must not be chowned"
+    if os.name == "posix":
+        assert rules_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_enable_alerting_does_not_overwrite_existing_rules_path_in_config(
+    monkeypatch, tmp_path
+):
+    """If lynceus.yaml somehow already declares rules_path (operator
+    hand-edit between renders, or future config-render change), the
+    wizard must not append a duplicate key. The duplicate would break
+    yaml.safe_load with a "duplicate key" error and the daemon would
+    fail to start."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 1,
+            "mac": 0,
+            "oui": 0,
+            "ssid": 0,
+            "ble_uuid": 0,
+        },
+    )
+    # Intercept render_config_yaml so its output already carries
+    # ``rules_path:`` — simulates the pre-existing key.
+    real_render = wiz.render_config_yaml
+
+    def render_with_rules_path(answers):
+        return real_render(answers) + '\nrules_path: "/operator/hand-picked/rules.yaml"\n'
+
+    monkeypatch.setattr(wiz, "render_config_yaml", render_with_rules_path)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(gate="y", type_answers=["y"])
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    # Config still parses cleanly — no duplicate key.
+    data = yaml.safe_load(target.read_text())
+    # The pre-existing value wins (the wizard refuses to append a duplicate).
+    assert data["rules_path"] == "/operator/hand-picked/rules.yaml"
+    # The new rules.yaml was still written at the wizard-chosen path.
+    assert (config_dir / "rules.yaml").exists()
 
 
 # Suppress the unused-import warning for sys (used by helpers above).
