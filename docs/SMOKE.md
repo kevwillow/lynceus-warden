@@ -1,4 +1,4 @@
-# First-run smoke checklist (v0.2)
+# First-run smoke checklist
 
 Run this **after** installing per [deploy/README.md](../deploy/README.md). Each step has an action, a verify command, an expected outcome, and a troubleshooting bullet. If any step fails, **stop and debug** — later steps assume earlier ones passed.
 
