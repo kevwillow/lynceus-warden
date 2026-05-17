@@ -441,3 +441,181 @@ def test_install_sh_etc_lynceus_chown_runs_after_mkdir():
     assert mkdir_idx >= 0, "expected /etc/lynceus mkdir in install_system()"
     assert chown_idx > mkdir_idx, "chown root:lynceus must run AFTER mkdir"
     assert chmod_idx > mkdir_idx, "chmod 0750 must run AFTER mkdir"
+
+
+# ---- lynceus-refresh.{service,timer} ---------------------------------------
+#
+# The rc5 auto-refresh layer ships two systemd units that re-run
+# ``lynceus-import-argus --from-github`` on a schedule. Both files are
+# copied by ``install.sh --system`` but install.sh does NOT enable the
+# timer — that stays an explicit operator opt-in so install.sh's offline
+# invariant holds (the only Lynceus surface that opts the host into a
+# recurring outbound network call is the timer the operator enables, not
+# the install).
+#
+# These tests are grep-based on file content, so they run on every
+# platform — no bash needed.
+
+
+def test_refresh_service_unit_exists_with_required_sections():
+    unit_path = SYSTEMD_DIR / "lynceus-refresh.service"
+    assert unit_path.exists(), f"missing unit file: {unit_path}"
+    content = unit_path.read_text()
+    for section in ("[Unit]", "[Service]", "[Install]"):
+        assert section in content, f"lynceus-refresh.service missing {section}"
+
+
+def test_refresh_timer_unit_exists_with_required_sections():
+    unit_path = SYSTEMD_DIR / "lynceus-refresh.timer"
+    assert unit_path.exists(), f"missing unit file: {unit_path}"
+    content = unit_path.read_text()
+    for section in ("[Unit]", "[Timer]", "[Install]"):
+        assert section in content, f"lynceus-refresh.timer missing {section}"
+
+
+def test_refresh_service_is_oneshot_running_as_lynceus():
+    """The refresh service must run as the same user as the daemon so
+    /var/lib/lynceus writes line up with the daemon's ownership, and
+    Type=oneshot so the timer's ``Requires=`` semantics treat each fire
+    as a discrete event rather than a long-lived service."""
+    content = (SYSTEMD_DIR / "lynceus-refresh.service").read_text()
+    assert "Type=oneshot" in content, "refresh service must be Type=oneshot"
+    assert "User=lynceus" in content, "refresh service must run as lynceus user"
+    assert "Group=lynceus" in content, "refresh service must run as lynceus group"
+
+
+def test_refresh_service_execstart_invokes_import_argus_from_github():
+    """The whole point of the unit. ``--scope system`` is mandatory: the
+    daemon user has --no-create-home, so the importer's default --scope
+    user would fail to resolve ~lynceus/.local/share/lynceus/argus-cache."""
+    content = (SYSTEMD_DIR / "lynceus-refresh.service").read_text()
+    assert "ExecStart=" in content
+    assert "/opt/lynceus/.venv/bin/lynceus-import-argus" in content
+    assert "--from-github" in content
+    assert "--scope system" in content
+
+
+def test_refresh_service_has_no_restart_directive():
+    """No Restart= on purpose — tight retry loops on a sustained network
+    outage burn through the GitHub API budget and never resolve. The
+    timer's next OnCalendar fire is the correct retry surface.
+
+    Match directive lines only (start of line, no leading `#`) so the
+    rationale comment that *mentions* ``Restart=`` in prose doesn't
+    trip the assertion.
+    """
+    content = (SYSTEMD_DIR / "lynceus-refresh.service").read_text()
+    directive_lines = [
+        line for line in content.splitlines()
+        if line.strip().startswith("Restart=")
+    ]
+    assert not directive_lines, (
+        "refresh service must NOT set Restart= — the timer is the retry "
+        f"surface, not the service. Found: {directive_lines!r}"
+    )
+
+
+def test_refresh_service_has_hardening_directives():
+    """Mirror the lynceus.service hardening posture: same user, same
+    ProtectSystem, same ReadWritePaths. A future edit that strips a
+    hardening directive from one unit but not the other would create a
+    quiet posture drift."""
+    content = (SYSTEMD_DIR / "lynceus-refresh.service").read_text()
+    assert "NoNewPrivileges=true" in content
+    assert "ProtectSystem=strict" in content
+    assert "ProtectHome=true" in content
+    assert "PrivateTmp=true" in content
+    # /var/lib/lynceus is where the import writes both lynceus.db and
+    # the argus-cache. Without it in ReadWritePaths the oneshot would
+    # fail with EROFS under ProtectSystem=strict.
+    assert "/var/lib/lynceus" in content
+
+
+def test_refresh_timer_oncalendar_and_failure_semantics():
+    content = (SYSTEMD_DIR / "lynceus-refresh.timer").read_text()
+    assert "OnCalendar=" in content, "timer must declare OnCalendar"
+    # Default cadence is weekly; operators wanting a different cadence
+    # drop in a systemctl edit override. If the default changes, this
+    # assertion intentionally fails — cadence is a deliberate decision.
+    assert "OnCalendar=weekly" in content
+    # Persistent=true catches up missed runs after a reboot or extended
+    # downtime, so a host that was off for the scheduled window doesn't
+    # wait another full cycle.
+    assert "Persistent=true" in content
+    # RandomizedDelaySec spreads load across deployments so we don't
+    # hammer GitHub's raw endpoint at the same moment of every Monday.
+    assert "RandomizedDelaySec=" in content
+
+
+def test_refresh_timer_requires_refresh_service():
+    """The timer's [Unit] must Requires= the service so they're treated
+    as a single unit (timer pulls the service when it fires; disabling
+    one is enough to stop refreshes)."""
+    content = (SYSTEMD_DIR / "lynceus-refresh.timer").read_text()
+    unit_block = content.split("[Timer]", 1)[0]
+    assert "Requires=lynceus-refresh.service" in unit_block
+
+
+def test_install_sh_copies_refresh_units_into_install_system():
+    """The two new units must be ``install -m 0644``'d under
+    install_system(), alongside the existing daemon + UI units, so a
+    fresh --system install lays them down on disk."""
+    content = INSTALL_SH.read_text()
+    install_system_block = content.split("install_system()", 1)[1].split("uninstall_system()", 1)[0]
+    assert "lynceus-refresh.service" in install_system_block, (
+        "install_system() must install lynceus-refresh.service"
+    )
+    assert "lynceus-refresh.timer" in install_system_block, (
+        "install_system() must install lynceus-refresh.timer"
+    )
+
+
+def test_install_sh_does_not_enable_refresh_timer():
+    """Hard constraint: install.sh stays offline. Enabling the timer
+    would opt every fresh install into a recurring outbound network
+    call without operator consent. The hint in install_system's
+    post-install summary is the opt-in surface; ``systemctl enable``
+    must not appear next to the refresh timer in install.sh."""
+    content = INSTALL_SH.read_text()
+    # We rule out the two failure modes:
+    # 1. `systemctl enable lynceus-refresh.timer`
+    # 2. `systemctl enable --now lynceus-refresh.timer` as an executed
+    #    command (the hint that's printed to stdout is a `log "..."`
+    #    string, NOT a `run systemctl enable ...` invocation).
+    assert "systemctl enable lynceus-refresh.timer" not in content
+    assert "run systemctl enable --now lynceus-refresh.timer" not in content
+    assert "run systemctl enable lynceus-refresh.timer" not in content
+
+
+def test_install_sh_uninstall_removes_refresh_units():
+    """uninstall_system() must include the refresh units in its stop /
+    disable / rm loop, otherwise an --uninstall leaves stale unit files
+    in /etc/systemd/system pointing at a /opt/lynceus path that no
+    longer has a venv."""
+    content = INSTALL_SH.read_text()
+    uninstall_block = content.split("uninstall_system()", 1)[1]
+    # The for-loop's unit list must mention both refresh units.
+    assert "lynceus-refresh.service" in uninstall_block, (
+        "uninstall_system() must remove lynceus-refresh.service"
+    )
+    assert "lynceus-refresh.timer" in uninstall_block, (
+        "uninstall_system() must remove lynceus-refresh.timer"
+    )
+
+
+def test_install_sh_system_dry_run_mentions_refresh_units():
+    """End-to-end: a system dry-run must reveal the new unit installs
+    in its plan output so an operator previewing ``--system --dry-run``
+    sees the refresh units land alongside the daemon + UI."""
+    if sys.platform != "linux":
+        pytest.skip("install.sh is Linux-only; skipping bash-driven dry-run")
+    if shutil.which("systemctl") is None:
+        pytest.skip("systemctl not on PATH; --system pre-flight would fail")
+    r = _run(["--system", "--dry-run"])
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "lynceus-refresh.service" in out
+    assert "lynceus-refresh.timer" in out
+    # The post-install hint must surface the opt-in command so operators
+    # discover the timer exists.
+    assert "systemctl enable --now lynceus-refresh.timer" in out
