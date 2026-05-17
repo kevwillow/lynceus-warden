@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import tempfile
 import time
 from pathlib import Path
@@ -29,18 +28,39 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from lynceus.kismet import DeviceObservation, normalize_mac
+from lynceus.kismet import DeviceObservation
+from lynceus.patterns import (
+    canonicalize_mac_range_pattern,
+    normalize_pattern,
+    parse_mac_range_pattern,
+)
 
 logger = logging.getLogger(__name__)
 
-_OUI_RE = re.compile(r"^[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}$")
+
+# Pattern types accepted by the allowlist. Mirrors the seven
+# delegation rule_types the watchlist supports so an operator can
+# express suppression in any shape the watchlist alerts on. The
+# canonicalizers and matchers below pair 1:1 with rules.evaluate's
+# watchlist_* branches — drift between the two surfaces silently
+# allows an alert to fire that an operator believed they had
+# allowlisted.
+AllowlistPatternType = Literal[
+    "mac",
+    "oui",
+    "ssid",
+    "mac_range",
+    "ble_uuid",
+    "ble_manufacturer_id",
+    "drone_id_prefix",
+]
 
 
 class AllowlistEntry(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     pattern: str
-    pattern_type: Literal["mac", "oui", "ssid"]
+    pattern_type: AllowlistPatternType
     note: str | None = None
     # Unix epoch seconds; None means permanent. Entries whose
     # ``expires_at`` is at or before the evaluation clock are silently
@@ -53,15 +73,15 @@ class AllowlistEntry(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_pattern(self) -> AllowlistEntry:
-        if self.pattern_type == "mac":
-            normalized = normalize_mac(self.pattern)
-        elif self.pattern_type == "oui":
-            s = self.pattern.strip().lower().replace("-", ":")
-            if not _OUI_RE.match(s):
-                raise ValueError(f"invalid oui: {self.pattern!r}")
-            normalized = s
+        # All known pattern_types route through lynceus.patterns so
+        # the canonical form stored here matches the canonical form
+        # stored in watchlist.pattern for the same type — the
+        # poll-time matcher relies on that equivalence.
+        if self.pattern_type == "mac_range":
+            prefix_hex, length = parse_mac_range_pattern(self.pattern)
+            normalized = canonicalize_mac_range_pattern(prefix_hex, length)
         else:
-            normalized = self.pattern
+            normalized = normalize_pattern(self.pattern_type, self.pattern)
         if normalized != self.pattern:
             object.__setattr__(self, "pattern", normalized)
         return self
@@ -95,22 +115,73 @@ class Allowlist(BaseModel):
         (falsy). Callers that only need a boolean can use it as such; the
         poller uses the returned entry's ``expires_at`` to annotate the
         audit log line for snooze-based suppressions.
+
+        Per-type matching pairs 1:1 with ``rules.evaluate`` watchlist
+        branches so suppression and alerting see the same truth. See
+        ``_entry_matches`` for the per-type predicate.
         """
         if now_ts is None:
             now_ts = int(time.time())
         for entry in self.entries:
             if entry.expires_at is not None and entry.expires_at <= now_ts:
                 continue
-            if entry.pattern_type == "mac":
-                if obs.mac == entry.pattern:
-                    return entry
-            elif entry.pattern_type == "oui":
-                if obs.mac.startswith(entry.pattern + ":"):
-                    return entry
-            elif entry.pattern_type == "ssid":
-                if obs.ssid is not None and obs.ssid == entry.pattern:
-                    return entry
+            if _entry_matches(entry, obs):
+                return entry
         return None
+
+
+def _mac_in_range(mac: str, range_pattern: str) -> bool:
+    """Test whether a canonical observation MAC falls within a stored mac_range.
+
+    ``range_pattern`` is the canonical CIDR string written by
+    ``AllowlistEntry._normalize_pattern`` (e.g. ``'aa:bb:cc:d/28'``).
+    A malformed pattern that somehow survived validation returns False
+    rather than raising, matching the soft-fail posture the rest of
+    ``is_allowed`` takes (a broken entry must not crash the poll loop).
+    """
+    try:
+        prefix_hex, length = parse_mac_range_pattern(range_pattern)
+    except ValueError:
+        return False
+    nibbles = length // 4
+    return mac.replace(":", "")[:nibbles] == prefix_hex
+
+
+def _entry_matches(entry: AllowlistEntry, obs: DeviceObservation) -> bool:
+    """Per-pattern_type predicate paired with ``rules.evaluate``.
+
+    Each branch mirrors the in-memory match-shape the watchlist uses
+    for the same pattern_type, so an operator who allowlists a device
+    by any one of its identifiers blocks the corresponding watchlist
+    alert. Types whose observation field is None (e.g. a non-BLE
+    record evaluated against a ``ble_uuid`` entry) short-circuit to
+    False — the existing watchlist branches do the same.
+    """
+    pt = entry.pattern_type
+    if pt == "mac":
+        return obs.mac == entry.pattern
+    if pt == "oui":
+        return obs.mac.startswith(entry.pattern + ":")
+    if pt == "ssid":
+        return obs.ssid is not None and obs.ssid == entry.pattern
+    if pt == "mac_range":
+        return _mac_in_range(obs.mac, entry.pattern)
+    if pt == "ble_uuid":
+        return entry.pattern in obs.ble_service_uuids
+    if pt == "ble_manufacturer_id":
+        return (
+            obs.ble_manufacturer_id is not None
+            and obs.ble_manufacturer_id == entry.pattern
+        )
+    if pt == "drone_id_prefix":
+        return (
+            obs.drone_id_prefix is not None
+            and obs.drone_id_prefix == entry.pattern
+        )
+    # AllowlistPatternType keeps this branch unreachable; the explicit
+    # False keeps mypy / type-checkers happy without raising on data
+    # that has already passed Pydantic validation.
+    return False
 
 
 def derive_ui_path(primary_path: Path) -> Path:
@@ -194,6 +265,36 @@ def load_allowlist(path: str) -> Allowlist:
     """
     merged, _primary_count, _ui_count = _load_allowlist_with_counts(path)
     return merged
+
+
+# Entry source discriminator used by the management UI. The /allowlist
+# table renders a badge per row and refuses bulk-remove on primary
+# entries; both signals key off this string.
+EntrySource = Literal["primary", "ui"]
+
+
+def load_allowlist_with_source(path: str) -> list[tuple[AllowlistEntry, EntrySource]]:
+    """Load all allowlist entries tagged by source file.
+
+    Returns a list of ``(entry, "primary" | "ui")`` tuples preserving
+    each file's internal order (primary entries first, then UI). The
+    /allowlist management view uses the tags to render a source badge
+    and to refuse UI-side mutations on primary-file entries — the
+    daemon never writes to ``allowlist.yaml``, so operator-curated
+    rows are read-only from the UI by construction.
+
+    Missing primary still raises ``FileNotFoundError`` for parity
+    with ``load_allowlist``; a missing UI sibling silently contributes
+    zero entries (the normal pre-first-UI-write state).
+    """
+    primary_path = Path(path)
+    primary = _load_primary(primary_path)
+    ui_entries = _load_ui_entries(derive_ui_path(primary_path))
+    tagged: list[tuple[AllowlistEntry, EntrySource]] = [
+        (e, "primary") for e in primary.entries
+    ]
+    tagged.extend((e, "ui") for e in ui_entries)
+    return tagged
 
 
 def _atomic_write_yaml(path: Path, payload: dict) -> None:
@@ -291,3 +392,42 @@ def remove_ui_entry(
         return False
     _atomic_write_yaml(ui_path, data)
     return True
+
+
+def bulk_remove_ui_entries(
+    ui_path: Path,
+    keys: list[tuple[str, str]],
+) -> int:
+    """Remove every UI entry whose ``(pattern, pattern_type)`` is in ``keys``.
+
+    Returns the number of entries actually removed. The whole batch
+    is one read + one atomic write — N sequential ``remove_ui_entry``
+    calls would produce N mtime updates and N reload ticks on the
+    daemon side, so this function is the only place batch removal
+    should happen.
+
+    ``keys`` is matched against the stored (post-normalization) form
+    of each entry, so callers should construct ``AllowlistEntry`` (or
+    canonicalize via ``patterns.normalize_pattern``) before deriving
+    keys from raw form input — otherwise an uppercase MAC from a form
+    would silently miss the lowercase-stored row.
+
+    Absent UI file → returns 0 without writing. Empty ``keys`` is a
+    no-op (also returns 0) — operators clicking "Remove selected"
+    with nothing checked land here; the caller is responsible for
+    surfacing the empty-selection case to the user before this call.
+    """
+    if not keys or not ui_path.exists():
+        return 0
+    data = _read_ui_yaml(ui_path)
+    before = len(data["entries"])
+    key_set = set(keys)
+    data["entries"] = [
+        e
+        for e in data["entries"]
+        if (e.get("pattern"), e.get("pattern_type")) not in key_set
+    ]
+    removed = before - len(data["entries"])
+    if removed > 0:
+        _atomic_write_yaml(ui_path, data)
+    return removed
