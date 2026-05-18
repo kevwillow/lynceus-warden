@@ -1,6 +1,6 @@
 # Argus Residual Types Audit
 
-Generated: 2026-05-18T01:09:15Z
+Generated: 2026-05-18T01:24:45Z
 Argus snapshot: `C:/Claude/argus-db-main/exports/argus_export.csv`
 Snapshot mtime: 2026-05-18T00:37:55Z
 Argus schema_version: 21
@@ -13,7 +13,7 @@ Currently dropped (unknown_type): 222 (1.0%) across 29 distinct residual types
 
 | Type | Argus rows | Sample values | Surface verification | Recommendation |
 |------|-----------|---------------|----------------------|----------------|
-| `device_class_id` | 49 | `DJI device_type=1`, `DJI device_type=2`, `DJI device_type=3`, `DJI device_type=4`, `DJI device_type=5` | plausible-needs-smoke | defer-pending-smoke |
+| `device_class_id` | 49 | `DJI device_type=1`, `DJI device_type=2`, `DJI device_type=3`, `DJI device_type=4`, `DJI device_type=5` | no-observation-surface | drop-entirely |
 | `chipset_codename` | 39 | `APQ8009`, `APQ8016`, `APQ8017`, `APQ8036`, `APQ8037` | no-observation-surface | drop-entirely |
 | `product_family_codename` | 20 | `AVICORE`, `CONDOR`, `DRONEDOCKINGSTATION`, `DRONERADAR`, `FALCON` | no-observation-surface | drop-entirely |
 | `ble_protocol_byte_table` | 16 | `0x01`, `0x05`, `0x07`, `0x09`, `0x0A` | plausible-needs-smoke | defer-pending-smoke |
@@ -47,7 +47,7 @@ Currently dropped (unknown_type): 222 (1.0%) across 29 distinct residual types
 
 Detailed surface rationale for each residual type. The table above shows the classification label; the prose below shows why.
 
-- **`device_class_id`** (plausible-needs-smoke): DJI device-type byte advertised in Remote-ID payload and BLE manufacturer-data. Kismet's Remote-ID datasource emission is unverified against a live capture as of rc5 — see ``_DRONE_ID_PATHS`` caveat in ``kismet.py``.
+- **`device_class_id`** (no-observation-surface): DJI ``device_type`` decoder enum (``DJI device_type=1`` ... ``=70`` mapping to model names like Inspire 1 via the ``DRONEID_DRONE_TYPES`` table in the RUB-SysSec/DroneSecurity decoder). The byte IS in the DJI DroneID broadcast, but the Argus values are model-class enum codes from a decoder catalog rather than per-device identifiers — admitting them as watchlist patterns would alert on every drone of that model class in range, mirroring the unbounded-fanout posture the audit already records for ``rf_channel``. Per-device Remote-ID coverage is via ``drone_id_prefix`` (ANSI/CTA-2063-A serial number prefix, the UAS-ID field), already admitted and observed via ``_DRONE_ID_PATHS`` in ``src/lynceus/kismet.py``. Lynceus has no current probe for the device-type byte and adding one would require a new pattern_type + schema migration + observation surface for a match semantic the watchlist primitive does not fit. Verdict from the rc5 device_class_id archaeology pass (see CHANGELOG).
 - **`chipset_codename`** (no-observation-surface): Silicon vendor part number (e.g. ``APQ8009``, ``BCM43xx``) — static manufacturer metadata, not present in Kismet runtime device emissions.
 - **`product_family_codename`** (no-observation-surface): Vendor-internal product family designation (``AVICORE``, ``CONDOR``) — static spec metadata, never advertised.
 - **`ble_protocol_byte_table`** (plausible-needs-smoke): First-byte protocol indicator inside the BLE manufacturer advertisement payload. Observable in principle via ``kismet.device.base.advdata`` but the byte-table view needs a live emission sample to pin the exact field.
@@ -81,8 +81,8 @@ Detailed surface rationale for each residual type. The table above shows the cla
 
 - **admit**: 0 type(s), 0 row(s)
 - **admit-via-normalization**: 0 type(s), 0 row(s)
-- **defer-pending-smoke**: 3 type(s), 70 row(s)
-- **drop-entirely**: 26 type(s), 152 row(s)
+- **defer-pending-smoke**: 2 type(s), 21 row(s)
+- **drop-entirely**: 27 type(s), 201 row(s)
 - **needs-classification**: 0 type(s), 0 row(s)
 
 ## Methodology

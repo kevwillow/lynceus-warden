@@ -244,15 +244,15 @@ def test_render_report_summary_counts_match_per_type_rows(tmp_path):
     # Synthetic counts / samples — one type per recommendation bucket,
     # each at yield 6 (above the negligible-yield threshold).
     counts = Counter({
-        "chipset_codename": 6,   # no-observation-surface -> drop-entirely
-        "ble_company_id": 6,     # normalization-variant -> admit-via-normalization
-        "device_class_id": 6,    # plausible-needs-smoke -> defer-pending-smoke
-        "ble_local_name": 6,     # verified-lynceus -> admit
+        "chipset_codename": 6,         # no-observation-surface -> drop-entirely
+        "ble_company_id": 6,           # normalization-variant -> admit-via-normalization
+        "ble_protocol_byte_table": 6,  # plausible-needs-smoke -> defer-pending-smoke
+        "ble_local_name": 6,           # verified-lynceus -> admit
     })
     samples = {
         "chipset_codename": [f"APQ80{i:02d}" for i in range(5)],
         "ble_company_id": [f"0x{i:04x}" for i in range(5)],
-        "device_class_id": [f"DJI device_type={i}" for i in range(5)],
+        "ble_protocol_byte_table": [f"0x{i:02x}" for i in range(5)],
         "ble_local_name": [f"name-{i}" for i in range(5)],
     }
     p = tmp_path / "synthetic.csv"
