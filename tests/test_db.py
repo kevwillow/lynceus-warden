@@ -2571,3 +2571,289 @@ def test_is_rule_type_snoozed_boundary_strictly_greater_than(db):
     db.add_rule_type_snooze("watchlist_mac", expires_at=1000, added_at=100)
     assert db.is_rule_type_snoozed("watchlist_mac", now_ts=1000) is None
     assert db.is_rule_type_snoozed("watchlist_mac", now_ts=999) is not None
+
+
+# ===================== watchful_recurrence (migration 018) ==================
+# Phase 1 backend coverage: helpers + boundaries. Operator-facing create
+# paths land in Phase 2 (see WATCHFUL_SNOOZE_DESIGN.md); these tests use
+# direct INSERTs to arrange scenarios per the OQ-resolved prompt.
+
+WATCHFUL_MAC = "aa:bb:cc:11:22:33"
+
+
+def _insert_watchful(
+    db,
+    mac=WATCHFUL_MAC,
+    *,
+    created_at=1000,
+    first_seen_at=1000,
+    last_seen_at=1000,
+    sighting_count=1,
+    snooze_expires_at=None,
+    escalated_at=None,
+    archived_at=None,
+    source_alert_id=None,
+    matched_watchlist_id=None,
+):
+    """Insert a watchful_recurrence row directly. Phase 2 will provide a
+    daemon-side create helper; for Phase 1 tests, direct INSERT is the
+    arrange path per the OQ-resolved prompt."""
+    cur = db._conn.execute(
+        "INSERT INTO watchful_recurrence("
+        "mac, created_at, first_seen_at, last_seen_at, sighting_count, "
+        "snooze_expires_at, escalated_at, archived_at, "
+        "source_alert_id, matched_watchlist_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            mac,
+            created_at,
+            first_seen_at,
+            last_seen_at,
+            sighting_count,
+            snooze_expires_at,
+            escalated_at,
+            archived_at,
+            source_alert_id,
+            matched_watchlist_id,
+        ),
+    )
+    db._conn.commit()
+    return cur.lastrowid
+
+
+def test_get_active_watchful_recurrence_returns_none_when_table_empty(db):
+    assert db.get_active_watchful_recurrence_by_mac(WATCHFUL_MAC) is None
+
+
+def test_get_active_watchful_recurrence_returns_row_when_active(db):
+    entry_id = _insert_watchful(db)
+    r = db.get_active_watchful_recurrence_by_mac(WATCHFUL_MAC)
+    assert r is not None
+    assert r.id == entry_id
+    assert r.mac == WATCHFUL_MAC
+    assert r.sighting_count == 1
+    assert r.archived_at is None
+
+
+def test_get_active_watchful_recurrence_excludes_archived(db):
+    """Archived rows are retained in the table for audit but must not
+    surface to the gate. Caller's `archived_at IS NULL` filter is what
+    enforces this."""
+    _insert_watchful(db, archived_at=2000)
+    assert db.get_active_watchful_recurrence_by_mac(WATCHFUL_MAC) is None
+
+
+def test_record_watchful_sighting_under_24h_no_count_increment(db):
+    entry_id = _insert_watchful(db, last_seen_at=1000, sighting_count=1)
+    outcome = db.record_watchful_sighting(entry_id, observed_at=1000 + 12 * 3600)
+    assert outcome is not None
+    assert outcome.counted is False
+    assert outcome.entry.sighting_count == 1
+    # last_seen_at MUST NOT update for under-debounce observations: this
+    # is what makes same-cycle dedup organic AND what keeps the 90d
+    # archive clock anchored on counted sightings only.
+    assert outcome.entry.last_seen_at == 1000
+
+
+def test_record_watchful_sighting_exactly_24h_counts_inclusive_boundary(db):
+    """24h boundary is inclusive (gap >= 86400 counts).
+
+    Per OQ-3 resolution's '=24h counts (inclusive boundary)' phrasing,
+    diverging from the design doc's strict-greater-than framing. This
+    test pins the operator-confirmed behavior.
+    """
+    entry_id = _insert_watchful(db, last_seen_at=1000, sighting_count=1)
+    outcome = db.record_watchful_sighting(entry_id, observed_at=1000 + 86400)
+    assert outcome.counted is True
+    assert outcome.entry.sighting_count == 2
+    assert outcome.entry.last_seen_at == 1000 + 86400
+
+
+def test_record_watchful_sighting_over_24h_counts(db):
+    entry_id = _insert_watchful(db, last_seen_at=1000, sighting_count=1)
+    outcome = db.record_watchful_sighting(entry_id, observed_at=1000 + 86400 + 1)
+    assert outcome.counted is True
+    assert outcome.entry.sighting_count == 2
+    assert outcome.entry.last_seen_at == 1000 + 86400 + 1
+
+
+def test_record_watchful_sighting_same_cycle_dedup(db):
+    """Same-cycle dedup falls out of the debounce rule: the first
+    counted call sets last_seen_at = observed_at; a second call in the
+    same cycle has gap = 0 and is under-debounce."""
+    entry_id = _insert_watchful(db, last_seen_at=1000, sighting_count=1)
+    first = db.record_watchful_sighting(entry_id, observed_at=1000 + 86400)
+    second = db.record_watchful_sighting(entry_id, observed_at=1000 + 86400)
+    assert first.counted is True
+    assert first.entry.sighting_count == 2
+    assert second.counted is False
+    assert second.entry.sighting_count == 2
+
+
+def test_record_watchful_sighting_returns_none_for_archived(db):
+    """Concurrent-archive race: the gate's lookup sees an active entry,
+    operator archives between lookup and record_sighting, this call
+    returns None instead of writing through to an archived row."""
+    entry_id = _insert_watchful(db, archived_at=2000)
+    assert db.record_watchful_sighting(entry_id, observed_at=3000) is None
+
+
+def test_record_watchful_sighting_returns_none_for_missing_entry(db):
+    assert db.record_watchful_sighting(99999, observed_at=1000) is None
+
+
+def test_record_watchful_sighting_threshold_progression(db):
+    """Count 1 -> 2 -> 3 -> 4 across three counted recurrences.
+
+    The helper itself does NOT auto-escalate (escalated_at remains
+    NULL after count reaches 4). Escalation is a separate transition
+    the caller drives; this keeps the policy boundary explicit and
+    leaves room for the per-rule_type snooze gate to suppress emit
+    without polluting state transitions."""
+    entry_id = _insert_watchful(db, last_seen_at=1000, sighting_count=1)
+    o2 = db.record_watchful_sighting(entry_id, observed_at=1000 + 86400)
+    o3 = db.record_watchful_sighting(entry_id, observed_at=1000 + 2 * 86400)
+    o4 = db.record_watchful_sighting(entry_id, observed_at=1000 + 3 * 86400)
+    assert (o2.counted, o2.entry.sighting_count) == (True, 2)
+    assert (o3.counted, o3.entry.sighting_count) == (True, 3)
+    assert (o4.counted, o4.entry.sighting_count) == (True, 4)
+    assert o4.entry.escalated_at is None
+
+
+def test_record_watchful_sighting_continues_past_escalation(db):
+    """Forward-compat with Phase 2 reset-from-escalated (OQ-8).
+
+    The helper keeps counting after escalation: sighting_count moves
+    4 -> 5 on the next counted recurrence, escalated_at preserved.
+    This admits a Phase 2 reset (clear escalated_at, reset count) +
+    a future fresh threshold cross via the same helpers, with no
+    'escalated is terminal' branch lock-in."""
+    entry_id = _insert_watchful(
+        db, last_seen_at=1000, sighting_count=4, escalated_at=2000,
+    )
+    outcome = db.record_watchful_sighting(entry_id, observed_at=1000 + 86400)
+    assert outcome.counted is True
+    assert outcome.entry.sighting_count == 5
+    assert outcome.entry.escalated_at == 2000
+
+
+def test_escalate_watchful_recurrence_sets_escalated_at(db):
+    entry_id = _insert_watchful(db, sighting_count=4)
+    result = db.escalate_watchful_recurrence(entry_id, escalated_at=5000)
+    assert result is not None
+    assert result.id == entry_id
+    assert result.escalated_at == 5000
+
+
+def test_escalate_watchful_recurrence_idempotent(db):
+    """Second call returns None and preserves the original
+    escalated_at. This is the "fire once per escalation" guard that
+    drives the design doc's anti-spam behavior past threshold."""
+    entry_id = _insert_watchful(db, sighting_count=4)
+    first = db.escalate_watchful_recurrence(entry_id, escalated_at=5000)
+    second = db.escalate_watchful_recurrence(entry_id, escalated_at=9999)
+    assert first is not None
+    assert first.escalated_at == 5000
+    assert second is None
+    refetched = db.get_active_watchful_recurrence_by_mac(WATCHFUL_MAC)
+    assert refetched.escalated_at == 5000
+
+
+def test_escalate_watchful_recurrence_returns_none_for_archived(db):
+    entry_id = _insert_watchful(db, archived_at=2000)
+    assert db.escalate_watchful_recurrence(entry_id, escalated_at=5000) is None
+
+
+def test_escalate_fires_again_after_phase2_reset_clears_escalated_at(db):
+    """Forward-compat invariant for OQ-8: after a Phase 2 reset that
+    clears escalated_at back to NULL, the next call must succeed. The
+    helper's WHERE-clause guard is the load-bearing piece."""
+    entry_id = _insert_watchful(db, sighting_count=4, escalated_at=5000)
+    db._conn.execute(
+        "UPDATE watchful_recurrence "
+        "SET escalated_at = NULL, sighting_count = 1 "
+        "WHERE id = ?",
+        (entry_id,),
+    )
+    db._conn.commit()
+    result = db.escalate_watchful_recurrence(entry_id, escalated_at=9000)
+    assert result is not None
+    assert result.escalated_at == 9000
+
+
+def test_auto_archive_watchful_recurrence_at_exactly_90d_archives(db):
+    """Boundary is inclusive: last_seen_at + 90d == now_ts archives.
+
+    The auto-archive predicate is `last_seen_at <= now_ts - 90d`,
+    which matches the operator-spec phrasing 'Auto-archive at exactly
+    90d'.
+    """
+    _insert_watchful(db, last_seen_at=1000)
+    archived = db.auto_archive_watchful_recurrence(now_ts=1000 + 86400 * 90)
+    assert archived == 1
+    assert db.get_active_watchful_recurrence_by_mac(WATCHFUL_MAC) is None
+
+
+def test_auto_archive_watchful_recurrence_at_89d_does_not_archive(db):
+    """One day short of 90d quiet: still active."""
+    _insert_watchful(db, last_seen_at=1000)
+    archived = db.auto_archive_watchful_recurrence(now_ts=1000 + 86400 * 89)
+    assert archived == 0
+    assert db.get_active_watchful_recurrence_by_mac(WATCHFUL_MAC) is not None
+
+
+def test_auto_archive_ignores_already_archived_rows(db):
+    _insert_watchful(db, last_seen_at=1000, archived_at=2000)
+    archived = db.auto_archive_watchful_recurrence(now_ts=1000 + 86400 * 365)
+    assert archived == 0
+
+
+def test_auto_archive_does_not_consult_snooze_expires_at(db):
+    """OQ-3 resolution: snooze_expires_at gates ALERTS ONLY.
+
+    An entry whose snooze expired 60 days ago but whose last_seen_at
+    is recent (counted sighting yesterday) MUST NOT be auto-archived.
+    The 90d quiet-stretch since last_seen_at is the sole lifecycle
+    clock; snooze_expires_at being in the past has no housekeeping
+    consequence. This guards against accidentally introducing a
+    second auto-archive pathway driven by snooze expiry."""
+    _insert_watchful(
+        db,
+        last_seen_at=86400 * 100,           # day 100
+        snooze_expires_at=86400 * 40,       # snooze expired at day 40
+    )
+    archived = db.auto_archive_watchful_recurrence(now_ts=86400 * 101)
+    assert archived == 0
+    assert db.get_active_watchful_recurrence_by_mac(WATCHFUL_MAC) is not None
+
+
+def test_auto_archive_archives_escalated_entries_preserving_audit(db):
+    """OQ-7 resolution: archive uniformly, regardless of escalation
+    state. escalated_at stays non-NULL on the archived row so the
+    audit predicate
+    (escalated_at IS NOT NULL AND archived_at IS NOT NULL)
+    distinguishes 'escalated then aged out unaddressed' from 'never
+    escalated, archived after 90d quiet'."""
+    _insert_watchful(
+        db, last_seen_at=1000, sighting_count=5, escalated_at=2000,
+    )
+    archived = db.auto_archive_watchful_recurrence(now_ts=1000 + 86400 * 90)
+    assert archived == 1
+    row = db._conn.execute(
+        "SELECT escalated_at, archived_at FROM watchful_recurrence WHERE mac = ?",
+        (WATCHFUL_MAC,),
+    ).fetchone()
+    assert row["escalated_at"] == 2000
+    assert row["archived_at"] is not None
+
+
+def test_auto_archive_returns_count_of_archived_rows(db):
+    """Multiple entries past the boundary: helper returns the count
+    (caller logs INFO when > 0). Mixed active/aged-out scenario."""
+    _insert_watchful(db, mac="aa:bb:cc:00:00:01", last_seen_at=1000)
+    _insert_watchful(db, mac="aa:bb:cc:00:00:02", last_seen_at=1000)
+    _insert_watchful(
+        db, mac="aa:bb:cc:00:00:03", last_seen_at=1000 + 86400 * 5,
+    )
+    archived = db.auto_archive_watchful_recurrence(now_ts=1000 + 86400 * 90)
+    assert archived == 2

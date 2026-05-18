@@ -294,3 +294,87 @@ def test_build_notifier_passes_auth_token_through():
     n = build_notifier(cfg)
     assert isinstance(n, NtfyNotifier)
     assert n.auth_token == "secret-xyz"
+
+
+# ------------------------- priority_override (migration 018) -----------------
+# These tests cover the priority_override knob added for watchful escalation
+# (OQ-1 resolution: option (b), one optional Notifier.send parameter at the
+# emit-site). Severity-to-priority defaults are validated above; these
+# tests assert the override path and the parallel-list bookkeeping on
+# RecordingNotifier.
+
+
+def test_ntfy_priority_override_overrides_severity_mapped_priority(mocker):
+    """priority_override=4 must override SEVERITY_TO_PRIORITY['high']=5.
+
+    This is the load-bearing assertion for OQ-1: the watchful escalation
+    emit-site passes severity='high' (so /alerts renders the high badge)
+    and priority_override=4 (so ntfy's notification prominence is the
+    scare-factor-mitigated 4, not the urgent 5). Both must hold.
+    """
+    post = mocker.patch("lynceus.notify.requests.post", return_value=_ok_response())
+    NtfyNotifier("https://ntfy.sh", "t").send(
+        "high", "t", "m", priority_override=4
+    )
+    assert post.call_args.kwargs["headers"]["Priority"] == "4"
+
+
+def test_ntfy_priority_override_keeps_severity_tag(mocker):
+    """priority_override decouples priority from severity but NOT tag.
+
+    The watchful escalation uses severity='high' so the rotating_light
+    tag reflects the operator's 'this matters' intent; only Priority
+    is decoupled. This guards against accidental tag override during
+    future refactors of the priority_override path.
+    """
+    post = mocker.patch("lynceus.notify.requests.post", return_value=_ok_response())
+    NtfyNotifier("https://ntfy.sh", "t").send(
+        "high", "t", "m", priority_override=4
+    )
+    assert post.call_args.kwargs["headers"]["Tags"] == "rotating_light"
+
+
+def test_ntfy_priority_override_none_uses_severity_default(mocker):
+    """priority_override=None must be equivalent to omitting the kwarg.
+
+    Regression guard: existing call sites pass three positional args
+    only. If the priority_override default were ever changed from None
+    to a numeric default, every existing ntfy notification would
+    silently change priority. This test pins the default behavior.
+    """
+    post = mocker.patch("lynceus.notify.requests.post", return_value=_ok_response())
+    NtfyNotifier("https://ntfy.sh", "t").send(
+        "high", "t", "m", priority_override=None
+    )
+    assert post.call_args.kwargs["headers"]["Priority"] == "5"
+
+
+def test_recording_notifier_records_priority_overrides_in_parallel():
+    """RecordingNotifier.priority_overrides parallels .calls by index.
+
+    Existing tests positionally unpack ``severity, title, message =
+    rec.calls[i]`` and depend on .calls being a 3-tuple. The new
+    priority_override bookkeeping is a separate parallel list to
+    preserve that shape; this test asserts both alignment and
+    backward-compat.
+    """
+    n = RecordingNotifier()
+    n.send("low", "t1", "m1")
+    n.send("high", "t2", "m2", priority_override=4)
+    n.send("med", "t3", "m3", priority_override=None)
+    assert n.calls == [
+        ("low", "t1", "m1"),
+        ("high", "t2", "m2"),
+        ("med", "t3", "m3"),
+    ]
+    assert n.priority_overrides == [None, 4, None]
+
+
+def test_null_notifier_accepts_priority_override():
+    """NullNotifier must accept priority_override without error.
+
+    The watchful escalation path goes through Notifier.send regardless
+    of the configured backend; NullNotifier (the default when ntfy is
+    not configured) must not raise.
+    """
+    assert NullNotifier().send("high", "t", "m", priority_override=4) is True

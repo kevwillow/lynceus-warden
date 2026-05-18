@@ -1855,3 +1855,373 @@ def test_poller_suppression_log_skips_when_counter_empty(db, config, fake_client
     # And the cadence anchor advanced to "now" so we don't burst-log
     # on the next non-empty counter.
     assert p._last_suppression_log_ts == 1_700_001_500
+
+
+# ===================== watchful_recurrence integration (migration 018) =====
+# Poller-side coverage of the watchful gate: ordering vs allowlist + rule
+# eval, escalation emit shape (severity high AND ntfy priority 4),
+# matched_watchlist_id propagation, post-escalation anti-spam, and the
+# 90d auto-archive housekeeping pass. Phase 2 (operator UI) lands the
+# create surface; Phase 1 tests INSERT directly into the table.
+
+WATCHFUL_TEST_MAC = "a4:83:e7:11:22:33"  # first fixture device
+
+
+def _insert_watchful_for_poller(
+    db,
+    mac=WATCHFUL_TEST_MAC,
+    *,
+    created_at=1000,
+    first_seen_at=1000,
+    last_seen_at=1000,
+    sighting_count=1,
+    snooze_expires_at=None,
+    escalated_at=None,
+    archived_at=None,
+    source_alert_id=None,
+    matched_watchlist_id=None,
+):
+    cur = db._conn.execute(
+        "INSERT INTO watchful_recurrence("
+        "mac, created_at, first_seen_at, last_seen_at, sighting_count, "
+        "snooze_expires_at, escalated_at, archived_at, "
+        "source_alert_id, matched_watchlist_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            mac,
+            created_at,
+            first_seen_at,
+            last_seen_at,
+            sighting_count,
+            snooze_expires_at,
+            escalated_at,
+            archived_at,
+            source_alert_id,
+            matched_watchlist_id,
+        ),
+    )
+    db._conn.commit()
+    return cur.lastrowid
+
+
+def _watchful_row(db, mac=WATCHFUL_TEST_MAC):
+    return db._conn.execute(
+        "SELECT * FROM watchful_recurrence WHERE mac = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (mac,),
+    ).fetchone()
+
+
+def test_watchful_tracking_gate_increments_count_on_qualifying_observation(
+    db, config, fake_client
+):
+    """Active watchful entry + observation with gap >= 24h must
+    increment sighting_count and update last_seen_at to now_ts.
+    """
+    _insert_watchful_for_poller(db, last_seen_at=1_700_000_000, sighting_count=1)
+    poll_once(fake_client, db, config, 1_700_086_400)  # exactly 24h later
+    row = _watchful_row(db)
+    assert row["sighting_count"] == 2
+    assert row["last_seen_at"] == 1_700_086_400
+
+
+def test_watchful_gate_no_op_when_no_active_entry(db, config, fake_client):
+    """Backward-compat invariant: with no watchful entries in the
+    table, the poll cycle's behavior is byte-identical to pre-rc6.
+    Sightings persist, no escalation, no archives."""
+    poll_once(fake_client, db, config, 1_700_001_000)
+    sightings = db._conn.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
+    alerts = _alerts_count(db)
+    watchful_rows = db._conn.execute(
+        "SELECT COUNT(*) FROM watchful_recurrence"
+    ).fetchone()[0]
+    assert sightings == 5
+    assert alerts == 0
+    assert watchful_rows == 0
+
+
+def test_watchful_escalation_emits_high_severity_priority_4_alert(
+    db, config, fake_client
+):
+    """Threshold-cross emits an alert with severity='high' (so /alerts
+    and /rules render the high badge consistent with operator intent)
+    AND notifier.send is called with priority_override=4 (so ntfy
+    prominence is the scare-factor-mitigated 4, not the urgent-5
+    reserved for severity=high watchlist hits). BOTH must hold.
+    """
+    # sighting_count=3 + one counted recurrence = threshold cross at 4
+    _insert_watchful_for_poller(
+        db, last_seen_at=1_700_000_000, sighting_count=3,
+    )
+    rec = RecordingNotifier()
+    poll_once(fake_client, db, config, 1_700_086_400, notifier=rec)
+
+    # Alert row was written with rule_type=watchful_recurrence severity=high
+    rows = db._conn.execute(
+        "SELECT severity, rule_type, mac FROM alerts WHERE rule_type = ?",
+        ("watchful_recurrence",),
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "high"
+    assert rows[0]["mac"] == WATCHFUL_TEST_MAC
+
+    # Notifier saw severity=high AND priority_override=4
+    matching = [
+        (rec.calls[i], rec.priority_overrides[i])
+        for i in range(len(rec.calls))
+        if "watchful escalation" in rec.calls[i][1]
+    ]
+    assert len(matching) == 1
+    (severity, _title, _msg), override = matching[0]
+    assert severity == "high"
+    assert override == 4
+
+    # State transition: escalated_at set
+    row = _watchful_row(db)
+    assert row["sighting_count"] == 4
+    assert row["escalated_at"] is not None
+
+
+def test_watchful_escalation_propagates_matched_watchlist_id(
+    db, config, fake_client
+):
+    """matched_watchlist_id on the watchful entry must propagate into
+    the escalation alert's matched_watchlist_id column, so the alert
+    row carries the original rule's provenance for the /alerts triage
+    surface and downstream metadata enrichment."""
+    # Seed a watchlist row so the FK is satisfied
+    cur = db._conn.execute(
+        "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+        "VALUES (?, ?, ?, ?)",
+        ("a4:83:e7:11:22:33", "mac", "high", "test"),
+    )
+    db._conn.commit()
+    watchlist_id = cur.lastrowid
+
+    _insert_watchful_for_poller(
+        db,
+        last_seen_at=1_700_000_000,
+        sighting_count=3,
+        matched_watchlist_id=watchlist_id,
+    )
+    poll_once(fake_client, db, config, 1_700_086_400)
+
+    alert = db._conn.execute(
+        "SELECT matched_watchlist_id FROM alerts WHERE rule_type = ?",
+        ("watchful_recurrence",),
+    ).fetchone()
+    assert alert is not None
+    assert alert["matched_watchlist_id"] == watchlist_id
+
+
+def test_watchful_allowlist_short_circuits_no_sighting_no_escalation(
+    db, config, fake_client
+):
+    """Locked gate ordering: allowlist -> watchful -> rule eval. An
+    allowlisted MAC under watchful snooze MUST see:
+    1) sighting_count UNCHANGED
+    2) NO escalation alert fires, even when sighting_count=3 would
+       cross the threshold on this cycle.
+    Both assertions are the operator-facing semantic guarantee --
+    they pin 'allowlist precedence wins' against future regressions
+    that might re-order the gates."""
+    _insert_watchful_for_poller(
+        db, last_seen_at=1_700_000_000, sighting_count=3,
+    )
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern=WATCHFUL_TEST_MAC, pattern_type="mac")]
+    )
+    rec = RecordingNotifier()
+    poll_once(
+        fake_client, db, config, 1_700_086_400, allowlist=al, notifier=rec,
+    )
+
+    # sighting_count unchanged (gate never reached)
+    row = _watchful_row(db)
+    assert row["sighting_count"] == 3
+    assert row["last_seen_at"] == 1_700_000_000
+    assert row["escalated_at"] is None
+
+    # No escalation alert fired
+    escalation_alerts = db._conn.execute(
+        "SELECT COUNT(*) FROM alerts WHERE rule_type = ?",
+        ("watchful_recurrence",),
+    ).fetchone()[0]
+    assert escalation_alerts == 0
+    assert not any("watchful escalation" in c[1] for c in rec.calls)
+
+
+def test_watchful_post_escalation_sightings_do_not_re_fire(
+    db, config, fake_client
+):
+    """Subsequent recurrences after escalation MUST NOT emit new alerts
+    (design doc anti-spam rule). Sighting count continues climbing on
+    the row -- /watchful UI (Phase 2) shows the count -- but the
+    notifier sees no new escalation."""
+    _insert_watchful_for_poller(
+        db,
+        last_seen_at=1_700_000_000,
+        sighting_count=5,
+        escalated_at=1_700_000_000,
+    )
+    rec = RecordingNotifier()
+    poll_once(fake_client, db, config, 1_700_086_400, notifier=rec)
+
+    row = _watchful_row(db)
+    assert row["sighting_count"] == 6  # count continued
+    assert row["escalated_at"] == 1_700_000_000  # original escalation ts preserved
+    assert _alerts_count(db) == 0
+    assert not any("watchful escalation" in c[1] for c in rec.calls)
+
+
+def test_watchful_rule_type_snooze_suppresses_emit_but_state_transitions(
+    db, config, fake_client
+):
+    """Per the design doc: per-rule_type snooze on watchful_recurrence
+    suppresses the escalation alert/notification, but watchful
+    detection itself continues. State transitions (sighting_count
+    increment, escalated_at set) still happen so the /watchful UI
+    reflects the climbing count and a Phase 2 'unsnooze rule_type'
+    would surface what was suppressed."""
+    _insert_watchful_for_poller(
+        db, last_seen_at=1_700_000_000, sighting_count=3,
+    )
+    db.add_rule_type_snooze(
+        "watchful_recurrence",
+        expires_at=1_700_999_999,
+        added_at=1_700_000_000,
+    )
+    rec = RecordingNotifier()
+    poll_once(fake_client, db, config, 1_700_086_400, notifier=rec)
+
+    row = _watchful_row(db)
+    # State transition happened
+    assert row["sighting_count"] == 4
+    assert row["escalated_at"] is not None
+    # But the alert was NOT written and the notifier did NOT fire
+    escalation_alerts = db._conn.execute(
+        "SELECT COUNT(*) FROM alerts WHERE rule_type = ?",
+        ("watchful_recurrence",),
+    ).fetchone()[0]
+    assert escalation_alerts == 0
+    assert not any("watchful escalation" in c[1] for c in rec.calls)
+
+
+def test_watchful_active_snooze_suppresses_original_alert_pipeline(
+    db, config, fake_client
+):
+    """OQ-3 (b): while snooze_expires_at > now_ts, the watchful gate
+    `continue`s past rule eval for this MAC -- the ORIGINAL alert
+    pipeline (underlying watchlist rules) is suppressed. Sightings
+    persist; the escalation alert remains an independent surface
+    that fires if threshold cross occurs."""
+    _insert_watchful_for_poller(
+        db,
+        last_seen_at=1_700_000_000,
+        sighting_count=1,
+        snooze_expires_at=1_700_999_999,  # snooze still active
+    )
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=[WATCHFUL_TEST_MAC],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1_700_086_400, ruleset=rs)
+    # Under active watchful snooze, the original watchlist alert
+    # MUST NOT fire.
+    original_alerts = db._conn.execute(
+        "SELECT COUNT(*) FROM alerts WHERE rule_type = ?",
+        ("watchlist_mac",),
+    ).fetchone()[0]
+    assert original_alerts == 0
+
+
+def test_watchful_expired_snooze_allows_original_alert_to_fire(
+    db, config, fake_client
+):
+    """OQ-3 (b): snooze_expires_at <= now_ts means the snooze gate no
+    longer suppresses original alerts. The underlying watchlist rule
+    fires normally. This pairs with the active-snooze test above to
+    pin the snooze-expiry behavioral inflection."""
+    _insert_watchful_for_poller(
+        db,
+        last_seen_at=1_700_000_000,
+        sighting_count=1,
+        snooze_expires_at=1_700_000_500,  # already expired
+    )
+    rs = Ruleset(
+        rules=[
+            Rule(
+                name="apple_mac",
+                rule_type="watchlist_mac",
+                severity="high",
+                patterns=[WATCHFUL_TEST_MAC],
+            )
+        ]
+    )
+    poll_once(fake_client, db, config, 1_700_086_400, ruleset=rs)
+    original_alerts = db._conn.execute(
+        "SELECT COUNT(*) FROM alerts WHERE rule_type = ?",
+        ("watchlist_mac",),
+    ).fetchone()[0]
+    assert original_alerts == 1
+
+
+def test_watchful_housekeeping_archives_90d_quiet_entries(
+    db, config, fake_client, caplog
+):
+    """Auto-archive runs on every poll cycle; entries with
+    last_seen_at >= 90d stale transition to archived and log an INFO
+    line. The log line gates on count > 0 to avoid spamming journalctl
+    on cycles with no archives."""
+    _insert_watchful_for_poller(
+        db,
+        mac="aa:bb:cc:00:00:99",  # not in fixture; archive runs regardless
+        last_seen_at=1_700_000_000,
+    )
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poll_once(fake_client, db, config, 1_700_000_000 + 86400 * 90)
+    row = db._conn.execute(
+        "SELECT archived_at FROM watchful_recurrence WHERE mac = ?",
+        ("aa:bb:cc:00:00:99",),
+    ).fetchone()
+    assert row["archived_at"] is not None
+    assert "archived 1 entries (90d quiet-stretch reached)" in caplog.text
+
+
+def test_watchful_housekeeping_does_not_archive_on_snooze_expiry(
+    db, config, fake_client
+):
+    """OQ-3 resolution guard: an entry whose snooze_expires_at is
+    long-expired but whose last_seen_at is recent MUST NOT be
+    auto-archived. The 90d quiet-stretch since last_seen_at is the
+    sole lifecycle clock; snooze_expires_at has no housekeeping
+    effect."""
+    _insert_watchful_for_poller(
+        db,
+        mac="aa:bb:cc:00:00:88",
+        last_seen_at=1_700_000_000,           # recent
+        snooze_expires_at=1_500_000_000,      # expired ages ago
+    )
+    poll_once(fake_client, db, config, 1_700_001_000)
+    row = db._conn.execute(
+        "SELECT archived_at FROM watchful_recurrence WHERE mac = ?",
+        ("aa:bb:cc:00:00:88",),
+    ).fetchone()
+    assert row["archived_at"] is None
+
+
+def test_watchful_housekeeping_quiet_cycle_no_log(
+    db, config, fake_client, caplog
+):
+    """A poll cycle with no archive candidates MUST NOT emit the
+    archive INFO line. Avoids journalctl spam on the steady-state
+    case (most cycles have nothing to archive)."""
+    with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+        poll_once(fake_client, db, config, 1_700_001_000)
+    assert "archived" not in caplog.text or "90d" not in caplog.text
