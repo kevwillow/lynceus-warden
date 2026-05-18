@@ -50,14 +50,24 @@ EXPECTED_HEADER: list[str] = [
 ]
 
 # Argus identifier_type -> Lynceus watchlist.pattern_type.
+#
+# ``ble_company_id`` and ``ble_service_uuid`` are normalization-variant
+# aliases (per docs/ARGUS_RESIDUALS.md): semantically the same surface as
+# ``ble_manufacturer_id`` and ``ble_uuid`` respectively, separated only by
+# the type label Argus emits and the input shape the canonicalizer accepts.
+# The alias is one-way at import — the canonical pattern_type stored in
+# watchlist.pattern_type is the Lynceus side of the map, never the Argus
+# alias, and downstream (rules, poller, webui) sees only the Lynceus type.
 IDENTIFIER_TYPE_MAP: dict[str, str] = {
     "mac": "mac",
     "oui": "oui",
     "ssid_exact": "ssid",
     "ble_uuid": "ble_uuid",
     "ble_service": "ble_uuid",
+    "ble_service_uuid": "ble_uuid",
     "mac_range": "mac_range",
     "ble_manufacturer_id": "ble_manufacturer_id",
+    "ble_company_id": "ble_manufacturer_id",
     "drone_id_prefix": "drone_id_prefix",
 }
 
