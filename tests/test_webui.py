@@ -4398,3 +4398,222 @@ def test_alerts_list_indicator_tooltip_truncates_long_notes(tmp_path):
         assert "A" * 50 in r.text
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# /alerts has_note filter -- pairs with the per-row indicator above to
+# close the triage-workflow loop (notes -> indicator -> filter).
+# ---------------------------------------------------------------------------
+
+
+def _seed_two_alerts_one_noted(db):
+    # Use distinct non-overlapping substrings so containment
+    # assertions don't conflate the two rows (e.g. "triaged" is a
+    # suffix of "untriaged"). "msg-noted" and "msg-fresh" share no
+    # substring, so `"msg-noted" not in text` is unambiguous.
+    a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="msg-noted", severity="low")
+    a2 = db.add_alert(ts=101, rule_name="r", mac=None, message="msg-fresh", severity="low")
+    db.update_alert_note(a1, "FP -- known device", now_ts=999)
+    return a1, a2
+
+
+@pytest.mark.webui
+def test_alerts_has_note_dropdown_renders_with_all_three_options(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'name="has_note"' in r.text
+        assert 'value="all"' in r.text
+        assert 'value="with_note"' in r.text
+        assert 'value="without_note"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_default_shows_all(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_two_alerts_one_noted(db)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "msg-noted" in r.text
+        assert "msg-fresh" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_with_note_narrows_to_noted_rows(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_two_alerts_one_noted(db)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=with_note")
+        assert r.status_code == 200
+        assert "msg-noted" in r.text
+        assert "msg-fresh" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_without_note_narrows_to_fresh_rows(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_two_alerts_one_noted(db)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=without_note")
+        assert r.status_code == 200
+        assert "msg-fresh" in r.text
+        assert "msg-noted" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_invalid_value_falls_back_to_all(tmp_path):
+    """Stale bookmark / typo'd has_note value lands on the unfiltered
+    page rather than a 400 -- matches the rule_type / window
+    silent-clamp precedent."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_two_alerts_one_noted(db)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=bogus_value")
+        assert r.status_code == 200
+        assert "msg-noted" in r.text
+        assert "msg-fresh" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_combines_with_severity(tmp_path):
+    """has_note ANDs cleanly with severity at the handler+DB layer."""
+    app, db = _make_app(tmp_path)
+    try:
+        a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="alpha-msg", severity="high")
+        db.add_alert(ts=101, rule_name="r", mac=None, message="bravo-msg", severity="high")
+        a3 = db.add_alert(ts=102, rule_name="r", mac=None, message="charlie-msg", severity="low")
+        db.update_alert_note(a1, "FP", now_ts=999)
+        db.update_alert_note(a3, "FP", now_ts=999)
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high&has_note=with_note")
+        assert r.status_code == 200
+        assert "alpha-msg" in r.text
+        assert "bravo-msg" not in r.text
+        assert "charlie-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_round_trips_in_pagination_links(tmp_path):
+    """has_note is preserved through next/prev pagination links --
+    operator paginating through a filtered view stays in the filter."""
+    app, db = _make_app(tmp_path)
+    try:
+        # 30 alerts, all noted, so the filter narrows nothing
+        # (purpose is to verify state preservation, not selection).
+        for i in range(30):
+            aid = db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"m{i}", severity="low",
+            )
+            db.update_alert_note(aid, f"note-{i}", now_ts=999)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=with_note&page_size=25")
+        assert r.status_code == 200
+        # Pagination next link carries has_note through.
+        assert "has_note=with_note" in r.text
+        assert "page=2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_dropdown_round_trips_selected_state(tmp_path):
+    """Round-trip on the dropdown: visiting /alerts?has_note=with_note
+    renders that option as selected so the operator sees the active
+    filter state in the form."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=with_note")
+        assert r.status_code == 200
+        assert 'value="with_note" selected' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_carried_through_ack_all_visible_form(tmp_path):
+    """ack-all-visible MUST mirror the GET filter set exactly. The
+    has_note hidden input rides along when set, so 'ack all matching'
+    operates on the same rows the operator sees."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_two_alerts_one_noted(db)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=with_note")
+        assert r.status_code == 200
+        # Hidden input present in the ack-all-visible form.
+        assert 'name="has_note" value="with_note"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_post_with_has_note_acks_only_matching(tmp_path):
+    """ack-all-visible POST with has_note=with_note acknowledges
+    only triaged rows -- single-source-of-truth invariant: the
+    POST handler's filter clamp must mirror the GET handler exactly."""
+    app, db = _make_app(tmp_path)
+    try:
+        a1, a2 = _seed_two_alerts_one_noted(db)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "has_note": "with_note",
+                },
+            )
+        assert r.status_code == 200
+        # Only the noted alert (a1) was acknowledged; untriaged (a2)
+        # left alone.
+        assert db.get_alert(a1)["acknowledged"] == 1
+        assert db.get_alert(a2)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_default_omits_param_from_pagination_url(tmp_path):
+    """When has_note is the default 'all', it must NOT appear in
+    pagination URLs -- keeps default-state URLs short and the
+    'no params -> baseline' invariant intact."""
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(30):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"m{i}", severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts?page_size=25")
+        assert r.status_code == 200
+        assert "has_note=" not in r.text or "has_note=all" not in r.text
+        # The pagination block contains 'page=2' but not has_note=all.
+        idx = r.text.find("page=2")
+        assert idx != -1
+        # Look in a 200-char window around the page=2 link.
+        link_window = r.text[max(0, idx - 200): idx + 200]
+        assert "has_note" not in link_window
+    finally:
+        db.close()

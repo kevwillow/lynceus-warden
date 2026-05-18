@@ -1004,6 +1004,77 @@ def test_list_alerts_filter_by_q_matches_manufacturer_via_join(db):
     assert db.count_alerts(q="apple") == 1
 
 
+def test_list_alerts_filter_by_has_note_with_note(db):
+    """has_note='with_note' returns only alerts where note IS NOT NULL.
+    Pairs with the per-row 📝 indicator on /alerts -- closes the
+    triage-workflow loop (notes -> indicator -> filter)."""
+    a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="triaged", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac=None, message="untriaged-1", severity="low")
+    db.add_alert(ts=102, rule_name="r", mac=None, message="untriaged-2", severity="low")
+    db.update_alert_note(a1, "FP -- known device", now_ts=999)
+    rows = db.list_alerts(has_note="with_note")
+    assert [r["message"] for r in rows] == ["triaged"]
+    assert db.count_alerts(has_note="with_note") == 1
+
+
+def test_list_alerts_filter_by_has_note_without_note(db):
+    a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="triaged", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac=None, message="untriaged-1", severity="low")
+    db.add_alert(ts=102, rule_name="r", mac=None, message="untriaged-2", severity="low")
+    db.update_alert_note(a1, "FP", now_ts=999)
+    rows = db.list_alerts(has_note="without_note")
+    # ts DESC -- newest first.
+    assert [r["message"] for r in rows] == ["untriaged-2", "untriaged-1"]
+    assert db.count_alerts(has_note="without_note") == 2
+
+
+def test_list_alerts_has_note_all_is_noop(db):
+    """has_note='all', None, and unrecognized values all degrade to
+    'no clause' -- same silent-fallback semantic as rule_type / window."""
+    a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="triaged", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac=None, message="untriaged", severity="low")
+    db.update_alert_note(a1, "FP", now_ts=999)
+    # None, "all", "" all return the full set.
+    assert db.count_alerts(has_note=None) == 2
+    assert db.count_alerts(has_note="all") == 2
+    assert db.count_alerts(has_note="") == 2
+    # Unrecognized value silently falls back to 'all' (no error).
+    assert db.count_alerts(has_note="bogus") == 2
+
+
+def test_list_alerts_has_note_combines_with_other_filters(db):
+    """has_note ANDs cleanly with severity / acknowledged."""
+    a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="high-triaged", severity="high")
+    a2 = db.add_alert(ts=101, rule_name="r", mac=None, message="low-triaged", severity="low")
+    db.add_alert(ts=102, rule_name="r", mac=None, message="high-untriaged", severity="high")
+    db.add_alert(ts=103, rule_name="r", mac=None, message="low-untriaged", severity="low")
+    db.update_alert_note(a1, "FP", now_ts=999)
+    db.update_alert_note(a2, "FP", now_ts=999)
+    rows = db.list_alerts(severity="high", has_note="with_note")
+    assert [r["message"] for r in rows] == ["high-triaged"]
+    assert db.count_alerts(severity="high", has_note="with_note") == 1
+    assert db.count_alerts(severity="high", has_note="without_note") == 1
+    assert db.count_alerts(severity="low", has_note="with_note") == 1
+
+
+def test_list_alerts_with_match_has_note_filter(db):
+    """list_alerts_with_match (the page query) honors has_note --
+    matching the count_alerts behavior so pagination math stays
+    correct."""
+    a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="triaged", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac=None, message="untriaged", severity="low")
+    db.update_alert_note(a1, "FP", now_ts=999)
+    rows = db.list_alerts_with_match({"has_note": "with_note"})
+    assert [r["message"] for r in rows] == ["triaged"]
+
+
+def test_list_alerts_with_match_rejects_unknown_filter(db):
+    """The filter-key whitelist gates unknown filters (regression
+    against future typos like 'has_notes' or 'note_filter')."""
+    with pytest.raises(ValueError, match="unknown filter keys"):
+        db.list_alerts_with_match({"has_notes": "with_note"})
+
+
 def test_count_alerts_and_list_alerts_apply_same_filter(db):
     # Single-source-of-truth invariant: count and page query must
     # report the same set under identical filters. Drift here is the
