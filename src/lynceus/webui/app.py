@@ -32,7 +32,7 @@ from lynceus.allowlist import (
     remove_ui_entry,
 )
 from lynceus.config import Config
-from lynceus.db import Database, RuleStats
+from lynceus.db import Database, RuleStats, WatchfulRecurrence
 from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.pagination import build_pagination, parse_pagination
@@ -1653,6 +1653,229 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return RedirectResponse(
             f"/alerts/{alert_id}?success={success}", status_code=303
         )
+
+    # ------------------------------------------------------------------
+    # Watchful snooze operator actions (Phase 2a backend)
+    #
+    # Six POST surfaces wire to db.py's Phase 2 helpers:
+    #
+    #   /alerts/{id}/watch          -- triage entry-point: create a
+    #                                  watchful row from an alert
+    #   /watchful/{id}/dismiss      -- archive (idempotent)
+    #   /watchful/{id}/promote      -- archive + allowlist entry (atomic)
+    #   /watchful/{id}/reset        -- walk back from escalated
+    #   /watchful/{id}/investigate  -- flag + note, no archive
+    #   /watchful/{id}/confirm-safe -- archive with safe annotation
+    #
+    # All six are CSRF-protected via the global CSRFMiddleware (the
+    # `_csrf` form field), return 303 on success (operator forms, not
+    # JSON APIs), and use HTTPException 400 for state-precondition
+    # violations (matches the existing "alert has no MAC" precedent).
+    # Phase 2b lands the UI -- no /watchful page or buttons yet.
+    # ------------------------------------------------------------------
+
+    # Snooze duration vocabulary for /alerts/{id}/watch. Mirrors the
+    # operator's mental model ("forever / 24h / 7d / 30d") rather than
+    # taking raw seconds via the form, so a typo can't accidentally
+    # produce a wildly off snooze window.
+    WATCH_SNOOZE_DURATIONS: dict[str, int | None] = {
+        "forever": None,
+        "24h": 86400,
+        "7d": 7 * 86400,
+        "30d": 30 * 86400,
+    }
+
+    WATCHFUL_NOTE_MAX_CHARS = 4096
+
+    def _normalize_watchful_note(note: str | None) -> str | None:
+        if note is None:
+            return None
+        note = note.strip()
+        if not note:
+            return None
+        if len(note) > WATCHFUL_NOTE_MAX_CHARS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"note must be <= {WATCHFUL_NOTE_MAX_CHARS} chars",
+            )
+        return note
+
+    def _load_watchful_for_action(entry_id: int, request: Request):
+        """Shared 400/404 gate for the five /watchful action routes.
+
+        Returns the entry on success, or a 404 TemplateResponse the
+        caller should return directly. Matches the
+        ``_load_alert_for_triage`` shape used by the /alerts triage
+        family.
+        """
+        if entry_id < 1:
+            raise HTTPException(
+                status_code=400, detail="entry_id must be positive"
+            )
+        entry = db.get_watchful_recurrence(entry_id)
+        if entry is None:
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "alerts",
+                    "message": f"Watchful entry {entry_id} not found.",
+                },
+                status_code=404,
+            )
+        return entry
+
+    @app.post("/alerts/{alert_id}/watch")
+    def watch_alert_post(
+        request: Request,
+        alert_id: int,
+        snooze_duration: str = Form(default="forever"),
+    ):
+        """Triage an alert into the watchful tracking surface.
+
+        Creates a ``watchful_recurrence`` row from the alert's MAC
+        and matched watchlist id. The Phase 2b UI will render the
+        button on /alerts; the route exists now so the backend is
+        complete and ready to wire.
+        """
+        if alert_id < 1:
+            raise HTTPException(
+                status_code=400, detail="alert_id must be positive"
+            )
+        if snooze_duration not in WATCH_SNOOZE_DURATIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "snooze_duration must be one of: "
+                    + ", ".join(WATCH_SNOOZE_DURATIONS)
+                ),
+            )
+        seconds = WATCH_SNOOZE_DURATIONS[snooze_duration]
+        try:
+            new_id = db.create_watchful_from_alert(
+                alert_id,
+                snooze_duration_seconds=seconds,
+                now_ts=int(time.time()),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if new_id is None:
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "alerts",
+                    "message": f"Alert {alert_id} not found.",
+                },
+                status_code=404,
+            )
+        target = _safe_redirect_target(request, default="/alerts")
+        return RedirectResponse(target, status_code=303)
+
+    @app.post("/watchful/{entry_id}/dismiss")
+    def watchful_dismiss_post(request: Request, entry_id: int):
+        result = _load_watchful_for_action(entry_id, request)
+        if not isinstance(result, WatchfulRecurrence):
+            return result
+        # Idempotent: dismiss on an already-archived entry succeeds
+        # with no DB change. Matches the /alerts/{id}/allowlist/remove
+        # idempotence pattern; the redirect still fires.
+        db.dismiss_watchful_recurrence(entry_id, now_ts=int(time.time()))
+        return RedirectResponse("/alerts", status_code=303)
+
+    @app.post("/watchful/{entry_id}/promote")
+    def watchful_promote_post(
+        request: Request,
+        entry_id: int,
+        note: str | None = Form(default=None),
+    ):
+        result = _load_watchful_for_action(entry_id, request)
+        if not isinstance(result, WatchfulRecurrence):
+            return result
+        if not app.state.config.allowlist_path:
+            raise HTTPException(
+                status_code=400,
+                detail="allowlist_path is not configured; nothing to write to",
+            )
+        operator_note = _normalize_watchful_note(note)
+        now_ts = int(time.time())
+        iso = unix_to_iso(now_ts)
+        # Provenance prefix matches the /alerts/{id}/allowlist convention
+        # so an operator reading allowlist_ui.yaml directly sees a
+        # consistent "added via webui at ..." marker, with the optional
+        # operator note appended.
+        provenance = f"promoted from watchful entry {entry_id} via webui at {iso}"
+        full_note = (
+            f"{provenance} -- {operator_note}" if operator_note else provenance
+        )
+        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
+        try:
+            db.promote_watchful_to_allowlist(
+                entry_id,
+                allowlist_path=ui_path,
+                pattern=result.mac,
+                pattern_type="mac",
+                note=full_note,
+                expires_at=None,
+                now_ts=now_ts,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            # Concurrent-archive race; rare. 409 would be ideal but the
+            # codebase has no 409 precedent, so 400 with a descriptive
+            # detail follows the existing "stateful precondition" shape.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return RedirectResponse("/alerts", status_code=303)
+
+    @app.post("/watchful/{entry_id}/reset")
+    def watchful_reset_post(request: Request, entry_id: int):
+        result = _load_watchful_for_action(entry_id, request)
+        if not isinstance(result, WatchfulRecurrence):
+            return result
+        try:
+            db.reset_watchful_recurrence(entry_id, now_ts=int(time.time()))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return RedirectResponse("/alerts", status_code=303)
+
+    @app.post("/watchful/{entry_id}/investigate")
+    def watchful_investigate_post(
+        request: Request,
+        entry_id: int,
+        note: str | None = Form(default=None),
+    ):
+        result = _load_watchful_for_action(entry_id, request)
+        if not isinstance(result, WatchfulRecurrence):
+            return result
+        operator_note = _normalize_watchful_note(note)
+        try:
+            db.flag_watchful_for_investigation(
+                entry_id, operator_note, now_ts=int(time.time())
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return RedirectResponse("/alerts", status_code=303)
+
+    @app.post("/watchful/{entry_id}/confirm-safe")
+    def watchful_confirm_safe_post(
+        request: Request,
+        entry_id: int,
+        note: str | None = Form(default=None),
+    ):
+        result = _load_watchful_for_action(entry_id, request)
+        if not isinstance(result, WatchfulRecurrence):
+            return result
+        operator_note = _normalize_watchful_note(note)
+        try:
+            db.mark_watchful_confirmed_safe(
+                entry_id, operator_note, now_ts=int(time.time())
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return RedirectResponse("/alerts", status_code=303)
 
     @app.get("/devices", response_class=HTMLResponse)
     def devices_list(
