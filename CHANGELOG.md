@@ -120,6 +120,48 @@ with external trackers.
   first. CSRF enforced via the existing global middleware;
   duration_seconds is strictly whitelisted at the POST handler.
 
+- **Watchful snooze (Phase 1: backend foundation).** The daemon-side
+  machinery for the recurrence-aware third snooze surface lands in
+  rc6; the operator UI follows in Phase 2. New `watchful_recurrence`
+  table (migration 018) tracks per-MAC observations under watchful
+  snooze, counts sightings on a >=24h gap debounce (inclusive
+  boundary), and emits a synthetic `watchful_recurrence` rule_type
+  alert at ntfy priority 4 on the 4th sighting (1 initial + 3
+  counted recurrences). Lifecycle is timestamp-derived
+  (`escalated_at`, `archived_at`) rather than a separate state
+  enum, with the audit predicate
+  `escalated_at IS NOT NULL AND archived_at IS NOT NULL`
+  distinguishing escalated-then-aged-out from never-escalated rows.
+  The 90-day no-observation auto-archive runs on the poller cycle
+  (alongside the rule_type snooze and evidence prune housekeeping)
+  and is the SOLE lifecycle clock for unactioned entries;
+  `snooze_expires_at` gates the original alert pipeline for the
+  MAC but does not drive any housekeeping. Gate ordering is
+  allowlist -> watchful tracking -> rule eval -> per-rule_type
+  snooze -> per-alert snooze -> emit, so allowlist precedence
+  wins: an allowlisted MAC under watchful snooze sees no
+  `sighting_count` increment and no escalation alert. The
+  `watchful_recurrence` rule_type integrates with existing surfaces
+  (`/alerts` filter, `/rules` stats, per-rule_type snooze gate)
+  without UI-specific work -- `/alerts` filter dropdowns are
+  data-driven, and per-rule_type snooze on `watchful_recurrence`
+  suppresses the escalation alert while detection state continues.
+  A new `priority_override: int | None = None` parameter on
+  `Notifier.send` plumbs priority 4 from the watchful emit-site
+  without touching the three-tier `Severity` literal -- the
+  severity / priority decoupling is intentional (severity stays
+  `high` for `/alerts` / `/rules` rendering; priority drops to 4
+  for the scare-factor mitigation, NOT a default-mapping
+  oversight). Phase 2 (operator UI, `/watchful` page, `/alerts`
+  triage button, POST routes, weekly digest) follows; Phase 1
+  ships with the four dormant Phase 2 columns
+  (`confirmed_safe`, `flagged_for_investigation`, `operator_note`,
+  `reset_count`) already on the table to avoid a migration 019.
+  Backward compat: with no entries in `watchful_recurrence`, poll
+  cycles are byte-identical to pre-rc6 behavior. See
+  `docs/WATCHFUL_SNOOZE_DESIGN.md` for the full design rationale
+  and the OQ resolutions that shaped Phase 1.
+
 ## [0.4.0-rc5] - 2026-05-17
 
 ### Added
