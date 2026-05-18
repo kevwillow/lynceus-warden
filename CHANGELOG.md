@@ -1141,6 +1141,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
+- **`device_class_id` residual archaeology — reclassified
+  `plausible-needs-smoke` → `no-observation-surface`.** The largest
+  defer-pending-smoke category in the rc5 residuals audit (49 rows,
+  top of the deferred bucket) is resolved without code change: a row-
+  by-row pull of all 49 entries from the current Argus snapshot
+  showed uniformly-shaped values — `DJI device_type=1` through `=70`
+  with gaps, all manufacturer=DJI, all sourced from the
+  `RUB-SysSec/DroneSecurity` decoder project's `DRONEID_DRONE_TYPES`
+  Python lookup table mapping the integer enum to model names
+  (`'1'='Inspire 1'`, etc.). The values are decoder catalog entries
+  for *labelling* the DroneID device-type byte, not per-device
+  identifiers — even though the byte itself is in the DJI DroneID
+  broadcast and so technically observable, treating these enum codes
+  as watchlist patterns would alert on every drone of that model
+  class in range, the same unbounded-fanout posture the audit
+  already records for `rf_channel`. The per-device Remote-ID
+  observation surface is `drone_id_prefix` (ANSI/CTA-2063-A serial
+  number prefix, the UAS-ID half of the ASTM F3411 Basic ID message)
+  — already admitted, already probed via `_DRONE_ID_PATHS` in
+  `src/lynceus/kismet.py`. Adding a separate `device_class_id`
+  pattern_type would require a new Kismet field-path probe + new
+  `DeviceObservation` field + schema migration + canonicalizer +
+  rules-evaluate branch + allowlist support, all for a match
+  semantic the watchlist primitive does not fit. Verdict: drop-
+  entirely. `RESIDUAL_SURFACE_TABLE` updated in
+  `scripts/audit_residuals.py` with the evidence; the regenerated
+  `docs/ARGUS_RESIDUALS.md` reflects defer-pending-smoke shrinking
+  from 3 types / 70 rows to 2 types / 21 rows (`ble_protocol_byte_
+  table` + `ssid_pattern` remain deferred pending live smoke) and
+  drop-entirely growing from 26 / 152 to 27 / 201. Total dropped
+  row count unchanged at 222 — the row was always dropped; only the
+  reason changed.
+
 - **Argus residual types audit.** Added a per-type residual analysis
   at `docs/ARGUS_RESIDUALS.md` characterizing the ~239 Argus rows
   currently dropped by the importer as `unknown_type`, plus a
