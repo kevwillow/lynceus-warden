@@ -1676,6 +1676,8 @@ def test_get_alert_shape_through_migrations(db):
         "message",
         "severity",
         "acknowledged",
+        "note",
+        "note_updated_at",
         "device",
     }
 

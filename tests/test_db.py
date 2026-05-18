@@ -184,6 +184,7 @@ def test_migrations_dir_lists_both_files(db):
         "013_pattern_type_extension.sql",
         "014_devices_remote_id.sql",
         "015_alerts_rule_type.sql",
+        "016_alerts_note.sql",
     ]
 
 
@@ -548,6 +549,125 @@ def test_unacknowledge_alert_inverse_behavior(db):
     with pytest.raises(ValueError):
         db.unacknowledge_alert(aid, actor="ip", note="x" * 501, ts=400)
     assert db.unacknowledge_alert(99999, actor="ip", ts=400) is False
+
+
+def test_update_alert_note_sets_note_and_timestamp(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    ok = db.update_alert_note(aid, "FP -- known neighbour AP", now_ts=12345)
+    assert ok is True
+    alert = db.get_alert(aid)
+    assert alert["note"] == "FP -- known neighbour AP"
+    assert alert["note_updated_at"] == 12345
+
+
+def test_update_alert_note_empty_text_clears(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    db.update_alert_note(aid, "first conclusion", now_ts=12345)
+    assert db.update_alert_note(aid, "", now_ts=99999) is True
+    alert = db.get_alert(aid)
+    assert alert["note"] is None
+    assert alert["note_updated_at"] is None
+
+
+def test_update_alert_note_whitespace_only_clears(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    db.update_alert_note(aid, "first conclusion", now_ts=12345)
+    assert db.update_alert_note(aid, "   \n  \t  ", now_ts=99999) is True
+    alert = db.get_alert(aid)
+    assert alert["note"] is None
+    assert alert["note_updated_at"] is None
+
+
+def test_update_alert_note_strips_surrounding_whitespace(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    db.update_alert_note(aid, "  spaced note  \n", now_ts=12345)
+    assert db.get_alert(aid)["note"] == "spaced note"
+
+
+def test_update_alert_note_returns_false_for_missing_id(db):
+    assert db.update_alert_note(99999, "note", now_ts=12345) is False
+
+
+def test_update_alert_note_validates_alert_id(db):
+    with pytest.raises(ValueError):
+        db.update_alert_note(0, "x", now_ts=1)
+    with pytest.raises(ValueError):
+        db.update_alert_note(-5, "x", now_ts=1)
+
+
+def test_update_alert_note_validates_type(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    with pytest.raises(ValueError):
+        db.update_alert_note(aid, None, now_ts=1)  # type: ignore[arg-type]
+
+
+def test_update_alert_note_length_boundary(db):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    # exactly 4096 chars accepted
+    assert db.update_alert_note(aid, "x" * 4096, now_ts=1) is True
+    assert db.get_alert(aid)["note"] == "x" * 4096
+    # 4097 rejected; pre-existing row unchanged
+    with pytest.raises(ValueError, match="4096"):
+        db.update_alert_note(aid, "x" * 4097, now_ts=2)
+    assert db.get_alert(aid)["note"] == "x" * 4096
+
+
+def test_update_alert_note_uses_default_now_when_omitted(db, monkeypatch):
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    monkeypatch.setattr("lynceus.db.time.time", lambda: 7777.0)
+    assert db.update_alert_note(aid, "default-now") is True
+    assert db.get_alert(aid)["note_updated_at"] == 7777
+
+
+def test_update_alert_note_replace_on_update(db):
+    """Single note per alert -- updating replaces, no history accrued."""
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    db.update_alert_note(aid, "v1", now_ts=10)
+    db.update_alert_note(aid, "v2 supersedes v1", now_ts=20)
+    alert = db.get_alert(aid)
+    assert alert["note"] == "v2 supersedes v1"
+    assert alert["note_updated_at"] == 20
+
+
+def test_get_alert_with_match_exposes_note_fields(db):
+    """get_alert_with_match (used by the alert detail page) surfaces
+    the new note + note_updated_at fields alongside the watchlist
+    join. Regression: pre-rc5 the SELECT did not project these."""
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    db.update_alert_note(aid, "triage-context", now_ts=999)
+    alert = db.get_alert_with_match(aid)
+    assert alert["note"] == "triage-context"
+    assert alert["note_updated_at"] == 999
+
+
+def test_list_alerts_with_match_exposes_note_fields(db):
+    """list_alerts_with_match (powers the /alerts list page) projects
+    the note field so the per-row indicator can render without a
+    separate query."""
+    aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    db.update_alert_note(aid, "list-indicator probe", now_ts=42)
+    rows = db.list_alerts_with_match()
+    assert len(rows) == 1
+    assert rows[0]["note"] == "list-indicator probe"
+    assert rows[0]["note_updated_at"] == 42
+
+
+def test_migration_016_columns_present_and_nullable(db):
+    """Existing pre-migration alerts must read NULL for the new
+    columns rather than erroring on the SELECT. Re-applying the
+    migration must be a no-op (covered by the idempotent suite
+    already, but this asserts the specific column shape)."""
+    cols = {
+        row[1] for row in db._conn.execute("PRAGMA table_info(alerts)").fetchall()
+    }
+    assert "note" in cols
+    assert "note_updated_at" in cols
+    # NULL default observed via a fresh insert that does not set
+    # the note (the daemon path -- add_alert -- never writes note).
+    aid = db.add_alert(ts=1, rule_name="r", mac=None, message="m", severity="low")
+    alert = db.get_alert(aid)
+    assert alert["note"] is None
+    assert alert["note_updated_at"] is None
 
 
 def test_bulk_acknowledge_returns_correct_counts(db):

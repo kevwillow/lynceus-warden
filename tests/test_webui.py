@@ -4176,3 +4176,225 @@ def test_allowlist_pagination_empty_filtered_set_no_nav_404(tmp_path):
         assert "0 total" in r.text
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-alert triage notes (alerts.note + /alerts/{id}/note + list indicator).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_alert_detail_no_note_renders_placeholder_and_empty_textarea(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "No triage note recorded" in r.text
+        assert "Save note" in r.text
+        # Empty textarea (no pre-populated value).
+        assert 'name="note_text"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_with_note_renders_text_and_timestamp(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, "FP -- known neighbour AP", now_ts=999)
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "FP -- known neighbour AP" in r.text
+        assert "Last updated" in r.text
+        assert "Update note" in r.text
+        assert "Clear note" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_note_post_saves_text_and_redirects(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/note",
+                data={CSRF_FORM_FIELD: token, "note_text": "actioned -- physical check"},
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/alerts/{aid}?success=note_saved"
+        alert = db.get_alert(aid)
+        assert alert["note"] == "actioned -- physical check"
+        assert alert["note_updated_at"] is not None
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_note_post_empty_clears_note(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, "initial conclusion", now_ts=42)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/note",
+                data={CSRF_FORM_FIELD: token, "note_text": ""},
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/alerts/{aid}?success=note_cleared"
+        alert = db.get_alert(aid)
+        assert alert["note"] is None
+        assert alert["note_updated_at"] is None
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_note_post_over_limit_returns_400_and_leaves_db_unchanged(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, "stable", now_ts=42)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/note",
+                data={CSRF_FORM_FIELD: token, "note_text": "x" * 4097},
+            )
+        assert r.status_code == 400
+        assert db.get_alert(aid)["note"] == "stable"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_note_post_without_csrf_returns_403(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            client.cookies.clear()
+            r = client.post(f"/alerts/{aid}/note", data={"note_text": "x"})
+        assert r.status_code == 403
+        assert db.get_alert(aid)["note"] is None
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_note_post_missing_alert_returns_404(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/99999/note",
+                data={CSRF_FORM_FIELD: token, "note_text": "x"},
+            )
+        assert r.status_code == 404
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_success_flash_renders_on_save(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, "noted", now_ts=42)
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}?success=note_saved")
+        assert r.status_code == 200
+        assert "Note saved." in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_success_flash_renders_on_clear(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}?success=note_cleared")
+        assert r.status_code == 200
+        assert "Note cleared." in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_unknown_success_token_renders_no_flash(tmp_path):
+    """Spoofed / hand-crafted ?success=... values must not echo into
+    the page. The whitelist drops unknown tokens before render."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}?success=<script>alert(1)</script>")
+        assert r.status_code == 200
+        assert "<script>alert(1)</script>" not in r.text
+        assert "Note saved." not in r.text
+        assert "Note cleared." not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_row_with_note_shows_indicator(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, "FP -- known neighbour AP", now_ts=42)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "alert-note-indicator" in r.text
+        # Tooltip carries the truncated preview.
+        assert "FP -- known neighbour AP" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_row_without_note_shows_no_indicator(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "alert-note-indicator" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_indicator_tooltip_truncates_long_notes(tmp_path):
+    """Indicator hover preview shows the first ~50 chars + ellipsis
+    for longer notes; the full note never leaks into the list-page
+    HTML (operators reading over the shoulder don't see triage
+    rationale unless they click through)."""
+    app, db = _make_app(tmp_path)
+    long_note = "A" * 200
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, long_note, now_ts=42)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "alert-note-indicator" in r.text
+        # Truncated preview only; full note must not appear on the
+        # list page (only on the detail page).
+        assert "A" * 200 not in r.text
+        assert "A" * 50 in r.text
+    finally:
+        db.close()
