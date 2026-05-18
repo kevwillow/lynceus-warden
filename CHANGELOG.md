@@ -8,6 +8,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/alerts` `has_note` filter — narrow to triaged vs untriaged at
+  a glance.** Closes the deferral left by the per-alert triage notes
+  prompt: that prompt added the 📝 indicator on each row but
+  intentionally deferred the matching filter. This entry completes
+  the workflow loop -- operators can now select "with note" or
+  "without note" from a new dropdown in the filter bar to surface
+  only the alerts they've triaged (or only the ones they haven't
+  looked at yet). The three values are `all` (default; renders
+  byte-identical to pre-filter behavior), `with_note` (`note IS NOT
+  NULL`), and `without_note` (`note IS NULL`). Invalid values
+  silently clamp to `all` -- a stale bookmark or typo lands on the
+  unfiltered page rather than a 400, matching the rule_type /
+  window precedent.
+
+  Plumbing rides on the existing `_alert_filter_clauses` helper so
+  COUNT and the page query stay locked -- the same single-source-
+  of-truth invariant that keeps "K total" honest under pagination.
+  `Database.list_alerts`, `count_alerts`, and `list_alerts_with_match`
+  gain a `has_note` keyword; `_ALERT_WITH_MATCH_FILTER_KEYS`
+  whitelists it. `/alerts/ack-all-visible` POST mirrors the GET
+  clamp exactly -- a missing has_note hidden input would cause "ack
+  all matching" to operate on a different filter set than the page
+  shows, the worst class of bug for a silent bulk write. The
+  template carries `has_note` through both the ack-all-visible
+  hidden inputs and the prev/next pagination links; default `all`
+  is omitted from URLs so the no-params baseline stays clean.
+
+  No new indexes. The `note IS [NOT] NULL` predicate full-scans at
+  current scale; if `/alerts` filter latency becomes a problem
+  (deferred from this prompt per the watchlist-filter precedent),
+  a partial index on `note IS NOT NULL` is a follow-up. No schema
+  changes -- the `note` column itself landed in migration 016 with
+  the triage-notes prompt.
+
 - **Per-alert triage notes.** Closes the "what did I conclude about
   this alert?" workflow gap. Operators triage an alert (false
   positive, expected device, action taken, still investigating) and
