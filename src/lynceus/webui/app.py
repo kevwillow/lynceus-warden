@@ -147,6 +147,43 @@ _RULES_DEFAULT_WINDOW: str = "7d"
 _RULES_SORT_OPTIONS: tuple[str, ...] = ("default", "count_desc", "count_asc")
 _RULES_DEFAULT_SORT: str = "default"
 
+# /rules status filter. Adds a third dropdown alongside since + sort
+# so the operator can narrow to "what's currently silenced?" without
+# scanning the full list. "all" is the default; "snoozed" filters
+# the iteration to rules whose rule_type carries an active snooze;
+# "active" is the complement. Invalid values silently fall back to
+# "all" via the same pattern as since / sort — a stale bookmark
+# with ``status=foo`` lands on the unfiltered page rather than 400.
+_RULES_STATUS_OPTIONS: tuple[str, ...] = ("all", "snoozed", "active")
+_RULES_DEFAULT_STATUS: str = "all"
+
+# Wirelisted snooze duration set for the rule_type-snooze dropdown
+# on /rules. Five buckets paralleling the alerts-window dropdown
+# values so an operator's muscle memory carries over. Values are
+# duration-in-seconds; the POST handler enforces strict membership
+# in this set (an attacker-supplied duration_seconds outside the
+# whitelist gets a 400). The label set is co-located with the values
+# so the template renders the operator-readable label while the
+# form posts the integer seconds.
+_RULE_TYPE_SNOOZE_DURATIONS: tuple[tuple[int, str], ...] = (
+    (3600, "1 hour"),
+    (4 * 3600, "4 hours"),
+    (24 * 3600, "24 hours"),
+    (7 * 86400, "7 days"),
+    (30 * 86400, "30 days"),
+)
+_RULE_TYPE_SNOOZE_DURATION_SECONDS: frozenset[int] = frozenset(
+    seconds for seconds, _label in _RULE_TYPE_SNOOZE_DURATIONS
+)
+
+# Authoritative set of rule_type literals admitted by the POST
+# snooze / unsnooze routes. Re-derived from rules.RuleType via the
+# same get_args path as _ALERTS_RULE_TYPES so a new rule_type added
+# to that Literal flows here automatically — no manual edit.
+_RULE_TYPE_SNOOZE_ALLOWED: frozenset[str] = frozenset(
+    _typing_get_args(rules_mod.RuleType)
+)
+
 
 def _resolve_window_to_since_ts(
     window: str | None,
@@ -1702,19 +1739,25 @@ def create_app(config: Config, db: Database) -> FastAPI:
         request: Request,
         since: str | None = Query(default=None),
         sort: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        success: str | None = Query(default=None),
+        rule_type: str | None = Query(default=None),
     ):
         # since (window dropdown) and sort are both rc5 additions.
-        # Invalid values silently fall back to defaults — the
-        # operator probably hit a stale URL after a constant
-        # rename; refusing to render the page is hostile when the
-        # underlying data (rules.yaml) is independent of the query
-        # params. The "no query params" URL behaves exactly as the
-        # pre-rc5 page: since=7d, sort=default, count + last-fired
-        # columns rendered alongside the existing surface.
+        # status is the rc6 rule_type-snooze filter (all / snoozed /
+        # active). Invalid values silently fall back to defaults — the
+        # operator probably hit a stale URL after a constant rename;
+        # refusing to render the page is hostile when the underlying
+        # data (rules.yaml) is independent of the query params. The
+        # "no query params" URL behaves exactly as pre-rc6: since=7d,
+        # sort=default, status=all, no flash banner — every column
+        # renders unchanged.
         if since is None or since == "" or since not in _RULES_WINDOW_SECONDS:
             since = _RULES_DEFAULT_WINDOW
         if sort is None or sort == "" or sort not in _RULES_SORT_OPTIONS:
             sort = _RULES_DEFAULT_SORT
+        if status is None or status == "" or status not in _RULES_STATUS_OPTIONS:
+            status = _RULES_DEFAULT_STATUS
 
         now_ts = int(time.time())
         since_ts = _resolve_window_to_since_ts(
@@ -1727,6 +1770,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # introduce invalidation complexity at alert-write time.
         rule_stats = db.count_alerts_grouped_by_rule_name(since_ts=since_ts)
 
+        # Active rule_type snoozes for the per-row badge / unsnooze
+        # button render. Projected to ``{rule_type: RuleTypeSnooze}``
+        # so the template can do an O(1) dict lookup per row instead
+        # of scanning the list. Expired-but-not-yet-cleaned rows are
+        # filtered at the DB layer (``expires_at > now_ts``) so the
+        # template never sees them.
+        active_snoozes = db.list_active_rule_type_snoozes(now_ts)
+        snoozes_by_type: dict[str, object] = {s.rule_type: s for s in active_snoozes}
+
         ruleset = None
         notice = None
         rules_path = app.state.config.rules_path
@@ -1738,19 +1790,26 @@ def create_app(config: Config, db: Database) -> FastAPI:
             except FileNotFoundError:
                 notice = f"Rules file not found at {rules_path}."
 
-        # Build the iteration list with stats attached. Rules that
-        # never fired in the window get RuleStats(0, None) — caller
-        # default rather than absent-key so the template never
-        # branches on dict membership. Order is rules.yaml order by
-        # default; the count_desc / count_asc sorts re-order with
-        # a name-based stable tie-breaker for the count=0 rows.
+        # Build the iteration list with stats + snooze attached. Rules
+        # that never fired in the window get RuleStats(0, None) —
+        # caller default rather than absent-key so the template never
+        # branches on dict membership. ``snooze`` is None when the
+        # rule's rule_type has no active snooze; the template
+        # branches on truthiness to pick badge vs. snooze-form render.
         rules_with_stats: list[dict] = []
         if ruleset is not None:
             for rule in ruleset.rules:
                 stats = rule_stats.get(
                     rule.name, RuleStats(count=0, last_fired_ts=None)
                 )
-                rules_with_stats.append({"rule": rule, "stats": stats})
+                snooze = snoozes_by_type.get(rule.rule_type)
+                if status == "snoozed" and snooze is None:
+                    continue
+                if status == "active" and snooze is not None:
+                    continue
+                rules_with_stats.append(
+                    {"rule": rule, "stats": stats, "snooze": snooze}
+                )
 
             if sort == "count_desc":
                 rules_with_stats.sort(
@@ -1767,6 +1826,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # "7d" / "30d") since those already read as recency.
         window_label = "all time" if since == "all" else since
 
+        # Success flash banner: surfaced from the snooze / unsnooze
+        # POST redirects (?success=snooze_added / snooze_removed +
+        # rule_type=<rule_type>). Sanitized against the allowed set
+        # so a stale URL doesn't render an arbitrary string. Empty
+        # / unknown values silently drop the banner.
+        flash = None
+        if success == "snooze_added" and rule_type in _RULE_TYPE_SNOOZE_ALLOWED:
+            flash = f"Snooze added for rule_type {rule_type}."
+        elif success == "snooze_removed" and rule_type in _RULE_TYPE_SNOOZE_ALLOWED:
+            flash = f"Snooze removed for rule_type {rule_type}."
+
         return app.state.templates.TemplateResponse(
             request=request,
             name="rules_list.html",
@@ -1778,11 +1848,67 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "rules_with_stats": rules_with_stats,
                 "since": since,
                 "sort": sort,
+                "status": status,
                 "window_options": tuple(_RULES_WINDOW_SECONDS.keys()),
                 "sort_options": _RULES_SORT_OPTIONS,
+                "status_options": _RULES_STATUS_OPTIONS,
                 "window_label": window_label,
                 "now_ts": now_ts,
+                "snooze_durations": _RULE_TYPE_SNOOZE_DURATIONS,
+                "flash": flash,
             },
+        )
+
+    @app.post("/rules/{rule_type}/snooze")
+    def snooze_rule_type_post(
+        request: Request,
+        rule_type: str,
+        duration_seconds: int = Form(...),
+        note: str | None = Form(default=None),
+    ):
+        # rule_type validated against the literal set so an attacker-
+        # crafted URL can't insert arbitrary PK rows. duration_seconds
+        # must come from the whitelisted dropdown; custom durations
+        # are intentionally out of scope (mirrors the per-alert
+        # snooze's fixed-duration posture, though with a richer
+        # dropdown). CSRF is enforced upstream by CSRFMiddleware —
+        # the handler runs only if the token already validated.
+        if rule_type not in _RULE_TYPE_SNOOZE_ALLOWED:
+            raise HTTPException(status_code=400, detail=f"unknown rule_type: {rule_type!r}")
+        if duration_seconds not in _RULE_TYPE_SNOOZE_DURATION_SECONDS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"invalid duration_seconds {duration_seconds}: "
+                    f"expected one of {sorted(_RULE_TYPE_SNOOZE_DURATION_SECONDS)}"
+                ),
+            )
+        normalized_note = _normalize_optional_note(note)
+        now_ts = int(time.time())
+        expires_at = now_ts + duration_seconds
+        db.add_rule_type_snooze(
+            rule_type=rule_type,
+            expires_at=expires_at,
+            added_at=now_ts,
+            note=normalized_note,
+        )
+        return RedirectResponse(
+            f"/rules?success=snooze_added&rule_type={rule_type}",
+            status_code=303,
+        )
+
+    @app.post("/rules/{rule_type}/unsnooze")
+    def unsnooze_rule_type_post(request: Request, rule_type: str):
+        # Idempotent: double-clicking unsnooze returns the same 303
+        # whether or not a row existed. The template re-renders
+        # against the current state — that's more useful than a
+        # stale error message. CSRF enforced upstream.
+        if rule_type not in _RULE_TYPE_SNOOZE_ALLOWED:
+            raise HTTPException(status_code=400, detail=f"unknown rule_type: {rule_type!r}")
+        db.remove_rule_type_snooze(rule_type)
+        return RedirectResponse(
+            f"/rules?success=snooze_removed&rule_type={rule_type}",
+            status_code=303,
         )
 
     @app.get("/watchlist", response_class=HTMLResponse)

@@ -4,6 +4,10 @@
   {% include "_topnav.html" %}
   <h2>rules</h2>
 
+  {% if flash %}
+    <article class="flash-success"><p>{{ flash }}</p></article>
+  {% endif %}
+
   <form method="get" action="/rules">
     <fieldset class="grid">
       <label>fires window
@@ -27,6 +31,18 @@
           {% endfor %}
         </select>
       </label>
+      <label>status
+        <select name="status">
+          {% for st in status_options %}
+            <option value="{{ st }}" {% if status == st %}selected{% endif %}>
+              {% if st == 'all' %}all
+              {% elif st == 'snoozed' %}snoozed only
+              {% elif st == 'active' %}active only
+              {% else %}{{ st }}{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
       <button type="submit">apply</button>
     </fieldset>
   </form>
@@ -39,12 +55,23 @@
     {% for entry in rules_with_stats %}
       {% set rule = entry.rule %}
       {% set stats = entry.stats %}
+      {% set snooze = entry.snooze %}
       <article {% if not rule.enabled %}class="dim" style="opacity: 0.55"{% endif %}>
         <header>
           <strong>{{ rule.name }}</strong>
           &middot; <code>{{ rule.rule_type }}</code>
           &middot; <span class="badge-{{ rule.severity }}">{{ rule.severity }}</span>
           &middot; {% if rule.enabled %}enabled{% else %}<em>disabled</em>{% endif %}
+          {% if snooze %}
+            &middot;
+            <span class="badge-snoozed"
+                  title="expires {{ snooze.expires_at | relative_time(now_ts=now_ts) }} &mdash; {{ snooze.expires_at | unix_to_utc_human }}">
+              &#x1F4A4; snoozed (until
+              <time datetime="{{ snooze.expires_at | unix_to_iso }}">
+                {{ snooze.expires_at | relative_time(now_ts=now_ts) }}
+              </time>)
+            </span>
+          {% endif %}
         </header>
         {% if rule.description %}
           <p>{{ rule.description }}</p>
@@ -72,10 +99,50 @@
             {% endfor %}
           </ul>
         {% endif %}
+
+        {% if snooze %}
+          {% if snooze.note %}
+            <p><small><strong>snooze note:</strong> {{ snooze.note }}</small></p>
+          {% endif %}
+          <form method="post" action="/rules/{{ rule.rule_type }}/unsnooze" class="inline-form">
+            <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+            <button type="submit" class="secondary">unsnooze</button>
+          </form>
+        {% else %}
+          <details>
+            <summary><small>snooze rule_type&hellip;</small></summary>
+            <form method="post" action="/rules/{{ rule.rule_type }}/snooze" class="inline-form">
+              <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+              <fieldset class="grid">
+                <label>duration
+                  <select name="duration_seconds">
+                    {% for seconds, label in snooze_durations %}
+                      <option value="{{ seconds }}" {% if seconds == 4 * 3600 %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>note (optional)
+                  <input type="text" name="note" maxlength="500" placeholder="e.g. network reconfiguration">
+                </label>
+                <button type="submit" class="secondary">snooze</button>
+              </fieldset>
+              <small>
+                Suppresses all alerts from <code>{{ rule.rule_type }}</code> until expiry.
+                The rule still evaluates; only alert emit is gated.
+              </small>
+            </form>
+          </details>
+        {% endif %}
       </article>
     {% endfor %}
   {% elif not notice %}
-    <p><em>No rules defined.</em></p>
+    {% if status == 'snoozed' %}
+      <p><em>No snoozed rules.</em></p>
+    {% elif status == 'active' %}
+      <p><em>No active (non-snoozed) rules.</em></p>
+    {% else %}
+      <p><em>No rules defined.</em></p>
+    {% endif %}
   {% endif %}
 
   <p><small>Edit rules.yaml on disk and restart lynceus to apply changes (live edit lands in v0.3).</small></p>
