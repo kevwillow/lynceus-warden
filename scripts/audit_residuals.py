@@ -93,11 +93,24 @@ RESIDUAL_SURFACE_TABLE: dict[str, tuple[str, str]] = {
         "``capture.ble_friendly_names`` is enabled.",
     ),
     "device_class_id": (
-        "plausible-needs-smoke",
-        "DJI device-type byte advertised in Remote-ID payload and "
-        "BLE manufacturer-data. Kismet's Remote-ID datasource "
-        "emission is unverified against a live capture as of rc5 — "
-        "see ``_DRONE_ID_PATHS`` caveat in ``kismet.py``.",
+        "no-observation-surface",
+        "DJI ``device_type`` decoder enum (``DJI device_type=1`` ... "
+        "``=70`` mapping to model names like Inspire 1 via the "
+        "``DRONEID_DRONE_TYPES`` table in the RUB-SysSec/DroneSecurity "
+        "decoder). The byte IS in the DJI DroneID broadcast, but the "
+        "Argus values are model-class enum codes from a decoder "
+        "catalog rather than per-device identifiers — admitting them "
+        "as watchlist patterns would alert on every drone of that "
+        "model class in range, mirroring the unbounded-fanout posture "
+        "the audit already records for ``rf_channel``. Per-device "
+        "Remote-ID coverage is via ``drone_id_prefix`` (ANSI/CTA-"
+        "2063-A serial number prefix, the UAS-ID field), already "
+        "admitted and observed via ``_DRONE_ID_PATHS`` in "
+        "``src/lynceus/kismet.py``. Lynceus has no current probe for "
+        "the device-type byte and adding one would require a new "
+        "pattern_type + schema migration + observation surface for a "
+        "match semantic the watchlist primitive does not fit. Verdict "
+        "from the rc5 device_class_id archaeology pass (see CHANGELOG).",
     ),
     "ble_protocol_byte_table": (
         "plausible-needs-smoke",
