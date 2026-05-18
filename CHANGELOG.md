@@ -91,6 +91,35 @@ with external trackers.
   indexes — `note IS [NOT] NULL` full-scans cheaply at current scale;
   a partial index is a follow-up if filter latency surfaces.
 
+- **Per-rule_type snooze.** New `rule_type_snoozes` table (migration
+  017) lets operators silence all alerts from a specific rule_type
+  for a bounded window (1h / 4h / 24h / 7d / 30d). Snooze controls
+  live on the `/rules` page per row: rule_types without an active
+  snooze get a collapsible "snooze…" form with the duration dropdown
+  and an optional note; rule_types with an active snooze get a 💤
+  badge (expiry rendered as both relative and absolute time in the
+  tooltip), the optional note, and an "unsnooze" button. A new
+  `status=all|snoozed|active` filter on the page lets operators
+  narrow to "what's currently silenced?" without scanning the full
+  list. Distinct from per-alert snooze, which suppresses a specific
+  observation via the allowlist; rule_type snooze mutes the entire
+  rule class at the alert-emit boundary. The underlying rule still
+  evaluates (so `rules.evaluate` returns the same `RuleHit` shape it
+  always did), but `db.add_alert`, evidence capture, and notifier
+  emit are all gated during the window — the operator's whole point
+  in snoozing is "don't page me", so suppressing the DB row while
+  leaking the alert to ntfy would defeat the feature. Expired
+  snoozes are filtered at gate-check time and physically deleted on
+  the poller cycle. A periodic INFO log line in the daemon
+  (`rule_type snooze suppressed N alert(s) in last ~Ts: <breakdown>`)
+  surfaces per-rule_type suppression counts to `journalctl` so
+  operators can confirm the snooze is doing its job beyond the badge
+  on `/rules`. Re-snoozing a rule_type that already has an active
+  snooze overwrites the prior expires_at (INSERT OR REPLACE), so
+  operators extending or shortening a window don't have to unsnooze
+  first. CSRF enforced via the existing global middleware;
+  duration_seconds is strictly whitelisted at the POST handler.
+
 ## [0.4.0-rc5] - 2026-05-17
 
 ### Added
