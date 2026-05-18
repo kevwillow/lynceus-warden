@@ -119,7 +119,12 @@
                 <td><input type="checkbox" name="alert_ids" value="{{ a.id }}"></td>
                 <td><time datetime="{{ a.ts | unix_to_iso }}">{{ a.ts | unix_to_iso }}</time></td>
                 <td><span class="badge-{{ a.severity }}">{{ a.severity }}</span></td>
-                <td><a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a></td>
+                <td>
+                  <a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a>
+                  {% if a.note %}
+                    <span class="alert-note-indicator" title="Triage note: {{ a.note[:50] }}{% if a.note|length > 50 %}&hellip;{% endif %}" aria-label="Has triage note">&#x1F4DD;</span>
+                  {% endif %}
+                </td>
                 <td>{{ a.device | device_label }}</td>
                 <td class="mac-cell">
                   {% if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif %}
