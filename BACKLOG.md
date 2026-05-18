@@ -80,16 +80,18 @@ after some weeks of real captures.
 - **Trigger**: enough real-world data to know what "normal" looks like in
   your environment.
 
-### Watchful snooze operator UI (Phase 2)
+### Watchful snooze operator UI (Phase 2b)
 Phase 1 (backend foundation: migration 018, tracking gate, escalation
-emission, 90-day auto-archive) shipped in rc6. Phase 2 lands the
-operator-facing surface: a new `/watchful` page listing active entries
-with state columns and per-entry detail view, an `/alerts` triage
-"watchful snooze" button alongside the existing snooze and allowlist
-actions, action-per-endpoint POST routes (dismiss, promote, reset,
-flag-investigate, confirm-safe) with CSRF, the weekly digest block on
-the dashboard, and the "promote to permanent allowlist" write path
-to `allowlist_ui.yaml`. See
+emission, 90-day auto-archive) and Phase 2a (operator-action backend:
+six DB helpers and six CSRF-protected POST routes covering dismiss,
+promote-to-permanent-allowlist, reset, flag-for-investigation,
+confirm-safe, and triage-from-alert) both shipped in rc6. Phase 2b
+lands the operator-facing UI: a new `/watchful` page listing active
+entries with state columns and per-entry detail view, an `/alerts`
+triage "watchful snooze" button alongside the existing snooze and
+allowlist actions, form templates for the action buttons (the POST
+endpoints already exist and are CSRF-ready), the weekly digest block
+on the dashboard, and the topnav `/watchful` link. See
 [`docs/WATCHFUL_SNOOZE_DESIGN.md`](docs/WATCHFUL_SNOOZE_DESIGN.md) for
 the full design and the locked OQ resolutions.
 - **Trigger**: operator-facing review of a few weeks of watchful
