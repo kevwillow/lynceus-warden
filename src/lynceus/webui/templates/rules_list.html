@@ -4,12 +4,41 @@
   {% include "_topnav.html" %}
   <h2>rules</h2>
 
+  <form method="get" action="/rules">
+    <fieldset class="grid">
+      <label>fires window
+        <select name="since">
+          {% for w in window_options %}
+            <option value="{{ w }}" {% if since == w %}selected{% endif %}>
+              {% if w == 'all' %}all time{% else %}last {{ w }}{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>sort
+        <select name="sort">
+          {% for s in sort_options %}
+            <option value="{{ s }}" {% if sort == s %}selected{% endif %}>
+              {% if s == 'default' %}rules.yaml order
+              {% elif s == 'count_desc' %}most fires first
+              {% elif s == 'count_asc' %}fewest fires first
+              {% else %}{{ s }}{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">apply</button>
+    </fieldset>
+  </form>
+
   {% if notice %}
     <article><p><em>{{ notice }}</em></p></article>
   {% endif %}
 
-  {% if ruleset and ruleset.rules %}
-    {% for rule in ruleset.rules %}
+  {% if rules_with_stats %}
+    {% for entry in rules_with_stats %}
+      {% set rule = entry.rule %}
+      {% set stats = entry.stats %}
       <article {% if not rule.enabled %}class="dim" style="opacity: 0.55"{% endif %}>
         <header>
           <strong>{{ rule.name }}</strong>
@@ -20,6 +49,21 @@
         {% if rule.description %}
           <p>{{ rule.description }}</p>
         {% endif %}
+        <p>
+          <small>
+            <strong>fires ({{ window_label }}):</strong> {{ stats.count }}
+            &middot;
+            <strong>last fired:</strong>
+            {% if stats.last_fired_ts %}
+              <time datetime="{{ stats.last_fired_ts | unix_to_iso }}"
+                    title="{{ stats.last_fired_ts | unix_to_utc_human }}">
+                {{ stats.last_fired_ts | relative_time(now_ts=now_ts) }}
+              </time>
+            {% else %}
+              &mdash;
+            {% endif %}
+          </small>
+        </p>
         {% if rule.patterns %}
           <p><strong>patterns:</strong></p>
           <ul>
