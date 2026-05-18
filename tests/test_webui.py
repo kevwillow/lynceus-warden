@@ -525,6 +525,351 @@ def test_rules_list_with_missing_file_shows_empty_notice(tmp_path):
 
 
 @pytest.mark.webui
+def test_relative_time_filter_buckets():
+    from lynceus.webui.app import relative_time
+
+    now = 1_000_000
+    # None / empty → "—"
+    assert relative_time(None, now_ts=now) == "—"
+    assert relative_time("", now_ts=now) == "—"
+    # < 60s → "just now"
+    assert relative_time(now - 30, now_ts=now) == "just now"
+    # Future timestamp (clock skew) → "just now", not negative.
+    assert relative_time(now + 30, now_ts=now) == "just now"
+    # < 60 min
+    assert relative_time(now - 600, now_ts=now) == "10m ago"
+    # < 24 h
+    assert relative_time(now - 3 * 3600, now_ts=now) == "3h ago"
+    # >= 24 h
+    assert relative_time(now - 5 * 86400, now_ts=now) == "5d ago"
+
+
+@pytest.mark.webui
+def test_rules_list_default_window_is_7d_and_default_sort_preserves_yaml_order(tmp_path):
+    """Bookmarked URLs from pre-rc5 (no query params) must keep
+    yielding the same row order — defaulting to count_desc would
+    surprise operators. The window default of 7d matches the
+    /alerts intuition of "recent past"."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: aaaa_first_in_yaml\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n"
+        "  - name: bbbb_second_in_yaml\n"
+        "    rule_type: watchlist_ssid\n"
+        "    severity: med\n"
+        "    patterns: ['SSID']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    # Give bbbb more fires than aaaa; default sort must still put
+    # aaaa first because that's the rules.yaml order.
+    import time as _time
+
+    now = int(_time.time())
+    db.add_alert(ts=now - 100, rule_name="aaaa_first_in_yaml", mac=None,
+                 message="x", severity="high")
+    db.add_alert(ts=now - 200, rule_name="bbbb_second_in_yaml", mac=None,
+                 message="x", severity="med")
+    db.add_alert(ts=now - 300, rule_name="bbbb_second_in_yaml", mac=None,
+                 message="x", severity="med")
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        # Default window is 7d → label text appears in the page.
+        assert "last 7d" in r.text or "7d" in r.text
+        idx_a = r.text.find("aaaa_first_in_yaml")
+        idx_b = r.text.find("bbbb_second_in_yaml")
+        assert idx_a != -1 and idx_b != -1
+        assert idx_a < idx_b, "default sort must preserve rules.yaml order"
+        # The "fires" stats line must show the actual counts.
+        # Find the fires line right after aaaa's row.
+        aaaa_segment = r.text[idx_a:idx_b]
+        assert "fires" in aaaa_segment.lower()
+        # aaaa has exactly 1 fire in the default 7d window.
+        assert "1" in aaaa_segment
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_since_window_narrows_counts(tmp_path):
+    """since=1h must exclude the older alert; rule's count drops."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: r1\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    import time as _time
+
+    now = int(_time.time())
+    db.add_alert(ts=now - 30, rule_name="r1", mac=None, message="x", severity="high")
+    db.add_alert(ts=now - 7200, rule_name="r1", mac=None, message="x", severity="high")
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r_1h = client.get("/rules?since=1h")
+            r_24h = client.get("/rules?since=24h")
+            r_all = client.get("/rules?since=all")
+        # All three should render successfully.
+        for r in (r_1h, r_24h, r_all):
+            assert r.status_code == 200
+            assert "r1" in r.text
+        # The 1h window excludes the 2h-old alert: only 1 fire visible.
+        # The 24h and "all" windows include both.
+        # Look at the "fires (last X):" line content.
+        for r, expected_count in (
+            (r_1h, "1"),
+            (r_24h, "2"),
+            (r_all, "2"),
+        ):
+            # Find the fires line for r1 and verify the count appears.
+            idx = r.text.find("r1")
+            assert idx != -1
+            # Search forward a reasonable window for the count.
+            segment = r.text[idx:idx + 600]
+            assert f"fires" in segment.lower()
+            # We expect the count immediately after "fires (...)".
+            import re as _re
+
+            m = _re.search(r"fires\s*\([^)]*\)\s*:\s*</strong>\s*(\d+)", segment)
+            assert m is not None, f"could not parse fires count in:\n{segment[:300]}"
+            assert m.group(1) == expected_count, (
+                f"expected count={expected_count}, got {m.group(1)} "
+                f"for url={r.request.url}"
+            )
+        # Window label appears in the column header.
+        assert "all time" in r_all.text
+        assert "1h" in r_1h.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_sort_count_desc_orders_by_count(tmp_path):
+    """sort=count_desc must put high-volume rules first; ties break by name."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: low_volume\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n"
+        "  - name: high_volume\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:02']\n"
+        "  - name: zzz_never_fires\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    import time as _time
+
+    now = int(_time.time())
+    db.add_alert(ts=now - 100, rule_name="low_volume", mac=None,
+                 message="x", severity="high")
+    for i in range(5):
+        db.add_alert(ts=now - 100 - i, rule_name="high_volume", mac=None,
+                     message="x", severity="high")
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?sort=count_desc")
+        assert r.status_code == 200
+        idx_high = r.text.find("high_volume")
+        idx_low = r.text.find("low_volume")
+        idx_zero = r.text.find("zzz_never_fires")
+        assert idx_high < idx_low < idx_zero
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_sort_count_asc_inverts(tmp_path):
+    """sort=count_asc is the mirror image: lowest count first."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: alpha_high_count\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n"
+        "  - name: beta_zero_count\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    import time as _time
+
+    now = int(_time.time())
+    for i in range(3):
+        db.add_alert(ts=now - i, rule_name="alpha_high_count", mac=None,
+                     message="x", severity="high")
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?sort=count_asc")
+        assert r.status_code == 200
+        idx_zero = r.text.find("beta_zero_count")
+        idx_high = r.text.find("alpha_high_count")
+        assert idx_zero < idx_high
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_never_fired_rule_shows_dash(tmp_path):
+    """A rule with zero fires must still render — with '—' for last fired."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: configured_but_silent\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        # The rule itself appears.
+        assert "configured_but_silent" in r.text
+        # Fires count is zero.
+        idx = r.text.find("configured_but_silent")
+        segment = r.text[idx:idx + 600]
+        import re as _re
+
+        m = _re.search(r"fires\s*\([^)]*\)\s*:\s*</strong>\s*(\d+)", segment)
+        assert m is not None
+        assert m.group(1) == "0"
+        # Last-fired column shows a dash (mdash entity) since the
+        # rule never fired in the window.
+        assert "&mdash;" in segment or "—" in segment
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_window_dropdown_renders_all_options(tmp_path):
+    """The window dropdown must render all five buckets, with the
+    current value selected. Same for the sort dropdown."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: r\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?since=24h&sort=count_desc")
+        assert r.status_code == 200
+        # All five window values must appear as <option> values.
+        for w in ("1h", "24h", "7d", "30d", "all"):
+            assert f'value="{w}"' in r.text, f"window option {w!r} missing"
+        # Current window=24h selected.
+        assert 'value="24h" selected' in r.text
+        # Sort options too.
+        for s in ("default", "count_desc", "count_asc"):
+            assert f'value="{s}"' in r.text, f"sort option {s!r} missing"
+        assert 'value="count_desc" selected' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_invalid_since_falls_back_to_default(tmp_path):
+    """Invalid since (e.g. stale URL) must silently fall back to
+    the 7d default rather than 400 — the underlying data is
+    independent of the query params, so refusing to render is
+    hostile."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: r\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?since=bogus&sort=alsobogus")
+        assert r.status_code == 200
+        # Falls back to since=7d and sort=default (rules.yaml order).
+        assert 'value="7d" selected' in r.text
+        assert 'value="default" selected' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_empty_alerts_table_shows_zero_counts(tmp_path):
+    """All rules render with 0 / — when the alerts table is empty."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: rule_a\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n"
+        "  - name: rule_b\n"
+        "    rule_type: watchlist_ssid\n"
+        "    severity: med\n"
+        "    patterns: ['SSID']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        import re as _re
+
+        for name in ("rule_a", "rule_b"):
+            assert name in r.text
+            idx = r.text.find(name)
+            segment = r.text[idx:idx + 600]
+            m = _re.search(r"fires\s*\([^)]*\)\s*:\s*</strong>\s*(\d+)", segment)
+            assert m is not None
+            assert m.group(1) == "0"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
 def test_rules_list_disabled_rules_dimmed(tmp_path):
     rules_yaml = tmp_path / "rules.yaml"
     rules_yaml.write_text(
