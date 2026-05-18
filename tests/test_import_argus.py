@@ -420,6 +420,150 @@ def test_ble_manufacturer_id_no_longer_falls_to_unknown_type(tmp_path, db):
     assert report.dropped_unknown_type == 1  # rf_channel still dropped
 
 
+def test_ble_company_id_aliased_to_ble_manufacturer_id(tmp_path, db):
+    """Argus emits a small tail (7 rows in the rc5 snapshot) of rows with
+    identifier_type=``ble_company_id`` carrying canonical-shape values
+    like ``0x4C`` / ``0x004C`` / ``0x010C``. The semantic surface is the
+    same as the admitted ``ble_manufacturer_id`` type — Bluetooth SIG
+    16-bit Company Identifier — and the importer aliases the Argus type
+    to the Lynceus pattern_type. Canonical persistent form is unchanged
+    (``004c`` lowercase 4-hex). Closes the rc5 residuals
+    admit-via-normalization gap (docs/ARGUS_RESIDUALS.md)."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="bci-1",
+                identifier_type="ble_company_id",
+                identifier="0x4C",
+            ),
+            _row(
+                argus_record_id="bci-2",
+                identifier_type="ble_company_id",
+                identifier="0x010C",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 2
+    assert report.dropped_unknown_type == 0
+    rows = db._conn.execute(
+        "SELECT pattern, pattern_type FROM watchlist ORDER BY pattern"
+    ).fetchall()
+    assert [r["pattern_type"] for r in rows] == [
+        "ble_manufacturer_id",
+        "ble_manufacturer_id",
+    ]
+    assert [r["pattern"] for r in rows] == ["004c", "010c"]
+
+
+def test_ble_service_uuid_aliased_to_ble_uuid_short_forms_expand(tmp_path, db):
+    """Argus emits ``ble_service_uuid`` in three shapes: 16-bit short
+    (``fd44``), 32-bit short (``7dfc9000``), and full 128-bit
+    (``74278bda-...``). The importer aliases the type to ``ble_uuid``
+    and the canonicalizer expands short forms against the Bluetooth
+    base UUID. Closes the rc5 residuals admit-via-normalization gap."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="bsu-16bit",
+                identifier_type="ble_service_uuid",
+                identifier="fd44",
+            ),
+            _row(
+                argus_record_id="bsu-32bit",
+                identifier_type="ble_service_uuid",
+                identifier="7dfc9000",
+            ),
+            _row(
+                argus_record_id="bsu-128bit",
+                identifier_type="ble_service_uuid",
+                identifier="74278bda-b644-4520-8f0c-720eaf059935",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 3
+    assert report.dropped_unknown_type == 0
+    rows = db._conn.execute(
+        "SELECT pattern, pattern_type FROM watchlist ORDER BY pattern"
+    ).fetchall()
+    assert [r["pattern_type"] for r in rows] == ["ble_uuid"] * 3
+    assert [r["pattern"] for r in rows] == [
+        "0000fd44-0000-1000-8000-00805f9b34fb",
+        "74278bda-b644-4520-8f0c-720eaf059935",
+        "7dfc9000-0000-1000-8000-00805f9b34fb",
+    ]
+
+
+def test_ble_service_uuid_dual_form_takes_uuid_segment(tmp_path, db):
+    """Argus emits ~2 rows in the rc5 snapshot with dual-form values
+    like ``"fd5a / 0x0075"`` — 16-bit UUID + paired company id in a
+    single identifier cell. The importer takes the UUID segment for
+    the ``ble_uuid`` admission; the company-id half is admitted
+    separately as ``ble_manufacturer_id`` when Argus types it that
+    way."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="bsu-dual-1",
+                identifier_type="ble_service_uuid",
+                identifier="fd5a / 0x0075",
+            ),
+            _row(
+                argus_record_id="bsu-dual-2",
+                identifier_type="ble_service_uuid",
+                identifier="fdcd / 0x02d0",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 2
+    assert report.dropped_unknown_type == 0
+    assert report.normalization_failed == 0
+    rows = db._conn.execute(
+        "SELECT pattern, pattern_type FROM watchlist ORDER BY pattern"
+    ).fetchall()
+    assert [r["pattern_type"] for r in rows] == ["ble_uuid", "ble_uuid"]
+    assert [r["pattern"] for r in rows] == [
+        "0000fd5a-0000-1000-8000-00805f9b34fb",
+        "0000fdcd-0000-1000-8000-00805f9b34fb",
+    ]
+
+
+def test_ble_service_uuid_short_and_padded_dedup_via_natural_key(tmp_path, db):
+    """``fd44`` (16-bit short) and ``0000fd44`` (32-bit zero-padded
+    rendering of the same SIG-assigned 16-bit UUID) both canonicalize
+    to ``0000fd44-...-00805f9b34fb``. The importer's natural-key
+    lookup (pattern, pattern_type) collapses them onto a single
+    watchlist row; the metadata side is keyed by watchlist_id and so
+    also collapses to one row (the second Argus row's metadata
+    overwrites the first via watchlist_id upsert). Both rows still
+    increment ``imported_new`` — the report counts CSV rows admitted,
+    not distinct rows persisted."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="bsu-fd44-short",
+                identifier_type="ble_service_uuid",
+                identifier="fd44",
+            ),
+            _row(
+                argus_record_id="bsu-fd44-padded",
+                identifier_type="ble_service_uuid",
+                identifier="0000fd44",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 2  # both rows counted as admitted
+    assert report.dropped_unknown_type == 0
+    assert _wl_count(db) == 1  # but only one watchlist row (dedup)
+
+
 def test_ble_manufacturer_id_malformed_lands_in_normalization_failed(tmp_path, db):
     """Defensive: a malformed ble_manufacturer_id value (>4 hex chars)
     routes through normalization_failed, not unknown_type — matches

@@ -141,19 +141,53 @@ def test_normalize_ble_uuid_already_canonical_idempotent():
     assert normalize_pattern("ble_uuid", canonical) == canonical
 
 
-def test_normalize_ble_uuid_short_16bit_rejected():
-    """Documents the deliberate non-expansion of 16-bit short UUIDs.
-    Expanding ``0xfd6f`` to the full Bluetooth-base 128-bit form is a
-    SEPARATE fix (the Kismet short-UUID hardware finding) and merging
-    it into this helper would let two unrelated changes ride together
-    on one normalization pass."""
-    with pytest.raises(ValueError, match="ble_uuid"):
-        normalize_pattern("ble_uuid", "0000fd6f")
+def test_normalize_ble_uuid_short_16bit_expands_to_base():
+    """16-bit Bluetooth SIG assigned UUID (4 hex chars) expands against
+    the canonical base UUID per Core Spec §3.2.1. Closes the
+    ``ble_service_uuid`` normalization-variant gap surfaced by the rc5
+    Argus residuals audit (e.g. ``fd44`` / ``fe9f`` rows)."""
+    assert (
+        normalize_pattern("ble_uuid", "fd5a")
+        == "0000fd5a-0000-1000-8000-00805f9b34fb"
+    )
+    assert (
+        normalize_pattern("ble_uuid", "FE9F")
+        == "0000fe9f-0000-1000-8000-00805f9b34fb"
+    )
 
 
-def test_normalize_ble_uuid_short_32bit_rejected():
-    """Same posture as the 16-bit case: 32-bit form is also a short UUID
-    that the Bluetooth-base expansion fix will handle separately."""
+def test_normalize_ble_uuid_short_32bit_expands_to_base():
+    """32-bit assigned UUID (8 hex chars) folds into the first 8 chars of
+    the base UUID. Covers the ``7dfc9000`` / ``0000fd44`` shapes Argus
+    emits as ``ble_service_uuid`` per the rc5 audit."""
+    assert (
+        normalize_pattern("ble_uuid", "7dfc9000")
+        == "7dfc9000-0000-1000-8000-00805f9b34fb"
+    )
+    assert (
+        normalize_pattern("ble_uuid", "0000fd44")
+        == "0000fd44-0000-1000-8000-00805f9b34fb"
+    )
+
+
+def test_normalize_ble_uuid_dual_form_takes_uuid_segment():
+    """Argus emits a small number of dual-form rows like
+    ``"fd5a / 0x0075"`` (16-bit UUID + paired company id). The UUID half
+    is the ``ble_uuid`` admission; the company id is admitted separately
+    as ``ble_manufacturer_id`` when Argus emits it that way."""
+    assert (
+        normalize_pattern("ble_uuid", "fd5a / 0x0075")
+        == "0000fd5a-0000-1000-8000-00805f9b34fb"
+    )
+    assert (
+        normalize_pattern("ble_uuid", "fdcd / 0x02d0")
+        == "0000fdcd-0000-1000-8000-00805f9b34fb"
+    )
+
+
+def test_normalize_ble_uuid_short_truncated_rejected():
+    """Truncated 128-bit input (16 hex chars after stripping) is neither
+    a short SIG form nor a full UUID — rejected as malformed."""
     with pytest.raises(ValueError, match="ble_uuid"):
         normalize_pattern("ble_uuid", "0000fd6f-0000-1000")
 

@@ -92,17 +92,17 @@ def test_collect_residuals_counts_admitted_vs_dropped(tmp_path):
         _row("r2", "aa:bb:cc", "oui"),
         _row("r3", "APQ8009", "chipset_codename"),
         _row("r4", "APQ8016", "chipset_codename"),
-        _row("r5", "0x4C", "ble_company_id"),
+        _row("r5", "builtin-flock", "alpr_model"),
     ]
     p = _write_fixture(tmp_path, rows)
     samples, admitted, total, counts = audit.collect_residuals(p)
     assert total == 5
     assert admitted == 2
     assert counts == Counter(
-        {"chipset_codename": 2, "ble_company_id": 1}
+        {"chipset_codename": 2, "alpr_model": 1}
     )
     assert samples["chipset_codename"] == ["APQ8009", "APQ8016"]
-    assert samples["ble_company_id"] == ["0x4C"]
+    assert samples["alpr_model"] == ["builtin-flock"]
 
 
 def test_collect_residuals_keeps_first_five_distinct_samples(tmp_path):
@@ -232,24 +232,37 @@ def test_render_report_summary_counts_match_per_type_rows(tmp_path):
     """High-yield + no-surface => ``drop-entirely``; high-yield +
     normalization-variant => ``admit-via-normalization``; high-yield
     + plausible => ``defer-pending-smoke``. The Summary section must
-    aggregate the per-type rows correctly."""
-    # Build a fixture where each non-trivial recommendation bucket
-    # gets exactly one type with yield 6 (above the threshold).
-    rows: list[str] = []
-    rows += [_row(f"a{i}", f"APQ80{i:02d}", "chipset_codename") for i in range(6)]
-    rows += [_row(f"b{i}", f"0x{i:04x}", "ble_company_id") for i in range(6)]
-    rows += [
-        _row(f"c{i}", f"DJI device_type={i}", "device_class_id") for i in range(6)
-    ]
-    rows += [_row(f"d{i}", f"name-{i}", "ble_local_name") for i in range(6)]
-    p = _write_fixture(tmp_path, rows)
-    samples, admitted, total, counts = audit.collect_residuals(p)
+    aggregate the per-type rows correctly.
+
+    Constructs ``counts`` / ``samples`` synthetically so the test can
+    exercise the ``admit-via-normalization`` rendering path even
+    though the only normalization-variant types in
+    ``RESIDUAL_SURFACE_TABLE`` (``ble_company_id``,
+    ``ble_service_uuid``) are now admitted by the importer and so
+    never appear in a live ``collect_residuals`` output.
+    """
+    # Synthetic counts / samples — one type per recommendation bucket,
+    # each at yield 6 (above the negligible-yield threshold).
+    counts = Counter({
+        "chipset_codename": 6,   # no-observation-surface -> drop-entirely
+        "ble_company_id": 6,     # normalization-variant -> admit-via-normalization
+        "device_class_id": 6,    # plausible-needs-smoke -> defer-pending-smoke
+        "ble_local_name": 6,     # verified-lynceus -> admit
+    })
+    samples = {
+        "chipset_codename": [f"APQ80{i:02d}" for i in range(5)],
+        "ble_company_id": [f"0x{i:04x}" for i in range(5)],
+        "device_class_id": [f"DJI device_type={i}" for i in range(5)],
+        "ble_local_name": [f"name-{i}" for i in range(5)],
+    }
+    p = tmp_path / "synthetic.csv"
+    p.write_text(META_LINE + HEADER_LINE, encoding="utf-8")
     report = audit.render_report(
         csv_path=p,
         samples=samples,
         counts=counts,
-        admitted=admitted,
-        total=total,
+        admitted=0,
+        total=sum(counts.values()),
         meta={},
     )
     assert "- **admit**: 1 type(s), 6 row(s)" in report
