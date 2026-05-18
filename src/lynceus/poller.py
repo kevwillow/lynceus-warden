@@ -31,6 +31,14 @@ from .rules import (
 
 STATE_KEY_LAST_POLL = "last_poll_ts"
 
+# Cadence for the per-rule_type snooze suppression summary log. The
+# Poller flushes accumulated counts to a single INFO line at this
+# interval (default ~1h) so operators grepping journalctl see what
+# the active snoozes are actually catching without one log line per
+# suppressed emit drowning the rest of the daemon output. Tests
+# shorten this to verify the flush behavior without sleeping.
+SUPPRESSION_LOG_INTERVAL_SECONDS = 3600
+
 # Backoff schedule for the startup Kismet health check, in seconds.
 # Three attempts with 2s/4s waits between them — covers the window where
 # Kismet is still coming up under systemd's After=network.target without
@@ -63,6 +71,7 @@ def poll_once(
     source_allowlist: frozenset[str] | None = None,
     source_locations: dict[str, str] | None = None,
     severity_overrides: RuntimeSeverityOverride | None = None,
+    rule_type_suppression_counter: dict[str, int] | None = None,
 ) -> int:
     """Run one poll tick: fetch from Kismet, persist sightings, evaluate rules.
 
@@ -72,6 +81,14 @@ def poll_once(
     emitted so operators can review whether the allowlist is too permissive —
     silently disabling a watchlist rule by allowlisting the matching device
     is exactly the kind of misconfiguration the audit log is meant to surface.
+
+    ``rule_type_suppression_counter`` accumulates per-rule_type
+    suppression counts for the rule_type-snooze layer. The Poller
+    instance owns the counter across poll cycles so the periodic
+    INFO-summary log spans more than a single tick; tests pass an
+    empty dict to inspect accumulation directly. ``None`` (the
+    default, used by ad-hoc callers) means no accumulation — the
+    gate still suppresses correctly; only the breakdown is dropped.
     """
     if ruleset is None:
         ruleset = Ruleset()
@@ -208,6 +225,31 @@ def poll_once(
                     drone_id_prefix=obs.drone_id_prefix,
                 )
             for hit in hits:
+                # Rule_type snooze gate. Sequenced BEFORE dedup because
+                # snooze is the wider / stronger statement: "no emits
+                # from this rule_type at all". Skipping dedup avoids
+                # writing a recent-alert lookup we'd discard anyway.
+                # The RuleHit is intentionally still produced upstream
+                # (rule.evaluate ran, /rules statistics see the rule
+                # firing in the sense it would have); only the alert
+                # row + evidence capture + notifier hop are gated. The
+                # in-process counter accumulates per rule_type so the
+                # Poller's periodic INFO summary can break suppression
+                # activity down — operators grepping journalctl see
+                # which rule_types the snooze is actually catching.
+                snooze = db.is_rule_type_snoozed(hit.rule_type, now_ts)
+                if snooze is not None:
+                    logger.debug(
+                        "rule_type snooze suppressed emit: rule=%s rule_type=%s mac=%s",
+                        hit.rule_name,
+                        hit.rule_type,
+                        hit.mac,
+                    )
+                    if rule_type_suppression_counter is not None:
+                        rule_type_suppression_counter[hit.rule_type] = (
+                            rule_type_suppression_counter.get(hit.rule_type, 0) + 1
+                        )
+                    continue
                 if config.alert_dedup_window_seconds > 0:
                     since = now_ts - config.alert_dedup_window_seconds
                     if (
@@ -264,6 +306,22 @@ def poll_once(
             logger.warning("Failed to persist observation %s: %s", obs.mac, e)
             continue
     db.set_state(STATE_KEY_LAST_POLL, str(now_ts))
+    # Per-poll housekeeping for the rule_type_snoozes table: physically
+    # delete rows whose expires_at has passed. Cheap (table is tiny;
+    # indexed on expires_at) and defensive — the gate's
+    # ``expires_at > now_ts`` filter already ignores expired rows, so a
+    # missed cleanup never affects correctness, only steady-state row
+    # count. Wrapped defensively for the same reason as the evidence
+    # prune below: a housekeeping failure must not abort the poll loop.
+    try:
+        purged = db.cleanup_expired_rule_type_snoozes(now_ts)
+        if purged > 0:
+            logger.debug(
+                "rule_type_snoozes: purged %d expired row(s) on poll cycle",
+                purged,
+            )
+    except Exception as e:
+        logger.warning("rule_type_snoozes cleanup failed: %s", e)
     # Daily housekeeping: prune evidence rows past the retention window. The
     # helper is a no-op except once per ~24h, so this is cheap to call from
     # every poll tick. Wrapped defensively because a prune failure must not
@@ -431,6 +489,56 @@ class Poller:
         )
         self.notifier: Notifier = build_notifier(config)
         self._stop_flag = False
+        # Rule_type snooze suppression accumulator. Cumulative across
+        # poll cycles; flushed to an INFO summary every
+        # SUPPRESSION_LOG_INTERVAL_SECONDS. Initialized to "log on the
+        # first tick that produces a non-empty counter past the
+        # interval boundary" — anchoring to instance-creation time so
+        # restarts don't produce a phantom summary on the first tick.
+        self._rule_type_suppression_counter: dict[str, int] = {}
+        self._last_suppression_log_ts: int = int(time.time())
+
+    def _maybe_flush_suppression_summary(self, *, now_ts: int) -> None:
+        """Emit the periodic per-rule_type suppression breakdown line.
+
+        Cadence is SUPPRESSION_LOG_INTERVAL_SECONDS (default 1h). On
+        each poll-loop iteration we check elapsed time since the last
+        flush; when it exceeds the interval AND at least one
+        suppression has accumulated, one INFO line goes out with the
+        per-rule_type breakdown and the counter resets. An empty
+        counter is silently skipped — no point logging "0 suppressed
+        in last hour" when no snooze is active.
+
+        Operators grepping journalctl for a single string get the
+        full audit shape: "rule_type snooze suppressed <total>
+        alert(s) in last ~<interval>: <breakdown>" — the prefix is
+        stable so a watcher script can match without parsing the
+        rest. The interval is approximate because poll ticks don't
+        align to the hour boundary; the line surfaces what was
+        accumulated, not what was expected.
+        """
+        elapsed = now_ts - self._last_suppression_log_ts
+        if elapsed < SUPPRESSION_LOG_INTERVAL_SECONDS:
+            return
+        if not self._rule_type_suppression_counter:
+            # Keep the cadence anchor moving so a sustained-empty
+            # period doesn't burst-log the moment a single suppression
+            # accumulates after a long idle stretch.
+            self._last_suppression_log_ts = now_ts
+            return
+        total = sum(self._rule_type_suppression_counter.values())
+        breakdown = ", ".join(
+            f"{rt}={count}"
+            for rt, count in sorted(self._rule_type_suppression_counter.items())
+        )
+        logger.info(
+            "rule_type snooze suppressed %d alert(s) in last ~%ds: %s",
+            total,
+            elapsed,
+            breakdown,
+        )
+        self._rule_type_suppression_counter.clear()
+        self._last_suppression_log_ts = now_ts
 
     def _current_allowlist_mtimes(self) -> dict[Path, float]:
         """Return current mtimes for both allowlist files, sentinel 0.0 if absent.
@@ -551,18 +659,21 @@ class Poller:
                 # the DB before the signal is re-raised.
                 try:
                     self._maybe_reload_allowlist()
+                    now_ts = int(time.time())
                     poll_once(
                         self.client,
                         self.db,
                         self.config,
-                        int(time.time()),
+                        now_ts,
                         ruleset=self.ruleset,
                         allowlist=self.allowlist,
                         notifier=self.notifier,
                         source_allowlist=self._source_allowlist,
                         source_locations=self.config.kismet_source_locations,
                         severity_overrides=self.severity_overrides,
+                        rule_type_suppression_counter=self._rule_type_suppression_counter,
                     )
+                    self._maybe_flush_suppression_summary(now_ts=now_ts)
                 except Exception:
                     logger.error("poll_once raised; continuing", exc_info=True)
                 self._interruptible_sleep(self.config.poll_interval_seconds)
@@ -572,18 +683,22 @@ class Poller:
     def run_once(self) -> int:
         try:
             self._maybe_reload_allowlist()
-            return poll_once(
+            now_ts = int(time.time())
+            processed = poll_once(
                 self.client,
                 self.db,
                 self.config,
-                int(time.time()),
+                now_ts,
                 ruleset=self.ruleset,
                 allowlist=self.allowlist,
                 notifier=self.notifier,
                 source_allowlist=self._source_allowlist,
                 source_locations=self.config.kismet_source_locations,
                 severity_overrides=self.severity_overrides,
+                rule_type_suppression_counter=self._rule_type_suppression_counter,
             )
+            self._maybe_flush_suppression_summary(now_ts=now_ts)
+            return processed
         finally:
             self.db.close()
 
