@@ -96,6 +96,40 @@
     </article>
   {% endif %}
 
+  <article>
+    <header><strong>triage notes</strong></header>
+    {% if note_flash == 'note_saved' %}
+      <p class="status"><em>Note saved.</em></p>
+    {% elif note_flash == 'note_cleared' %}
+      <p class="status"><em>Note cleared.</em></p>
+    {% endif %}
+    {% if alert.note %}
+      <pre class="alert-note-text">{{ alert.note }}</pre>
+      {% if alert.note_updated_at %}
+        <p class="dim"><small>Last updated <time datetime="{{ alert.note_updated_at | unix_to_iso }}">{{ alert.note_updated_at | relative_time(now_ts=now_ts) }}</time>.</small></p>
+      {% endif %}
+    {% else %}
+      <p class="dim"><em>No triage note recorded for this alert.</em></p>
+    {% endif %}
+    <form method="post" action="/alerts/{{ alert.id }}/note">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <label>note
+        <textarea name="note_text" rows="4" maxlength="{{ note_max_chars }}"
+                  placeholder="What did you conclude about this alert?">{{ alert.note or "" }}</textarea>
+      </label>
+      <p><small class="dim">Plain text. Up to {{ note_max_chars }} characters. Saving an empty note clears the existing one.</small></p>
+      <button type="submit">{% if alert.note %}Update note{% else %}Save note{% endif %}</button>
+    </form>
+    {% if alert.note %}
+      <form method="post" action="/alerts/{{ alert.id }}/note"
+            onsubmit="return confirm('Clear the triage note for this alert?');">
+        <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+        <input type="hidden" name="note_text" value="">
+        <button type="submit" class="outline">Clear note</button>
+      </form>
+    {% endif %}
+  </article>
+
   {% if allowlist_configured and alert.mac %}
     <article>
       <header><strong>triage</strong></header>

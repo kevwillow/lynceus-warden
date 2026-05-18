@@ -1178,7 +1178,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
         )
 
     @app.get("/alerts/{alert_id}", response_class=HTMLResponse)
-    def alert_detail(request: Request, alert_id: int):
+    def alert_detail(
+        request: Request,
+        alert_id: int,
+        success: str | None = Query(default=None),
+    ):
         if alert_id < 1:
             raise HTTPException(status_code=400, detail="alert_id must be positive")
         alert = db.get_alert_with_match(alert_id)
@@ -1245,6 +1249,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
             # because ``_match_mac_in_entries`` filters them out first.
             seconds_left = max(0, allowlist_match.expires_at - now_ts)
             snooze_hours_remaining = max(1, (seconds_left + 3599) // 3600)
+        # Whitelist the success-flash tokens that the detail page
+        # recognizes. Unknown / spoofed values from a hand-crafted
+        # URL render as no toast at all rather than echoing arbitrary
+        # query-string content into the page.
+        note_flash: str | None = None
+        if success in ("note_saved", "note_cleared"):
+            note_flash = success
         return app.state.templates.TemplateResponse(
             request=request,
             name="alert_detail.html",
@@ -1260,6 +1271,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "allowlist_match_removable": allowlist_match_removable,
                 "allowlist_configured": allowlist_configured,
                 "snooze_hours_remaining": snooze_hours_remaining,
+                "note_flash": note_flash,
+                "note_max_chars": db._ALERT_NOTE_MAX_CHARS,
+                "now_ts": now_ts,
             },
         )
 
@@ -1533,6 +1547,42 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # truth, which is more useful than a stale error message.
         remove_ui_entry(ui_path, result["mac"], "mac")
         return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
+
+    @app.post("/alerts/{alert_id}/note")
+    def update_alert_note_post(
+        request: Request,
+        alert_id: int,
+        note_text: str = Form(default=""),
+    ):
+        # Persistent per-alert triage note. Distinct from the
+        # alert_actions per-event note posted by ack/unack: this is
+        # one current conclusion ("FP -- known device"), replace-on-
+        # update; the action history continues to record ack events
+        # alongside. CSRF is enforced upstream by CSRFMiddleware.
+        if alert_id < 1:
+            raise HTTPException(status_code=400, detail="alert_id must be positive")
+        try:
+            ok = db.update_alert_note(alert_id, note_text, now_ts=int(time.time()))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not ok:
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "alerts",
+                    "message": f"Alert {alert_id} not found.",
+                },
+                status_code=404,
+            )
+        # Distinguish cleared vs saved via a ?success= flag so the
+        # detail template can show the appropriate one-time toast.
+        # Stripped-empty input clears the note (DB column NULL).
+        success = "note_cleared" if not note_text.strip() else "note_saved"
+        return RedirectResponse(
+            f"/alerts/{alert_id}?success={success}", status_code=303
+        )
 
     @app.get("/devices", response_class=HTMLResponse)
     def devices_list(
