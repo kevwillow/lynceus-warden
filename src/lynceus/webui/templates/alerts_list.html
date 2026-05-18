@@ -29,6 +29,13 @@
           <option value="true" {% if acknowledged is sameas true %}selected{% endif %}>yes</option>
         </select>
       </label>
+      <label>triage
+        <select name="has_note">
+          <option value="all" {% if has_note == 'all' %}selected{% endif %}>any</option>
+          <option value="with_note" {% if has_note == 'with_note' %}selected{% endif %}>with note &#x1F4DD;</option>
+          <option value="without_note" {% if has_note == 'without_note' %}selected{% endif %}>without note</option>
+        </select>
+      </label>
       <label>per page
         <select name="page_size">
           {% for n in per_page_options %}
@@ -83,6 +90,7 @@
       {% if rule_type %}<input type="hidden" name="rule_type" value="{{ rule_type }}">{% endif %}
       {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
       {% if window %}<input type="hidden" name="window" value="{{ window }}">{% endif %}
+      {% if has_note and has_note != 'all' %}<input type="hidden" name="has_note" value="{{ has_note }}">{% endif %}
       <details>
         <summary>acknowledge all matching</summary>
         <p><small>(this acknowledges all alerts matching your current filters, up to 1000)</small></p>
@@ -179,6 +187,7 @@
     {% if rule_type %}{% set _ = qs.append('rule_type=' ~ rule_type) %}{% endif %}
     {% if q %}{% set _ = qs.append('q=' ~ q) %}{% endif %}
     {% if window %}{% set _ = qs.append('window=' ~ window) %}{% endif %}
+    {% if has_note and has_note != 'all' %}{% set _ = qs.append('has_note=' ~ has_note) %}{% endif %}
     {% set _ = qs.append('page_size=' ~ pagination.per_page) %}
     {% set base_qs = qs | join('&') %}
     <ul>
