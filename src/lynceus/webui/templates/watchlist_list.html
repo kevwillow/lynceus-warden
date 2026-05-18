@@ -4,7 +4,53 @@
   {% include "_topnav.html" %}
   <h2>watchlist</h2>
 
-  <p><small>{{ entries | length }} entr{{ "y" if entries | length == 1 else "ies" }}</small></p>
+  <form method="get" action="/watchlist">
+    <fieldset class="grid">
+      <label>type
+        <select name="pattern_type">
+          <option value="" {% if not pattern_type %}selected{% endif %}>any</option>
+          {% for pt in pattern_type_options %}
+            <option value="{{ pt }}" {% if pattern_type == pt %}selected{% endif %}>{{ pt }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>severity
+        <select name="severity">
+          <option value="" {% if not severity %}selected{% endif %}>any</option>
+          <option value="low" {% if severity == 'low' %}selected{% endif %}>low</option>
+          <option value="med" {% if severity == 'med' %}selected{% endif %}>med</option>
+          <option value="high" {% if severity == 'high' %}selected{% endif %}>high</option>
+        </select>
+      </label>
+      <label>category
+        <select name="device_category">
+          <option value="" {% if not device_category %}selected{% endif %}>any</option>
+          <option value="{{ uncategorized_sentinel }}" {% if device_category == uncategorized_sentinel %}selected{% endif %}>(uncategorized)</option>
+          {% for cat in device_category_options %}
+            <option value="{{ cat }}" {% if device_category == cat %}selected{% endif %}>{{ cat }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>per page
+        <select name="page_size">
+          {% for n in per_page_options %}
+            <option value="{{ n }}" {% if n == pagination.per_page %}selected{% endif %}>{{ n }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </fieldset>
+    <fieldset class="grid">
+      <label>q
+        <input type="text" name="q" value="{{ q }}" maxlength="100" placeholder="pattern / manufacturer / argus id / category">
+      </label>
+      <button type="submit">filter</button>
+    </fieldset>
+    {% if filters_active %}
+      <p><a class="reset-filters" href="/watchlist">reset filters</a></p>
+    {% endif %}
+  </form>
+
+  <p><small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small></p>
 
   {% if entries %}
     <div class="table-scroll">
@@ -16,6 +62,8 @@
             <th>severity</th>
             <th>description</th>
             <th>vendor</th>
+            <th>category</th>
+            <th>argus id</th>
             <th>confidence</th>
           </tr>
         </thead>
@@ -27,6 +75,8 @@
               <td><span class="badge-{{ e.severity }}">{{ e.severity }}</span></td>
               <td>{{ e.description or "" }}</td>
               <td>{{ e.vendor or "" }}</td>
+              <td>{{ e.device_category or "" }}</td>
+              <td>{% if e.argus_record_id %}<code>{{ e.argus_record_id }}</code>{% endif %}</td>
               <td>
                 {% if e.confidence is not none %}
                   {% if e.confidence >= 70 %}
@@ -44,8 +94,44 @@
       </table>
     </div>
   {% else %}
-    <p><em>No watchlist entries.</em></p>
+    <p>
+      <em>No watchlist entries match the current filters.</em>
+      {% if filters_active %}
+        <a class="reset-filters" href="/watchlist">reset filters</a>
+      {% endif %}
+    </p>
   {% endif %}
+
+  <nav>
+    {% set qs = [] %}
+    {% if q %}{% set _ = qs.append('q=' ~ q) %}{% endif %}
+    {% if pattern_type %}{% set _ = qs.append('pattern_type=' ~ pattern_type) %}{% endif %}
+    {% if severity %}{% set _ = qs.append('severity=' ~ severity) %}{% endif %}
+    {% if device_category %}{% set _ = qs.append('device_category=' ~ device_category) %}{% endif %}
+    {% set _ = qs.append('page_size=' ~ pagination.per_page) %}
+    {% set base_qs = qs | join('&') %}
+    <ul>
+      <li>
+        {% if pagination.has_prev %}
+          <a href="/watchlist?{{ base_qs }}&page={{ pagination.page - 1 }}">&larr; prev</a>
+        {% else %}
+          <span class="dim">&larr; prev</span>
+        {% endif %}
+      </li>
+    </ul>
+    <ul>
+      <li><small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small></li>
+    </ul>
+    <ul>
+      <li>
+        {% if pagination.has_next %}
+          <a href="/watchlist?{{ base_qs }}&page={{ pagination.page + 1 }}">next &rarr;</a>
+        {% else %}
+          <span class="dim">next &rarr;</span>
+        {% endif %}
+      </li>
+    </ul>
+  </nav>
 
   <p><small>Edit watchlist via the <code>lynceus-seed-watchlist</code> CLI; UI is read-only.</small></p>
 {% endblock %}
