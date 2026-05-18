@@ -1118,6 +1118,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
+- **Argus residual types audit.** Added a per-type residual analysis
+  at `docs/ARGUS_RESIDUALS.md` characterizing the ~239 Argus rows
+  currently dropped by the importer as `unknown_type`, plus a
+  re-runnable diagnostic script at `scripts/audit_residuals.py`
+  that regenerates the report against any Argus snapshot. The
+  report enumerates 31 distinct residual identifier_types in the
+  current snapshot, with each row classified by Kismet observation
+  surface — `verified-lynceus` (already extracted in kismet.py),
+  `verified-kismet-docs` (in Kismet's documented schema),
+  `plausible-needs-smoke` (likely observable but unconfirmed),
+  `no-observation-surface` (static manufacturer / spec metadata
+  Kismet does not emit), or `normalization-variant` (same concept
+  as an admitted pattern_type, blocked only by case / hex-shape /
+  dual-form rendering). Per-type recommendation falls out
+  mechanically from surface + yield: `admit` / `admit-via-
+  normalization` / `defer-pending-smoke` / `drop-entirely`. With
+  the F1/F2 admissions landed earlier in rc5 (ble_manufacturer_id
+  + drone_id_prefix), the residual count dropped from ~4,635 to
+  239; the audit answers the natural follow-up "which of those
+  239 are worth a third admission" with concrete data rather
+  than guesswork, and surfaces two normalization gaps
+  (`ble_company_id`, `ble_service_uuid`) that overlap admitted
+  pattern_types and would be fixed in the importer's
+  normalization layer rather than via new Kismet surfaces. The
+  script lives in `scripts/` and is intentionally not a
+  `[project.scripts]` entry — operator surface stays unchanged.
+
 - **Doc-rot sweep across operator-visible docs.** SECURITY.md
   version refreshed from 0.3.0-rc1 to 0.4.0-rc5 (two occurrences).
   PROJECT_STATUS.md refreshed for 0.4 reality: current-version line,
