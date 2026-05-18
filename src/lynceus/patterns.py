@@ -22,9 +22,16 @@ Pattern types (matching the column values stored in ``watchlist.pattern_type``):
                    and flat-hex (``AABBCC`` — IEEE distribution form). The flat
                    form closes L-RULES-11.
 * ``ble_uuid``   – lowercase, hyphen-separated 128-bit UUID. Accepts uppercase
-                   and the dehyphenated 32-hex form. Does NOT expand short
-                   16-bit / 32-bit UUIDs to the Bluetooth base — that's a
-                   separate fix tracked under the Kismet short-UUID finding.
+                   and the dehyphenated 32-hex form. Also accepts 16-bit
+                   (4-hex) and 32-bit (8-hex) Bluetooth SIG short forms,
+                   which expand against the canonical Bluetooth base UUID
+                   ``00000000-0000-1000-8000-00805f9b34fb`` (Core Spec §3.2.1).
+                   Additionally accepts dual-form Argus emissions like
+                   ``"fd5a / 0x0075"`` (16-bit UUID plus paired company id);
+                   the leading UUID is taken and the trailing commentary
+                   dropped. Canonical output form is unchanged — the
+                   admitted-input shape widened, the stored 36-char
+                   8-4-4-4-12 form did not.
 * ``ssid``       – returned unchanged. SSIDs are case-sensitive by IEEE 802.11
                    spec; normalizing would silently change matching behaviour.
                    L-RULES-10 (SSID case/whitespace handling) is a deliberate
@@ -79,10 +86,50 @@ def _normalize_oui(pattern: str) -> str:
     return ":".join(hex_str[i : i + 2] for i in range(0, 6, 2))
 
 
+# Bluetooth Core Specification §3.2.1 base UUID. 16-bit and 32-bit assigned
+# UUIDs are folded into the first 4 / 8 hex chars of this base when expanded
+# to the canonical 128-bit form — i.e. 16-bit ``fd5a`` becomes
+# ``0000fd5a-0000-1000-8000-00805f9b34fb``. Lowercase here so the canonical
+# output form lands lowercase without an extra .lower() pass.
+_BLE_BASE_UUID_SUFFIX = "-0000-1000-8000-00805f9b34fb"
+
+
 def _normalize_ble_uuid(pattern: str) -> str:
-    hex_str = _to_canonical_hex(pattern, 32, "ble_uuid")
-    # Canonical UUID hyphen positions: 8-4-4-4-12.
-    return f"{hex_str[0:8]}-{hex_str[8:12]}-{hex_str[12:16]}-{hex_str[16:20]}-{hex_str[20:32]}"
+    # Argus emits a small number of ble_service_uuid rows in dual-form
+    # commentary shape — ``"fd5a / 0x0075"`` is "16-bit assigned UUID
+    # fd5a paired with company id 0x0075". For watchlist purposes the
+    # ``ble_uuid`` admission is the UUID half; the company id half is
+    # admitted separately as ``ble_manufacturer_id`` by Argus when it
+    # carries detection value on its own. Take the segment before the
+    # first ``/`` and canonicalize that.
+    text = pattern.strip()
+    if "/" in text:
+        text = text.split("/", 1)[0].strip()
+    cleaned = text.lower()
+    for sep in (":", "-", ".", " "):
+        cleaned = cleaned.replace(sep, "")
+    if not cleaned or not _HEX_RE.match(cleaned):
+        raise ValueError(
+            f"invalid ble_uuid: {pattern!r} "
+            f"(expected 4, 8, or 32 hex digits after stripping separators)"
+        )
+    # 16-bit and 32-bit Bluetooth SIG assigned UUIDs fold into the
+    # base UUID per Core Spec §3.2.1.
+    if len(cleaned) == 4:
+        return f"0000{cleaned}{_BLE_BASE_UUID_SUFFIX}"
+    if len(cleaned) == 8:
+        return f"{cleaned}{_BLE_BASE_UUID_SUFFIX}"
+    if len(cleaned) == 32:
+        # Canonical UUID hyphen positions: 8-4-4-4-12.
+        return (
+            f"{cleaned[0:8]}-{cleaned[8:12]}-{cleaned[12:16]}-"
+            f"{cleaned[16:20]}-{cleaned[20:32]}"
+        )
+    raise ValueError(
+        f"invalid ble_uuid: {pattern!r} "
+        f"(expected 4, 8, or 32 hex digits after stripping separators, "
+        f"got {len(cleaned)})"
+    )
 
 
 # mac_range parsing. Argus emits two CIDR shapes (operator-confirmed against
