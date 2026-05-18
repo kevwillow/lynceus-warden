@@ -1,13 +1,13 @@
 # Argus Residual Types Audit
 
-Generated: 2026-05-18T00:49:52Z
+Generated: 2026-05-18T01:09:15Z
 Argus snapshot: `C:/Claude/argus-db-main/exports/argus_export.csv`
 Snapshot mtime: 2026-05-18T00:37:55Z
 Argus schema_version: 21
 Argus record_count (meta): 22533
 Total CSV rows: 22533
-Currently admitted: 22294 (98.9%)
-Currently dropped (unknown_type): 239 (1.1%) across 31 distinct residual types
+Currently admitted: 22311 (99.0%)
+Currently dropped (unknown_type): 222 (1.0%) across 29 distinct residual types
 
 ## Per-type breakdown
 
@@ -20,9 +20,7 @@ Currently dropped (unknown_type): 239 (1.1%) across 31 distinct residual types
 | `rf_channel` | 16 | `2414.5 MHz`, `2429.502441 MHz`, `2434.5 MHz`, `2444.5 MHz`, `2459.5 MHz` | no-observation-surface | drop-entirely |
 | `asdstan_enum_value` | 14 | `asdstan_id_type_values.0=None`, `asdstan_id_type_values.1=Serial Number`, `asdstan_id_type_values.2=CAA-assigned registration ID`, `asdstan_height_type_enum.0=Above take-off`, `asdstan_height_type_enum.1=AGL` | no-observation-surface | drop-entirely |
 | `alpr_model` | 11 | `builtin-generic-alpr`, `builtin-flock`, `builtin-motorola`, `builtin-genetec`, `builtin-leonardo` | no-observation-surface | drop-entirely |
-| `ble_service_uuid` | 10 | `fd5a / 0x0075`, `fdcd / 0x02d0`, `7dfc9000`, `7dfc9001`, `7dfc9002` | normalization-variant | admit-via-normalization |
 | `asdstan_message_type` | 7 | `asdstan_msg_type_0`, `asdstan_msg_type_1`, `asdstan_msg_type_2`, `asdstan_msg_type_3`, `asdstan_msg_type_4` | no-observation-surface | drop-entirely |
-| `ble_company_id` | 7 | `0x4C`, `0x004C`, `0x010C`, `0x0183`, `0x022B` | normalization-variant | admit-via-normalization |
 | `ssid_pattern` | 5 | `flock`, `Flock`, `FLOCK`, `FS Ext Battery`, `Penguin` | plausible-needs-smoke | defer-pending-smoke |
 | `ble_protocol_byte` | 4 | `0x07`, `0x12`, `0x19`, `0x0A` | plausible-needs-smoke | drop-entirely |
 | `firmware_sha256_hash` | 4 | `8bcdd2fd8042ba91af2e94db044f301a293936980821a23564a85dfae41a7b12`, `08da4991581076e2d0b3be87c377c177d955d55c92be8ecee66e586181293a2f`, `dede8a4976eee00e464f6e7c301b291954e7941951fdcf23642613912a94bca7`, `0e03a8189b7451d1bb81d6fb10efbcefd399623edcb015af45008eedf8fd1298` | no-observation-surface | drop-entirely |
@@ -56,9 +54,7 @@ Detailed surface rationale for each residual type. The table above shows the cla
 - **`rf_channel`** (no-observation-surface): RF center frequency in MHz. Kismet emits ``kismet.device.base.frequency`` per device, but watchlist semantics — alert on every device on a given frequency — have unbounded fanout and no real detection value.
 - **`asdstan_enum_value`** (no-observation-surface): ASD-STAN F3411 enum descriptor (e.g. ``asdstan_id_type_values.0=None``) — Remote-ID taxonomy spec value, not a runtime field.
 - **`alpr_model`** (no-observation-surface): Argus-internal ALPR model identifier (``builtin-flock``, ``builtin-motorola``) — taxonomy metadata; no equivalent in Kismet emissions.
-- **`ble_service_uuid`** (normalization-variant): 16-bit assigned BLE service UUID — same surface as admitted pattern_type ``ble_uuid``. Argus emits dual-form values (e.g. ``fd5a / 0x0075``) which the existing UUID normalizer rejects as malformed; the canonical 36-char form is stored.
 - **`asdstan_message_type`** (no-observation-surface): ASD-STAN F3411 message-type descriptor — Remote-ID spec taxonomy, not a runtime field.
-- **`ble_company_id`** (normalization-variant): Bluetooth SIG 16-bit Company Identifier — same underlying concept as admitted pattern_type ``ble_manufacturer_id``. Residual values like ``0x4C`` / ``0x004C`` differ only in hex shape from the canonical lowercase 4-hex form Lynceus already stores (``004c``).
 - **`ssid_pattern`** (plausible-needs-smoke): Case-insensitive / substring SSID match — Kismet emits SSIDs in standard fields and Lynceus already extracts them, but watchlist match semantics differ from the existing exact-match ``ssid`` pattern_type and would require a new matcher in ``rules.py``.
 - **`ble_protocol_byte`** (plausible-needs-smoke): Single BLE protocol byte — same observation surface as ``ble_protocol_byte_table``, smaller value cardinality.
 - **`firmware_sha256_hash`** (no-observation-surface): Firmware binary hash — static spec metadata from image inspection, never broadcast.
@@ -84,7 +80,7 @@ Detailed surface rationale for each residual type. The table above shows the cla
 ## Summary
 
 - **admit**: 0 type(s), 0 row(s)
-- **admit-via-normalization**: 2 type(s), 17 row(s)
+- **admit-via-normalization**: 0 type(s), 0 row(s)
 - **defer-pending-smoke**: 3 type(s), 70 row(s)
 - **drop-entirely**: 26 type(s), 152 row(s)
 - **needs-classification**: 0 type(s), 0 row(s)

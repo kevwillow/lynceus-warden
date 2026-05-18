@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Argus importer admits `ble_company_id` and `ble_service_uuid` via
+  normalization.** The rc5 Argus residuals audit
+  (`docs/ARGUS_RESIDUALS.md`) flagged two `identifier_type` labels as
+  normalization-variants of admitted pattern_types: `ble_company_id`
+  (7 rows) is semantically the same surface as
+  `ble_manufacturer_id`, and `ble_service_uuid` (10 rows) is
+  semantically the same surface as `ble_uuid`. The importer now
+  aliases the Argus types one-way to the existing Lynceus
+  pattern_types — the canonical pattern_type stored in
+  `watchlist.pattern_type` is unchanged downstream, only the Argus-
+  side type label widened. The `ble_uuid` canonicalizer now accepts
+  16-bit (4-hex) and 32-bit (8-hex) Bluetooth SIG short forms and
+  expands them against the canonical base UUID
+  (`00000000-0000-1000-8000-00805f9b34fb`, Core Spec §3.2.1), plus
+  dual-form Argus emissions like `"fd5a / 0x0075"` (UUID + paired
+  company id in a single identifier cell — the UUID half lands as
+  the `ble_uuid` admission). Canonical persistent output forms are
+  unchanged for both pattern_types; only input acceptance widened.
+  No new pattern_types, no schema migration. 17 additional rows
+  recovered from the residuals tail (22294 → 22311 admitted; 239 →
+  222 dropped). The audit re-run reflects the new state:
+  admit-via-normalization drops to 0 types / 0 rows.
+
 - **`/watchlist` search + filter + pagination.** A full Argus import
   lands ~22k+ rows in the watchlist; the pre-rc5 page rendered every
   row on a single render and was genuinely unbrowsable past a few
