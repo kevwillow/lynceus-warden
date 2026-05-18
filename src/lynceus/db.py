@@ -2354,6 +2354,381 @@ class Database:
             )
         return cur.rowcount
 
+    # ------------------------------------------------------------------
+    # Phase 2 operator-action helpers (migration 018 dormant columns)
+    #
+    # Six surfaces wire into Phase 2a's POST routes:
+    #
+    #   dismiss               -> archived_at = now (idempotent)
+    #   promote               -> allowlist write + archived_at = now
+    #   reset                 -> escalated_at NULL, count=1, reset_count++
+    #   flag-for-investigate  -> flag + note, NO archive
+    #   confirmed-safe        -> flag + note + archive
+    #   create-from-alert     -> new row from an alerts.id
+    #
+    # The auto-archive sweep (above) and these operator writes coexist
+    # cleanly: the sweep's `WHERE archived_at IS NULL` filter renders
+    # operator-archived rows invisible. No housekeeping change needed.
+    # ------------------------------------------------------------------
+
+    def dismiss_watchful_recurrence(self, entry_id: int, now_ts: int) -> bool:
+        """Operator dismiss: archive the entry, no other state change.
+
+        Idempotent on already-archived (per Phase 2a spec): a second
+        call returns False without raising. The DB UPDATE's
+        ``archived_at IS NULL`` guard makes the second call a no-op
+        and the rowcount tells us which case we hit.
+
+        Returns True if this call performed the archive, False if the
+        row was already archived. Caller distinguishes "not found"
+        via a separate existence check (the route layer renders 404
+        before invoking this helper).
+        """
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            raise ValueError("entry_id must be an int")
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE watchful_recurrence SET archived_at = ? "
+                "WHERE id = ? AND archived_at IS NULL",
+                (now_ts, entry_id),
+            )
+        return cur.rowcount == 1
+
+    def promote_watchful_to_allowlist(
+        self,
+        entry_id: int,
+        *,
+        allowlist_path,
+        pattern: str,
+        pattern_type: str,
+        note: str | None,
+        expires_at: int | None,
+        now_ts: int,
+    ) -> bool:
+        """Operator promote: allowlist write + watchful archive, atomic.
+
+        Two effects must happen together: the allowlist file gains an
+        entry (so the MAC stops alerting permanently) and the
+        watchful row's ``archived_at`` is set (so the operator UI
+        stops listing it). The "atomic" intent: the operator never
+        sees a half-done state -- both happen, or neither.
+
+        Achieving this against a yaml file + sqlite row is a
+        best-effort coupling, not a true distributed transaction.
+        Ordering:
+
+          1. Precondition check: the row exists and is active. If
+             archived or missing, raise before any side effect so
+             the caller gets a clean failure with no yaml write.
+          2. Allowlist write. If this raises, the DB row is
+             untouched (we have not yet started the transaction).
+          3. DB UPDATE under ``WHERE archived_at IS NULL``. If a
+             concurrent archive snuck in between (1) and (3), the
+             rowcount will be 0; we best-effort remove the yaml
+             entry we just wrote and raise.
+
+        The allowlist module is imported inside the function rather
+        than at the top of db.py so the foundation module retains no
+        compile-time dependency on the operator-UI layer. (db.py is
+        a leaf; allowlist.py builds on it conceptually even if it
+        does not import it today.)
+
+        Returns True on success. Raises ``ValueError`` if the entry
+        is already archived or does not exist; raises
+        ``RuntimeError`` if the row was concurrently archived
+        between the precondition check and the DB write.
+        """
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            raise ValueError("entry_id must be an int")
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError("pattern must be a non-empty string")
+        if not isinstance(pattern_type, str) or not pattern_type:
+            raise ValueError("pattern_type must be a non-empty string")
+
+        from lynceus.allowlist import AllowlistEntry, add_ui_entry, remove_ui_entry
+
+        row = self._conn.execute(
+            "SELECT archived_at FROM watchful_recurrence WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"watchful entry {entry_id} does not exist")
+        if row["archived_at"] is not None:
+            raise ValueError(f"watchful entry {entry_id} is already archived")
+
+        entry = AllowlistEntry(
+            pattern=pattern,
+            pattern_type=pattern_type,
+            note=note,
+            added_at=now_ts,
+            expires_at=expires_at,
+        )
+        add_ui_entry(allowlist_path, entry)
+        # Pattern stored is post-normalization; keep it for the rollback path.
+        stored_pattern = entry.pattern
+        stored_pattern_type = entry.pattern_type
+
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE watchful_recurrence SET archived_at = ? "
+                "WHERE id = ? AND archived_at IS NULL",
+                (now_ts, entry_id),
+            )
+            if cur.rowcount == 0:
+                # Concurrent archive between our precondition check
+                # and the UPDATE. Best-effort rollback of the yaml write.
+                try:
+                    remove_ui_entry(allowlist_path, stored_pattern, stored_pattern_type)
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"watchful entry {entry_id} was concurrently archived during promote"
+                )
+        return True
+
+    def reset_watchful_recurrence(
+        self, entry_id: int, now_ts: int
+    ) -> WatchfulRecurrence | None:
+        """Operator reset-from-escalated: walk the entry back to tracking.
+
+        Per OQ-8 the only state reset is meaningful from is
+        ``escalated`` -- the operator saw the escalation alert,
+        decided it was a known-benign pattern, and wants the count
+        cleared so the next ~4 sightings won't re-escalate
+        immediately. Resetting from ``tracking`` would be a no-op
+        operator action (count already low); resetting from
+        ``archived`` would resurrect a closed entry behind the
+        operator's back. Both are rejected via ``ValueError``.
+
+        On success the row becomes::
+
+            escalated_at    -> NULL
+            sighting_count  -> 1
+            last_seen_at    -> now_ts
+            reset_count     -> reset_count + 1
+
+        Returns the post-update ``WatchfulRecurrence`` or raises
+        ``ValueError`` if the entry does not exist or is not
+        currently escalated. The next time the device is observed,
+        the existing Phase 1 escalation machinery (record-sighting
+        debounce + escalate guard) takes over with no special
+        re-escalation path required.
+        """
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            raise ValueError("entry_id must be an int")
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE watchful_recurrence SET "
+                "escalated_at = NULL, sighting_count = 1, "
+                "last_seen_at = ?, reset_count = reset_count + 1 "
+                "WHERE id = ? "
+                "AND escalated_at IS NOT NULL "
+                "AND archived_at IS NULL",
+                (now_ts, entry_id),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(
+                    f"watchful entry {entry_id} is not in the escalated state"
+                )
+            row = self._conn.execute(
+                "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
+                "sighting_count, snooze_expires_at, escalated_at, archived_at, "
+                "source_alert_id, matched_watchlist_id, confirmed_safe, "
+                "flagged_for_investigation, operator_note, reset_count "
+                "FROM watchful_recurrence WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+        return _row_to_watchful_recurrence(row) if row is not None else None
+
+    def flag_watchful_for_investigation(
+        self, entry_id: int, note: str | None, now_ts: int
+    ) -> bool:
+        """Operator: mark the entry as 'under investigation', keep tracking.
+
+        Distinct from confirmed-safe and dismiss: the operator wants
+        to keep watching but flag the entry visibly for later. The
+        row stays active (``archived_at`` unchanged) so future
+        sightings continue to count and escalate per Phase 1
+        behavior. Sets ``flagged_for_investigation = 1`` and
+        replaces ``operator_note``.
+
+        ``now_ts`` is accepted for API symmetry with the other
+        operator-action helpers; this surface does not currently
+        stamp it anywhere (the v1 row has no
+        ``flagged_at`` column). Future-compat: if a per-action
+        timestamp column lands, the signature is already shaped to
+        carry it.
+
+        Returns True on success. Raises ``ValueError`` if the entry
+        is archived or does not exist -- a flag on a closed entry
+        would be invisible in the UI and is rejected to avoid
+        silent no-ops.
+        """
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            raise ValueError("entry_id must be an int")
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        if note is not None and not isinstance(note, str):
+            raise ValueError("note must be a string or None")
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE watchful_recurrence SET "
+                "flagged_for_investigation = 1, operator_note = ? "
+                "WHERE id = ? AND archived_at IS NULL",
+                (note, entry_id),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(
+                    f"watchful entry {entry_id} does not exist or is archived"
+                )
+        return True
+
+    def mark_watchful_confirmed_safe(
+        self, entry_id: int, note: str | None, now_ts: int
+    ) -> bool:
+        """Operator: mark the entry as confirmed-not-suspicious and close it.
+
+        Distinct from ``promote_watchful_to_allowlist``: the
+        operator's signal here is "this specific entry is benign",
+        not "never alert me on this MAC again". No allowlist entry
+        is created -- the same MAC appearing tomorrow can still
+        raise a watchlist hit and a new watchful entry. Confirmed-
+        safe is a per-entry annotation plus an archive, nothing
+        more.
+
+        Sets ``confirmed_safe = 1``, replaces ``operator_note``,
+        and sets ``archived_at = now_ts``. Returns True on success.
+        Raises ``ValueError`` if the entry is already archived or
+        does not exist.
+        """
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            raise ValueError("entry_id must be an int")
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        if note is not None and not isinstance(note, str):
+            raise ValueError("note must be a string or None")
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE watchful_recurrence SET "
+                "confirmed_safe = 1, operator_note = ?, archived_at = ? "
+                "WHERE id = ? AND archived_at IS NULL",
+                (note, now_ts, entry_id),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(
+                    f"watchful entry {entry_id} does not exist or is archived"
+                )
+        return True
+
+    def create_watchful_from_alert(
+        self,
+        alert_id: int,
+        snooze_duration_seconds: int | None,
+        now_ts: int,
+    ) -> int | None:
+        """Operator triage from /alerts: create a watchful entry.
+
+        Reads ``mac`` and ``matched_watchlist_id`` from the source
+        alert (the get_alert path does not include
+        matched_watchlist_id, so the SELECT is local). Refuses to
+        create if the source alert has no MAC -- watchful tracking
+        is MAC-keyed.
+
+        ``snooze_duration_seconds`` is the operator-chosen alert
+        suppression window: e.g. 86400 for 24h, 604800 for 7d,
+        2592000 for 30d, or ``None`` for forever. This populates
+        ``snooze_expires_at`` (alert-gating only -- per OQ-3 it
+        does not drive the row's lifecycle clock). The
+        forever-snooze case is ``NULL`` in the column, which the
+        existing poll-time gate already treats as "no expiry".
+
+        Returns the new row's id. Returns ``None`` if the source
+        alert does not exist. Raises ``ValueError`` if the alert
+        has no MAC or if an active watchful entry already exists
+        for the MAC (application-layer enforcement of the
+        "at most one active row per MAC" invariant documented in
+        migration 018).
+        """
+        if not isinstance(alert_id, int) or isinstance(alert_id, bool):
+            raise ValueError("alert_id must be an int")
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        if snooze_duration_seconds is not None:
+            if (
+                not isinstance(snooze_duration_seconds, int)
+                or isinstance(snooze_duration_seconds, bool)
+                or snooze_duration_seconds <= 0
+            ):
+                raise ValueError(
+                    "snooze_duration_seconds must be a positive int or None"
+                )
+        alert_row = self._conn.execute(
+            "SELECT mac, matched_watchlist_id FROM alerts WHERE id = ?",
+            (alert_id,),
+        ).fetchone()
+        if alert_row is None:
+            return None
+        mac = alert_row["mac"]
+        if not mac:
+            raise ValueError(
+                f"alert {alert_id} has no MAC; watchful tracking is MAC-keyed"
+            )
+        existing = self.get_active_watchful_recurrence_by_mac(mac)
+        if existing is not None:
+            raise ValueError(
+                f"MAC {mac} already has active watchful entry {existing.id}"
+            )
+        snooze_expires_at = (
+            now_ts + snooze_duration_seconds
+            if snooze_duration_seconds is not None
+            else None
+        )
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO watchful_recurrence("
+                "mac, created_at, first_seen_at, last_seen_at, sighting_count, "
+                "snooze_expires_at, source_alert_id, matched_watchlist_id) "
+                "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+                (
+                    mac,
+                    now_ts,
+                    now_ts,
+                    now_ts,
+                    snooze_expires_at,
+                    alert_id,
+                    alert_row["matched_watchlist_id"],
+                ),
+            )
+        return cur.lastrowid
+
+    def get_watchful_recurrence(
+        self, entry_id: int
+    ) -> WatchfulRecurrence | None:
+        """Fetch a watchful entry by id, active or archived.
+
+        Used by the Phase 2a route layer to render 404 before
+        invoking action helpers, and by tests to assert post-action
+        state. Distinct from ``get_active_watchful_recurrence_by_mac``
+        which filters to active rows by MAC.
+        """
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            raise ValueError("entry_id must be an int")
+        row = self._conn.execute(
+            "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
+            "sighting_count, snooze_expires_at, escalated_at, archived_at, "
+            "source_alert_id, matched_watchlist_id, confirmed_safe, "
+            "flagged_for_investigation, operator_note, reset_count "
+            "FROM watchful_recurrence WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+        return _row_to_watchful_recurrence(row) if row is not None else None
+
     def alerts_per_day(self, *, days: int = 30, now_ts: int) -> list[dict]:
         if not isinstance(days, int) or isinstance(days, bool):
             raise ValueError("days must be int")
