@@ -29,6 +29,7 @@ RuleType = Literal[
     "watchlist_ble_manufacturer_id",
     "watchlist_drone_id_prefix",
     "new_non_randomized_device",
+    "watchful_recurrence",
 ]
 Severity = Literal["low", "med", "high"]
 
@@ -74,6 +75,16 @@ class Rule(BaseModel):
             if self.patterns:
                 raise ValueError(
                     f"rule {self.name!r}: new_non_randomized_device must have empty patterns"
+                )
+        elif self.rule_type == "watchful_recurrence":
+            # System-emitted: the poller generates this rule_type at
+            # the watchful escalation site (migration 018). Users do
+            # not author it in yaml; if a rules.yaml entry declares
+            # this type, ``patterns`` would have no semantic since
+            # the threshold-cross is the only emit trigger.
+            if self.patterns:
+                raise ValueError(
+                    f"rule {self.name!r}: watchful_recurrence must have empty patterns"
                 )
         elif self.rule_type in ("watchlist_mac", "watchlist_oui", "watchlist_ssid", "ble_uuid"):
             # Delegation-capable. Empty patterns = delegate matching

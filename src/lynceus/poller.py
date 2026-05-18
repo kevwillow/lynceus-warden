@@ -17,7 +17,7 @@ from .allowlist import (
     load_allowlist,
 )
 from .config import Config, load_config
-from .db import Database
+from .db import Database, WatchfulRecurrence
 from .evidence import capture_evidence, maybe_prune_evidence
 from .kismet import FakeKismetClient, KismetClient
 from .notify import Notifier, NullNotifier, build_metadata_suffix, build_notifier
@@ -47,6 +47,79 @@ SUPPRESSION_LOG_INTERVAL_SECONDS = 3600
 HEALTH_CHECK_RETRY_BACKOFF: list[float] = [2.0, 4.0, 8.0]
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_watchful_escalation(
+    db: Database,
+    notifier: Notifier,
+    entry: WatchfulRecurrence,
+    now_ts: int,
+) -> None:
+    """Emit the synthetic ``watchful_recurrence`` escalation alert.
+
+    Called once at the first threshold-cross for an entry (the
+    ``db.escalate_watchful_recurrence`` idempotency guard ensures
+    "fire once per escalation"). Independent of the entry's own
+    ``snooze_expires_at``: per OQ-3 that field gates the original
+    alert pipeline only, not the escalation alert. Subject to the
+    per-rule_type snooze on ``watchful_recurrence``, which the
+    caller checks before invoking this helper -- watchful detection
+    state transitions still happen even when the rule_type snooze
+    is suppressing emit.
+
+    Severity is "high" -- consistent with the operator's intent
+    that the recurrence matters and so /alerts and /rules render
+    the high-severity badge. ntfy priority is 4 via the
+    ``priority_override`` knob added to ``Notifier.send`` in this
+    rc cycle. The severity / priority decoupling is intentional
+    per the scare-factor mitigation locked decision: priority-4 is
+    one above the default-3 (med) and one below the urgent-5
+    reserved for severity=high watchlist hits the operator opted
+    into. It is NOT a default-mapping oversight.
+    """
+    first_watched_iso = _dt.datetime.fromtimestamp(
+        entry.first_seen_at, tz=_dt.UTC
+    ).strftime("%Y-%m-%d")
+    message = (
+        f"Device {entry.mac} seen {entry.sighting_count} times "
+        f"since first watch on {first_watched_iso}. "
+        "Recurrence threshold reached."
+    )
+    try:
+        db.add_alert(
+            ts=now_ts,
+            rule_name="watchful_recurrence",
+            mac=entry.mac,
+            message=message,
+            severity="high",
+            matched_watchlist_id=entry.matched_watchlist_id,
+            rule_type="watchful_recurrence",
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to write watchful escalation alert for %s: %s",
+            entry.mac,
+            e,
+        )
+        return
+    try:
+        ok = notifier.send(
+            severity="high",
+            title="lynceus: watchful escalation",
+            message=message,
+            priority_override=4,
+        )
+        if not ok:
+            logger.warning(
+                "Notifier returned False for watchful escalation %s",
+                entry.mac,
+            )
+    except Exception as e:
+        logger.warning(
+            "Notifier raised for watchful escalation %s: %s",
+            entry.mac,
+            e,
+        )
 
 
 def build_kismet_client(config: Config) -> KismetClient:
@@ -208,6 +281,75 @@ def poll_once(
                         expires_suffix,
                     )
                 continue
+            # Watchful tracking gate (migration 018). Per the locked
+            # gate-ordering decision -- allowlist -> watchful tracking
+            # -> rule eval -> per-rule_type snooze -> per-alert snooze
+            # -> emit -- watchful runs only for non-allowlisted
+            # observations (the allowlist branch above continues on
+            # match, so this code is unreachable for allowlisted
+            # MACs). Operator semantic: allowlist precedence wins,
+            # an allowlisted MAC under watchful snooze sees no
+            # sighting_count increment and no escalation.
+            #
+            # Fast-path skip: the get_active_watchful_recurrence_by_mac
+            # lookup is a single indexed point query and returns None
+            # immediately when the table is empty (typical steady
+            # state). Backward-compat: poll cycles with no tracking
+            # entries are byte-identical to pre-rc6 behavior.
+            watchful_entry = db.get_active_watchful_recurrence_by_mac(obs.mac)
+            if watchful_entry is not None:
+                outcome = db.record_watchful_sighting(watchful_entry.id, now_ts)
+                if outcome is not None:
+                    # Threshold detection. escalate_watchful_recurrence
+                    # is idempotent (no-op if escalated_at already
+                    # set), which drives the design doc's "fire once
+                    # per escalation" rule without a separate
+                    # first-crossing guard here.
+                    if (
+                        outcome.counted
+                        and outcome.entry.sighting_count
+                        >= Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD
+                    ):
+                        escalated = db.escalate_watchful_recurrence(
+                            watchful_entry.id, now_ts
+                        )
+                        if escalated is not None:
+                            # First crossing. Subject only to the
+                            # per-rule_type snooze on watchful_recurrence
+                            # (per design doc: detection runs;
+                            # notification doesn't, while the snooze
+                            # is active).
+                            rt_snooze = db.is_rule_type_snoozed(
+                                "watchful_recurrence", now_ts
+                            )
+                            if rt_snooze is None:
+                                _emit_watchful_escalation(
+                                    db, notifier, escalated, now_ts
+                                )
+                            else:
+                                logger.debug(
+                                    "watchful escalation suppressed by "
+                                    "rule_type snooze: mac=%s",
+                                    obs.mac,
+                                )
+                    # snooze_expires_at on the watchful entry gates
+                    # the ORIGINAL alert pipeline for this MAC (per
+                    # OQ-3). The escalation alert above is
+                    # independent of this gate -- the operator's
+                    # whole point is "tell me if it keeps showing
+                    # up", which the escalation answers regardless
+                    # of the snooze window.
+                    snooze_expires_at = outcome.entry.snooze_expires_at
+                    snooze_active = (
+                        snooze_expires_at is None
+                        or snooze_expires_at > now_ts
+                    )
+                    if snooze_active:
+                        logger.debug(
+                            "watchful snooze suppressing original alerts: mac=%s",
+                            obs.mac,
+                        )
+                        continue
             hits = evaluate(
                 ruleset,
                 obs,
@@ -322,6 +464,23 @@ def poll_once(
             )
     except Exception as e:
         logger.warning("rule_type_snoozes cleanup failed: %s", e)
+    # Per-poll housekeeping for watchful_recurrence: archive entries
+    # whose last_seen_at is >= 90 days stale. Per OQ-3 this is the
+    # SOLE lifecycle clock for unactioned watchful entries --
+    # snooze_expires_at does not drive any housekeeping action.
+    # Idempotent and cheap (indexed on archived_at; bounded by the
+    # watchful table's small steady-state size). Wrapped defensively
+    # for the same reason as the surrounding housekeeping blocks: a
+    # failure here must not abort the poll loop.
+    try:
+        archived = db.auto_archive_watchful_recurrence(now_ts)
+        if archived > 0:
+            logger.info(
+                "watchful_recurrence: archived %d entries (90d quiet-stretch reached)",
+                archived,
+            )
+    except Exception as e:
+        logger.warning("watchful_recurrence auto-archive failed: %s", e)
     # Daily housekeeping: prune evidence rows past the retention window. The
     # helper is a no-op except once per ~24h, so this is cheap to call from
     # every poll tick. Wrapped defensively because a prune failure must not

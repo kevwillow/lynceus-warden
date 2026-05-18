@@ -31,6 +31,7 @@ class Notifier(ABC):
         severity: Literal["low", "med", "high"],
         title: str,
         message: str,
+        priority_override: int | None = None,
     ) -> bool: ...
 
 
@@ -40,22 +41,36 @@ class NullNotifier(Notifier):
         severity: Literal["low", "med", "high"],
         title: str,
         message: str,
+        priority_override: int | None = None,
     ) -> bool:
         logger.debug("NullNotifier dropped %s: %s", severity, title)
         return True
 
 
 class RecordingNotifier(Notifier):
+    """Test double that records every call.
+
+    ``.calls`` preserves the historical 3-tuple shape
+    ``(severity, title, message)`` -- existing tests unpack it
+    positionally. ``.priority_overrides`` is a parallel list of
+    the per-call ``priority_override`` arg (None when the caller
+    used the severity-mapped default). Indexed alignment:
+    ``priority_overrides[i]`` belongs to ``calls[i]``.
+    """
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str]] = []
+        self.priority_overrides: list[int | None] = []
 
     def send(
         self,
         severity: Literal["low", "med", "high"],
         title: str,
         message: str,
+        priority_override: int | None = None,
     ) -> bool:
         self.calls.append((severity, title, message))
+        self.priority_overrides.append(priority_override)
         return True
 
 
@@ -79,6 +94,7 @@ class NtfyNotifier(Notifier):
         severity: Literal["low", "med", "high"],
         title: str,
         message: str,
+        priority_override: int | None = None,
     ) -> bool:
         url = f"{self.base_url}/{self.topic}"
         # ntfy topics are shared secrets; never let them reach log surfaces.
@@ -86,9 +102,25 @@ class NtfyNotifier(Notifier):
         # so we log only the exception type name and reserve the full
         # traceback for explicit DEBUG operation (mirrors H-7).
         safe_url = redact_topic_in_url(url)
+        # priority_override decouples ntfy notification prominence
+        # from the severity literal: the watchful escalation emit
+        # site passes severity="high" + priority_override=4 by
+        # design (severity stays high so /alerts and /rules render
+        # consistently with the operator's "this matters" intent,
+        # but priority drops below the urgent-5 reserved for
+        # watchlist hits the operator opted into). When None, the
+        # severity-mapped default holds and existing call sites
+        # see no behavior change. Tag follows severity in both
+        # cases -- visual tone matches severity, prominence
+        # follows priority.
+        priority = (
+            priority_override
+            if priority_override is not None
+            else SEVERITY_TO_PRIORITY[severity]
+        )
         headers = {
             "Title": title,
-            "Priority": str(SEVERITY_TO_PRIORITY[severity]),
+            "Priority": str(priority),
             "Tags": SEVERITY_TO_TAGS[severity],
         }
         if self.auth_token:
