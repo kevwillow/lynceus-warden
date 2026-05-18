@@ -107,6 +107,15 @@ _ALERTS_RULE_TYPES: tuple[str, ...] = tuple(_typing_get_args(rules_mod.RuleType)
 _ALERTS_PER_PAGE_ALLOWED: tuple[int, ...] = (25, 50, 100, 200)
 _ALERTS_PER_PAGE_DEFAULT: int = 50
 
+# Triage-note filter dropdown on /alerts. Pairs with the 📝 indicator
+# on each row added in the per-alert notes prompt -- closes the
+# triage-workflow loop ("notes -> indicator -> filter by triage
+# state"). "all" is the default and renders as the empty WHERE
+# (every alert). Invalid values silently fall back to "all" via the
+# handler's clamp, matching the rule_type / window / severity
+# precedent.
+_ALERTS_HAS_NOTE_VALUES: tuple[str, ...] = ("all", "with_note", "without_note")
+
 # Relative window dropdown for /alerts. Resolved to an absolute
 # since_ts at request time so URLs stay shareable ("recent" means
 # the same recency to any operator opening the link, anchored to
@@ -1056,6 +1065,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         rule_type: str | None = Query(default=None),
         q: str | None = Query(default=None),
         window: str | None = Query(default=None),
+        has_note: str | None = Query(default=None),
     ):
         # severity / acknowledged / since / until / search are the
         # pre-rc5 filters and stay byte-identical -- bookmarked URLs
@@ -1093,6 +1103,14 @@ def create_app(config: Config, db: Database) -> FastAPI:
         now_ts = int(time.time())
         window_since_ts = (now_ts - window_seconds) if window_seconds else None
 
+        # has_note: clamp invalid / "all" to the no-op None which the
+        # DB-layer filter helper interprets as "no clause." A stale
+        # bookmark with has_note=foo lands on the unfiltered page,
+        # not 400 -- same clamp posture as rule_type / window.
+        if has_note is not None and has_note not in _ALERTS_HAS_NOTE_VALUES:
+            has_note = None
+        has_note_for_db = has_note if has_note in ("with_note", "without_note") else None
+
         # If both absolute since and relative window are provided,
         # combine them by taking the tighter lower bound. The DB
         # gets a single since_ts -- both intent paths roll into the
@@ -1122,6 +1140,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             search=search_clean,
             rule_type=rule_type_for_db,
             q=q_clean,
+            has_note=has_note_for_db,
         )
 
         pagination = build_pagination(requested_page, per_page, total_count)
@@ -1137,6 +1156,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "search": search_clean,
                 "rule_type": rule_type_for_db,
                 "q": q_clean,
+                "has_note": has_note_for_db,
             }
         )
         _enrich_alerts_with_devices(db, alerts)
@@ -1149,6 +1169,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             or rule_type
             or (q and q != "")
             or window
+            or has_note_for_db
         )
         return app.state.templates.TemplateResponse(
             request=request,
@@ -1170,9 +1191,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "rule_type": rule_type or "",
                 "q": q or "",
                 "window": window or "",
+                "has_note": has_note or "all",
                 "rule_types": _ALERTS_RULE_TYPES,
                 "per_page_options": _ALERTS_PER_PAGE_ALLOWED,
                 "window_options": tuple(_ALERTS_WINDOW_SECONDS.keys()),
+                "has_note_options": _ALERTS_HAS_NOTE_VALUES,
                 "filters_active": filters_active,
             },
         )
@@ -1315,6 +1338,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         rule_type: str | None = Form(default=None),
         q: str | None = Form(default=None),
         window: str | None = Form(default=None),
+        has_note: str | None = Form(default=None),
         note: str | None = Form(default=None),
     ):
         # The filter set MUST mirror /alerts GET exactly. If a filter
@@ -1345,6 +1369,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
         now_ts = int(time.time())
         window_since_ts = (now_ts - window_seconds) if window_seconds else None
 
+        # has_note: silently clamp invalid to the no-op. MUST mirror
+        # the GET clamp exactly or ack-all-visible could write
+        # against a different filter set than the operator sees.
+        if has_note is not None and has_note not in _ALERTS_HAS_NOTE_VALUES:
+            has_note = None
+        has_note_for_db = has_note if has_note in ("with_note", "without_note") else None
+
         effective_since_ts = since_ts
         if window_since_ts is not None:
             if effective_since_ts is None:
@@ -1362,6 +1393,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             search=search_clean,
             rule_type=rule_type_for_db,
             q=q_clean,
+            has_note=has_note_for_db,
         )
         if total > 1000:
             raise HTTPException(
@@ -1381,6 +1413,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             search=search_clean,
             rule_type=rule_type_for_db,
             q=q_clean,
+            has_note=has_note_for_db,
         )
         ids = [a["id"] for a in candidate_alerts]
         actor = request.client.host if request.client else "unknown"

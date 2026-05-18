@@ -888,6 +888,7 @@ class Database:
         search: str | None = None,
         rule_type: str | None = None,
         q: str | None = None,
+        has_note: str | None = None,
     ) -> list[dict]:
         self._validate_pagination(limit, offset)
         if severity is not None and severity not in self._ALERT_SEVERITIES:
@@ -906,6 +907,7 @@ class Database:
             search=search,
             rule_type=rule_type,
             q=q,
+            has_note=has_note,
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -928,6 +930,7 @@ class Database:
         search: str | None = None,
         rule_type: str | None = None,
         q: str | None = None,
+        has_note: str | None = None,
     ) -> int:
         # COUNT and the page query (list_alerts_with_match) must
         # apply the same filters or "K total" is a lie and the
@@ -944,6 +947,7 @@ class Database:
             search=search,
             rule_type=rule_type,
             q=q,
+            has_note=has_note,
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -962,6 +966,13 @@ class Database:
         "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id"
     )
 
+    # has_note accepted values. "all" / None / unrecognized -> no
+    # clause; the handler clamps invalid input to None before
+    # reaching here. Kept narrow on purpose -- expanding to fuzzy
+    # forms (e.g. note_contains=X) would conflate the indicator-on-
+    # list workflow with full-text search.
+    _ALERT_HAS_NOTE_VALUES = ("with_note", "without_note")
+
     @staticmethod
     def _alert_filter_clauses(
         *,
@@ -972,6 +983,7 @@ class Database:
         search: str | None,
         rule_type: str | None = None,
         q: str | None = None,
+        has_note: str | None = None,
         alias: str = "",
     ) -> tuple[list[str], list]:
         prefix = f"{alias}." if alias else ""
@@ -1012,6 +1024,13 @@ class Database:
                 "OR LOWER(COALESCE(m.vendor, '')) LIKE ?)"
             )
             params.extend([qlike, qlike, qlike])
+        if has_note == "with_note":
+            clauses.append(f"{prefix}note IS NOT NULL")
+        elif has_note == "without_note":
+            clauses.append(f"{prefix}note IS NULL")
+        # Any other value (including None / "all" / typo) is the
+        # no-op default -- same silent-fallback semantic as rule_type
+        # and window.
         return clauses, params
 
     def get_alert(self, alert_id: int) -> dict | None:
@@ -1042,6 +1061,7 @@ class Database:
         "search",
         "rule_type",
         "q",
+        "has_note",
     )
 
     _ALERT_WITH_MATCH_SELECT = (
@@ -1209,6 +1229,7 @@ class Database:
             search=filters.get("search"),
             rule_type=filters.get("rule_type"),
             q=filters.get("q"),
+            has_note=filters.get("has_note"),
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
