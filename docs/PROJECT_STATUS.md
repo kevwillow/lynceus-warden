@@ -6,7 +6,7 @@ weekend?"
 
 ## Current version
 
-**0.4.0-rc5** — feature-complete for the v0.4 cycle (Argus integration, Tier-1 enrichment, read-only `/settings`, `/allowlist` management, `/alerts` filter+pagination, auto-refresh timer, `lynceus-export-config`), with hardware shakedown still in progress.
+**0.4.0-rc6** — feature-complete for the v0.4 cycle (Argus integration, Tier-1 enrichment, read-only `/settings`, `/allowlist` management, `/alerts` filter+pagination, per-alert triage notes, auto-refresh timer, `lynceus-export-config`), with hardware shakedown still in progress.
 
 ## What's shipped
 
@@ -73,7 +73,7 @@ The headlines:
 
 ## Test coverage at a glance
 
-**1973 tests** across the suite as of v0.4.0-rc5, up from 888 at v0.3.0-rc1 and 437 at v0.2. Coverage spans the daemon, the UI, the rules engine, the notifier, the database layer, the watchlist + Argus import path, the setup wizard, install.sh, and packaging.
+**2103 tests** across the suite as of v0.4.0-rc6, up from 888 at v0.3.0-rc1 and 437 at v0.2. Coverage spans the daemon, the UI, the rules engine, the notifier, the database layer, the watchlist + Argus import path, the setup wizard, install.sh, and packaging.
 
 The `slow` mark is a wheel-build round-trip. Skip with
 `pytest -v -m "not slow"` for fast iteration; run the full suite before

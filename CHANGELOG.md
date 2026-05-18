@@ -4,120 +4,96 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.4.0-rc5] - 2026-05-17
+## [0.4.0-rc6] - 2026-05-17
+
+Mostly cleanup. rc5 shipped the big feature push (`/watchlist`
+search + filter + pagination, `/rules` stats, `lynceus-export-config`,
+the Argus residuals audit, …); rc6 closes the two normalization gaps
+that audit surfaced, corrects one speculative audit verdict, and
+adds the small per-alert triage-note surface + matching `/alerts`
+filter that operators were quietly working around.
+
+### Fixed
+
+- **Argus importer: 17 normalization-variant rows previously
+  silently dropped as `unknown_type` now admit under existing
+  pattern_types.** The rc5 residuals audit
+  (`docs/ARGUS_RESIDUALS.md`) flagged `ble_company_id` (7 rows) and
+  `ble_service_uuid` (10 rows) as semantic duplicates of the
+  already-admitted `ble_manufacturer_id` and `ble_uuid` pattern_types
+  — separated only by the Argus type label plus input-shape
+  variants (16-bit / 32-bit Bluetooth SIG short forms, and Argus's
+  dual-form `"fd5a / 0x0075"` rendering for the Samsung SmartTag /
+  Tile Tag rows). Importer aliases the two Argus types one-way; the
+  `ble_uuid` canonicalizer widens to accept 4-hex and 8-hex short
+  forms (expanded against the Core Spec §3.2.1 base UUID
+  `00000000-0000-1000-8000-00805f9b34fb`) and the dual-form shape
+  (UUID half taken, paired company-id commentary dropped).
+  Canonical output forms unchanged; pattern_type set unchanged; no
+  schema migration. Admit count 22294 → 22311; dropped 239 → 222;
+  audit's `admit-via-normalization` bucket drops to 0 / 0.
+
+- **`device_class_id` audit verdict corrected from `plausible-needs-
+  smoke` to `no-observation-surface` (drop-entirely).** The rc5
+  audit deferred 49 `device_class_id` rows -- the largest deferred
+  category -- based on plausibility rather than evidence. Row-by-row
+  inspection showed all 49 are `DJI device_type=N` decoder enum
+  codes from the `RUB-SysSec/DroneSecurity` decoder's
+  `DRONEID_DRONE_TYPES` Python table (`'1'='Inspire 1'`, etc.) --
+  model-class labels for decoding the DroneID device-type byte, not
+  per-device identifiers. Admitting them would alert on every DJI
+  drone of a given model class in range, the same unbounded-fanout
+  posture the audit already records for `rf_channel`. Per-device
+  Remote-ID is already covered by the admitted `drone_id_prefix`
+  (ANSI/CTA-2063-A serial number prefix via `_DRONE_ID_PATHS`).
+  `RESIDUAL_SURFACE_TABLE` updated with the evidence; the
+  regenerated audit report shifts `defer-pending-smoke` 3 / 70 → 2 /
+  21 and `drop-entirely` 26 / 152 → 27 / 201. Total dropped row
+  count unchanged at 222 -- the row was always dropped; only the
+  reason changed.
 
 ### Added
 
-- **`/alerts` `has_note` filter — narrow to triaged vs untriaged at
-  a glance.** Closes the deferral left by the per-alert triage notes
-  prompt: that prompt added the 📝 indicator on each row but
-  intentionally deferred the matching filter. This entry completes
-  the workflow loop -- operators can now select "with note" or
-  "without note" from a new dropdown in the filter bar to surface
-  only the alerts they've triaged (or only the ones they haven't
-  looked at yet). The three values are `all` (default; renders
-  byte-identical to pre-filter behavior), `with_note` (`note IS NOT
-  NULL`), and `without_note` (`note IS NULL`). Invalid values
-  silently clamp to `all` -- a stale bookmark or typo lands on the
-  unfiltered page rather than a 400, matching the rule_type /
-  window precedent.
-
-  Plumbing rides on the existing `_alert_filter_clauses` helper so
-  COUNT and the page query stay locked -- the same single-source-
-  of-truth invariant that keeps "K total" honest under pagination.
-  `Database.list_alerts`, `count_alerts`, and `list_alerts_with_match`
-  gain a `has_note` keyword; `_ALERT_WITH_MATCH_FILTER_KEYS`
-  whitelists it. `/alerts/ack-all-visible` POST mirrors the GET
-  clamp exactly -- a missing has_note hidden input would cause "ack
-  all matching" to operate on a different filter set than the page
-  shows, the worst class of bug for a silent bulk write. The
-  template carries `has_note` through both the ack-all-visible
-  hidden inputs and the prev/next pagination links; default `all`
-  is omitted from URLs so the no-params baseline stays clean.
-
-  No new indexes. The `note IS [NOT] NULL` predicate full-scans at
-  current scale; if `/alerts` filter latency becomes a problem
-  (deferred from this prompt per the watchlist-filter precedent),
-  a partial index on `note IS NOT NULL` is a follow-up. No schema
-  changes -- the `note` column itself landed in migration 016 with
-  the triage-notes prompt.
-
 - **Per-alert triage notes.** Closes the "what did I conclude about
-  this alert?" workflow gap. Operators triage an alert (false
-  positive, expected device, action taken, still investigating) and
-  pre-rc5 had to record their conclusion in an external tracker or
-  trust memory -- the only annotation surface was the per-event note
-  on each ack/unack entry in the action history, which captures
-  events but not a current conclusion. The triage-note surface is
-  one persistent note per alert, visible alongside the alert when
-  revisiting.
+  this alert?" gap operators were working around with external
+  trackers. Migration 016 adds NULL-able `note TEXT` +
+  `note_updated_at INTEGER` columns to `alerts`. New
+  `Database.update_alert_note()` is the only writer (the daemon
+  path never touches the column); empty / whitespace-only text
+  clears (both columns NULL), non-empty writes the stripped value
+  plus a server-side epoch-seconds timestamp. 4096-char cap
+  enforced server-side. Alert detail page gains a "triage notes"
+  article with the current note rendered in `<pre>` (preserves
+  line breaks), a `relative_time` "Last updated N ago" stamp, an
+  editable textarea (4096-char `maxlength`), and Save / Clear forms
+  (Clear behind a `confirm()` guard). `/alerts` list page gains a
+  📝 indicator per row when the alert carries a note, with a
+  50-char tooltip preview -- the full triage rationale stays on
+  the detail page so it isn't visible over the shoulder. Plain
+  text only; one note per alert (replace-on-update); markdown,
+  multi-operator history, and note-history table all explicitly
+  deferred. CSRF enforced via the existing global middleware.
 
-  New migration `016_alerts_note.sql` adds two NULL-able columns to
-  the `alerts` table: `note TEXT` and `note_updated_at INTEGER`.
-  Forward-only; existing rows get NULL. The daemon path
-  (`add_alert`) never writes the new column, so the only writer is
-  the webui POST handler. New `Database.update_alert_note(alert_id,
-  note_text, *, now_ts=None) -> bool` is the persistence primitive:
-  empty / whitespace-only `note_text` clears (both columns set to
-  NULL); non-empty text writes the stripped value plus a server-
-  side epoch-seconds timestamp. Length cap of 4096 chars is enforced
-  server-side (the textarea sets the same `maxlength` but the DB
-  layer is the source of truth) and raises `ValueError` before any
-  write so an over-cap submission cannot partially apply.
+- **`/alerts` `has_note` filter dropdown.** Pairs the list-page 📝
+  indicator with a narrow-by-state filter so the triage workflow
+  loop closes: notes → indicator → filter. Three values: `any`
+  (default; renders byte-identical to pre-filter behavior),
+  `with_note` (appends `note IS NOT NULL`), `without_note`
+  (appends `note IS NULL`). Invalid values silently clamp to
+  `any`, matching the rule_type / window precedent. Plumbing rides
+  on the existing `_alert_filter_clauses` helper so COUNT and the
+  page query stay locked under combined filters;
+  `/alerts/ack-all-visible` POST mirrors the GET clamp exactly so
+  bulk-write operates on the same filter set the page shows. The
+  template carries `has_note` through the ack-all-visible hidden
+  inputs and the prev/next pagination links; default `any` is
+  omitted from URLs so the no-params baseline stays clean. No new
+  indexes -- `note IS [NOT] NULL` full-scans at current scale; a
+  partial index is a follow-up if filter latency surfaces.
 
-  Alert detail page (`/alerts/{id}`) gains a "triage notes" article
-  with the current note rendered in `<pre>` (preserving line breaks
-  in plain text), a "Last updated N ago" timestamp via the existing
-  `relative_time` Jinja filter, an editable textarea (4096-char
-  `maxlength`), a Save/Update button, and a Clear button (separate
-  form with a `confirm()` guard). Empty-textarea Save is the documented
-  way to clear -- intentional, no separate "Clear" action needed on
-  submit. After save/clear, the redirect carries `?success=note_saved`
-  or `?success=note_cleared` which renders a one-time inline status
-  message; the success token is whitelisted at render time so a
-  hand-crafted URL cannot inject arbitrary content.
+## [0.4.0-rc5] - 2026-05-17
 
-  `/alerts` list page gains a small per-row indicator (📝 emoji
-  badge with `alert-note-indicator` class) when the alert carries a
-  note; the `title` attribute carries a 50-char tooltip preview so
-  operators can scan triaged-vs-untriaged at a glance without
-  clicking through. Long notes are deliberately truncated in the
-  tooltip so the full triage rationale stays on the detail page (an
-  operator reading over the shoulder sees only that a note exists,
-  not its contents). New `Database.list_alerts_with_match` SELECT
-  projects the note column alongside the existing watchlist join, so
-  the indicator renders without an extra per-row query.
-
-  Plain text only -- no markdown rendering, no rich-text editor, no
-  multi-operator tracking, no per-rule_type bulk-note operations.
-  Single note per alert (replace-on-update); a note-history table is
-  deferred as a future feature if operators ask. CSRF enforced via
-  the existing global middleware. A `has_note` filter on `/alerts`
-  is intentionally deferred -- the indicator is purely visual in
-  this prompt; a filter dropdown is a small follow-up.
-
-- **Argus importer admits `ble_company_id` and `ble_service_uuid` via
-  normalization.** The rc5 Argus residuals audit
-  (`docs/ARGUS_RESIDUALS.md`) flagged two `identifier_type` labels as
-  normalization-variants of admitted pattern_types: `ble_company_id`
-  (7 rows) is semantically the same surface as
-  `ble_manufacturer_id`, and `ble_service_uuid` (10 rows) is
-  semantically the same surface as `ble_uuid`. The importer now
-  aliases the Argus types one-way to the existing Lynceus
-  pattern_types — the canonical pattern_type stored in
-  `watchlist.pattern_type` is unchanged downstream, only the Argus-
-  side type label widened. The `ble_uuid` canonicalizer now accepts
-  16-bit (4-hex) and 32-bit (8-hex) Bluetooth SIG short forms and
-  expands them against the canonical base UUID
-  (`00000000-0000-1000-8000-00805f9b34fb`, Core Spec §3.2.1), plus
-  dual-form Argus emissions like `"fd5a / 0x0075"` (UUID + paired
-  company id in a single identifier cell — the UUID half lands as
-  the `ble_uuid` admission). Canonical persistent output forms are
-  unchanged for both pattern_types; only input acceptance widened.
-  No new pattern_types, no schema migration. 17 additional rows
-  recovered from the residuals tail (22294 → 22311 admitted; 239 →
-  222 dropped). The audit re-run reflects the new state:
-  admit-via-normalization drops to 0 types / 0 rows.
+### Added
 
 - **`/watchlist` search + filter + pagination.** A full Argus import
   lands ~22k+ rows in the watchlist; the pre-rc5 page rendered every
@@ -1228,39 +1204,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   types.
 
 ### Documentation
-
-- **`device_class_id` residual archaeology — reclassified
-  `plausible-needs-smoke` → `no-observation-surface`.** The largest
-  defer-pending-smoke category in the rc5 residuals audit (49 rows,
-  top of the deferred bucket) is resolved without code change: a row-
-  by-row pull of all 49 entries from the current Argus snapshot
-  showed uniformly-shaped values — `DJI device_type=1` through `=70`
-  with gaps, all manufacturer=DJI, all sourced from the
-  `RUB-SysSec/DroneSecurity` decoder project's `DRONEID_DRONE_TYPES`
-  Python lookup table mapping the integer enum to model names
-  (`'1'='Inspire 1'`, etc.). The values are decoder catalog entries
-  for *labelling* the DroneID device-type byte, not per-device
-  identifiers — even though the byte itself is in the DJI DroneID
-  broadcast and so technically observable, treating these enum codes
-  as watchlist patterns would alert on every drone of that model
-  class in range, the same unbounded-fanout posture the audit
-  already records for `rf_channel`. The per-device Remote-ID
-  observation surface is `drone_id_prefix` (ANSI/CTA-2063-A serial
-  number prefix, the UAS-ID half of the ASTM F3411 Basic ID message)
-  — already admitted, already probed via `_DRONE_ID_PATHS` in
-  `src/lynceus/kismet.py`. Adding a separate `device_class_id`
-  pattern_type would require a new Kismet field-path probe + new
-  `DeviceObservation` field + schema migration + canonicalizer +
-  rules-evaluate branch + allowlist support, all for a match
-  semantic the watchlist primitive does not fit. Verdict: drop-
-  entirely. `RESIDUAL_SURFACE_TABLE` updated in
-  `scripts/audit_residuals.py` with the evidence; the regenerated
-  `docs/ARGUS_RESIDUALS.md` reflects defer-pending-smoke shrinking
-  from 3 types / 70 rows to 2 types / 21 rows (`ble_protocol_byte_
-  table` + `ssid_pattern` remain deferred pending live smoke) and
-  drop-entirely growing from 26 / 152 to 27 / 201. Total dropped
-  row count unchanged at 222 — the row was always dropped; only the
-  reason changed.
 
 - **Argus residual types audit.** Added a per-type residual analysis
   at `docs/ARGUS_RESIDUALS.md` characterizing the ~239 Argus rows
