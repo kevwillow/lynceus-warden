@@ -2857,3 +2857,398 @@ def test_auto_archive_returns_count_of_archived_rows(db):
     )
     archived = db.auto_archive_watchful_recurrence(now_ts=1000 + 86400 * 90)
     assert archived == 2
+
+
+# ===================== watchful_recurrence Phase 2a operator helpers ========
+# Phase 2a backend coverage: the six operator-action helpers + the get-by-id
+# accessor. Routes are exercised in tests/test_ui_watchful.py.
+
+
+def test_dismiss_watchful_recurrence_archives_active_entry(db):
+    entry_id = _insert_watchful(db)
+    ok = db.dismiss_watchful_recurrence(entry_id, now_ts=5000)
+    assert ok is True
+    row = db.get_watchful_recurrence(entry_id)
+    assert row.archived_at == 5000
+
+
+def test_dismiss_watchful_recurrence_idempotent_on_archived(db):
+    """Per Phase 2a spec: idempotent on already-archived. Second call
+    returns False without raising; the row's archived_at is preserved
+    (not bumped to the second call's now_ts)."""
+    entry_id = _insert_watchful(db, archived_at=2000)
+    ok = db.dismiss_watchful_recurrence(entry_id, now_ts=9999)
+    assert ok is False
+    row = db.get_watchful_recurrence(entry_id)
+    assert row.archived_at == 2000
+
+
+def test_dismiss_watchful_recurrence_does_not_touch_other_columns(db):
+    """Dismiss is JUST an archive: it must not stomp escalated_at,
+    operator_note, or any Phase 2 flag the operator set earlier."""
+    entry_id = _insert_watchful(
+        db, sighting_count=4, escalated_at=3000,
+    )
+    # Simulate operator having flagged + noted before dismissing.
+    db.flag_watchful_for_investigation(entry_id, "looks weird", now_ts=4000)
+    db.dismiss_watchful_recurrence(entry_id, now_ts=5000)
+    row = db.get_watchful_recurrence(entry_id)
+    assert row.archived_at == 5000
+    assert row.escalated_at == 3000
+    assert row.sighting_count == 4
+    assert row.flagged_for_investigation == 1
+    assert row.operator_note == "looks weird"
+
+
+def _make_allowlist_yaml(tmp_path):
+    """Build a primary allowlist file + return the derived UI path."""
+    from lynceus.allowlist import derive_ui_path
+
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    return primary, derive_ui_path(primary)
+
+
+def test_promote_watchful_to_allowlist_archives_and_writes_entry(db, tmp_path):
+    from lynceus.allowlist import load_allowlist
+
+    _primary, ui_path = _make_allowlist_yaml(tmp_path)
+    entry_id = _insert_watchful(db)
+    ok = db.promote_watchful_to_allowlist(
+        entry_id,
+        allowlist_path=ui_path,
+        pattern=WATCHFUL_MAC,
+        pattern_type="mac",
+        note="known device",
+        expires_at=None,
+        now_ts=5000,
+    )
+    assert ok is True
+
+    row = db.get_watchful_recurrence(entry_id)
+    assert row.archived_at == 5000
+
+    allowlist = load_allowlist(str(_primary))
+    assert len(allowlist.entries) == 1
+    e = allowlist.entries[0]
+    assert e.pattern == WATCHFUL_MAC
+    assert e.pattern_type == "mac"
+    assert e.note == "known device"
+    assert e.expires_at is None
+
+
+def test_promote_watchful_to_allowlist_rejects_archived(db, tmp_path):
+    _primary, ui_path = _make_allowlist_yaml(tmp_path)
+    entry_id = _insert_watchful(db, archived_at=2000)
+    with pytest.raises(ValueError, match="already archived"):
+        db.promote_watchful_to_allowlist(
+            entry_id,
+            allowlist_path=ui_path,
+            pattern=WATCHFUL_MAC,
+            pattern_type="mac",
+            note=None,
+            expires_at=None,
+            now_ts=5000,
+        )
+    # No allowlist file was created either.
+    assert not ui_path.exists()
+
+
+def test_promote_atomicity_allowlist_failure_leaves_row_unarchived(
+    db, tmp_path, monkeypatch
+):
+    """Atomicity: if the allowlist write raises, the watchful row is NOT
+    archived. We monkeypatch add_ui_entry to raise; the helper should
+    surface the exception with the DB row untouched."""
+    from lynceus import allowlist as allowlist_mod
+
+    _primary, ui_path = _make_allowlist_yaml(tmp_path)
+    entry_id = _insert_watchful(db)
+
+    def _boom(*_a, **_kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(allowlist_mod, "add_ui_entry", _boom)
+    with pytest.raises(OSError, match="disk full"):
+        db.promote_watchful_to_allowlist(
+            entry_id,
+            allowlist_path=ui_path,
+            pattern=WATCHFUL_MAC,
+            pattern_type="mac",
+            note=None,
+            expires_at=None,
+            now_ts=5000,
+        )
+    row = db.get_watchful_recurrence(entry_id)
+    assert row.archived_at is None
+
+
+def test_reset_watchful_recurrence_walks_back_from_escalated(db):
+    """The OQ-8 state walk-back: escalated -> tracking with sighting_count
+    reset to 1, escalated_at cleared, reset_count incremented,
+    last_seen_at advanced to now_ts."""
+    entry_id = _insert_watchful(
+        db,
+        last_seen_at=1000,
+        sighting_count=4,
+        escalated_at=2000,
+    )
+    result = db.reset_watchful_recurrence(entry_id, now_ts=5000)
+    assert result is not None
+    assert result.escalated_at is None
+    assert result.sighting_count == 1
+    assert result.last_seen_at == 5000
+    assert result.reset_count == 1
+    # Row in DB matches.
+    row = db.get_watchful_recurrence(entry_id)
+    assert row.escalated_at is None
+    assert row.sighting_count == 1
+    assert row.reset_count == 1
+
+
+def test_reset_watchful_recurrence_increments_reset_count_each_call(db):
+    """Second reset (e.g., entry re-escalated and operator reset again)
+    bumps reset_count from 1 to 2, not back to 1."""
+    entry_id = _insert_watchful(
+        db, sighting_count=4, escalated_at=2000,
+    )
+    db.reset_watchful_recurrence(entry_id, now_ts=5000)
+    # Re-escalate to enable the second reset.
+    db._conn.execute(
+        "UPDATE watchful_recurrence SET escalated_at = 6000 WHERE id = ?",
+        (entry_id,),
+    )
+    db._conn.commit()
+    result = db.reset_watchful_recurrence(entry_id, now_ts=7000)
+    assert result.reset_count == 2
+
+
+def test_reset_watchful_recurrence_rejects_tracking_state(db):
+    """OQ-8 explicitly says reset is only meaningful from escalated.
+    Resetting from tracking (the default state) raises."""
+    entry_id = _insert_watchful(db)  # escalated_at = None
+    with pytest.raises(ValueError, match="not in the escalated state"):
+        db.reset_watchful_recurrence(entry_id, now_ts=5000)
+
+
+def test_reset_watchful_recurrence_rejects_archived(db):
+    entry_id = _insert_watchful(
+        db, escalated_at=2000, archived_at=3000,
+    )
+    with pytest.raises(ValueError, match="not in the escalated state"):
+        db.reset_watchful_recurrence(entry_id, now_ts=5000)
+
+
+def test_flag_watchful_for_investigation_sets_flag_and_note(db):
+    entry_id = _insert_watchful(db)
+    ok = db.flag_watchful_for_investigation(
+        entry_id, "spotted near front door", now_ts=5000,
+    )
+    assert ok is True
+    row = db.get_watchful_recurrence(entry_id)
+    assert row.flagged_for_investigation == 1
+    assert row.operator_note == "spotted near front door"
+    # Crucially NOT archived -- operator wants to keep watching.
+    assert row.archived_at is None
+
+
+def test_flag_watchful_for_investigation_overwrites_prior_note(db):
+    entry_id = _insert_watchful(db)
+    db.flag_watchful_for_investigation(entry_id, "first take", now_ts=5000)
+    db.flag_watchful_for_investigation(entry_id, "updated take", now_ts=6000)
+    row = db.get_watchful_recurrence(entry_id)
+    assert row.operator_note == "updated take"
+
+
+def test_flag_watchful_for_investigation_rejects_archived(db):
+    entry_id = _insert_watchful(db, archived_at=2000)
+    with pytest.raises(ValueError, match="does not exist or is archived"):
+        db.flag_watchful_for_investigation(entry_id, "x", now_ts=5000)
+
+
+def test_mark_watchful_confirmed_safe_archives_with_flag_and_note(db):
+    entry_id = _insert_watchful(db)
+    ok = db.mark_watchful_confirmed_safe(
+        entry_id, "neighbour's TV", now_ts=5000,
+    )
+    assert ok is True
+    row = db.get_watchful_recurrence(entry_id)
+    assert row.confirmed_safe == 1
+    assert row.operator_note == "neighbour's TV"
+    assert row.archived_at == 5000
+
+
+def test_confirmed_safe_does_not_create_allowlist_entry(db, tmp_path):
+    """The whole point of confirmed-safe vs promote: confirmed-safe is a
+    per-entry annotation, NOT an instruction to suppress this MAC
+    forever. The same MAC appearing tomorrow can still raise a fresh
+    watchlist hit -- so no allowlist entry must be created here."""
+    from lynceus.allowlist import load_allowlist
+
+    primary, _ui = _make_allowlist_yaml(tmp_path)
+    entry_id = _insert_watchful(db)
+    db.mark_watchful_confirmed_safe(entry_id, "benign", now_ts=5000)
+
+    allowlist = load_allowlist(str(primary))
+    assert allowlist.entries == []
+
+
+def test_mark_watchful_confirmed_safe_rejects_archived(db):
+    entry_id = _insert_watchful(db, archived_at=2000)
+    with pytest.raises(ValueError, match="does not exist or is archived"):
+        db.mark_watchful_confirmed_safe(entry_id, "x", now_ts=5000)
+
+
+# --- create_watchful_from_alert -------------------------------------------
+
+
+def _seed_alert_for_watchful(
+    db, *, mac=WATCHFUL_MAC, watchlist_id=None, ts=1000,
+):
+    """Create an alert row via the public helpers. alerts.mac is FK to
+    devices(mac), so the device must exist first."""
+    if mac is not None:
+        db.upsert_device(mac, "wifi", None, 0, ts)
+    return db.add_alert(
+        ts=ts,
+        rule_name="r",
+        mac=mac,
+        message="m",
+        severity="low",
+        matched_watchlist_id=watchlist_id,
+    )
+
+
+def test_create_watchful_from_alert_copies_mac_and_matched_watchlist_id(db):
+    # Need a watchlist row for the FK reference to be valid.
+    cur = db._conn.execute(
+        "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+        "VALUES (?, 'mac', 'low', 'test')",
+        ("aa:bb:cc:11:22:33",),
+    )
+    db._conn.commit()
+    wl_id = cur.lastrowid
+    alert_id = _seed_alert_for_watchful(
+        db, mac=WATCHFUL_MAC, watchlist_id=wl_id,
+    )
+    new_id = db.create_watchful_from_alert(
+        alert_id, snooze_duration_seconds=86400, now_ts=5000,
+    )
+    assert new_id is not None
+    row = db.get_watchful_recurrence(new_id)
+    assert row.mac == WATCHFUL_MAC
+    assert row.matched_watchlist_id == wl_id
+    assert row.source_alert_id == alert_id
+    assert row.sighting_count == 1
+    assert row.first_seen_at == 5000
+    assert row.last_seen_at == 5000
+    assert row.created_at == 5000
+
+
+def test_create_watchful_from_alert_snooze_duration_24h(db):
+    alert_id = _seed_alert_for_watchful(db)
+    new_id = db.create_watchful_from_alert(
+        alert_id, snooze_duration_seconds=86400, now_ts=5000,
+    )
+    row = db.get_watchful_recurrence(new_id)
+    assert row.snooze_expires_at == 5000 + 86400
+
+
+def test_create_watchful_from_alert_snooze_duration_7d(db):
+    alert_id = _seed_alert_for_watchful(db)
+    new_id = db.create_watchful_from_alert(
+        alert_id, snooze_duration_seconds=7 * 86400, now_ts=5000,
+    )
+    row = db.get_watchful_recurrence(new_id)
+    assert row.snooze_expires_at == 5000 + 7 * 86400
+
+
+def test_create_watchful_from_alert_snooze_duration_30d(db):
+    alert_id = _seed_alert_for_watchful(db)
+    new_id = db.create_watchful_from_alert(
+        alert_id, snooze_duration_seconds=30 * 86400, now_ts=5000,
+    )
+    row = db.get_watchful_recurrence(new_id)
+    assert row.snooze_expires_at == 5000 + 30 * 86400
+
+
+def test_create_watchful_from_alert_forever_snooze_is_null(db):
+    """The forever case maps to NULL, which the existing poll-time
+    snooze gate treats as 'no expiry' without special casing."""
+    alert_id = _seed_alert_for_watchful(db)
+    new_id = db.create_watchful_from_alert(
+        alert_id, snooze_duration_seconds=None, now_ts=5000,
+    )
+    row = db.get_watchful_recurrence(new_id)
+    assert row.snooze_expires_at is None
+
+
+def test_create_watchful_from_alert_returns_none_for_missing_alert(db):
+    assert db.create_watchful_from_alert(
+        9999, snooze_duration_seconds=None, now_ts=5000,
+    ) is None
+
+
+def test_create_watchful_from_alert_rejects_alert_without_mac(db):
+    """Watchful tracking is MAC-keyed; alerts without a MAC (e.g.,
+    pure-SSID watchlist hits) cannot be triaged into this surface."""
+    alert_id = db.add_alert(
+        ts=1000, rule_name="r", mac=None, message="m", severity="low",
+    )
+    with pytest.raises(ValueError, match="has no MAC"):
+        db.create_watchful_from_alert(
+            alert_id, snooze_duration_seconds=None, now_ts=5000,
+        )
+
+
+def test_create_watchful_from_alert_rejects_duplicate_active_mac(db):
+    """Migration 018 documents 'at most one active row per MAC' as an
+    application-layer invariant (no partial-unique index). The helper
+    enforces it explicitly so the operator can't accidentally create a
+    parallel tracking row for the same device."""
+    _insert_watchful(db)  # already active for WATCHFUL_MAC
+    alert_id = _seed_alert_for_watchful(db, mac=WATCHFUL_MAC)
+    with pytest.raises(ValueError, match="already has active watchful"):
+        db.create_watchful_from_alert(
+            alert_id, snooze_duration_seconds=None, now_ts=5000,
+        )
+
+
+def test_create_watchful_from_alert_allows_new_after_archive(db):
+    """Once the prior entry is archived, a fresh triage from a new
+    alert on the same MAC is permitted -- the active-only uniqueness
+    invariant is the constraint, not lifetime uniqueness."""
+    _insert_watchful(db, archived_at=2000)
+    alert_id = _seed_alert_for_watchful(db, mac=WATCHFUL_MAC)
+    new_id = db.create_watchful_from_alert(
+        alert_id, snooze_duration_seconds=None, now_ts=5000,
+    )
+    assert new_id is not None
+
+
+def test_create_watchful_from_alert_rejects_invalid_snooze_duration(db):
+    alert_id = _seed_alert_for_watchful(db)
+    with pytest.raises(ValueError, match="positive int or None"):
+        db.create_watchful_from_alert(
+            alert_id, snooze_duration_seconds=0, now_ts=5000,
+        )
+    with pytest.raises(ValueError, match="positive int or None"):
+        db.create_watchful_from_alert(
+            alert_id, snooze_duration_seconds=-1, now_ts=5000,
+        )
+
+
+def test_get_watchful_recurrence_returns_archived_rows(db):
+    """Distinct from get_active_watchful_recurrence_by_mac: this
+    accessor surfaces archived rows so the route layer can render 404
+    only when the id truly does not exist (not when the entry has
+    simply been actioned)."""
+    entry_id = _insert_watchful(db, archived_at=2000)
+    row = db.get_watchful_recurrence(entry_id)
+    assert row is not None
+    assert row.id == entry_id
+    assert row.archived_at == 2000
+
+
+def test_get_watchful_recurrence_returns_none_for_missing(db):
+    assert db.get_watchful_recurrence(9999) is None
