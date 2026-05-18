@@ -8,6 +8,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/watchlist` search + filter + pagination.** A full Argus import
+  lands ~22k+ rows in the watchlist; the pre-rc5 page rendered every
+  row on a single render and was genuinely unbrowsable past a few
+  thousand rows. The rc5 surface adds a filter bar (substring `q`
+  across pattern / manufacturer / argus_record_id / device_category,
+  plus dropdowns for pattern_type, severity, and device_category)
+  and offset pagination matching the `/alerts` convention
+  (`page` + `page_size` in {25, 50, 100, 200}, default 50). The
+  operator pain point "I know I imported a specific Argus row,
+  where is it?" finally has a real answer: type the row's
+  argus_record_id substring (or its manufacturer, or its
+  pattern) into `q` and the row surfaces. Filter state
+  round-trips through the URL so a filtered view is bookmarkable
+  and shareable. With this landing, the three list pages
+  (`/alerts`, `/allowlist`, `/watchlist`) all share the same
+  filter+pagination idiom -- consistent muscle memory for the
+  operator and a single source of truth (`PaginationParams`) for
+  the math.
+
+  The default render (no query params) is byte-equivalent to
+  pre-rc5 at the row-set level: severity-by-importance then
+  pattern alphabetical, with `id` as the deterministic
+  tiebreaker so pagination doesn't flicker. Invalid filter values
+  silently fall back to "all" (a stale bookmark with `severity=foo`
+  lands on the unfiltered page rather than 400), and an
+  out-of-range page clamps silently to the last valid page (no
+  404 on a typo'd `?page=999`). The device_category dropdown is
+  populated live from a `SELECT DISTINCT` against the
+  `watchlist_metadata` side table; NULL category surfaces as a
+  dedicated `(uncategorized)` option backed by the `__none__`
+  sentinel, so the yaml-seeded / bundled rows can be triaged
+  separately from Argus-imported rows.
+
+  New `Database.list_watchlist_filtered` returns
+  `(rows: list[WatchlistRow], total: int)` -- a COUNT query plus
+  a LIMIT/OFFSET'd SELECT that both consume the same
+  `_build_watchlist_filter_clauses` helper, the same invariant
+  /alerts ack-all-visible depends on. Companion
+  `distinct_watchlist_device_categories` powers the dropdown.
+  No schema change. No new indexes -- the 22k-row scans against
+  `watchlist` complete well under the 500ms perf budget on
+  SQLite, and adding indexes ahead of demonstrated need would
+  trade insert/import cost for read cost that isn't there yet.
+
 - **`/rules` per-rule fire-count and last-fired statistics.** Answers
   the "is this rule worth keeping?" question at a glance: each rule
   row now carries its fire count over a configurable time window
