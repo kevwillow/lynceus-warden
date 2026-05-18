@@ -199,6 +199,43 @@ with external trackers.
   dormant columns landed in migration 018) and no Phase 1 path
   modified.
 
+- **Watchful snooze (Phase 2b: operator-facing UI).** Closes the
+  Phase 2 feature loop. A new `/watchful` page lists tracked
+  devices with filter (status / state / window / MAC substring),
+  pagination (25 / 50 / 100 / 200; default 50), per-entry action
+  buttons, and a recurrence-digest section. A new `/watchful/<id>`
+  detail page mirrors `/alerts/<id>` with full row state,
+  cross-links to the source alert / matched watchlist row /
+  device record, and the same action panel. The topnav gains a
+  `/watchful` entry between `/alerts` and `/devices`. The
+  `/alerts` list grows a per-row "Watch" button (snooze duration
+  `24h / 7d / 30d / forever`, default `30d` per the locked
+  decision) that posts to the existing Phase 2a triage route.
+  All five Phase 2a action POSTs now redirect to
+  `/watchful?success=<token>` so the operator stays in context
+  and sees a success banner per the `/rules` flash convention.
+  Per-entry action visibility honors the state-guard invariant:
+  reset only renders on escalated entries, all five render on
+  escalated, four render on tracking (reset hidden), zero render
+  on archived (entries are read-only). Promote and confirmed-safe
+  are visually distinct -- the two are NOT the same action and
+  conflating them would silently break the operator's
+  threat-model intuition: promote (red, &#x1F6AB;, "never alert
+  me on this MAC again") creates a permanent allowlist entry;
+  confirmed-safe (green, &check;, "close as benign") does NOT.
+  The recurrence digest is a section on `/watchful` (per locked
+  decision 7d, not a separately-emitted notification): groups
+  escalations from the last 8 ISO weeks by week of `escalated_at`,
+  renders a collapsible MAC list per week, most recent first.
+  Operator-facing copy stays in the non-alarmist register per
+  the locked scare-factor mitigation: "watchful", "recurrence",
+  "sighting", "tracked device" rather than "threat" / "intrusion"
+  / "danger". Three new read-side `db.py` helpers
+  (`count_watchful_recurrence`, `list_watchful_recurrence`,
+  `list_recent_watchful_escalations`) drive the page; the COUNT
+  and SELECT share a filter-clause builder for pagination
+  consistency. No write-path additions and no schema change.
+
 ## [0.4.0-rc5] - 2026-05-17
 
 ### Added

@@ -80,24 +80,26 @@ after some weeks of real captures.
 - **Trigger**: enough real-world data to know what "normal" looks like in
   your environment.
 
-### Watchful snooze operator UI (Phase 2b)
-Phase 1 (backend foundation: migration 018, tracking gate, escalation
-emission, 90-day auto-archive) and Phase 2a (operator-action backend:
-six DB helpers and six CSRF-protected POST routes covering dismiss,
-promote-to-permanent-allowlist, reset, flag-for-investigation,
-confirm-safe, and triage-from-alert) both shipped in rc6. Phase 2b
-lands the operator-facing UI: a new `/watchful` page listing active
-entries with state columns and per-entry detail view, an `/alerts`
-triage "watchful snooze" button alongside the existing snooze and
-allowlist actions, form templates for the action buttons (the POST
-endpoints already exist and are CSRF-ready), the weekly digest block
-on the dashboard, and the topnav `/watchful` link. See
-[`docs/WATCHFUL_SNOOZE_DESIGN.md`](docs/WATCHFUL_SNOOZE_DESIGN.md) for
-the full design and the locked OQ resolutions.
-- **Trigger**: operator-facing review of a few weeks of watchful
-  tracking data in the wild, to confirm Phase 1's recurrence model
-  (>=24h gap, 4-sighting threshold, 90-day archive) holds up before
-  building the UI on top of it.
+### Watchful snooze — possible Phase 3 enhancements
+Phase 1 (backend foundation), Phase 2a (operator-action backend), and
+Phase 2b (operator-facing UI) all shipped in rc6 -- the feature is
+complete and usable. Future work would be reactive to operator
+experience rather than planned now. Candidates a few weeks of real
+usage might surface:
+- ntfy-pushed weekly digest (current digest is render-on-load on
+  `/watchful` per locked decision 7d; if operators ask for a pushed
+  summary, the existing helper just needs a notifier wire-up)
+- per-entry sighting timeline (current detail page shows aggregate
+  counts; a per-sighting log would require schema and is deferred
+  unless operators ask for it)
+- bulk-action surface (e.g. select-all-archived → bulk dismiss);
+  unclear whether watchful's expected steady-state size makes this
+  worth the UI complexity
+- richer audit predicates on `/watchful` (e.g. "escalated then
+  archived without action" — the schema already supports this via
+  `escalated_at IS NOT NULL AND archived_at IS NOT NULL`)
+- **Trigger**: real-world operator feedback after a few weeks of
+  usage; not worth pre-designing.
 
 ### Allowlist auto-learn mode
 First N hours after install, everything seen goes into a "candidate
