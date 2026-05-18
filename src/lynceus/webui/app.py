@@ -169,6 +169,33 @@ def _resolve_window_to_since_ts(
 _ALLOWLIST_PER_PAGE_ALLOWED: tuple[int, ...] = (25, 50, 100, 200)
 _ALLOWLIST_PER_PAGE_DEFAULT: int = 50
 
+# /watchlist pagination -- shares the same per_page set + default
+# as /alerts and /allowlist so an operator's muscle memory carries
+# over. The 22k+ row scale post-Argus-import is the genuine driver
+# (default 50 keeps the first paint cheap on a fresh visit).
+_WATCHLIST_PER_PAGE_ALLOWED: tuple[int, ...] = (25, 50, 100, 200)
+_WATCHLIST_PER_PAGE_DEFAULT: int = 50
+
+# Pattern_type filter options for /watchlist. All 7 currently-
+# supported types -- migration 013 expanded the v0.3 set to admit
+# ble_manufacturer_id and drone_id_prefix, so the dropdown enumerates
+# every type an Argus import or yaml seed can produce.
+_WATCHLIST_PATTERN_TYPES: tuple[str, ...] = (
+    "mac",
+    "oui",
+    "ssid",
+    "ble_uuid",
+    "mac_range",
+    "ble_manufacturer_id",
+    "drone_id_prefix",
+)
+
+# Sentinel for the "(uncategorized)" device_category dropdown option
+# -- mirrors Database._WATCHLIST_UNCATEGORIZED_SENTINEL. Surfacing
+# it as a constant here keeps the template / route / DB layer in
+# lockstep.
+_WATCHLIST_UNCATEGORIZED_SENTINEL: str = "__none__"
+
 
 def _parse_date_to_ts(value: str, *, end_of_day: bool, name: str) -> int:
     try:
@@ -413,13 +440,6 @@ def render_rssi_sparkline(rssi_history) -> str:
         f'fill="currentColor">min: {rmin} max: {rmax}</text>'
         f"</svg>"
     )
-
-
-_SEVERITY_ORDER = {"high": 0, "med": 1, "low": 2}
-
-
-def _watchlist_sort_key(entry: dict) -> tuple[int, str]:
-    return (_SEVERITY_ORDER.get(entry.get("severity"), 99), entry.get("pattern") or "")
 
 
 def _enrich_alerts_with_devices(db, alerts: list[dict]) -> None:
@@ -1683,16 +1703,99 @@ def create_app(config: Config, db: Database) -> FastAPI:
         )
 
     @app.get("/watchlist", response_class=HTMLResponse)
-    def watchlist_list(request: Request):
-        rows = db.list_watchlist_with_metadata()
-        rows_sorted = sorted(rows, key=_watchlist_sort_key)
+    def watchlist_list(
+        request: Request,
+        q: str | None = Query(default=None),
+        pattern_type: str | None = Query(default=None),
+        severity: str | None = Query(default=None),
+        device_category: str | None = Query(default=None),
+        page: str | None = Query(default=None),
+        page_size: str | None = Query(default=None),
+    ):
+        # Backward compat: /watchlist with no query params behaves
+        # exactly as pre-rc5 (first 50 rows, severity-by-importance
+        # then pattern alphabetical). Invalid filter values silently
+        # fall back to "all" -- a stale bookmark with a typo like
+        # severity=foo lands on the unfiltered page rather than 400.
+        if q is not None and len(q) > 100:
+            raise HTTPException(status_code=400, detail="q must be <= 100 chars")
+        q_clean = q if q else None
+
+        if pattern_type is not None and pattern_type not in _WATCHLIST_PATTERN_TYPES:
+            pattern_type = None
+        pt_clean = pattern_type or None
+
+        if severity is not None and severity not in ("low", "med", "high"):
+            severity = None
+        sev_clean = severity or None
+
+        device_category_options = db.distinct_watchlist_device_categories()
+        # device_category accepts the "uncategorized" sentinel
+        # explicitly; any other value must appear in the live DISTINCT
+        # set, else silently fall back to "all".
+        if device_category is not None and device_category != "":
+            if device_category not in (
+                _WATCHLIST_UNCATEGORIZED_SENTINEL,
+                *device_category_options,
+            ):
+                device_category = None
+        dc_clean = device_category or None
+
+        requested_page, per_page = parse_pagination(
+            page,
+            page_size,
+            allowed_per_page=_WATCHLIST_PER_PAGE_ALLOWED,
+            default_per_page=_WATCHLIST_PER_PAGE_DEFAULT,
+        )
+
+        rows, total = db.list_watchlist_filtered(
+            q=q_clean,
+            pattern_type=pt_clean,
+            severity=sev_clean,
+            device_category=dc_clean,
+            page=requested_page,
+            per_page=per_page,
+        )
+        pagination = build_pagination(requested_page, per_page, total)
+
+        # If the requested page exceeded total_pages, re-fetch at the
+        # clamped page so the rendered rows match the footer. The
+        # alternative -- returning the over-the-edge empty page -- is
+        # worse UX for a stale bookmark.
+        if pagination.page != requested_page:
+            rows, _ = db.list_watchlist_filtered(
+                q=q_clean,
+                pattern_type=pt_clean,
+                severity=sev_clean,
+                device_category=dc_clean,
+                page=pagination.page,
+                per_page=per_page,
+            )
+
+        filters_active = bool(
+            q_clean
+            or pt_clean
+            or sev_clean
+            or dc_clean
+        )
+
         return app.state.templates.TemplateResponse(
             request=request,
             name="watchlist_list.html",
             context={
                 "version": __version__,
                 "active": "watchlist",
-                "entries": rows_sorted,
+                "entries": rows,
+                "pagination": pagination,
+                "q": q or "",
+                "pattern_type": pattern_type or "",
+                "severity": severity or "",
+                "device_category": device_category or "",
+                "pattern_type_options": _WATCHLIST_PATTERN_TYPES,
+                "device_category_options": device_category_options,
+                "uncategorized_sentinel": _WATCHLIST_UNCATEGORIZED_SENTINEL,
+                "per_page_options": _WATCHLIST_PER_PAGE_ALLOWED,
+                "filters_active": filters_active,
             },
         )
 
