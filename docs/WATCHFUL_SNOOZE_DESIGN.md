@@ -477,22 +477,39 @@ same path used for any other UI-written allowlist entry the operator
 decides to make canonical.
 
 **Existing alert-flow gate location.** The watchful tracking gate
-inserts in `poll_once` *after* `db.insert_sighting` (so every
-observation is recorded regardless of watchful state) and *before* the
-allowlist suppression check. This ordering matters:
+inserts in `poll_once` *after* the allowlist suppression check's
+`continue` branch closes and *before* `evaluate(...)` runs the
+ruleset. Full gate ordering per the locked decision:
 
-- After `insert_sighting`: the sighting goes into the DB unconditionally;
-  watchful tracking augments the record but doesn't replace it.
-- Before allowlist suppression: a tracked MAC that the operator later
-  allowlists still gets the suppression precedence. The watchful entry
-  remains in its own state (probably `promoted`), and the allowlist
-  audit log records the suppression as usual.
+```
+allowlist  ->  watchful tracking  ->  rule eval  ->
+    per-rule_type snooze  ->  per-alert snooze  ->  emit
+```
 
-This places the watchful gate at a different point in the loop than
-the rc6 per-rule_type snooze gate, which is at alert-emit time
-(inside the `for hit in hits` block, before `db.add_alert`). The two
-gates do different things: rule_type snooze suppresses output;
-watchful tracking observes input.
+This ordering matters:
+
+- After allowlist suppression: allowlist precedence wins, consistent
+  with the *Edge cases* section's "Watchful snooze entry whose
+  pattern_type matches an existing allowlist entry" resolution. An
+  allowlisted MAC under watchful snooze sees no `sighting_count`
+  increment and no escalation alert -- the operator's stronger
+  statement ("this is fine forever") shadows the weaker one ("tell
+  me if it keeps showing up"). Phase 2's "promote to permanent
+  allowlist" flow inherits this cleanly: the new allowlist entry
+  intercepts before the promoted watchful row is ever consulted on
+  subsequent sightings.
+- Before rule eval: an active `snooze_expires_at` lets the watchful
+  gate `continue` past rule evaluation for this MAC, suppressing
+  the original alert pipeline (the underlying watchlist rules)
+  while sightings still get counted. The escalation alert remains
+  an independent surface that fires on threshold cross regardless
+  of `snooze_expires_at`.
+
+The watchful gate sits at a different point in the loop than the
+rc6 per-rule_type snooze gate, which is at alert-emit time (inside
+the `for hit in hits` block, before `db.add_alert`). The two gates
+do different things: rule_type snooze suppresses output; watchful
+tracking observes input.
 
 ## Scare-factor mitigations
 

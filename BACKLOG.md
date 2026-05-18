@@ -80,6 +80,23 @@ after some weeks of real captures.
 - **Trigger**: enough real-world data to know what "normal" looks like in
   your environment.
 
+### Watchful snooze operator UI (Phase 2)
+Phase 1 (backend foundation: migration 018, tracking gate, escalation
+emission, 90-day auto-archive) shipped in rc6. Phase 2 lands the
+operator-facing surface: a new `/watchful` page listing active entries
+with state columns and per-entry detail view, an `/alerts` triage
+"watchful snooze" button alongside the existing snooze and allowlist
+actions, action-per-endpoint POST routes (dismiss, promote, reset,
+flag-investigate, confirm-safe) with CSRF, the weekly digest block on
+the dashboard, and the "promote to permanent allowlist" write path
+to `allowlist_ui.yaml`. See
+[`docs/WATCHFUL_SNOOZE_DESIGN.md`](docs/WATCHFUL_SNOOZE_DESIGN.md) for
+the full design and the locked OQ resolutions.
+- **Trigger**: operator-facing review of a few weeks of watchful
+  tracking data in the wild, to confirm Phase 1's recurrence model
+  (>=24h gap, 4-sighting threshold, 90-day archive) holds up before
+  building the UI on top of it.
+
 ### Allowlist auto-learn mode
 First N hours after install, everything seen goes into a "candidate
 allowlist" you review and accept rather than firing alerts on.
