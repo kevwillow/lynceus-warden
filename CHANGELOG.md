@@ -162,6 +162,43 @@ with external trackers.
   `docs/WATCHFUL_SNOOZE_DESIGN.md` for the full design rationale
   and the OQ resolutions that shaped Phase 1.
 
+- **Watchful snooze (Phase 2a: operator-action backend).** The
+  HTTP-and-DB plumbing for the five operator actions on watchful
+  entries plus the triage entry-point from `/alerts`. No UI yet --
+  Phase 2b wires up the buttons -- but the backend is complete and
+  CSRF-protected so the UI layer is a pure rendering job. Six new
+  `db.py` helpers cover the action surface:
+  `dismiss_watchful_recurrence` (archive, idempotent on
+  already-archived); `promote_watchful_to_allowlist` (allowlist
+  write + archive coupled atomically -- yaml write first, DB UPDATE
+  under `archived_at IS NULL` second, best-effort yaml rollback if
+  a concurrent archive sneaks in between);
+  `reset_watchful_recurrence` (the OQ-8 walk-back from escalated:
+  `escalated_at -> NULL`, `sighting_count -> 1`, `last_seen_at` to
+  now, `reset_count` incremented; only valid from the escalated
+  state); `flag_watchful_for_investigation` (flag + replace
+  `operator_note`, entry stays active so sightings keep counting
+  per Phase 1); `mark_watchful_confirmed_safe` (flag + replace
+  note + archive; deliberately does NOT create an allowlist entry
+  -- the operator's signal is "this entry is benign", not "never
+  alert me on this MAC again"); and `create_watchful_from_alert`
+  (builds a row from an `alerts.id`, copying `mac` and
+  `matched_watchlist_id`, with snooze_duration in
+  `{forever, 24h, 7d, 30d}`). Six matching POST routes in
+  `webui/app.py`: `/alerts/{id}/watch` for triage from the alert
+  list, and `/watchful/{id}/{dismiss,promote,reset,investigate,
+  confirm-safe}` for the action surface. All return 303 redirects
+  (operator-facing forms, not JSON APIs), validate snooze duration
+  against a fixed vocabulary at the POST handler, cap operator
+  notes at 4096 chars, and use HTTPException 400 for stateful
+  preconditions (matches the existing "alert has no MAC" pattern).
+  The auto-archive housekeeping sweep coexists cleanly with
+  operator-driven archives -- its `WHERE archived_at IS NULL`
+  filter renders operator-archived rows invisible without
+  coordination. Backward compat: no schema change (the Phase 2
+  dormant columns landed in migration 018) and no Phase 1 path
+  modified.
+
 ## [0.4.0-rc5] - 2026-05-17
 
 ### Added

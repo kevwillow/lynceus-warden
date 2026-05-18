@@ -63,10 +63,13 @@ The headlines:
 - Stingray / IMSI-catcher hunter bridge.
 - Web UI editing for rules and allowlist (currently read-only; YAML is
   the only edit path).
-- Watchful snooze operator UI (Phase 2): `/watchful` page, `/alerts`
-  triage button, weekly digest, POST routes for the five operator
-  actions. Backend foundation shipped in rc6 (migration 018, tracking
-  gate, escalation emission, 90-day auto-archive).
+- Watchful snooze operator UI (Phase 2b): `/watchful` page, `/alerts`
+  triage button, weekly digest. Phase 1 (backend foundation:
+  migration 018, tracking gate, escalation emission, 90-day
+  auto-archive) and Phase 2a (operator-action backend: six DB
+  helpers and six CSRF-protected POST routes for dismiss / promote /
+  reset / investigate / confirm-safe / triage-from-alert) both
+  shipped in rc6.
 - Multi-location stalking heuristics (cross-Pi correlation).
 - Allowlist auto-learn mode for early-deployment FP suppression.
 - BLE 16-bit short-UUID expansion.
