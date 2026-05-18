@@ -857,6 +857,13 @@ class Database:
 
     _ALERT_SEVERITIES = ("low", "med", "high")
     _DEVICE_TYPES = ("wifi", "ble", "bt_classic", "remote_id")
+    # Cap for the per-alert triage note (alerts.note). 4096 chars
+    # accommodates multi-paragraph triage rationale without inviting
+    # the column to become an unbounded text dump -- a longer write-up
+    # belongs in an external system (operator notebook, ticket).
+    # Enforced server-side; the template textarea sets the same cap
+    # via maxlength but the server is the source of truth.
+    _ALERT_NOTE_MAX_CHARS = 4096
 
     @staticmethod
     def _validate_pagination(limit: int, offset: int, *, max_limit: int = 1000) -> None:
@@ -1010,7 +1017,7 @@ class Database:
     def get_alert(self, alert_id: int) -> dict | None:
         row = self._conn.execute(
             "SELECT id, ts, rule_name, rule_type, mac, message, severity, "
-            "acknowledged FROM alerts WHERE id = ?",
+            "acknowledged, note, note_updated_at FROM alerts WHERE id = ?",
             (alert_id,),
         ).fetchone()
         if row is None:
@@ -1044,6 +1051,7 @@ class Database:
         "a.message AS message, a.severity AS severity, "
         "a.acknowledged AS acknowledged, "
         "a.matched_watchlist_id AS matched_watchlist_id, "
+        "a.note AS note, a.note_updated_at AS note_updated_at, "
         "w.id AS w_id, w.pattern AS w_pattern, "
         "w.pattern_type AS w_pattern_type, w.severity AS w_severity, "
         "w.description AS w_description, "
@@ -1072,6 +1080,8 @@ class Database:
             "severity": row["severity"],
             "acknowledged": row["acknowledged"],
             "matched_watchlist_id": row["matched_watchlist_id"],
+            "note": row["note"],
+            "note_updated_at": row["note_updated_at"],
         }
         if row["w_id"] is not None:
             alert["watchlist"] = {
@@ -1602,6 +1612,54 @@ class Database:
             if len(note) > 500:
                 raise ValueError("note must be <= 500 chars")
         return cleaned
+
+    def update_alert_note(
+        self,
+        alert_id: int,
+        note_text: str,
+        *,
+        now_ts: int | None = None,
+    ) -> bool:
+        """Set or clear the operator triage note for an alert.
+
+        ``note_text`` is plain text. Empty / whitespace-only input
+        CLEARS the note (sets both columns to NULL); a non-empty
+        value writes the stripped text plus an updated_at timestamp.
+        ``now_ts`` defaults to ``int(time.time())`` -- server-side
+        clock is the single source of truth for the timestamp.
+
+        Returns True if the alert existed and was updated, False if
+        ``alert_id`` did not match a row. Length-validation
+        (``_ALERT_NOTE_MAX_CHARS``) raises ``ValueError`` before any
+        DB write so an over-cap submission cannot partially apply.
+
+        Distinct from ``alert_actions.note`` (the per-ack/unack
+        action-history note) and from ``watchlist_metadata.notes``
+        (Argus-imported metadata). This column is one persistent
+        triage conclusion per alert; the action history continues
+        to record per-event notes orthogonally.
+        """
+        self._validate_alert_id(alert_id)
+        if not isinstance(note_text, str):
+            raise ValueError("note_text must be a string")
+        if len(note_text) > self._ALERT_NOTE_MAX_CHARS:
+            raise ValueError(
+                f"note_text must be <= {self._ALERT_NOTE_MAX_CHARS} chars "
+                f"(got {len(note_text)})"
+            )
+        stripped = note_text.strip()
+        if not stripped:
+            persist: str | None = None
+            ts_value: int | None = None
+        else:
+            persist = stripped
+            ts_value = now_ts if now_ts is not None else int(time.time())
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE alerts SET note = ?, note_updated_at = ? WHERE id = ?",
+                (persist, ts_value, alert_id),
+            )
+            return cur.rowcount > 0
 
     def _set_alert_ack(
         self,

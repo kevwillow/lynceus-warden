@@ -1,0 +1,38 @@
+-- Per-alert operator triage notes.
+--
+-- Operators triage an alert and conclude something about it ("false
+-- positive -- known neighbour device", "actioned -- physical
+-- inspection performed", "still investigating"). Pre-rc5 the only
+-- per-alert annotation surface was the action-history note (a
+-- transient one-off line tied to each ack/unack event in
+-- alert_actions); revisiting an alert weeks later required scanning
+-- the action history for context rather than reading one current
+-- conclusion. The triage-note surface answers "what did I decide
+-- about this alert?" in one place, persistent across acks.
+--
+-- Forward-only; existing rows get NULL for both columns. There is no
+-- per-row backfill (no recoverable note text from action history --
+-- the semantics differ and conflating would be misleading).
+--
+-- Column shape:
+--   note             TEXT NULL    -- plain text, server-enforced 4096 char cap
+--   note_updated_at  INTEGER NULL -- server-side epoch seconds; NULL when note is cleared
+--
+-- Single note per alert (replace-on-update). Multi-operator history,
+-- per-action-note correlation, and markdown rendering are explicitly
+-- out of scope -- the watchlist primitive is single-operator and a
+-- separate note-history table would be premature at this scale.
+--
+-- No CHECK constraint on length: the daemon side never writes to
+-- this column (the poller's add_alert path stays unchanged), so the
+-- only writer is update_alert_note via the webui POST handler, which
+-- enforces the cap. Enforcing twice would just add a second error
+-- surface with worse messaging.
+--
+-- No index. Reads are per-alert lookups (PK hit) or list-page
+-- enrichment (already-bounded by the ts DESC + LIMIT slice). The
+-- list-page indicator just checks IS NOT NULL on the already-selected
+-- row, no separate query.
+
+ALTER TABLE alerts ADD COLUMN note TEXT;
+ALTER TABLE alerts ADD COLUMN note_updated_at INTEGER;
