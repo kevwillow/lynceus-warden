@@ -3252,3 +3252,136 @@ def test_get_watchful_recurrence_returns_archived_rows(db):
 
 def test_get_watchful_recurrence_returns_none_for_missing(db):
     assert db.get_watchful_recurrence(9999) is None
+
+
+# ===================== watchful_recurrence Phase 2b read helpers ===========
+# list + count + recent-escalations support the /watchful UI's filter,
+# pagination, and weekly-digest sections. Filter semantics:
+#   status: active | archived | all (default active)
+#   state:  tracking | escalated | all (default all)
+#   since_ts: clamps last_seen_at >= since_ts
+#   q: MAC substring (LIKE %q%)
+
+
+def test_count_watchful_default_filters(db):
+    assert db.count_watchful_recurrence() == 0
+    _insert_watchful(db, mac="aa:bb:cc:00:00:01")
+    _insert_watchful(db, mac="aa:bb:cc:00:00:02")
+    _insert_watchful(db, mac="aa:bb:cc:00:00:03", archived_at=2000)
+    # Default status=active hides the archived row.
+    assert db.count_watchful_recurrence() == 2
+    assert db.count_watchful_recurrence(status="archived") == 1
+    assert db.count_watchful_recurrence(status="all") == 3
+
+
+def test_count_watchful_state_filter(db):
+    _insert_watchful(db, mac="aa:bb:cc:00:00:01")  # tracking
+    _insert_watchful(
+        db, mac="aa:bb:cc:00:00:02", sighting_count=4, escalated_at=2000,
+    )
+    assert db.count_watchful_recurrence(state="tracking") == 1
+    assert db.count_watchful_recurrence(state="escalated") == 1
+    assert db.count_watchful_recurrence(state="all") == 2
+
+
+def test_count_watchful_window_filter(db):
+    _insert_watchful(db, mac="aa:bb:cc:00:00:01", last_seen_at=1000)
+    _insert_watchful(db, mac="aa:bb:cc:00:00:02", last_seen_at=5000)
+    # since_ts=3000 admits only the second row.
+    assert db.count_watchful_recurrence(since_ts=3000) == 1
+
+
+def test_count_watchful_q_substring(db):
+    _insert_watchful(db, mac="aa:bb:cc:00:00:01")
+    _insert_watchful(db, mac="dd:ee:ff:11:22:33")
+    assert db.count_watchful_recurrence(q="dd:ee") == 1
+    assert db.count_watchful_recurrence(q="zz:zz") == 0
+
+
+def test_count_watchful_rejects_invalid_status_state(db):
+    with pytest.raises(ValueError, match="status"):
+        db.count_watchful_recurrence(status="bogus")
+    with pytest.raises(ValueError, match="state"):
+        db.count_watchful_recurrence(state="bogus")
+
+
+def test_list_watchful_orders_by_last_seen_desc(db):
+    """Newest-first per the operator's triage-first read."""
+    _insert_watchful(db, mac="aa:bb:cc:00:00:01", last_seen_at=1000)
+    _insert_watchful(db, mac="aa:bb:cc:00:00:02", last_seen_at=5000)
+    _insert_watchful(db, mac="aa:bb:cc:00:00:03", last_seen_at=3000)
+    rows = db.list_watchful_recurrence()
+    assert [r.mac for r in rows] == [
+        "aa:bb:cc:00:00:02",
+        "aa:bb:cc:00:00:03",
+        "aa:bb:cc:00:00:01",
+    ]
+
+
+def test_list_watchful_pagination(db):
+    for i in range(5):
+        _insert_watchful(
+            db, mac=f"aa:bb:cc:00:00:{i:02x}", last_seen_at=1000 + i,
+        )
+    page1 = db.list_watchful_recurrence(limit=2, offset=0)
+    page2 = db.list_watchful_recurrence(limit=2, offset=2)
+    page3 = db.list_watchful_recurrence(limit=2, offset=4)
+    assert len(page1) == 2
+    assert len(page2) == 2
+    assert len(page3) == 1
+    # No overlap across pages.
+    seen = {r.mac for r in page1 + page2 + page3}
+    assert len(seen) == 5
+
+
+def test_list_watchful_combined_filters(db):
+    # Active tracking entry inside window, MAC matches.
+    _insert_watchful(db, mac="aa:bb:cc:00:00:01", last_seen_at=5000)
+    # Active escalated entry — excluded by state=tracking.
+    _insert_watchful(
+        db, mac="aa:bb:cc:00:00:02",
+        sighting_count=4, escalated_at=2000, last_seen_at=5000,
+    )
+    # Archived — excluded by status=active.
+    _insert_watchful(
+        db, mac="aa:bb:cc:00:00:03", archived_at=4000, last_seen_at=5000,
+    )
+    # Active tracking but outside window.
+    _insert_watchful(db, mac="aa:bb:cc:00:00:04", last_seen_at=500)
+    # Active tracking inside window but MAC substring miss.
+    _insert_watchful(db, mac="dd:ee:ff:11:22:33", last_seen_at=5000)
+    rows = db.list_watchful_recurrence(
+        status="active", state="tracking", since_ts=3000, q="aa:bb",
+    )
+    assert [r.mac for r in rows] == ["aa:bb:cc:00:00:01"]
+
+
+def test_list_recent_watchful_escalations_filters_and_orders(db):
+    """Returns only rows with escalated_at >= since_ts, ordered by
+    escalated_at DESC. Includes archived rows (the digest reflects
+    historical escalations even after operator-driven archive)."""
+    _insert_watchful(
+        db, mac="aa:bb:cc:00:00:01",
+        sighting_count=4, escalated_at=1000,
+    )  # too old
+    _insert_watchful(
+        db, mac="aa:bb:cc:00:00:02",
+        sighting_count=4, escalated_at=5000,
+    )
+    _insert_watchful(
+        db, mac="aa:bb:cc:00:00:03",
+        sighting_count=4, escalated_at=7000, archived_at=8000,
+    )
+    _insert_watchful(db, mac="aa:bb:cc:00:00:04")  # tracking only
+    rows = db.list_recent_watchful_escalations(since_ts=3000)
+    assert [r.mac for r in rows] == [
+        "aa:bb:cc:00:00:03",
+        "aa:bb:cc:00:00:02",
+    ]
+
+
+def test_list_recent_watchful_escalations_empty_window(db):
+    """With nothing in the window, returns an empty list (not an
+    exception). The digest's empty-state copy renders off of this."""
+    _insert_watchful(db, mac="aa:bb:cc:00:00:01", escalated_at=500)
+    assert db.list_recent_watchful_escalations(since_ts=10000) == []
