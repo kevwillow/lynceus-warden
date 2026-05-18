@@ -159,6 +159,32 @@ class RuleStats(NamedTuple):
     last_fired_ts: int | None
 
 
+class RuleTypeSnooze(NamedTuple):
+    """One row of ``rule_type_snoozes``: an active temporary suppression.
+
+    Mirrors the table schema from migration 017 — ``rule_type`` is the
+    primary key (the ``rules.RuleType`` literal whose alerts are
+    suppressed); ``expires_at`` is the absolute epoch-seconds bound at
+    which the snooze stops gating (rows with ``expires_at <= now_ts``
+    are filtered at gate-check time and physically deleted on the
+    poller cleanup pass); ``added_at`` is when the snooze was written
+    (operator audit trail / UI sort key); ``note`` is the optional
+    free-text reason supplied at snooze time.
+
+    The gate at the poller emit boundary consumes a single instance
+    (``is_rule_type_snoozed`` returns ``RuleTypeSnooze | None``); the
+    /rules render consumes the full active set
+    (``list_active_rule_type_snoozes``). Both call sites work off the
+    same shape so the template can render expiry / note consistently
+    whichever helper produced the row.
+    """
+
+    rule_type: str
+    expires_at: int
+    added_at: int
+    note: str | None
+
+
 def _find_migrations_dir() -> Path:
     try:
         from importlib.resources import files
@@ -1865,6 +1891,147 @@ class Database:
                 last_fired_ts=int(max_ts) if max_ts is not None else None,
             )
         return out
+
+    def add_rule_type_snooze(
+        self,
+        rule_type: str,
+        expires_at: int,
+        added_at: int,
+        note: str | None = None,
+    ) -> bool:
+        """Insert (or replace) the rule_type snooze row.
+
+        INSERT OR REPLACE semantic: re-snoozing a rule_type that
+        already has an active snooze overwrites ``expires_at`` /
+        ``added_at`` / ``note`` rather than failing — the operator
+        clicking "snooze 24h" on an already-snoozed rule_type wants
+        the new window applied, not an error. Returns True on success.
+
+        Caller computes ``expires_at = now_ts + duration_seconds`` so
+        the duration-whitelist enforcement lives at the POST-route
+        layer; this helper trusts the value passed in.
+
+        Validates ``rule_type`` is a non-empty string. The webui-side
+        validates against the ``rules.RuleType`` literal set; this
+        helper rejects only the trivially-invalid case so a direct
+        caller (e.g. a future CLI surface) doesn't accidentally insert
+        an empty string as a primary key.
+        """
+        if not isinstance(rule_type, str) or not rule_type:
+            raise ValueError("rule_type must be a non-empty string")
+        if not isinstance(expires_at, int) or isinstance(expires_at, bool):
+            raise ValueError("expires_at must be an int (epoch seconds)")
+        if not isinstance(added_at, int) or isinstance(added_at, bool):
+            raise ValueError("added_at must be an int (epoch seconds)")
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO rule_type_snoozes("
+                "rule_type, expires_at, added_at, note) VALUES (?, ?, ?, ?)",
+                (rule_type, expires_at, added_at, note),
+            )
+        return True
+
+    def remove_rule_type_snooze(self, rule_type: str) -> bool:
+        """Delete the snooze row for ``rule_type``.
+
+        Returns True if a row existed and was deleted, False if no
+        snooze existed. The webui "unsnooze" POST handler is idempotent
+        — operators double-clicking the button get a 303 either way
+        and the template re-renders against current state.
+        """
+        if not isinstance(rule_type, str) or not rule_type:
+            raise ValueError("rule_type must be a non-empty string")
+        with self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM rule_type_snoozes WHERE rule_type = ?",
+                (rule_type,),
+            )
+        return cur.rowcount > 0
+
+    def list_active_rule_type_snoozes(self, now_ts: int) -> list[RuleTypeSnooze]:
+        """Return all snoozes whose ``expires_at > now_ts``.
+
+        Expired-but-not-yet-deleted rows are filtered here (the
+        cleanup_expired_rule_type_snoozes physical delete runs on
+        poller cycle, so between cycles a stale row may briefly exist
+        in the table without gating any alerts). The /rules render
+        consumes this list and shows the rendered badge / unsnooze
+        button only for active rows.
+
+        Sorted by ``rule_type ASC`` for deterministic render order;
+        the /rules page iterates rules.yaml entries against this list
+        via a dict membership test, so the sort order is for tests
+        that read the full active set.
+        """
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        rows = self._conn.execute(
+            "SELECT rule_type, expires_at, added_at, note "
+            "FROM rule_type_snoozes WHERE expires_at > ? "
+            "ORDER BY rule_type ASC",
+            (now_ts,),
+        ).fetchall()
+        return [
+            RuleTypeSnooze(
+                rule_type=str(r["rule_type"]),
+                expires_at=int(r["expires_at"]),
+                added_at=int(r["added_at"]),
+                note=r["note"],
+            )
+            for r in rows
+        ]
+
+    def cleanup_expired_rule_type_snoozes(self, now_ts: int) -> int:
+        """Physically delete snoozes whose ``expires_at <= now_ts``.
+
+        Called from the poller cycle. Between cycles, the gate-time
+        ``is_rule_type_snoozed`` filter on ``expires_at > now_ts``
+        already ignores expired rows — this is housekeeping, not
+        correctness. Returns the count of rows deleted (caller can
+        log if non-zero).
+        """
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        with self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM rule_type_snoozes WHERE expires_at <= ?",
+                (now_ts,),
+            )
+        return cur.rowcount
+
+    def is_rule_type_snoozed(
+        self, rule_type: str, now_ts: int
+    ) -> RuleTypeSnooze | None:
+        """Single-row lookup for the alert-emit gate.
+
+        Returns the live ``RuleTypeSnooze`` when one exists with
+        ``expires_at > now_ts``; returns ``None`` for any of:
+        - no row exists for this rule_type (the common case — no
+          snooze applies)
+        - a row exists but has expired (``expires_at <= now_ts``;
+          gate gracefully ignores until cleanup runs)
+
+        The gate calls this on every emitted RuleHit. The PK lookup
+        is sub-millisecond; checking ``expires_at`` inline in SQL
+        means a single round-trip without a follow-up filter.
+        """
+        if not isinstance(rule_type, str) or not rule_type:
+            return None
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        row = self._conn.execute(
+            "SELECT rule_type, expires_at, added_at, note "
+            "FROM rule_type_snoozes WHERE rule_type = ? AND expires_at > ?",
+            (rule_type, now_ts),
+        ).fetchone()
+        if row is None:
+            return None
+        return RuleTypeSnooze(
+            rule_type=str(row["rule_type"]),
+            expires_at=int(row["expires_at"]),
+            added_at=int(row["added_at"]),
+            note=row["note"],
+        )
 
     def alerts_per_day(self, *, days: int = 30, now_ts: int) -> list[dict]:
         if not isinstance(days, int) or isinstance(days, bool):
