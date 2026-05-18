@@ -8,6 +8,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/rules` per-rule fire-count and last-fired statistics.** Answers
+  the "is this rule worth keeping?" question at a glance: each rule
+  row now carries its fire count over a configurable time window
+  plus a relative-time "last fired" stamp ("3h ago" / "5d ago" / "—"
+  if never). A `since` dropdown matches the `/alerts` convention
+  (`1h` / `24h` / `7d` / `30d` / `all`), with `7d` as the default
+  recency anchor so a fresh visit reads "what fired this week"
+  rather than diluting against the lifetime of the deployment. The
+  default `sort=default` preserves the rules.yaml ordering, so an
+  operator with a pre-rc5 `/rules` bookmark sees byte-equivalent
+  row order on first visit; the `count_desc` and `count_asc` sort
+  options are opt-in via the sort dropdown for "show me the
+  high-volume rules first" reads. Stats are aggregated live from
+  the `alerts` table on every render — a single
+  `SELECT rule_name, COUNT(*), MAX(ts) FROM alerts WHERE ts >= ?
+  GROUP BY rule_name` query, backed by the existing
+  `idx_alerts_ts` index. No schema change, no caching, no
+  invalidation surface to maintain. New `Database.
+  count_alerts_grouped_by_rule_name()` helper returns
+  `{rule_name: RuleStats(count, last_fired_ts)}`; rules that
+  never fired in the window are absent from the dict and the
+  handler defaults them to `RuleStats(0, None)` so the template
+  loop stays branch-free. New `relative_time` Jinja filter
+  formats epoch ints into the "Nm/h/d ago" buckets; future
+  timestamps (operator-machine clock skew) collapse to "just now"
+  rather than rendering as negative. URL params round-trip for
+  shareability — `/rules?since=24h&sort=count_desc` bookmarks
+  exactly that view.
+
 - **`lynceus-export-config` — operator-facing CLI that bundles config
   (and optionally state) into a portable `tar.gz` archive.** Closes
   the missing "save / share / backup my config" surface in the CLI
