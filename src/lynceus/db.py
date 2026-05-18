@@ -101,6 +101,42 @@ class ResolvedWatchlistMatch(NamedTuple):
     argus_record_id: str | None
 
 
+class WatchlistRow(NamedTuple):
+    """A single watchlist row projected for the /watchlist list page.
+
+    Returned by ``Database.list_watchlist_filtered`` as the row side
+    of the ``(rows, total)`` tuple. The shape carries every column
+    the list template renders -- pattern + pattern_type + severity +
+    description from ``watchlist``, plus the small subset of
+    ``watchlist_metadata`` columns the list view actually shows
+    (vendor, confidence, device_category, argus_record_id). The
+    detail page still reads the full metadata row via
+    ``list_watchlist_with_metadata`` -- the projection here keeps
+    each list query at one SELECT per page render rather than
+    materializing 20+ unused columns for 22k rows.
+
+    ``vendor`` / ``device_category`` / ``argus_record_id`` /
+    ``confidence`` are NULL when the row has no
+    ``watchlist_metadata`` JOIN partner (i.e. yaml-seeded or bundled
+    rows without an Argus side-table entry). The template renders
+    each as an empty string in that case; the filter helper exposes
+    ``device_category=__none__`` as the explicit "uncategorized"
+    selector.
+    """
+
+    id: int
+    pattern: str
+    pattern_type: str
+    severity: str
+    description: str | None
+    mac_range_prefix: str | None
+    mac_range_prefix_length: int | None
+    vendor: str | None
+    confidence: int | None
+    device_category: str | None
+    argus_record_id: str | None
+
+
 class RuleStats(NamedTuple):
     """Per-rule fire counts + last-fired timestamp for a time window.
 
@@ -1376,6 +1412,173 @@ class Database:
         )
         rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
+    # --- Filtered + paginated watchlist for /watchlist list page ----------
+    #
+    # The full Argus import lands ~22k rows in ``watchlist``. The
+    # pre-rc5 ``list_watchlist_with_metadata`` returns every row to
+    # Python and sorts there; that does not scale past a few thousand
+    # rows. ``list_watchlist_filtered`` is the paginated sibling: a
+    # COUNT query for the footer and a LIMIT/OFFSET'd SELECT for the
+    # page, both sharing ``_build_watchlist_filter_clauses`` so the
+    # two never diverge (same invariant /alerts ack-all-visible
+    # depends on). The ``device_category=__none__`` sentinel selects
+    # rows with no metadata JOIN partner -- the "uncategorized"
+    # bucket for yaml-seeded / bundled rows the operator may want
+    # to triage separately from Argus-imported rows.
+
+    _WATCHLIST_UNCATEGORIZED_SENTINEL = "__none__"
+
+    @staticmethod
+    def _build_watchlist_filter_clauses(
+        *,
+        q: str | None,
+        pattern_type: str | None,
+        severity: str | None,
+        device_category: str | None,
+    ) -> tuple[list[str], list]:
+        """Build the shared WHERE clauses + bind params for
+        list_watchlist_filtered's COUNT and SELECT halves.
+
+        Treats empty strings as "absent" (the route layer passes
+        "" through for unset form fields). The ``q`` clause matches
+        case-insensitively against pattern, vendor (the "manufacturer"
+        column in the prompt's vocabulary), argus_record_id, and
+        device_category -- the four columns an operator is likely to
+        type into the search box. COALESCE collapses NULLs to "" so
+        a NULL vendor on a yaml-seeded row doesn't blow the predicate.
+        """
+        clauses: list[str] = []
+        params: list = []
+        if pattern_type is not None and pattern_type != "":
+            clauses.append("w.pattern_type = ?")
+            params.append(pattern_type)
+        if severity is not None and severity != "":
+            clauses.append("w.severity = ?")
+            params.append(severity)
+        if device_category is not None and device_category != "":
+            if device_category == Database._WATCHLIST_UNCATEGORIZED_SENTINEL:
+                clauses.append("m.device_category IS NULL")
+            else:
+                clauses.append("m.device_category = ?")
+                params.append(device_category)
+        if q is not None and q != "":
+            qlike = f"%{q.lower()}%"
+            clauses.append(
+                "("
+                "LOWER(w.pattern) LIKE ? "
+                "OR LOWER(COALESCE(m.vendor, '')) LIKE ? "
+                "OR LOWER(COALESCE(m.argus_record_id, '')) LIKE ? "
+                "OR LOWER(COALESCE(m.device_category, '')) LIKE ?"
+                ")"
+            )
+            params.extend([qlike, qlike, qlike, qlike])
+        return clauses, params
+
+    _WATCHLIST_FROM_FOR_FILTERS = (
+        "FROM watchlist w "
+        "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id"
+    )
+
+    # The sort key matches the pre-rc5 Python-side
+    # ``_watchlist_sort_key`` (severity desc by importance then pattern
+    # alphabetical). ``w.id`` is the deterministic tiebreaker so two
+    # rows with identical (severity, pattern) do not flicker between
+    # pages on repeat renders. SQLite returns the same row order for
+    # COUNT-clamped LIMIT/OFFSET pagination only when ORDER BY is
+    # total; the id tiebreaker makes it so.
+    _WATCHLIST_ORDER_BY = (
+        "ORDER BY CASE w.severity "
+        "WHEN 'high' THEN 0 WHEN 'med' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, "
+        "w.pattern, w.id"
+    )
+
+    def list_watchlist_filtered(
+        self,
+        *,
+        q: str | None = None,
+        pattern_type: str | None = None,
+        severity: str | None = None,
+        device_category: str | None = None,
+        page: int = 1,
+        per_page: int = 50,
+    ) -> tuple[list[WatchlistRow], int]:
+        """Return ``(rows for page, total matching count)``.
+
+        The COUNT query and the page SELECT share
+        ``_build_watchlist_filter_clauses`` and
+        ``_WATCHLIST_FROM_FOR_FILTERS`` -- single filter-builder
+        invariant, mirroring /alerts. ``page`` is 1-indexed and is
+        floored at 1 here; out-of-range clamping against the total
+        is the caller's job (the route uses the shared
+        ``build_pagination`` helper for that).
+        """
+        if pattern_type is not None and pattern_type != "" and pattern_type not in self._WATCHLIST_PATTERN_TYPES:
+            raise ValueError(f"pattern_type must be one of {self._WATCHLIST_PATTERN_TYPES}")
+        if severity is not None and severity != "" and severity not in self._ALERT_SEVERITIES:
+            raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
+        if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+            raise ValueError("page must be a positive int")
+        if not isinstance(per_page, int) or isinstance(per_page, bool) or per_page < 1:
+            raise ValueError("per_page must be a positive int")
+
+        clauses, params = self._build_watchlist_filter_clauses(
+            q=q,
+            pattern_type=pattern_type,
+            severity=severity,
+            device_category=device_category,
+        )
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        count_sql = f"SELECT COUNT(*) {self._WATCHLIST_FROM_FOR_FILTERS} {where}"
+        total = int(self._conn.execute(count_sql, params).fetchone()[0])
+
+        offset = (page - 1) * per_page
+        page_sql = (
+            "SELECT "
+            "w.id AS id, w.pattern, w.pattern_type, w.severity, w.description, "
+            "w.mac_range_prefix, w.mac_range_prefix_length, "
+            "m.vendor, m.confidence, m.device_category, m.argus_record_id "
+            f"{self._WATCHLIST_FROM_FOR_FILTERS} "
+            f"{where} {self._WATCHLIST_ORDER_BY} LIMIT ? OFFSET ?"
+        )
+        page_params = [*params, per_page, offset]
+        rows = self._conn.execute(page_sql, page_params).fetchall()
+        return [
+            WatchlistRow(
+                id=int(r["id"]),
+                pattern=r["pattern"],
+                pattern_type=r["pattern_type"],
+                severity=r["severity"],
+                description=r["description"],
+                mac_range_prefix=r["mac_range_prefix"],
+                mac_range_prefix_length=r["mac_range_prefix_length"],
+                vendor=r["vendor"],
+                confidence=r["confidence"],
+                device_category=r["device_category"],
+                argus_record_id=r["argus_record_id"],
+            )
+            for r in rows
+        ], total
+
+    def distinct_watchlist_device_categories(self) -> list[str]:
+        """Return the sorted distinct non-NULL ``device_category``
+        values in ``watchlist_metadata``, for the filter-bar
+        dropdown on /watchlist.
+
+        Live query is acceptable at current scale (22k rows, a
+        SELECT DISTINCT on a non-indexed column completes in
+        single-digit milliseconds on SQLite). If the cardinality
+        becomes pathological for any reason, a cached snapshot at
+        import time is the obvious follow-up. NULL is excluded
+        from the result set because the route exposes "no
+        category" via the ``__none__`` sentinel option instead.
+        """
+        rows = self._conn.execute(
+            "SELECT DISTINCT device_category FROM watchlist_metadata "
+            "WHERE device_category IS NOT NULL "
+            "ORDER BY device_category"
+        ).fetchall()
+        return [r["device_category"] for r in rows]
 
     # --- Alert acknowledgement actions and stats --------------------------
 
