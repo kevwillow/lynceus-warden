@@ -32,7 +32,7 @@ from lynceus.allowlist import (
     remove_ui_entry,
 )
 from lynceus.config import Config
-from lynceus.db import Database
+from lynceus.db import Database, RuleStats
 from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.pagination import build_pagination, parse_pagination
@@ -118,6 +118,49 @@ _ALERTS_WINDOW_SECONDS: dict[str, int | None] = {
     "30d": 30 * 86400,
     "all": None,
 }
+
+# Relative window dropdown for /rules. Same five buckets as
+# /alerts so an operator's muscle memory carries over, but with a
+# default of "7d" rather than "" (any time): operators visiting
+# /rules want a recency-bounded "is this rule worth keeping?"
+# read; defaulting to all-time would dilute "last fired" against
+# the lifetime of the deployment. The "all" bucket is reachable
+# from the dropdown for explicit lifetime views.
+_RULES_WINDOW_SECONDS: dict[str, int | None] = _ALERTS_WINDOW_SECONDS
+_RULES_DEFAULT_WINDOW: str = "7d"
+
+# /rules sort options. ``default`` preserves rules.yaml order
+# (no-op vs pre-rc5 — important for "/rules with no query params
+# behaves exactly as today" invariant). ``count_desc`` /
+# ``count_asc`` re-order by fire count over the resolved window;
+# never-fired rules (count=0) tie-break by name so the secondary
+# ordering is stable across renders.
+_RULES_SORT_OPTIONS: tuple[str, ...] = ("default", "count_desc", "count_asc")
+_RULES_DEFAULT_SORT: str = "default"
+
+
+def _resolve_window_to_since_ts(
+    window: str | None,
+    *,
+    now_ts: int,
+    options: dict[str, int | None],
+) -> int | None:
+    """Resolve a window-dropdown value to a ``since_ts`` lower bound.
+
+    Returns ``None`` when ``window`` is the all-time bucket
+    (``"all"``) or unset; otherwise returns ``now_ts - seconds``
+    where ``seconds`` is the corresponding value in ``options``.
+    Caller is responsible for upstream validation of ``window``
+    against ``options.keys()`` — the helper does no validation
+    itself so each caller can choose its own fallback policy
+    (silent rewrite to default, 400, etc).
+    """
+    if window is None or window == "":
+        return None
+    seconds = options.get(window)
+    if seconds is None:
+        return None
+    return now_ts - seconds
 
 # /allowlist pagination shares the same per_page set / default as
 # /alerts. Allowlists are typically smaller (the prompt notes the
@@ -285,6 +328,34 @@ def unix_to_utc_human(ts) -> str:
         return ""
     dt = _dt.datetime.fromtimestamp(int(ts), tz=_dt.UTC)
     return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def relative_time(ts, *, now_ts: int | None = None) -> str:
+    """Format a unix epoch int as a human-readable relative time.
+
+    Buckets: <60s → "just now"; <60min → "{N}m ago"; <24h →
+    "{N}h ago"; else → "{N}d ago". Future timestamps (ts > now_ts)
+    collapse to "just now" rather than negative output — defensive
+    against clock skew on the operator's machine vs the DB's
+    timestamps. None / empty → "—" (the column placeholder).
+
+    ``now_ts`` is taken from the template context when called as a
+    filter via ``{{ ts | relative_time(now_ts) }}``; falls back to
+    ``int(time.time())`` only when invoked without a now_ts
+    argument (tests, ad-hoc callers).
+    """
+    if ts is None or ts == "":
+        return "—"
+    if now_ts is None:
+        now_ts = int(time.time())
+    delta = int(now_ts) - int(ts)
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{delta // 60}m ago"
+    if delta < 86400:
+        return f"{delta // 3600}h ago"
+    return f"{delta // 86400}d ago"
 
 
 _RSSI_SPARKLINE_WIDTH = 200
@@ -859,6 +930,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     app.state.templates.env.filters["unix_to_iso"] = unix_to_iso
     app.state.templates.env.filters["unix_to_utc_human"] = unix_to_utc_human
     app.state.templates.env.filters["device_label"] = _device_label
+    app.state.templates.env.filters["relative_time"] = relative_time
 
     app.mount(
         "/static",
@@ -1523,7 +1595,35 @@ def create_app(config: Config, db: Database) -> FastAPI:
         )
 
     @app.get("/rules", response_class=HTMLResponse)
-    def rules_list(request: Request):
+    def rules_list(
+        request: Request,
+        since: str | None = Query(default=None),
+        sort: str | None = Query(default=None),
+    ):
+        # since (window dropdown) and sort are both rc5 additions.
+        # Invalid values silently fall back to defaults — the
+        # operator probably hit a stale URL after a constant
+        # rename; refusing to render the page is hostile when the
+        # underlying data (rules.yaml) is independent of the query
+        # params. The "no query params" URL behaves exactly as the
+        # pre-rc5 page: since=7d, sort=default, count + last-fired
+        # columns rendered alongside the existing surface.
+        if since is None or since == "" or since not in _RULES_WINDOW_SECONDS:
+            since = _RULES_DEFAULT_WINDOW
+        if sort is None or sort == "" or sort not in _RULES_SORT_OPTIONS:
+            sort = _RULES_DEFAULT_SORT
+
+        now_ts = int(time.time())
+        since_ts = _resolve_window_to_since_ts(
+            since, now_ts=now_ts, options=_RULES_WINDOW_SECONDS
+        )
+
+        # Live aggregate on every render — no caching. At current
+        # scale the COUNT/MAX over an indexed-ts predicate is
+        # sub-100ms; caching would buy nothing material and would
+        # introduce invalidation complexity at alert-write time.
+        rule_stats = db.count_alerts_grouped_by_rule_name(since_ts=since_ts)
+
         ruleset = None
         notice = None
         rules_path = app.state.config.rules_path
@@ -1534,6 +1634,36 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 ruleset = rules_mod.load_ruleset(rules_path)
             except FileNotFoundError:
                 notice = f"Rules file not found at {rules_path}."
+
+        # Build the iteration list with stats attached. Rules that
+        # never fired in the window get RuleStats(0, None) — caller
+        # default rather than absent-key so the template never
+        # branches on dict membership. Order is rules.yaml order by
+        # default; the count_desc / count_asc sorts re-order with
+        # a name-based stable tie-breaker for the count=0 rows.
+        rules_with_stats: list[dict] = []
+        if ruleset is not None:
+            for rule in ruleset.rules:
+                stats = rule_stats.get(
+                    rule.name, RuleStats(count=0, last_fired_ts=None)
+                )
+                rules_with_stats.append({"rule": rule, "stats": stats})
+
+            if sort == "count_desc":
+                rules_with_stats.sort(
+                    key=lambda r: (-r["stats"].count, r["rule"].name)
+                )
+            elif sort == "count_asc":
+                rules_with_stats.sort(
+                    key=lambda r: (r["stats"].count, r["rule"].name)
+                )
+
+        # Resolve the window label for the dynamic "Fires (last X)"
+        # column header. "all" gets the human label "all time"; the
+        # other four buckets render their raw key ("1h" / "24h" /
+        # "7d" / "30d") since those already read as recency.
+        window_label = "all time" if since == "all" else since
+
         return app.state.templates.TemplateResponse(
             request=request,
             name="rules_list.html",
@@ -1542,6 +1672,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "active": "rules",
                 "ruleset": ruleset,
                 "notice": notice,
+                "rules_with_stats": rules_with_stats,
+                "since": since,
+                "sort": sort,
+                "window_options": tuple(_RULES_WINDOW_SECONDS.keys()),
+                "sort_options": _RULES_SORT_OPTIONS,
+                "window_label": window_label,
+                "now_ts": now_ts,
             },
         )
 
