@@ -186,6 +186,7 @@ def test_migrations_dir_lists_both_files(db):
         "015_alerts_rule_type.sql",
         "016_alerts_note.sql",
         "017_rule_type_snoozes.sql",
+        "018_watchful_recurrence.sql",
     ]
 
 

@@ -185,6 +185,123 @@ class RuleTypeSnooze(NamedTuple):
     note: str | None
 
 
+class WatchfulRecurrence(NamedTuple):
+    """One row of ``watchful_recurrence``: the daemon's tracking state
+    for a MAC under watchful snooze.
+
+    Lifecycle is timestamp-derived, not stored in a `state` enum::
+
+        escalated_at IS NULL,     archived_at IS NULL  -> tracking
+        escalated_at IS NOT NULL, archived_at IS NULL  -> escalated
+        archived_at IS NOT NULL                        -> archived
+
+    ``sighting_count`` starts at 1 (the alert that prompted the
+    watch is the first sighting); escalation fires when a counted
+    recurrence brings the count to 4 while ``escalated_at`` is
+    NULL.
+
+    ``snooze_expires_at`` gates ALERTS ONLY: it has no effect on
+    the row's lifecycle. The 90-day no-observation auto-archive is
+    the sole lifecycle clock for unactioned entries.
+
+    ``last_seen_at`` updates only on counted sightings (>=24h
+    gap), not on intra-debounce observations. See migration 018
+    header for the v1 recurrence model's documented consequence
+    (continuously-nearby devices accumulate one sighting per
+    ~24h rather than one total).
+
+    The Phase 2 dormant columns -- ``confirmed_safe``,
+    ``flagged_for_investigation``, ``operator_note``,
+    ``reset_count`` -- are present on the row but are not read or
+    written by Phase 1 code paths. They ship now to avoid a
+    migration 019 when the operator UI lands.
+    """
+
+    id: int
+    mac: str
+    created_at: int
+    first_seen_at: int
+    last_seen_at: int
+    sighting_count: int
+    snooze_expires_at: int | None
+    escalated_at: int | None
+    archived_at: int | None
+    source_alert_id: int | None
+    matched_watchlist_id: int | None
+    confirmed_safe: int
+    flagged_for_investigation: int
+    operator_note: str | None
+    reset_count: int
+
+
+class WatchfulSightingOutcome(NamedTuple):
+    """Result of recording an observation against a watchful entry.
+
+    ``counted`` is True when the observation was at >=24h from the
+    entry's ``last_seen_at`` and incremented ``sighting_count``;
+    False when the observation was under-debounce (the ambient
+    case, no DB change). ``entry`` is the post-update row state in
+    either case so the caller can drive escalation decisions
+    (``counted AND entry.sighting_count >= 4 AND
+    entry.escalated_at IS NULL`` => threshold cross) without a
+    second round-trip.
+
+    Same-cycle dedup is handled organically: the first counted
+    observation in a cycle updates ``last_seen_at`` to the cycle's
+    ``now_ts``; any subsequent observation in the same cycle has
+    ``gap == 0 < 86400`` and is treated as under-debounce.
+    """
+
+    counted: bool
+    entry: WatchfulRecurrence
+
+
+def _row_to_watchful_recurrence(row: sqlite3.Row) -> WatchfulRecurrence:
+    """Construct a ``WatchfulRecurrence`` from a SELECT * row.
+
+    Factored out because the 15-column shape recurs across four
+    helpers (get_active, record_sighting, escalate, and the
+    re-fetch after record_sighting's UPDATE); inlining the
+    NamedTuple construction at each call site would add ~60 lines
+    of indistinguishable boilerplate and tempt drift between
+    sites. Column order in callers' SELECT statements MUST match
+    the field order here.
+    """
+    return WatchfulRecurrence(
+        id=int(row["id"]),
+        mac=str(row["mac"]),
+        created_at=int(row["created_at"]),
+        first_seen_at=int(row["first_seen_at"]),
+        last_seen_at=int(row["last_seen_at"]),
+        sighting_count=int(row["sighting_count"]),
+        snooze_expires_at=(
+            int(row["snooze_expires_at"])
+            if row["snooze_expires_at"] is not None
+            else None
+        ),
+        escalated_at=(
+            int(row["escalated_at"]) if row["escalated_at"] is not None else None
+        ),
+        archived_at=(
+            int(row["archived_at"]) if row["archived_at"] is not None else None
+        ),
+        source_alert_id=(
+            int(row["source_alert_id"])
+            if row["source_alert_id"] is not None
+            else None
+        ),
+        matched_watchlist_id=(
+            int(row["matched_watchlist_id"])
+            if row["matched_watchlist_id"] is not None
+            else None
+        ),
+        confirmed_safe=int(row["confirmed_safe"]),
+        flagged_for_investigation=int(row["flagged_for_investigation"]),
+        operator_note=row["operator_note"],
+        reset_count=int(row["reset_count"]),
+    )
+
+
 def _find_migrations_dir() -> Path:
     try:
         from importlib.resources import files
@@ -2032,6 +2149,210 @@ class Database:
             added_at=int(row["added_at"]),
             note=row["note"],
         )
+
+    # ------------------------------------------------------------------
+    # watchful_recurrence helpers (migration 018)
+    #
+    # Four operations: lookup-active-by-mac, record-sighting,
+    # escalate, auto-archive. Phase 1 entries are created via
+    # direct INSERT in tests; Phase 2's operator UI will add a
+    # create helper. None of the helpers below assume "escalated
+    # is terminal" -- a Phase 2 reset-from-escalated transition
+    # (clears escalated_at, resets sighting_count) interoperates
+    # cleanly with all four (record_watchful_sighting keeps
+    # counting; escalate_watchful_recurrence will fire again on a
+    # second threshold cross; auto-archive applies regardless of
+    # prior escalation state).
+    # ------------------------------------------------------------------
+
+    WATCHFUL_RECURRENCE_DEBOUNCE_SECONDS = 86400
+    WATCHFUL_RECURRENCE_ARCHIVE_QUIET_SECONDS = 86400 * 90
+    WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD = 4
+
+    def get_active_watchful_recurrence_by_mac(
+        self, mac: str
+    ) -> WatchfulRecurrence | None:
+        """Resolve the active watchful entry for ``mac``, or None.
+
+        "Active" means ``archived_at IS NULL``. Archived rows are
+        retained in the table for audit but are not surfaced to
+        the gate. The caller (poller) checks ``snooze_expires_at``
+        independently when deciding whether the escalation alert
+        should be suppressed by the snooze; the row's lifecycle
+        does not depend on ``snooze_expires_at`` (per OQ-3).
+
+        Returns the first matching row by ``id`` ASC. The
+        application layer enforces at most one active row per MAC
+        (no partial-unique index in migration 018 -- see header).
+        If multiple active rows somehow exist, the oldest wins,
+        which is the safer default for a tracking-style surface.
+        """
+        if not isinstance(mac, str) or not mac:
+            return None
+        row = self._conn.execute(
+            "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
+            "sighting_count, snooze_expires_at, escalated_at, archived_at, "
+            "source_alert_id, matched_watchlist_id, confirmed_safe, "
+            "flagged_for_investigation, operator_note, reset_count "
+            "FROM watchful_recurrence "
+            "WHERE mac = ? AND archived_at IS NULL "
+            "ORDER BY id ASC LIMIT 1",
+            (mac,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_watchful_recurrence(row)
+
+    def record_watchful_sighting(
+        self, entry_id: int, observed_at: int
+    ) -> WatchfulSightingOutcome | None:
+        """Record an observation against a watchful entry.
+
+        Returns ``None`` if the entry doesn't exist or has been
+        archived between the gate's lookup and this call (the
+        concurrent-archive race documented in the design doc). On
+        success returns a ``WatchfulSightingOutcome`` whose
+        ``counted`` field is True when the observation triggered a
+        count increment (gap >= 24h) and False otherwise.
+
+        The 24-hour debounce boundary is inclusive: an observation
+        exactly 86400 seconds after ``last_seen_at`` counts. This
+        matches the OQ-3 resolution's inclusive-boundary phrasing
+        and differs from the design doc's strict-greater-than
+        framing.
+
+        Under-debounce observations are TRUE no-ops at the DB
+        layer (``last_seen_at`` is not bumped). This is what makes
+        same-cycle dedup organic: the first counted observation in
+        a cycle updates ``last_seen_at = now_ts``; any subsequent
+        observation in the same cycle has ``gap == 0`` and is
+        rejected as under-debounce.
+
+        Independent of ``escalated_at``: the count keeps
+        incrementing after escalation so the /watchful UI (Phase
+        2) can show the climbing count, and so a Phase 2
+        reset-from-escalated transition (clears escalated_at,
+        resets sighting_count) can drive a fresh fourth-sighting
+        cross without helper changes.
+        """
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            raise ValueError("entry_id must be an int")
+        if not isinstance(observed_at, int) or isinstance(observed_at, bool):
+            raise ValueError("observed_at must be an int (epoch seconds)")
+        with self._conn:
+            row = self._conn.execute(
+                "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
+                "sighting_count, snooze_expires_at, escalated_at, archived_at, "
+                "source_alert_id, matched_watchlist_id, confirmed_safe, "
+                "flagged_for_investigation, operator_note, reset_count "
+                "FROM watchful_recurrence "
+                "WHERE id = ? AND archived_at IS NULL",
+                (entry_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            gap = observed_at - int(row["last_seen_at"])
+            if gap < self.WATCHFUL_RECURRENCE_DEBOUNCE_SECONDS:
+                return WatchfulSightingOutcome(
+                    counted=False,
+                    entry=_row_to_watchful_recurrence(row),
+                )
+            self._conn.execute(
+                "UPDATE watchful_recurrence "
+                "SET last_seen_at = ?, sighting_count = sighting_count + 1 "
+                "WHERE id = ?",
+                (observed_at, entry_id),
+            )
+            new_row = self._conn.execute(
+                "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
+                "sighting_count, snooze_expires_at, escalated_at, archived_at, "
+                "source_alert_id, matched_watchlist_id, confirmed_safe, "
+                "flagged_for_investigation, operator_note, reset_count "
+                "FROM watchful_recurrence WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+        return WatchfulSightingOutcome(
+            counted=True,
+            entry=_row_to_watchful_recurrence(new_row),
+        )
+
+    def escalate_watchful_recurrence(
+        self, entry_id: int, escalated_at: int
+    ) -> WatchfulRecurrence | None:
+        """Set ``escalated_at`` on the entry if currently NULL.
+
+        Returns the post-update row when the transition fired (the
+        caller emits the escalation alert in that case), or
+        ``None`` when the entry was already escalated, has been
+        archived, or doesn't exist. The WHERE-clause guard makes
+        this idempotent: a second call for the same entry-id is a
+        no-op, which is what drives the design doc's
+        "fire once per escalation" rule.
+
+        Phase 2 reset-from-escalated clears ``escalated_at`` back
+        to NULL; the next threshold-cross will then call this
+        helper again and the WHERE-clause guard will accept the
+        new write. No special "re-escalate" path is needed.
+        """
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            raise ValueError("entry_id must be an int")
+        if not isinstance(escalated_at, int) or isinstance(escalated_at, bool):
+            raise ValueError("escalated_at must be an int (epoch seconds)")
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE watchful_recurrence SET escalated_at = ? "
+                "WHERE id = ? "
+                "AND escalated_at IS NULL "
+                "AND archived_at IS NULL",
+                (escalated_at, entry_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = self._conn.execute(
+                "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
+                "sighting_count, snooze_expires_at, escalated_at, archived_at, "
+                "source_alert_id, matched_watchlist_id, confirmed_safe, "
+                "flagged_for_investigation, operator_note, reset_count "
+                "FROM watchful_recurrence WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+        return _row_to_watchful_recurrence(row) if row is not None else None
+
+    def auto_archive_watchful_recurrence(self, now_ts: int) -> int:
+        """Archive watchful entries that haven't been counted in 90d.
+
+        The boundary is inclusive: an entry whose
+        ``last_seen_at + 90d == now_ts`` is archived. Returns the
+        count of rows transitioned.
+
+        Per OQ-3 this is the SOLE lifecycle clock for unactioned
+        entries -- ``snooze_expires_at`` is not consulted. An
+        entry whose 30-day snooze expired without any recurrence
+        therefore continues to occupy a row until 90 days of
+        silence accumulate, which the operator sees as a single
+        archive transition at day 90 rather than a snooze-driven
+        dismiss at day 30 plus an archive at day 90.
+
+        Applies regardless of ``escalated_at``: an escalated entry
+        that ages out hits ``archived``. The audit predicate
+        ``escalated_at IS NOT NULL AND archived_at IS NOT NULL``
+        distinguishes "escalated then aged out unaddressed" from
+        "never escalated, archived after 90d quiet" (per OQ-7).
+
+        Idempotent and cheap: indexed on ``archived_at`` (sweep
+        target), bounded by the watchful table's small steady-
+        state size.
+        """
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        cutoff = now_ts - self.WATCHFUL_RECURRENCE_ARCHIVE_QUIET_SECONDS
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE watchful_recurrence SET archived_at = ? "
+                "WHERE archived_at IS NULL AND last_seen_at <= ?",
+                (now_ts, cutoff),
+            )
+        return cur.rowcount
 
     def alerts_per_day(self, *, days: int = 30, now_ts: int) -> list[dict]:
         if not isinstance(days, int) or isinstance(days, bool):
