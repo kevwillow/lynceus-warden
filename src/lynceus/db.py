@@ -101,6 +101,28 @@ class ResolvedWatchlistMatch(NamedTuple):
     argus_record_id: str | None
 
 
+class RuleStats(NamedTuple):
+    """Per-rule fire counts + last-fired timestamp for a time window.
+
+    Returned by ``Database.count_alerts_grouped_by_rule_name`` as the
+    value side of the ``{rule_name: RuleStats}`` dict. ``count`` is
+    the number of alerts with the given ``rule_name`` whose ``ts``
+    falls in the requested window; ``last_fired_ts`` is the
+    ``MAX(ts)`` for that same set. Both come from a single
+    aggregation query — caller pays for one round-trip regardless of
+    how many rules.yaml entries exist.
+
+    Rules that never fired in the window are absent from the dict
+    entirely; the /rules handler defaults missing entries to
+    ``RuleStats(count=0, last_fired_ts=None)`` so the template can
+    iterate the ruleset and render "—" for inactive rules without
+    branching on dict membership.
+    """
+
+    count: int
+    last_fired_ts: int | None
+
+
 def _find_migrations_dir() -> Path:
     try:
         from importlib.resources import files
@@ -1506,6 +1528,61 @@ class Database:
             if sev in counts:
                 counts[sev] = int(count)
         return counts
+
+    def count_alerts_grouped_by_rule_name(
+        self, *, since_ts: int | None = None
+    ) -> dict[str, RuleStats]:
+        """Return ``{rule_name: RuleStats}`` for alerts in the time window.
+
+        Single aggregation query — one round-trip regardless of how
+        many distinct ``rule_name`` values exist. ``since_ts`` is an
+        epoch-seconds lower bound (inclusive, matches the
+        ``alerts.ts >= ?`` shape used elsewhere); ``None`` means
+        all-time aggregation. Rules that never fired in the window
+        are absent from the dict — callers default missing entries
+        to ``RuleStats(count=0, last_fired_ts=None)`` rather than
+        filling them in here (keeps the dict small and the rendering
+        loop branch-free at the call site).
+
+        ``rule_name`` is the operator-visible identifier from
+        rules.yaml — the same string that lands in
+        ``alerts.rule_name`` at write time. Pre-migration-015 rows
+        with NULL ``rule_type`` still count toward their
+        ``rule_name`` aggregate; this helper deliberately ignores
+        ``rule_type`` so the count reflects the operator's
+        rules.yaml view, not the post-rc5 type-axis subset.
+
+        Backed by the ``idx_alerts_ts`` index for the ``ts >= ?``
+        clause; the ``GROUP BY rule_name`` is unindexed but
+        operates over the already-filtered range. At current scale
+        (rules.yaml typically dozens of entries, alerts table small
+        enough that filtered aggregates are sub-100ms) live-querying
+        on every /rules render is cheaper than any caching scheme.
+        """
+        if since_ts is None:
+            sql = (
+                "SELECT rule_name, COUNT(*), MAX(ts) "
+                "FROM alerts GROUP BY rule_name"
+            )
+            params: tuple = ()
+        else:
+            sql = (
+                "SELECT rule_name, COUNT(*), MAX(ts) "
+                "FROM alerts WHERE ts >= ? GROUP BY rule_name"
+            )
+            params = (since_ts,)
+        out: dict[str, RuleStats] = {}
+        for rule_name, count, max_ts in self._conn.execute(sql, params).fetchall():
+            if rule_name is None:
+                # Defensive: alerts.rule_name is NOT NULL in the
+                # schema, but a hand-edited DB or a future column
+                # relaxation should not crash the /rules page.
+                continue
+            out[str(rule_name)] = RuleStats(
+                count=int(count),
+                last_fired_ts=int(max_ts) if max_ts is not None else None,
+            )
+        return out
 
     def alerts_per_day(self, *, days: int = 30, now_ts: int) -> list[dict]:
         if not isinstance(days, int) or isinstance(days, bool):
