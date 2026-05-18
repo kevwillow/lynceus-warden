@@ -2729,6 +2729,150 @@ class Database:
         ).fetchone()
         return _row_to_watchful_recurrence(row) if row is not None else None
 
+    # ------------------------------------------------------------------
+    # /watchful page read helpers (Phase 2b)
+    #
+    # Listing + counting + escalation digest. Mirrors the
+    # ``list_alerts_with_match`` + ``count_alerts`` shape used by /alerts
+    # so the route's filter/pagination wiring matches the established
+    # pattern. Filter semantics (silent fallback on unknown values) live
+    # in the route; these helpers accept already-validated tokens.
+    # ------------------------------------------------------------------
+
+    _WATCHFUL_LIST_STATUS = frozenset({"active", "archived", "all"})
+    _WATCHFUL_LIST_STATE = frozenset({"tracking", "escalated", "all"})
+
+    def _build_watchful_filter_clauses(
+        self,
+        *,
+        status: str,
+        state: str,
+        since_ts: int | None,
+        q: str | None,
+    ) -> tuple[str, list]:
+        """Compose the WHERE clause + params for list + count.
+
+        Sharing one builder keeps the COUNT and SELECT in lockstep so
+        the operator never sees ``pagination.total = 12`` over an
+        eight-row page (the bug class the /alerts shared builder
+        documents and prevents). The two callers pass identical
+        ``status / state / since_ts / q`` and get the same row set.
+        """
+        clauses: list[str] = []
+        params: list = []
+        if status == "active":
+            clauses.append("archived_at IS NULL")
+        elif status == "archived":
+            clauses.append("archived_at IS NOT NULL")
+        if state == "tracking":
+            clauses.append("escalated_at IS NULL")
+        elif state == "escalated":
+            clauses.append("escalated_at IS NOT NULL")
+        if since_ts is not None:
+            clauses.append("last_seen_at >= ?")
+            params.append(since_ts)
+        if q:
+            clauses.append("mac LIKE ?")
+            params.append(f"%{q}%")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        return where, params
+
+    def count_watchful_recurrence(
+        self,
+        *,
+        status: str = "active",
+        state: str = "all",
+        since_ts: int | None = None,
+        q: str | None = None,
+    ) -> int:
+        """Count watchful rows matching the /watchful filter set.
+
+        ``status`` selects on ``archived_at``: ``active`` (NULL),
+        ``archived`` (NOT NULL), or ``all``. ``state`` selects on
+        ``escalated_at`` and is only meaningful when status=active.
+        ``since_ts`` clamps ``last_seen_at >= since_ts`` for the
+        recency window. ``q`` is a MAC substring (case-sensitive --
+        MACs are stored normalized lowercase).
+        """
+        if status not in self._WATCHFUL_LIST_STATUS:
+            raise ValueError(f"status must be one of {sorted(self._WATCHFUL_LIST_STATUS)}")
+        if state not in self._WATCHFUL_LIST_STATE:
+            raise ValueError(f"state must be one of {sorted(self._WATCHFUL_LIST_STATE)}")
+        where, params = self._build_watchful_filter_clauses(
+            status=status, state=state, since_ts=since_ts, q=q,
+        )
+        row = self._conn.execute(
+            f"SELECT COUNT(*) AS c FROM watchful_recurrence{where}",
+            params,
+        ).fetchone()
+        return int(row["c"])
+
+    def list_watchful_recurrence(
+        self,
+        *,
+        status: str = "active",
+        state: str = "all",
+        since_ts: int | None = None,
+        q: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[WatchfulRecurrence]:
+        """List watchful rows under the filter set, newest-first.
+
+        Ordering: ``last_seen_at DESC, id DESC``. Most recently active
+        rows surface to the top of /watchful, which is the operator's
+        triage-first view; the secondary id-DESC tiebreak keeps the
+        ordering stable across renders when many rows share a
+        last_seen_at (e.g. seed/test data).
+        """
+        if status not in self._WATCHFUL_LIST_STATUS:
+            raise ValueError(f"status must be one of {sorted(self._WATCHFUL_LIST_STATUS)}")
+        if state not in self._WATCHFUL_LIST_STATE:
+            raise ValueError(f"state must be one of {sorted(self._WATCHFUL_LIST_STATE)}")
+        if not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive int")
+        if not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be a non-negative int")
+        where, params = self._build_watchful_filter_clauses(
+            status=status, state=state, since_ts=since_ts, q=q,
+        )
+        rows = self._conn.execute(
+            "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
+            "sighting_count, snooze_expires_at, escalated_at, archived_at, "
+            "source_alert_id, matched_watchlist_id, confirmed_safe, "
+            "flagged_for_investigation, operator_note, reset_count "
+            f"FROM watchful_recurrence{where} "
+            "ORDER BY last_seen_at DESC, id DESC "
+            "LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+        return [_row_to_watchful_recurrence(r) for r in rows]
+
+    def list_recent_watchful_escalations(
+        self, *, since_ts: int
+    ) -> list[WatchfulRecurrence]:
+        """Watchful rows whose ``escalated_at`` falls in [since_ts, now].
+
+        Powers the /watchful weekly-digest section. Returns rows
+        regardless of current archived state so the digest reflects
+        escalations that happened in the window even if the operator
+        subsequently archived the entry. Ordered by escalated_at DESC
+        so the route can group-by-week in a single pass.
+        """
+        if not isinstance(since_ts, int) or isinstance(since_ts, bool):
+            raise ValueError("since_ts must be an int (epoch seconds)")
+        rows = self._conn.execute(
+            "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
+            "sighting_count, snooze_expires_at, escalated_at, archived_at, "
+            "source_alert_id, matched_watchlist_id, confirmed_safe, "
+            "flagged_for_investigation, operator_note, reset_count "
+            "FROM watchful_recurrence "
+            "WHERE escalated_at IS NOT NULL AND escalated_at >= ? "
+            "ORDER BY escalated_at DESC",
+            (since_ts,),
+        ).fetchall()
+        return [_row_to_watchful_recurrence(r) for r in rows]
+
     def alerts_per_day(self, *, days: int = 30, now_ts: int) -> list[dict]:
         if not isinstance(days, int) or isinstance(days, bool):
             raise ValueError("days must be int")

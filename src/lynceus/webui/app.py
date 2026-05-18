@@ -1783,7 +1783,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # with no DB change. Matches the /alerts/{id}/allowlist/remove
         # idempotence pattern; the redirect still fires.
         db.dismiss_watchful_recurrence(entry_id, now_ts=int(time.time()))
-        return RedirectResponse("/alerts", status_code=303)
+        return RedirectResponse("/watchful?success=dismissed", status_code=303)
 
     @app.post("/watchful/{entry_id}/promote")
     def watchful_promote_post(
@@ -1828,7 +1828,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             # codebase has no 409 precedent, so 400 with a descriptive
             # detail follows the existing "stateful precondition" shape.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return RedirectResponse("/alerts", status_code=303)
+        return RedirectResponse("/watchful?success=promoted", status_code=303)
 
     @app.post("/watchful/{entry_id}/reset")
     def watchful_reset_post(request: Request, entry_id: int):
@@ -1839,7 +1839,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             db.reset_watchful_recurrence(entry_id, now_ts=int(time.time()))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return RedirectResponse("/alerts", status_code=303)
+        return RedirectResponse("/watchful?success=reset", status_code=303)
 
     @app.post("/watchful/{entry_id}/investigate")
     def watchful_investigate_post(
@@ -1857,7 +1857,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return RedirectResponse("/alerts", status_code=303)
+        return RedirectResponse("/watchful?success=flagged", status_code=303)
 
     @app.post("/watchful/{entry_id}/confirm-safe")
     def watchful_confirm_safe_post(
@@ -1875,7 +1875,210 @@ def create_app(config: Config, db: Database) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return RedirectResponse("/alerts", status_code=303)
+        return RedirectResponse("/watchful?success=confirmed_safe", status_code=303)
+
+    # ------------------------------------------------------------------
+    # /watchful read views (Phase 2b)
+    #
+    # GET /watchful           -- operator triage list with filter +
+    #                            pagination + per-row action buttons
+    # GET /watchful/{id}      -- per-entry detail mirroring the
+    #                            /alerts/{id} shape: full row state +
+    #                            action buttons + cross-links to the
+    #                            source alert and matched watchlist row
+    #
+    # All action POSTs from Phase 2a land back here via the
+    # ?success=<token> banner convention established on /rules.
+    # ------------------------------------------------------------------
+
+    WATCHFUL_PER_PAGE_ALLOWED: tuple[int, ...] = (25, 50, 100, 200)
+    WATCHFUL_PER_PAGE_DEFAULT: int = 50
+    WATCHFUL_STATUS_OPTIONS: tuple[str, ...] = ("active", "archived", "all")
+    WATCHFUL_STATE_OPTIONS: tuple[str, ...] = ("all", "tracking", "escalated")
+    WATCHFUL_DEFAULT_STATUS: str = "active"
+    WATCHFUL_DEFAULT_STATE: str = "all"
+    WATCHFUL_DIGEST_WEEKS: int = 8
+    _WATCHFUL_SUCCESS_FLASHES: dict[str, str] = {
+        "dismissed": "Entry dismissed.",
+        "promoted": "Entry promoted to the permanent allowlist.",
+        "reset": "Escalation reset; tracking continues.",
+        "flagged": "Entry flagged for investigation.",
+        "confirmed_safe": "Entry confirmed as not suspicious and closed.",
+        "watched": "Watchful tracking started for the alert.",
+    }
+
+    def _entry_state(entry: WatchfulRecurrence) -> str:
+        """Three-state label derived from the timestamp columns (per
+        migration 018's timestamp-derived lifecycle convention)."""
+        if entry.archived_at is not None:
+            return "archived"
+        if entry.escalated_at is not None:
+            return "escalated"
+        return "tracking"
+
+    def _build_weekly_digest(now_ts: int, n_weeks: int) -> list[dict]:
+        """Group recent escalations by ISO week, most recent first.
+
+        Returns a list of ``{week_label, count, macs}`` dicts covering
+        the last ``n_weeks`` ISO weeks. Weeks with zero escalations
+        are omitted (the empty-state copy in the template handles
+        "no recent escalations at all"). Sourced from a single
+        ``list_recent_watchful_escalations`` call so the grouping
+        happens in Python on a small bounded result set.
+
+        ISO week is the chosen grouping convention (locked decision
+        was silent; ISO is the established standard and Python's
+        ``isocalendar()`` returns it directly). Week labels use the
+        ``YYYY-Www`` shape.
+        """
+        window_seconds = n_weeks * 7 * 86400
+        since_ts = now_ts - window_seconds
+        rows = db.list_recent_watchful_escalations(since_ts=since_ts)
+        buckets: dict[tuple[int, int], list[str]] = {}
+        for row in rows:
+            assert row.escalated_at is not None
+            iso_year, iso_week, _weekday = _dt.datetime.fromtimestamp(
+                row.escalated_at, tz=_dt.UTC,
+            ).isocalendar()
+            buckets.setdefault((iso_year, iso_week), []).append(row.mac)
+        digest: list[dict] = []
+        for iso_year, iso_week in sorted(buckets.keys(), reverse=True):
+            macs = buckets[(iso_year, iso_week)]
+            digest.append({
+                "week_label": f"{iso_year}-W{iso_week:02d}",
+                "count": len(macs),
+                "macs": macs,
+            })
+        return digest
+
+    @app.get("/watchful", response_class=HTMLResponse)
+    def watchful_list(
+        request: Request,
+        status: str | None = Query(default=None),
+        state: str | None = Query(default=None),
+        window: str | None = Query(default=None),
+        q: str | None = Query(default=None),
+        page: str | None = Query(default=None),
+        page_size: str | None = Query(default=None),
+        success: str | None = Query(default=None),
+    ):
+        # Silent fallback on unknown filter values -- matches the
+        # /alerts and /rules clamp posture so a stale bookmark lands
+        # on the unfiltered page, not 400.
+        if status is None or status not in WATCHFUL_STATUS_OPTIONS:
+            status = WATCHFUL_DEFAULT_STATUS
+        if state is None or state not in WATCHFUL_STATE_OPTIONS:
+            state = WATCHFUL_DEFAULT_STATE
+        if window is not None and window not in _ALERTS_WINDOW_SECONDS:
+            window = None
+        if q is not None and len(q) > 100:
+            raise HTTPException(status_code=400, detail="q must be <= 100 chars")
+        q_clean = (q or "").strip() or None
+
+        now_ts = int(time.time())
+        window_seconds = _ALERTS_WINDOW_SECONDS.get(window) if window else None
+        since_ts = (now_ts - window_seconds) if window_seconds else None
+
+        # state only narrows when status=active. If the operator picks
+        # state=escalated on status=archived we still apply both -- the
+        # combination has a coherent meaning ("entries that escalated
+        # then got archived") even if it's not the common case.
+
+        requested_page, per_page = parse_pagination(
+            page,
+            page_size,
+            allowed_per_page=WATCHFUL_PER_PAGE_ALLOWED,
+            default_per_page=WATCHFUL_PER_PAGE_DEFAULT,
+        )
+        total = db.count_watchful_recurrence(
+            status=status, state=state, since_ts=since_ts, q=q_clean,
+        )
+        pagination = build_pagination(requested_page, per_page, total)
+        entries = db.list_watchful_recurrence(
+            status=status,
+            state=state,
+            since_ts=since_ts,
+            q=q_clean,
+            limit=pagination.per_page,
+            offset=pagination.offset,
+        )
+
+        # Decorate each entry with its three-state label so the
+        # template doesn't have to recompute the same NULL-checks for
+        # the action-button visibility test.
+        decorated = [
+            {"entry": e, "state_label": _entry_state(e)} for e in entries
+        ]
+
+        digest = _build_weekly_digest(now_ts, WATCHFUL_DIGEST_WEEKS)
+
+        flash = _WATCHFUL_SUCCESS_FLASHES.get(success or "")
+
+        filters_active = bool(
+            status != WATCHFUL_DEFAULT_STATUS
+            or state != WATCHFUL_DEFAULT_STATE
+            or window
+            or q_clean
+        )
+
+        return app.state.templates.TemplateResponse(
+            request=request,
+            name="watchful_list.html",
+            context={
+                "version": __version__,
+                "active": "watchful",
+                "decorated": decorated,
+                "pagination": pagination,
+                "status": status,
+                "state": state,
+                "window": window or "",
+                "q": q or "",
+                "status_options": WATCHFUL_STATUS_OPTIONS,
+                "state_options": WATCHFUL_STATE_OPTIONS,
+                "window_options": tuple(_ALERTS_WINDOW_SECONDS.keys()),
+                "per_page_options": WATCHFUL_PER_PAGE_ALLOWED,
+                "now_ts": now_ts,
+                "digest": digest,
+                "digest_weeks": WATCHFUL_DIGEST_WEEKS,
+                "flash": flash,
+                "filters_active": filters_active,
+                "watch_snooze_durations": list(WATCH_SNOOZE_DURATIONS.keys()),
+            },
+        )
+
+    @app.get("/watchful/{entry_id}", response_class=HTMLResponse)
+    def watchful_detail(
+        request: Request,
+        entry_id: int,
+        success: str | None = Query(default=None),
+    ):
+        if entry_id < 1:
+            raise HTTPException(status_code=400, detail="entry_id must be positive")
+        entry = db.get_watchful_recurrence(entry_id)
+        if entry is None:
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "watchful",
+                    "message": f"Watchful entry {entry_id} not found.",
+                },
+                status_code=404,
+            )
+        flash = _WATCHFUL_SUCCESS_FLASHES.get(success or "")
+        return app.state.templates.TemplateResponse(
+            request=request,
+            name="watchful_detail.html",
+            context={
+                "version": __version__,
+                "active": "watchful",
+                "entry": entry,
+                "state_label": _entry_state(entry),
+                "now_ts": int(time.time()),
+                "flash": flash,
+            },
+        )
 
     @app.get("/devices", response_class=HTMLResponse)
     def devices_list(

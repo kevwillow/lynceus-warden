@@ -1,0 +1,65 @@
+{# Per-entry action buttons. Inputs (set by caller):
+   - `e`: the WatchfulRecurrence row
+   - `state_label`: 'tracking' | 'escalated' (caller must skip include
+     entirely for 'archived' -- archived entries are read-only)
+
+   Visual distinctions, deliberate:
+   - promote (red, &#x1F6AB;) -- "never alert me on this MAC again";
+     creates a permanent allowlist entry
+   - confirmed-safe (green, &check;) -- "this entry is benign, close it";
+     does NOT create an allowlist entry (operator's signal is per-entry,
+     not per-MAC)
+   - investigate (yellow, &#x1F50D;) -- keep watching, flag for later
+   - reset (outline) -- only on escalated entries; walks back the
+     escalation so a fresh sighting can re-cross the threshold
+   - dismiss (outline) -- archive with no other state change
+#}
+<div class="watchful-actions">
+  {% if state_label == 'escalated' %}
+    <form method="post" action="/watchful/{{ e.id }}/reset" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <button type="submit" class="outline secondary watchful-action-reset" title="Walk back the escalation; tracking continues from a clean count of 1">&#x21A9; reset</button>
+    </form>
+  {% endif %}
+
+  <form method="post" action="/watchful/{{ e.id }}/dismiss" class="inline-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+    <button type="submit" class="outline secondary watchful-action-dismiss" title="Archive this entry; no allowlist change">&times; dismiss</button>
+  </form>
+
+  <details class="watchful-action-promote">
+    <summary><span class="watchful-promote-summary" title="Create a permanent allowlist entry for this MAC; never alert me on it again">&#x1F6AB; promote&hellip;</span></summary>
+    <form method="post" action="/watchful/{{ e.id }}/promote" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <label>note (optional)
+        <input type="text" name="note" maxlength="500" placeholder="e.g. neighbour's printer">
+      </label>
+      <button type="submit" class="watchful-action-promote-submit">Promote to permanent allowlist</button>
+      <small class="dim">This permanently exempts <code>{{ e.mac }}</code> from future alerts.</small>
+    </form>
+  </details>
+
+  <details class="watchful-action-investigate">
+    <summary><span class="watchful-investigate-summary" title="Keep tracking; flag for later review">&#x1F50D; investigate&hellip;</span></summary>
+    <form method="post" action="/watchful/{{ e.id }}/investigate" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <label>note
+        <input type="text" name="note" maxlength="500" placeholder="e.g. seen near front door at odd hours">
+      </label>
+      <button type="submit" class="watchful-action-investigate-submit">Flag for investigation</button>
+      <small class="dim">Entry stays active and continues to count sightings.</small>
+    </form>
+  </details>
+
+  <details class="watchful-action-safe">
+    <summary><span class="watchful-safe-summary" title="Close this entry as benign; does NOT create an allowlist entry">&check; confirmed safe&hellip;</span></summary>
+    <form method="post" action="/watchful/{{ e.id }}/confirm-safe" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <label>note (optional)
+        <input type="text" name="note" maxlength="500" placeholder="e.g. confirmed: housemate's tablet">
+      </label>
+      <button type="submit" class="watchful-action-safe-submit">Confirm safe and close</button>
+      <small class="dim">Closes this entry. Unlike <strong>promote</strong>, the same MAC can still alert tomorrow if a fresh watchlist hit fires.</small>
+    </form>
+  </details>
+</div>

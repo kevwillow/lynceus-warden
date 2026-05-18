@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}watchful entry #{{ entry.id }} &mdash; lynceus{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <p><a href="/watchful">&larr; back to watchful</a></p>
+  <h2>watchful entry #{{ entry.id }}</h2>
+
+  {% if flash %}
+    <article class="flash-success"><p>{{ flash }}</p></article>
+  {% endif %}
+
+  <article>
+    <header>
+      <strong>state:</strong>
+      {% if state_label == 'escalated' %}
+        <span class="badge-watchful-escalated">escalated</span>
+      {% elif state_label == 'archived' %}
+        <span class="badge-watchful-archived">archived</span>
+      {% else %}
+        <span class="badge-watchful-tracking">tracking</span>
+      {% endif %}
+      {% if entry.flagged_for_investigation %}
+        &middot; <span class="badge-watchful-flagged">&#x1F50D; flagged for investigation</span>
+      {% endif %}
+      {% if entry.confirmed_safe %}
+        &middot; <span class="badge-watchful-safe">&check; confirmed safe</span>
+      {% endif %}
+    </header>
+
+    <p>
+      <strong>MAC:</strong> <code>{{ entry.mac }}</code>
+      &middot; <strong>sightings:</strong> {{ entry.sighting_count }}
+      {% if entry.reset_count > 0 %}
+        &middot; <strong>resets:</strong> {{ entry.reset_count }}
+      {% endif %}
+    </p>
+    <p>
+      <strong>first seen:</strong>
+      <time datetime="{{ entry.first_seen_at | unix_to_iso }}" title="{{ entry.first_seen_at | unix_to_utc_human }}">
+        {{ entry.first_seen_at | relative_time(now_ts=now_ts) }}
+      </time>
+      &middot; <strong>last seen:</strong>
+      <time datetime="{{ entry.last_seen_at | unix_to_iso }}" title="{{ entry.last_seen_at | unix_to_utc_human }}">
+        {{ entry.last_seen_at | relative_time(now_ts=now_ts) }}
+      </time>
+      &middot; <strong>created:</strong>
+      <time datetime="{{ entry.created_at | unix_to_iso }}" title="{{ entry.created_at | unix_to_utc_human }}">
+        {{ entry.created_at | relative_time(now_ts=now_ts) }}
+      </time>
+    </p>
+    <p>
+      <strong>escalated:</strong>
+      {% if entry.escalated_at %}
+        <time datetime="{{ entry.escalated_at | unix_to_iso }}" title="{{ entry.escalated_at | unix_to_utc_human }}">
+          {{ entry.escalated_at | relative_time(now_ts=now_ts) }}
+        </time>
+      {% else %}
+        &mdash;
+      {% endif %}
+      &middot; <strong>snooze expires:</strong>
+      {% if entry.snooze_expires_at %}
+        <time datetime="{{ entry.snooze_expires_at | unix_to_iso }}" title="{{ entry.snooze_expires_at | unix_to_utc_human }}">
+          {{ entry.snooze_expires_at | relative_time(now_ts=now_ts) }}
+        </time>
+      {% elif state_label != 'archived' %}
+        never (forever)
+      {% else %}
+        &mdash;
+      {% endif %}
+      &middot; <strong>archived:</strong>
+      {% if entry.archived_at %}
+        <time datetime="{{ entry.archived_at | unix_to_iso }}" title="{{ entry.archived_at | unix_to_utc_human }}">
+          {{ entry.archived_at | relative_time(now_ts=now_ts) }}
+        </time>
+      {% else %}
+        &mdash;
+      {% endif %}
+    </p>
+
+    {% if entry.operator_note %}
+      <p><strong>operator note:</strong></p>
+      <pre>{{ entry.operator_note }}</pre>
+    {% endif %}
+  </article>
+
+  <article>
+    <header><strong>cross-links</strong></header>
+    <ul>
+      {% if entry.source_alert_id %}
+        <li><a href="/alerts/{{ entry.source_alert_id }}">originating alert &mdash; alert #{{ entry.source_alert_id }}</a></li>
+      {% else %}
+        <li><em>no source alert recorded</em></li>
+      {% endif %}
+      {% if entry.matched_watchlist_id %}
+        <li><a href="/watchlist/{{ entry.matched_watchlist_id }}">matched watchlist entry &mdash; watchlist #{{ entry.matched_watchlist_id }}</a></li>
+      {% else %}
+        <li><em>no matched watchlist entry recorded</em></li>
+      {% endif %}
+      {% if entry.mac %}
+        <li><a href="/devices/{{ entry.mac }}">device record for <code>{{ entry.mac }}</code></a></li>
+      {% endif %}
+    </ul>
+  </article>
+
+  {% if state_label != 'archived' %}
+    <article>
+      <header><strong>actions</strong></header>
+      {% set e = entry %}
+      {% include "_watchful_actions.html" %}
+    </article>
+  {% else %}
+    <article>
+      <p><em>This entry is archived. Read-only.</em></p>
+    </article>
+  {% endif %}
+{% endblock %}
