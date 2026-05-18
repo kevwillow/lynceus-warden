@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}watchful &mdash; lynceus{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <h2>watchful</h2>
+  <p><small>
+    Devices you've asked lynceus to keep an eye on. Recurrences are tracked
+    silently; an entry escalates to a low-priority recurrence alert on its
+    fourth sighting (with a &ge;24h gap between counted sightings).
+  </small></p>
+
+  {% if flash %}
+    <article class="flash-success"><p>{{ flash }}</p></article>
+  {% endif %}
+
+  <form method="get" action="/watchful">
+    <fieldset class="grid">
+      <label>status
+        <select name="status">
+          {% for s in status_options %}
+            <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>state
+        <select name="state">
+          {% for st in state_options %}
+            <option value="{{ st }}" {% if state == st %}selected{% endif %}>{{ st }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>recent
+        <select name="window">
+          <option value="" {% if not window %}selected{% endif %}>any time</option>
+          {% for w in window_options %}
+            {% if w != 'all' %}
+              <option value="{{ w }}" {% if window == w %}selected{% endif %}>last {{ w }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      </label>
+      <label>q
+        <input type="text" name="q" value="{{ q }}" maxlength="100" placeholder="mac substring">
+      </label>
+      <label>per page
+        <select name="page_size">
+          {% for n in per_page_options %}
+            <option value="{{ n }}" {% if n == pagination.per_page %}selected{% endif %}>{{ n }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">filter</button>
+    </fieldset>
+    {% if filters_active %}
+      <p><a class="reset-filters" href="/watchful">reset filters</a></p>
+    {% endif %}
+  </form>
+
+  <p><small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small></p>
+
+  {% if decorated %}
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>id</th>
+            <th>MAC</th>
+            <th>state</th>
+            <th>sightings</th>
+            <th>first seen</th>
+            <th>last seen</th>
+            <th>escalated</th>
+            <th>snooze until</th>
+            <th>source</th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in decorated %}
+            {% set e = row.entry %}
+            {% set state_label = row.state_label %}
+            <tr class="row-watchful-{{ state_label }}">
+              <td><a href="/watchful/{{ e.id }}">#{{ e.id }}</a></td>
+              <td class="mac-cell"><code>{{ e.mac }}</code></td>
+              <td>
+                {% if state_label == 'escalated' %}
+                  <span class="badge-watchful-escalated">escalated</span>
+                {% elif state_label == 'archived' %}
+                  <span class="badge-watchful-archived">archived</span>
+                {% else %}
+                  <span class="badge-watchful-tracking">tracking</span>
+                {% endif %}
+                {% if e.flagged_for_investigation %}
+                  <span class="badge-watchful-flagged" title="flagged for investigation">&#x1F50D;</span>
+                {% endif %}
+                {% if e.confirmed_safe %}
+                  <span class="badge-watchful-safe" title="confirmed not suspicious">&check;</span>
+                {% endif %}
+                {% if e.reset_count > 0 %}
+                  <small class="dim" title="operator-driven escalation resets">(reset &times;{{ e.reset_count }})</small>
+                {% endif %}
+              </td>
+              <td>{{ e.sighting_count }}</td>
+              <td title="{{ e.first_seen_at | unix_to_utc_human }}">
+                <time datetime="{{ e.first_seen_at | unix_to_iso }}">
+                  {{ e.first_seen_at | relative_time(now_ts=now_ts) }}
+                </time>
+              </td>
+              <td title="{{ e.last_seen_at | unix_to_utc_human }}">
+                <time datetime="{{ e.last_seen_at | unix_to_iso }}">
+                  {{ e.last_seen_at | relative_time(now_ts=now_ts) }}
+                </time>
+              </td>
+              <td>
+                {% if e.escalated_at %}
+                  <time datetime="{{ e.escalated_at | unix_to_iso }}" title="{{ e.escalated_at | unix_to_utc_human }}">
+                    {{ e.escalated_at | relative_time(now_ts=now_ts) }}
+                  </time>
+                {% else %}
+                  &mdash;
+                {% endif %}
+              </td>
+              <td>
+                {% if e.snooze_expires_at %}
+                  <time datetime="{{ e.snooze_expires_at | unix_to_iso }}" title="{{ e.snooze_expires_at | unix_to_utc_human }}">
+                    {{ e.snooze_expires_at | relative_time(now_ts=now_ts) }}
+                  </time>
+                {% elif state_label != 'archived' %}
+                  forever
+                {% else %}
+                  &mdash;
+                {% endif %}
+              </td>
+              <td>
+                {% if e.source_alert_id %}
+                  <a href="/alerts/{{ e.source_alert_id }}" title="originating alert">alert #{{ e.source_alert_id }}</a>
+                {% else %}
+                  &mdash;
+                {% endif %}
+                {% if e.matched_watchlist_id %}
+                  &middot;
+                  <a href="/watchlist/{{ e.matched_watchlist_id }}" title="matched watchlist entry">watchlist #{{ e.matched_watchlist_id }}</a>
+                {% endif %}
+              </td>
+              <td>
+                {% if state_label != 'archived' %}
+                  {% include "_watchful_actions.html" %}
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p>
+      <em>
+        {% if filters_active %}
+          No watchful entries match the current filters.
+          <a class="reset-filters" href="/watchful">reset filters</a>
+        {% else %}
+          No watchful entries yet. Entries are created when you click
+          "Watch" on an alert.
+        {% endif %}
+      </em>
+    </p>
+  {% endif %}
+
+  <nav>
+    {% set qs = [] %}
+    {% if status != 'active' %}{% set _ = qs.append('status=' ~ status) %}{% endif %}
+    {% if state != 'all' %}{% set _ = qs.append('state=' ~ state) %}{% endif %}
+    {% if window %}{% set _ = qs.append('window=' ~ window) %}{% endif %}
+    {% if q %}{% set _ = qs.append('q=' ~ q) %}{% endif %}
+    {% set _ = qs.append('page_size=' ~ pagination.per_page) %}
+    {% set base_qs = qs | join('&') %}
+    <ul>
+      <li>
+        {% if pagination.has_prev %}
+          <a href="/watchful?{{ base_qs }}&page={{ pagination.page - 1 }}">&larr; prev</a>
+        {% else %}
+          <span class="dim">&larr; prev</span>
+        {% endif %}
+      </li>
+    </ul>
+    <ul>
+      <li><small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small></li>
+    </ul>
+    <ul>
+      <li>
+        {% if pagination.has_next %}
+          <a href="/watchful?{{ base_qs }}&page={{ pagination.page + 1 }}">next &rarr;</a>
+        {% else %}
+          <span class="dim">next &rarr;</span>
+        {% endif %}
+      </li>
+    </ul>
+  </nav>
+
+  <article>
+    <header><strong>recent recurrence digest</strong> &middot; <small>last {{ digest_weeks }} ISO weeks</small></header>
+    {% if digest %}
+      {% for week in digest %}
+        <details>
+          <summary>
+            <strong>{{ week.week_label }}</strong>
+            &middot; {{ week.count }} escalation{% if week.count != 1 %}s{% endif %}
+          </summary>
+          <ul>
+            {% for mac in week.macs %}
+              <li><code>{{ mac }}</code></li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endfor %}
+    {% else %}
+      <p><em>No recurrences escalated in the last {{ digest_weeks }} weeks.</em></p>
+    {% endif %}
+  </article>
+{% endblock %}

@@ -160,6 +160,18 @@
                       <button type="submit" class="ack-button-inline">Acknowledge</button>
                     </form>
                   {% endif %}
+                  {% if a.mac %}
+                    <form method="post" action="/alerts/{{ a.id }}/watch" class="inline-form watch-form">
+                      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+                      <select name="snooze_duration" class="watch-snooze-select" title="how long to suppress repeat alerts for this MAC; tracking continues regardless">
+                        <option value="24h">24h</option>
+                        <option value="7d">7d</option>
+                        <option value="30d" selected>30d</option>
+                        <option value="forever">forever</option>
+                      </select>
+                      <button type="submit" class="watch-button-inline" title="Track this MAC; raise a low-priority recurrence alert if it shows up four times">Watch</button>
+                    </form>
+                  {% endif %}
                 </td>
               </tr>
             {% endfor %}
