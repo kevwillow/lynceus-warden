@@ -8,6 +8,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Per-alert triage notes.** Closes the "what did I conclude about
+  this alert?" workflow gap. Operators triage an alert (false
+  positive, expected device, action taken, still investigating) and
+  pre-rc5 had to record their conclusion in an external tracker or
+  trust memory -- the only annotation surface was the per-event note
+  on each ack/unack entry in the action history, which captures
+  events but not a current conclusion. The triage-note surface is
+  one persistent note per alert, visible alongside the alert when
+  revisiting.
+
+  New migration `016_alerts_note.sql` adds two NULL-able columns to
+  the `alerts` table: `note TEXT` and `note_updated_at INTEGER`.
+  Forward-only; existing rows get NULL. The daemon path
+  (`add_alert`) never writes the new column, so the only writer is
+  the webui POST handler. New `Database.update_alert_note(alert_id,
+  note_text, *, now_ts=None) -> bool` is the persistence primitive:
+  empty / whitespace-only `note_text` clears (both columns set to
+  NULL); non-empty text writes the stripped value plus a server-
+  side epoch-seconds timestamp. Length cap of 4096 chars is enforced
+  server-side (the textarea sets the same `maxlength` but the DB
+  layer is the source of truth) and raises `ValueError` before any
+  write so an over-cap submission cannot partially apply.
+
+  Alert detail page (`/alerts/{id}`) gains a "triage notes" article
+  with the current note rendered in `<pre>` (preserving line breaks
+  in plain text), a "Last updated N ago" timestamp via the existing
+  `relative_time` Jinja filter, an editable textarea (4096-char
+  `maxlength`), a Save/Update button, and a Clear button (separate
+  form with a `confirm()` guard). Empty-textarea Save is the documented
+  way to clear -- intentional, no separate "Clear" action needed on
+  submit. After save/clear, the redirect carries `?success=note_saved`
+  or `?success=note_cleared` which renders a one-time inline status
+  message; the success token is whitelisted at render time so a
+  hand-crafted URL cannot inject arbitrary content.
+
+  `/alerts` list page gains a small per-row indicator (📝 emoji
+  badge with `alert-note-indicator` class) when the alert carries a
+  note; the `title` attribute carries a 50-char tooltip preview so
+  operators can scan triaged-vs-untriaged at a glance without
+  clicking through. Long notes are deliberately truncated in the
+  tooltip so the full triage rationale stays on the detail page (an
+  operator reading over the shoulder sees only that a note exists,
+  not its contents). New `Database.list_alerts_with_match` SELECT
+  projects the note column alongside the existing watchlist join, so
+  the indicator renders without an extra per-row query.
+
+  Plain text only -- no markdown rendering, no rich-text editor, no
+  multi-operator tracking, no per-rule_type bulk-note operations.
+  Single note per alert (replace-on-update); a note-history table is
+  deferred as a future feature if operators ask. CSRF enforced via
+  the existing global middleware. A `has_note` filter on `/alerts`
+  is intentionally deferred -- the indicator is purely visual in
+  this prompt; a filter dropdown is a small follow-up.
+
 - **Argus importer admits `ble_company_id` and `ble_service_uuid` via
   normalization.** The rc5 Argus residuals audit
   (`docs/ARGUS_RESIDUALS.md`) flagged two `identifier_type` labels as
