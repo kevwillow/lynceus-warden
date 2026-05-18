@@ -651,6 +651,70 @@ def test_alert_severity_counts_with_since_ts(db):
     assert counts["low"] == 1
 
 
+def test_count_alerts_grouped_by_rule_name_all_time(db):
+    db.add_alert(ts=100, rule_name="rule_a", mac=None, message="x", severity="low")
+    db.add_alert(ts=150, rule_name="rule_a", mac=None, message="x", severity="med")
+    db.add_alert(ts=200, rule_name="rule_b", mac=None, message="x", severity="high")
+    stats = db.count_alerts_grouped_by_rule_name()
+    assert set(stats.keys()) == {"rule_a", "rule_b"}
+    assert stats["rule_a"].count == 2
+    assert stats["rule_a"].last_fired_ts == 150
+    assert stats["rule_b"].count == 1
+    assert stats["rule_b"].last_fired_ts == 200
+
+
+def test_count_alerts_grouped_by_rule_name_with_since_ts(db):
+    db.add_alert(ts=100, rule_name="rule_a", mac=None, message="x", severity="low")
+    db.add_alert(ts=200, rule_name="rule_a", mac=None, message="x", severity="med")
+    db.add_alert(ts=300, rule_name="rule_b", mac=None, message="x", severity="high")
+    # since_ts excludes the ts=100 alert; rule_a count drops to 1.
+    stats = db.count_alerts_grouped_by_rule_name(since_ts=200)
+    assert stats["rule_a"].count == 1
+    assert stats["rule_a"].last_fired_ts == 200
+    assert stats["rule_b"].count == 1
+    assert stats["rule_b"].last_fired_ts == 300
+
+
+def test_count_alerts_grouped_by_rule_name_empty_table(db):
+    stats = db.count_alerts_grouped_by_rule_name()
+    assert stats == {}
+    stats = db.count_alerts_grouped_by_rule_name(since_ts=1_000_000)
+    assert stats == {}
+
+
+def test_count_alerts_grouped_by_rule_name_rule_outside_window_absent(db):
+    db.add_alert(ts=100, rule_name="ancient", mac=None, message="x", severity="low")
+    db.add_alert(ts=500, rule_name="recent", mac=None, message="x", severity="low")
+    stats = db.count_alerts_grouped_by_rule_name(since_ts=400)
+    # "ancient" fired before the window and must be absent — caller
+    # defaults missing rule_names to RuleStats(0, None).
+    assert "ancient" not in stats
+    assert stats["recent"].count == 1
+
+
+def test_count_alerts_grouped_by_rule_name_edge_rule_names(db):
+    # rule_name is operator-defined; spaces, quotes, and unicode all
+    # must round-trip through the GROUP BY without mangling.
+    weird = "rule with spaces & quotes\""
+    unicode_name = "règle_éé"
+    db.add_alert(ts=100, rule_name=weird, mac=None, message="x", severity="low")
+    db.add_alert(ts=110, rule_name=weird, mac=None, message="x", severity="low")
+    db.add_alert(ts=120, rule_name=unicode_name, mac=None, message="x", severity="low")
+    stats = db.count_alerts_grouped_by_rule_name()
+    assert stats[weird].count == 2
+    assert stats[weird].last_fired_ts == 110
+    assert stats[unicode_name].count == 1
+
+
+def test_count_alerts_grouped_by_rule_name_returns_rulestats_named_fields(db):
+    db.add_alert(ts=100, rule_name="r", mac=None, message="x", severity="low")
+    stats = db.count_alerts_grouped_by_rule_name()
+    # Confirm named-field access (RuleStats is a NamedTuple, not a
+    # plain tuple — callers use .count / .last_fired_ts).
+    assert stats["r"].count == 1
+    assert stats["r"].last_fired_ts == 100
+
+
 def test_alerts_per_day_includes_zero_days(db):
     now_ts = 1777809600
     today_ts = now_ts
