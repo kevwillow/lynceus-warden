@@ -185,6 +185,7 @@ def test_migrations_dir_lists_both_files(db):
         "014_devices_remote_id.sql",
         "015_alerts_rule_type.sql",
         "016_alerts_note.sql",
+        "017_rule_type_snoozes.sql",
     ]
 
 
@@ -2378,3 +2379,194 @@ def test_db_device_types_tuple_admits_remote_id(db):
     # Unknown types still rejected.
     with pytest.raises(ValueError):
         db.list_devices(device_type="zigbee")
+
+
+# ---------------------------------------------------------------------------
+# rc6 migration 017: rule_type_snoozes table.
+# ---------------------------------------------------------------------------
+
+
+def test_migration_017_creates_rule_type_snoozes_table(db):
+    """Bare-schema check: migration 017 brings the table + index into
+    existence with the exact column shape the helpers depend on. Caught
+    early via PRAGMA introspection so a schema regression doesn't only
+    surface as a downstream helper raise."""
+    rows = db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='rule_type_snoozes'"
+    ).fetchall()
+    assert len(rows) == 1, "rule_type_snoozes table missing"
+    cols = {
+        r["name"]: r["type"]
+        for r in db._conn.execute("PRAGMA table_info(rule_type_snoozes)").fetchall()
+    }
+    assert cols == {
+        "rule_type": "TEXT",
+        "expires_at": "INTEGER",
+        "added_at": "INTEGER",
+        "note": "TEXT",
+    }
+    # PK on rule_type (one snooze per rule_type at any time).
+    pk = db._conn.execute(
+        "PRAGMA table_info(rule_type_snoozes)"
+    ).fetchall()
+    pk_cols = [r["name"] for r in pk if r["pk"] > 0]
+    assert pk_cols == ["rule_type"]
+    # Index on expires_at supports cleanup + list-active range queries.
+    idx = db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' "
+        "AND name='idx_rule_type_snoozes_expires'"
+    ).fetchall()
+    assert len(idx) == 1
+
+
+def test_migration_017_no_op_on_unrelated_data(db):
+    """Existing alerts / watchlist rows are unaffected by the new
+    table; the migration is forward-only and additive."""
+    db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+    pre = db._conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+    # A second .__init__ replays migrations idempotently — should not
+    # touch the alert row.
+    same_path = db._conn.execute("PRAGMA database_list").fetchone()["file"]
+    db2 = Database(same_path) if same_path else None
+    if db2 is not None:
+        post = db2._conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+        db2.close()
+        assert pre == post
+
+
+# ---------------------------------------------------------------------------
+# rc6 db helpers: add / remove / list / cleanup / is_rule_type_snoozed.
+# ---------------------------------------------------------------------------
+
+
+def test_add_rule_type_snooze_inserts_row(db):
+    ok = db.add_rule_type_snooze(
+        rule_type="watchlist_mac",
+        expires_at=200,
+        added_at=100,
+        note="testing",
+    )
+    assert ok is True
+    row = db._conn.execute(
+        "SELECT rule_type, expires_at, added_at, note FROM rule_type_snoozes"
+    ).fetchone()
+    assert row["rule_type"] == "watchlist_mac"
+    assert row["expires_at"] == 200
+    assert row["added_at"] == 100
+    assert row["note"] == "testing"
+
+
+def test_add_rule_type_snooze_replaces_existing(db):
+    """Re-snoozing a rule_type while a snooze is active overwrites the
+    prior expires_at / added_at / note rather than failing — INSERT OR
+    REPLACE semantic verified end-to-end."""
+    db.add_rule_type_snooze("watchlist_mac", expires_at=200, added_at=100, note="first")
+    db.add_rule_type_snooze("watchlist_mac", expires_at=500, added_at=400, note="second")
+    rows = db._conn.execute(
+        "SELECT rule_type, expires_at, added_at, note "
+        "FROM rule_type_snoozes WHERE rule_type='watchlist_mac'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["expires_at"] == 500
+    assert rows[0]["added_at"] == 400
+    assert rows[0]["note"] == "second"
+
+
+def test_add_rule_type_snooze_rejects_empty_string(db):
+    with pytest.raises(ValueError):
+        db.add_rule_type_snooze("", expires_at=200, added_at=100)
+
+
+def test_remove_rule_type_snooze_deletes_existing_row(db):
+    db.add_rule_type_snooze("watchlist_mac", expires_at=200, added_at=100)
+    ok = db.remove_rule_type_snooze("watchlist_mac")
+    assert ok is True
+    row = db._conn.execute(
+        "SELECT * FROM rule_type_snoozes WHERE rule_type='watchlist_mac'"
+    ).fetchone()
+    assert row is None
+
+
+def test_remove_rule_type_snooze_returns_false_when_absent(db):
+    ok = db.remove_rule_type_snooze("watchlist_mac")
+    assert ok is False
+
+
+def test_list_active_rule_type_snoozes_filters_expired(db):
+    """Expired rows physically remain in the table between cleanup
+    cycles; the list helper filters via expires_at > now_ts so the
+    /rules render never surfaces a stale badge."""
+    now = 1000
+    db.add_rule_type_snooze("watchlist_mac", expires_at=now + 100, added_at=now)
+    db.add_rule_type_snooze("watchlist_oui", expires_at=now - 100, added_at=now - 200)
+    db.add_rule_type_snooze("watchlist_ssid", expires_at=now + 500, added_at=now)
+    active = db.list_active_rule_type_snoozes(now_ts=now)
+    rule_types = [s.rule_type for s in active]
+    assert "watchlist_mac" in rule_types
+    assert "watchlist_ssid" in rule_types
+    assert "watchlist_oui" not in rule_types  # expired
+    # Sorted by rule_type ASC for deterministic render order.
+    assert rule_types == sorted(rule_types)
+
+
+def test_list_active_rule_type_snoozes_namedtuple_shape(db):
+    db.add_rule_type_snooze("watchlist_mac", expires_at=500, added_at=100, note="why")
+    active = db.list_active_rule_type_snoozes(now_ts=200)
+    assert len(active) == 1
+    s = active[0]
+    assert s.rule_type == "watchlist_mac"
+    assert s.expires_at == 500
+    assert s.added_at == 100
+    assert s.note == "why"
+
+
+def test_cleanup_expired_rule_type_snoozes_deletes_only_expired(db):
+    now = 1000
+    db.add_rule_type_snooze("watchlist_mac", expires_at=now + 100, added_at=now)
+    db.add_rule_type_snooze("watchlist_oui", expires_at=now - 100, added_at=now - 200)
+    db.add_rule_type_snooze("watchlist_ssid", expires_at=now, added_at=now - 50)
+    deleted = db.cleanup_expired_rule_type_snoozes(now_ts=now)
+    # expires_at <= now → watchlist_oui (strictly older) + watchlist_ssid (equal-to-now boundary)
+    assert deleted == 2
+    remaining = {
+        r["rule_type"]
+        for r in db._conn.execute("SELECT rule_type FROM rule_type_snoozes").fetchall()
+    }
+    assert remaining == {"watchlist_mac"}
+
+
+def test_cleanup_expired_rule_type_snoozes_returns_zero_on_empty(db):
+    deleted = db.cleanup_expired_rule_type_snoozes(now_ts=1000)
+    assert deleted == 0
+
+
+def test_is_rule_type_snoozed_returns_none_when_no_row(db):
+    assert db.is_rule_type_snoozed("watchlist_mac", now_ts=1000) is None
+
+
+def test_is_rule_type_snoozed_returns_none_when_expired(db):
+    db.add_rule_type_snooze("watchlist_mac", expires_at=500, added_at=100)
+    assert db.is_rule_type_snoozed("watchlist_mac", now_ts=600) is None
+
+
+def test_is_rule_type_snoozed_returns_namedtuple_when_active(db):
+    db.add_rule_type_snooze(
+        "watchlist_mac", expires_at=1000, added_at=100, note="noisy period"
+    )
+    s = db.is_rule_type_snoozed("watchlist_mac", now_ts=500)
+    assert s is not None
+    assert s.rule_type == "watchlist_mac"
+    assert s.expires_at == 1000
+    assert s.added_at == 100
+    assert s.note == "noisy period"
+
+
+def test_is_rule_type_snoozed_boundary_strictly_greater_than(db):
+    """expires_at == now_ts is the boundary; the gate must NOT treat
+    it as snoozed (the snooze just expired). Matches the cleanup
+    helper's expires_at <= now_ts deletion predicate so the two are
+    consistent: a row is either alive (expires_at > now_ts) or dead
+    (expires_at <= now_ts), never both."""
+    db.add_rule_type_snooze("watchlist_mac", expires_at=1000, added_at=100)
+    assert db.is_rule_type_snoozed("watchlist_mac", now_ts=1000) is None
+    assert db.is_rule_type_snoozed("watchlist_mac", now_ts=999) is not None

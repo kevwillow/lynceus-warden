@@ -4617,3 +4617,333 @@ def test_alerts_has_note_default_omits_param_from_pagination_url(tmp_path):
         assert "has_note" not in link_window
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# rc6: per-rule_type snooze controls on /rules.
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_rules(tmp_path, body: str):
+    """App factory for /rules tests: writes a rules.yaml at tmp_path
+    and configures the Config + Database around it. Body is the YAML
+    document body (everything below the top-level ``rules:`` key)."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text("rules:\n" + body, encoding="utf-8")
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    return app, db
+
+
+_TWO_RULES_YAML = (
+    "  - name: known_bad_mac\n"
+    "    rule_type: watchlist_mac\n"
+    "    severity: high\n"
+    "    patterns: ['de:ad:be:ef:00:01']\n"
+    "  - name: rogue_ssids\n"
+    "    rule_type: watchlist_ssid\n"
+    "    severity: med\n"
+    "    patterns: ['FreeAirportWiFi']\n"
+)
+
+
+@pytest.mark.webui
+def test_rules_list_renders_snooze_form_when_no_active_snooze(tmp_path):
+    """The collapsible snooze form is the per-row affordance for
+    rule_types without an active snooze — operators see the option to
+    silence, with the dropdown of durations."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        assert "/rules/watchlist_mac/snooze" in r.text
+        assert "/rules/watchlist_ssid/snooze" in r.text
+        assert 'name="duration_seconds"' in r.text
+        assert 'value="3600"' in r.text  # 1h
+        assert 'value="86400"' in r.text  # 24h
+        assert "badge-snoozed" not in r.text  # no badge when no snooze active
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_renders_badge_and_unsnooze_when_active(tmp_path):
+    """An active snooze on watchlist_mac swaps the snooze form for a
+    badge + unsnooze button on that row only. The other rule_type's
+    row is unaffected."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac",
+        expires_at=now + 4 * 3600,
+        added_at=now,
+        note="network reconfigure",
+    )
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        # Snoozed row: badge + unsnooze button.
+        assert "/rules/watchlist_mac/unsnooze" in r.text
+        assert "badge-snoozed" in r.text
+        assert "snooze note" in r.text
+        assert "network reconfigure" in r.text
+        # Non-snoozed row: snooze form still rendered.
+        assert "/rules/watchlist_ssid/snooze" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_status_filter_snoozed_only(tmp_path):
+    """status=snoozed narrows the iteration to rules whose rule_type
+    has an active snooze. The unsnoozed rule's name disappears from
+    the render."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
+    )
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?status=snoozed")
+        assert r.status_code == 200
+        assert "known_bad_mac" in r.text
+        assert "rogue_ssids" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_status_filter_active_only(tmp_path):
+    """status=active is the complement: only rules whose rule_type
+    has no active snooze appear."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
+    )
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?status=active")
+        assert r.status_code == 200
+        assert "rogue_ssids" in r.text
+        assert "known_bad_mac" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_invalid_status_falls_back_to_all(tmp_path):
+    """Stale-bookmark posture: a typo in the status query param lands
+    on the unfiltered page rather than 400."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?status=garbage")
+        assert r.status_code == 200
+        assert "known_bad_mac" in r.text
+        assert "rogue_ssids" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_post_inserts_row_and_redirects(tmp_path):
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/watchlist_mac/snooze",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "duration_seconds": 3600,
+                    "note": "investigating",
+                },
+            )
+        assert r.status_code == 303
+        assert "success=snooze_added" in r.headers["location"]
+        assert "rule_type=watchlist_mac" in r.headers["location"]
+        row = db._conn.execute(
+            "SELECT rule_type, note FROM rule_type_snoozes"
+        ).fetchone()
+        assert row["rule_type"] == "watchlist_mac"
+        assert row["note"] == "investigating"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unsnooze_post_deletes_row_and_redirects(tmp_path):
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
+    )
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/watchlist_mac/unsnooze",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        assert "success=snooze_removed" in r.headers["location"]
+        row = db._conn.execute(
+            "SELECT * FROM rule_type_snoozes WHERE rule_type='watchlist_mac'"
+        ).fetchone()
+        assert row is None
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_post_invalid_duration_returns_400(tmp_path):
+    """An attacker-supplied duration outside the whitelist gets a 400
+    rather than silently inserting. The duration set is strictly
+    enforced (the dropdown is the only legitimate source)."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/watchlist_mac/snooze",
+                data={CSRF_FORM_FIELD: token, "duration_seconds": 999},
+            )
+        assert r.status_code == 400
+        row_count = db._conn.execute(
+            "SELECT COUNT(*) FROM rule_type_snoozes"
+        ).fetchone()[0]
+        assert row_count == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_post_unknown_rule_type_returns_400(tmp_path):
+    """Path-param rule_type must be a known RuleType literal; arbitrary
+    strings get 400 (defense in depth against PK-pollution attempts)."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/totally_made_up/snooze",
+                data={CSRF_FORM_FIELD: token, "duration_seconds": 3600},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_post_without_csrf_returns_403(tmp_path):
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            client.cookies.clear()
+            r = client.post(
+                "/rules/watchlist_mac/snooze",
+                data={"duration_seconds": 3600},
+            )
+        assert r.status_code == 403
+        row_count = db._conn.execute(
+            "SELECT COUNT(*) FROM rule_type_snoozes"
+        ).fetchone()[0]
+        assert row_count == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unsnooze_post_without_csrf_returns_403(tmp_path):
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
+    )
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            client.cookies.clear()
+            r = client.post("/rules/watchlist_mac/unsnooze")
+        assert r.status_code == 403
+        # Row still present.
+        row = db._conn.execute(
+            "SELECT * FROM rule_type_snoozes WHERE rule_type='watchlist_mac'"
+        ).fetchone()
+        assert row is not None
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unsnooze_post_idempotent_when_no_row_exists(tmp_path):
+    """Double-clicking unsnooze (or unsnoozing a rule that wasn't
+    snoozed) returns 303 rather than an error. The /rules re-render
+    shows current state, which is more useful than a 404."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/watchlist_mac/unsnooze",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_post_replaces_existing_snooze(tmp_path):
+    """Re-snoozing a rule_type that already has an active snooze
+    overwrites the prior expires_at rather than 400. Operator who
+    initially picked 1h and now wants 24h shouldn't have to unsnooze
+    first."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac",
+        expires_at=now + 3600,
+        added_at=now,
+        note="first",
+    )
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/watchlist_mac/snooze",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "duration_seconds": 24 * 3600,
+                    "note": "second",
+                },
+            )
+        assert r.status_code == 303
+        rows = db._conn.execute(
+            "SELECT note FROM rule_type_snoozes WHERE rule_type='watchlist_mac'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["note"] == "second"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_flash_banner_on_success(tmp_path):
+    """The POST redirect's ?success=snooze_added&rule_type=<rt> renders
+    a flash banner on the resulting /rules page."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app) as client:
+            r = client.get(
+                "/rules?success=snooze_added&rule_type=watchlist_mac"
+            )
+        assert r.status_code == 200
+        assert "flash-success" in r.text or "Snooze added" in r.text
+        assert "watchlist_mac" in r.text
+    finally:
+        db.close()

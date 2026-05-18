@@ -1634,3 +1634,224 @@ def test_expired_entry_does_not_suppress_in_poll(db, config, fake_client):
     )
     poll_once(fake_client, db, config, 1_800_000_000, ruleset=rs, allowlist=al)
     assert _alerts_count(db) == 1
+
+
+# ---------------------------------------------------------------------------
+# rc6 rule_type snooze gate.
+# ---------------------------------------------------------------------------
+
+
+def _apple_oui_ruleset() -> Ruleset:
+    """Apple-OUI rule that will fire on the fixture's a4:83:e7 device."""
+    return Ruleset(
+        rules=[
+            Rule(
+                name="apple_oui",
+                rule_type="watchlist_oui",
+                severity="high",
+                patterns=["a4:83:e7"],
+            )
+        ]
+    )
+
+
+def test_rule_type_snooze_suppresses_emit(db, config, fake_client):
+    """An active rule_type snooze for watchlist_oui suppresses the
+    alert emit — no row in alerts. The RuleHit was still produced
+    (rules.evaluate ran); only db.add_alert is gated."""
+    rs = _apple_oui_ruleset()
+    db.add_rule_type_snooze(
+        rule_type="watchlist_oui",
+        expires_at=1_700_001_500,
+        added_at=1_700_001_000,
+    )
+    poll_once(fake_client, db, config, 1_700_001_000, ruleset=rs)
+    assert _alerts_count(db) == 0
+
+
+def test_rule_type_snooze_other_rule_type_not_suppressed(db, config, fake_client):
+    """Snoozing watchlist_mac doesn't gate watchlist_oui — suppressions
+    are per rule_type, not global."""
+    rs = _apple_oui_ruleset()
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac",
+        expires_at=1_700_001_500,
+        added_at=1_700_001_000,
+    )
+    poll_once(fake_client, db, config, 1_700_001_000, ruleset=rs)
+    assert _alerts_count(db) == 1
+
+
+def test_rule_type_snooze_expired_does_not_suppress(db, config, fake_client):
+    """A snooze whose expires_at has passed is gracefully ignored at
+    gate time — the alert fires normally. Mirrors the allowlist
+    expired-entry behavior (see test_expired_entry_does_not_suppress_in_poll)."""
+    rs = _apple_oui_ruleset()
+    db.add_rule_type_snooze(
+        rule_type="watchlist_oui",
+        expires_at=1_700_000_000,
+        added_at=1_699_999_000,
+    )
+    poll_once(fake_client, db, config, 1_700_001_000, ruleset=rs)
+    assert _alerts_count(db) == 1
+
+
+def test_rule_type_snooze_accumulates_into_counter(db, config, fake_client):
+    """The optional suppression_counter dict accumulates per rule_type
+    when poll_once gates an emit. The Poller passes its own dict so
+    multi-tick accumulation works; tests pass a local dict to inspect
+    the gate behavior directly."""
+    rs = _apple_oui_ruleset()
+    db.add_rule_type_snooze(
+        rule_type="watchlist_oui",
+        expires_at=1_700_001_500,
+        added_at=1_700_001_000,
+    )
+    counter: dict[str, int] = {}
+    poll_once(
+        fake_client,
+        db,
+        config,
+        1_700_001_000,
+        ruleset=rs,
+        rule_type_suppression_counter=counter,
+    )
+    assert counter == {"watchlist_oui": 1}
+
+
+def test_rule_type_snooze_counter_none_means_no_accumulation(db, config, fake_client):
+    """Passing counter=None (default) still gates the emit correctly;
+    only the breakdown accumulation is skipped. Confirms the gate's
+    correctness contract is independent of the counter argument."""
+    rs = _apple_oui_ruleset()
+    db.add_rule_type_snooze(
+        rule_type="watchlist_oui",
+        expires_at=1_700_001_500,
+        added_at=1_700_001_000,
+    )
+    # No counter arg → default None.
+    poll_once(fake_client, db, config, 1_700_001_000, ruleset=rs)
+    assert _alerts_count(db) == 0
+
+
+def test_rule_type_snooze_skips_notifier(db, config, fake_client):
+    """Notifier.send must NOT be called for suppressed emits. The
+    operator's whole point in snoozing is "don't page me about this
+    rule_type" — leaking the alert to ntfy/push would defeat the
+    feature even if no DB row is written."""
+    rs = _apple_oui_ruleset()
+    db.add_rule_type_snooze(
+        rule_type="watchlist_oui",
+        expires_at=1_700_001_500,
+        added_at=1_700_001_000,
+    )
+    rec = RecordingNotifier()
+    poll_once(fake_client, db, config, 1_700_001_000, ruleset=rs, notifier=rec)
+    assert rec.calls == []
+
+
+def test_poll_once_cleans_up_expired_rule_type_snoozes(db, config, fake_client):
+    """poll_once invokes cleanup_expired_rule_type_snoozes at end of
+    tick; expired rows physically vanish from the table on the next
+    poll. The gate's expires_at > now_ts filter already handles
+    correctness between cycles — cleanup is the housekeeping that
+    keeps steady-state row count bounded."""
+    db.add_rule_type_snooze(
+        rule_type="watchlist_oui",
+        expires_at=1_700_000_000,
+        added_at=1_699_999_000,
+    )
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac",
+        expires_at=1_700_002_000,
+        added_at=1_700_000_000,
+    )
+    poll_once(fake_client, db, config, 1_700_001_000)
+    remaining = {
+        r["rule_type"]
+        for r in db._conn.execute(
+            "SELECT rule_type FROM rule_type_snoozes"
+        ).fetchall()
+    }
+    assert remaining == {"watchlist_mac"}  # only the active one survives
+
+
+def test_poller_suppression_log_flushes_after_interval(db, config, fake_client, monkeypatch, caplog):
+    """The Poller emits the breakdown INFO line when
+    SUPPRESSION_LOG_INTERVAL_SECONDS has elapsed and the counter has
+    accumulated entries. We shrink the interval to 0 so a single
+    poll-tick is enough to trip the flush; the resulting log line
+    carries the rule_type breakdown."""
+    from lynceus import poller as poller_mod
+
+    monkeypatch.setattr(poller_mod, "SUPPRESSION_LOG_INTERVAL_SECONDS", 0)
+    rs = _apple_oui_ruleset()
+    db.add_rule_type_snooze(
+        rule_type="watchlist_oui",
+        expires_at=1_700_010_000,
+        added_at=1_700_001_000,
+    )
+
+    cfg = config.model_copy(
+        update={
+            "kismet_health_check_on_startup": False,
+            "rules_path": None,
+            "allowlist_path": None,
+        }
+    )
+    p = Poller(cfg)
+    try:
+        # Inject the test ruleset directly; the Poller's normal load
+        # path doesn't apply here.
+        p.ruleset = rs
+        # Anchor the cadence so any positive elapsed seconds will
+        # exceed the (now-zero) interval. Subsequent poll_once call
+        # will tick the in-process clock past it.
+        p._last_suppression_log_ts = 0
+        with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+            # Pump the gate path via direct poll_once: it accumulates
+            # into p._rule_type_suppression_counter, then we trigger
+            # the flush manually to keep the test independent of the
+            # internal run_forever loop machinery.
+            poll_once(
+                fake_client,
+                p.db,
+                cfg,
+                1_700_001_000,
+                ruleset=rs,
+                rule_type_suppression_counter=p._rule_type_suppression_counter,
+            )
+            p._maybe_flush_suppression_summary(now_ts=1_700_001_500)
+    finally:
+        p.db.close()
+
+    assert "rule_type snooze suppressed" in caplog.text
+    assert "watchlist_oui=1" in caplog.text
+
+
+def test_poller_suppression_log_skips_when_counter_empty(db, config, fake_client, monkeypatch, caplog):
+    """An idle hour (no suppressions) doesn't produce a log line —
+    only the cadence anchor moves forward. Avoids spamming journalctl
+    with '0 suppressed' lines."""
+    from lynceus import poller as poller_mod
+
+    monkeypatch.setattr(poller_mod, "SUPPRESSION_LOG_INTERVAL_SECONDS", 0)
+    cfg = config.model_copy(
+        update={
+            "kismet_health_check_on_startup": False,
+            "rules_path": None,
+            "allowlist_path": None,
+        }
+    )
+    p = Poller(cfg)
+    try:
+        p._last_suppression_log_ts = 0
+        with caplog.at_level(logging.INFO, logger="lynceus.poller"):
+            p._maybe_flush_suppression_summary(now_ts=1_700_001_500)
+    finally:
+        p.db.close()
+
+    assert "rule_type snooze suppressed" not in caplog.text
+    # And the cadence anchor advanced to "now" so we don't burst-log
+    # on the next non-empty counter.
+    assert p._last_suppression_log_ts == 1_700_001_500
