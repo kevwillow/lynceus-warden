@@ -35,6 +35,7 @@ from lynceus.allowlist import (
 )
 from lynceus.config import Config
 from lynceus.db import Database, RuleStats, WatchfulRecurrence
+from lynceus.patterns import mac_in_mac_range
 from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.pagination import build_pagination, parse_pagination
@@ -811,13 +812,14 @@ def _match_mac_in_entries(
     """Return the first entry whose pattern matches the MAC, respecting expiry.
 
     Webui-side counterpart to ``Allowlist.is_allowed`` for the alert-detail
-    lookup. Only MAC and OUI matches are considered: alerts do not carry
-    live SSID context, so an ``ssid``-type allowlist entry could not be
-    correctly evaluated against an alert without re-fetching the device's
-    last-known SSID — and the operator-intent of an SSID allowlist is
-    "this network", not "this device", so silently mis-attributing a
-    suppression that way would be worse than not matching at all.
-    Expired entries are skipped, mirroring poll-time semantics.
+    lookup. Matches ``mac``, ``oui``, and ``mac_range`` pattern types:
+    alerts do not carry live SSID / BLE / drone-id context, so the
+    remaining allowlist types cannot be evaluated against an alert
+    without re-fetching the device's last-known fields — and the
+    operator-intent of those types is "this network / this radio",
+    not "this device", so silently mis-attributing a suppression that
+    way would be worse than not matching at all. Expired entries are
+    skipped, mirroring poll-time semantics.
     """
     for entry in entries:
         if entry.expires_at is not None and entry.expires_at <= now_ts:
@@ -826,25 +828,29 @@ def _match_mac_in_entries(
             return entry
         if entry.pattern_type == "oui" and mac.startswith(entry.pattern + ":"):
             return entry
+        if entry.pattern_type == "mac_range" and mac_in_mac_range(mac, entry.pattern):
+            return entry
     return None
 
 
 def _load_actioned_patterns(
     config: Config,
     now_ts: int,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Active mac + oui allowlist patterns, merged across both files.
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Active mac + oui + mac_range allowlist patterns, merged across both files.
 
-    Returns ``(macs, oui_prefixes)``. Both lists are post-expiry --
-    snooze entries past their ``expires_at`` are skipped, mirroring
-    ``Allowlist.is_allowed`` and ``_match_mac_in_entries``. Only
-    ``pattern_type`` in {``mac``, ``oui``} contributes: alerts do not
-    carry live SSID / BLE / mac_range context, so other types cannot
-    be matched from ``alert.mac`` alone, and the alert-detail page's
-    `_match_mac_in_entries` documents the same scope. Extending to
-    ``mac_range`` is backlog (see BACKLOG.md) and must land in
-    lockstep with `_match_mac_in_entries` so the /alerts has_action
-    filter and the alert-detail "actioned" badge never disagree.
+    Returns ``(macs, oui_prefixes, mac_ranges)``. All three lists are
+    post-expiry -- snooze entries past their ``expires_at`` are
+    skipped, mirroring ``Allowlist.is_allowed`` and
+    ``_match_mac_in_entries``. ``pattern_type`` in {``mac``, ``oui``,
+    ``mac_range``} contributes: alerts do not carry live SSID / BLE /
+    drone-id context, so the remaining types cannot be matched from
+    ``alert.mac`` alone, and the alert-detail page's
+    ``_match_mac_in_entries`` documents the same scope. The /alerts
+    has_action filter consumes the third tuple via the SQL
+    ``mac_in_mac_range`` function registered on every Database
+    connection, so the SQL side and the alert-detail "actioned" badge
+    agree on which alerts a mac_range allowlist entry suppresses.
 
     Called only when has_action is engaged on the /alerts route --
     the default page request stays YAML-cost-free. Missing
@@ -852,7 +858,7 @@ def _load_actioned_patterns(
     (the alert-detail page handles those configurations the same way).
     """
     if not config.allowlist_path:
-        return (), ()
+        return (), (), ()
     primary_path = Path(config.allowlist_path)
     try:
         primary_entries = allowlist_mod._load_primary(primary_path).entries
@@ -861,6 +867,7 @@ def _load_actioned_patterns(
     ui_entries = allowlist_mod._load_ui_entries(derive_ui_path(primary_path))
     macs: list[str] = []
     ouis: list[str] = []
+    mac_ranges: list[str] = []
     for entry in list(primary_entries) + list(ui_entries):
         if entry.expires_at is not None and entry.expires_at <= now_ts:
             continue
@@ -868,7 +875,9 @@ def _load_actioned_patterns(
             macs.append(entry.pattern)
         elif entry.pattern_type == "oui":
             ouis.append(entry.pattern)
-    return tuple(macs), tuple(ouis)
+        elif entry.pattern_type == "mac_range":
+            mac_ranges.append(entry.pattern)
+    return tuple(macs), tuple(ouis), tuple(mac_ranges)
 
 
 def _resolve_allowlist_match(
@@ -1235,11 +1244,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
             has_action if has_action in ("with_action", "without_action") else None
         )
         if has_action_for_db is not None:
-            actioned_macs, actioned_oui_prefixes = _load_actioned_patterns(
-                app.state.config, now_ts
-            )
+            (
+                actioned_macs,
+                actioned_oui_prefixes,
+                actioned_mac_ranges,
+            ) = _load_actioned_patterns(app.state.config, now_ts)
         else:
-            actioned_macs, actioned_oui_prefixes = (), ()
+            actioned_macs, actioned_oui_prefixes, actioned_mac_ranges = (), (), ()
 
         # If both absolute since and relative window are provided,
         # combine them by taking the tighter lower bound. The DB
@@ -1274,6 +1285,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             has_action=has_action_for_db,
             actioned_macs=actioned_macs,
             actioned_oui_prefixes=actioned_oui_prefixes,
+            actioned_mac_ranges=actioned_mac_ranges,
         )
 
         pagination = build_pagination(requested_page, per_page, total_count)
@@ -1293,6 +1305,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "has_action": has_action_for_db,
                 "actioned_macs": actioned_macs,
                 "actioned_oui_prefixes": actioned_oui_prefixes,
+                "actioned_mac_ranges": actioned_mac_ranges,
             }
         )
         _enrich_alerts_with_devices(db, alerts)
@@ -1405,9 +1418,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
             else:
                 effective_since_ts = max(effective_since_ts, window_since_ts)
 
-        actioned_macs, actioned_oui_prefixes = _load_actioned_patterns(
-            app.state.config, now_ts
-        )
+        (
+            actioned_macs,
+            actioned_oui_prefixes,
+            actioned_mac_ranges,
+        ) = _load_actioned_patterns(app.state.config, now_ts)
         actioned_macs_set = frozenset(actioned_macs)
         watchful_macs = db.active_watchful_macs()
 
@@ -1423,6 +1438,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "has_action": has_action_for_db,
             "actioned_macs": actioned_macs,
             "actioned_oui_prefixes": actioned_oui_prefixes,
+            "actioned_mac_ranges": actioned_mac_ranges,
         }
 
         header = [
@@ -1458,6 +1474,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 return True
             for oui in actioned_oui_prefixes:
                 if mac.startswith(f"{oui}:"):
+                    return True
+            for pattern in actioned_mac_ranges:
+                if mac_in_mac_range(mac, pattern):
                     return True
             return False
 
@@ -1715,11 +1734,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
             has_action if has_action in ("with_action", "without_action") else None
         )
         if has_action_for_db is not None:
-            actioned_macs, actioned_oui_prefixes = _load_actioned_patterns(
-                app.state.config, now_ts
-            )
+            (
+                actioned_macs,
+                actioned_oui_prefixes,
+                actioned_mac_ranges,
+            ) = _load_actioned_patterns(app.state.config, now_ts)
         else:
-            actioned_macs, actioned_oui_prefixes = (), ()
+            actioned_macs, actioned_oui_prefixes, actioned_mac_ranges = (), (), ()
 
         effective_since_ts = since_ts
         if window_since_ts is not None:
@@ -1742,6 +1763,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             has_action=has_action_for_db,
             actioned_macs=actioned_macs,
             actioned_oui_prefixes=actioned_oui_prefixes,
+            actioned_mac_ranges=actioned_mac_ranges,
         )
         if total > 1000:
             raise HTTPException(
@@ -1765,6 +1787,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             has_action=has_action_for_db,
             actioned_macs=actioned_macs,
             actioned_oui_prefixes=actioned_oui_prefixes,
+            actioned_mac_ranges=actioned_mac_ranges,
         )
         ids = [a["id"] for a in candidate_alerts]
         actor = request.client.host if request.client else "unknown"

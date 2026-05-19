@@ -266,6 +266,26 @@ def canonicalize_mac_range_pattern(prefix_hex: str, length_bits: int) -> str:
     raise ValueError(f"unsupported mac_range length: {length_bits}")
 
 
+def mac_in_mac_range(mac: str, range_pattern: str) -> bool:
+    """Test whether a canonical observation MAC falls within a mac_range.
+
+    ``mac`` is the colon-separated lowercase form that
+    ``kismet.normalize_mac`` produces (e.g. ``'aa:bb:cc:dd:ee:ff'``).
+    ``range_pattern`` is any shape ``parse_mac_range_pattern`` accepts
+    (canonical CIDR, legacy bare). A malformed pattern returns False
+    rather than raising — both the live poll path (allowlist
+    ``_entry_matches``) and the SQLite-registered helper used by the
+    /alerts has_action filter need a non-crashing soft-fail when an
+    operator-curated YAML entry is malformed.
+    """
+    try:
+        prefix_hex, length = parse_mac_range_pattern(range_pattern)
+    except ValueError:
+        return False
+    nibbles = length // 4
+    return mac.replace(":", "")[:nibbles] == prefix_hex
+
+
 # ble_manufacturer_id parsing. Argus emits the Bluetooth SIG 16-bit
 # Company Identifier (Assigned Numbers, §2.1) in the canonical
 # '0x'-prefixed uppercase 4-hex-char form, e.g. '0x004C' (Apple) or

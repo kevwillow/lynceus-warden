@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from lynceus.kismet import DeviceObservation
 from lynceus.patterns import (
     canonicalize_mac_range_pattern,
+    mac_in_mac_range,
     normalize_pattern,
     parse_mac_range_pattern,
 )
@@ -130,23 +131,6 @@ class Allowlist(BaseModel):
         return None
 
 
-def _mac_in_range(mac: str, range_pattern: str) -> bool:
-    """Test whether a canonical observation MAC falls within a stored mac_range.
-
-    ``range_pattern`` is the canonical CIDR string written by
-    ``AllowlistEntry._normalize_pattern`` (e.g. ``'aa:bb:cc:d/28'``).
-    A malformed pattern that somehow survived validation returns False
-    rather than raising, matching the soft-fail posture the rest of
-    ``is_allowed`` takes (a broken entry must not crash the poll loop).
-    """
-    try:
-        prefix_hex, length = parse_mac_range_pattern(range_pattern)
-    except ValueError:
-        return False
-    nibbles = length // 4
-    return mac.replace(":", "")[:nibbles] == prefix_hex
-
-
 def _entry_matches(entry: AllowlistEntry, obs: DeviceObservation) -> bool:
     """Per-pattern_type predicate paired with ``rules.evaluate``.
 
@@ -165,7 +149,7 @@ def _entry_matches(entry: AllowlistEntry, obs: DeviceObservation) -> bool:
     if pt == "ssid":
         return obs.ssid is not None and obs.ssid == entry.pattern
     if pt == "mac_range":
-        return _mac_in_range(obs.mac, entry.pattern)
+        return mac_in_mac_range(obs.mac, entry.pattern)
     if pt == "ble_uuid":
         return entry.pattern in obs.ble_service_uuids
     if pt == "ble_manufacturer_id":
