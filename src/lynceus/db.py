@@ -358,6 +358,46 @@ class Database:
         self._migrations_dir = _find_migrations_dir()
         self._apply_migrations()
 
+    # Sentinel comment that marks an irreversible migration's down
+    # file. The rollback runner detects this string anywhere in the
+    # file body and treats the step as schema-version-bookkeeping-
+    # only: the migration's schema_migrations row is removed so the
+    # operator can continue rolling further back, but no SQL is
+    # executed and a WARNING is logged. See migration 010's down for
+    # the full rationale.
+    _IRREVERSIBLE_MARKER = "IRREVERSIBLE:"
+
+    @staticmethod
+    def _is_down_sql(path: Path) -> bool:
+        """True for files named ``NNN_<name>_down.sql``."""
+        return path.name.endswith("_down.sql")
+
+    def _iter_up_migration_files(self) -> list[Path]:
+        """Forward-apply targets: ``NNN_<name>.sql`` only.
+
+        Excludes the paired ``NNN_<name>_down.sql`` rollback files,
+        which would otherwise be picked up by the plain ``*.sql``
+        glob and applied as forward migrations — disastrous on a
+        fresh DB.
+        """
+        return sorted(
+            p for p in self._migrations_dir.glob("*.sql") if not self._is_down_sql(p)
+        )
+
+    def _down_sql_path_for(self, version: int) -> Path | None:
+        """Return the ``_down.sql`` paired with ``version``, or None.
+
+        Pairs by the leading numeric prefix in the filename: a down
+        file for version 011 is anything matching ``011_*_down.sql``.
+        The naming convention is ``NNN_<name>_down.sql`` to match the
+        forward file ``NNN_<name>.sql``.
+        """
+        prefix = f"{version:03d}_"
+        for path in self._migrations_dir.glob("*_down.sql"):
+            if path.name.startswith(prefix):
+                return path
+        return None
+
     def _apply_migrations(self) -> None:
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations("
@@ -366,7 +406,7 @@ class Database:
         )
         self._conn.commit()
         applied = {row[0] for row in self._conn.execute("SELECT version FROM schema_migrations")}
-        for sql_path in sorted(self._migrations_dir.glob("*.sql")):
+        for sql_path in self._iter_up_migration_files():
             version = int(sql_path.name.split("_", 1)[0])
             if version in applied:
                 continue
@@ -377,6 +417,108 @@ class Database:
                 (version, int(time.time())),
             )
             self._conn.commit()
+
+    def rollback_to(self, target_version: int) -> list[int]:
+        """Roll the DB back to ``target_version`` (exclusive-of-target).
+
+        Applies the paired ``_down.sql`` for every applied migration
+        whose version is strictly greater than ``target_version``, in
+        descending order. After each successful down apply, the
+        corresponding ``schema_migrations`` row is removed.
+
+        ``target_version=0`` rolls everything back, leaving an empty
+        DB except for the ``schema_migrations`` bookkeeping table.
+
+        Irreversible migrations (down files marked with
+        ``IRREVERSIBLE:``) are SKIPPED at the SQL layer: the runner
+        logs a WARNING explaining that the data state cannot be
+        recovered, removes the ``schema_migrations`` row anyway so
+        the rollback chain can continue, and proceeds. The operator
+        is expected to have restored from backup beforehand if the
+        data state matters.
+
+        Conditional-reverse migrations (the table-rebuild downs for
+        011, 013, 014, 019) raise ``sqlite3.IntegrityError`` if rows
+        of the now-disallowed type exist. That error propagates
+        unchanged; the current step's transaction is rolled back by
+        SQLite, no ``schema_migrations`` row is removed, and the
+        operator can either delete the offending rows or restore
+        from backup before re-invoking rollback.
+
+        Returns the ordered list of versions actually rolled back
+        (skipping versions for which no down file exists, with a
+        WARNING logged — that case is a packaging bug, not an
+        operator-facing situation).
+        """
+        if target_version < 0:
+            raise ValueError(f"target_version must be >= 0, got {target_version}")
+        applied = sorted(
+            (row[0] for row in self._conn.execute("SELECT version FROM schema_migrations")),
+            reverse=True,
+        )
+        to_roll_back = [v for v in applied if v > target_version]
+        rolled: list[int] = []
+        for version in to_roll_back:
+            down_path = self._down_sql_path_for(version)
+            if down_path is None:
+                logger.warning(
+                    "rollback: no _down.sql found for migration %03d; skipping. "
+                    "This is a packaging bug — every migration should ship a "
+                    "paired down file. Removing schema_migrations row anyway so "
+                    "the rollback chain can continue.",
+                    version,
+                )
+                self._conn.execute(
+                    "DELETE FROM schema_migrations WHERE version = ?", (version,)
+                )
+                self._conn.commit()
+                rolled.append(version)
+                continue
+            sql = down_path.read_text(encoding="utf-8")
+            if self._IRREVERSIBLE_MARKER in sql:
+                logger.warning(
+                    "rollback: migration %03d is IRREVERSIBLE (%s). The data "
+                    "state changed by this migration cannot be recovered from "
+                    "the current DB; if the original state matters, restore "
+                    "from a backup taken before %03d applied. Removing "
+                    "schema_migrations row so the chain continues; no SQL "
+                    "executed for this step.",
+                    version,
+                    down_path.name,
+                    version,
+                )
+                self._conn.execute(
+                    "DELETE FROM schema_migrations WHERE version = ?", (version,)
+                )
+                self._conn.commit()
+                rolled.append(version)
+                continue
+            try:
+                self._conn.executescript(sql)
+            except sqlite3.Error:
+                # SQLite already rolled back the offending transaction;
+                # surface the error to the caller. schema_migrations
+                # row stays in place (the migration is still applied).
+                logger.error(
+                    "rollback: SQL error applying %s; aborting at version %03d. "
+                    "Operator action required: see docs/CONFIGURATION.md "
+                    "rollback section.",
+                    down_path.name,
+                    version,
+                )
+                raise
+            self._conn.execute(
+                "DELETE FROM schema_migrations WHERE version = ?", (version,)
+            )
+            self._conn.commit()
+            rolled.append(version)
+        return rolled
+
+    def applied_versions(self) -> list[int]:
+        """Return the sorted ascending list of applied migration versions."""
+        return sorted(
+            row[0] for row in self._conn.execute("SELECT version FROM schema_migrations")
+        )
 
     def upsert_device(
         self,

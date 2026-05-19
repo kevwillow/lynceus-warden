@@ -1,17 +1,29 @@
-"""lynceus-validate — read-only configuration validator.
+"""lynceus-validate — configuration validator and migration rollback CLI.
 
-Reads (but never modifies) the four lynceus YAML files an operator may
-maintain — ``lynceus.yaml``, ``rules.yaml``, ``severity_overrides.yaml``,
-and ``allowlist.yaml`` (plus its daemon-managed ``allowlist_ui.yaml``
-sibling) — and reports schema errors, unknown keys, malformed values,
-and missing referenced paths. Wraps the existing loaders rather than
-re-implementing them so the diagnoses match what the daemon would hit
-at startup.
+Default subcommand (``validate``, also the no-subcommand invocation
+for backward compatibility) reads (but never modifies) the four
+lynceus YAML files an operator may maintain — ``lynceus.yaml``,
+``rules.yaml``, ``severity_overrides.yaml``, and ``allowlist.yaml``
+(plus its daemon-managed ``allowlist_ui.yaml`` sibling) — and
+reports schema errors, unknown keys, malformed values, and missing
+referenced paths. Wraps the existing loaders rather than
+re-implementing them so the diagnoses match what the daemon would
+hit at startup.
+
+The ``rollback`` subcommand reverses applied migrations on the
+SQLite DB down to a target version (exclusive-of-target). It
+applies the paired ``_down.sql`` files from
+``src/lynceus/migrations/`` in descending order and updates the
+``schema_migrations`` bookkeeping table. Irreversible migrations
+(e.g. data normalizations) are skipped with a logged warning;
+conditional-reverse migrations abort with an error if rows of the
+newly-disallowed type exist. See the project CHANGELOG and
+docs/CONFIGURATION.md for the operator-facing rollback flow.
 
 Exit codes are stable for CI / pre-commit hook use:
 - 0: no errors (warnings may exist)
-- 1: errors found
-- 2: tool-level failure (config dir unreachable, etc.)
+- 1: errors found (validate) / rollback aborted with SQL error
+- 2: tool-level failure (config dir unreachable, target invalid, etc.)
 
 Output is plain ASCII, no ANSI color, no emoji — parseable for grep /
 awk by operators in scripts. Where the daemon is lenient at runtime
@@ -988,15 +1000,107 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="lynceus-validate",
         description=(
-            "Read-only validator for Lynceus configuration files. "
-            "Checks lynceus.yaml, rules.yaml, severity_overrides.yaml, "
-            "and allowlist.yaml (plus the UI sibling) for schema "
-            "errors, unknown keys, malformed values, and missing "
-            "referenced paths. Reports per-file results to stdout. "
+            "Validator for Lynceus configuration files plus a "
+            "migration rollback subcommand. The default no-subcommand "
+            "invocation runs the config validator (read-only); the "
+            "'rollback' subcommand reverses applied DB migrations. "
             "Exit code 0 on success, 1 on errors, 2 on tool failure."
         ),
     )
     p.add_argument(
+        "--version",
+        action="version",
+        version=f"lynceus-validate {__version__}",
+    )
+
+    sub = p.add_subparsers(
+        dest="subcommand",
+        metavar="<subcommand>",
+        # NOT required: omitting the subcommand falls through to the
+        # legacy 'validate' default for backward compat with operator
+        # scripts that invoke `lynceus-validate --scope user --quiet`
+        # directly.
+        required=False,
+    )
+
+    # validate subcommand (and the legacy top-level invocation share
+    # these flags via _add_validate_args).
+    validate_sub = sub.add_parser(
+        "validate",
+        help="validate config files (default).",
+        description=(
+            "Read-only validator for Lynceus configuration files. "
+            "Checks lynceus.yaml, rules.yaml, severity_overrides.yaml, "
+            "and allowlist.yaml (plus the UI sibling) for schema "
+            "errors, unknown keys, malformed values, and missing "
+            "referenced paths. Reports per-file results to stdout."
+        ),
+    )
+    _add_validate_args(validate_sub)
+
+    # Top-level legacy flags — same as `validate` subparser. argparse
+    # routes `lynceus-validate --scope user` to the top-level parser
+    # (no subcommand), which we then treat as the validate default in
+    # main().
+    _add_validate_args(p)
+
+    rollback_sub = sub.add_parser(
+        "rollback",
+        help="reverse DB migrations down to a target version.",
+        description=(
+            "Reverse applied SQLite migrations down to the given "
+            "target version (exclusive-of-target). Applies the paired "
+            "_down.sql files in descending order. Irreversible "
+            "migrations are skipped with a logged warning; "
+            "conditional-reverse migrations abort if rows of the "
+            "newly-disallowed type exist (see CHANGELOG / "
+            "docs/CONFIGURATION.md). BACK UP YOUR DB FIRST."
+        ),
+    )
+    rollback_sub.add_argument(
+        "--target-version",
+        type=int,
+        required=True,
+        help=(
+            "roll back every migration with version > target-version. "
+            "0 rolls back everything (leaves an empty DB except the "
+            "schema_migrations bookkeeping table)."
+        ),
+    )
+    rollback_sub.add_argument(
+        "--db",
+        type=str,
+        default=None,
+        help=(
+            "path to the SQLite DB to roll back. Defaults to the "
+            "canonical path for --scope (user or system)."
+        ),
+    )
+    rollback_sub.add_argument(
+        "--scope",
+        choices=("user", "system"),
+        default="user",
+        help=(
+            "scope used to derive the default DB path when --db is "
+            "not given (default: %(default)s)."
+        ),
+    )
+    rollback_sub.add_argument(
+        "--yes",
+        action="store_true",
+        help=(
+            "skip the interactive confirmation prompt. Required for "
+            "non-tty / scripted use. Operator MUST have a recent backup."
+        ),
+    )
+    return p
+
+
+def _add_validate_args(parser: argparse.ArgumentParser) -> None:
+    """Shared between the top-level (legacy) parser and the explicit
+    ``validate`` subparser so both invocations accept identical flags.
+    """
+    parser.add_argument(
         "--scope",
         choices=("user", "system"),
         default="user",
@@ -1005,12 +1109,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "Matches lynceus-import-argus's scope-resolution convention."
         ),
     )
-    p.add_argument(
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="suppress OK and WARNING lines; print only ERRORs and the Summary.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help=(
@@ -1018,16 +1122,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "future color support."
         ),
     )
-    p.add_argument(
-        "--version",
-        action="version",
-        version=f"lynceus-validate {__version__}",
-    )
-    return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+def _run_validate(args: argparse.Namespace) -> int:
     try:
         reports = _collect_reports(args.scope)
     except ConfigDirUnreachable as exc:
@@ -1041,6 +1138,99 @@ def main(argv: list[str] | None = None) -> int:
         any(i.severity == "error" for i in r.issues) for r in reports
     )
     return 1 if has_errors else 0
+
+
+def _run_rollback(args: argparse.Namespace) -> int:
+    """Apply the rollback engine; print a short report to stdout."""
+    # Import locally so the validate path doesn't pay db.py's import
+    # cost (db.py pulls sqlite3, json, time, etc. — fine, but the
+    # validate subcommand should stay snappy in CI).
+    import sqlite3
+
+    from ..db import Database
+
+    if args.target_version < 0:
+        print(
+            f"lynceus-validate: rollback: --target-version must be >= 0, "
+            f"got {args.target_version}",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.db is not None:
+        db_path = args.db
+    else:
+        try:
+            data_dir = paths.default_data_dir(args.scope)
+        except (NotImplementedError, ValueError) as exc:
+            print(
+                f"lynceus-validate: rollback: cannot resolve default db path: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        db_path = str(data_dir / "lynceus.db")
+
+    if not Path(db_path).exists():
+        print(
+            f"lynceus-validate: rollback: db file not found: {db_path}",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print(
+                "lynceus-validate: rollback: stdin is not a tty and --yes "
+                "was not supplied; refusing to roll back without an "
+                "explicit confirmation.",
+                file=sys.stderr,
+            )
+            return 2
+        prompt = (
+            f"Rolling back migrations on {db_path} to version "
+            f"{args.target_version} (exclusive). This is destructive — "
+            f"data added by reversed migrations will be lost. Have you "
+            f"taken a backup? Type 'yes' to proceed: "
+        )
+        try:
+            response = input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nlynceus-validate: rollback: aborted by operator.", file=sys.stderr)
+            return 2
+        if response != "yes":
+            print("lynceus-validate: rollback: aborted (no confirmation).", file=sys.stderr)
+            return 2
+
+    db = Database(db_path)
+    try:
+        before = db.applied_versions()
+        try:
+            rolled = db.rollback_to(args.target_version)
+        except sqlite3.Error as exc:
+            print(
+                f"lynceus-validate: rollback: SQL error during rollback: "
+                f"{exc}. See log output above for the failing step.",
+                file=sys.stderr,
+            )
+            return 1
+        after = db.applied_versions()
+    finally:
+        db.close()
+
+    print(f"Rollback complete on {db_path}")
+    print(f"  Target version (exclusive): {args.target_version}")
+    print(f"  Applied versions before:    {before}")
+    print(f"  Applied versions after:     {after}")
+    print(f"  Versions rolled back:       {rolled}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    if getattr(args, "subcommand", None) == "rollback":
+        return _run_rollback(args)
+    # No subcommand or explicit `validate` -> run the validator.
+    return _run_validate(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

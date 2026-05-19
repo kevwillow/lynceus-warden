@@ -1,0 +1,23 @@
+-- IRREVERSIBLE: 010_normalize_watchlist_patterns.sql.
+--
+-- 010 ran a one-way UPDATE that case-folded watchlist.pattern and
+-- collapsed separators on rows where pattern_type IN
+-- ('mac','oui','ble_uuid'). The pre-normalization text is not
+-- recoverable from the post-normalization row — there is no
+-- forensic column to reverse from.
+--
+-- The rollback runner DETECTS this IRREVERSIBLE marker:
+--   1. Logs a WARNING naming this migration and explaining that
+--      the data state cannot be recovered.
+--   2. Removes the schema_migrations row for version 010 so the
+--      operator can roll back further past this point (e.g. to
+--      reverse 009 below it). The DB rows are NOT modified.
+--   3. Continues the rollback chain.
+--
+-- If the operator needs the pre-010 pattern text restored, they
+-- must restore from a backup taken before this migration applied.
+-- The DB file path is logged at every poller startup so a recent
+-- copy can be located; SQLite's `.backup` is the recommended
+-- snapshot tool.
+
+-- (Intentional empty body: the runner does not execute this file.)
