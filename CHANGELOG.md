@@ -8,6 +8,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Migration rollback paths (operator-facing, opt-in destructive
+  flow).** Every shipped DB migration (001..019) now ships a paired
+  `NNN_<name>_down.sql` rollback file alongside its forward
+  counterpart in `src/lynceus/migrations/`. A new
+  `lynceus-validate rollback --target-version N` subcommand walks
+  the applied chain in descending order, applying paired down files
+  and updating the `schema_migrations` bookkeeping table per step.
+  Defaults to the canonical DB path for `--scope user|system`; the
+  `--db PATH` override accepts an off-canonical install or a copy.
+  Interactive runs prompt for an explicit `yes` confirmation;
+  scripted/non-tty use requires `--yes`. The legacy no-subcommand
+  invocation (`lynceus-validate --scope user`) is preserved
+  verbatim for operator scripts. Three response classes: pure
+  CREATE→DROP migrations (001..004, 008, 012, 017, 018) reverse
+  cleanly; ADD COLUMN migrations (005, 006, 009, 015, 016) reverse
+  via a portable table-rebuild that preserves the pre-3.35-SQLite
+  floor; CHECK-relaxation migrations (011, 013, 014, 019) reverse
+  via a rebuild with the tighter CHECK and abort with
+  `CHECK constraint failed` if rows of the now-disallowed type
+  exist (operator deletes them or restores from backup and
+  re-runs). Migration 010 (`normalize_watchlist_patterns`) is
+  IRREVERSIBLE — its down file carries the sentinel comment
+  `IRREVERSIBLE:` which the runner detects: WARNING logged,
+  schema_migrations row removed so the chain can continue, no SQL
+  executed. **BACK UP YOUR DB BEFORE INVOKING ROLLBACK.** See
+  [docs/CONFIGURATION.md §Database migration rollback](docs/CONFIGURATION.md#database-migration-rollback)
+  for the full operator flow.
+
 - **`/watchlist.csv`: streaming CSV export of the filtered watchlist
   result set.** Sibling of `/alerts.csv` (below) on the watchlist
   surface. "Export CSV" link adjacent to the pagination summary on
