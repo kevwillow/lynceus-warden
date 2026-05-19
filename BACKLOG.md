@@ -147,6 +147,31 @@ allowlist" you review and accept rather than firing alerts on.
 
 ## Followups for technical debt
 
+### `mac_range` support in the alert-detail allowlist match and the `/alerts` has_action filter
+Both surfaces today only consider `pattern_type in ('mac', 'oui')`
+when deciding whether an alert is currently allowlisted/snoozed.
+`mac_range` is the other type that's matchable from `alert.mac`
+alone (prefix-bit comparison against the canonical
+`prefix_hex/length` form), so the gap is consistent but real:
+operators who use `mac_range` to allowlist a vendor block won't see
+their alerts flagged as actioned via the `has_action` filter and
+won't see the snooze/allowlist badge on the alert detail page.
+- **Trigger**: operator reports of unexpected "without action"
+  results on alerts whose MAC sits inside a mac_range allowlist
+  entry, OR before any UI promotion of mac_range entries (an
+  inconsistency between filter and detail page is worse than a
+  consistent omission).
+- **Estimated**: 1 prompt, ~30 LOC + tests. Single commit must
+  fix both surfaces in lockstep — `_match_mac_in_entries`
+  (`src/lynceus/webui/app.py`) AND the has_action filter's
+  `_load_actioned_patterns` helper. The `Allowlist._entry_matches`
+  helper already does the prefix-bit comparison for `mac_range`;
+  the two webui-side helpers just need to call it (or replicate
+  its `_mac_in_range` logic).
+- **Notes**: the existing `_match_mac_in_entries` docstring
+  documents the mac+oui scope as a deliberate omission — update
+  it when the gap closes.
+
 ### CSRF token rotation on session boundaries
 v0.2 ships a single token per cookie session (8 hours). Rotation on
 auth events comes when auth lands.

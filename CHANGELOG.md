@@ -8,6 +8,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/alerts` has_action filter: triage-state-aware dropdown.** Parallels
+  the rc6 `has_note` filter and closes the same loop on the other half
+  of the triage workflow: "alerts I've already taken an action on." The
+  dropdown — `any / with action taken / without action taken`, default
+  `any` — lives next to `has_note` in the filter form. An alert counts
+  as "actioned" when ANY of three signals applies: a per-alert snooze
+  (active mac/oui entry in `allowlist_ui.yaml`), a permanent allowlist
+  match (active mac/oui entry in `allowlist.yaml`), or watchful tracking
+  (the alert's MAC has a non-archived row in `watchful_recurrence`).
+  The watchful signal is mac-scoped (transitive) — every alert from a
+  MAC under an active watchful entry inherits the action status,
+  matching the actual suppression effect the operator opted into.
+  Expired snoozes are skipped, mirroring `Allowlist.is_allowed`'s
+  semantics: a lapsed snooze effectively reverts the alert to
+  "without action." `rule_type_snoozes` (migration 017) is
+  intentionally NOT in scope here — that surface is system-wide, not
+  per-alert engagement, so rule-type-snoozed alerts continue to show
+  as "without action." Notes are also out of scope — that's the
+  separate `has_note` filter, and the two compose for workflows like
+  `?has_action=with_action&has_note=without_note` ("actioned but
+  unannotated"). The filter composes with every existing `/alerts`
+  filter, drives pagination counts off the filtered set, and mirrors
+  cleanly into `/alerts/ack-all-visible` so bulk-ack never writes
+  against a different filter than the operator sees. Invalid values
+  silently fall back to `any` (no 400), matching the established
+  filter-input convention. The two allowlist YAML files are loaded
+  lazily — only when `has_action` is engaged — so the default
+  `/alerts` page stays YAML-cost-free. Allowlist pattern types other
+  than `mac` and `oui` are out of scope (alerts don't carry live
+  SSID/BLE/drone context); `mac_range` is matchable in principle and
+  is tracked as a follow-up that must extend both this filter and the
+  alert-detail `_match_mac_in_entries` helper in lockstep so the two
+  surfaces never disagree.
+
 - **Per-alert snooze: operator-pickable duration.** The snooze form
   on the alert detail page grows a duration selector offering five
   options — `1h / 24h / 7d / 30d / forever` — replacing the previous
