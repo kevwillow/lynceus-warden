@@ -736,3 +736,374 @@ def test_existing_v02_routes_still_render(tmp_path):
                 assert r.status_code == 200, f"{path} returned {r.status_code}"
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# /watchlist.csv -- streaming CSV export of the filtered watchlist.
+# ---------------------------------------------------------------------------
+
+import csv as _csv  # noqa: E402 -- top-of-section, self-contained
+import io as _io  # noqa: E402
+
+
+def _parse_csv_response(body: str) -> tuple[list[str], list[list[str]]]:
+    reader = _csv.reader(_io.StringIO(body))
+    rows = list(reader)
+    if not rows:
+        return [], []
+    return rows[0], rows[1:]
+
+
+_WATCHLIST_CSV_HEADER = [
+    "id",
+    "pattern",
+    "pattern_type",
+    "severity",
+    "description",
+    "mac_range_prefix",
+    "mac_range_prefix_length",
+    "argus_record_id",
+    "device_category",
+    "confidence",
+    "vendor",
+    "source",
+    "source_url",
+    "source_excerpt",
+    "fcc_id",
+    "geographic_scope",
+    "first_seen_iso_utc",
+    "first_seen_unix",
+    "last_verified_iso_utc",
+    "last_verified_unix",
+    "notes",
+]
+
+
+@pytest.mark.webui
+def test_watchlist_csv_returns_200_with_content_type_and_disposition(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "med", "row")
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv")
+        assert r.status_code == 200
+        assert "text/csv" in r.headers["content-type"]
+        cd = r.headers["content-disposition"]
+        assert cd.startswith('attachment; filename="watchlist-')
+        assert cd.endswith('Z.csv"')
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_filename_is_iso_utc_timestamped(tmp_path):
+    import re
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv")
+        cd = r.headers["content-disposition"]
+        m = re.search(r'filename="watchlist-(\d{8}T\d{6}Z)\.csv"', cd)
+        assert m is not None, f"filename did not match expected shape: {cd}"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_header_row_columns_stable_order(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv")
+        header, _ = _parse_csv_response(r.text)
+        assert header == _WATCHLIST_CSV_HEADER
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_empty_db_returns_header_only(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv")
+        assert r.status_code == 200
+        header, data_rows = _parse_csv_response(r.text)
+        assert header == _WATCHLIST_CSV_HEADER
+        assert data_rows == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_emits_one_row_per_entry(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "high", "a")
+        _add_watchlist(db, "aa:bb:cc:dd:ee:02", "mac", "med", "b")
+        _add_watchlist(db, "aa:bb:cc:dd:ee:03", "mac", "low", "c")
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 3
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_respects_pattern_type_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "med", "mac-row")
+        _add_watchlist(db, "DangerSSID", "ssid", "med", "ssid-row")
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv?pattern_type=mac")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        # pattern_type is column index 2
+        assert data_rows[0][2] == "mac"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_respects_severity_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "high", "high-row")
+        _add_watchlist(db, "aa:bb:cc:dd:ee:02", "mac", "low", "low-row")
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv?severity=high")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        # severity column index 3
+        assert data_rows[0][3] == "high"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_respects_device_category_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        wid1 = _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "med", "x")
+        _add_meta(db, wid1, device_category="lpr")
+        wid2 = _add_watchlist(db, "aa:bb:cc:dd:ee:02", "mac", "med", "y")
+        _add_meta(db, wid2, device_category="surveillance_camera")
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv?device_category=lpr")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        # device_category index 8
+        assert data_rows[0][8] == "lpr"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_respects_q_substring_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        wid1 = _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "med", "x")
+        _add_meta(db, wid1, vendor="Acme Surveillance")
+        wid2 = _add_watchlist(db, "11:22:33:44:55:66", "mac", "med", "y")
+        _add_meta(db, wid2, vendor="Globex Corp")
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv?q=acme")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        # vendor column index 10
+        assert "Acme" in data_rows[0][10]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_composes_multiple_filters(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        wid1 = _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "high", "match")
+        _add_meta(db, wid1, vendor="Acme")
+        _add_watchlist(db, "aa:bb:cc:dd:ee:02", "mac", "low", "wrong-severity")
+        wid3 = _add_watchlist(db, "DangerNet", "ssid", "high", "wrong-type")
+        _add_meta(db, wid3, vendor="Acme")
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv?pattern_type=mac&severity=high&q=acme")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        # pattern column index 1
+        assert data_rows[0][1] == "aa:bb:cc:dd:ee:01"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_includes_full_metadata_join(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        wid = _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "high", "full row")
+        _add_meta(
+            db,
+            wid,
+            argus_record_id="argus-007",
+            device_category="lpr",
+            confidence=85,
+            vendor="Acme",
+            source="vendor_docs",
+            source_url="https://example.com/d",
+            source_excerpt="A short excerpt.",
+            fcc_id="ABC1234XYZ",
+            geographic_scope="US-CA",
+            first_seen=1_700_000_000,
+            last_verified=1_700_500_000,
+            notes="some_internal_notes",
+        )
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        row = data_rows[0]
+        # Header indexes from _WATCHLIST_CSV_HEADER above.
+        assert row[1] == "aa:bb:cc:dd:ee:01"  # pattern
+        assert row[7] == "argus-007"  # argus_record_id
+        assert row[8] == "lpr"  # device_category
+        assert row[9] == "85"  # confidence
+        assert row[10] == "Acme"  # vendor
+        assert row[11] == "vendor_docs"  # source
+        assert row[12] == "https://example.com/d"  # source_url
+        assert row[13] == "A short excerpt."  # source_excerpt
+        assert row[14] == "ABC1234XYZ"  # fcc_id
+        assert row[15] == "US-CA"  # geographic_scope
+        # first_seen_iso_utc / first_seen_unix / last_verified_iso_utc / last_verified_unix
+        assert row[16] == "2023-11-14T22:13:20Z"
+        assert row[17] == "1700000000"
+        assert row[18] == "2023-11-20T17:06:40Z"
+        assert row[19] == "1700500000"
+        assert row[20] == "some_internal_notes"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_no_metadata_row_renders_empty_join_cells(tmp_path):
+    # LEFT JOIN: a watchlist row without a watchlist_metadata partner
+    # must still appear, with empty cells for the join columns
+    # (no "None" string, no "null").
+    app, db = _make_app(tmp_path)
+    try:
+        _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "high", "bare row")
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        row = data_rows[0]
+        assert row[1] == "aa:bb:cc:dd:ee:01"
+        # All metadata-join cells are empty strings.
+        for idx in range(7, 21):
+            assert row[idx] == ""
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_is_a_streaming_response(tmp_path):
+    from starlette.responses import StreamingResponse
+    from starlette.requests import Request
+
+    app, db = _make_app(tmp_path)
+    try:
+        route = next(r for r in app.routes if getattr(r, "path", None) == "/watchlist.csv")
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/watchlist.csv",
+            "query_string": b"",
+            "headers": [],
+            "app": app,
+        }
+        req = Request(scope=scope)
+        resp = route.endpoint(
+            request=req,
+            q=None, pattern_type=None, severity=None, device_category=None,
+        )
+        assert isinstance(resp, StreamingResponse)
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_link_visible_on_list_page(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/watchlist")
+        assert r.status_code == 200
+        assert "/watchlist.csv" in r.text
+        assert "Export CSV" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_link_passes_through_query_string(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/watchlist?pattern_type=mac&severity=high")
+        assert r.status_code == 200
+        assert "/watchlist.csv?pattern_type=mac" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_invalid_pattern_type_silently_falls_back(tmp_path):
+    # Mirrors the list-route clamp posture: invalid pattern_type
+    # -> silent fallback to "all", export returns 200 with all rows.
+    app, db = _make_app(tmp_path)
+    try:
+        _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "med", "x")
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv?pattern_type=bogus")
+        assert r.status_code == 200
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_q_too_long_returns_400(tmp_path):
+    # Same input-validation posture as the list route.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/watchlist.csv?q={'x' * 101}")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_csv_xss_field_values_csv_escaped(tmp_path):
+    # csv.writer applies QUOTE_MINIMAL: cells containing special
+    # CSV chars (comma, quote, newline) are properly escaped. No
+    # HTML escaping needed in CSV output, but we verify no naive
+    # string corruption either.
+    app, db = _make_app(tmp_path)
+    try:
+        wid = _add_watchlist(
+            db, "aa:bb:cc:dd:ee:01", "mac", "med",
+            'descr,with,commas and "quotes" inside',
+        )
+        _add_meta(db, wid, notes="line1\nline2 with comma, end")
+        with TestClient(app) as client:
+            r = client.get("/watchlist.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        # csv.reader round-trips QUOTE_MINIMAL cleanly: data_rows[0][4]
+        # is the original description string.
+        assert data_rows[0][4] == 'descr,with,commas and "quotes" inside'
+        # notes column index 20
+        assert data_rows[0][20] == "line1\nline2 with comma, end"
+    finally:
+        db.close()
