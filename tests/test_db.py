@@ -167,7 +167,10 @@ def test_migrations_dir_found_via_package_resources(db):
 
 
 def test_migrations_dir_lists_both_files(db):
-    names = sorted(p.name for p in db._migrations_dir.glob("*.sql"))
+    # Forward (up) migration files only — _down.sql siblings are
+    # filtered out by _iter_up_migration_files. Pin the exact list
+    # so a renamed / missing forward file regresses loudly.
+    names = sorted(p.name for p in db._iter_up_migration_files())
     assert names == [
         "001_initial.sql",
         "002_poller_state.sql",
