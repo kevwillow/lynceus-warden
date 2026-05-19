@@ -58,6 +58,33 @@ Re-emits hunter alerts to Lynceus ntfy topic. Independent module under
   the hunter is operational means the integration drifts out of sync with
   Rayhunter/Crocodile Hunter releases before it's ever exercised.
 
+### L-RULES-10: SSID case/whitespace handling for the `ssid` pattern_type
+The existing exact-match `ssid` pattern_type (case-sensitive per
+IEEE 802.11) deliberately does NOT case-fold or strip whitespace. The
+new `ssid_pattern` pattern_type (rc6, migration 019) is case-
+insensitive substring; that scope intentionally does not retroactively
+change `ssid`. If operators report missed alerts due to case drift on
+exact watchlist entries (vs. observed SSIDs from the same vendor), the
+fix would be either: (a) normalize at write time (would change stored
+data — needs migration), or (b) normalize at match time (preserve
+stored data, fold at lookup — symmetric to the ssid_pattern matcher).
+- **Trigger**: operator reports of missed exact-ssid alerts traced to
+  case mismatch between watchlist entry and Kismet observation.
+- **Estimated**: 1 prompt, ~30 LOC + tests + migration if (a) wins.
+- **Notes**: ssid_pattern covers the substring-with-case-insensitivity
+  use case already, so the remaining gap is narrow. Default to deferral
+  until a real miss is observed.
+
+### Argus data quality observations relayed upstream
+The 2026-05-17 Argus export contains a `'Flock-*'` row typed as
+`ssid_exact` (almost certainly should be `ssid_pattern`) and duplicate
+`'Flock'` + `'Flock-230503'` rows differing only in `device_category`.
+The importer warns on wildcards and lets dedup collapse the duplicates,
+but the upstream curation is what would fix this cleanly. Forward via
+the Argus issue tracker when convenient; the next Argus refresh after
+the fix will pick it up naturally and the lynceus-side warning counter
+should drop to zero.
+
 ### BLE 16-bit short UUID expansion
 Extend `normalize_uuid` to accept 16-bit shorts and expand to full 128-bit
 form via the standard base UUID (`0000XXXX-0000-1000-8000-00805F9B34FB`).
