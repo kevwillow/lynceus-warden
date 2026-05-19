@@ -94,11 +94,19 @@ rules:
   #   patterns: []
   #   description: "Argus + bundled OUI watchlist"
   #
-  # - name: argus_ssid
-  #   rule_type: watchlist_ssid
-  #   severity: low  # ignored — actual severity comes from the matched row
-  #   patterns: []
-  #   description: "Argus + bundled SSID watchlist"
+  # argus_ssid below is enabled by default in rc6+: the bundled
+  # default_watchlist.csv now ships with Argus SSID rows (5 ssid_exact
+  # + 5 ssid_pattern at the 2026-05-17 snapshot, all Flock-related),
+  # so the rule produces real alerts out of the box. The
+  # watchlist_ssid DB-delegation branch dispatches BOTH pattern_types:
+  # 'ssid' (case-sensitive exact match) consulted first, then
+  # 'ssid_pattern' (case-insensitive substring) as a fallback.
+  # Operators see one rule_type; the DB carries both shapes.
+  - name: argus_ssid
+    rule_type: watchlist_ssid
+    severity: low  # ignored — actual severity comes from the matched row
+    patterns: []
+    description: "Argus + bundled SSID watchlist (exact + substring)"
   #
   # - name: argus_ble_uuid
   #   rule_type: ble_uuid

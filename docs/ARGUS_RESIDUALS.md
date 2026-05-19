@@ -6,8 +6,14 @@ Snapshot mtime: 2026-05-18T00:37:55Z
 Argus schema_version: 21
 Argus record_count (meta): 22533
 Total CSV rows: 22533
-Currently admitted: 22311 (99.0%)
-Currently dropped (unknown_type): 222 (1.0%) across 29 distinct residual types
+Currently admitted: 22316 (99.0%)
+Currently dropped (unknown_type): 217 (1.0%) across 28 distinct residual types
+
+Refresh note (2026-05-18, rc6): `ssid_pattern` was admitted in this
+cycle (migration 019 + the case-insensitive substring matcher in
+``db.resolve_matched_ssid_pattern_for_eval``), moving 5 rows from
+defer-pending-smoke to admit. Numbers below reflect the post-admit
+counts.
 
 ## Per-type breakdown
 
@@ -21,7 +27,7 @@ Currently dropped (unknown_type): 222 (1.0%) across 29 distinct residual types
 | `asdstan_enum_value` | 14 | `asdstan_id_type_values.0=None`, `asdstan_id_type_values.1=Serial Number`, `asdstan_id_type_values.2=CAA-assigned registration ID`, `asdstan_height_type_enum.0=Above take-off`, `asdstan_height_type_enum.1=AGL` | no-observation-surface | drop-entirely |
 | `alpr_model` | 11 | `builtin-generic-alpr`, `builtin-flock`, `builtin-motorola`, `builtin-genetec`, `builtin-leonardo` | no-observation-surface | drop-entirely |
 | `asdstan_message_type` | 7 | `asdstan_msg_type_0`, `asdstan_msg_type_1`, `asdstan_msg_type_2`, `asdstan_msg_type_3`, `asdstan_msg_type_4` | no-observation-surface | drop-entirely |
-| `ssid_pattern` | 5 | `flock`, `Flock`, `FLOCK`, `FS Ext Battery`, `Penguin` | plausible-needs-smoke | defer-pending-smoke |
+| `ssid_pattern` | 5 | `flock`, `Flock`, `FLOCK`, `FS Ext Battery`, `Penguin` | verified-lynceus | admit (rc6: migration 019) |
 | `ble_protocol_byte` | 4 | `0x07`, `0x12`, `0x19`, `0x0A` | plausible-needs-smoke | drop-entirely |
 | `firmware_sha256_hash` | 4 | `8bcdd2fd8042ba91af2e94db044f301a293936980821a23564a85dfae41a7b12`, `08da4991581076e2d0b3be87c377c177d955d55c92be8ecee66e586181293a2f`, `dede8a4976eee00e464f6e7c301b291954e7941951fdcf23642613912a94bca7`, `0e03a8189b7451d1bb81d6fb10efbcefd399623edcb015af45008eedf8fd1298` | no-observation-surface | drop-entirely |
 | `frequency_band` | 4 | `GSM900`, `DCS1800`, `GSM850`, `PCS1900` | no-observation-surface | drop-entirely |
@@ -55,7 +61,7 @@ Detailed surface rationale for each residual type. The table above shows the cla
 - **`asdstan_enum_value`** (no-observation-surface): ASD-STAN F3411 enum descriptor (e.g. ``asdstan_id_type_values.0=None``) — Remote-ID taxonomy spec value, not a runtime field.
 - **`alpr_model`** (no-observation-surface): Argus-internal ALPR model identifier (``builtin-flock``, ``builtin-motorola``) — taxonomy metadata; no equivalent in Kismet emissions.
 - **`asdstan_message_type`** (no-observation-surface): ASD-STAN F3411 message-type descriptor — Remote-ID spec taxonomy, not a runtime field.
-- **`ssid_pattern`** (plausible-needs-smoke): Case-insensitive / substring SSID match — Kismet emits SSIDs in standard fields and Lynceus already extracts them, but watchlist match semantics differ from the existing exact-match ``ssid`` pattern_type and would require a new matcher in ``rules.py``.
+- **`ssid_pattern`** (admitted rc6): Case-insensitive substring SSID match. Kismet already emits SSIDs and Lynceus already extracts them; the matcher landed in rc6 as ``db.resolve_matched_ssid_pattern_for_eval`` (case-insensitive substring via ``COLLATE NOCASE``), dispatched alongside the exact-match ``ssid`` type under the same ``watchlist_ssid`` rule_type. Migration 019 extended the ``pattern_type`` CHECK constraint to admit the new type. L-RULES-10 (case/whitespace folding for the existing ``ssid`` type) remains deferred — case-insensitivity is scoped to ``ssid_pattern`` only.
 - **`ble_protocol_byte`** (plausible-needs-smoke): Single BLE protocol byte — same observation surface as ``ble_protocol_byte_table``, smaller value cardinality.
 - **`firmware_sha256_hash`** (no-observation-surface): Firmware binary hash — static spec metadata from image inspection, never broadcast.
 - **`frequency_band`** (no-observation-surface): Cellular band label (``GSM900``, ``DCS1800``) — Kismet does not emit a band-label field; closest is per-device frequency in MHz, which carries different semantics.
@@ -79,9 +85,9 @@ Detailed surface rationale for each residual type. The table above shows the cla
 
 ## Summary
 
-- **admit**: 0 type(s), 0 row(s)
+- **admit**: 1 type(s), 5 row(s)  *(rc6: ssid_pattern admitted via migration 019)*
 - **admit-via-normalization**: 0 type(s), 0 row(s)
-- **defer-pending-smoke**: 2 type(s), 21 row(s)
+- **defer-pending-smoke**: 1 type(s), 16 row(s)
 - **drop-entirely**: 27 type(s), 201 row(s)
 - **needs-classification**: 0 type(s), 0 row(s)
 
