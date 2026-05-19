@@ -14,6 +14,7 @@ import pytest
 
 from lynceus.patterns import (
     canonicalize_mac_range_pattern,
+    mac_in_mac_range,
     normalize_pattern,
     parse_mac_range_pattern,
 )
@@ -461,3 +462,49 @@ def test_normalize_drone_id_prefix_rejects_non_ascii():
     """Non-ASCII characters are not valid ANSI/CTA-2063-A serial chars."""
     with pytest.raises(ValueError, match="ASCII alphanumeric"):
         normalize_pattern("drone_id_prefix", "ABCDé")
+
+
+# ------------------------------ mac_in_mac_range -----------------------------
+#
+# The public helper backs both the allowlist live-poll match path
+# (allowlist._entry_matches) AND the /alerts has_action filter's SQL
+# function (registered on every Database connection). Same body in both
+# places, so a regression here breaks both surfaces.
+
+
+def test_mac_in_mac_range_28_bit_canonical_cidr_match():
+    """Canonical CIDR form: the first 7 hex nibbles of the MAC equal
+    the prefix."""
+    assert mac_in_mac_range("aa:bb:cc:d3:00:01", "aa:bb:cc:d/28") is True
+
+
+def test_mac_in_mac_range_28_bit_legacy_bare_match():
+    """Legacy bare-prefix form: parser infers /28 from the 4-group shape."""
+    assert mac_in_mac_range("aa:bb:cc:d3:00:01", "aa:bb:cc:d") is True
+
+
+def test_mac_in_mac_range_36_bit_canonical_cidr_match():
+    """/36: the first 9 hex nibbles of the MAC equal the prefix."""
+    assert mac_in_mac_range("aa:bb:cc:dd:e7:01", "aa:bb:cc:dd:e/36") is True
+
+
+def test_mac_in_mac_range_36_bit_legacy_bare_match():
+    """Legacy bare-prefix /36."""
+    assert mac_in_mac_range("aa:bb:cc:dd:e7:01", "aa:bb:cc:dd:e") is True
+
+
+def test_mac_in_mac_range_28_bit_non_match():
+    """A MAC outside the /28 prefix nibble does not match."""
+    assert mac_in_mac_range("aa:bb:cc:e3:00:01", "aa:bb:cc:d/28") is False
+
+
+def test_mac_in_mac_range_36_bit_non_match():
+    """A MAC with matching /28 but different 9th nibble does not /36-match."""
+    assert mac_in_mac_range("aa:bb:cc:dd:f7:01", "aa:bb:cc:dd:e/36") is False
+
+
+def test_mac_in_mac_range_malformed_pattern_returns_false():
+    """Soft-fail posture matches the live-poll path: a malformed entry
+    must not crash the SQL function or the per-row matcher."""
+    assert mac_in_mac_range("aa:bb:cc:d3:00:01", "garbage/24") is False
+    assert mac_in_mac_range("aa:bb:cc:d3:00:01", "") is False

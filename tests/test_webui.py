@@ -4787,13 +4787,21 @@ def _seed_alert_with_device(db, mac, message, *, ts=100, severity="low"):
     )
 
 
-def _write_allowlist_primary(primary_path, *, macs=(), ouis=()):
-    """Compose an allowlist.yaml with the given mac/oui entries."""
+def _write_allowlist_primary(primary_path, *, macs=(), ouis=(), mac_ranges=()):
+    """Compose an allowlist.yaml with the given mac/oui/mac_range entries.
+
+    Patterns are emitted quoted -- e.g. the OUI '11:22:33' parses as
+    a sexagesimal integer (40953) when YAML's default scalar
+    resolver sees it bare. Quoting forces the string scalar so the
+    allowlist loader sees the operator-intended pattern verbatim.
+    """
     lines = ["entries:\n"]
     for m in macs:
-        lines.append(f"  - pattern: {m}\n    pattern_type: mac\n")
+        lines.append(f'  - pattern: "{m}"\n    pattern_type: mac\n')
     for o in ouis:
-        lines.append(f"  - pattern: {o}\n    pattern_type: oui\n")
+        lines.append(f'  - pattern: "{o}"\n    pattern_type: oui\n')
+    for r in mac_ranges:
+        lines.append(f'  - pattern: "{r}"\n    pattern_type: mac_range\n')
     primary_path.write_text("".join(lines), encoding="utf-8")
 
 
@@ -5116,6 +5124,176 @@ def test_alerts_has_action_default_does_not_require_allowlist_path(tmp_path):
             r2 = client.get("/alerts?has_action=all")
         assert r.status_code == 200
         assert r2.status_code == 200
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# mac_range parity: has_action filter + alert-detail "actioned" badge
+# must agree about mac_range allowlist entries. Lockstep with
+# _match_mac_in_entries -- a regression here means a single feature is
+# broken on two surfaces.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_narrows_to_mac_range_allowlisted(tmp_path):
+    """A mac_range entry in the primary allowlist.yaml makes alerts
+    whose MAC falls inside the /28 prefix 'actioned' under with_action."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, mac_ranges=["aa:bb:cc:d/28"])
+        # In-range MAC: first 7 nibbles match "aabbccd".
+        _seed_alert_with_device(db, "aa:bb:cc:d3:00:01", "msg-in-range", ts=100)
+        # Out-of-range MAC: 4th nibble differs.
+        _seed_alert_with_device(db, "aa:bb:cc:e3:00:01", "msg-out-of-range", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-in-range" in r.text
+        assert "msg-out-of-range" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_narrows_to_mac_range_snoozed_rows(tmp_path):
+    """A mac_range entry in the UI-side allowlist sibling (snooze
+    pathway) with a future expires_at counts as actioned while active."""
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        ui_path = derive_ui_path(primary)
+        now_ts = int(_time.time())
+        add_ui_entry(ui_path, AllowlistEntry(
+            pattern="aa:bb:cc:d/28",
+            pattern_type="mac_range",
+            expires_at=now_ts + 86400,
+            added_at=now_ts,
+        ))
+        _seed_alert_with_device(db, "aa:bb:cc:d3:00:01", "msg-snoozed-range", ts=100)
+        _seed_alert_with_device(db, "11:22:33:44:55:66", "msg-other", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-snoozed-range" in r.text
+        assert "msg-other" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_without_action_excludes_mac_range_match(tmp_path):
+    """The complementary path: an alert whose MAC matches an
+    allowlist mac_range entry must NOT appear under without_action."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, mac_ranges=["aa:bb:cc:d/28"])
+        _seed_alert_with_device(db, "aa:bb:cc:d3:00:01", "msg-in-range", ts=100)
+        _seed_alert_with_device(db, "11:22:33:44:55:66", "msg-no-signal", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=without_action")
+        assert r.status_code == 200
+        assert "msg-in-range" not in r.text
+        assert "msg-no-signal" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_36_bit_mac_range_match(tmp_path):
+    """/36 mac_range patterns work end-to-end: the SQL function
+    handles both admitted prefix lengths, not just /28."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, mac_ranges=["aa:bb:cc:dd:e/36"])
+        # In /36 range: first 9 nibbles "aabbccdde".
+        _seed_alert_with_device(db, "aa:bb:cc:dd:e7:01", "msg-in-36", ts=100)
+        # Out of /36: 9th nibble differs (still in /28 but the /36 narrows).
+        _seed_alert_with_device(db, "aa:bb:cc:dd:f7:01", "msg-out-of-36", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-in-36" in r.text
+        assert "msg-out-of-36" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_existing_mac_oui_signals_unchanged_with_mac_range_helper(tmp_path):
+    """Regression pin: mac and oui matching must still work exactly
+    the same after the mac_range extension. The third tuple is
+    additive; the first two paths are byte-identical to pre-feature
+    behavior."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        # All three pattern types in one allowlist; only the mac
+        # signal hits the first alert, only the oui signal hits the
+        # second, only the mac_range signal hits the third.
+        _write_allowlist_primary(
+            primary,
+            macs=["aa:bb:cc:dd:ee:01"],
+            ouis=["11:22:33"],
+            mac_ranges=["44:55:66:7/28"],
+        )
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-mac", ts=100)
+        _seed_alert_with_device(db, "11:22:33:44:55:66", "msg-oui", ts=101)
+        _seed_alert_with_device(db, "44:55:66:73:00:01", "msg-range", ts=102)
+        _seed_alert_with_device(db, "ff:ee:dd:cc:bb:aa", "msg-no-signal", ts=103)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-mac" in r.text
+        assert "msg-oui" in r.text
+        assert "msg-range" in r.text
+        assert "msg-no-signal" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_state2_mac_range_primary_match_shows_allowlisted(tmp_path):
+    """Alert-detail page: a primary-file mac_range entry whose prefix
+    covers the alert MAC renders the Allowlisted status. Mirrors the
+    has_action SQL-side result; they must never disagree about a
+    given alert."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        primary.write_text(
+            "entries:\n  - pattern: aa:bb:cc:d/28\n    pattern_type: mac_range\n",
+            encoding="utf-8",
+        )
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:d3:00:01")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Allowlisted" in r.text
+        # Primary-file entries are not UI-removable.
+        assert "Remove from allowlist" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_state2_mac_range_non_match_does_not_show_allowlisted(tmp_path):
+    """Negative pin: an alert MAC outside the mac_range prefix must
+    render WITHOUT the Allowlisted status, so the operator can still
+    triage it."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        primary.write_text(
+            "entries:\n  - pattern: aa:bb:cc:d/28\n    pattern_type: mac_range\n",
+            encoding="utf-8",
+        )
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:e3:00:01")  # outside /28
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Allowlisted" not in r.text
     finally:
         db.close()
 
