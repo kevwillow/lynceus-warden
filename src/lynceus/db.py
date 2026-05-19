@@ -812,6 +812,69 @@ class Database:
             return None
         return self._lookup_simple_watchlist_match("ssid", ssid)
 
+    def resolve_matched_ssid_pattern_for_eval(
+        self, ssid: str | None
+    ) -> ResolvedWatchlistMatch | None:
+        """Watchlist row for a case-insensitive substring SSID match, or None.
+
+        Sibling to ``resolve_matched_ssid_for_eval`` for the
+        ``ssid_pattern`` pattern_type (Argus's identifier_type by the
+        same name; aliased one-to-one at import). The observation's
+        SSID is the haystack; the watchlist row's ``pattern`` column
+        is the substring needle. ``COLLATE NOCASE`` provides the
+        ASCII-insensitive matching SQLite documents for LIKE (and
+        makes the intent self-documenting in case
+        ``PRAGMA case_sensitive_like`` is ever flipped elsewhere).
+
+        Defensive ``pattern != ''`` filter: an empty needle would
+        match every observation. Belt-and-suspenders alongside the
+        Python-side falsy short-circuit (the empty pattern still
+        survives the importer's ``not raw_pattern`` check only if
+        somehow injected later — guard against the hypothetical).
+
+        Used by rules.evaluate's watchlist_ssid branch as a fallback
+        after the exact ssid lookup misses. Severity is sourced from
+        the matched row (same convention as the exact path).
+
+        LIKE wildcard chars (``%``, ``_``) in stored patterns: not
+        escaped. SSIDs containing those chars as literals are
+        vanishingly rare in practice, and any false-positive widening
+        is bounded by the existing watchlist row set (operator-curated
+        or Argus-imported). If this surfaces as a real problem, the
+        fix is at write time (escape on insert) rather than read
+        time.
+        """
+        if not ssid:
+            return None
+        row = self._conn.execute(
+            "SELECT w.id AS id, w.severity AS severity, "
+            "m.device_category AS device_category, "
+            "m.vendor AS manufacturer, "
+            "m.argus_record_id AS argus_record_id "
+            "FROM watchlist w "
+            "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
+            "WHERE w.pattern_type = 'ssid_pattern' "
+            "AND w.pattern != '' "
+            "AND ? LIKE '%' || w.pattern || '%' COLLATE NOCASE "
+            "LIMIT 1",
+            (ssid,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ResolvedWatchlistMatch(
+            watchlist_id=int(row["id"]),
+            severity=str(row["severity"]),
+            device_category=(
+                str(row["device_category"]) if row["device_category"] is not None else None
+            ),
+            manufacturer=(
+                str(row["manufacturer"]) if row["manufacturer"] is not None else None
+            ),
+            argus_record_id=(
+                str(row["argus_record_id"]) if row["argus_record_id"] is not None else None
+            ),
+        )
+
     def resolve_matched_ble_uuid_for_eval(
         self, uuids: tuple[str, ...] | list[str]
     ) -> ResolvedWatchlistMatch | None:
