@@ -267,6 +267,7 @@ class ImportReport:
     dropped_unknown_type: int = 0
     dropped_low_confidence: int = 0
     normalization_failed: int = 0
+    ssid_exact_wildcard_warn: int = 0
     errors: int = 0
     error_log: list[str] = field(default_factory=list)
     dry_run: bool = False
@@ -284,6 +285,8 @@ class ImportReport:
             f"{prefix}Dropped (unknown_type): {self.dropped_unknown_type}",
             f"{prefix}Dropped (low_confidence): {self.dropped_low_confidence}",
             f"{prefix}Dropped (normalization_failed): {self.normalization_failed}",
+            f"{prefix}Warned (ssid_exact wildcard, imported anyway): "
+            f"{self.ssid_exact_wildcard_warn}",
             f"{prefix}Errors: {self.errors}",
         ]
         if self.error_log:
@@ -555,6 +558,24 @@ def import_csv(
             raw_pattern = row["identifier"]
             if not raw_pattern:
                 raise ValueError("identifier is empty")
+            # Argus-side data quality check for ssid_exact: a literal `*`
+            # in an exact-typed identifier almost certainly indicates
+            # upstream miscategorization (the row was meant as
+            # ssid_pattern). Import anyway — the literal `*` never
+            # matches a real WiFi observation, so the row sits dormant
+            # until Argus fixes the typing — and warn loudly so the
+            # operator (and the next Argus refresh diff) sees it.
+            if argus_type == "ssid_exact" and "*" in raw_pattern:
+                report.ssid_exact_wildcard_warn += 1
+                logger.warning(
+                    "argus import: ssid_exact identifier %r contains '*' — "
+                    "likely Argus-side miscategorization (should be "
+                    "ssid_pattern). Importing as ssid anyway; the literal "
+                    "'*' will never match real WiFi observations. "
+                    "argus_record_id=%s",
+                    raw_pattern,
+                    argus_id,
+                )
             # Normalize at write time (L-RULES-1). The poller normalizes its
             # observation MAC/UUID before the equality lookup against the
             # watchlist table; a row stored in non-canonical form silently
