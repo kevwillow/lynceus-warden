@@ -2762,6 +2762,129 @@ def create_app(config: Config, db: Database) -> FastAPI:
             },
         )
 
+    @app.get("/watchlist.csv")
+    def watchlist_csv_export(
+        request: Request,
+        q: str | None = Query(default=None),
+        pattern_type: str | None = Query(default=None),
+        severity: str | None = Query(default=None),
+        device_category: str | None = Query(default=None),
+    ):
+        # Streaming CSV export of the currently-filtered /watchlist
+        # result set. Filter parsing mirrors the watchlist_list handler
+        # byte-for-byte: same clamp posture, same silent-fallback for
+        # invalid values, same device_category sentinel handling.
+        # Pagination is bypassed; the export covers every matching row.
+        # Column projection is wider than the list page -- the full
+        # watchlist_metadata join surfaces (source_url, source_excerpt,
+        # fcc_id, geographic_scope, first_seen, last_verified, notes)
+        # for offline Argus-provenance triage.
+        if q is not None and len(q) > 100:
+            raise HTTPException(status_code=400, detail="q must be <= 100 chars")
+        q_clean = q if q else None
+
+        if pattern_type is not None and pattern_type not in _WATCHLIST_PATTERN_TYPES:
+            pattern_type = None
+        pt_clean = pattern_type or None
+
+        if severity is not None and severity not in ("low", "med", "high"):
+            severity = None
+        sev_clean = severity or None
+
+        device_category_options = db.distinct_watchlist_device_categories()
+        if device_category is not None and device_category != "":
+            if device_category not in (
+                _WATCHLIST_UNCATEGORIZED_SENTINEL,
+                *device_category_options,
+            ):
+                device_category = None
+        dc_clean = device_category or None
+
+        header = [
+            "id",
+            "pattern",
+            "pattern_type",
+            "severity",
+            "description",
+            "mac_range_prefix",
+            "mac_range_prefix_length",
+            "argus_record_id",
+            "device_category",
+            "confidence",
+            "vendor",
+            "source",
+            "source_url",
+            "source_excerpt",
+            "fcc_id",
+            "geographic_scope",
+            "first_seen_iso_utc",
+            "first_seen_unix",
+            "last_verified_iso_utc",
+            "last_verified_unix",
+            "notes",
+        ]
+
+        def _iso_utc(ts) -> str:
+            if ts is None:
+                return ""
+            return _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+
+        def _row_generator():
+            buf = io.StringIO()
+            writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+            writer.writerow(header)
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate(0)
+            for row in db.iter_watchlist_filtered(
+                q=q_clean,
+                pattern_type=pt_clean,
+                severity=sev_clean,
+                device_category=dc_clean,
+            ):
+                writer.writerow(
+                    [
+                        row["id"],
+                        row.get("pattern") or "",
+                        row.get("pattern_type") or "",
+                        row.get("severity") or "",
+                        row.get("description") or "",
+                        row.get("mac_range_prefix") or "",
+                        row.get("mac_range_prefix_length")
+                        if row.get("mac_range_prefix_length") is not None
+                        else "",
+                        row.get("argus_record_id") or "",
+                        row.get("device_category") or "",
+                        row.get("confidence") if row.get("confidence") is not None else "",
+                        row.get("vendor") or "",
+                        row.get("source") or "",
+                        row.get("source_url") or "",
+                        row.get("source_excerpt") or "",
+                        row.get("fcc_id") or "",
+                        row.get("geographic_scope") or "",
+                        _iso_utc(row.get("first_seen")),
+                        row.get("first_seen") if row.get("first_seen") is not None else "",
+                        _iso_utc(row.get("last_verified")),
+                        row.get("last_verified") if row.get("last_verified") is not None else "",
+                        row.get("notes") or "",
+                    ]
+                )
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate(0)
+
+        ts_now = _dt.datetime.fromtimestamp(int(time.time()), tz=_dt.timezone.utc).strftime(
+            "%Y%m%dT%H%M%SZ"
+        )
+        filename = f"watchlist-{ts_now}.csv"
+        return StreamingResponse(
+            _row_generator(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.get("/watchlist/{watchlist_id}", response_class=HTMLResponse)
     def watchlist_detail(request: Request, watchlist_id: int):
         if watchlist_id < 1:
