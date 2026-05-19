@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`/alerts.csv`: streaming CSV export of the filtered alerts result
+  set.** New "Export CSV" link adjacent to the pagination summary on
+  the `/alerts` list page. The href carries the current query string
+  through, so the download mirrors the visible filter state exactly
+  (severity, acknowledged, since/until, search, rule_type, q,
+  window, has_note, has_action). Pagination is bypassed — the
+  export covers every matching row, not just the visible page.
+  Filename: `alerts-YYYYMMDDTHHMMSSZ.csv` (ISO UTC timestamp,
+  sorts lexicographically, avoids filter-string sanitization
+  hazards). Content-Type: `text/csv; charset=utf-8`. Column order
+  is stable and parser-friendly: `id, ts_iso_utc, ts_unix,
+  severity, rule_name, rule_type, mac, message, acknowledged,
+  note, note_updated_at_iso_utc, matched_watchlist_id,
+  matched_pattern, matched_pattern_type, matched_vendor,
+  matched_confidence, matched_device_category,
+  matched_argus_record_id, device_type, oui_vendor, action_taken`.
+  Both watchlist + watchlist_metadata join fields surface so the
+  operator gets full Argus provenance offline (no need to click
+  through to each `/alerts/<id>` page for vendor / confidence /
+  category context). `action_taken` is the per-row union of the
+  three signals the `has_action` filter recognizes — active
+  snooze / permanent allowlist / non-archived watchful tracking —
+  computed unconditionally for the export (the YAML loads run
+  on every export request, unlike the list route's lazy load
+  when has_action is engaged, because every row needs the
+  signal). Response is genuinely streamed via FastAPI
+  `StreamingResponse` over a new
+  `Database.iter_alerts_with_match(filters)` cursor-iterating
+  helper, so memory stays roughly constant in the row size for
+  arbitrarily large filtered sets — no row cap. Invalid severity
+  still 400s; other invalid filter values silent-fall-back to
+  "all", mirroring the list-route clamp posture exactly. No
+  CSRF (GET-only, no state mutation).
+
 ### Performance
 
 - **`/watchlist/<id>` detail route: single-row JOIN instead of
