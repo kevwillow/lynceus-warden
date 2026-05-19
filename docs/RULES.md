@@ -55,7 +55,11 @@ Fires when the observed device's MAC begins with any 24-bit OUI prefix in `patte
 
 ### `watchlist_ssid`
 
-Fires when the device's `ssid` exactly matches any pattern. Only WiFi devices populate `ssid`; BLE and Bluetooth Classic sightings always miss.
+Fires when the device's `ssid` matches a watchlisted SSID. Only WiFi devices populate `ssid`; BLE and Bluetooth Classic sightings always miss.
+
+Two modes, picked by whether `patterns` is empty:
+
+**In-memory mode (non-empty `patterns`):** classic exact-string match against the listed patterns, case-sensitive per IEEE 802.11. Severity comes from the rule. This is the operator-curated path for known evil-twin SSIDs.
 
 ```yaml
 - name: rogue_ssids
@@ -66,6 +70,23 @@ Fires when the device's `ssid` exactly matches any pattern. Only WiFi devices po
     - attwifi-rogue
   description: SSIDs commonly used for evil-twin attacks
 ```
+
+**DB-delegation mode (empty `patterns`):** the rule consults the watchlist DB for every observation, dispatching two pattern_types under one rule:
+
+- `pattern_type='ssid'` — **case-sensitive exact match**, consulted first.
+- `pattern_type='ssid_pattern'` — **case-insensitive substring match**, consulted as a fallback when the exact match misses. The watchlist row's stored `pattern` is the substring needle; the observation's `ssid` is the haystack.
+
+Severity comes from the matched DB row (not from `rule.severity`, which is ignored in this mode). The bundled `argus_ssid` rule in `config/rules.yaml` is the default-enabled delegation entry; the bundled `default_watchlist.csv` ships SSID rows imported from Argus (Flock cameras, Penguin trackers, and the FS Ext Battery family at the rc6 snapshot).
+
+```yaml
+- name: argus_ssid
+  rule_type: watchlist_ssid
+  severity: low  # ignored — actual severity comes from the matched row
+  patterns: []
+  description: "Argus + bundled SSID watchlist (exact + substring)"
+```
+
+Both modes coexist in the same ruleset. A typical deployment runs the delegation entry alongside any operator-curated in-memory entries for site-specific evil-twin SSIDs.
 
 ### `ble_uuid`
 

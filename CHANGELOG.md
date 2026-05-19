@@ -236,6 +236,57 @@ with external trackers.
   and SELECT share a filter-clause builder for pagination
   consistency. No write-path additions and no schema change.
 
+- **SSID dimension activated end-to-end.** Three changes land
+  together; the `watchlist_ssid` rule type is unchanged on the
+  operator-facing surface but its DB-delegation mode now dispatches
+  two pattern_types from the watchlist DB under one rule. The
+  bundled `argus_ssid` rule is enabled by default and the bundled
+  `default_watchlist.csv` is refreshed from Argus's 2026-05-17
+  snapshot so fresh installs alert on Flock-class equipment out of
+  the box.
+
+  - Migration 019 extends `watchlist.pattern_type` CHECK to admit
+    `ssid_pattern`. Same full-table-rebuild shape as migration 013
+    (SQLite cannot ALTER a CHECK in place); preserves the partial
+    index on `mac_range`. L-RULES-10 case-folding for the existing
+    case-sensitive `ssid` type stays deferred -- case-insensitivity
+    is scoped to the new `ssid_pattern` matcher only.
+
+  - `db.resolve_matched_ssid_pattern_for_eval` is a sibling to the
+    existing exact-match helper. SQL is `? LIKE '%' || pattern ||
+    '%' COLLATE NOCASE` with a defensive `pattern != ''` filter
+    (empty needle would otherwise match every observation). The
+    `watchlist_ssid` evaluate branch consults exact first, then
+    falls back to substring on miss; severity flows from whichever
+    DB row fires.
+
+  - `lynceus-import-argus` IDENTIFIER_TYPE_MAP gains
+    `ssid_pattern -> ssid_pattern` (one-to-one, mirrors the rc5
+    `ssid_exact -> ssid` alias). The 5 ssid_pattern rows from the
+    Argus snapshot (`flock`, `Flock`, `FLOCK`, `FS Ext Battery`,
+    `Penguin`) now flow into the watchlist DB at the
+    `device_category`-derived severity. Per-row data-quality check:
+    ssid_exact rows containing `*` (e.g. Argus's `Flock-*` row) log
+    a WARNING and are imported anyway -- the literal `*` never
+    matches a real WiFi observation, so the row sits dormant
+    until Argus fixes the typing upstream. New
+    `ImportReport.ssid_exact_wildcard_warn` counter surfaces the
+    occurrence at the importer's render output.
+
+  - `default_watchlist.csv` bundle refresh: 22533 records at
+    schema_version 21, exported 2026-05-17T15:53:27Z. Replaces the
+    v8 / 63-row / zero-SSID-coverage prior snapshot. Column shape
+    unchanged. `config/rules.yaml` `argus_ssid` template is
+    uncommented and enabled. NOTICE.md updated to match the new
+    exported_at; `docs/ARGUS_RESIDUALS.md` moves `ssid_pattern`
+    from `defer-pending-smoke` to `admit`, recomputes the summary
+    (deferred drops from 2 types / 21 rows to 1 type / 16 rows).
+
+  Operationally meaningful: a Kismet observation of `'Flock-230503'`
+  (exact ssid) or `'My-Penguin-AP'` (substring ssid_pattern) now
+  alerts at the matched row's severity on a fresh install with the
+  bundled config.
+
 ## [0.4.0-rc5] - 2026-05-17
 
 ### Added
