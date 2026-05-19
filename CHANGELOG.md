@@ -204,8 +204,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   duration_seconds is strictly whitelisted at the POST handler.
 
 - **Watchful snooze (Phase 1: backend foundation).** The daemon-side
-  machinery for the recurrence-aware third snooze surface lands in
-  rc6; the operator UI follows in Phase 2. New `watchful_recurrence`
+  machinery for the recurrence-aware third snooze surface lands
+  first; the operator UI follows in Phase 2. New `watchful_recurrence`
   table (migration 018) tracks per-MAC observations under watchful
   snooze, counts sightings on a >=24h gap debounce (inclusive
   boundary), and emits a synthetic `watchful_recurrence` rule_type
@@ -241,7 +241,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`confirmed_safe`, `flagged_for_investigation`, `operator_note`,
   `reset_count`) already on the table to avoid a migration 019.
   Backward compat: with no entries in `watchful_recurrence`, poll
-  cycles are byte-identical to pre-rc6 behavior. See
+  cycles are byte-identical to pre-Phase-1 behavior. See
   `docs/WATCHFUL_SNOOZE_DESIGN.md` for the full design rationale
   and the OQ resolutions that shaped Phase 1.
 
