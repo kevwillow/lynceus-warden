@@ -127,10 +127,11 @@
 // (and our matching one in lynceus.css) decide. The two forced modes
 // set data-theme on <html>, which Pico and our overrides both honor.
 //
-// Caveat: this script is loaded with `defer`, so there's a brief
-// flash-of-prefers-color-scheme before the stored choice applies on
-// every page load. Mitigating that would require an inline <head>
-// script; deferred to a future iteration if anyone complains.
+// FOUC mitigation: base.html has a tiny inline <head> script that
+// applies the stored "light"/"dark" choice synchronously before the
+// stylesheet loads, so the forced-theme case never flashes the OS
+// default. This deferred script still runs to keep "auto" behaviour
+// (clear attribute → fall back to @media) and to wire the toggle.
 (function () {
   "use strict";
 
