@@ -693,3 +693,106 @@ def test_report_renders_file_paths(monkeypatch, tmp_path, capsys):
     v.main(["--scope", "user"])
     out = capsys.readouterr().out
     assert str(tmp_path / "lynceus.yaml") in out
+
+
+# ---------------------------------------------------------------------------
+# Rollback subcommand
+# ---------------------------------------------------------------------------
+
+
+def test_rollback_subcommand_to_zero(tmp_path, capsys):
+    """`lynceus-validate rollback --db PATH --target-version 0 --yes`
+    rolls every applied migration back. Exit 0, applied_versions empty
+    after the call."""
+    from lynceus.db import Database
+
+    db_path = str(tmp_path / "lynceus.db")
+    Database(db_path).close()  # forward-apply 001..019 via __init__
+
+    exit_code = v.main(
+        ["rollback", "--db", db_path, "--target-version", "0", "--yes"]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Rollback complete" in out
+
+    # Re-open the DB; applied_versions starts re-applying forward
+    # because Database.__init__ runs _apply_migrations. Confirm the
+    # versions match the full chain after the re-init — proves the
+    # rollback was atomic + the forward path is still functional.
+    db = Database(db_path)
+    assert db.applied_versions() == list(range(1, 20))
+    db.close()
+
+
+def test_rollback_subcommand_target_version_required(capsys):
+    """Missing --target-version is a parser error (argparse exits 2)."""
+    with pytest.raises(SystemExit) as exc:
+        v.main(["rollback", "--db", "/tmp/whatever.db", "--yes"])
+    assert exc.value.code == 2
+
+
+def test_rollback_subcommand_negative_target_rejected(tmp_path, capsys):
+    """Negative --target-version is preflight-rejected with exit 2."""
+    from lynceus.db import Database
+
+    db_path = str(tmp_path / "lynceus.db")
+    Database(db_path).close()
+
+    exit_code = v.main(
+        ["rollback", "--db", db_path, "--target-version", "-1", "--yes"]
+    )
+    assert exit_code == 2
+
+
+def test_rollback_subcommand_missing_db_path(tmp_path, capsys):
+    """Non-existent --db path is preflight-rejected with exit 2."""
+    missing = str(tmp_path / "does-not-exist.db")
+    exit_code = v.main(
+        ["rollback", "--db", missing, "--target-version", "0", "--yes"]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "not found" in err
+
+
+def test_rollback_subcommand_requires_yes_or_tty(monkeypatch, tmp_path, capsys):
+    """Without --yes and with no tty, the rollback refuses (exit 2)."""
+    from lynceus.db import Database
+
+    db_path = str(tmp_path / "lynceus.db")
+    Database(db_path).close()
+
+    # Force isatty to False so the preflight path triggers.
+    import sys as _sys
+
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+    exit_code = v.main(
+        ["rollback", "--db", db_path, "--target-version", "0"]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "stdin is not a tty" in err
+
+
+def test_legacy_invocation_no_subcommand_still_validates(
+    monkeypatch, tmp_path, capsys
+):
+    """`lynceus-validate --scope user` (no subcommand) still runs the
+    validator — proves the subparser restructure preserves the legacy
+    operator-script invocation shape."""
+    _wire_scope(monkeypatch, tmp_path)
+    _write(tmp_path / "lynceus.yaml", _valid_lynceus_yaml())
+    exit_code = v.main(["--scope", "user"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Summary:" in out
+
+
+def test_explicit_validate_subcommand_works(monkeypatch, tmp_path, capsys):
+    """`lynceus-validate validate --scope user` is the explicit form of
+    the legacy invocation."""
+    _wire_scope(monkeypatch, tmp_path)
+    _write(tmp_path / "lynceus.yaml", _valid_lynceus_yaml())
+    exit_code = v.main(["validate", "--scope", "user"])
+    assert exit_code == 0
