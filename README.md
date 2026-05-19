@@ -91,6 +91,16 @@ For convenience, `./uninstall.sh` is a thin wrapper that auto-detects the instal
   - `--user` install: `~/.local/bin` must be on `PATH`. `install.sh --user` prints a one-liner hint when it isn't.
   - `--system` install: `/usr/local/bin` is on `PATH` for normal login shells; if it isn't, fix your shell profile rather than working around it.
 
+## Getting started
+
+For a step-by-step end-to-end install from a fresh Kali / Debian /
+Ubuntu host through working capture + alerting + web UI, see
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). The runbook covers
+prerequisites, install, Kismet bootstrap, configuration,
+validation, systemd enablement, and post-install smoke
+verification, with a "common issues" section for the operator-
+facing failure modes that surface most often.
+
 ## Quick start
 
 1. **Install Lynceus.** `./install.sh --user` from a clone.

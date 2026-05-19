@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Deployment runbook (docs/DEPLOYMENT.md).** End-to-end install
+  walkthrough for a fresh Kali / Debian / Ubuntu host: prerequisites,
+  clone + install, Kismet bootstrap, API key creation, lynceus-setup
+  configuration, optional Argus refresh, lynceus-validate
+  preflight, systemd enable (system install) or
+  lynceus-quickstart foreground (dev/demo), and smoke verification.
+  Each step carries action + expected output + brief
+  explanation so the operator can paste the command directly and
+  tell whether it worked. Cross-references CONFIGURATION.md,
+  RULES.md, NTFY_SETUP.md, and SMOKE.md rather than duplicating
+  them. A "Common issues" section covers the five operator-facing
+  failure modes that surface most often (Kismet API key
+  auto-detect, PATH not picking up `lynceus-*`, adapter not in
+  monitor mode, ntfy topic mismatch, systemd unit permission-
+  denied). README gains a "Getting started" link to the new
+  runbook; the existing README §Installation + §Quick start
+  sections are unchanged.
+
 - **Migration rollback paths (operator-facing, opt-in destructive
   flow).** Every shipped DB migration (001..019) now ships a paired
   `NNN_<name>_down.sql` rollback file alongside its forward
