@@ -260,8 +260,8 @@ then one poll-cycle log line per `poll_interval_seconds`. No Python
 tracebacks.
 
 **Explanation:** the installer copies the hardened systemd units
-(`NoNewPrivileges`, `ProtectSystem=strict`, restricted namespaces,
-the `lynceus` system user, memory caps) into
+(`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, restricted
+namespaces, the `lynceus` system user) into
 `/etc/systemd/system/` but doesn't auto-enable them. Enabling +
 starting is the explicit operator decision.
 
@@ -303,7 +303,7 @@ Run through [docs/SMOKE.md](SMOKE.md) to confirm:
 - The Lynceus daemon is polling cleanly (step 2 there).
 - The web UI is reachable and `/healthz` responds (step 3 there).
 - Sightings are landing in the DB (step 4 there).
-- `/watchlist` renders the imported Argus corpus (step 5 there).
+- The watchlist table is populated (step 5 there).
 - An end-to-end alert fires when a watched MAC is observed (the
   remaining SMOKE steps).
 
