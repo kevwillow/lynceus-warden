@@ -117,26 +117,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "all", mirroring the list-route clamp posture exactly. No
   CSRF (GET-only, no state mutation).
 
-### Performance
-
-- **`/watchlist/<id>` detail route: single-row JOIN instead of
-  list-then-filter-in-Python.** New `Database.get_watchlist_with_metadata(id)`
-  helper mirrors `list_watchlist_with_metadata`'s column projection
-  but indexes by `w.id` with a `LIMIT 1`. The previous route shape
-  loaded every row in `watchlist` (up to ~22k after a full Argus
-  import) and ran `next(r for r in rows if r["id"] == id)` in
-  Python on every detail-page request — exactly the scaling
-  footgun the `list_watchlist_filtered` docstring already calls
-  out for the list page. Behavior is unchanged for operators —
-  the same template renders, the same fields surface, the same
-  404 path via `not_found.html` for missing ids; the route now
-  reads one row per request instead of all of them. Topnav
-  active-state coverage on `/watchlist/<id>` is also pinned so
-  the highlight can't silently regress (mirrors the existing
-  `/watchful/<id>` pin).
-
-### Added
-
 - **`/alerts` has_action filter: triage-state-aware dropdown.** Parallels
   the rc6 `has_note` filter and closes the same loop on the other half
   of the triage workflow: "alerts I've already taken an action on." The
@@ -193,93 +173,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   side-effect. CSRF protection and the `confirm()` safety pattern
   are unchanged (confirm text is now duration-agnostic:
   `"Snooze alerts for {mac}?"`).
-
-## [0.4.0-rc6] - 2026-05-17
-
-Mostly cleanup. rc5 shipped the big feature push — `/watchlist` search,
-filter, and pagination; `/rules` statistics; `lynceus-export-config`;
-the Argus residuals audit. rc6 closes the two normalization gaps that
-audit surfaced, corrects one audit verdict that turned out to be wrong
-on inspection, and adds the per-alert triage-note surface (plus a
-matching `/alerts` filter) that operators were quietly working around
-with external trackers.
-
-### Fixed
-
-- **Importer admits 17 Argus rows that previously dropped as
-  `unknown_type`.** The rc5 residuals audit (`docs/ARGUS_RESIDUALS.md`)
-  flagged that `ble_company_id` (7 rows) and `ble_service_uuid`
-  (10 rows) were semantic duplicates of the already-admitted
-  `ble_manufacturer_id` and `ble_uuid` pattern types — separated only
-  by the Argus type label and a couple of input-shape variants (16-bit
-  and 32-bit Bluetooth SIG short forms, plus Argus's dual-form
-  rendering like `"fd5a / 0x0075"` for the Samsung SmartTag / Tile Tag
-  rows). The importer now aliases the two Argus types one-way onto the
-  existing pattern types, and the `ble_uuid` canonicalizer accepts the
-  4-hex and 8-hex short forms (expanded against the Bluetooth Core
-  Spec §3.2.1 base UUID `00000000-0000-1000-8000-00805f9b34fb`) plus
-  the dual-form shape (UUID half taken, paired company-id commentary
-  dropped). Canonical output forms unchanged; pattern_type set
-  unchanged; no schema migration. The admit count moves
-  22,294 → 22,311; dropped 239 → 222; the audit's
-  `admit-via-normalization` bucket is now empty.
-
-- **`device_class_id` audit verdict corrected from
-  `plausible-needs-smoke` to `drop-entirely`.** The rc5 audit deferred
-  49 `device_class_id` rows — the largest deferred category — on the
-  basis of plausibility rather than evidence. Going row-by-row showed
-  all 49 are DJI drone model-class enum codes pulled from the
-  `RUB-SysSec/DroneSecurity` decoder's `DRONEID_DRONE_TYPES` table
-  (e.g. `'1'='Inspire 1'`). Those are labels for decoding the DroneID
-  device-type byte, not per-device identifiers — admitting them would
-  alert on every DJI drone of a given model class in range, the same
-  unbounded-fanout posture the audit already records for
-  `rf_channel`. Per-device Remote-ID coverage is already handled by
-  the admitted `drone_id_prefix` (ANSI/CTA-2063-A serial-number
-  prefix). The audit's source table is updated with the evidence; the
-  regenerated report shifts `defer-pending-smoke` from 3 / 70 to
-  2 / 21 and `drop-entirely` from 26 / 152 to 27 / 201. Total dropped
-  row count is unchanged at 222 — the row was always dropped; only
-  the reason changed.
-
-### Added
-
-- **Per-alert triage notes.** Closes the "what did I conclude about
-  this alert?" gap operators were working around with external
-  trackers. Migration 016 adds a nullable `note TEXT` column plus a
-  `note_updated_at INTEGER` column to `alerts`. Notes are written
-  only from the alert detail page (the daemon's add-alert path never
-  touches the column); the server stores stripped text plus an
-  epoch-seconds timestamp, enforces a 4096-character cap, and treats
-  empty / whitespace-only text as "clear" (both columns return to
-  NULL). The alert detail page gains a triage-notes section with the
-  current note rendered in a `<pre>` (preserves line breaks), a
-  relative-time "Last updated N ago" stamp, an editable textarea
-  (4096-char `maxlength`), and Save / Clear buttons (Clear behind a
-  `confirm()` prompt). The `/alerts` list page shows a 📝 indicator on
-  rows that carry a note, with a 50-character tooltip preview — the
-  full rationale stays on the detail page so it isn't visible over the
-  shoulder. Plain text only, one note per alert (replace-on-update);
-  markdown rendering, multi-operator history, and a note-history
-  table are all explicitly deferred. CSRF is enforced via the
-  existing global middleware.
-
-- **`/alerts` `has_note` filter dropdown.** Pairs the list-page 📝
-  indicator with a narrow-by-state filter so the triage workflow loop
-  closes: notes → indicator → filter. Three values: `any` (default;
-  renders byte-identical to pre-filter behaviour), `with_note`
-  (filters to alerts where `note IS NOT NULL`), and `without_note`
-  (the inverse). Invalid values silently fall back to `any`, matching
-  the `rule_type` / `window` convention. Both the COUNT query and the
-  page query consume the same internal filter helper, so the totals
-  and rows stay aligned under combined filters;
-  `/alerts/ack-all-visible` POSTs mirror the GET clamp exactly so
-  bulk-ack always operates on the same set the operator can see. The
-  template carries `has_note` through the ack-all-visible hidden
-  inputs and the prev/next pagination links; the default `any` is
-  omitted from URLs so the no-params baseline stays clean. No new
-  indexes — `note IS [NOT] NULL` full-scans cheaply at current scale;
-  a partial index is a follow-up if filter latency surfaces.
 
 - **Per-rule_type snooze.** New `rule_type_snoozes` table (migration
   017) lets operators silence all alerts from a specific rule_type
@@ -476,6 +369,111 @@ with external trackers.
   (exact ssid) or `'My-Penguin-AP'` (substring ssid_pattern) now
   alerts at the matched row's severity on a fresh install with the
   bundled config.
+
+### Performance
+
+- **`/watchlist/<id>` detail route: single-row JOIN instead of
+  list-then-filter-in-Python.** New `Database.get_watchlist_with_metadata(id)`
+  helper mirrors `list_watchlist_with_metadata`'s column projection
+  but indexes by `w.id` with a `LIMIT 1`. The previous route shape
+  loaded every row in `watchlist` (up to ~22k after a full Argus
+  import) and ran `next(r for r in rows if r["id"] == id)` in
+  Python on every detail-page request — exactly the scaling
+  footgun the `list_watchlist_filtered` docstring already calls
+  out for the list page. Behavior is unchanged for operators —
+  the same template renders, the same fields surface, the same
+  404 path via `not_found.html` for missing ids; the route now
+  reads one row per request instead of all of them. Topnav
+  active-state coverage on `/watchlist/<id>` is also pinned so
+  the highlight can't silently regress (mirrors the existing
+  `/watchful/<id>` pin).
+
+## [0.4.0-rc6] - 2026-05-17
+
+Mostly cleanup. rc5 shipped the big feature push — `/watchlist` search,
+filter, and pagination; `/rules` statistics; `lynceus-export-config`;
+the Argus residuals audit. rc6 closes the two normalization gaps that
+audit surfaced, corrects one audit verdict that turned out to be wrong
+on inspection, and adds the per-alert triage-note surface (plus a
+matching `/alerts` filter) that operators were quietly working around
+with external trackers.
+
+### Fixed
+
+- **Importer admits 17 Argus rows that previously dropped as
+  `unknown_type`.** The rc5 residuals audit (`docs/ARGUS_RESIDUALS.md`)
+  flagged that `ble_company_id` (7 rows) and `ble_service_uuid`
+  (10 rows) were semantic duplicates of the already-admitted
+  `ble_manufacturer_id` and `ble_uuid` pattern types — separated only
+  by the Argus type label and a couple of input-shape variants (16-bit
+  and 32-bit Bluetooth SIG short forms, plus Argus's dual-form
+  rendering like `"fd5a / 0x0075"` for the Samsung SmartTag / Tile Tag
+  rows). The importer now aliases the two Argus types one-way onto the
+  existing pattern types, and the `ble_uuid` canonicalizer accepts the
+  4-hex and 8-hex short forms (expanded against the Bluetooth Core
+  Spec §3.2.1 base UUID `00000000-0000-1000-8000-00805f9b34fb`) plus
+  the dual-form shape (UUID half taken, paired company-id commentary
+  dropped). Canonical output forms unchanged; pattern_type set
+  unchanged; no schema migration. The admit count moves
+  22,294 → 22,311; dropped 239 → 222; the audit's
+  `admit-via-normalization` bucket is now empty.
+
+- **`device_class_id` audit verdict corrected from
+  `plausible-needs-smoke` to `drop-entirely`.** The rc5 audit deferred
+  49 `device_class_id` rows — the largest deferred category — on the
+  basis of plausibility rather than evidence. Going row-by-row showed
+  all 49 are DJI drone model-class enum codes pulled from the
+  `RUB-SysSec/DroneSecurity` decoder's `DRONEID_DRONE_TYPES` table
+  (e.g. `'1'='Inspire 1'`). Those are labels for decoding the DroneID
+  device-type byte, not per-device identifiers — admitting them would
+  alert on every DJI drone of a given model class in range, the same
+  unbounded-fanout posture the audit already records for
+  `rf_channel`. Per-device Remote-ID coverage is already handled by
+  the admitted `drone_id_prefix` (ANSI/CTA-2063-A serial-number
+  prefix). The audit's source table is updated with the evidence; the
+  regenerated report shifts `defer-pending-smoke` from 3 / 70 to
+  2 / 21 and `drop-entirely` from 26 / 152 to 27 / 201. Total dropped
+  row count is unchanged at 222 — the row was always dropped; only
+  the reason changed.
+
+### Added
+
+- **Per-alert triage notes.** Closes the "what did I conclude about
+  this alert?" gap operators were working around with external
+  trackers. Migration 016 adds a nullable `note TEXT` column plus a
+  `note_updated_at INTEGER` column to `alerts`. Notes are written
+  only from the alert detail page (the daemon's add-alert path never
+  touches the column); the server stores stripped text plus an
+  epoch-seconds timestamp, enforces a 4096-character cap, and treats
+  empty / whitespace-only text as "clear" (both columns return to
+  NULL). The alert detail page gains a triage-notes section with the
+  current note rendered in a `<pre>` (preserves line breaks), a
+  relative-time "Last updated N ago" stamp, an editable textarea
+  (4096-char `maxlength`), and Save / Clear buttons (Clear behind a
+  `confirm()` prompt). The `/alerts` list page shows a 📝 indicator on
+  rows that carry a note, with a 50-character tooltip preview — the
+  full rationale stays on the detail page so it isn't visible over the
+  shoulder. Plain text only, one note per alert (replace-on-update);
+  markdown rendering, multi-operator history, and a note-history
+  table are all explicitly deferred. CSRF is enforced via the
+  existing global middleware.
+
+- **`/alerts` `has_note` filter dropdown.** Pairs the list-page 📝
+  indicator with a narrow-by-state filter so the triage workflow loop
+  closes: notes → indicator → filter. Three values: `any` (default;
+  renders byte-identical to pre-filter behaviour), `with_note`
+  (filters to alerts where `note IS NOT NULL`), and `without_note`
+  (the inverse). Invalid values silently fall back to `any`, matching
+  the `rule_type` / `window` convention. Both the COUNT query and the
+  page query consume the same internal filter helper, so the totals
+  and rows stay aligned under combined filters;
+  `/alerts/ack-all-visible` POSTs mirror the GET clamp exactly so
+  bulk-ack always operates on the same set the operator can see. The
+  template carries `has_note` through the ack-all-visible hidden
+  inputs and the prev/next pagination links; the default `any` is
+  omitted from URLs so the no-params baseline stays clean. No new
+  indexes — `note IS [NOT] NULL` full-scans cheaply at current scale;
+  a partial index is a follow-up if filter latency surfaces.
 
 ## [0.4.0-rc5] - 2026-05-17
 
