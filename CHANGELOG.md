@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- **`/watchlist/<id>` detail route: single-row JOIN instead of
+  list-then-filter-in-Python.** New `Database.get_watchlist_with_metadata(id)`
+  helper mirrors `list_watchlist_with_metadata`'s column projection
+  but indexes by `w.id` with a `LIMIT 1`. The previous route shape
+  loaded every row in `watchlist` (up to ~22k after a full Argus
+  import) and ran `next(r for r in rows if r["id"] == id)` in
+  Python on every detail-page request — exactly the scaling
+  footgun the `list_watchlist_filtered` docstring already calls
+  out for the list page. Behavior is unchanged for operators —
+  the same template renders, the same fields surface, the same
+  404 path via `not_found.html` for missing ids; the route now
+  reads one row per request instead of all of them. Topnav
+  active-state coverage on `/watchlist/<id>` is also pinned so
+  the highlight can't silently regress (mirrors the existing
+  `/watchful/<id>` pin).
+
 ### Added
 
 - **`/alerts` has_action filter: triage-state-aware dropdown.** Parallels
