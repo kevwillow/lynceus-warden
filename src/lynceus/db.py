@@ -12,6 +12,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import NamedTuple
 
+from lynceus.patterns import mac_in_mac_range
+
 logger = logging.getLogger(__name__)
 
 
@@ -355,6 +357,14 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
+        # The /alerts has_action filter clause builder emits
+        # mac_in_mac_range(alerts.mac, ?) per allowlist mac_range
+        # entry. Register as deterministic so SQLite can hoist it
+        # past expression-equality checks; the function reads only
+        # its arguments (no global state, no side effects).
+        self._conn.create_function(
+            "mac_in_mac_range", 2, mac_in_mac_range, deterministic=True
+        )
         self._migrations_dir = _find_migrations_dir()
         self._apply_migrations()
 
@@ -1240,6 +1250,7 @@ class Database:
         has_action: str | None = None,
         actioned_macs: tuple[str, ...] = (),
         actioned_oui_prefixes: tuple[str, ...] = (),
+        actioned_mac_ranges: tuple[str, ...] = (),
     ) -> list[dict]:
         self._validate_pagination(limit, offset)
         if severity is not None and severity not in self._ALERT_SEVERITIES:
@@ -1262,6 +1273,7 @@ class Database:
             has_action=has_action,
             actioned_macs=actioned_macs,
             actioned_oui_prefixes=actioned_oui_prefixes,
+            actioned_mac_ranges=actioned_mac_ranges,
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -1288,6 +1300,7 @@ class Database:
         has_action: str | None = None,
         actioned_macs: tuple[str, ...] = (),
         actioned_oui_prefixes: tuple[str, ...] = (),
+        actioned_mac_ranges: tuple[str, ...] = (),
     ) -> int:
         # COUNT and the page query (list_alerts_with_match) must
         # apply the same filters or "K total" is a lie and the
@@ -1308,6 +1321,7 @@ class Database:
             has_action=has_action,
             actioned_macs=actioned_macs,
             actioned_oui_prefixes=actioned_oui_prefixes,
+            actioned_mac_ranges=actioned_mac_ranges,
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -1354,6 +1368,7 @@ class Database:
         has_action: str | None = None,
         actioned_macs: tuple[str, ...] = (),
         actioned_oui_prefixes: tuple[str, ...] = (),
+        actioned_mac_ranges: tuple[str, ...] = (),
         alias: str = "",
     ) -> tuple[list[str], list]:
         prefix = f"{alias}." if alias else ""
@@ -1420,6 +1435,15 @@ class Database:
             for oui in actioned_oui_prefixes:
                 action_clauses.append(f"{prefix}mac LIKE ?")
                 action_params.append(f"{oui}:%")
+            for pattern in actioned_mac_ranges:
+                # Delegates to the connection-registered SQL function
+                # set up in Database.__init__. Per-pattern clause keeps
+                # the in/range semantics aligned with the alert-detail
+                # page (mac_in_mac_range is the same helper both sides
+                # call) and stays correct for /28 and /36 — the only
+                # lengths parse_mac_range_pattern admits.
+                action_clauses.append(f"mac_in_mac_range({prefix}mac, ?)")
+                action_params.append(pattern)
             action_clauses.append(
                 "EXISTS (SELECT 1 FROM watchful_recurrence wr "
                 f"WHERE wr.mac = {prefix}mac "
@@ -1475,6 +1499,7 @@ class Database:
         "has_action",
         "actioned_macs",
         "actioned_oui_prefixes",
+        "actioned_mac_ranges",
     )
 
     _ALERT_WITH_MATCH_SELECT = (
@@ -1646,6 +1671,7 @@ class Database:
             has_action=filters.get("has_action"),
             actioned_macs=filters.get("actioned_macs", ()),
             actioned_oui_prefixes=filters.get("actioned_oui_prefixes", ()),
+            actioned_mac_ranges=filters.get("actioned_mac_ranges", ()),
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -1684,6 +1710,7 @@ class Database:
             has_action=filters.get("has_action"),
             actioned_macs=filters.get("actioned_macs", ()),
             actioned_oui_prefixes=filters.get("actioned_oui_prefixes", ()),
+            actioned_mac_ranges=filters.get("actioned_mac_ranges", ()),
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
