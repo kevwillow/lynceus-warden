@@ -1057,6 +1057,41 @@ def test_alerts_list_renders_watch_button_for_alerts_with_mac(tmp_path):
 
 
 @pytest.mark.webui
+def test_alerts_list_watch_form_omits_1h_option(tmp_path):
+    """B1 added a 1h bucket to the shared ``_SNOOZE_DURATIONS`` map.
+    The watchful triage selector on /alerts is intentionally left
+    alone (recurrence-tracking semantics don't fit a 1h window — 1h
+    is per-alert snooze territory). This test pins the
+    visible-surface invariant against accidental template drift that
+    would expose ``1h`` to operators on the watchful surface.
+
+    Scoped to the ``watch-snooze-select`` element so the assertion
+    doesn't catch the ``value="1h"`` that appears in the unrelated
+    ``window`` filter dropdown on the same page.
+    """
+    import re as _re
+
+    app, db, _ = _make_app(tmp_path)
+    try:
+        _seed_alert(db, mac="aa:bb:cc:11:22:33")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        m = _re.search(
+            r'<select[^>]*class="watch-snooze-select"[^>]*>(.*?)</select>',
+            r.text,
+            flags=_re.DOTALL,
+        )
+        assert m is not None
+        watch_select = m.group(1)
+        # Exactly four options — same shape Phase 2b locked in.
+        assert watch_select.count("<option") == 4
+        assert 'value="1h"' not in watch_select
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
 def test_alerts_list_hides_watch_button_for_alerts_without_mac(tmp_path):
     """Alerts without a MAC (pure SSID matches, e.g.) can't be triaged
     into the MAC-keyed watchful surface; the button is hidden so the

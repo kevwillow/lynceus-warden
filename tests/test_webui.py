@@ -2441,6 +2441,102 @@ def test_triage_routes_return_400_when_alert_has_no_mac(tmp_path, path_suffix):
         db.close()
 
 
+# --- B1: per-alert snooze custom durations ---------------------------------
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "duration_key,expected_offset",
+    [
+        ("1h", 3600),
+        ("24h", 86400),
+        ("7d", 7 * 86400),
+        ("30d", 30 * 86400),
+        ("forever", None),
+    ],
+)
+def test_snooze_duration_writes_correct_expires_at(
+    tmp_path, duration_key, expected_offset
+):
+    """Each of the 5 operator-pickable durations resolves to the
+    expected ``expires_at``. ``forever`` writes a NULL (omitted in
+    yaml) — semantically a permanent allowlist entry, distinguished
+    from /allowlist only by the provenance note prefix."""
+    import time as _time
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        before = int(_time.time())
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/snooze",
+                data={CSRF_FORM_FIELD: token, "snooze_duration": duration_key},
+            )
+        after = int(_time.time())
+        assert r.status_code == 303
+        entries = _read_ui_entries(primary)
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["pattern"] == "aa:bb:cc:dd:ee:ff"
+        if expected_offset is None:
+            assert "expires_at" not in e
+        else:
+            assert before + expected_offset <= e["expires_at"] <= after + expected_offset
+        assert f"snoozed {duration_key} via webui" in e["note"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_invalid_duration_returns_400(tmp_path):
+    """Invalid ``snooze_duration`` is rejected with 400 (matches the
+    /alerts/{id}/watch validation posture; no yaml side-effect)."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/snooze",
+                data={CSRF_FORM_FIELD: token, "snooze_duration": "5y"},
+            )
+        assert r.status_code == 400
+        assert _read_ui_entries(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_snooze_form_renders_all_five_options(tmp_path):
+    """The per-alert snooze form on the detail page renders the five
+    locked options with ``24h`` selected (preserves the pre-B1
+    fixed-24h default for operators submitting without selecting)."""
+    import re as _re
+
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        # Scope to the snooze form region so the assertions don't
+        # leak across unrelated dropdowns on the page.
+        m = _re.search(
+            rf'action="/alerts/{aid}/snooze".*?</form>',
+            r.text,
+            flags=_re.DOTALL,
+        )
+        assert m is not None
+        snooze_form = m.group(0)
+        for opt in ("1h", "24h", "7d", "30d", "forever"):
+            assert f'value="{opt}"' in snooze_form
+        assert 'value="24h" selected' in snooze_form
+    finally:
+        db.close()
+
+
 # --- template render states -----------------------------------------------
 
 
