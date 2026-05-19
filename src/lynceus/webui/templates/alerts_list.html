@@ -83,7 +83,14 @@
     {% endif %}
   </form>
 
-  <p><small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small></p>
+  <p>
+    <small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small>
+    &middot;
+    <small>
+      <a href="/alerts.csv{% if request.url.query %}?{{ request.url.query }}{% endif %}"
+         title="Download every alert matching the current filters as a CSV file (pagination ignored)">Export CSV</a>
+    </small>
+  </p>
 
   {% if alerts %}
     <form method="post" action="/alerts/ack-all-visible">
