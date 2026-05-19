@@ -75,6 +75,18 @@ stored data, fold at lookup — symmetric to the ssid_pattern matcher).
   use case already, so the remaining gap is narrow. Default to deferral
   until a real miss is observed.
 
+### Per-Argus-record dedup model
+Current watchlist-natural-key dedup collapses same-pattern Argus rows
+differing only in `device_category`; `watchlist_metadata` is keyed by
+`watchlist_id` so the second row's `upsert_metadata` overwrites the
+first (last-write-wins on `device_category` / `vendor` / `argus_record_id`).
+Bounded operator impact unless device-category-based severity overrides
+(`severity_overrides.yaml`: `device_category_severity`, `suppress_categories`,
+`pattern_overrides`) are heavily used and depend on which side of a
+duplicate pair survives. Reconsider if operationally important — would
+need an `argus_record_id`-keyed metadata model and a row-level dispatch
+decision in `rules.py`.
+
 ### Argus data quality observations relayed upstream
 The 2026-05-17 Argus export contains a `'Flock-*'` row typed as
 `ssid_exact` (almost certainly should be `ssid_pattern`) and duplicate
