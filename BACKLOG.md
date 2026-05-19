@@ -147,30 +147,31 @@ allowlist" you review and accept rather than firing alerts on.
 
 ## Followups for technical debt
 
-### `mac_range` support in the alert-detail allowlist match and the `/alerts` has_action filter
-Both surfaces today only consider `pattern_type in ('mac', 'oui')`
-when deciding whether an alert is currently allowlisted/snoozed.
-`mac_range` is the other type that's matchable from `alert.mac`
-alone (prefix-bit comparison against the canonical
-`prefix_hex/length` form), so the gap is consistent but real:
-operators who use `mac_range` to allowlist a vendor block won't see
-their alerts flagged as actioned via the `has_action` filter and
-won't see the snooze/allowlist badge on the alert detail page.
-- **Trigger**: operator reports of unexpected "without action"
-  results on alerts whose MAC sits inside a mac_range allowlist
-  entry, OR before any UI promotion of mac_range entries (an
-  inconsistency between filter and detail page is worse than a
-  consistent omission).
-- **Estimated**: 1 prompt, ~30 LOC + tests. Single commit must
-  fix both surfaces in lockstep — `_match_mac_in_entries`
-  (`src/lynceus/webui/app.py`) AND the has_action filter's
-  `_load_actioned_patterns` helper. The `Allowlist._entry_matches`
-  helper already does the prefix-bit comparison for `mac_range`;
-  the two webui-side helpers just need to call it (or replicate
-  its `_mac_in_range` logic).
-- **Notes**: the existing `_match_mac_in_entries` docstring
-  documents the mac+oui scope as a deliberate omission — update
-  it when the gap closes.
+### `lynceus-validate rollback` em-dash for Windows-console smoke
+The pre-execution confirmation prompt
+(`src/lynceus/cli/validate.py`, around the rollback-runner
+prompt) uses a real em-dash (U+2014) in the operator-facing
+copy. On a default Windows console that's not in UTF-8 mode the
+character renders as `�`. Linux / macOS smoke is unaffected.
+- **Trigger**: any pre-release Windows-console smoke pass, or
+  the next operator-facing CLI prompt change.
+- **Estimated**: 2-line phrasing tweak; swap to ASCII `--` or
+  add an `os.fsencode`-style hardening at the prompt layer.
+
+### `lynceus-import-argus --help` crashes argparse on Python 3.14
+Running `lynceus-import-argus --help` under Python 3.14's stdlib
+argparse raises an exception inside `format_help` (deep inside
+`_HelpAction.__call__`). Pre-3.14 Pythons render the help fine.
+The fault is in argparse's interaction with the importer's very
+long help text; no end-user CLI behavior is affected beyond
+`--help` itself.
+- **Trigger**: Python 3.14 becomes the default install target
+  (currently still on 3.11 / 3.12 per pyproject.toml's
+  `requires-python = ">=3.11"`), OR an operator complains about
+  the traceback during a setup walkthrough.
+- **Estimated**: 1 prompt. Likely fixable by shortening one of
+  the verbose help strings in import_argus's argparse setup, or
+  by switching that parser to a custom HelpFormatter.
 
 ### CSRF token rotation on session boundaries
 v0.2 ships a single token per cookie session (8 hours). Rotation on

@@ -370,6 +370,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   alerts at the matched row's severity on a fresh install with the
   bundled config.
 
+- **`mac_range` parity in /alerts `has_action` filter + alert-detail
+  "Allowlisted" badge.** Operators allowlisting a vendor block via
+  a `mac_range` entry (e.g. `aa:bb:cc:d/28`) now see their affected
+  alerts flagged as actioned on the list filter AND get the
+  Allowlisted status on each alert's detail page. Both surfaces
+  previously covered only `mac` and `oui` pattern types; the third
+  type matchable from `alert.mac` alone was a deliberate omission
+  with the lockstep follow-up captured in `BACKLOG.md`. Implementation
+  reuses the existing bit-level matcher (lifted to
+  `lynceus.patterns.mac_in_mac_range`, a public helper alongside
+  `parse_mac_range_pattern`) on both surfaces: the alert-detail
+  Python path calls it directly via `_match_mac_in_entries`, and the
+  /alerts SQL filter calls it via a deterministic SQLite scalar
+  function registered on every `Database` connection. Same helper
+  drives the live poll path, the detail page, the CSV export's
+  per-row `action_taken` column, and the list-page filter -- no
+  per-surface re-implementation that could drift. /28 and /36 are
+  the only prefix lengths `parse_mac_range_pattern` admits (both
+  nibble-aligned), so no operator-visible caveat about prefix
+  alignment.
+
 ### Performance
 
 - **`/watchlist/<id>` detail route: single-row JOIN instead of
