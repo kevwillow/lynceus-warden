@@ -4362,5 +4362,35 @@ def test_run_wizard_autolocate_walks_multiple_candidates_until_hit(
     assert data["kismet_api_key"] == "SECONDCANDIDATEKEY99"
 
 
+def test_main_reconfigures_stdout_utf8_for_cp1252_consoles(monkeypatch):
+    """Windows default-console regression: cp1252 stdout must not crash main().
+
+    `_print_section` writes U+2550 BOX DRAWINGS DOUBLE HORIZONTAL, which
+    cp1252 cannot encode. Before the fix, `lynceus-setup` raised
+    UnicodeEncodeError on a Windows console whose default code page was
+    not utf-8. main() now reconfigures sys.stdout to utf-8 at entry, so
+    even a cp1252-encoded wrapper survives subsequent box-drawing prints.
+    """
+    import io
+
+    fake = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", write_through=True)
+    monkeypatch.setattr(sys, "stdout", fake)
+
+    # --version exits 0 via SystemExit after argparse prints; reaching
+    # that point at all proves the reconfigure() call inside main() ran
+    # without an AttributeError-style regression.
+    with pytest.raises(SystemExit) as excinfo:
+        wiz.main(["--version"])
+    assert excinfo.value.code == 0
+
+    # Post-reconfigure, the wrapper must accept the box-drawing char that
+    # would have raised UnicodeEncodeError under the original cp1252
+    # encoding. Call the helper directly to confirm.
+    wiz._print_section("Test")
+    fake.flush()
+    body = fake.buffer.getvalue().decode("utf-8")
+    assert "═" in body
+
+
 # Suppress the unused-import warning for sys (used by helpers above).
 _ = sys
