@@ -1674,6 +1674,29 @@ class Database:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_watchlist_with_metadata(self, watchlist_id: int) -> dict | None:
+        # Single-row sibling of ``list_watchlist_with_metadata``: same
+        # column projection, but indexed by ``w.id`` so the /watchlist/<id>
+        # detail route does not have to load every row (the full Argus
+        # import lands ~22k rows; ``list_watchlist_with_metadata`` returns
+        # all of them and the route would then filter in Python).
+        # ``metadata_id`` is the alias the route uses to detect a present
+        # JOIN partner.
+        row = self._conn.execute(
+            "SELECT "
+            "w.id AS id, w.pattern, w.pattern_type, w.severity, w.description, "
+            "w.mac_range_prefix, w.mac_range_prefix_length, "
+            "m.id AS metadata_id, m.argus_record_id, m.device_category, "
+            "m.confidence, m.vendor, m.source, m.source_url, m.source_excerpt, "
+            "m.fcc_id, m.geographic_scope, m.first_seen, m.last_verified, "
+            "m.notes, m.created_at, m.updated_at "
+            "FROM watchlist w "
+            "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
+            "WHERE w.id = ? LIMIT 1",
+            (watchlist_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def list_watchlist_with_metadata(
         self,
         filters: dict | None = None,

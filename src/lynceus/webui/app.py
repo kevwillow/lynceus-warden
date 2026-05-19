@@ -2577,8 +2577,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     def watchlist_detail(request: Request, watchlist_id: int):
         if watchlist_id < 1:
             raise HTTPException(status_code=400, detail="watchlist_id must be positive")
-        rows = db.list_watchlist_with_metadata()
-        row = next((r for r in rows if r["id"] == watchlist_id), None)
+        row = db.get_watchlist_with_metadata(watchlist_id)
         if row is None:
             return app.state.templates.TemplateResponse(
                 request=request,
