@@ -2,15 +2,21 @@
 
 `default_watchlist.csv` in this directory is a snapshot exported from
 [Argus](https://github.com/kevwillow/argus-db), a sibling project that curates
-identifiers (OUIs, MAC ranges, individual MACs) associated with surveillance
-and tracking equipment.
+identifiers (OUIs, MAC ranges, individual MACs, BLE manufacturer IDs, drone
+Remote-ID prefixes, and SSIDs) associated with surveillance and tracking
+equipment.
 
 ## Snapshot
 
-- **Source:** Argus CP11-format CSV export (`schema_version=8`)
-- **Exported at:** 2026-05-07T20:17:59Z
-- **Records:** 63
-- **Identifier types:** 54 OUI, 8 mac_range, 1 mac
+- **Source:** Argus CP11-format CSV export (`schema_version=21`)
+- **Exported at:** 2026-05-17T15:53:27Z
+- **Records:** 22533
+- **Identifier types (admitted, 22316 of 22533 rows):**
+  17795 mac_range, 3976 ble_manufacturer_id (incl. ble_company_id alias),
+  427 drone_id_prefix, 86 oui, 18 ble_uuid (incl. ble_service / ble_service_uuid
+  aliases), 10 SSID (5 ssid_exact alias to ssid + 5 ssid_pattern), 4 mac.
+- **Dropped at import:** 217 rows across 28 residual identifier types
+  (see `docs/ARGUS_RESIDUALS.md` for the per-type breakdown).
 
 This snapshot is provided as a development starting point so that a fresh
 Lynceus install has useful threat data on day one. It is not authoritative
@@ -22,6 +28,10 @@ findings.
 To replace the bundled snapshot with a newer Argus export at runtime:
 
     lynceus-import-argus --input <path-to-fresh-export.csv>
+
+Or pull the latest published snapshot directly from the Argus GitHub release:
+
+    lynceus-import-argus --from-github
 
 Operators who maintain their own Argus instance can drop a fresh export over
 this file and rebuild the wheel; that is how new Lynceus releases pick up
