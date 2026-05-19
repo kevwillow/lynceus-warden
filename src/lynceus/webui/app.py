@@ -135,6 +135,18 @@ _ALERTS_PER_PAGE_DEFAULT: int = 50
 # precedent.
 _ALERTS_HAS_NOTE_VALUES: tuple[str, ...] = ("all", "with_note", "without_note")
 
+# Action-state filter dropdown on /alerts. "Action" is any one of:
+# per-alert snooze (active mac/oui entry in allowlist_ui.yaml),
+# permanent allowlist (active mac/oui entry in allowlist.yaml), or
+# watchful tracking (an active mac-keyed row in
+# watchful_recurrence). Excludes rule_type_snoozes (migration 017):
+# that surface is system-wide, not per-alert engagement. Excludes
+# the triage-note signal: notes have their own has_note filter, and
+# composing the two is the workflow ("actioned but unnoted").
+# Invalid values silently fall back to "all" via the handler's
+# clamp, matching rule_type / window / has_note precedent.
+_ALERTS_HAS_ACTION_VALUES: tuple[str, ...] = ("all", "with_action", "without_action")
+
 # Relative window dropdown for /alerts. Resolved to an absolute
 # since_ts at request time so URLs stay shareable ("recent" means
 # the same recency to any operator opening the link, anchored to
@@ -815,6 +827,48 @@ def _match_mac_in_entries(
     return None
 
 
+def _load_actioned_patterns(
+    config: Config,
+    now_ts: int,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Active mac + oui allowlist patterns, merged across both files.
+
+    Returns ``(macs, oui_prefixes)``. Both lists are post-expiry --
+    snooze entries past their ``expires_at`` are skipped, mirroring
+    ``Allowlist.is_allowed`` and ``_match_mac_in_entries``. Only
+    ``pattern_type`` in {``mac``, ``oui``} contributes: alerts do not
+    carry live SSID / BLE / mac_range context, so other types cannot
+    be matched from ``alert.mac`` alone, and the alert-detail page's
+    `_match_mac_in_entries` documents the same scope. Extending to
+    ``mac_range`` is backlog (see BACKLOG.md) and must land in
+    lockstep with `_match_mac_in_entries` so the /alerts has_action
+    filter and the alert-detail "actioned" badge never disagree.
+
+    Called only when has_action is engaged on the /alerts route --
+    the default page request stays YAML-cost-free. Missing
+    ``allowlist_path`` or missing primary file returns empty tuples
+    (the alert-detail page handles those configurations the same way).
+    """
+    if not config.allowlist_path:
+        return (), ()
+    primary_path = Path(config.allowlist_path)
+    try:
+        primary_entries = allowlist_mod._load_primary(primary_path).entries
+    except FileNotFoundError:
+        primary_entries = []
+    ui_entries = allowlist_mod._load_ui_entries(derive_ui_path(primary_path))
+    macs: list[str] = []
+    ouis: list[str] = []
+    for entry in list(primary_entries) + list(ui_entries):
+        if entry.expires_at is not None and entry.expires_at <= now_ts:
+            continue
+        if entry.pattern_type == "mac":
+            macs.append(entry.pattern)
+        elif entry.pattern_type == "oui":
+            ouis.append(entry.pattern)
+    return tuple(macs), tuple(ouis)
+
+
 def _resolve_allowlist_match(
     config: Config,
     alert_mac: str | None,
@@ -1122,6 +1176,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         q: str | None = Query(default=None),
         window: str | None = Query(default=None),
         has_note: str | None = Query(default=None),
+        has_action: str | None = Query(default=None),
     ):
         # severity / acknowledged / since / until / search are the
         # pre-rc5 filters and stay byte-identical -- bookmarked URLs
@@ -1167,6 +1222,23 @@ def create_app(config: Config, db: Database) -> FastAPI:
             has_note = None
         has_note_for_db = has_note if has_note in ("with_note", "without_note") else None
 
+        # has_action: same clamp posture. The YAML-side signals
+        # (snooze + permanent allowlist) are loaded lazily ONLY when
+        # has_action is engaged -- the default /alerts request stays
+        # YAML-cost-free. Watchful is a SQL EXISTS subquery handled
+        # by the db layer.
+        if has_action is not None and has_action not in _ALERTS_HAS_ACTION_VALUES:
+            has_action = None
+        has_action_for_db = (
+            has_action if has_action in ("with_action", "without_action") else None
+        )
+        if has_action_for_db is not None:
+            actioned_macs, actioned_oui_prefixes = _load_actioned_patterns(
+                app.state.config, now_ts
+            )
+        else:
+            actioned_macs, actioned_oui_prefixes = (), ()
+
         # If both absolute since and relative window are provided,
         # combine them by taking the tighter lower bound. The DB
         # gets a single since_ts -- both intent paths roll into the
@@ -1197,6 +1269,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
             rule_type=rule_type_for_db,
             q=q_clean,
             has_note=has_note_for_db,
+            has_action=has_action_for_db,
+            actioned_macs=actioned_macs,
+            actioned_oui_prefixes=actioned_oui_prefixes,
         )
 
         pagination = build_pagination(requested_page, per_page, total_count)
@@ -1213,6 +1288,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "rule_type": rule_type_for_db,
                 "q": q_clean,
                 "has_note": has_note_for_db,
+                "has_action": has_action_for_db,
+                "actioned_macs": actioned_macs,
+                "actioned_oui_prefixes": actioned_oui_prefixes,
             }
         )
         _enrich_alerts_with_devices(db, alerts)
@@ -1226,6 +1304,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             or (q and q != "")
             or window
             or has_note_for_db
+            or has_action_for_db
         )
         return app.state.templates.TemplateResponse(
             request=request,
@@ -1248,10 +1327,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "q": q or "",
                 "window": window or "",
                 "has_note": has_note or "all",
+                "has_action": has_action or "all",
                 "rule_types": _ALERTS_RULE_TYPES,
                 "per_page_options": _ALERTS_PER_PAGE_ALLOWED,
                 "window_options": tuple(_ALERTS_WINDOW_SECONDS.keys()),
                 "has_note_options": _ALERTS_HAS_NOTE_VALUES,
+                "has_action_options": _ALERTS_HAS_ACTION_VALUES,
                 "filters_active": filters_active,
             },
         )
@@ -1397,6 +1478,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         q: str | None = Form(default=None),
         window: str | None = Form(default=None),
         has_note: str | None = Form(default=None),
+        has_action: str | None = Form(default=None),
         note: str | None = Form(default=None),
     ):
         # The filter set MUST mirror /alerts GET exactly. If a filter
@@ -1434,6 +1516,22 @@ def create_app(config: Config, db: Database) -> FastAPI:
             has_note = None
         has_note_for_db = has_note if has_note in ("with_note", "without_note") else None
 
+        # has_action: same clamp + lazy-load posture as the GET
+        # handler. The two MUST stay in lockstep -- ack-all-visible
+        # writing under a different filter set than the visible page
+        # is the worst class of bug for a bulk-write surface.
+        if has_action is not None and has_action not in _ALERTS_HAS_ACTION_VALUES:
+            has_action = None
+        has_action_for_db = (
+            has_action if has_action in ("with_action", "without_action") else None
+        )
+        if has_action_for_db is not None:
+            actioned_macs, actioned_oui_prefixes = _load_actioned_patterns(
+                app.state.config, now_ts
+            )
+        else:
+            actioned_macs, actioned_oui_prefixes = (), ()
+
         effective_since_ts = since_ts
         if window_since_ts is not None:
             if effective_since_ts is None:
@@ -1452,6 +1550,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
             rule_type=rule_type_for_db,
             q=q_clean,
             has_note=has_note_for_db,
+            has_action=has_action_for_db,
+            actioned_macs=actioned_macs,
+            actioned_oui_prefixes=actioned_oui_prefixes,
         )
         if total > 1000:
             raise HTTPException(
@@ -1472,6 +1573,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
             rule_type=rule_type_for_db,
             q=q_clean,
             has_note=has_note_for_db,
+            has_action=has_action_for_db,
+            actioned_macs=actioned_macs,
+            actioned_oui_prefixes=actioned_oui_prefixes,
         )
         ids = [a["id"] for a in candidate_alerts]
         actor = request.client.host if request.client else "unknown"
