@@ -86,6 +86,14 @@ Bounded operator impact unless device-category-based severity overrides
 duplicate pair survives. Reconsider if operationally important — would
 need an `argus_record_id`-keyed metadata model and a row-level dispatch
 decision in `rules.py`.
+- **Observable symptoms** (pre-tag local-tool exercise, 2026-05-19):
+  - 31 false-new + 21 false-updated counters reported on a no-op
+    re-import of the same Argus CSV.
+  - 25 `watchlist_metadata` rows have `updated_at` thrashed on every
+    re-import even when no source data changed.
+  - Contradicts the previous `DEPLOYMENT.md §6` "only updates changed
+    rows" claim (now reworded — see af341be) until the dedup model is
+    reworked here.
 
 ### Argus data quality observations relayed upstream
 The 2026-05-17 Argus export contains a `'Flock-*'` row typed as
