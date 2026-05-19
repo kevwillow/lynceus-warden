@@ -238,3 +238,34 @@ sudo systemctl restart lynceus-ui
 ```
 
 Live reload (SIGHUP, file-watch, or a control socket) is tracked in [BACKLOG.md](../BACKLOG.md) under web-UI editing — that work needs the validation/rollback machinery first. Until then, plan to bundle config edits and restart deliberately rather than tweaking and hoping.
+
+## Database migration rollback
+
+Lynceus tracks DB schema state via the `schema_migrations` table — one row per applied migration, populated when the migration runner first ran the corresponding `NNN_*.sql` file. As of v0.5.0 every shipped migration has a paired `NNN_*_down.sql` rollback file, and `lynceus-validate rollback` is the operator surface for reversing applied migrations.
+
+> **Back up the DB first. Always.** Rollback is destructive: every migration that added a column or table loses the rows in it on the way down. Run `sqlite3 <DB_PATH> ".backup '<DB_PATH>.bak-$(date +%Y%m%d%H%M%S)'"` (or copy the file while the daemon is stopped) before invoking rollback.
+
+**Invocation.**
+
+```sh
+# User install (default ~/.local/share/lynceus/lynceus.db):
+lynceus-validate rollback --target-version 17 --yes
+
+# System install (default /var/lib/lynceus/lynceus.db):
+sudo -u lynceus lynceus-validate rollback --scope system --target-version 17 --yes
+
+# Explicit DB path (e.g. a copy you want to test against):
+lynceus-validate rollback --db /tmp/lynceus.db --target-version 0 --yes
+```
+
+`--target-version N` reverses every migration with version > N. `--target-version 0` rolls everything back; the resulting DB has only the `schema_migrations` bookkeeping table. The legacy no-subcommand invocation (`lynceus-validate --scope user`) still runs the config validator unchanged.
+
+**Confirmation prompt.** Interactive runs (stdin is a tty) prompt for an explicit `yes` to confirm the operator has taken a backup. `--yes` skips the prompt and is REQUIRED for scripted / non-tty use; without it the runner refuses with exit code 2.
+
+**Conditional-reverse migrations.** Migrations 011, 013, 014, and 019 relaxed CHECK constraints on `watchlist.pattern_type` and `devices.device_type` to admit new identifier categories. Their down files tighten the CHECK back to the pre-migration set via a table rebuild. If rows of the newly-disallowed type exist (e.g. you have `mac_range` rows in the watchlist and you're trying to roll back past 011), the rebuild's `INSERT ... SELECT` raises `CHECK constraint failed` and the rollback aborts AT THAT STEP. Earlier migrations in the chain that already reverted stay reverted; the offending step's `schema_migrations` row is preserved. To proceed: either delete the offending rows manually first (e.g. `DELETE FROM watchlist WHERE pattern_type='mac_range';`) or restore from a backup taken before the migration applied, then re-invoke rollback.
+
+**Irreversible migrations.** Migration 010 (`normalize_watchlist_patterns`) ran a one-way `UPDATE` that case-folded `watchlist.pattern` and collapsed separators. The pre-normalization text is not recoverable from the post-normalization row — there's no forensic column to reverse from. Its down file carries the sentinel comment `IRREVERSIBLE:` which the runner detects: it logs a `WARNING`, removes the `schema_migrations` row so the chain can continue past this point, and executes NO SQL. The current data state is unchanged. If you need the original pattern text restored, you must do so from a pre-010 backup before re-running rollback.
+
+**Schema-version after rollback.** Each step that successfully runs (or skips, for IRREVERSIBLE) removes its `schema_migrations` row. After `--target-version 0`, the table is empty. Restarting the daemon at that point will RE-APPLY the full chain forward via the standard `_apply_migrations` path — handy if you wanted to roll back, edit a seed CSV, then start fresh. If you don't want that, stop the daemon and keep it stopped until you've inspected the state.
+
+**Recovery from a bad rollback.** Restore the backup file you took at the start (you took one, right?), restart the daemon, confirm `lynceus-validate` reports a clean config, and (if the rollback was triggered by a real problem) think about whether the issue is in the DB or in the schema-migration logic itself.
