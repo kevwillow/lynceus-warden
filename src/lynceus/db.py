@@ -1095,6 +1095,9 @@ class Database:
         rule_type: str | None = None,
         q: str | None = None,
         has_note: str | None = None,
+        has_action: str | None = None,
+        actioned_macs: tuple[str, ...] = (),
+        actioned_oui_prefixes: tuple[str, ...] = (),
     ) -> list[dict]:
         self._validate_pagination(limit, offset)
         if severity is not None and severity not in self._ALERT_SEVERITIES:
@@ -1114,6 +1117,9 @@ class Database:
             rule_type=rule_type,
             q=q,
             has_note=has_note,
+            has_action=has_action,
+            actioned_macs=actioned_macs,
+            actioned_oui_prefixes=actioned_oui_prefixes,
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -1137,6 +1143,9 @@ class Database:
         rule_type: str | None = None,
         q: str | None = None,
         has_note: str | None = None,
+        has_action: str | None = None,
+        actioned_macs: tuple[str, ...] = (),
+        actioned_oui_prefixes: tuple[str, ...] = (),
     ) -> int:
         # COUNT and the page query (list_alerts_with_match) must
         # apply the same filters or "K total" is a lie and the
@@ -1154,6 +1163,9 @@ class Database:
             rule_type=rule_type,
             q=q,
             has_note=has_note,
+            has_action=has_action,
+            actioned_macs=actioned_macs,
+            actioned_oui_prefixes=actioned_oui_prefixes,
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -1179,6 +1191,13 @@ class Database:
     # list workflow with full-text search.
     _ALERT_HAS_NOTE_VALUES = ("with_note", "without_note")
 
+    # has_action accepted values. Same clamp posture as has_note --
+    # any other value (including None / "all" / typo) becomes the
+    # no-op default. The handler resolves the YAML-side allowlist
+    # signal into actioned_macs / actioned_oui_prefixes before
+    # calling here; this layer never reads files.
+    _ALERT_HAS_ACTION_VALUES = ("with_action", "without_action")
+
     @staticmethod
     def _alert_filter_clauses(
         *,
@@ -1190,6 +1209,9 @@ class Database:
         rule_type: str | None = None,
         q: str | None = None,
         has_note: str | None = None,
+        has_action: str | None = None,
+        actioned_macs: tuple[str, ...] = (),
+        actioned_oui_prefixes: tuple[str, ...] = (),
         alias: str = "",
     ) -> tuple[list[str], list]:
         prefix = f"{alias}." if alias else ""
@@ -1234,6 +1256,46 @@ class Database:
             clauses.append(f"{prefix}note IS NOT NULL")
         elif has_note == "without_note":
             clauses.append(f"{prefix}note IS NULL")
+        if has_action in ("with_action", "without_action"):
+            # Three OR'd signals: per-alert snooze (allowlist_ui.yaml
+            # mac/oui match), permanent allowlist (allowlist.yaml
+            # mac/oui match), and watchful tracking (mac-scoped
+            # transitive: every alert from a MAC under an active
+            # watchful_recurrence row inherits the action status,
+            # because that's the suppression effect the operator
+            # opted into). Snooze and allowlist signals are pre-
+            # resolved into actioned_macs / actioned_oui_prefixes
+            # by the handler (which loads the YAML files) -- this
+            # layer never reads files. Rule_type_snoozes (migration
+            # 017) intentionally excluded: a system-wide setting,
+            # not a per-alert engagement.
+            action_clauses: list[str] = []
+            action_params: list = []
+            if actioned_macs:
+                placeholders = ",".join("?" for _ in actioned_macs)
+                action_clauses.append(f"{prefix}mac IN ({placeholders})")
+                action_params.extend(actioned_macs)
+            for oui in actioned_oui_prefixes:
+                action_clauses.append(f"{prefix}mac LIKE ?")
+                action_params.append(f"{oui}:%")
+            action_clauses.append(
+                "EXISTS (SELECT 1 FROM watchful_recurrence wr "
+                f"WHERE wr.mac = {prefix}mac "
+                "AND wr.archived_at IS NULL)"
+            )
+            combined = "(" + " OR ".join(action_clauses) + ")"
+            if has_action == "with_action":
+                clauses.append(combined)
+            else:
+                # NULL-mac alerts can't match any mac-keyed signal;
+                # the OR collapses to NULL there and NOT NULL stays
+                # NULL, silently dropping NULL-mac rows from BOTH
+                # with_action and without_action result sets. Add
+                # an explicit mac-is-null branch so without_action
+                # behaves as "no action signal applies" rather than
+                # "has mac and no signal applies."
+                clauses.append(f"({prefix}mac IS NULL OR NOT {combined})")
+            params.extend(action_params)
         # Any other value (including None / "all" / typo) is the
         # no-op default -- same silent-fallback semantic as rule_type
         # and window.
@@ -1268,6 +1330,9 @@ class Database:
         "rule_type",
         "q",
         "has_note",
+        "has_action",
+        "actioned_macs",
+        "actioned_oui_prefixes",
     )
 
     _ALERT_WITH_MATCH_SELECT = (
@@ -1436,6 +1501,9 @@ class Database:
             rule_type=filters.get("rule_type"),
             q=filters.get("q"),
             has_note=filters.get("has_note"),
+            has_action=filters.get("has_action"),
+            actioned_macs=filters.get("actioned_macs", ()),
+            actioned_oui_prefixes=filters.get("actioned_oui_prefixes", ()),
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""

@@ -36,6 +36,13 @@
           <option value="without_note" {% if has_note == 'without_note' %}selected{% endif %}>without note</option>
         </select>
       </label>
+      <label>action
+        <select name="has_action">
+          <option value="all" {% if has_action == 'all' %}selected{% endif %}>any</option>
+          <option value="with_action" {% if has_action == 'with_action' %}selected{% endif %}>with action taken</option>
+          <option value="without_action" {% if has_action == 'without_action' %}selected{% endif %}>without action taken</option>
+        </select>
+      </label>
       <label>per page
         <select name="page_size">
           {% for n in per_page_options %}
@@ -91,6 +98,7 @@
       {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
       {% if window %}<input type="hidden" name="window" value="{{ window }}">{% endif %}
       {% if has_note and has_note != 'all' %}<input type="hidden" name="has_note" value="{{ has_note }}">{% endif %}
+      {% if has_action and has_action != 'all' %}<input type="hidden" name="has_action" value="{{ has_action }}">{% endif %}
       <details>
         <summary>acknowledge all matching</summary>
         <p><small>(this acknowledges all alerts matching your current filters, up to 1000)</small></p>
@@ -200,6 +208,7 @@
     {% if q %}{% set _ = qs.append('q=' ~ q) %}{% endif %}
     {% if window %}{% set _ = qs.append('window=' ~ window) %}{% endif %}
     {% if has_note and has_note != 'all' %}{% set _ = qs.append('has_note=' ~ has_note) %}{% endif %}
+    {% if has_action and has_action != 'all' %}{% set _ = qs.append('has_action=' ~ has_action) %}{% endif %}
     {% set _ = qs.append('page_size=' ~ pagination.per_page) %}
     {% set base_qs = qs | join('&') %}
     <ul>
