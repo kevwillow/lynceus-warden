@@ -1893,6 +1893,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows consoles default to cp1252/cp437, which can't encode the
+    # box-drawing chars _print_section uses (UnicodeEncodeError on print).
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = _build_parser().parse_args(argv)
     # Refuse sudo-without-system. The wizard derives scope from --system
     # alone (not euid), so `sudo lynceus-setup --reconfigure` would
