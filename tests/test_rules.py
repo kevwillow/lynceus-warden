@@ -924,6 +924,172 @@ def test_evaluate_watchlist_ssid_delegation_without_db_logs_error(caplog):
     assert len(errors) == 1
 
 
+# ---- watchlist_ssid delegation: ssid_pattern dispatch (migration 019) ----
+#
+# The watchlist_ssid DB-delegation branch dispatches two pattern_types:
+# 'ssid' (exact, case-sensitive) consulted first, 'ssid_pattern'
+# (substring, case-insensitive) as a fallback. The tests below cover
+# the substring path's correctness invariants AND the exact-precedence
+# contract so the dispatch order is locked.
+
+
+@pytest.fixture
+def db_with_ssid_pattern_rows(tmp_path):
+    """Seed two ssid_pattern rows (case-variant + substring) at distinct
+    severities. Used by the ssid_pattern dispatch tests below; kept
+    separate from db_with_delegation_rows so the case-insensitive
+    substring rows do not bleed into the other rule_types' tests."""
+    db_path = str(tmp_path / "rules_ssid_pattern.db")
+    db = Database(db_path)
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, 'ssid_pattern', 'high', 'flock substring')",
+            ("flock",),
+        )
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, 'ssid_pattern', 'med', 'penguin substring')",
+            ("Penguin",),
+        )
+    yield db
+    db.close()
+
+
+def test_evaluate_watchlist_ssid_pattern_case_variants_match(
+    db_with_ssid_pattern_rows,
+):
+    """Stored 'flock' fires for case-variant observations 'Flock-FOO',
+    'FLOCK-foo', 'flock-bar' — the case-insensitive contract for the
+    new ssid_pattern matcher. Distinct from the existing
+    case-sensitive ssid type, which would miss all three."""
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    for obs_ssid in ("Flock-FOO", "FLOCK-foo", "flock-bar"):
+        hits = evaluate(
+            rs,
+            _obs(mac="aa:bb:cc:dd:ee:ff", ssid=obs_ssid),
+            is_new_device=False,
+            db=db_with_ssid_pattern_rows,
+        )
+        assert len(hits) == 1, f"obs_ssid={obs_ssid!r} should fire"
+        assert hits[0].severity == "high"
+
+
+def test_evaluate_watchlist_ssid_pattern_substring_semantic(
+    db_with_ssid_pattern_rows,
+):
+    """Stored 'Penguin' must fire for observation 'My-Penguin-AP' —
+    substring (not equality) matching is what makes ssid_pattern
+    useful for vendor-string-embedded SSIDs that vary by location."""
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="My-Penguin-AP"),
+        is_new_device=False,
+        db=db_with_ssid_pattern_rows,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_watchlist_ssid_pattern_severity_from_db_anti_tautology(
+    db_with_ssid_pattern_rows,
+):
+    """rule.severity is deliberately 'low' while the matched
+    ssid_pattern DB row's severity is 'high'. The emitted hit's
+    severity MUST be 'high' (from the DB row). If both were the same
+    value, the test would pass even on a regression where severity
+    fell through from rule.severity — the anti-tautology insurance."""
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="Flock-FOO"),
+        is_new_device=False,
+        db=db_with_ssid_pattern_rows,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity != rule.severity, (
+        "severity must come from the matched DB row, not from rule.severity"
+    )
+    assert hits[0].severity == "high"
+
+
+def test_evaluate_watchlist_ssid_exact_takes_precedence_over_ssid_pattern(tmp_path):
+    """When an observation could match BOTH an exact ssid row AND a
+    substring ssid_pattern row, the exact match wins. Documented
+    ordering: rules.py consults resolve_matched_ssid_for_eval first,
+    then falls back to resolve_matched_ssid_pattern_for_eval only if
+    the exact path returns None. Operators relying on exact rows
+    getting the exact row's severity must not be surprised by a
+    substring-pattern's severity overriding it."""
+    db_path = str(tmp_path / "rules_precedence.db")
+    db = Database(db_path)
+    try:
+        with db._conn:
+            db._conn.execute(
+                "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+                "VALUES (?, 'ssid', 'low', 'exact flock-foo')",
+                ("Flock-FOO",),
+            )
+            db._conn.execute(
+                "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+                "VALUES (?, 'ssid_pattern', 'high', 'flock substring')",
+                ("flock",),
+            )
+        rule = Rule(
+            name="del_ssid", rule_type="watchlist_ssid", severity="med", patterns=[]
+        )
+        rs = Ruleset(rules=[rule])
+        hits = evaluate(
+            rs,
+            _obs(mac="aa:bb:cc:dd:ee:ff", ssid="Flock-FOO"),
+            is_new_device=False,
+            db=db,
+        )
+        assert len(hits) == 1
+        assert hits[0].severity == "low", (
+            "exact ssid row (severity=low) must win over substring "
+            "ssid_pattern row (severity=high)"
+        )
+    finally:
+        db.close()
+
+
+def test_evaluate_watchlist_ssid_pattern_no_ssid_no_hit(db_with_ssid_pattern_rows):
+    """BLE/Classic safety: observations without obs.ssid (None) must
+    not fire the ssid_pattern matcher, just as they don't fire the
+    exact ssid matcher."""
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid=None),
+        is_new_device=False,
+        db=db_with_ssid_pattern_rows,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_ssid_pattern_miss_when_no_substring(
+    db_with_ssid_pattern_rows,
+):
+    """Observation that doesn't contain any stored substring → no
+    hit. Without this, a regression to a wildcard-matching SQL clause
+    (e.g. dropped LIKE pattern) would silently fire every observation."""
+    rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _obs(mac="aa:bb:cc:dd:ee:ff", ssid="Albatross-Network"),
+        is_new_device=False,
+        db=db_with_ssid_pattern_rows,
+    )
+    assert hits == []
+
+
 # ---- ble_uuid delegation ----
 
 

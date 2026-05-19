@@ -1734,6 +1734,84 @@ def test_resolve_matched_ssid_for_eval_case_sensitive(db):
     assert db.resolve_matched_ssid_for_eval("freeairportwifi") is None
 
 
+# ---- resolve_matched_ssid_pattern_for_eval ----
+
+
+def test_resolve_matched_ssid_pattern_for_eval_substring_hit(db):
+    """Observation 'My-Penguin-AP' matches stored substring 'Penguin'."""
+    wid = _add_simple(db, "Penguin", "ssid_pattern", severity="med")
+    match = db.resolve_matched_ssid_pattern_for_eval("My-Penguin-AP")
+    assert match is not None
+    assert match.watchlist_id == wid
+    assert match.severity == "med"
+
+
+def test_resolve_matched_ssid_pattern_for_eval_case_insensitive(db):
+    """Stored 'flock' must match observation 'Flock-FOO' (and 'FLOCK-FOO',
+    and 'flock-foo'). The case-insensitive substring semantic is what
+    distinguishes ssid_pattern from the case-sensitive ssid type — the
+    central correctness invariant for this matcher."""
+    _add_simple(db, "flock", "ssid_pattern", severity="high")
+    for obs in ("Flock-FOO", "FLOCK-FOO", "flock-foo", "MY-FLOCK"):
+        match = db.resolve_matched_ssid_pattern_for_eval(obs)
+        assert match is not None, f"observation {obs!r} should match stored 'flock'"
+        assert match.severity == "high"
+
+
+def test_resolve_matched_ssid_pattern_for_eval_stored_case_preserved(db):
+    """Stored 'FLOCK' must match observation 'flock-foo' too — symmetry
+    check for COLLATE NOCASE (matcher must be case-insensitive on both
+    sides, not just observation-side)."""
+    _add_simple(db, "FLOCK", "ssid_pattern", severity="med")
+    match = db.resolve_matched_ssid_pattern_for_eval("flock-foo")
+    assert match is not None
+    assert match.severity == "med"
+
+
+def test_resolve_matched_ssid_pattern_for_eval_miss(db):
+    _add_simple(db, "Penguin", "ssid_pattern")
+    assert db.resolve_matched_ssid_pattern_for_eval("Albatross") is None
+
+
+def test_resolve_matched_ssid_pattern_for_eval_none_and_empty(db):
+    """Falsy ssid (None or "") short-circuits to None — observations
+    without a captured SSID can't match ssid_pattern any more than
+    they can match ssid."""
+    _add_simple(db, "Penguin", "ssid_pattern")
+    assert db.resolve_matched_ssid_pattern_for_eval(None) is None
+    assert db.resolve_matched_ssid_pattern_for_eval("") is None
+
+
+def test_resolve_matched_ssid_pattern_for_eval_empty_stored_pattern_rejected(db):
+    """Defensive: an empty needle in the watchlist would otherwise match
+    every observation (SQL: ? LIKE '%%' COLLATE NOCASE is always true).
+    The resolver's `pattern != ''` filter must reject it. Belt-and-
+    suspenders alongside the importer's `not raw_pattern` reject."""
+    _add_simple(db, "", "ssid_pattern", severity="high")
+    assert db.resolve_matched_ssid_pattern_for_eval("anything") is None
+    assert db.resolve_matched_ssid_pattern_for_eval("FreeAirportWiFi") is None
+
+
+def test_resolve_matched_ssid_pattern_for_eval_does_not_match_ssid_rows(db):
+    """Cross-type isolation: an exact-equality 'ssid' row must NOT be
+    surfaced by the ssid_pattern matcher even if the substring would
+    technically fire. The two pattern_types are dispatched
+    independently in rules.evaluate; bleed between them would
+    double-fire alerts and confuse severity attribution."""
+    _add_simple(db, "Flock", "ssid", severity="high")
+    assert db.resolve_matched_ssid_pattern_for_eval("Flock-FOO") is None
+    assert db.resolve_matched_ssid_pattern_for_eval("Flock") is None
+
+
+def test_resolve_matched_ssid_pattern_for_eval_populates_device_category(db):
+    wid = _add_simple(db, "flock", "ssid_pattern", severity="high")
+    _attach_metadata(db, wid, device_category="alpr", vendor="Flock Safety")
+    match = db.resolve_matched_ssid_pattern_for_eval("Flock-FOO")
+    assert match is not None
+    assert match.device_category == "alpr"
+    assert match.manufacturer == "Flock Safety"
+
+
 # ---- resolve_matched_ble_uuid_for_eval ----
 
 
