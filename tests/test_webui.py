@@ -2454,7 +2454,7 @@ def test_alert_detail_state1_renders_both_buttons_and_csrf(tmp_path):
             r = client.get(f"/alerts/{aid}")
         assert r.status_code == 200
         assert "Allowlist this device" in r.text
-        assert "Snooze for 24h" in r.text
+        assert ">Snooze</button>" in r.text
         assert f'action="/alerts/{aid}/allowlist"' in r.text
         assert f'action="/alerts/{aid}/snooze"' in r.text
         # Both forms must carry the CSRF token.

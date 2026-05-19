@@ -141,9 +141,17 @@
           <button type="submit">Allowlist this device</button>
         </form>
         <form method="post" action="/alerts/{{ alert.id }}/snooze"
-              onsubmit="return confirm('Snooze alerts for {{ alert.mac }} for 24 hours?');">
+              onsubmit="return confirm('Snooze alerts for {{ alert.mac }}?');">
           <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
-          <button type="submit">Snooze for 24h</button>
+          <label>
+            Duration:
+            <select name="snooze_duration" class="snooze-duration-select" title="how long to suppress alerts for this MAC">
+              {% for d in snooze_duration_options %}
+                <option value="{{ d }}"{% if d == snooze_default_duration %} selected{% endif %}>{{ d }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit">Snooze</button>
         </form>
       {% elif allowlist_match.expires_at is none %}
         <p class="status">
