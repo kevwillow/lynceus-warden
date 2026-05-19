@@ -2673,10 +2673,10 @@ with external trackers.
   Light-mode rendering is byte-identical to pre-change (the `:root`
   defaults preserve the prior color literals exactly), so operators
   who keep their OS in light mode and never touch the toggle see no
-  visual change. Known limitation: a brief flash-of-prefers-color-
-  scheme on every page load because `lynceus.js` runs `defer`red;
-  fixing requires an inline `<head>` script and is deferred to a
-  future iteration if anyone reports it as bothersome.
+  visual change. A tiny synchronous `<head>` bootstrap reads the
+  stored choice before the stylesheet loads, so operators on a
+  forced theme do not see a flash of `prefers-color-scheme` between
+  first paint and the deferred `lynceus.js` running.
 
 - **`lynceus-import-argus --min-confidence N` row-skip flag.**
   Hard-skips rows where `confidence < N` before any DB write;
