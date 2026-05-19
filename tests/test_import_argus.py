@@ -167,6 +167,122 @@ def test_ssid_exact_identifier_type_imports_as_ssid(tmp_path, db):
     assert row["pattern_type"] == "ssid"
 
 
+def test_ssid_exact_argus_sample_rows_all_land_as_ssid(tmp_path, db):
+    """Mirrors the actual Argus export contents at the 2026-05-17 snapshot:
+    5 ssid_exact rows (``Flock`` x2, ``Flock-230503`` x2, ``Flock-*``).
+    The two pairs of duplicates differ in argus_record_id only, so the
+    natural-key dedup at write time produces 3 unique watchlist rows.
+    ``upsert_metadata`` is keyed by ``watchlist_id`` (last-write-wins),
+    so the duplicate pairs collapse to one metadata row each (3 total),
+    even though all 5 argus_record_ids are processed (report.imported_new
+    == 5). Asserts all four counts so a regression to the dedup, alias,
+    or upsert paths is loud."""
+    samples = [
+        ("s-flock-1", "Flock"),
+        ("s-flock-2", "Flock"),
+        ("s-flock-230503-1", "Flock-230503"),
+        ("s-flock-230503-2", "Flock-230503"),
+        ("s-flock-wildcard", "Flock-*"),
+    ]
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(argus_record_id=arid, identifier_type="ssid_exact", identifier=val)
+            for arid, val in samples
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+
+    types = {
+        r["pattern_type"]
+        for r in db._conn.execute("SELECT pattern_type FROM watchlist").fetchall()
+    }
+    assert types == {"ssid"}
+
+    patterns = sorted(
+        r["pattern"]
+        for r in db._conn.execute("SELECT pattern FROM watchlist").fetchall()
+    )
+    assert patterns == ["Flock", "Flock-*", "Flock-230503"]
+
+    assert _wl_count(db) == 3
+    assert _md_count(db) == 3
+    assert report.imported_new == 5
+
+
+def test_ssid_exact_wildcard_logs_warning_and_imports_anyway(tmp_path, db, caplog):
+    """``Flock-*`` typed as ssid_exact is almost certainly Argus-side
+    miscategorization (should be ssid_pattern). Per kev's call: warn
+    loudly at import time but import the row anyway — the literal ``*``
+    never matches a real WiFi observation, so the row sits dormant
+    until Argus fixes it upstream. Asserts the warning is emitted, the
+    counter increments, AND the row lands in the watchlist."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="s-wild",
+                identifier_type="ssid_exact",
+                identifier="Flock-*",
+            )
+        ],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == _logging.WARNING
+        and r.name == "lynceus.cli.import_argus"
+        and "ssid_exact" in r.getMessage()
+        and "Flock-*" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "argus_record_id=s-wild" in warnings[0].getMessage()
+    assert "ssid_pattern" in warnings[0].getMessage(), (
+        "warning should hint the operator that the row likely belongs as ssid_pattern"
+    )
+
+    assert report.ssid_exact_wildcard_warn == 1
+    assert report.imported_new == 1
+
+    row = db._conn.execute(
+        "SELECT pattern, pattern_type FROM watchlist"
+    ).fetchone()
+    assert row["pattern"] == "Flock-*"
+    assert row["pattern_type"] == "ssid"
+
+
+def test_ssid_exact_without_wildcard_emits_no_warning(tmp_path, db, caplog):
+    """Guard: ordinary ssid_exact rows must NOT trip the wildcard warning
+    path. Catches accidental over-broadening of the trigger (e.g. if
+    someone widens the char set to include `-` or normal punctuation)."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="s-clean",
+                identifier_type="ssid_exact",
+                identifier="Flock-230503",
+            )
+        ],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+
+    wildcard_warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == _logging.WARNING
+        and r.name == "lynceus.cli.import_argus"
+        and "ssid_exact" in r.getMessage()
+    ]
+    assert wildcard_warnings == []
+    assert report.ssid_exact_wildcard_warn == 0
+    assert report.imported_new == 1
+
+
 def test_ble_uuid_identifier_type_imports_as_ble_uuid(tmp_path, db):
     # Full 128-bit UUID — short forms are rejected by normalize_pattern
     # (L-RULES-1) since the poller only matches against the 128-bit
