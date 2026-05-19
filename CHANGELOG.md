@@ -4,6 +4,33 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Per-alert snooze: operator-pickable duration.** The snooze form
+  on the alert detail page grows a duration selector offering five
+  options — `1h / 24h / 7d / 30d / forever` — replacing the previous
+  bare "Snooze for 24h" button. The shared overlap with the watchful
+  triage button (`24h / 7d / 30d / forever`) uses the same vocabulary
+  and the same seconds; `1h` is new and lives on per-alert snooze
+  only ("shut up about this for an hour while I look into it"), with
+  the watchful triage selector deliberately left at its four-option
+  set since 1h doesn't fit recurrence-tracking semantics. Default is
+  still `24h` — a form submission without a `snooze_duration` param
+  produces the same `expires_at` and the same
+  `"snoozed 24h via webui"` provenance note as before, so existing
+  links / scripts continue to behave identically. The `forever`
+  option writes a NULL `expires_at` (yaml end-state identical to the
+  Allowlist button) but records distinct provenance
+  (`"snoozed forever via webui"`) so operators reading
+  `allowlist_ui.yaml` can tell which surface produced the entry. The
+  POST route grew strict validation matching `/alerts/{id}/watch`'s
+  shape — an unknown duration value returns 400 with no yaml
+  side-effect. CSRF protection and the `confirm()` safety pattern
+  are unchanged (confirm text is now duration-agnostic:
+  `"Snooze alerts for {mac}?"`).
+
 ## [0.4.0-rc6] - 2026-05-17
 
 Mostly cleanup. rc5 shipped the big feature push — `/watchlist` search,
