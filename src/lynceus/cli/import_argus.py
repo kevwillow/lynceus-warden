@@ -62,6 +62,7 @@ IDENTIFIER_TYPE_MAP: dict[str, str] = {
     "mac": "mac",
     "oui": "oui",
     "ssid_exact": "ssid",
+    "ssid_pattern": "ssid_pattern",
     "ble_uuid": "ble_uuid",
     "ble_service": "ble_uuid",
     "ble_service_uuid": "ble_uuid",

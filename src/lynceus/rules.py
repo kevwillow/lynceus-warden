@@ -852,6 +852,16 @@ def evaluate(
                 # Delegation path. Severity sourced from the matched
                 # DB row — see the watchlist_mac branch above for the
                 # architectural rationale.
+                #
+                # Two pattern_types are dispatched under this single
+                # rule_type: 'ssid' (case-sensitive equality, the
+                # original v0.4.0-rc4 path) and 'ssid_pattern' (case-
+                # insensitive substring, added in rc6 alongside
+                # migration 019). Exact equality is consulted first;
+                # if it misses, the substring matcher is the fallback.
+                # Operators see one rule_type — the watchlist DB
+                # carries both pattern_types and the dispatch is
+                # invisible from the rules.yaml surface.
                 if db is None:
                     logger.error(
                         "delegation rule %r (watchlist_ssid, empty patterns) "
@@ -860,6 +870,8 @@ def evaluate(
                     )
                     continue
                 match = db.resolve_matched_ssid_for_eval(obs.ssid)
+                if match is None:
+                    match = db.resolve_matched_ssid_pattern_for_eval(obs.ssid)
                 if match is None:
                     continue
                 effective_severity = _apply_runtime_overrides(

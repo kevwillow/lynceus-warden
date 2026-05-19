@@ -372,6 +372,12 @@ def normalize_pattern(pattern_type: str, pattern: str) -> str:
     if pattern_type == "ssid":
         # SSIDs are case-sensitive per 802.11; do not normalize.
         return pattern
+    if pattern_type == "ssid_pattern":
+        # Case-insensitive substring needle. Case-folding happens in
+        # the matcher (db.resolve_matched_ssid_pattern_for_eval via
+        # COLLATE NOCASE), not at write time — the original case is
+        # preserved so the stored pattern remains operator-readable.
+        return pattern
     logger.debug(
         "normalize_pattern: unknown pattern_type %r — passing through unchanged",
         pattern_type,
