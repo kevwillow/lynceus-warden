@@ -8,6 +8,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/watchlist.csv`: streaming CSV export of the filtered watchlist
+  result set.** Sibling of `/alerts.csv` (below) on the watchlist
+  surface. "Export CSV" link adjacent to the pagination summary on
+  the `/watchlist` list page; href carries the current filter query
+  string through (pattern_type, severity, device_category, q).
+  Pagination is bypassed — the export covers every matching row,
+  up to the full ~22k-row Argus corpus. Filename:
+  `watchlist-YYYYMMDDTHHMMSSZ.csv` (ISO UTC timestamp, sorts
+  lexicographically). Content-Type: `text/csv; charset=utf-8`.
+  Column projection is wider than the compact `/watchlist` list
+  page: surfaces the full `watchlist_metadata` join so operators
+  exporting get the same Argus provenance the
+  `/watchlist/<id>` detail page renders — `argus_record_id,
+  device_category, confidence, vendor, source, source_url,
+  source_excerpt, fcc_id, geographic_scope, first_seen` (both
+  ISO UTC and unix), `last_verified` (both), `notes`. Plus the
+  watchlist row itself: `id, pattern, pattern_type, severity,
+  description, mac_range_prefix, mac_range_prefix_length`. CSV
+  escaping via `csv.QUOTE_MINIMAL` round-trips commas / quotes /
+  newlines safely. LEFT JOIN preserves yaml-seeded / bundled
+  rows that have no `watchlist_metadata` partner: those export
+  with empty cells across the 14 metadata-join columns (no
+  `None` / `null` leakage). Response genuinely streamed via
+  FastAPI `StreamingResponse` over a new
+  `Database.iter_watchlist_filtered(...)` cursor-iterating
+  helper; no row cap. Invalid filter values silent-fall-back
+  to "all" (matches list-route clamp posture); `q` capped at
+  100 chars (400 above). No CSRF.
+
 - **`/alerts.csv`: streaming CSV export of the filtered alerts result
   set.** New "Export CSV" link adjacent to the pagination summary on
   the `/alerts` list page. The href carries the current query string
