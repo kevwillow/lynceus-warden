@@ -213,7 +213,9 @@ lynceus-import-argus --from-github
 GitHub Releases, caches it under
 `<data-dir>/argus-cache/<ref>__argus_export.csv`, and reports the
 number of rows imported / updated / skipped. Idempotent — re-running
-is safe and only updates changed rows.
+is safe. Import counters reflect rows touched by the importer, not
+rows whose source data actually changed; some metadata rows update
+on no-op re-imports (tracked in BACKLOG).
 
 **Explanation:** The bundled watchlist that `lynceus-setup` imported
 is a point-in-time snapshot. `--from-github` pulls the latest tagged
