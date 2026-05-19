@@ -1110,6 +1110,190 @@ def test_list_alerts_with_match_accepts_rule_type_and_q(db):
 
 
 # ---------------------------------------------------------------------------
+# /alerts has_action filter -- pairs with has_note to close the
+# triage workflow (snooze / allowlist / watchful -> filter). Three
+# signals OR'd together: per-alert snooze + permanent allowlist
+# (both resolved to mac/oui sets by the handler) + watchful
+# (mac-keyed EXISTS on watchful_recurrence in the DB layer).
+# ---------------------------------------------------------------------------
+
+
+def _seed_device(db, mac, ts=100):
+    """alerts.mac is a FK to devices.mac; upsert the device first."""
+    db.upsert_device(mac, "wifi", "Acme", 0, ts)
+
+
+def test_list_alerts_has_action_with_action_mac_signal(db):
+    """A mac in actioned_macs makes the alert "actioned" (covers
+    both the per-alert-snooze and permanent-allowlist mac surfaces;
+    the handler folds both into the same actioned_macs tuple)."""
+    _seed_device(db, "aa:bb:cc:dd:ee:01")
+    _seed_device(db, "aa:bb:cc:dd:ee:02")
+    db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01",
+                 message="actioned", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac="aa:bb:cc:dd:ee:02",
+                 message="fresh", severity="low")
+    rows = db.list_alerts(
+        has_action="with_action",
+        actioned_macs=("aa:bb:cc:dd:ee:01",),
+    )
+    assert [r["message"] for r in rows] == ["actioned"]
+    assert db.count_alerts(
+        has_action="with_action",
+        actioned_macs=("aa:bb:cc:dd:ee:01",),
+    ) == 1
+
+
+def test_list_alerts_has_action_with_action_oui_signal(db):
+    """An oui prefix in actioned_oui_prefixes matches every alert
+    whose mac starts with that prefix."""
+    _seed_device(db, "aa:bb:cc:dd:ee:01")
+    _seed_device(db, "11:22:33:44:55:66")
+    db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01",
+                 message="under-oui", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac="11:22:33:44:55:66",
+                 message="outside-oui", severity="low")
+    rows = db.list_alerts(
+        has_action="with_action",
+        actioned_oui_prefixes=("aa:bb:cc",),
+    )
+    assert [r["message"] for r in rows] == ["under-oui"]
+
+
+def test_list_alerts_has_action_with_action_watchful_signal(db):
+    """An active (non-archived) watchful_recurrence row keyed on the
+    alert's mac makes the alert "actioned" -- the mac-scoped
+    transitive semantic: every alert from a tracked MAC inherits
+    the action status the operator opted into."""
+    _seed_device(db, WATCHFUL_MAC)
+    _seed_device(db, "cc:dd:ee:ff:00:11")
+    db.add_alert(ts=100, rule_name="r", mac=WATCHFUL_MAC,
+                 message="watchful-tracked", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac="cc:dd:ee:ff:00:11",
+                 message="other-mac", severity="low")
+    _insert_watchful(db, mac=WATCHFUL_MAC)
+    rows = db.list_alerts(has_action="with_action")
+    assert [r["message"] for r in rows] == ["watchful-tracked"]
+
+
+def test_list_alerts_has_action_archived_watchful_does_not_trigger(db):
+    """archived_at IS NULL is the activeness gate; archived rows
+    are operator-finished and must not contribute to with_action."""
+    _seed_device(db, WATCHFUL_MAC)
+    db.add_alert(ts=100, rule_name="r", mac=WATCHFUL_MAC,
+                 message="archived-watchful", severity="low")
+    _insert_watchful(db, mac=WATCHFUL_MAC, archived_at=2000)
+    assert db.count_alerts(has_action="with_action") == 0
+    assert db.count_alerts(has_action="without_action") == 1
+
+
+def test_list_alerts_has_action_without_action_complement(db):
+    """without_action selects rows where none of the three signals
+    apply -- the complement of with_action."""
+    _seed_device(db, "aa:bb:cc:dd:ee:01")
+    _seed_device(db, "cc:dd:ee:ff:00:11")
+    _seed_device(db, "22:33:44:55:66:77")
+    db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01",
+                 message="snoozed", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac="cc:dd:ee:ff:00:11",
+                 message="watched", severity="low")
+    db.add_alert(ts=102, rule_name="r", mac="22:33:44:55:66:77",
+                 message="untouched", severity="low")
+    _insert_watchful(db, mac="cc:dd:ee:ff:00:11")
+    rows = db.list_alerts(
+        has_action="without_action",
+        actioned_macs=("aa:bb:cc:dd:ee:01",),
+    )
+    assert [r["message"] for r in rows] == ["untouched"]
+
+
+def test_list_alerts_has_action_null_mac_lands_in_without_action(db):
+    """NULL-mac alerts can't match any mac-keyed signal. Without the
+    `mac IS NULL` branch in the without_action clause they'd silently
+    drop from BOTH with_action and without_action result sets
+    (NULL IN (...) and NULL LIKE ... both return NULL, and NOT NULL
+    is NULL too)."""
+    db.add_alert(ts=100, rule_name="r", mac=None,
+                 message="null-mac", severity="low")
+    assert db.count_alerts(
+        has_action="with_action",
+        actioned_macs=("aa:bb:cc:dd:ee:01",),
+    ) == 0
+    rows = db.list_alerts(
+        has_action="without_action",
+        actioned_macs=("aa:bb:cc:dd:ee:01",),
+    )
+    assert [r["message"] for r in rows] == ["null-mac"]
+
+
+def test_list_alerts_has_action_all_is_noop(db):
+    """has_action='all', None, '', and unrecognized values all degrade
+    to 'no clause' -- same silent-fallback semantic as has_note."""
+    _seed_device(db, "aa:bb:cc:dd:ee:01")
+    _seed_device(db, "22:33:44:55:66:77")
+    db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01",
+                 message="m1", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac="22:33:44:55:66:77",
+                 message="m2", severity="low")
+    assert db.count_alerts(has_action=None) == 2
+    assert db.count_alerts(has_action="all") == 2
+    assert db.count_alerts(has_action="") == 2
+    assert db.count_alerts(has_action="bogus") == 2
+
+
+def test_list_alerts_has_action_combines_with_has_note(db):
+    """Composition: with_action + without_note = "actioned but unnoted"
+    (the headline workflow the brief calls out)."""
+    _seed_device(db, "aa:bb:cc:dd:ee:01")
+    _seed_device(db, "aa:bb:cc:dd:ee:02")
+    _seed_device(db, "22:33:44:55:66:77")
+    a1 = db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01",
+                      message="actioned-noted", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac="aa:bb:cc:dd:ee:02",
+                 message="actioned-unnoted", severity="low")
+    db.add_alert(ts=102, rule_name="r", mac="22:33:44:55:66:77",
+                 message="fresh-unnoted", severity="low")
+    db.update_alert_note(a1, "FP", now_ts=999)
+    rows = db.list_alerts(
+        has_action="with_action",
+        has_note="without_note",
+        actioned_macs=("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"),
+    )
+    assert [r["message"] for r in rows] == ["actioned-unnoted"]
+
+
+def test_list_alerts_with_match_has_action_filter(db):
+    """list_alerts_with_match (the page query) honors has_action --
+    matching count_alerts so pagination stays correct."""
+    _seed_device(db, "aa:bb:cc:dd:ee:01")
+    _seed_device(db, "22:33:44:55:66:77")
+    db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01",
+                 message="actioned", severity="low")
+    db.add_alert(ts=101, rule_name="r", mac="22:33:44:55:66:77",
+                 message="fresh", severity="low")
+    rows = db.list_alerts_with_match({
+        "has_action": "with_action",
+        "actioned_macs": ("aa:bb:cc:dd:ee:01",),
+    })
+    assert [r["message"] for r in rows] == ["actioned"]
+
+
+def test_list_alerts_with_match_accepts_has_action_keys(db):
+    """_ALERT_WITH_MATCH_FILTER_KEYS admits has_action +
+    actioned_macs + actioned_oui_prefixes (regression against a
+    future drift between the two layers)."""
+    _seed_device(db, "aa:bb:cc:dd:ee:01")
+    db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01",
+                 message="m", severity="low")
+    # No ValueError on any of the three keys:
+    db.list_alerts_with_match({
+        "has_action": "with_action",
+        "actioned_macs": ("aa:bb:cc:dd:ee:01",),
+        "actioned_oui_prefixes": ("aa:bb:cc",),
+    })
+
+
+# ---------------------------------------------------------------------------
 # device_seen_counts and latest_poll_ts (UI dashboard helpers).
 # ---------------------------------------------------------------------------
 

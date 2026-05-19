@@ -4754,6 +4754,373 @@ def test_alerts_has_note_default_omits_param_from_pagination_url(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# /alerts has_action filter -- pairs with has_note to close the
+# triage workflow. Three signals OR'd: per-alert snooze
+# (allowlist_ui.yaml mac/oui), permanent allowlist (allowlist.yaml
+# mac/oui), watchful tracking (mac-keyed active watchful_recurrence
+# row). YAML loads are lazy -- only the engaged-filter request pays
+# that cost.
+# ---------------------------------------------------------------------------
+
+
+def _insert_watchful_row(db, mac, *, archived_at=None):
+    """Direct INSERT into watchful_recurrence -- mirrors test_db.py's
+    _insert_watchful (operator-facing create paths live in Phase 2,
+    not yet shipped). Tests here only need a single active or
+    archived row."""
+    db._conn.execute(
+        "INSERT INTO watchful_recurrence("
+        "mac, created_at, first_seen_at, last_seen_at, sighting_count, "
+        "archived_at, source_alert_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (mac, 1000, 1000, 1000, 1, archived_at, None),
+    )
+    db._conn.commit()
+
+
+def _seed_alert_with_device(db, mac, message, *, ts=100, severity="low"):
+    """alerts.mac is a FK to devices.mac. Tests that name a mac
+    explicitly must upsert the device first."""
+    db.upsert_device(mac, "wifi", "Acme", 0, ts)
+    return db.add_alert(
+        ts=ts, rule_name="r", mac=mac, message=message, severity=severity,
+    )
+
+
+def _write_allowlist_primary(primary_path, *, macs=(), ouis=()):
+    """Compose an allowlist.yaml with the given mac/oui entries."""
+    lines = ["entries:\n"]
+    for m in macs:
+        lines.append(f"  - pattern: {m}\n    pattern_type: mac\n")
+    for o in ouis:
+        lines.append(f"  - pattern: {o}\n    pattern_type: oui\n")
+    primary_path.write_text("".join(lines), encoding="utf-8")
+
+
+@pytest.mark.webui
+def test_alerts_has_action_dropdown_renders_with_all_three_options(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'name="has_action"' in r.text
+        assert 'value="with_action"' in r.text
+        assert 'value="without_action"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_default_shows_all(tmp_path):
+    """Default page renders every row regardless of action state --
+    no filter applied, no YAML loaded."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-snoozed", ts=100)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "msg-snoozed" in r.text
+        assert "msg-fresh" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_narrows_to_permanently_allowlisted(tmp_path):
+    """A mac entry in the operator-curated allowlist.yaml makes the
+    alert "actioned" under with_action."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, macs=["aa:bb:cc:dd:ee:01"])
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-allowed", ts=100)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-allowed" in r.text
+        assert "msg-fresh" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_narrows_to_snoozed_rows(tmp_path):
+    """A UI-side allowlist entry with a future expires_at (the
+    per-alert-snooze surface) counts as actioned while the snooze
+    is active."""
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        ui_path = derive_ui_path(primary)
+        now_ts = int(_time.time())
+        add_ui_entry(ui_path, AllowlistEntry(
+            pattern="aa:bb:cc:dd:ee:01",
+            pattern_type="mac",
+            expires_at=now_ts + 86400,
+            added_at=now_ts,
+        ))
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-snoozed", ts=100)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-snoozed" in r.text
+        assert "msg-fresh" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_expired_snooze_does_not_trigger(tmp_path):
+    """An allowlist entry past its expires_at has effectively reverted
+    to 'without action.' The lazy YAML loader skips expired entries
+    same as Allowlist.is_allowed."""
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        ui_path = derive_ui_path(primary)
+        now_ts = int(_time.time())
+        add_ui_entry(ui_path, AllowlistEntry(
+            pattern="aa:bb:cc:dd:ee:01",
+            pattern_type="mac",
+            expires_at=now_ts - 3600,
+            added_at=now_ts - 7200,
+        ))
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-once-snoozed", ts=100)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-once-snoozed" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_narrows_to_watchful_tracked(tmp_path):
+    """An active watchful_recurrence row keyed on the alert's mac
+    makes the alert "actioned" -- mac-scoped (transitive) per
+    Q1 resolution: every alert from the tracked MAC inherits the
+    action status the operator opted into."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-watched", ts=100)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
+        _insert_watchful_row(db, "aa:bb:cc:dd:ee:01")
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-watched" in r.text
+        assert "msg-fresh" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_archived_watchful_does_not_trigger(tmp_path):
+    """archived_at IS NULL gates activeness. An archived watchful
+    row is operator-finished and must not contribute to with_action."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-archived", ts=100)
+        _insert_watchful_row(db, "aa:bb:cc:dd:ee:01", archived_at=2000)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-archived" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_without_action_excludes_all_three_signals(tmp_path):
+    """without_action returns alerts where NONE of the three signals
+    apply -- the complement of with_action."""
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, macs=["aa:aa:aa:aa:aa:aa"])
+        ui_path = derive_ui_path(primary)
+        now_ts = int(_time.time())
+        add_ui_entry(ui_path, AllowlistEntry(
+            pattern="bb:bb:bb:bb:bb:bb",
+            pattern_type="mac",
+            expires_at=now_ts + 86400,
+            added_at=now_ts,
+        ))
+        _seed_alert_with_device(db, "aa:aa:aa:aa:aa:aa", "msg-permanent", ts=100)
+        _seed_alert_with_device(db, "bb:bb:bb:bb:bb:bb", "msg-snoozed", ts=101)
+        _seed_alert_with_device(db, "cc:cc:cc:cc:cc:cc", "msg-watched", ts=102)
+        _seed_alert_with_device(db, "dd:dd:dd:dd:dd:dd", "msg-untouched", ts=103)
+        _insert_watchful_row(db, "cc:cc:cc:cc:cc:cc")
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=without_action")
+        assert r.status_code == 200
+        assert "msg-untouched" in r.text
+        assert "msg-permanent" not in r.text
+        assert "msg-snoozed" not in r.text
+        assert "msg-watched" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_invalid_value_falls_back_to_all(tmp_path):
+    """Stale bookmark / typo'd has_action lands on the unfiltered
+    page rather than a 400 -- matches the rule_type / window /
+    has_note silent-clamp precedent."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-one", ts=100)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-two", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=bogus_value")
+        assert r.status_code == 200
+        assert "msg-one" in r.text
+        assert "msg-two" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_combines_with_has_note(tmp_path):
+    """Composition with has_note: ?has_action=with_action&has_note=without_note
+    surfaces alerts the operator actioned but never annotated --
+    the headline composability the brief calls out."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, macs=[
+            "aa:bb:cc:dd:ee:01",
+            "aa:bb:cc:dd:ee:02",
+        ])
+        a1 = _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-actioned-noted", ts=100)
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:02", "msg-actioned-unnoted", ts=101)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh-unnoted", ts=102)
+        db.update_alert_note(a1, "FP", now_ts=999)
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?has_action=with_action&has_note=without_note"
+            )
+        assert r.status_code == 200
+        assert "msg-actioned-unnoted" in r.text
+        assert "msg-actioned-noted" not in r.text
+        assert "msg-fresh-unnoted" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_round_trips_in_pagination_links(tmp_path):
+    """has_action is preserved through next/prev pagination links --
+    operator paginating through a filtered view stays in the filter."""
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(30):
+            _seed_alert_with_device(
+                db, f"aa:bb:cc:dd:00:{i:02x}", f"m{i}", ts=100 + i,
+            )
+            _insert_watchful_row(db, f"aa:bb:cc:dd:00:{i:02x}")
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action&page_size=25")
+        assert r.status_code == 200
+        assert "has_action=with_action" in r.text
+        assert "page=2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_dropdown_round_trips_selected_state(tmp_path):
+    """Round-trip on the dropdown: visiting /alerts?has_action=with_action
+    renders that option as selected so the operator sees the active
+    filter state in the form."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert 'value="with_action" selected' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_carried_through_ack_all_visible_form(tmp_path):
+    """ack-all-visible MUST mirror the GET filter set exactly. The
+    has_action hidden input rides along when set, so 'ack all
+    matching' operates on the same rows the operator sees."""
+    app, db = _make_app(tmp_path)
+    try:
+        # The ack-all-visible form only renders when there's at least
+        # one matching alert. Seed a watchful-tracked alert so the
+        # filter has something to display.
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg", ts=100)
+        _insert_watchful_row(db, "aa:bb:cc:dd:ee:01")
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert 'name="has_action" value="with_action"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_post_with_has_action_acks_only_matching(tmp_path):
+    """ack-all-visible POST with has_action=with_action acknowledges
+    only actioned rows -- single-source-of-truth invariant: the POST
+    handler's clamp + lazy-YAML-load must mirror GET exactly."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, macs=["aa:bb:cc:dd:ee:01"])
+        a1 = _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-actioned", ts=100)
+        a2 = _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "has_action": "with_action",
+                },
+            )
+        assert r.status_code == 200
+        assert db.get_alert(a1)["acknowledged"] == 1
+        assert db.get_alert(a2)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_default_does_not_require_allowlist_path(tmp_path):
+    """Lazy-load invariant: the default /alerts request (has_action
+    unset) must not require allowlist_path -- the YAML loader is
+    only called when has_action is engaged."""
+    # _make_app does NOT configure allowlist_path. Default request
+    # must succeed regardless.
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg", ts=100)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+            r2 = client.get("/alerts?has_action=all")
+        assert r.status_code == 200
+        assert r2.status_code == 200
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # rc6: per-rule_type snooze controls on /rules.
 # ---------------------------------------------------------------------------
 
