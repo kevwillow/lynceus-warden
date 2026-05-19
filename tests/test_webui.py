@@ -5448,3 +5448,425 @@ def test_rules_list_flash_banner_on_success(tmp_path):
         assert "watchlist_mac" in r.text
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# /alerts.csv -- streaming CSV export of the filtered alerts result set.
+# ---------------------------------------------------------------------------
+
+import csv as _csv  # noqa: E402 -- top-of-section to keep section self-contained
+
+
+def _parse_csv_response(body: str) -> tuple[list[str], list[list[str]]]:
+    reader = _csv.reader(io.StringIO(body))
+    rows = list(reader)
+    if not rows:
+        return [], []
+    return rows[0], rows[1:]
+
+
+_ALERTS_CSV_HEADER = [
+    "id",
+    "ts_iso_utc",
+    "ts_unix",
+    "severity",
+    "rule_name",
+    "rule_type",
+    "mac",
+    "message",
+    "acknowledged",
+    "note",
+    "note_updated_at_iso_utc",
+    "matched_watchlist_id",
+    "matched_pattern",
+    "matched_pattern_type",
+    "matched_vendor",
+    "matched_confidence",
+    "matched_device_category",
+    "matched_argus_record_id",
+    "device_type",
+    "oui_vendor",
+    "action_taken",
+]
+
+
+@pytest.mark.webui
+def test_alerts_csv_returns_200_with_content_type_and_disposition(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="boom", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        assert r.status_code == 200
+        assert "text/csv" in r.headers["content-type"]
+        cd = r.headers["content-disposition"]
+        assert cd.startswith('attachment; filename="alerts-')
+        assert cd.endswith('Z.csv"')
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_filename_is_iso_utc_timestamped(tmp_path):
+    import re
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        cd = r.headers["content-disposition"]
+        # alerts-YYYYMMDDTHHMMSSZ.csv
+        m = re.search(r'filename="alerts-(\d{8}T\d{6}Z)\.csv"', cd)
+        assert m is not None, f"filename did not match expected shape: {cd}"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_header_row_columns_stable_order(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        header, _ = _parse_csv_response(r.text)
+        assert header == _ALERTS_CSV_HEADER
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_empty_result_returns_header_only(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        assert r.status_code == 200
+        header, data_rows = _parse_csv_response(r.text)
+        assert header == _ALERTS_CSV_HEADER
+        assert data_rows == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_emits_one_row_per_alert(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r1", mac=None, message="m1", severity="low")
+        db.add_alert(ts=200, rule_name="r2", mac=None, message="m2", severity="med")
+        db.add_alert(ts=300, rule_name="r3", mac=None, message="m3", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 3
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_respects_severity_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="low", severity="low")
+        db.add_alert(ts=200, rule_name="r", mac=None, message="med", severity="med")
+        db.add_alert(ts=300, rule_name="r", mac=None, message="high", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?severity=high")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        # message column is index 7
+        assert data_rows[0][7] == "high"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_respects_acknowledged_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="acked", severity="low")
+        db.add_alert(ts=200, rule_name="r", mac=None, message="unacked", severity="low")
+        db.acknowledge_alert(aid, actor="test", note=None, ts=150)
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?acknowledged=true")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        assert data_rows[0][8] == "true"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_respects_rule_type_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r1", mac=None, message="a", severity="low",
+            rule_type="watchlist_mac",
+        )
+        db.add_alert(
+            ts=200, rule_name="r2", mac=None, message="b", severity="low",
+            rule_type="watchlist_ssid",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?rule_type=watchlist_mac")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        assert data_rows[0][5] == "watchlist_mac"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_respects_q_mac_substring_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        db.upsert_device("11:22:33:44:55:66", "wifi", "Acme", 0, 100)
+        db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="a", severity="low")
+        db.add_alert(ts=200, rule_name="r", mac="11:22:33:44:55:66", message="b", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?q=aa:bb")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        assert data_rows[0][6] == "aa:bb:cc:dd:ee:01"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_composes_multiple_filters(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for mac in ("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02", "11:22:33:44:55:66"):
+            db.upsert_device(mac, "wifi", "Acme", 0, 100)
+        db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="a", severity="high")
+        db.add_alert(ts=200, rule_name="r", mac="aa:bb:cc:dd:ee:02", message="b", severity="low")
+        db.add_alert(ts=300, rule_name="r", mac="11:22:33:44:55:66", message="c", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?severity=high&q=aa:bb")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        assert data_rows[0][6] == "aa:bb:cc:dd:ee:01"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_includes_matched_watchlist_join(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        with db._conn:
+            cur = db._conn.execute(
+                "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+                "VALUES ('aa:bb:cc:dd:ee:01', 'mac', 'high', 'wl-row')"
+            )
+            wid = int(cur.lastrowid)
+        db.upsert_metadata(
+            wid,
+            {
+                "argus_record_id": "argus-007",
+                "device_category": "lpr",
+                "vendor": "Acme",
+                "confidence": 85,
+            },
+        )
+        db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="m",
+            severity="high", matched_watchlist_id=wid,
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        row = data_rows[0]
+        # matched_watchlist_id (11), matched_pattern (12), matched_pattern_type (13),
+        # matched_vendor (14), matched_confidence (15), matched_device_category (16),
+        # matched_argus_record_id (17)
+        assert row[11] == str(wid)
+        assert row[12] == "aa:bb:cc:dd:ee:01"
+        assert row[13] == "mac"
+        assert row[14] == "Acme"
+        assert row[15] == "85"
+        assert row[16] == "lpr"
+        assert row[17] == "argus-007"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_includes_device_join_columns(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "AcmeCo", 0, 100)
+        db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="m", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        row = data_rows[0]
+        # device_type (18), oui_vendor (19)
+        assert row[18] == "wifi"
+        assert row[19] == "AcmeCo"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_action_taken_true_for_allowlisted_mac(tmp_path):
+    # Per-row action_taken: an allowlisted MAC must surface true even
+    # when has_action is NOT engaged on the filter. The export loads
+    # the YAML unconditionally (vs the list route's lazy load), so
+    # action_taken is the same regardless of filter posture.
+    allowlist_path = tmp_path / "allowlist.yaml"
+    allowlist_path.write_text(
+        "entries:\n"
+        "  - pattern: 'aa:bb:cc:dd:ee:01'\n"
+        "    pattern_type: mac\n"
+        "    note: test\n",
+        encoding="utf-8",
+    )
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(allowlist_path),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        db.upsert_device("aa:bb:cc:dd:ee:99", "wifi", "Acme", 0, 100)
+        db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="actioned", severity="low",
+        )
+        db.add_alert(
+            ts=200, rule_name="r", mac="aa:bb:cc:dd:ee:99", message="not-actioned", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        by_msg = {row[7]: row for row in data_rows}
+        # action_taken is the LAST column (index 20)
+        assert by_msg["actioned"][20] == "true"
+        assert by_msg["not-actioned"][20] == "false"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_action_taken_true_for_watchful_tracked_mac(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        db.upsert_device("aa:bb:cc:dd:ee:99", "wifi", "Acme", 0, 100)
+        db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="tracked", severity="low")
+        db.add_alert(ts=200, rule_name="r", mac="aa:bb:cc:dd:ee:99", message="untracked", severity="low")
+        # Insert a non-archived watchful_recurrence row by hand.
+        with db._conn:
+            db._conn.execute(
+                "INSERT INTO watchful_recurrence(mac, created_at, first_seen_at, "
+                "last_seen_at, sighting_count, archived_at) "
+                "VALUES ('aa:bb:cc:dd:ee:01', 100, 100, 100, 1, NULL)"
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        by_msg = {row[7]: row for row in data_rows}
+        assert by_msg["tracked"][20] == "true"
+        assert by_msg["untracked"][20] == "false"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_is_a_streaming_response(tmp_path):
+    # Belt-and-braces: confirm we did NOT regress to a buffered
+    # Response (which would defeat the constant-memory invariant).
+    from starlette.responses import StreamingResponse
+    from lynceus.webui.app import create_app
+
+    config = Config(db_path=str(tmp_path / "ui.db"))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        # Exercise the route via the underlying FastAPI app to inspect
+        # the returned Response type directly (bypass TestClient which
+        # consumes streamed bodies transparently).
+        from starlette.requests import Request
+
+        # Find the route handler.
+        route = next(r for r in app.routes if getattr(r, "path", None) == "/alerts.csv")
+        # The handler is the route's endpoint; call it directly with
+        # the request-equivalent kwargs (all None / defaults).
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/alerts.csv",
+            "query_string": b"",
+            "headers": [],
+            "app": app,
+        }
+        req = Request(scope=scope)
+        resp = route.endpoint(
+            request=req,
+            severity=None, acknowledged=None, since=None, until=None,
+            search=None, rule_type=None, q=None, window=None,
+            has_note=None, has_action=None,
+        )
+        assert isinstance(resp, StreamingResponse)
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_link_visible_on_list_page(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "/alerts.csv" in r.text
+        assert "Export CSV" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_link_passes_through_query_string(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high&rule_type=watchlist_mac")
+        assert r.status_code == 200
+        # Link should carry the same filter context, not bare /alerts.csv.
+        assert "/alerts.csv?severity=high" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_invalid_severity_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?severity=bogus")
+        # Same posture as the list route: invalid severity is a 400.
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_invalid_rule_type_silently_falls_back(tmp_path):
+    # rule_type invalid -> silent fallback to "all", export returns 200
+    # with all rows (matches list-route clamp posture).
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?rule_type=does_not_exist")
+        assert r.status_code == 200
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+    finally:
+        db.close()
