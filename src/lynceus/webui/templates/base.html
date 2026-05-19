@@ -4,6 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}lynceus{% endblock %}</title>
+    {# Inline theme bootstrap: runs synchronously before the stylesheet loads
+       so an operator who picked "light" or "dark" never sees a flash of the
+       OS-default theme. Reads the same localStorage key the toggle in
+       lynceus.js writes ("lynceus-theme"). When the stored value is "auto"
+       or absent, leave data-theme unset so the @media (prefers-color-scheme)
+       rule in lynceus.css (and Pico) decides. #}
+    <script>
+      (function(){try{var t=localStorage.getItem("lynceus-theme");if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}}catch(_){}})();
+    </script>
     <link rel="stylesheet" href="{{ url_for('static', path='/pico.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', path='/lynceus.css') }}">
     <script defer src="{{ url_for('static', path='/htmx.min.js') }}"></script>
