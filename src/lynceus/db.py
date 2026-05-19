@@ -1515,6 +1515,53 @@ class Database:
         rows = self._conn.execute(sql, params).fetchall()
         return [self._alert_match_row_to_dict(r) for r in rows]
 
+    def iter_alerts_with_match(self, filters: dict | None = None):
+        # Streaming sibling of ``list_alerts_with_match`` for the
+        # /alerts.csv export route. Same filter shape, same projection,
+        # same ORDER BY -- but no LIMIT/OFFSET, and yields one dict at
+        # a time so the export response can stream without buffering
+        # the full result set. The sqlite3 cursor iterates rows lazily
+        # at the C level, so memory stays roughly constant in the
+        # row size for arbitrarily large filtered sets.
+        filters = filters or {}
+        unknown = set(filters) - set(self._ALERT_WITH_MATCH_FILTER_KEYS) - {"limit", "offset"}
+        if unknown:
+            raise ValueError(f"unknown filter keys: {sorted(unknown)}")
+        severity = filters.get("severity")
+        if severity is not None and severity not in self._ALERT_SEVERITIES:
+            raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
+        clauses, params = self._alert_filter_clauses(
+            severity=severity,
+            acknowledged=filters.get("acknowledged"),
+            since_ts=filters.get("since_ts"),
+            until_ts=filters.get("until_ts"),
+            search=filters.get("search"),
+            rule_type=filters.get("rule_type"),
+            q=filters.get("q"),
+            has_note=filters.get("has_note"),
+            has_action=filters.get("has_action"),
+            actioned_macs=filters.get("actioned_macs", ()),
+            actioned_oui_prefixes=filters.get("actioned_oui_prefixes", ()),
+            alias="a",
+        )
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            f"{self._ALERT_WITH_MATCH_SELECT} {where} "
+            "ORDER BY a.ts DESC, a.id DESC"
+        )
+        for row in self._conn.execute(sql, params):
+            yield self._alert_match_row_to_dict(row)
+
+    def active_watchful_macs(self) -> frozenset[str]:
+        # MACs with a non-archived watchful_recurrence row. Used by the
+        # /alerts.csv export to compute the per-row action_taken column
+        # without paying a per-row EXISTS subquery. One query, one
+        # in-memory frozenset; cheap to recompute per export request.
+        rows = self._conn.execute(
+            "SELECT DISTINCT mac FROM watchful_recurrence WHERE archived_at IS NULL"
+        ).fetchall()
+        return frozenset(r["mac"] for r in rows)
+
     def list_devices(
         self,
         *,

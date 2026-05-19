@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import csv
 import datetime as _dt
 import importlib.metadata
+import io
 import json
 import logging
 import math
@@ -13,7 +15,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
@@ -1335,6 +1337,193 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "has_action_options": _ALERTS_HAS_ACTION_VALUES,
                 "filters_active": filters_active,
             },
+        )
+
+    @app.get("/alerts.csv")
+    def alerts_csv_export(
+        request: Request,
+        severity: str | None = Query(default=None),
+        acknowledged: str | None = Query(default=None),
+        since: str | None = Query(default=None),
+        until: str | None = Query(default=None),
+        search: str | None = Query(default=None),
+        rule_type: str | None = Query(default=None),
+        q: str | None = Query(default=None),
+        window: str | None = Query(default=None),
+        has_note: str | None = Query(default=None),
+        has_action: str | None = Query(default=None),
+    ):
+        # Streaming CSV export of the currently-filtered /alerts result
+        # set. Filter parsing intentionally mirrors the alerts_list
+        # handler byte-for-byte (clamp posture + invalid-value
+        # silent-fallback) so the same query string the operator
+        # sees on the list page produces an identically-filtered
+        # download. Pagination is bypassed -- the export covers
+        # every matching row, not just the visible page.
+        #
+        # action_taken column is computed per row from the
+        # actioned_macs / actioned_oui_prefixes / active watchful set;
+        # the allowlist YAML files are loaded unconditionally here
+        # (the operator opted into the YAML cost by clicking the
+        # download link), unlike the list route which only loads
+        # them when has_action is engaged.
+        if severity is not None and severity not in ("low", "med", "high"):
+            raise HTTPException(status_code=400, detail="invalid severity")
+        ack_bool = _parse_bool_str(acknowledged, "acknowledged")
+        if search is not None and len(search) > 100:
+            raise HTTPException(status_code=400, detail="search must be <= 100 chars")
+        if q is not None and len(q) > 100:
+            raise HTTPException(status_code=400, detail="q must be <= 100 chars")
+        since_ts = (
+            _parse_date_to_ts(since, end_of_day=False, name="since") if since else None
+        )
+        until_ts = (
+            _parse_date_to_ts(until, end_of_day=True, name="until") if until else None
+        )
+        search_clean = search if search else None
+        q_clean = q if q else None
+        if rule_type is not None and rule_type not in _ALERTS_RULE_TYPES:
+            rule_type = None
+        rule_type_for_db = rule_type or None
+        if window is not None and window not in _ALERTS_WINDOW_SECONDS:
+            window = None
+        window_seconds = _ALERTS_WINDOW_SECONDS.get(window) if window else None
+        now_ts = int(time.time())
+        window_since_ts = (now_ts - window_seconds) if window_seconds else None
+        if has_note is not None and has_note not in _ALERTS_HAS_NOTE_VALUES:
+            has_note = None
+        has_note_for_db = has_note if has_note in ("with_note", "without_note") else None
+        if has_action is not None and has_action not in _ALERTS_HAS_ACTION_VALUES:
+            has_action = None
+        has_action_for_db = (
+            has_action if has_action in ("with_action", "without_action") else None
+        )
+        effective_since_ts = since_ts
+        if window_since_ts is not None:
+            if effective_since_ts is None:
+                effective_since_ts = window_since_ts
+            else:
+                effective_since_ts = max(effective_since_ts, window_since_ts)
+
+        actioned_macs, actioned_oui_prefixes = _load_actioned_patterns(
+            app.state.config, now_ts
+        )
+        actioned_macs_set = frozenset(actioned_macs)
+        watchful_macs = db.active_watchful_macs()
+
+        filters = {
+            "severity": severity,
+            "acknowledged": ack_bool,
+            "since_ts": effective_since_ts,
+            "until_ts": until_ts,
+            "search": search_clean,
+            "rule_type": rule_type_for_db,
+            "q": q_clean,
+            "has_note": has_note_for_db,
+            "has_action": has_action_for_db,
+            "actioned_macs": actioned_macs,
+            "actioned_oui_prefixes": actioned_oui_prefixes,
+        }
+
+        header = [
+            "id",
+            "ts_iso_utc",
+            "ts_unix",
+            "severity",
+            "rule_name",
+            "rule_type",
+            "mac",
+            "message",
+            "acknowledged",
+            "note",
+            "note_updated_at_iso_utc",
+            "matched_watchlist_id",
+            "matched_pattern",
+            "matched_pattern_type",
+            "matched_vendor",
+            "matched_confidence",
+            "matched_device_category",
+            "matched_argus_record_id",
+            "device_type",
+            "oui_vendor",
+            "action_taken",
+        ]
+
+        def _mac_is_actioned(mac: str | None) -> bool:
+            if not mac:
+                return False
+            if mac in actioned_macs_set:
+                return True
+            if mac in watchful_macs:
+                return True
+            for oui in actioned_oui_prefixes:
+                if mac.startswith(f"{oui}:"):
+                    return True
+            return False
+
+        def _iso_utc(ts) -> str:
+            if ts is None:
+                return ""
+            return _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+
+        def _row_generator():
+            buf = io.StringIO()
+            writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+            writer.writerow(header)
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate(0)
+            for alert in db.iter_alerts_with_match(filters):
+                mac = alert.get("mac")
+                # Device join per row -- get_device is a single primary-
+                # key lookup, so this stays cheap even at high row counts.
+                device = None
+                if mac:
+                    try:
+                        device = db.get_device(mac)
+                    except Exception:
+                        device = None
+                wl = alert.get("watchlist") or {}
+                meta = alert.get("watchlist_metadata") or {}
+                writer.writerow(
+                    [
+                        alert["id"],
+                        _iso_utc(alert.get("ts")),
+                        alert.get("ts") if alert.get("ts") is not None else "",
+                        alert.get("severity") or "",
+                        alert.get("rule_name") or "",
+                        alert.get("rule_type") or "",
+                        mac or "",
+                        alert.get("message") or "",
+                        "true" if alert.get("acknowledged") else "false",
+                        alert.get("note") or "",
+                        _iso_utc(alert.get("note_updated_at")),
+                        alert.get("matched_watchlist_id") or "",
+                        wl.get("pattern") or "",
+                        wl.get("pattern_type") or "",
+                        meta.get("vendor") or "",
+                        meta.get("confidence") if meta.get("confidence") is not None else "",
+                        meta.get("device_category") or "",
+                        meta.get("argus_record_id") or "",
+                        (device or {}).get("device_type") or "",
+                        (device or {}).get("oui_vendor") or "",
+                        "true" if _mac_is_actioned(mac) else "false",
+                    ]
+                )
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate(0)
+
+        ts_now = _dt.datetime.fromtimestamp(now_ts, tz=_dt.timezone.utc).strftime(
+            "%Y%m%dT%H%M%SZ"
+        )
+        filename = f"alerts-{ts_now}.csv"
+        return StreamingResponse(
+            _row_generator(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     @app.get("/alerts/{alert_id}", response_class=HTMLResponse)
