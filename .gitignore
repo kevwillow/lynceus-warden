@@ -13,3 +13,5 @@ build/
 lynceus.yaml
 talos.yaml
 .docs-backup-*/
+prompts/
+logs/
