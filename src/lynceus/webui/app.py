@@ -37,9 +37,28 @@ from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.pagination import build_pagination, parse_pagination
 
-# Fixed snooze duration. Custom durations are intentionally out of scope —
-# operators wanting a non-24h window edit allowlist.yaml directly.
-SNOOZE_DEFAULT_SECONDS = 86400
+# Snooze duration vocabulary, shared between the per-alert /snooze
+# surface (alert_detail.html) and the watchful /watch surface
+# (alerts_list.html). Keys are operator-readable labels posted by the
+# form; values are seconds, with ``None`` denoting the "forever"
+# (NULL expires_at, semantically a permanent allowlist) sentinel. The
+# ``1h`` bucket is offered on per-alert snooze (quick-dismiss-while-
+# investigating) and dormant on the watchful surface — its template
+# enumerates only forever/24h/7d/30d. See
+# ``test_watch_form_renders_exactly_four_options`` for the pin on
+# that visible-surface invariant.
+_SNOOZE_DURATIONS: dict[str, int | None] = {
+    "1h": 3600,
+    "24h": 86400,
+    "7d": 7 * 86400,
+    "30d": 30 * 86400,
+    "forever": None,
+}
+
+# Default duration for the per-alert /alerts/{id}/snooze form when
+# the operator submits without selecting (preserves backward compat
+# with the pre-B1 fixed-24h posture).
+_SNOOZE_DEFAULT_KEY: str = "24h"
 
 logger = logging.getLogger(__name__)
 
@@ -1331,6 +1350,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "allowlist_match_removable": allowlist_match_removable,
                 "allowlist_configured": allowlist_configured,
                 "snooze_hours_remaining": snooze_hours_remaining,
+                "snooze_duration_options": list(_SNOOZE_DURATIONS.keys()),
+                "snooze_default_duration": _SNOOZE_DEFAULT_KEY,
                 "note_flash": note_flash,
                 "note_max_chars": db._ALERT_NOTE_MAX_CHARS,
                 "now_ts": now_ts,
@@ -1562,22 +1583,31 @@ def create_app(config: Config, db: Database) -> FastAPI:
             )
         return alert
 
-    def _write_ui_allowlist(alert: dict, *, snooze: bool, now_ts: int) -> None:
+    def _write_ui_allowlist(
+        alert: dict,
+        *,
+        snooze_duration_key: str | None,
+        now_ts: int,
+    ) -> None:
         """Construct + persist the UI-managed entry for ``alert``.
 
-        Permanent and snooze share the same code path because the only
-        difference is ``expires_at`` and the note prefix. Centralizing
-        keeps the note format consistent — operators reading
-        allowlist_ui.yaml directly should see the same provenance
-        string for every webui-originated entry.
+        ``snooze_duration_key`` is ``None`` for the permanent
+        /allowlist path, or one of ``_SNOOZE_DURATIONS`` keys for the
+        /snooze path. ``"forever"`` writes a NULL expires_at (yaml
+        end-state identical to permanent) but records distinct
+        provenance in the note prefix so operators reading
+        allowlist_ui.yaml can tell which surface produced the entry.
+        Caller is responsible for upstream validation of the key
+        against ``_SNOOZE_DURATIONS``.
         """
         iso = unix_to_iso(now_ts)
-        if snooze:
-            note = f"snoozed 24h via webui at {iso}"
-            expires_at: int | None = now_ts + SNOOZE_DEFAULT_SECONDS
-        else:
+        if snooze_duration_key is None:
             note = f"added via webui at {iso}"
-            expires_at = None
+            expires_at: int | None = None
+        else:
+            seconds = _SNOOZE_DURATIONS[snooze_duration_key]
+            note = f"snoozed {snooze_duration_key} via webui at {iso}"
+            expires_at = None if seconds is None else now_ts + seconds
         entry = AllowlistEntry(
             pattern=alert["mac"],
             pattern_type="mac",
@@ -1593,15 +1623,31 @@ def create_app(config: Config, db: Database) -> FastAPI:
         result = _load_alert_for_triage(alert_id, request)
         if not isinstance(result, dict):
             return result
-        _write_ui_allowlist(result, snooze=False, now_ts=int(time.time()))
+        _write_ui_allowlist(result, snooze_duration_key=None, now_ts=int(time.time()))
         return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
 
     @app.post("/alerts/{alert_id}/snooze")
-    def snooze_alert_post(request: Request, alert_id: int):
+    def snooze_alert_post(
+        request: Request,
+        alert_id: int,
+        snooze_duration: str = Form(default=_SNOOZE_DEFAULT_KEY),
+    ):
+        if snooze_duration not in _SNOOZE_DURATIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "snooze_duration must be one of: "
+                    + ", ".join(_SNOOZE_DURATIONS)
+                ),
+            )
         result = _load_alert_for_triage(alert_id, request)
         if not isinstance(result, dict):
             return result
-        _write_ui_allowlist(result, snooze=True, now_ts=int(time.time()))
+        _write_ui_allowlist(
+            result,
+            snooze_duration_key=snooze_duration,
+            now_ts=int(time.time()),
+        )
         return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
 
     @app.post("/alerts/{alert_id}/allowlist/remove")
@@ -1674,17 +1720,6 @@ def create_app(config: Config, db: Database) -> FastAPI:
     # Phase 2b lands the UI -- no /watchful page or buttons yet.
     # ------------------------------------------------------------------
 
-    # Snooze duration vocabulary for /alerts/{id}/watch. Mirrors the
-    # operator's mental model ("forever / 24h / 7d / 30d") rather than
-    # taking raw seconds via the form, so a typo can't accidentally
-    # produce a wildly off snooze window.
-    WATCH_SNOOZE_DURATIONS: dict[str, int | None] = {
-        "forever": None,
-        "24h": 86400,
-        "7d": 7 * 86400,
-        "30d": 30 * 86400,
-    }
-
     WATCHFUL_NOTE_MAX_CHARS = 4096
 
     def _normalize_watchful_note(note: str | None) -> str | None:
@@ -1743,15 +1778,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
             raise HTTPException(
                 status_code=400, detail="alert_id must be positive"
             )
-        if snooze_duration not in WATCH_SNOOZE_DURATIONS:
+        if snooze_duration not in _SNOOZE_DURATIONS:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "snooze_duration must be one of: "
-                    + ", ".join(WATCH_SNOOZE_DURATIONS)
+                    + ", ".join(_SNOOZE_DURATIONS)
                 ),
             )
-        seconds = WATCH_SNOOZE_DURATIONS[snooze_duration]
+        seconds = _SNOOZE_DURATIONS[snooze_duration]
         try:
             new_id = db.create_watchful_from_alert(
                 alert_id,
@@ -2042,7 +2077,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "digest_weeks": WATCHFUL_DIGEST_WEEKS,
                 "flash": flash,
                 "filters_active": filters_active,
-                "watch_snooze_durations": list(WATCH_SNOOZE_DURATIONS.keys()),
+                "watch_snooze_durations": list(_SNOOZE_DURATIONS.keys()),
             },
         )
 
