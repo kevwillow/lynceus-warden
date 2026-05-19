@@ -2509,6 +2509,44 @@ def test_snooze_invalid_duration_returns_400(tmp_path):
 
 
 @pytest.mark.webui
+def test_alert_detail_renders_cleanly_after_forever_snooze(tmp_path):
+    """``forever`` snoozes write a NULL ``expires_at`` — the detail
+    page must not leak ``None hours remaining`` or empty numeric
+    text. By construction the handler leaves ``snooze_hours_remaining``
+    as ``None`` when ``expires_at is None`` and the template branches
+    on the Allowlisted path first; this pins that branching against
+    future template drift.
+
+    Note the operator-visible label says "Allowlisted" after a
+    forever-snooze (end-state is yaml-identical to a /allowlist
+    permanent entry); only the provenance note in allowlist_ui.yaml
+    (``snoozed forever via webui``) distinguishes which surface
+    produced it.
+    """
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/snooze",
+                data={CSRF_FORM_FIELD: token, "snooze_duration": "forever"},
+            )
+            assert r.status_code == 303
+            page = client.get(f"/alerts/{aid}")
+        assert page.status_code == 200
+        # No NULL-leakage into operator-visible text. "hours remaining"
+        # appears only in the Snoozed-until branch — forever-snooze
+        # must not reach it.
+        assert "hours remaining" not in page.text
+        assert "None" not in page.text
+        # End-state: the Allowlisted branch renders.
+        assert "Allowlisted" in page.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
 def test_alert_detail_snooze_form_renders_all_five_options(tmp_path):
     """The per-alert snooze form on the detail page renders the five
     locked options with ``24h`` selected (preserves the pre-B1
