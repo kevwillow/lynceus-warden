@@ -1935,6 +1935,47 @@ class Database:
             for r in rows
         ], total
 
+    def iter_watchlist_filtered(
+        self,
+        *,
+        q: str | None = None,
+        pattern_type: str | None = None,
+        severity: str | None = None,
+        device_category: str | None = None,
+    ):
+        # Streaming sibling of ``list_watchlist_filtered`` for the
+        # /watchlist.csv export. Same filter shape, same ORDER BY,
+        # no LIMIT/OFFSET, yields one dict per row over the sqlite3
+        # cursor so the export stays roughly constant-memory across
+        # the full ~22k-row Argus corpus. Column projection is wider
+        # than the list helper: includes source_url, source_excerpt,
+        # fcc_id, geographic_scope, first_seen, last_verified, and
+        # notes from watchlist_metadata so operators get the full
+        # Argus provenance for offline triage.
+        if pattern_type is not None and pattern_type != "" and pattern_type not in self._WATCHLIST_PATTERN_TYPES:
+            raise ValueError(f"pattern_type must be one of {self._WATCHLIST_PATTERN_TYPES}")
+        if severity is not None and severity != "" and severity not in self._ALERT_SEVERITIES:
+            raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
+        clauses, params = self._build_watchlist_filter_clauses(
+            q=q,
+            pattern_type=pattern_type,
+            severity=severity,
+            device_category=device_category,
+        )
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT "
+            "w.id AS id, w.pattern, w.pattern_type, w.severity, w.description, "
+            "w.mac_range_prefix, w.mac_range_prefix_length, "
+            "m.argus_record_id, m.device_category, m.confidence, m.vendor, "
+            "m.source, m.source_url, m.source_excerpt, m.fcc_id, "
+            "m.geographic_scope, m.first_seen, m.last_verified, m.notes "
+            f"{self._WATCHLIST_FROM_FOR_FILTERS} "
+            f"{where} {self._WATCHLIST_ORDER_BY}"
+        )
+        for row in self._conn.execute(sql, params):
+            yield dict(row)
+
     def distinct_watchlist_device_categories(self) -> list[str]:
         """Return the sorted distinct non-NULL ``device_category``
         values in ``watchlist_metadata``, for the filter-bar
