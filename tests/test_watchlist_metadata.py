@@ -507,6 +507,71 @@ def test_get_metadata_by_argus_record_id_miss(db):
 
 
 # ---------------------------------------------------------------------------
+# get_watchlist_with_metadata (single-row sibling of list_watchlist_with_metadata).
+# Regression for the /watchlist/<id> detail route: confirms the joined
+# projection matches columns the route + template depend on, and that
+# the LEFT JOIN preserves rows without metadata (metadata_id NULL).
+# ---------------------------------------------------------------------------
+
+
+def test_get_watchlist_with_metadata_hit_with_metadata(db):
+    wl = _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "high", "joined-row")
+    db.upsert_metadata(
+        wl,
+        {
+            "argus_record_id": "argus-001",
+            "device_category": "lpr",
+            "vendor": "Acme",
+            "confidence": 80,
+            "source_url": "https://example.com/d",
+        },
+    )
+    row = db.get_watchlist_with_metadata(wl)
+    assert row is not None
+    assert row["id"] == wl
+    assert row["pattern"] == "aa:bb:cc:dd:ee:01"
+    assert row["pattern_type"] == "mac"
+    assert row["severity"] == "high"
+    assert row["description"] == "joined-row"
+    assert row["metadata_id"] is not None
+    assert row["argus_record_id"] == "argus-001"
+    assert row["device_category"] == "lpr"
+    assert row["vendor"] == "Acme"
+    assert row["confidence"] == 80
+    assert row["source_url"] == "https://example.com/d"
+
+
+def test_get_watchlist_with_metadata_hit_without_metadata(db):
+    wl = _add_watchlist(db, "aa:bb:cc:dd:ee:02", "mac", "med", "bare-row")
+    row = db.get_watchlist_with_metadata(wl)
+    assert row is not None
+    assert row["id"] == wl
+    assert row["pattern"] == "aa:bb:cc:dd:ee:02"
+    assert row["metadata_id"] is None
+    # LEFT JOIN nulls flow through unchanged.
+    assert row["argus_record_id"] is None
+    assert row["device_category"] is None
+    assert row["vendor"] is None
+    assert row["confidence"] is None
+
+
+def test_get_watchlist_with_metadata_miss(db):
+    assert db.get_watchlist_with_metadata(99999) is None
+
+
+def test_get_watchlist_with_metadata_returns_single_row_not_list(db):
+    # Belt-and-braces: prior route shape pulled every row and filtered
+    # in Python; this guards against a regression to that pattern.
+    _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "high", "row1")
+    wl2 = _add_watchlist(db, "aa:bb:cc:dd:ee:02", "mac", "med", "row2")
+    _add_watchlist(db, "aa:bb:cc:dd:ee:03", "mac", "low", "row3")
+    row = db.get_watchlist_with_metadata(wl2)
+    assert isinstance(row, dict)
+    assert row["id"] == wl2
+    assert row["description"] == "row2"
+
+
+# ---------------------------------------------------------------------------
 # list_watchlist_with_metadata.
 # ---------------------------------------------------------------------------
 

@@ -483,6 +483,38 @@ def test_watchlist_nav_link_appears_on_other_pages(tmp_path):
         db.close()
 
 
+@pytest.mark.webui
+def test_watchlist_nav_active_on_list_page(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/watchlist")
+        assert r.status_code == 200
+        assert 'href="/watchlist" class="active"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_watchlist_nav_active_on_detail_page(tmp_path):
+    # Mirrors the /watchful/<id> active-state pin in test_ui_watchful.py:
+    # the /watchlist nav link must carry class="active" on the detail
+    # page too, so operators don't lose their sense of place after
+    # clicking through from the list.
+    app, db = _make_app(tmp_path)
+    try:
+        wid = _add_watchlist(db, "aa:bb:cc:dd:ee:01", "mac", "med", "x")
+        with TestClient(app) as client:
+            r = client.get(f"/watchlist/{wid}")
+        assert r.status_code == 200
+        assert 'href="/watchlist" class="active"' in r.text
+        # Other nav links must NOT be active simultaneously.
+        assert 'href="/alerts" class="active"' not in r.text
+        assert 'href="/devices" class="active"' not in r.text
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # XSS regression — Jinja autoescape must escape all metadata fields.
 # ---------------------------------------------------------------------------
