@@ -138,3 +138,81 @@ tests are project-state-conditional — they're all platform-mode skips
 that come back in on Linux. Tagging 0.5.0 against this commit is
 safe from a test-suite perspective; remaining release work is
 operator-side (CHANGELOG section rename, tag, push).
+
+## Diagnostic tests (dump-not-assert)
+
+A small sibling layer of tests deliberately diverges from the rest of
+the suite. **They observe and dump production behavior; they do not
+assert content.** A diagnostic test "passes" when the production code
+under exercise didn't crash — the artifact is the per-test `.log`
+file, which a reviewer reads offline against design intent.
+
+Why this exists: unit tests pin what we expect, but the v0.4.0rc6
+pre-smoke dry-exercise surfaced operator-visible divergences (version
+drift, import-argus counter lies) that every existing unit test
+missed because they assert on the expected-good shape. Diagnostic
+tests are the unit-level equivalent of that dry-exercise — small
+synthetic fixtures, real production code, and a structured dump of
+what actually happened.
+
+### Running them
+
+```
+pytest -m diagnostic
+```
+
+The default suite **excludes** them via
+`addopts = "... -m 'not diagnostic'"` in `pyproject.toml`. They are
+not part of CI's pass/fail signal; they are an operator-driven
+pre-push step.
+
+Output lands in `tests/diagnostic_output/<test_name>.log` (one file
+per test, gitignored). Each file follows the structure:
+
+```
+==================== <test_name>
+FIXTURE:
+  * <what the test set up>
+EXERCISE:
+  * <what was triggered>
+OBSERVED:
+  * <what the production code did: emitted SQL, return shapes,
+    counters, table state, HTTP status, ...>
+NOTES:
+  * <what the test author wants the reviewer to weigh against intent>
+```
+
+### Surfaces covered (as of 2026-05-19)
+
+| File | Surface |
+| --- | --- |
+| `test_diag_watchful.py` | watchful tracking gate + snooze interaction |
+| `test_diag_filters.py` | `/alerts?has_action=` SQL + mac_range parity |
+| `test_diag_csv.py` | `/alerts.csv` export NULLs, parity, datetime |
+| `test_diag_rollback.py` | migration rollback chain (incl. v010 irreversible) |
+| `test_diag_import.py` | import-argus accounting + metadata thrash |
+| `test_diag_rules.py` | rules engine eval order + severity resolution |
+
+### Authoring conventions
+
+- Module-level `pytestmark = pytest.mark.diagnostic`.
+- Use the `diag` fixture (`tests/conftest.py:DiagnosticDump`) and
+  the four labeled methods `.fixture()`, `.exercise()`,
+  `.observed()`, `.notes()`. Multi-scenario tests can open
+  sub-sections via `diag.section(name)`.
+- Catch and dump exceptions from production code under exercise; do
+  not let them abort the test. The reviewer reads "GET raised:
+  OperationalError" as a finding, not a test bug.
+- Deterministic fixtures only: fixed seeds, fixed timestamps,
+  synthetic small inputs. The reproducibility of the dump across
+  runs is the contract.
+
+### Reviewing
+
+Findings flagged in diagnostic output are surfaced for **separate
+fix prompts** — diagnostic tests intentionally do not fix what they
+find. The current pass turned up at least one issue worth filing:
+`mac_in_mac_range(None, ...)` raises `AttributeError` when an alert
+with NULL mac is in the table and `has_action=with_action` is in
+the query string. See
+`tests/diagnostic_output/test_diag_has_action_null_mac_invocation.log`.
