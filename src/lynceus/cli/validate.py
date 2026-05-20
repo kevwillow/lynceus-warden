@@ -1188,7 +1188,7 @@ def _run_rollback(args: argparse.Namespace) -> int:
             return 2
         prompt = (
             f"Rolling back migrations on {db_path} to version "
-            f"{args.target_version} (exclusive). This is destructive — "
+            f"{args.target_version} (exclusive). This is destructive -- "
             f"data added by reversed migrations will be lost. Have you "
             f"taken a backup? Type 'yes' to proceed: "
         )
