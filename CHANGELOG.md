@@ -409,6 +409,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the highlight can't silently regress (mirrors the existing
   `/watchful/<id>` pin).
 
+### Fixed
+
+- **`/alerts?has_action=with_action` no longer 500s when NULL-mac
+  alerts coexist with any `mac_range` allowlist entry.** The SQL
+  clause for the `with_action` branch invoked `mac_in_mac_range(a.mac,
+  ?)` (a Python UDF that calls `.replace` on its arg) without a
+  NULL-mac guard, so any NULL-mac alert in the table caused
+  `OperationalError: user-defined function raised exception` from the
+  query and a 500 response. NULL-mac alerts are legitimate (pre-
+  migration-015 historical rows; certain `new_non_randomized_device`
+  early failures). Each `mac_in_mac_range` predicate now carries an
+  inner `mac IS NOT NULL AND ...` guard so the UDF is never invoked
+  with a NULL arg. With the fix, `with_action` returns 200 and
+  excludes NULL-mac alerts (they can't carry a mac-keyed action
+  signal); `without_action` behavior is unchanged. Failure mode
+  surfaced by the diagnostic test
+  `tests/test_diag_filters.py::test_diag_has_action_null_mac_invocation`
+  (commit 9483137); regression pinned in `tests/test_webui.py`.
+
 ## [0.4.0-rc6] - 2026-05-17
 
 Mostly cleanup. rc5 shipped the big feature push — `/watchlist` search,
