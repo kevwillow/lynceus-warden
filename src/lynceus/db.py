@@ -1442,7 +1442,22 @@ class Database:
                 # page (mac_in_mac_range is the same helper both sides
                 # call) and stays correct for /28 and /36 — the only
                 # lengths parse_mac_range_pattern admits.
-                action_clauses.append(f"mac_in_mac_range({prefix}mac, ?)")
+                #
+                # NULL-mac guard: the IN()/LIKE clauses above propagate
+                # NULL safely (SQL NULL semantics), but mac_in_mac_range
+                # is a Python UDF that calls .replace on its arg and
+                # raises on None. NULL-mac alerts can't match a mac-
+                # keyed signal anyway, so short-circuit with IS NOT NULL
+                # before the function is ever invoked. The without_action
+                # branch below already wraps `combined` with a `mac IS
+                # NULL OR NOT ...` outer guard, but SQLite isn't
+                # guaranteed to short-circuit the OR before evaluating
+                # the inner UDF — the inner guard is the load-bearing
+                # one.
+                action_clauses.append(
+                    f"({prefix}mac IS NOT NULL "
+                    f"AND mac_in_mac_range({prefix}mac, ?))"
+                )
                 action_params.append(pattern)
             action_clauses.append(
                 "EXISTS (SELECT 1 FROM watchful_recurrence wr "
