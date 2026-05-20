@@ -15,3 +15,4 @@ talos.yaml
 .docs-backup-*/
 prompts/
 logs/
+tests/diagnostic_output/
