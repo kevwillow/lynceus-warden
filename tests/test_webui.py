@@ -1890,6 +1890,119 @@ def test_alerts_list_keyboard_shortcut_handler_present_when_no_filters(tmp_path)
 
 
 @pytest.mark.webui
+def test_alerts_list_search_input_carries_shortcut_id(tmp_path):
+    # The `/` shortcut targets `getElementById('alerts-search-input')`;
+    # the rule/message search input is the canonical target. If the id
+    # ever drifts off this input the shortcut goes silent.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'id="alerts-search-input"' in r.text
+        # And it must be on the `search` text input specifically (not q,
+        # not a hidden field). Anchor on both id and name to catch
+        # accidental rebinding.
+        assert 'id="alerts-search-input" name="search"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_links_carry_shortcut_classes(tmp_path):
+    # When prev/next pages exist, the rendered <a> elements must carry
+    # the classes the `n` / `p` shortcuts query for.
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"m{i}", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts?page_size=25&page=2")
+        assert r.status_code == 200
+        assert 'class="alerts-page-prev"' in r.text
+        assert 'class="alerts-page-next"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_disabled_state_has_no_shortcut_class(tmp_path):
+    # On the only page (1 of 1), prev/next render as <span class="dim">
+    # rather than <a>. The shortcut-class selectors must miss in that
+    # case so `n`/`p` do nothing rather than navigating to a wrong href.
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="only", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'class="alerts-page-prev"' not in r.text
+        assert 'class="alerts-page-next"' not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_help_overlay_markup_present(tmp_path):
+    # `?` toggles an overlay panel; the markup is always rendered with
+    # the `hidden` attribute so no-JS operators see nothing and so the
+    # shortcut has something to flip on.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'id="alerts-shortcut-help"' in r.text
+        assert "hidden" in r.text  # the attribute is on the overlay
+        # The four documented shortcuts must appear inside the panel so
+        # operators have something to read when they press `?`.
+        assert "Focus search" in r.text
+        assert "Next page" in r.text
+        assert "Previous page" in r.text
+        assert "Toggle this help" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_shortcut_handler_references_all_minimum_keys(tmp_path):
+    # The handler must wire up each shortcut key in the minimum set.
+    # These string assertions are coarse but catch the common
+    # regression of accidentally removing one branch during refactors.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "e.key === '/'" in r.text
+        assert "e.key === 'n'" in r.text
+        assert "e.key === 'p'" in r.text
+        assert "e.key === '?'" in r.text
+        # Input-shadowing guard: letter shortcuts must skip when focus
+        # is in a form input. The handler ships with a single guard
+        # function shared across keys.
+        assert "isFormField" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_renders_shortcut_discovery_hint(tmp_path):
+    # Discoverability: a small hint next to the page-count line tells
+    # operators to press `?`. Without this, the shortcut set is
+    # effectively invisible.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "keyboard shortcuts" in r.text.lower()
+        assert "<kbd>?</kbd>" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
 def test_alerts_list_ack_all_visible_form_carries_filter_state(tmp_path):
     app, db = _make_app(tmp_path)
     try:
