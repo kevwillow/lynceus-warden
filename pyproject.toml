@@ -88,12 +88,13 @@ lynceus = [
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = "-ra --strict-markers --strict-config"
+addopts = "-ra --strict-markers --strict-config -m 'not diagnostic'"
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "slow: tests that build a wheel or do other slow setup",
     "webui: tests that exercise the FastAPI app",
+    "diagnostic: pre-push observation-only tests; dump actual behavior, don't assert content. Excluded from default suite -- run explicitly with `pytest -m diagnostic`.",
 ]
 
 [tool.ruff]
