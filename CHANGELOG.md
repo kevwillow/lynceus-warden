@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Clearer filtered indicator + Esc keyboard shortcut on
+  `/alerts`.** Replaces the bare "reset filters" link with a
+  single summary line that names which filters are active and
+  their values, e.g.
+  `Filtered by: severity=high, since=2026-05-01, q=apple
+  -- reset filters  (or press Esc)`. Single source of truth for
+  filter state; operator no longer has to scan the form to
+  understand why a result count is narrow. Pressing `Esc`
+  navigates to the reset-filters link's href, with an
+  input-focus guard so typing into `q` / `search` or selecting
+  from a dropdown is unaffected. First keyboard shortcut on the
+  webui; chosen as the universal cancel/clear convention and
+  surfaced in the visible "(or press Esc)" hint so the shortcut
+  documents itself on the page. Scope: `/alerts` only; the
+  watchful / watchlist / allowlist pages keep their existing
+  bare-link rendering.
+
 - **Deployment runbook (docs/DEPLOYMENT.md).** End-to-end install
   walkthrough for a fresh Kali / Debian / Ubuntu host: prerequisites,
   clone + install, Kismet bootstrap, API key creation, lynceus-setup
