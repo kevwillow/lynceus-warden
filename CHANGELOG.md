@@ -8,6 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Keyboard shortcuts on `/alerts` (minimum set).** Extends the
+  existing `Esc` precedent (reset filters) into a small, hands-
+  on-home-row navigation set so an operator triaging an alert
+  queue doesn't have to reach for the mouse to focus the search
+  bar or page forward. The minimum set: `/` focuses the
+  rule/message search input; `n` advances to the next page; `p`
+  to the previous page; `?` toggles a non-modal floating help
+  panel that lists the shortcuts; `Esc` closes the help panel if
+  open and otherwise falls through to the established reset-
+  filters behavior. The handler is a single document-level
+  `keydown` listener with a shared input-shadowing guard --
+  letter and symbol shortcuts skip when focus is inside an
+  `<input>`, `<textarea>`, `<select>`, or `[contenteditable]`,
+  so typing a `/` or `?` into the search field lands the
+  character in the field as a character (GitHub / Gmail
+  convention). Modifier-held chords (Ctrl/Cmd/Alt) are also
+  skipped so OS and browser shortcuts win; Shift is intentionally
+  not in the guard since `?` needs Shift on US layouts. The help
+  overlay is non-modal (no focus trap, no backdrop), rendered
+  as an always-present `<aside hidden>` so screen readers and
+  no-JS clients see nothing and the `?` shortcut just flips the
+  attribute. Progressive-enhancement posture is preserved:
+  every shortcut has a non-JS equivalent (click the search field;
+  click prev/next; click reset-filters), so the page is fully
+  usable with JS disabled. Vanilla event listeners only -- no
+  hotkeys library, no JS framework. The page-count line carries
+  a small "Press `?` for keyboard shortcuts" hint so the set is
+  discoverable without prior knowledge. Scope is `/alerts` only;
+  propagation to `/rules`, `/watchlist`, and `/allowlist` is
+  deferred to follow-on prompts once the JS shape is settled
+  here. A row-selection cluster (`j`/`k` to move a highlight,
+  `a` to ack the selected row, `Enter` to open detail) is also
+  deferred -- it requires a "currently selected row" UI primitive
+  that doesn't exist today, plus focus-vs-selection semantics
+  and a11y design that warrants its own pass.
+
 - **Sub-day granularity on `/alerts` absolute date range.** The
   `since` / `until` URL params on `/alerts` (and the lockstep CSV
   export at `/alerts.csv` and bulk-ack POST at
