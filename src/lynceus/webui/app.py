@@ -277,11 +277,44 @@ _WATCHLIST_PATTERN_TYPES: tuple[str, ...] = (
 _WATCHLIST_UNCATEGORIZED_SENTINEL: str = "__none__"
 
 
-def _parse_date_to_ts(value: str, *, end_of_day: bool, name: str) -> int:
+def _parse_date_or_datetime_to_ts(
+    value: str | None, *, end_of_day: bool, name: str
+) -> int | None:
+    """Parse a since/until URL param to an epoch-seconds bound.
+
+    Accepts two shapes posted by the /alerts filter bar:
+
+    * ``YYYY-MM-DD`` — date-only, promoted to UTC midnight at the
+      lower bound or ``23:59:59`` at the upper bound. Preserves the
+      pre-rc6 behavior so bookmarks with date-only since/until keep
+      filtering the same row set.
+    * ``YYYY-MM-DDTHH:MM`` / ``YYYY-MM-DDTHH:MM:SS`` — full ISO 8601
+      datetime as submitted by the ``<input type="datetime-local">``
+      picker. Parsed verbatim as UTC; ``end_of_day`` is ignored —
+      the operator-supplied minute IS the boundary. This is the
+      sub-day granularity an operator needs to express ranges like
+      "Tuesday 14:00 to Wednesday 09:00."
+
+    Malformed input silently returns ``None`` (no clause applied),
+    matching the rule_type / window / has_note clamp posture on
+    /alerts so a stale bookmark or fat-fingered picker submission
+    lands on the unfiltered page rather than 400. The ``name``
+    parameter is retained for call-site readability.
+    """
+    if not value:
+        return None
+    if "T" in value or " " in value:
+        try:
+            dt = _dt.datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_dt.UTC)
+        return int(dt.timestamp())
     try:
         d = _dt.date.fromisoformat(value)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=f"invalid {name}: {value!r}") from exc
+    except (ValueError, TypeError):
+        return None
     base = _dt.datetime.combine(d, _dt.time.min, tzinfo=_dt.UTC)
     if end_of_day:
         base = base.replace(hour=23, minute=59, second=59)
@@ -1200,12 +1233,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
             raise HTTPException(status_code=400, detail="search must be <= 100 chars")
         if q is not None and len(q) > 100:
             raise HTTPException(status_code=400, detail="q must be <= 100 chars")
-        since_ts = (
-            _parse_date_to_ts(since, end_of_day=False, name="since") if since else None
-        )
-        until_ts = (
-            _parse_date_to_ts(until, end_of_day=True, name="until") if until else None
-        )
+        since_ts = _parse_date_or_datetime_to_ts(since, end_of_day=False, name="since")
+        until_ts = _parse_date_or_datetime_to_ts(until, end_of_day=True, name="until")
         search_clean = search if search else None
         q_clean = q if q else None
 
@@ -1387,12 +1416,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
             raise HTTPException(status_code=400, detail="search must be <= 100 chars")
         if q is not None and len(q) > 100:
             raise HTTPException(status_code=400, detail="q must be <= 100 chars")
-        since_ts = (
-            _parse_date_to_ts(since, end_of_day=False, name="since") if since else None
-        )
-        until_ts = (
-            _parse_date_to_ts(until, end_of_day=True, name="until") if until else None
-        )
+        since_ts = _parse_date_or_datetime_to_ts(since, end_of_day=False, name="since")
+        until_ts = _parse_date_or_datetime_to_ts(until, end_of_day=True, name="until")
         search_clean = search if search else None
         q_clean = q if q else None
         if rule_type is not None and rule_type not in _ALERTS_RULE_TYPES:
@@ -1701,8 +1726,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
             raise HTTPException(status_code=400, detail="search must be <= 100 chars")
         if q is not None and len(q) > 100:
             raise HTTPException(status_code=400, detail="q must be <= 100 chars")
-        since_ts = _parse_date_to_ts(since, end_of_day=False, name="since") if since else None
-        until_ts = _parse_date_to_ts(until, end_of_day=True, name="until") if until else None
+        since_ts = _parse_date_or_datetime_to_ts(since, end_of_day=False, name="since")
+        until_ts = _parse_date_or_datetime_to_ts(until, end_of_day=True, name="until")
         search_clean = search if search else None
         q_clean = q if q else None
         note = _normalize_optional_note(note)

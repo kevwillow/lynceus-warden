@@ -63,10 +63,12 @@
         </select>
       </label>
       <label>since
-        <input type="date" name="since" value="{{ since }}">
+        <input type="datetime-local" name="since" value="{{ since }}" step="60"
+               title="absolute lower bound; date-only (YYYY-MM-DD) or datetime (YYYY-MM-DDTHH:MM), interpreted as UTC">
       </label>
       <label>until
-        <input type="date" name="until" value="{{ until }}">
+        <input type="datetime-local" name="until" value="{{ until }}" step="60"
+               title="absolute upper bound; date-only (YYYY-MM-DD) or datetime (YYYY-MM-DDTHH:MM), interpreted as UTC">
       </label>
     </fieldset>
     <fieldset class="grid">
