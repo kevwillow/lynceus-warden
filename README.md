@@ -4,7 +4,7 @@ Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchli
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Status: v0.4.0-rc4](https://img.shields.io/badge/Status-v0.4.0--rc4-yellow.svg)](#project-status)
+[![Status: v0.5.0](https://img.shields.io/badge/Status-v0.5.0-blue.svg)](#project-status)
 [![Counter-Surveillance](https://img.shields.io/badge/Counter--Surveillance-passive%20only-1f6feb.svg)](#privacy--threat-model)
 [![Watching the Watchers](https://img.shields.io/badge/Watching-the%20Watchers-black.svg)](#what-lynceus-does)
 
@@ -19,11 +19,11 @@ Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchli
 
 ## Project status
 
-**Personal-use RF security monitoring tool. v0.4.0-rc4.**
+**Personal-use RF security monitoring tool. v0.5.0.**
 
-This is not a hardened public product. It is a personal project, feature-complete for v0.4, with hardware shakedown still in progress on Kali. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
+This is not a hardened public product. It is a personal project, feature-complete for v0.5.0, with Kali hardware-smoke validation pending. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
 
-Test count: **1215 passing** at v0.4.0-rc4, up from 888 at v0.3.0-rc1.
+Test count: **2434 passing on Windows / 2450 expected on Linux** at v0.5.0 (the 16-test delta is POSIX-only `install.sh` + `chmod`-mode tests that skip on non-POSIX hosts). Up from 1215 at v0.4.0-rc4 and 888 at v0.3.0-rc1. A separate diagnostic suite of **21 behavior-dump tests** (`pytest -m diagnostic`) is run pre-push for pre-flight observation and is excluded from the default suite.
 
 ## What Lynceus does
 
@@ -35,10 +35,15 @@ The threat model is simple: detect surveillance-relevant devices in the operator
 
 - **Argus integration.** Watchlist metadata schema migration, dual-artifact CSV import via `lynceus-import-argus`, optional metadata extension to `lynceus-seed-watchlist` YAML, alert-to-watchlist linkage in the alerts table, and a `/watchlist` UI page that surfaces vendor/category/confidence. Ntfy notification bodies are enriched with vendor and confidence.
 - **Tier 1 enrichment.** Probe SSID capture (opt-in, off by default), BLE friendly-name capture (on by default — BLE names are publicly broadcast), and an expanded BLE service UUID enrichment dictionary.
-- **Ergonomic CLI tooling.** `lynceus-quickstart` (foreground daemon + UI + browser launch for dev/demo), `lynceus-setup` (interactive wizard with Kismet/ntfy probes and optional Argus import), `lynceus-bootstrap-kismet` (Debian/Ubuntu/Kali helper that adds the Kismet apt repo, installs the package, configures capture interfaces, and adds the operator to the `kismet` group — idempotent, the one CLI that's allowed to touch the network).
+- **Operator triage workflow on `/alerts`.** Filter dropdowns for severity, time window, acknowledged state, search, rule_type, `has_note`, and `has_action` (any alert covered by an active snooze / permanent allowlist / non-archived watchful tracking). Per-alert snooze with operator-pickable durations (`1h / 24h / 7d / 30d / forever`), per-rule_type snooze on `/rules` with the duration vocabulary `1h / 4h / 24h / 7d / 30d`, single + bulk acknowledge, Esc keyboard shortcut to clear filters, and streaming CSV export at `/alerts.csv` that mirrors the filtered set with full Argus-metadata join + `action_taken` column. `mac_range` parity across the alert-detail "Allowlisted" badge and the `has_action` filter.
+- **Watchful snooze (recurrence-aware tracking).** A third snooze surface for MACs that should not page on every sighting but should escalate if they keep showing up. A `/watchful` page lists tracked entries with status / state / window / MAC filters, a recurrence-digest section grouping escalations by ISO week, and per-entry action buttons: dismiss (archive), promote (allowlist + archive atomically), reset (walk back from escalated), investigate (flag + note, keep counting), confirmed-safe (close as benign, no allowlist write). Triage entry-point is the per-row "Watch" button on `/alerts`. A synthetic `watchful_recurrence` rule_type alert at ntfy priority 4 fires on the 4th sighting (1 initial + 3 counted recurrences on a ≥24h gap debounce); unactioned entries auto-archive after 90 days with no observations.
+- **Watchlist exploration.** `/watchlist` list page with search (`q`), filters (`pattern_type`, `severity`, `device_category`), and pagination over the full ~22.5k-row corpus. Per-row detail page at `/watchlist/<id>` cross-links to matched alerts and surfaces full Argus provenance (vendor, source URL, source excerpt, FCC ID, geographic scope, first-seen / last-verified timestamps). Streaming CSV export at `/watchlist.csv` covers the filtered set with the full metadata-join column projection.
+- **Migration rollback (operator-facing, opt-in destructive flow).** Every shipped DB migration ships a paired `NNN_<name>_down.sql`. The `lynceus-validate rollback --target-version N` subcommand walks the chain in descending order with interactive confirmation (`--yes` for scripted use), reversing pure-CREATE migrations cleanly, ADD-COLUMN migrations via portable table-rebuild, and CHECK-relaxation migrations with informative abort on now-disallowed rows. Migration 010 (`normalize_watchlist_patterns`) is irreversible by design and skipped with a logged WARNING. **Back up your DB before invoking rollback.**
+- **Dark mode (theme toggle).** Persistent operator preference via `localStorage`. Theme bootstrap script in the `<head>` resolves the active theme before first paint so navigating between pages never flashes the wrong palette. Toggle lives in the topnav on every page.
+- **Ergonomic CLI tooling.** `lynceus-quickstart` (foreground daemon + UI + browser launch for dev/demo), `lynceus-setup` (interactive wizard with Kismet/ntfy probes and optional Argus import), `lynceus-bootstrap-kismet` (Debian/Ubuntu/Kali helper that adds the Kismet apt repo, installs the package, configures capture interfaces, and adds the operator to the `kismet` group — idempotent, the one CLI that's allowed to touch the network), `lynceus-validate` (config preflight + migration rollback subcommand), `lynceus-export-config` (single-file YAML+rules+allowlist bundle for backup / sharing / diffing).
 - **Read-only `/settings` page.** Surfaces current capture state with prominent privacy treatment (recording warning when probe-SSID capture is on, privacy-mode indicator when off), Kismet/ntfy connection status, watchlist origin breakdown (Argus / YAML / bundled), and system info (version, DB path, log path). Sensitive values (Kismet API token, ntfy topic) are redacted server-side. **No mutation endpoints.**
-- **Release packaging.** `install.sh` and a thin `uninstall.sh` wrapper (Linux only; `--user` / `--system` / `--uninstall` / `--purge` / `--dry-run`), hardened systemd units (`lynceus.service`, `lynceus-ui.service`) with `NoNewPrivileges`, `ProtectSystem=strict`, restricted namespaces, and friends. Canonical XDG-aware DB-path conventions across the codebase.
-- **Bundled threat data.** A curated default watchlist (~22 500 Argus rows) ships in the wheel as package data and is auto-imported on first `lynceus-setup` run. Coverage includes MAC, OUI, MAC ranges, BLE manufacturer IDs, drone Remote-ID prefixes, and SSID rows (both exact and case-insensitive-substring matches — the bundled `argus_ssid` rule fires on Flock cameras, Penguin trackers, and the FS Ext Battery family out of the box). Refresh from the latest published export with `lynceus-import-argus --from-github`.
+- **Release packaging.** `install.sh` and a thin `uninstall.sh` wrapper (Linux only; `--user` / `--system` / `--uninstall` / `--purge` / `--dry-run`), hardened systemd units (`lynceus.service`, `lynceus-ui.service`, `lynceus-refresh.service` + `lynceus-refresh.timer`) with `NoNewPrivileges`, `ProtectSystem=strict`, restricted namespaces, and friends. Canonical XDG-aware DB-path conventions across the codebase. End-to-end fresh-host deployment runbook at [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and Kali Linux smoke checklist at [docs/KALI_SMOKE_CHECKLIST.md](docs/KALI_SMOKE_CHECKLIST.md).
+- **Bundled threat data.** A curated default watchlist (~22,500 Argus rows, exported 2026-05-17) ships in the wheel as package data and is auto-imported on first `lynceus-setup` run. Coverage includes MAC, OUI, MAC ranges, BLE manufacturer IDs, BLE service UUIDs, drone Remote-ID prefixes, and SSID rows (both exact and case-insensitive-substring matches — the bundled `argus_ssid` rule fires on Flock cameras, Penguin trackers, and the FS Ext Battery family out of the box). Refresh from the latest published export with `lynceus-import-argus --from-github`.
 
 ## Installation
 
@@ -127,7 +132,7 @@ To check current configuration without editing files, navigate to `/settings` in
 Lynceus ships a default watchlist as package data inside the wheel: `src/lynceus/data/default_watchlist.csv`.
 
 - **Source.** Snapshot from [Argus](https://github.com/kevwillow/argus-db), the companion RF-signature project. Lynceus is **not** redistributing the full Argus corpus — what's bundled is a point-in-time snapshot.
-- **Coverage.** ~63 records (exported around 2026-05-07) across `mac`, `oui`, and `mac_range` identifier types. Categories include `drone`, `alpr`, `gunshot_detect`, `hacking_tool`, and `unknown`.
+- **Coverage.** ~22,500 records (exported 2026-05-17) across `mac`, `oui`, `mac_range`, `ble_manufacturer_id`, `ble_uuid`, `drone_remote_id_prefix`, `ssid`, and `ssid_pattern` identifier types. Categories include `drone`, `alpr`, `gunshot_detect`, `hacking_tool`, and `unknown`. The bundled `argus_ssid` rule fires on Flock-class cameras, Penguin trackers, and the FS Ext Battery family out of the box.
 - **First-run.** `lynceus-setup` auto-imports the bundled CSV on first run, so a fresh install has a working watchlist out of the box.
 - **Refresh.** When a newer Argus export is available, refresh in place. The single-command path pulls the latest tagged release straight from GitHub:
 
@@ -181,6 +186,9 @@ Both units are hardened (`NoNewPrivileges=yes`, `ProtectSystem=strict`, restrict
 | `lynceus-setup` | Interactive configuration wizard. |
 | `lynceus-seed-watchlist` | Add watchlist entries from a YAML file. |
 | `lynceus-import-argus` | Import an Argus CSV export. `--from-github` pulls the latest release from `kevwillow/argus-db`; `--input <path>` reads a local file. `--db` defaults to the canonical scope path. |
+| `lynceus-validate` | Config preflight + DB migration rollback. The legacy no-subcommand form runs the read-only config validator; `lynceus-validate rollback --target-version N` reverses applied migrations with an opt-in confirmation flow. |
+| `lynceus-bootstrap-kismet` | Debian/Ubuntu/Kali installer for the Kismet apt repo + package + capture-interface configuration. The one CLI that touches the network during install. |
+| `lynceus-export-config` | Bundle current config + rules + allowlist into a single YAML for backup / sharing / diffing. |
 
 For at-a-glance configuration and connectivity verification while running, navigate to `/settings` in the web UI. It surfaces capture state, Kismet/ntfy reachability, watchlist origin breakdown, and system info — read-only.
 
@@ -213,7 +221,7 @@ Two-process production deployment, single SQLite database between them.
 ```
 
 - **Poller** (`lynceus`) — polls the Kismet REST API on a configurable interval, runs the rules engine over each sighting, persists sightings + alerts.
-- **Rules engine** — watchlist match (mac / oui / mac_range / ble service uuid), allowlist suppression, AirTag-class tracker recognition, first-sighting heuristics.
+- **Rules engine** — watchlist match (mac / oui / mac_range / ble service uuid / ble manufacturer id / ssid exact / ssid substring / drone remote-id prefix), allowlist suppression, AirTag-class tracker recognition, first-sighting heuristics, watchful recurrence tracking, per-rule_type and per-alert snooze gates.
 - **Database** — SQLite, with versioned migrations and a canonical XDG-aware path resolution.
 - **Web UI** (`lynceus-ui`) — FastAPI + Jinja2 templates, read-only. Served by uvicorn.
 - **Notifier** — ntfy push for matched alerts. Null/recording backends exist for testing.
