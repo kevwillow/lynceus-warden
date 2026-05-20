@@ -76,7 +76,7 @@
         <input type="text" name="q" value="{{ q }}" maxlength="100" placeholder="mac / ssid / vendor substring">
       </label>
       <label>search
-        <input type="text" name="search" value="{{ search }}" maxlength="100" placeholder="rule name or message">
+        <input type="text" id="alerts-search-input" name="search" value="{{ search }}" maxlength="100" placeholder="rule name or message">
       </label>
       <button type="submit">filter</button>
     </fieldset>
@@ -108,6 +108,8 @@
       <a href="/alerts.csv{% if request.url.query %}?{{ request.url.query }}{% endif %}"
          title="Download every alert matching the current filters as a CSV file (pagination ignored)">Export CSV</a>
     </small>
+    &middot;
+    <small class="shortcut-hint">Press <kbd>?</kbd> for keyboard shortcuts</small>
   </p>
 
   {% if alerts %}
@@ -239,7 +241,7 @@
     <ul>
       <li>
         {% if pagination.has_prev %}
-          <a href="/alerts?{{ base_qs }}&page={{ pagination.page - 1 }}">&larr; prev</a>
+          <a class="alerts-page-prev" href="/alerts?{{ base_qs }}&page={{ pagination.page - 1 }}">&larr; prev</a>
         {% else %}
           <span class="dim">&larr; prev</span>
         {% endif %}
@@ -251,7 +253,7 @@
     <ul>
       <li>
         {% if pagination.has_next %}
-          <a href="/alerts?{{ base_qs }}&page={{ pagination.page + 1 }}">next &rarr;</a>
+          <a class="alerts-page-next" href="/alerts?{{ base_qs }}&page={{ pagination.page + 1 }}">next &rarr;</a>
         {% else %}
           <span class="dim">next &rarr;</span>
         {% endif %}
@@ -259,21 +261,72 @@
     </ul>
   </nav>
 
-  {% if filters_active %}
-    <script>
-      (function () {
-        document.addEventListener('keydown', function (e) {
-          if (e.key !== 'Escape') return;
-          var t = e.target;
-          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) {
+  <aside id="alerts-shortcut-help" hidden role="region" aria-label="Keyboard shortcuts">
+    <h3>Keyboard shortcuts</h3>
+    <dl>
+      <dt><kbd>/</kbd></dt><dd>Focus search</dd>
+      <dt><kbd>n</kbd></dt><dd>Next page</dd>
+      <dt><kbd>p</kbd></dt><dd>Previous page</dd>
+      <dt><kbd>?</kbd></dt><dd>Toggle this help</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close help{% if filters_active %} / reset filters{% endif %}</dd>
+    </dl>
+  </aside>
+
+  <script>
+    (function () {
+      function isFormField(el) {
+        if (!el) return false;
+        var tag = el.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+        if (el.isContentEditable) return true;
+        return false;
+      }
+      var help = document.getElementById('alerts-shortcut-help');
+      function helpVisible() { return help && !help.hidden; }
+      function showHelp() { if (help) help.hidden = false; }
+      function hideHelp() { if (help) help.hidden = true; }
+      document.addEventListener('keydown', function (e) {
+        // Esc: close help first (even from inside an input), then fall
+        // through to the reset-filters precedent when applicable.
+        if (e.key === 'Escape') {
+          if (helpVisible()) {
+            e.preventDefault();
+            hideHelp();
             return;
           }
+          if (isFormField(e.target)) return;
           var link = document.querySelector('a.reset-filters');
-          if (link) {
-            window.location.href = link.href;
+          if (link) window.location.href = link.href;
+          return;
+        }
+        // Letter/symbol shortcuts must not shadow typing in form inputs,
+        // and must not steal browser/OS chords (Ctrl/Cmd/Alt held).
+        if (isFormField(e.target)) return;
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.key === '/') {
+          var search = document.getElementById('alerts-search-input');
+          if (search) {
+            e.preventDefault();
+            search.focus();
+            search.select();
           }
-        });
-      })();
-    </script>
-  {% endif %}
+        } else if (e.key === 'n') {
+          var next = document.querySelector('a.alerts-page-next');
+          if (next) {
+            e.preventDefault();
+            window.location.href = next.href;
+          }
+        } else if (e.key === 'p') {
+          var prev = document.querySelector('a.alerts-page-prev');
+          if (prev) {
+            e.preventDefault();
+            window.location.href = prev.href;
+          }
+        } else if (e.key === '?') {
+          e.preventDefault();
+          if (helpVisible()) hideHelp(); else showHelp();
+        }
+      });
+    })();
+  </script>
 {% endblock %}

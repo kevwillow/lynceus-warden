@@ -133,6 +133,30 @@ tr.row-acked    { opacity: 0.55; }
 /* Reset filters link visibility */
 .reset-filters { margin-left: 1em; font-size: 0.9em; }
 
+/* Keyboard-shortcut help overlay on /alerts. Non-modal floating panel
+   toggled by `?` and dismissed by Esc — no focus trap, no backdrop.
+   Hidden by default via the `hidden` HTML attribute, which is also
+   honored by screen readers. Reuses Pico's card colors so it stays
+   coherent across the light/dark/auto theme toggle. */
+#alerts-shortcut-help {
+    position: fixed;
+    top: 4rem;
+    right: 1.5rem;
+    z-index: 1000;
+    max-width: 22rem;
+    padding: 0.9rem 1.1rem;
+    background: var(--pico-card-background-color, #fff);
+    color: var(--pico-color, inherit);
+    border: 1px solid var(--pico-card-border-color, var(--lyn-topnav-border));
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+    font-size: 0.9em;
+}
+#alerts-shortcut-help h3 { margin: 0 0 0.5rem; font-size: 1em; }
+#alerts-shortcut-help dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 0.9rem; margin: 0; }
+#alerts-shortcut-help dt { margin: 0; }
+#alerts-shortcut-help dd { margin: 0; }
+
 /* Evidence section: RSSI sparkline + collapsible Kismet record. The
    sparkline polyline uses currentColor so it inherits text color and
    stays legible in both light and dark themes without per-theme
