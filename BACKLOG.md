@@ -58,6 +58,32 @@ Re-emits hunter alerts to Lynceus ntfy topic. Independent module under
   the hunter is operational means the integration drifts out of sync with
   Rayhunter/Crocodile Hunter releases before it's ever exercised.
 
+### Single-emit-with-resolved-severity mode for multi-rule matches
+`rules.evaluate()` emits one RuleHit per matching rule per observation;
+a device on the watchlist by both mac AND oui produces two alert rows
+at two potentially-different severities for the same poll-cycle
+observation. This is intentional (see CHANGELOG `[Unreleased] §
+Documentation` — audit-first design, dedup window collapses
+near-duplicates downstream). If operators report ntfy/alert-list noise
+that the dedup window doesn't smooth out, the alternative is an opt-in
+"single-emit with resolved severity" mode: highest-severity-wins
+across the matching set, one alert row, configurable via the existing
+runtime overrides surface. NOT a default change — the current emit
+semantics let operators see which rule chains are catching what
+across the same observation, which is information the merged path
+would hide.
+- **Trigger**: real-world operator report of multi-rule noise that
+  the dedup window can't absorb, OR a request to attribute a single
+  alert to a single resolved cause for downstream tooling.
+- **Estimated**: 1 prompt, ~100 LOC in `rules.evaluate()` + a config
+  knob + tests. Architecturally cheap — the loop already collects all
+  hits before returning; a post-loop resolve step is small.
+- **Notes**: until then, do NOT "fix" the multi-emit behavior. It is
+  the locked semantic. Diagnostic test
+  `tests/test_diag_rules.py::test_diag_rules_severity_resolution`
+  pins the current behavior; future contributors who read it asking
+  "shouldn't this resolve?" should be pointed at this entry.
+
 ### L-RULES-10: SSID case/whitespace handling for the `ssid` pattern_type
 The existing exact-match `ssid` pattern_type (case-sensitive per
 IEEE 802.11) deliberately does NOT case-fold or strip whitespace. The
