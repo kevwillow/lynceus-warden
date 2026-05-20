@@ -1463,6 +1463,86 @@ def test_alerts_list_reset_link_absent_when_no_filters(tmp_path):
 
 
 @pytest.mark.webui
+def test_alerts_list_filters_summary_breakdown_present_when_filters_active(tmp_path):
+    # The filtered-by summary line names each active filter so operators
+    # can see at a glance why a narrow result set is narrow, without
+    # having to scan the form fields. Single filter case.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high")
+        assert r.status_code == 200
+        assert "Filtered by:" in r.text
+        assert "severity=high" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filters_summary_includes_multiple_active_filters(tmp_path):
+    # Multi-filter breakdown -- each engaged filter appears in the
+    # summary, comma-joined. acknowledged renders as yes/no rather than
+    # the raw true/false to match the form-control labels.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high&acknowledged=true&window=24h&q=apple")
+        assert r.status_code == 200
+        assert "Filtered by:" in r.text
+        assert "severity=high" in r.text
+        assert "acknowledged=yes" in r.text
+        assert "window=24h" in r.text
+        assert "q=apple" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filters_summary_absent_when_no_filters(tmp_path):
+    # No filters -> no summary line. Operators on the default view
+    # shouldn't see "Filtered by:" with an empty values list.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "Filtered by:" not in r.text
+        assert "filters-summary" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_esc_keydown_handler_present_when_filters_active(tmp_path):
+    # The Esc shortcut handler is conditionally emitted; only when
+    # filters are active is there anything to clear. Operators on the
+    # default view get no script at all.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high")
+        assert r.status_code == 200
+        assert "keydown" in r.text
+        assert "Escape" in r.text
+        assert "a.reset-filters" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_esc_keydown_handler_absent_when_no_filters(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "keydown" not in r.text
+        assert "Escape" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
 def test_alerts_list_ack_all_visible_form_carries_filter_state(tmp_path):
     app, db = _make_app(tmp_path)
     try:
