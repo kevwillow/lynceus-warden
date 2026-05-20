@@ -1798,7 +1798,10 @@ def test_alerts_list_reset_link_absent_when_no_filters(tmp_path):
         with TestClient(app) as client:
             r = client.get("/alerts")
         assert r.status_code == 200
-        assert "reset-filters" not in r.text
+        # The shortcut handler script references "a.reset-filters" as a
+        # selector regardless of filter state, so check for the actual
+        # rendered link rather than the bare substring.
+        assert 'class="reset-filters"' not in r.text
     finally:
         db.close()
 
@@ -1854,10 +1857,9 @@ def test_alerts_list_filters_summary_absent_when_no_filters(tmp_path):
 
 
 @pytest.mark.webui
-def test_alerts_list_esc_keydown_handler_present_when_filters_active(tmp_path):
-    # The Esc shortcut handler is conditionally emitted; only when
-    # filters are active is there anything to clear. Operators on the
-    # default view get no script at all.
+def test_alerts_list_keyboard_shortcut_handler_present_when_filters_active(tmp_path):
+    # Filtered view: shortcut handler emitted with the reset-filters
+    # path wired up so Esc clears filters (the original precedent).
     app, db = _make_app(tmp_path)
     try:
         with TestClient(app) as client:
@@ -1871,14 +1873,18 @@ def test_alerts_list_esc_keydown_handler_present_when_filters_active(tmp_path):
 
 
 @pytest.mark.webui
-def test_alerts_list_esc_keydown_handler_absent_when_no_filters(tmp_path):
+def test_alerts_list_keyboard_shortcut_handler_present_when_no_filters(tmp_path):
+    # Shortcut handler is unconditional: /, n, p, ? are useful on the
+    # default view too. The reset-filters branch is a runtime no-op
+    # when no reset link is rendered.
     app, db = _make_app(tmp_path)
     try:
         with TestClient(app) as client:
             r = client.get("/alerts")
         assert r.status_code == 200
-        assert "keydown" not in r.text
-        assert "Escape" not in r.text
+        assert "keydown" in r.text
+        assert "Escape" in r.text
+        assert "alerts-search-input" in r.text
     finally:
         db.close()
 
