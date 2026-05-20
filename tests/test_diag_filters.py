@@ -214,8 +214,14 @@ def test_diag_has_action_precedence(diag, tmp_path):
         diag.exercise(f"GET /alerts/{alert_id}")
         detail_resp = client.get(f"/alerts/{alert_id}")
         diag.observed(f"detail page status: {detail_resp.status_code}")
-        # Look for the human-rendered allowlist disposition string.
-        for token in ("allowlist", "mac_range", "snooze", "permanent"):
+        # The detail page surfaces disposition via three branches in
+        # alert_detail.html: "Allowlisted ..." (primary file, expires_at
+        # is None), "Snoozed until ..." (UI sibling), or "not on the
+        # allowlist" (no match). With both fixture entries in the primary
+        # file, expect Allowlisted + the "Configured in allowlist.yaml"
+        # operator-managed hint (primary entries are not removable from UI).
+        for token in ("Allowlisted", "Snoozed until",
+                      "Configured in", "allowlist.yaml"):
             diag.observed(f"  detail-page contains {token!r}: "
                           f"{token in detail_resp.text}")
 
@@ -223,7 +229,10 @@ def test_diag_has_action_precedence(diag, tmp_path):
                "signal matches; the matched signal identity is not surfaced "
                "by the filter. The /alerts/<id> detail page resolves a single "
                "match via _resolve_allowlist_match -- primary file before UI "
-               "sibling, no precedence between mac/mac_range within a file.")
+               "sibling, no precedence between mac/mac_range within a file. "
+               "The matched-pattern_type (mac vs mac_range) is also not "
+               "surfaced in the rendered disposition; both render identically "
+               "as 'Allowlisted'.")
     db.close()
 
 
@@ -287,15 +296,25 @@ def test_diag_has_action_with_snooze_and_allowlist(diag, tmp_path):
         diag.exercise(f"GET /alerts/{alert_id}")
         d = client.get(f"/alerts/{alert_id}")
         diag.observed(f"detail status: {d.status_code}")
-        for token in ("diag-permanent", "diag-snooze", "Remove",
-                      "Permanent", "snooze"):
+        # Disposition vocabulary on /alerts/<id> (see alert_detail.html
+        # triage section). Primary file wins over UI sibling, so expect
+        # "Allowlisted" (True) and "Snoozed until" (False); the
+        # operator-managed hint surfaces because primary-file entries
+        # are not UI-removable, so "Remove from allowlist" (False) and
+        # "Cancel snooze" (False).
+        for token in ("Allowlisted", "Snoozed until", "Configured in",
+                      "Remove from allowlist", "Cancel snooze"):
             diag.observed(f"  detail-page contains {token!r}: "
                           f"{token in d.text}")
 
     diag.notes("_resolve_allowlist_match consults the primary file FIRST; "
                "the UI sibling only wins when the primary misses. With both "
                "files matching, the operator sees the permanent disposition "
-               "and the snooze entry is invisible from the detail page.")
+               "('Allowlisted') and the snooze entry is invisible from the "
+               "detail page ('Snoozed until' False). The note text "
+               "('diag-permanent' / 'diag-snooze') is not surfaced because "
+               "the template does not render the entry's note field; only "
+               "added_at + expires_at + the disposition branch.")
     db.close()
 
 
