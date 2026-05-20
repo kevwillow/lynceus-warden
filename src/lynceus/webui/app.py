@@ -2546,6 +2546,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # sub-100ms; caching would buy nothing material and would
         # introduce invalidation complexity at alert-write time.
         rule_stats = db.count_alerts_grouped_by_rule_name(since_ts=since_ts)
+        # Type-axis sibling of the per-rule_name aggregate above,
+        # backing the "fires by rule_type" summary section at the top
+        # of the page. Same time window drives both — flipping the
+        # since dropdown updates both views in one round-trip.
+        rule_type_stats = db.count_alerts_grouped_by_rule_type(since_ts=since_ts)
 
         # Active rule_type snoozes for the per-row badge / unsnooze
         # button render. Projected to ``{rule_type: RuleTypeSnooze}``
@@ -2597,6 +2602,35 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     key=lambda r: (r["stats"].count, r["rule"].name)
                 )
 
+        # Per-rule_type breakdown for the summary section at the top
+        # of the page. Iteration scope = unique rule_types present
+        # in the loaded ruleset (matches per-rule_name behavior: a
+        # rule_type with fires in the window but no rule in
+        # rules.yaml does not appear, since the operator's
+        # rules.yaml view is the authoritative scope). Missing keys
+        # default to RuleStats(0, None) so types with zero fires in
+        # the window still render with their snooze affordances —
+        # the section is independent of the per-rule_name status
+        # filter for that reason: hiding snoozed types from the
+        # type-level view would defeat its purpose.
+        rule_types_with_stats: list[dict] = []
+        if ruleset is not None:
+            seen_rule_types: list[str] = []
+            for rule in ruleset.rules:
+                if rule.rule_type not in seen_rule_types:
+                    seen_rule_types.append(rule.rule_type)
+            for rt in seen_rule_types:
+                stats = rule_type_stats.get(
+                    rt, RuleStats(count=0, last_fired_ts=None)
+                )
+                snooze = snoozes_by_type.get(rt)
+                rule_types_with_stats.append(
+                    {"rule_type": rt, "stats": stats, "snooze": snooze}
+                )
+            rule_types_with_stats.sort(
+                key=lambda r: (-r["stats"].count, r["rule_type"])
+            )
+
         # Resolve the window label for the dynamic "Fires (last X)"
         # column header. "all" gets the human label "all time"; the
         # other four buckets render their raw key ("1h" / "24h" /
@@ -2623,6 +2657,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "ruleset": ruleset,
                 "notice": notice,
                 "rules_with_stats": rules_with_stats,
+                "rule_types_with_stats": rule_types_with_stats,
                 "since": since,
                 "sort": sort,
                 "status": status,
