@@ -8,6 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Sub-day granularity on `/alerts` absolute date range.** The
+  `since` / `until` URL params on `/alerts` (and the lockstep CSV
+  export at `/alerts.csv` and bulk-ack POST at
+  `/alerts/ack-all-visible`) now accept `YYYY-MM-DDTHH:MM` /
+  `YYYY-MM-DDTHH:MM:SS` datetime strings in addition to the
+  pre-existing `YYYY-MM-DD` date-only form. An operator triaging
+  an incident can express a window like "Tuesday 14:00 to
+  Wednesday 09:00" directly in the filter bar; previously the only
+  way to narrow to a sub-day stretch was to pick a wider relative
+  `window` bucket (e.g. `24h`) and visually filter, which both
+  overstated the range and broke down for anything older than 30d.
+  The picker UI swaps `<input type="date">` for
+  `<input type="datetime-local">`; datetime values are interpreted
+  verbatim as UTC (no JS conversion, no new TZ config key --
+  single-operator deployment, operator does the mental math for
+  non-UTC, same posture as everywhere else in the webui). Date-only
+  bookmarks are preserved byte-for-byte: `since=YYYY-MM-DD`
+  promotes to UTC midnight, `until=YYYY-MM-DD` promotes to
+  `23:59:59`, exactly as before. Datetime `until` does NOT promote
+  to end-of-day -- the operator-supplied minute IS the boundary,
+  matching the picker's affordance. Mix-and-match works
+  (`since=date&until=datetime` parses each independently); one-
+  sided ranges (`since` alone or `until` alone) work; combining
+  with the relative `window=` selector preserves the established
+  MAX-combine behavior (tighter lower bound wins, not "absolute
+  overrides relative"). Malformed input switches from the pre-rc6
+  strict HTTP 400 to silent clamp-to-no-clause, matching the
+  `rule_type` / `window` / `has_note` posture on the same page so
+  a stale bookmark or fat-fingered submission lands on the
+  unfiltered page rather than an error. No schema changes, no
+  migrations -- the DB layer was already `ts >= ?` / `ts <= ?` on
+  epoch seconds and is granularity-agnostic; the rc6 extension is
+  purely in the query-param parsing helper plus the picker widget.
+  Configurable browser-local timezone display and CSV-export-of-
+  datetime-range are deferred.
+
 - **Per-rule_type fires breakdown on `/rules`.** The page already
   showed per-rule_name fire counts and per-rule_type snooze
   controls, but operators had to mentally sum rule_name rows to get

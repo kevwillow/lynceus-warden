@@ -200,7 +200,7 @@ Read-only views:
 | Path | What it shows |
 | --- | --- |
 | `/` | Index: severity counts (24h / 7d / 30d), 30-day sparkline, recent unacknowledged alerts, recent devices, Kismet reachability. |
-| `/alerts` | Paginated alerts list with filters for severity, ack state, absolute date range (`since`/`until`), relative time `window` (1h/24h/7d/30d), `rule_type`, free-text `search` (rule name + message), and free-text `q` (MAC + message + manufacturer). |
+| `/alerts` | Paginated alerts list with filters for severity, ack state, absolute date or datetime range (`since`/`until` accept both `YYYY-MM-DD` and `YYYY-MM-DDTHH:MM[:SS]`, interpreted as UTC), relative time `window` (1h/24h/7d/30d), `rule_type`, free-text `search` (rule name + message), and free-text `q` (MAC + message + manufacturer). |
 | `/alerts/{id}` | Alert detail with action history (ack/unack audit trail). |
 | `/devices` | Paginated devices list with filters for device type and randomization state. |
 | `/devices/{mac}` | Device detail with sighting history. |
