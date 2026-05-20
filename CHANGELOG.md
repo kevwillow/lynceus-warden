@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Per-rule_type fires breakdown on `/rules`.** The page already
+  showed per-rule_name fire counts and per-rule_type snooze
+  controls, but operators had to mentally sum rule_name rows to get
+  type-level totals like "watchlist_mac total fires (last 24h)".
+  A new "fires by rule_type" summary section now sits above the
+  per-rule_name list, surfacing fire count + last fired + snooze
+  state at the type level in one place. The same `since=` window
+  param drives both views in lockstep across `1h / 24h / 7d / 30d
+  / all`; flipping the dropdown updates both summary and per-name
+  list in one round-trip. The summary also carries inline
+  snooze / unsnooze controls so the operator can drive a type-
+  level snooze from the type-level view rather than picking an
+  arbitrary rule_name article. Section ordering is count_desc with
+  rule_type as tiebreaker so the highest-volume types lead.
+  Iteration scope is the unique rule_types present in the loaded
+  ruleset (matches per-rule_name behavior; the operator's
+  rules.yaml view is authoritative); types with zero fires in the
+  window still render so snooze affordances stay reachable. The
+  section is independent of the `status=` filter -- that filter
+  narrows the per-rule_name list only; hiding snoozed types from
+  the type-level view would defeat its purpose. No schema changes,
+  no new URL params, no new sort vocab. CSV export of the
+  per-rule_type breakdown is not in scope here.
+
 ## [0.5.0] - 2026-05-20
 
 Release status: This release has not yet been validated against
