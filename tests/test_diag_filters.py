@@ -327,10 +327,20 @@ def test_diag_mac_range_sql_function_invocation(diag, tmp_path):
     # 50 mac_range allowlist entries -- enough to make the per-row,
     # per-pattern call count observable without bundling the full
     # 17,795 production set into a test fixture.
+    #
+    # Patterns are /36-shape (5 colon-separated groups, 9 hex chars
+    # before the slash, last group exactly 1 nibble) -- the only
+    # other accepted shape is /28 (4 groups, 7 hex chars), which
+    # gives just 16 distinct prefixes under a fixed aa:bb:cc lead,
+    # not enough to generate 50 unique entries. parse_mac_range_pattern
+    # rejects any shape mismatch; if these patterns become invalid
+    # the allowlist would fall back to an empty entry set, the
+    # has_action SQL would emit zero mac_in_mac_range predicates,
+    # and the invocation counter would silently report 0.
     n_ranges = 50
     n_alerts = 30
     mac_range_patterns = [
-        f"aa:bb:cc:{i:02x}:0/28" for i in range(n_ranges)
+        f"aa:bb:cc:{i:02x}:0/36" for i in range(n_ranges)
     ]
     allowlist_path = _write_allowlist(
         tmp_path,
@@ -344,21 +354,43 @@ def test_diag_mac_range_sql_function_invocation(diag, tmp_path):
 
     for i in range(n_alerts):
         _seed_alert(db, f"99:88:77:66:55:{i:02x}")
-    diag.fixture(f"allowlist mac_range entries: {n_ranges}")
+    diag.fixture(f"allowlist mac_range entries: {n_ranges} ({mac_range_patterns[0]!r} .. "
+                 f"{mac_range_patterns[-1]!r})")
     diag.fixture(f"alerts seeded: {n_alerts} (none in any range)")
 
     counter = _wrap_mac_in_mac_range(db)
     diag.fixture("re-registered mac_in_mac_range as a counting wrapper "
                  "around lynceus.patterns.mac_in_mac_range")
 
+    # Sanity-bind the wrapper to the same connection the route will
+    # use. create_app(config, db) stashes db on app.state and the
+    # /alerts handler closes over the same Database instance, so the
+    # connection-scoped function registration above IS the one the
+    # request hits. A direct invocation here pre-flights that
+    # binding -- if the counter doesn't bump, the wrapper isn't
+    # wired correctly and the fixture should be inspected before
+    # interpreting the request-side number.
+    db._conn.execute(
+        "SELECT mac_in_mac_range(?, ?)",
+        ("99:88:77:66:55:00", mac_range_patterns[0]),
+    ).fetchone()
+    diag.fixture(f"pre-flight direct SQL invocation; counter={counter['calls']} "
+                 f"(expect 1, confirms the wrapper is registered on the "
+                 f"connection the route uses)")
+    pre_flight_calls = counter["calls"]
+
     app = create_app(config, db)
     with TestClient(app) as client:
         diag.exercise("GET /alerts?has_action=with_action")
         r = client.get("/alerts", params={"has_action": "with_action"})
         diag.observed(f"status: {r.status_code}")
-        diag.observed(f"mac_in_mac_range invocation count: {counter['calls']}")
-        diag.observed(f"expected upper bound n_alerts * n_ranges = "
-                      f"{n_alerts * n_ranges} (per-row, per-pattern)")
+        request_calls = counter["calls"] - pre_flight_calls
+        diag.observed(f"mac_in_mac_range invocation count (request only): "
+                      f"{request_calls}")
+        diag.observed(f"expected upper bound per WHERE eval: "
+                      f"n_alerts * n_ranges = {n_alerts * n_ranges} "
+                      f"(per-row, per-pattern; route runs count_alerts + "
+                      f"list_alerts_with_match, so ~2x this bound)")
         diag.observed(f"first {len(counter['args_sample'])} (mac, pattern) "
                       f"calls: {counter['args_sample']}")
 
@@ -366,7 +398,10 @@ def test_diag_mac_range_sql_function_invocation(diag, tmp_path):
                "leading IN(?,?) clause was emitted (it isn't, because no mac "
                "entries are present), mac_in_mac_range would be skipped for "
                "matched rows. Here only mac_range clauses fire, so every "
-               "(row, pattern) pair invokes the function.")
+               "(row, pattern) pair invokes the function -- twice over the "
+               "request, once for the COUNT(*) and once for the page SELECT, "
+               "both of which call _alert_filter_clauses with the same "
+               "actioned_mac_ranges tuple.")
     db.close()
 
 
