@@ -888,7 +888,7 @@ def main(argv: list[str] | None = None) -> int:
             "paths.default_overrides_path(--scope), e.g. "
             "~/.config/lynceus/severity_overrides.yaml for --scope user, "
             "/etc/lynceus/severity_overrides.yaml for --scope system). "
-            "Resolution is scope-strict — there is no user→system "
+            "Resolution is scope-strict -- there is no user->system "
             "fallback. Absent files yield built-in defaults."
         ),
     )
