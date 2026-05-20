@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-20
+
+Release status: This release has not yet been validated against
+real Kismet + ntfy + systemd on Linux hardware. The test suite
+covers 2434 tests on Windows / 2450 expected on Linux, with the
+16-test delta being POSIX-specific install.sh and chmod-mode
+checks that don't run on non-POSIX platforms. Functional
+correctness is asserted by tests + 21 diagnostic behavior-dump
+tests; deployment behavior is asserted by `docs/DEPLOYMENT.md`
+and `docs/KALI_SMOKE_CHECKLIST.md` but unsmoked. Operators
+encountering issues should file via the project tracker with
+browser + Python version + relevant journalctl excerpt.
+
+Most likely class of bugs is UI-related — the backend has the
+deepest test coverage; operator-facing templates and the JS
+keyboard shortcut have lighter coverage by their nature.
+
 ### Added
 
 - **Clearer filtered indicator + Esc keyboard shortcut on
