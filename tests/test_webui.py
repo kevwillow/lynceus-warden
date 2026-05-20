@@ -5256,6 +5256,34 @@ def test_alerts_has_action_existing_mac_oui_signals_unchanged_with_mac_range_hel
 
 
 @pytest.mark.webui
+def test_alerts_has_action_with_action_handles_null_mac_when_mac_range_active(tmp_path):
+    """NULL-mac alerts must not crash the with_action SQL when any
+    mac_range allowlist entry is active. mac_in_mac_range is a Python
+    UDF that raises on None; the assembled clause guards each
+    invocation with `mac IS NOT NULL AND ...`. Regression pin for the
+    fix to the diagnostic reproducer at tests/test_diag_filters.py::
+    test_diag_has_action_null_mac_invocation (commit 9483137)."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, mac_ranges=["aa:bb:cc:d/28"])
+        # In-range non-NULL alert: must appear under with_action.
+        _seed_alert_with_device(db, "aa:bb:cc:d3:00:01", "msg-in-range", ts=100)
+        # NULL-mac alert: can't carry any mac-keyed action signal, must
+        # NOT appear under with_action -- and must not crash the query.
+        db.add_alert(
+            ts=101, rule_name="r", mac=None,
+            message="msg-null-mac", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-in-range" in r.text
+        assert "msg-null-mac" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
 def test_alert_detail_state2_mac_range_primary_match_shows_allowlisted(tmp_path):
     """Alert-detail page: a primary-file mac_range entry whose prefix
     covers the alert MAC renders the Allowlisted status. Mirrors the
