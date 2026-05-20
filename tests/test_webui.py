@@ -6156,3 +6156,234 @@ def test_alerts_csv_invalid_rule_type_silently_falls_back(tmp_path):
         assert len(data_rows) == 1
     finally:
         db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_renders_per_rule_type_section_header(tmp_path):
+    """The 'fires by rule_type' summary section renders above the
+    per-rule_name article list whenever a ruleset is loaded. Header
+    text and window-label substitution must both appear."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        # Section header carries the window label (default "7d").
+        assert "fires by rule_type (7d)" in r.text
+        # Both rule_types from the loaded ruleset appear in the
+        # summary section even with zero fires.
+        idx_section = r.text.find("fires by rule_type")
+        idx_rules_h = r.text.find("<h3>rules</h3>")
+        assert idx_section != -1 and idx_rules_h != -1
+        assert idx_section < idx_rules_h, "summary must precede per-rule_name list"
+        section_block = r.text[idx_section:idx_rules_h]
+        assert "watchlist_mac" in section_block
+        assert "watchlist_ssid" in section_block
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_per_rule_type_rolls_up_multiple_rule_names(tmp_path):
+    """Two rule_names sharing a rule_type roll up to one type bucket
+    whose count equals the sum -- this is the whole point of the
+    type-axis aggregation."""
+    rules_body = (
+        "  - name: mac_rule_a\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n"
+        "  - name: mac_rule_b\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:02']\n"
+        "  - name: ssid_rule\n"
+        "    rule_type: watchlist_ssid\n"
+        "    severity: med\n"
+        "    patterns: ['SSID']\n"
+    )
+    app, db = _make_app_with_rules(tmp_path, rules_body)
+    import time as _time
+
+    now = int(_time.time())
+    # Two fires under mac_rule_a, one under mac_rule_b -> watchlist_mac
+    # bucket count == 3. One fire under ssid_rule -> watchlist_ssid == 1.
+    db.add_alert(
+        ts=now - 100, rule_name="mac_rule_a", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=now - 200, rule_name="mac_rule_a", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=now - 300, rule_name="mac_rule_b", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=now - 400, rule_name="ssid_rule", mac=None, message="x",
+        severity="med", rule_type="watchlist_ssid",
+    )
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        idx_section = r.text.find("fires by rule_type")
+        idx_rules_h = r.text.find("<h3>rules</h3>")
+        section_block = r.text[idx_section:idx_rules_h]
+        # Locate the watchlist_mac row inside the summary section and
+        # confirm the bucket count is 3 (not 2 from a single rule_name).
+        import re as _re
+
+        m_mac = _re.search(
+            r"<code>watchlist_mac</code>\s*&middot;\s*"
+            r"<strong>fires:</strong>\s*(\d+)",
+            section_block,
+        )
+        assert m_mac is not None, (
+            f"could not locate watchlist_mac summary row:\n{section_block[:600]}"
+        )
+        assert m_mac.group(1) == "3"
+        m_ssid = _re.search(
+            r"<code>watchlist_ssid</code>\s*&middot;\s*"
+            r"<strong>fires:</strong>\s*(\d+)",
+            section_block,
+        )
+        assert m_ssid is not None
+        assert m_ssid.group(1) == "1"
+        # Highest-volume rule_type leads -- watchlist_mac before
+        # watchlist_ssid in the summary block.
+        idx_mac = section_block.find("<code>watchlist_mac</code>")
+        idx_ssid = section_block.find("<code>watchlist_ssid</code>")
+        assert idx_mac < idx_ssid
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_per_rule_type_respects_since_window(tmp_path):
+    """Flipping the since= dropdown must update the per-rule_type
+    summary in lockstep with the per-rule_name list -- same window
+    drives both queries."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    import time as _time
+
+    now = int(_time.time())
+    # Two fires inside 1h, one outside.
+    db.add_alert(
+        ts=now - 30, rule_name="known_bad_mac", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=now - 60, rule_name="known_bad_mac", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=now - 7200, rule_name="known_bad_mac", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    try:
+        with TestClient(app) as client:
+            r_1h = client.get("/rules?since=1h")
+            r_24h = client.get("/rules?since=24h")
+            r_all = client.get("/rules?since=all")
+        import re as _re
+
+        for r, expected in ((r_1h, "2"), (r_24h, "3"), (r_all, "3")):
+            assert r.status_code == 200
+            idx_section = r.text.find("fires by rule_type")
+            idx_rules_h = r.text.find("<h3>rules</h3>")
+            section_block = r.text[idx_section:idx_rules_h]
+            m = _re.search(
+                r"<code>watchlist_mac</code>\s*&middot;\s*"
+                r"<strong>fires:</strong>\s*(\d+)",
+                section_block,
+            )
+            assert m is not None
+            assert m.group(1) == expected, (
+                f"url={r.request.url}: expected {expected}, got {m.group(1)}"
+            )
+        # since=all surfaces the "all time" label in the section header.
+        assert "fires by rule_type (all time)" in r_all.text
+        assert "fires by rule_type (1h)" in r_1h.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_per_rule_type_empty_alerts_shows_zero(tmp_path):
+    """Empty alerts table -> per-rule_type rows still render with 0
+    fires so snooze affordances remain reachable."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        import re as _re
+
+        section_block = r.text[
+            r.text.find("fires by rule_type") : r.text.find("<h3>rules</h3>")
+        ]
+        for rt in ("watchlist_mac", "watchlist_ssid"):
+            m = _re.search(
+                rf"<code>{rt}</code>\s*&middot;\s*"
+                r"<strong>fires:</strong>\s*(\d+)",
+                section_block,
+            )
+            assert m is not None, f"missing {rt} row"
+            assert m.group(1) == "0"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_per_rule_type_shows_snooze_badge(tmp_path):
+    """An active rule_type snooze must surface a badge on the
+    per-rule_type summary row (operator's at-a-glance signal that the
+    whole type is silenced)."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    import time as _time
+
+    now = int(_time.time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac",
+        expires_at=now + 4 * 3600,
+        added_at=now,
+        note="lab gear reset",
+    )
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        section_block = r.text[
+            r.text.find("fires by rule_type") : r.text.find("<h3>rules</h3>")
+        ]
+        # Snoozed type: badge + unsnooze action present inside the
+        # summary block (not just on the per-rule_name article below).
+        assert "badge-snoozed" in section_block
+        assert "/rules/watchlist_mac/unsnooze" in section_block
+        assert "lab gear reset" in section_block
+        # Non-snoozed type: snooze form action present, no badge in
+        # that sub-block. Slice from watchlist_ssid onward inside the
+        # summary; that sub-block must contain the snooze action.
+        idx_ssid = section_block.find("<code>watchlist_ssid</code>")
+        ssid_sub = section_block[idx_ssid:]
+        assert "/rules/watchlist_ssid/snooze" in ssid_sub
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_per_rule_type_section_absent_without_ruleset(tmp_path):
+    """No rules_path configured -> the summary section must not
+    render (matches the per-rule_name list which is also absent)."""
+    config = Config(db_path=str(tmp_path / "ui.db"))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        assert "fires by rule_type" not in r.text
+    finally:
+        db.close()

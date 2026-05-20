@@ -841,6 +841,99 @@ def test_count_alerts_grouped_by_rule_name_returns_rulestats_named_fields(db):
     assert stats["r"].last_fired_ts == 100
 
 
+def test_count_alerts_grouped_by_rule_type_all_time(db):
+    db.add_alert(
+        ts=100, rule_name="rule_a", mac=None, message="x", severity="low",
+        rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=150, rule_name="rule_b", mac=None, message="x", severity="med",
+        rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=200, rule_name="rule_c", mac=None, message="x", severity="high",
+        rule_type="watchlist_ssid",
+    )
+    stats = db.count_alerts_grouped_by_rule_type()
+    assert set(stats.keys()) == {"watchlist_mac", "watchlist_ssid"}
+    # Two distinct rule_names roll up to one rule_type bucket -- this
+    # is the whole point of the type-axis aggregation.
+    assert stats["watchlist_mac"].count == 2
+    assert stats["watchlist_mac"].last_fired_ts == 150
+    assert stats["watchlist_ssid"].count == 1
+    assert stats["watchlist_ssid"].last_fired_ts == 200
+
+
+def test_count_alerts_grouped_by_rule_type_with_since_ts(db):
+    db.add_alert(
+        ts=100, rule_name="r", mac=None, message="x", severity="low",
+        rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=200, rule_name="r", mac=None, message="x", severity="med",
+        rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=300, rule_name="r", mac=None, message="x", severity="high",
+        rule_type="watchlist_ssid",
+    )
+    stats = db.count_alerts_grouped_by_rule_type(since_ts=200)
+    assert stats["watchlist_mac"].count == 1
+    assert stats["watchlist_mac"].last_fired_ts == 200
+    assert stats["watchlist_ssid"].count == 1
+    assert stats["watchlist_ssid"].last_fired_ts == 300
+
+
+def test_count_alerts_grouped_by_rule_type_empty_table(db):
+    stats = db.count_alerts_grouped_by_rule_type()
+    assert stats == {}
+    stats = db.count_alerts_grouped_by_rule_type(since_ts=1_000_000)
+    assert stats == {}
+
+
+def test_count_alerts_grouped_by_rule_type_outside_window_absent(db):
+    db.add_alert(
+        ts=100, rule_name="r", mac=None, message="x", severity="low",
+        rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=500, rule_name="r", mac=None, message="x", severity="low",
+        rule_type="watchlist_ssid",
+    )
+    stats = db.count_alerts_grouped_by_rule_type(since_ts=400)
+    assert "watchlist_mac" not in stats
+    assert stats["watchlist_ssid"].count == 1
+
+
+def test_count_alerts_grouped_by_rule_type_null_rule_type_filtered(db):
+    # Pre-migration-015 rows (rule_type=NULL) cannot be bucketed into
+    # a type aggregate; they must be skipped, not surface as a None
+    # / "" / "NULL" key. This is the deliberate inverse of the
+    # per-rule_name helper which keeps them under their rule_name.
+    db.add_alert(
+        ts=100, rule_name="legacy", mac=None, message="x", severity="low",
+    )  # rule_type defaults to None
+    db.add_alert(
+        ts=200, rule_name="modern", mac=None, message="x", severity="low",
+        rule_type="watchlist_mac",
+    )
+    stats = db.count_alerts_grouped_by_rule_type()
+    assert set(stats.keys()) == {"watchlist_mac"}
+    assert stats["watchlist_mac"].count == 1
+    assert None not in stats
+    assert "" not in stats
+
+
+def test_count_alerts_grouped_by_rule_type_returns_rulestats_named_fields(db):
+    db.add_alert(
+        ts=100, rule_name="r", mac=None, message="x", severity="low",
+        rule_type="watchlist_mac",
+    )
+    stats = db.count_alerts_grouped_by_rule_type()
+    assert stats["watchlist_mac"].count == 1
+    assert stats["watchlist_mac"].last_fired_ts == 100
+
+
 def test_alerts_per_day_includes_zero_days(db):
     now_ts = 1777809600
     today_ts = now_ts
