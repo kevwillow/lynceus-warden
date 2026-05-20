@@ -79,7 +79,23 @@
       <button type="submit">filter</button>
     </fieldset>
     {% if filters_active %}
-      <p><a class="reset-filters" href="/alerts">reset filters</a></p>
+      {%- set _parts = [] -%}
+      {% if severity %}{% set _ = _parts.append('severity=' ~ severity) %}{% endif %}
+      {% if acknowledged is sameas true %}{% set _ = _parts.append('acknowledged=yes') %}{% endif %}
+      {% if acknowledged is sameas false %}{% set _ = _parts.append('acknowledged=no') %}{% endif %}
+      {% if window %}{% set _ = _parts.append('window=' ~ window) %}{% endif %}
+      {% if since %}{% set _ = _parts.append('since=' ~ since) %}{% endif %}
+      {% if until %}{% set _ = _parts.append('until=' ~ until) %}{% endif %}
+      {% if rule_type %}{% set _ = _parts.append('rule_type=' ~ rule_type) %}{% endif %}
+      {% if q %}{% set _ = _parts.append('q=' ~ q) %}{% endif %}
+      {% if search %}{% set _ = _parts.append('search=' ~ search) %}{% endif %}
+      {% if has_note and has_note != 'all' %}{% set _ = _parts.append('has_note=' ~ has_note) %}{% endif %}
+      {% if has_action and has_action != 'all' %}{% set _ = _parts.append('has_action=' ~ has_action) %}{% endif %}
+      <p class="filters-summary">
+        <small>Filtered by: {{ _parts | join(', ') }}</small>
+        &mdash; <a class="reset-filters" href="/alerts">reset filters</a>
+        <small class="filter-shortcut-hint">(or press <kbd>Esc</kbd>)</small>
+      </p>
     {% endif %}
   </form>
 
@@ -240,4 +256,22 @@
       </li>
     </ul>
   </nav>
+
+  {% if filters_active %}
+    <script>
+      (function () {
+        document.addEventListener('keydown', function (e) {
+          if (e.key !== 'Escape') return;
+          var t = e.target;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) {
+            return;
+          }
+          var link = document.querySelector('a.reset-filters');
+          if (link) {
+            window.location.href = link.href;
+          }
+        });
+      })();
+    </script>
+  {% endif %}
 {% endblock %}
