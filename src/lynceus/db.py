@@ -2435,6 +2435,54 @@ class Database:
             )
         return out
 
+    def count_alerts_grouped_by_rule_type(
+        self, *, since_ts: int | None = None
+    ) -> dict[str, RuleStats]:
+        """Return ``{rule_type: RuleStats}`` for alerts in the time window.
+
+        Type-axis sibling of ``count_alerts_grouped_by_rule_name`` --
+        same time-window filter, same fire-count + last-fired shape,
+        but bucketed by ``alerts.rule_type`` instead of ``rule_name``.
+        Operators use this on /rules to see total fires at the type
+        level without mentally summing per-rule_name rows.
+
+        Pre-migration-015 rows with NULL ``rule_type`` are filtered
+        out: they can't be bucketed cleanly into a type aggregate.
+        This is the deliberate inverse of
+        ``count_alerts_grouped_by_rule_name`` (which keeps them under
+        their ``rule_name``); the per-type view is post-rc5 only.
+
+        Backed by ``idx_alerts_ts`` for the ``ts >= ?`` clause; the
+        ``GROUP BY rule_type`` is unindexed but operates over the
+        already-filtered range. RuleType cardinality is bounded by
+        the literal set in ``rules.RuleType`` (currently 9 values),
+        so the grouping work is constant-bounded regardless of
+        alert volume.
+        """
+        if since_ts is None:
+            sql = (
+                "SELECT rule_type, COUNT(*), MAX(ts) "
+                "FROM alerts WHERE rule_type IS NOT NULL "
+                "GROUP BY rule_type"
+            )
+            params: tuple = ()
+        else:
+            sql = (
+                "SELECT rule_type, COUNT(*), MAX(ts) "
+                "FROM alerts WHERE ts >= ? AND rule_type IS NOT NULL "
+                "GROUP BY rule_type"
+            )
+            params = (since_ts,)
+        out: dict[str, RuleStats] = {}
+        for rule_type, count, max_ts in self._conn.execute(sql, params).fetchall():
+            if rule_type is None:
+                continue
+            out[str(rule_type)] = RuleStats(
+                count=int(count),
+                last_fired_ts=int(max_ts) if max_ts is not None else None,
+            )
+        return out
+
     def add_rule_type_snooze(
         self,
         rule_type: str,

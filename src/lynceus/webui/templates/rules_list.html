@@ -51,6 +51,75 @@
     <article><p><em>{{ notice }}</em></p></article>
   {% endif %}
 
+  {% if rule_types_with_stats %}
+    <h3>fires by rule_type ({{ window_label }})</h3>
+    <p><small>Aggregate fire counts at the type level. Snooze affordances here suppress all alerts from the type until expiry. The per-rule_name breakdown below is unaffected by the status filter for this summary.</small></p>
+    {% for type_entry in rule_types_with_stats %}
+      {% set rt = type_entry.rule_type %}
+      {% set type_stats = type_entry.stats %}
+      {% set type_snooze = type_entry.snooze %}
+      <article>
+        <header>
+          <code>{{ rt }}</code>
+          &middot; <strong>fires:</strong> {{ type_stats.count }}
+          &middot; <strong>last fired:</strong>
+          {% if type_stats.last_fired_ts %}
+            <time datetime="{{ type_stats.last_fired_ts | unix_to_iso }}"
+                  title="{{ type_stats.last_fired_ts | unix_to_utc_human }}">
+              {{ type_stats.last_fired_ts | relative_time(now_ts=now_ts) }}
+            </time>
+          {% else %}
+            &mdash;
+          {% endif %}
+          {% if type_snooze %}
+            &middot;
+            <span class="badge-snoozed"
+                  title="expires {{ type_snooze.expires_at | relative_time(now_ts=now_ts) }} &mdash; {{ type_snooze.expires_at | unix_to_utc_human }}">
+              &#x1F4A4; snoozed (until
+              <time datetime="{{ type_snooze.expires_at | unix_to_iso }}">
+                {{ type_snooze.expires_at | relative_time(now_ts=now_ts) }}
+              </time>)
+            </span>
+          {% endif %}
+        </header>
+        {% if type_snooze %}
+          {% if type_snooze.note %}
+            <p><small><strong>snooze note:</strong> {{ type_snooze.note }}</small></p>
+          {% endif %}
+          <form method="post" action="/rules/{{ rt }}/unsnooze" class="inline-form">
+            <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+            <button type="submit" class="secondary">unsnooze</button>
+          </form>
+        {% else %}
+          <details>
+            <summary><small>snooze rule_type&hellip;</small></summary>
+            <form method="post" action="/rules/{{ rt }}/snooze" class="inline-form">
+              <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+              <fieldset class="grid">
+                <label>duration
+                  <select name="duration_seconds">
+                    {% for seconds, label in snooze_durations %}
+                      <option value="{{ seconds }}" {% if seconds == 4 * 3600 %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>note (optional)
+                  <input type="text" name="note" maxlength="500" placeholder="e.g. network reconfiguration">
+                </label>
+                <button type="submit" class="secondary">snooze</button>
+              </fieldset>
+              <small>
+                Suppresses all alerts from <code>{{ rt }}</code> until expiry.
+                The rule still evaluates; only alert emit is gated.
+              </small>
+            </form>
+          </details>
+        {% endif %}
+      </article>
+    {% endfor %}
+    <h3>rules</h3>
+  {% endif %}
+
   {% if rules_with_stats %}
     {% for entry in rules_with_stats %}
       {% set rule = entry.rule %}
