@@ -1102,14 +1102,355 @@ def test_alerts_list_filter_search_too_long_returns_400(tmp_path):
 
 
 @pytest.mark.webui
-def test_alerts_list_filter_invalid_date_returns_400(tmp_path):
+def test_alerts_list_filter_invalid_date_silently_falls_back(tmp_path):
+    """Malformed since/until silently clamp to no-clause (200 + full
+    row set), matching the rule_type / window / has_note clamp
+    posture on /alerts so a stale bookmark or fat-fingered picker
+    submission lands on a usable page rather than a 400. The rc6
+    sub-day granularity extension switched from the pre-rc6 strict
+    400 posture; this regression test pins the new behavior."""
     app, db = _make_app(tmp_path)
     try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="visible-row", severity="low")
         with TestClient(app) as client:
             r1 = client.get("/alerts?since=not-a-date")
             r2 = client.get("/alerts?until=2026-13-99")
-        assert r1.status_code == 400
-        assert r2.status_code == 400
+            r3 = client.get("/alerts?since=2026-05-15T99:99")
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r3.status_code == 200
+        # No clause applied -> the seeded row shows on all three.
+        assert "visible-row" in r1.text
+        assert "visible-row" in r2.text
+        assert "visible-row" in r3.text
+    finally:
+        db.close()
+
+
+# Sub-day granularity on since/until (rc6).
+#
+# The /alerts since/until URL params accept BOTH the pre-rc6
+# date-only YYYY-MM-DD form (preserved byte-for-byte) and the rc6
+# YYYY-MM-DDTHH:MM[:SS] datetime form posted by the
+# <input type="datetime-local"> picker. The datetime form lets an
+# operator express ranges like "Tuesday 14:00 to Wednesday 09:00"
+# that the relative-window vocabulary (1h/24h/7d/30d) can only
+# approximate by picking a wider bucket and visually filtering.
+
+# Shared anchor: 2026-04-15 00:00:00 UTC. Pinned literal because the
+# tests below cross-reference the absolute date in URL params like
+# ``since=2026-04-15T14:00`` -- the parsing helper interprets these
+# verbatim as UTC, so the anchor must match the calendar date in
+# the URL exactly.
+_TS_APR15_MIDNIGHT_UTC = 1776211200
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_datetime_since_filters_at_hour_granularity(tmp_path):
+    """since=YYYY-MM-DDTHH:MM excludes earlier-same-day rows."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_0900 = _TS_APR15_MIDNIGHT_UTC + 9 * 3600
+        ts_1430 = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 1800
+        db.add_alert(ts=ts_0900, rule_name="r", mac=None, message="apr15-0900", severity="low")
+        db.add_alert(ts=ts_1430, rule_name="r", mac=None, message="apr15-1430", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?since=2026-04-15T14:00")
+        assert r.status_code == 200
+        assert "apr15-1430" in r.text
+        assert "apr15-0900" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_datetime_until_no_end_of_day_promotion(tmp_path):
+    """until=YYYY-MM-DDTHH:MM uses the operator-supplied minute as
+    the boundary -- NOT promoted to 23:59:59 the way the date-only
+    YYYY-MM-DD form is."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_0900 = _TS_APR15_MIDNIGHT_UTC + 9 * 3600
+        ts_1430 = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 1800
+        db.add_alert(ts=ts_0900, rule_name="r", mac=None, message="apr15-0900", severity="low")
+        db.add_alert(ts=ts_1430, rule_name="r", mac=None, message="apr15-1430", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?until=2026-04-15T14:00")
+        assert r.status_code == 200
+        assert "apr15-0900" in r.text
+        assert "apr15-1430" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_datetime_overnight_window(tmp_path):
+    """The motivating use case: 'Tuesday 14:00 to Wednesday 09:00'
+    -- an overnight investigative window unrepresentable in the
+    relative-window vocabulary without picking too-wide a bucket
+    and visually narrowing."""
+    app, db = _make_app(tmp_path)
+    try:
+        # 2026-04-14 (Tue) 13:59 -- just before the start.
+        ts_tue_1359 = _TS_APR15_MIDNIGHT_UTC - 86400 + 13 * 3600 + 59 * 60
+        # 2026-04-14 (Tue) 14:01 -- inside the window.
+        ts_tue_1401 = _TS_APR15_MIDNIGHT_UTC - 86400 + 14 * 3600 + 60
+        # 2026-04-15 (Wed) 08:59 -- inside the window.
+        ts_wed_0859 = _TS_APR15_MIDNIGHT_UTC + 8 * 3600 + 59 * 60
+        # 2026-04-15 (Wed) 09:01 -- just after the end.
+        ts_wed_0901 = _TS_APR15_MIDNIGHT_UTC + 9 * 3600 + 60
+        db.add_alert(ts=ts_tue_1359, rule_name="r", mac=None, message="tue-1359-excluded", severity="low")
+        db.add_alert(ts=ts_tue_1401, rule_name="r", mac=None, message="tue-1401-included", severity="low")
+        db.add_alert(ts=ts_wed_0859, rule_name="r", mac=None, message="wed-0859-included", severity="low")
+        db.add_alert(ts=ts_wed_0901, rule_name="r", mac=None, message="wed-0901-excluded", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?since=2026-04-14T14:00&until=2026-04-15T09:00")
+        assert r.status_code == 200
+        assert "tue-1401-included" in r.text
+        assert "wed-0859-included" in r.text
+        assert "tue-1359-excluded" not in r.text
+        assert "wed-0901-excluded" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_datetime_since_only_partial_range(tmp_path):
+    """One-sided datetime range (since alone, no until) clamps the
+    lower bound only -- 'everything since X 14:00'."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_0900 = _TS_APR15_MIDNIGHT_UTC + 9 * 3600
+        ts_1430 = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 1800
+        ts_next_day = _TS_APR15_MIDNIGHT_UTC + 86400 + 10 * 3600
+        db.add_alert(ts=ts_0900, rule_name="r", mac=None, message="apr15-0900", severity="low")
+        db.add_alert(ts=ts_1430, rule_name="r", mac=None, message="apr15-1430", severity="low")
+        db.add_alert(ts=ts_next_day, rule_name="r", mac=None, message="apr16-1000", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?since=2026-04-15T14:00")
+        assert r.status_code == 200
+        assert "apr15-1430" in r.text
+        assert "apr16-1000" in r.text
+        assert "apr15-0900" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_datetime_and_window_max_combine(tmp_path):
+    """When BOTH since=datetime AND window=relative are set, the
+    tighter lower bound wins (max of the two ts thresholds) -- the
+    behavior established for date-only since + window is preserved
+    for datetime since + window."""
+    import time as _time
+    import datetime as _datetime
+    app, db = _make_app(tmp_path)
+    try:
+        # Anchor "now" via a row 30 minutes in the past. The 1h
+        # window then admits anything from now-3600 onward; a
+        # since=now-2h admits anything from now-7200 onward. Both
+        # combined => the 1h window's lower bound dominates.
+        now = int(_time.time())
+        ts_recent = now - 30 * 60       # 30 min ago: inside both clauses.
+        ts_45m_ago = now - 45 * 60      # 45 min ago: inside both clauses.
+        ts_90m_ago = now - 90 * 60      # 90 min ago: inside since (-2h) but OUTSIDE window (1h).
+        db.add_alert(ts=ts_recent, rule_name="r", mac=None, message="recent-30m", severity="low")
+        db.add_alert(ts=ts_45m_ago, rule_name="r", mac=None, message="recent-45m", severity="low")
+        db.add_alert(ts=ts_90m_ago, rule_name="r", mac=None, message="ago-90m", severity="low")
+        # since= = 2h ago, but window=1h is tighter -> 90m-ago row is excluded.
+        since_dt = _datetime.datetime.fromtimestamp(
+            now - 2 * 3600, tz=_datetime.UTC
+        ).strftime("%Y-%m-%dT%H:%M")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts?since={since_dt}&window=1h")
+        assert r.status_code == 200
+        assert "recent-30m" in r.text
+        assert "recent-45m" in r.text
+        assert "ago-90m" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_date_only_and_datetime_mix(tmp_path):
+    """since=date-only + until=datetime mixes the two forms; each
+    parsed independently by the helper. Date-only since promotes to
+    midnight UTC (lower bound); datetime until takes the operator's
+    exact minute (upper bound, no end-of-day promotion)."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_before = _TS_APR15_MIDNIGHT_UTC - 3600        # 2026-04-14 23:00 UTC
+        ts_at_start = _TS_APR15_MIDNIGHT_UTC + 60        # 2026-04-15 00:01 UTC
+        ts_in_window = _TS_APR15_MIDNIGHT_UTC + 8 * 3600 # 2026-04-15 08:00 UTC
+        ts_after = _TS_APR15_MIDNIGHT_UTC + 10 * 3600    # 2026-04-15 10:00 UTC
+        db.add_alert(ts=ts_before, rule_name="r", mac=None, message="before", severity="low")
+        db.add_alert(ts=ts_at_start, rule_name="r", mac=None, message="at-start", severity="low")
+        db.add_alert(ts=ts_in_window, rule_name="r", mac=None, message="in-window", severity="low")
+        db.add_alert(ts=ts_after, rule_name="r", mac=None, message="after", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?since=2026-04-15&until=2026-04-15T09:00")
+        assert r.status_code == 200
+        assert "at-start" in r.text
+        assert "in-window" in r.text
+        assert "before" not in r.text
+        assert "after" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_preserves_datetime_since_until(tmp_path):
+    """Pagination links carry datetime since/until through the URL
+    so the operator's range survives page navigation -- the same
+    invariant the date-only form holds, extended to the new form."""
+    app, db = _make_app(tmp_path)
+    try:
+        # 60 rows inside a 1-hour datetime window so pagination kicks in.
+        base = _TS_APR15_MIDNIGHT_UTC + 14 * 3600
+        for i in range(60):
+            db.add_alert(
+                ts=base + i,
+                rule_name="r",
+                mac=None,
+                message=f"dt-row-{i}",
+                severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?since=2026-04-15T14:00&until=2026-04-15T15:00&page=1&page_size=25"
+            )
+        assert r.status_code == 200
+        assert "since=2026-04-15T14:00" in r.text
+        assert "until=2026-04-15T15:00" in r.text
+        assert "page=2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_template_renders_datetime_local_widget(tmp_path):
+    """The since/until picker is <input type="datetime-local"> (rc6
+    sub-day-capable), not the pre-rc6 <input type="date">. Pin the
+    widget choice so a regression to date-only is caught."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'type="datetime-local" name="since"' in r.text
+        assert 'type="datetime-local" name="until"' in r.text
+        # And not the pre-rc6 date-only widget for these two params.
+        assert 'type="date" name="since"' not in r.text
+        assert 'type="date" name="until"' not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_ack_all_visible_form_carries_datetime_filter_state(tmp_path):
+    """The bulk-ack POST form mirrors the GET filter state; the
+    datetime since/until threads through as hidden inputs so
+    ack-all-visible operates on EXACTLY the visible row set, not a
+    different filter set than the operator sees."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=_TS_APR15_MIDNIGHT_UTC + 14 * 3600,
+            rule_name="r",
+            mac=None,
+            message="m",
+            severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?since=2026-04-15T14:00&until=2026-04-15T15:00"
+            )
+        assert r.status_code == 200
+        assert 'action="/alerts/ack-all-visible"' in r.text
+        assert 'name="since" value="2026-04-15T14:00"' in r.text
+        assert 'name="until" value="2026-04-15T15:00"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_acks_filtered_datetime_subset(tmp_path):
+    """POST /alerts/ack-all-visible clamps to the datetime range
+    identically to the GET -- rows outside the range are NOT acked.
+    Pins the GET/POST parity invariant for the new datetime path."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_in_1 = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 10
+        ts_in_2 = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 30 * 60
+        ts_before = _TS_APR15_MIDNIGHT_UTC + 13 * 3600
+        ts_after = _TS_APR15_MIDNIGHT_UTC + 16 * 3600
+        in_id_1 = db.add_alert(ts=ts_in_1, rule_name="r", mac=None, message="in1", severity="low")
+        in_id_2 = db.add_alert(ts=ts_in_2, rule_name="r", mac=None, message="in2", severity="low")
+        before_id = db.add_alert(ts=ts_before, rule_name="r", mac=None, message="before", severity="low")
+        after_id = db.add_alert(ts=ts_after, rule_name="r", mac=None, message="after", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "since": "2026-04-15T14:00",
+                    "until": "2026-04-15T15:00",
+                },
+            )
+        assert r.status_code == 200
+        assert db.get_alert(in_id_1)["acknowledged"] == 1
+        assert db.get_alert(in_id_2)["acknowledged"] == 1
+        # Rows outside the datetime range are NOT acked.
+        assert db.get_alert(before_id)["acknowledged"] == 0
+        assert db.get_alert(after_id)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_invalid_date_silently_falls_back(tmp_path):
+    """POST /alerts/ack-all-visible mirrors the GET silent-fallback
+    behavior for malformed since/until. Replaces the pre-rc6 400
+    posture so the ack-all-visible POST stays in lockstep with the
+    GET handler -- a mismatch would mean the POST writes against a
+    different filter set than the operator sees on the page."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(
+            ts=100, rule_name="r", mac=None, message="m", severity="low"
+        )
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "since": "not-a-date"},
+            )
+        # No 400 -- malformed silently clamps to no-clause, the same
+        # row set the GET would surface.
+        assert r.status_code == 200
+        assert db.get_alert(aid)["acknowledged"] == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_respects_datetime_since_filter(tmp_path):
+    """CSV export inherits the datetime granularity for free; the
+    rc6 parsing helper is shared with /alerts and ack-all-visible
+    by design (comment in alerts_csv_export pins this lockstep)."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_in = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 10
+        ts_before = _TS_APR15_MIDNIGHT_UTC + 13 * 3600
+        db.add_alert(ts=ts_in, rule_name="r", mac=None, message="csv-in", severity="low")
+        db.add_alert(ts=ts_before, rule_name="r", mac=None, message="csv-before", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?since=2026-04-15T14:00")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        # message column is index 7 per the other CSV tests.
+        assert data_rows[0][7] == "csv-in"
     finally:
         db.close()
 
@@ -1622,21 +1963,6 @@ def test_ack_all_visible_invalid_severity_returns_400(tmp_path):
             r = client.post(
                 "/alerts/ack-all-visible",
                 data={CSRF_FORM_FIELD: token, "severity": "critical"},
-            )
-        assert r.status_code == 400
-    finally:
-        db.close()
-
-
-@pytest.mark.webui
-def test_ack_all_visible_invalid_date_returns_400(tmp_path):
-    app, db = _make_app(tmp_path)
-    try:
-        with TestClient(app, follow_redirects=False) as client:
-            token, _ = _csrf_setup(client)
-            r = client.post(
-                "/alerts/ack-all-visible",
-                data={CSRF_FORM_FIELD: token, "since": "not-a-date"},
             )
         assert r.status_code == 400
     finally:
