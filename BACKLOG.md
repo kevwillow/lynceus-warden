@@ -36,13 +36,15 @@ What landed in the v0.2 cycle:
 A versioned, community-maintainable watchlist of RF signatures for known
 surveillance hardware: marked police vehicle WiFi/BT, body-worn cameras,
 dashcams, license plate readers, Flock and similar fixed camera systems.
-Shipped as a separate YAML dataset consumed via the existing
-`lynceus-seed-watchlist --yaml` path — no code change inside lynceus itself,
-only data.
+Maintained in a separate project (argus-db) and consumed by lynceus via
+the dedicated `lynceus-import-argus` CLI, which lands rows into the
+watchlist + watchlist_metadata side table. Continued work here is
+data-gathering, not lynceus-side integration -- the importer shipped in
+v0.5.0.
 - **Trigger**: when a useful baseline of real-world signatures has been
-  collected. Data work first; integration is trivial once the data exists.
-- **Estimated**: data-gathering effort dominates; lynceus-side work is a
-  YAML conversion and a re-seed pass.
+  collected. Data work first; lynceus-side ingest is already in place.
+- **Estimated**: data-gathering effort dominates; lynceus-side work is
+  bounded to schema or importer changes if the CSV contract evolves.
 - **Notes**: maintain in its own repo or sub-tree so the dataset can
   evolve at its own pace and be forked. Permissive licence on the
   dataset so derivatives are allowed. Detection only — lynceus does not
@@ -148,8 +150,9 @@ Currently read-only views exist; YAML editing is the only path to change them.
   via a content hash, undo via the existing audit-trail pattern.
 
 ### Stalking heuristics (multi-location detection)
-Requires real captured baseline data to design well. Postponed until v0.3+
-after some weeks of real captures.
+Requires real captured baseline data to design well. Deferred indefinitely;
+revisit when a real-world capture corpus is large enough to characterise
+"normal" in the deployment environment.
 - **Trigger**: enough real-world data to know what "normal" looks like in
   your environment.
 
@@ -180,32 +183,6 @@ allowlist" you review and accept rather than firing alerts on.
 - **Trigger**: confirmed false-positive volume in early deployments.
 
 ## Followups for technical debt
-
-### `lynceus-validate rollback` em-dash for Windows-console smoke
-The pre-execution confirmation prompt
-(`src/lynceus/cli/validate.py`, around the rollback-runner
-prompt) uses a real em-dash (U+2014) in the operator-facing
-copy. On a default Windows console that's not in UTF-8 mode the
-character renders as `�`. Linux / macOS smoke is unaffected.
-- **Trigger**: any pre-release Windows-console smoke pass, or
-  the next operator-facing CLI prompt change.
-- **Estimated**: 2-line phrasing tweak; swap to ASCII `--` or
-  add an `os.fsencode`-style hardening at the prompt layer.
-
-### `lynceus-import-argus --help` crashes argparse on Python 3.14
-Running `lynceus-import-argus --help` under Python 3.14's stdlib
-argparse raises an exception inside `format_help` (deep inside
-`_HelpAction.__call__`). Pre-3.14 Pythons render the help fine.
-The fault is in argparse's interaction with the importer's very
-long help text; no end-user CLI behavior is affected beyond
-`--help` itself.
-- **Trigger**: Python 3.14 becomes the default install target
-  (currently still on 3.11 / 3.12 per pyproject.toml's
-  `requires-python = ">=3.11"`), OR an operator complains about
-  the traceback during a setup walkthrough.
-- **Estimated**: 1 prompt. Likely fixable by shortening one of
-  the verbose help strings in import_argus's argparse setup, or
-  by switching that parser to a custom HelpFormatter.
 
 ### CSRF token rotation on session boundaries
 v0.2 ships a single token per cookie session (8 hours). Rotation on
