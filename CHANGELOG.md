@@ -428,6 +428,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tests/test_diag_filters.py::test_diag_has_action_null_mac_invocation`
   (commit 9483137); regression pinned in `tests/test_webui.py`.
 
+### Documentation
+
+- **Multi-rule emit policy made explicit.** A single observation that
+  matches N enabled rules emits N RuleHits (one per matching rule),
+  each carrying its own severity sourced from its own DB row (for
+  delegation rules — `watchlist_mac`, `watchlist_oui`, `watchlist_ssid`,
+  `watchlist_mac_range`, `ble_uuid` with empty `patterns`) or from
+  `rule.severity` (for in-memory pattern rules). There is no
+  "highest-severity wins", "first-match wins", or "merge into one
+  alert" resolution step in `rules.evaluate()`: every matching rule
+  is its own alert row. A device on the watchlist by mac, oui, AND
+  ssid will produce three alert rows at three potentially-different
+  severities for the same poll-cycle observation. This is intentional —
+  the audit-first design treats each rule as an independent reason to
+  surface the observation, and the dedup window (configurable, default
+  N minutes) collapses near-duplicates downstream so the ntfy stream
+  doesn't drown in repeats. Confirmed by the diagnostic test
+  `tests/test_diag_rules.py::test_diag_rules_severity_resolution` (mac
+  rule + oui rule both matching → 2 hits with the per-DB-row severities
+  preserved). Behavior is locked; the BACKLOG carries a future-
+  consideration entry for an opt-in "single-emit with resolved severity"
+  mode if operators ask for it.
+
 ## [0.4.0-rc6] - 2026-05-17
 
 Mostly cleanup. rc5 shipped the big feature push — `/watchlist` search,
