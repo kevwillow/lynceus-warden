@@ -67,6 +67,7 @@ SEVERITY_OVERRIDES_KNOWN_KEYS: tuple[str, ...] = (
     "device_category_severity",
     "geographic_filter",
     "confidence_downgrade_threshold",
+    "argus_schema_version_accept_list",
     "suppress_categories",
     "suppress_vendors",
     "pattern_overrides",
