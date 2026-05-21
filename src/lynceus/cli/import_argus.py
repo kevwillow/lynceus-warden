@@ -267,6 +267,21 @@ class ImportReport:
     dropped_geographic_filter: int = 0
     dropped_unknown_type: int = 0
     dropped_low_confidence: int = 0
+    # Argus emits some rows that the Lynceus canonicalizer collapses
+    # to the same (pattern, pattern_type) natural key — e.g. the
+    # ``mac_range`` legacy bare-prefix and CIDR shapes of the same
+    # range, or ``ble_manufacturer_id`` leading-zero variants. The
+    # first row wins; subsequent peers land here to avoid the
+    # last-write-wins overwrite of ``watchlist_metadata`` (and the
+    # downstream counter inflation it produced). See
+    # docs/ARGUS_DEDUP_SHAPES.md for the bucket inventory.
+    dropped_peer_collision: int = 0
+    # Argus occasionally repeats the same ``argus_record_id`` within
+    # a single CSV with different metadata content (notably the
+    # primary_registry vs crowdsourced OUI overlay). First occurrence
+    # wins; later occurrences land here so the existing-md path does
+    # not see a moving target and report rewrites as updates.
+    dropped_in_import_dup: int = 0
     normalization_failed: int = 0
     ssid_exact_wildcard_warn: int = 0
     errors: int = 0
@@ -285,6 +300,8 @@ class ImportReport:
             f"{prefix}Dropped (geographic_filter): {self.dropped_geographic_filter}",
             f"{prefix}Dropped (unknown_type): {self.dropped_unknown_type}",
             f"{prefix}Dropped (low_confidence): {self.dropped_low_confidence}",
+            f"{prefix}Dropped (peer_collision): {self.dropped_peer_collision}",
+            f"{prefix}Dropped (in_import_dup): {self.dropped_in_import_dup}",
             f"{prefix}Dropped (normalization_failed): {self.normalization_failed}",
             f"{prefix}Warned (ssid_exact wildcard, imported anyway): "
             f"{self.ssid_exact_wildcard_warn}",
@@ -299,6 +316,8 @@ class ImportReport:
             + self.dropped_geographic_filter
             + self.dropped_unknown_type
             + self.dropped_low_confidence
+            + self.dropped_peer_collision
+            + self.dropped_in_import_dup
             + self.normalization_failed
         )
         lines.append(
@@ -310,6 +329,8 @@ class ImportReport:
             f"{self.dropped_severity_drop} severity_drop, "
             f"{self.dropped_unknown_type} unknown_type, "
             f"{self.dropped_low_confidence} low_confidence, "
+            f"{self.dropped_peer_collision} peer_collision, "
+            f"{self.dropped_in_import_dup} in_import_dup, "
             f"{self.normalization_failed} normalization_failed)"
         )
         return "\n".join(lines)
@@ -497,6 +518,14 @@ def import_csv(
     meta = parse_argus_meta(csv_path)
     report = ImportReport(total_rows=len(rows), dry_run=dry_run)
 
+    # Within-import dedup tracking. Argus occasionally repeats the same
+    # ``argus_record_id`` within a single CSV (the primary_registry /
+    # crowdsourced OUI overlay is the dominant shape). First occurrence
+    # wins; subsequent ones are gated below to keep the existing-md path
+    # from seeing a moving target and counting rewrites as updates.
+    # Fresh per ``import_csv`` call — not persisted across calls.
+    seen_argus_ids: set[str] = set()
+
     for row in rows:
         try:
             argus_id = row["argus_record_id"]
@@ -631,6 +660,21 @@ def import_csv(
             description = _empty_to_none(row["description"])
             new_metadata = _build_metadata_fields(row, confidence)
 
+            # Within-import dup gate. Fires AFTER the validation gates
+            # (so a first occurrence with a parse failure doesn't lock
+            # out a valid second occurrence) and BEFORE the argus_id DB
+            # lookup (so the existing-md path doesn't see the same id
+            # twice in one run and report rewrites as updates).
+            if argus_id in seen_argus_ids:
+                report.dropped_in_import_dup += 1
+                logger.info(
+                    "argus import: skipping row argus_record_id=%s "
+                    "reason=in_import_dup (already seen in this CSV)",
+                    argus_id,
+                )
+                continue
+            seen_argus_ids.add(argus_id)
+
             existing_md = db.get_metadata_by_argus_record_id(argus_id)
             existing_wl = (
                 _watchlist_row_for(db, existing_md["watchlist_id"])
@@ -648,7 +692,18 @@ def import_csv(
 
             if dry_run:
                 if existing_md is None:
-                    report.imported_new += 1
+                    # Mirror the real-import peer-collide gate so the
+                    # dry-run preview agrees with the actual write
+                    # behavior on bundled-CSV-shape peer rows.
+                    wl_row = _watchlist_row_by_natural_key(
+                        db, pattern, pattern_type
+                    )
+                    if wl_row is not None and db.get_metadata_by_watchlist_id(
+                        int(wl_row["id"])
+                    ) is not None:
+                        report.dropped_peer_collision += 1
+                    else:
+                        report.imported_new += 1
                 elif wl_changed or md_changed:
                     report.updated += 1
                 else:
@@ -659,7 +714,44 @@ def import_csv(
                 # Argus side has no record: insert (or attach to an existing
                 # YAML-seeded watchlist row) and create the metadata side.
                 wl_row = _watchlist_row_by_natural_key(db, pattern, pattern_type)
-                if wl_row is None:
+                if wl_row is not None:
+                    # Peer-collide gate. The natural-key dedup on
+                    # ``watchlist`` collapsed this Argus row onto a
+                    # pre-existing watchlist row. If that watchlist
+                    # row ALREADY has a metadata side bound to a
+                    # different ``argus_record_id``, this row is a
+                    # peer-collision (e.g. mac_range CIDR vs legacy
+                    # bare-prefix, ble_manufacturer_id case variants)
+                    # — first one in wins, this one is dropped to
+                    # avoid the last-write-wins overwrite of
+                    # ``watchlist_metadata``. Seeded watchlist rows
+                    # without metadata yet fall through (existing_peer
+                    # is None) and attach normally.
+                    existing_peer = db.get_metadata_by_watchlist_id(
+                        int(wl_row["id"])
+                    )
+                    if existing_peer is not None:
+                        report.dropped_peer_collision += 1
+                        logger.info(
+                            "argus import: skipping row argus_record_id=%s "
+                            "reason=peer_collision pattern=%r pattern_type=%s "
+                            "already_bound_to=%s",
+                            argus_id,
+                            pattern,
+                            pattern_type,
+                            existing_peer.get("argus_record_id"),
+                        )
+                        continue
+                    watchlist_id = int(wl_row["id"])
+                    if wl_row["severity"] != severity or (wl_row["description"] or None) != (
+                        description or None
+                    ):
+                        with db._conn:
+                            db._conn.execute(
+                                "UPDATE watchlist SET severity = ?, description = ? WHERE id = ?",
+                                (severity, description, watchlist_id),
+                            )
+                else:
                     with db._conn:
                         cur = db._conn.execute(
                             "INSERT INTO watchlist("
@@ -676,16 +768,6 @@ def import_csv(
                             ),
                         )
                         watchlist_id = int(cur.lastrowid)
-                else:
-                    watchlist_id = int(wl_row["id"])
-                    if wl_row["severity"] != severity or (wl_row["description"] or None) != (
-                        description or None
-                    ):
-                        with db._conn:
-                            db._conn.execute(
-                                "UPDATE watchlist SET severity = ?, description = ? WHERE id = ?",
-                                (severity, description, watchlist_id),
-                            )
                 db.upsert_metadata(watchlist_id, new_metadata)
                 report.imported_new += 1
             else:
