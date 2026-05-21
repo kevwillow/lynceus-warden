@@ -121,7 +121,13 @@ side gates and a layered idempotency short-circuit in
 count on the bundled CSV is now 1 (`import_runs` INSERT); counter
 math invariant balances; new `dropped_peer_collision` and
 `dropped_in_import_dup` counters surface the gated rows in the
-operator-facing report.
+operator-facing report. Both gates adjudicate among colliding
+members via an explicit highest-severity-wins tiebreak chain
+(severity rank → confidence → earliest CSV index) so the policy
+is operator-protective rather than dependent on Argus emission
+order; see [docs/ARGUS_DEDUP_SHAPES.md](docs/ARGUS_DEDUP_SHAPES.md)
+"Tiebreak policy" for the chain rationale and the audit of which
+bundled-CSV groups carry severity drift.
 
 **Schema-side rework still possible if operationally useful**
 (v0.7.0+ candidate, conditional). The v0.6.0 fix preserves the

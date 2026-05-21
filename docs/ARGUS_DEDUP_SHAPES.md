@@ -177,6 +177,81 @@ in `dropped_unknown_type` per the residual-types audit in
   `import_runs` staleness-signal INSERT); 0 writes to `watchlist`
   or `watchlist_metadata`
 
+## Tiebreak policy
+
+When Bucket A or Bucket B has more than one candidate row in a
+group, the importer's two-phase pre-pass adjudicates the winner
+via a three-tier deterministic chain. Each tier breaks ties from
+the previous; the surviving winner reaches the DB-write loop and
+the losers increment the appropriate `dropped_*` counter.
+
+1. **Highest severity rank.** Severities are ranked
+   `high` > `med` > `low` (`_SEVERITY_RANK` in
+   `src/lynceus/cli/import_argus.py`). The candidate whose
+   `resolve_severity` output ranks highest wins.
+2. **Highest confidence.** Among candidates tied on severity, the
+   highest `confidence` integer wins.
+3. **Earliest CSV index.** Among candidates tied on severity AND
+   confidence, the first occurrence in the parsed CSV wins.
+
+### Why highest-severity-wins
+
+Lynceus's posture is "if in doubt, alert higher" — the gates
+exist to prevent the importer from silently downgrading what the
+operator sees. Argus's `primary_registry` vs `crowdsourced` OUI
+overlay and Flock Safety's alpr-vs-gunshot_detect dual-category
+emissions both produce dup sets where one member carries a
+higher device-category severity than the other; an emission-
+order-dependent first-wins selection would expose the operator
+to silent severity demotion whenever Argus's CSV ordering
+shifted. Highest-severity-wins ties the selection to the
+resolved alert behavior rather than to the upstream emission
+order.
+
+The confidence and CSV-index tiers exist to make the selection
+fully deterministic — two re-runs of the same CSV against fresh
+DBs must produce identical winners, identical insertion order,
+and identical alert severities. The
+`test_tiebreak_is_deterministic_across_repeated_imports`
+regular-suite test pins this contract.
+
+### Bundled-CSV audit
+
+The 2026-05-17 bundled snapshot exhibits severity drift in:
+
+- **Bucket A (peer-collide): 0 of 15 groups** carry severity
+  drift. All natural-key-collision members share
+  `device_category=unknown` and resolve to `low`; the
+  highest-severity-wins tier is a no-op here today and the
+  confidence tier (or CSV-index tier) settles the winner. One
+  group (`00:50:c2:2a:5/36`) has confidence drift (`50` vs `85`)
+  so the second tier fires; the rest fall through to the
+  CSV-index tier.
+- **Bucket B (within-import-dup): 5 of 12 sets** carry severity
+  drift:
+  - `2fde1a991a0cd103` (`48:1c:b9` oui, DJI): primary_registry
+    conf=80 → `med` wins over crowdsourced conf=65 → `low`.
+  - `8f6d7a48b568c851` (`60:60:1f` oui, DJI): same shape.
+  - `99696ff1930ae2c6` (`34:d2:62` oui, DJI): same shape.
+  - `69248a5dad0c2eab` (`Flock` ssid_exact, Flock Safety):
+    cat=alpr conf=65 → `med` wins over cat=gunshot_detect
+    conf=65 → `low`. (The motivating case for the tiebreak.)
+  - `ef29f65fa5ed8a78` (`Flock-230503` ssid_exact, Flock Safety):
+    same shape.
+
+The remaining Bucket B sets are content-identical or severity-
+identical between members (8 of the 12 — including one
+3-member Parrot OUI set where all three members resolve to
+`low`); the tiebreak still selects deterministically via the
+confidence or CSV-index tier.
+
+The diagnostic test
+`tests/test_diag_import.py::test_diag_import_argus_bundled_csv_dedup_shapes`
+emits per-member `[WINS]` / `[loses]` annotations to
+`tests/diagnostic_output/test_diag_import_argus_bundled_csv_dedup_shapes.log`
+so a refresh after the next Argus snapshot will show which
+groups gained or lost severity drift.
+
 ## Upstream tracking
 
 These shapes originate in Argus emissions. The upstream-side fix
