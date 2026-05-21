@@ -212,9 +212,9 @@ in particular has lighter coverage by its nature.
     `test_geographic_filter_unset_imports_all_scopes`, the cross-
     repo reconciliation invariant, and the bundled-CSV end-to-end
     Flock alert which now asserts DB-delegation directly rather
-    than via a `'low'` sentinel). 7 new regular-suite tests + 1
-    new diagnostic test pin the gates and the bundled-CSV
-    second-run mutation count.
+    than via a `'low'` sentinel). 12 new regular-suite tests + 1
+    new diagnostic test pin the gates, the highest-severity-wins
+    tiebreak, and the bundled-CSV second-run mutation count.
 
 ## [0.5.0] - 2026-05-20
 
