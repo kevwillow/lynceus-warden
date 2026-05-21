@@ -718,6 +718,329 @@ def test_drone_id_prefix_too_short_lands_in_normalization_failed(tmp_path, db):
 
 
 # ---------------------------------------------------------------------------
+# Per-Argus-record dedup gates (v0.6.0).
+#
+# Two upstream-emitted dup shapes in the bundled Argus CSV produced
+# counter inflation + watchlist_metadata thrash on no-op re-import
+# before the v0.6.0 rework. Both are gated at per-row dispatch in
+# `import_csv`; see docs/ARGUS_DEDUP_SHAPES.md for the bucket
+# inventory.
+# ---------------------------------------------------------------------------
+
+
+def test_peer_collide_gate_drops_second_natural_key_collision(tmp_path, db):
+    """Two Argus rows with distinct argus_record_ids that canonicalize
+    to the same (pattern, pattern_type) — the dominant shape behind
+    Bucket A (mac_range legacy bare-prefix vs CIDR, ble_manufacturer_id
+    case variants, ble_uuid short-form). First row wins;
+    ``dropped_peer_collision`` increments; the second row's metadata
+    never reaches `upsert_metadata` so the first row's
+    ``watchlist_metadata`` row is not overwritten."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="pc-bare",
+                identifier_type="mac_range",
+                identifier="10:63:a3:1",   # legacy bare prefix
+                manufacturer="Jacobs",
+            ),
+            _row(
+                argus_record_id="pc-cidr",
+                identifier_type="mac_range",
+                identifier="10:63:a3:1/28",  # canonical CIDR; same pattern
+                manufacturer="Jacobs Technology, Inc.",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    assert report.dropped_peer_collision == 1
+    assert _wl_count(db) == 1
+    assert _md_count(db) == 1
+    md = db._conn.execute(
+        "SELECT argus_record_id, vendor FROM watchlist_metadata"
+    ).fetchone()
+    assert md["argus_record_id"] == "pc-bare"  # first occurrence wins
+    assert md["vendor"] == "Jacobs"
+
+
+def test_peer_collide_gate_attaches_to_seeded_watchlist_row_without_md(tmp_path, db):
+    """A YAML-seeded watchlist row exists with no metadata side. The
+    first Argus row matching that natural key MUST attach metadata
+    normally — the peer-collide gate only fires when the existing
+    watchlist row ALREADY has metadata bound to a different
+    argus_record_id. Without this case, seeded rows would be locked
+    out of the Argus side entirely."""
+    # Seed a watchlist row without metadata.
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, ?, ?, ?)",
+            ("aa:bb:cc:dd:ee:ff", "mac", "low", "yaml-seeded"),
+        )
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(argus_record_id="argus-first-attach", identifier="aa:bb:cc:dd:ee:ff"),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    assert report.dropped_peer_collision == 0
+    assert _wl_count(db) == 1  # same row, not duplicated
+    assert _md_count(db) == 1
+    md = db._conn.execute(
+        "SELECT argus_record_id FROM watchlist_metadata"
+    ).fetchone()
+    assert md["argus_record_id"] == "argus-first-attach"
+
+
+def test_in_import_dup_gate_drops_second_argus_record_id_occurrence(tmp_path, db):
+    """The same argus_record_id appearing twice in one CSV with
+    content drift — the dominant Bucket B shape (primary_registry vs
+    crowdsourced OUI overlay). First occurrence wins; second drops
+    to ``dropped_in_import_dup`` rather than rewriting the metadata
+    row via the existing-md path."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="dup-record-1",
+                identifier_type="oui",
+                identifier="48:1c:b9",
+                device_category="drone",
+                manufacturer="DJI",
+                source_type="primary_registry",
+                confidence="80",
+            ),
+            _row(
+                argus_record_id="dup-record-1",   # SAME id, different fields
+                identifier_type="oui",
+                identifier="48:1c:b9",
+                device_category="drone",
+                manufacturer="",                  # crowdsourced overlay shape
+                source_type="crowdsourced",
+                confidence="65",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    assert report.dropped_in_import_dup == 1
+    md = db._conn.execute(
+        "SELECT vendor, source, confidence FROM watchlist_metadata"
+    ).fetchone()
+    # First occurrence's fields survived; not overwritten by occ 2.
+    assert md["vendor"] == "DJI"
+    assert md["source"] == "primary_registry"
+    assert md["confidence"] == 80
+
+
+def test_in_import_dup_gate_independent_of_peer_collide_gate(tmp_path, db):
+    """A CSV that exercises BOTH gates in one run — argus_record_id
+    `X` appears once and is admitted; argus_record_id `Y` appears
+    twice (dropped_in_import_dup increments once for the second);
+    and argus_record_id `Z` shares X's canonical pattern
+    (dropped_peer_collision increments once). Verifies the two
+    gates do not interfere — distinct counters and clean counter
+    invariant."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(argus_record_id="X", identifier="aa:bb:cc:11:22:33"),
+            _row(argus_record_id="Y", identifier="aa:bb:cc:44:55:66"),
+            _row(argus_record_id="Y", identifier="aa:bb:cc:44:55:66"),  # in-import dup
+            _row(argus_record_id="Z", identifier="aa:bb:cc:11:22:33"),  # peer-collide of X
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 2  # X and Y
+    assert report.dropped_in_import_dup == 1  # second Y
+    assert report.dropped_peer_collision == 1  # Z collides with X
+    assert (
+        report.imported_new
+        + report.updated
+        + report.unchanged
+        + report.dropped_in_import_dup
+        + report.dropped_peer_collision
+        + report.dropped_unknown_type
+        + report.dropped_geographic_filter
+        + report.dropped_severity_drop
+        + report.dropped_low_confidence
+        + report.normalization_failed
+        + report.errors
+    ) == report.total_rows == 4
+
+
+def test_no_op_reimport_produces_zero_mutating_writes_to_watchlist_tables(
+    tmp_path, db
+):
+    """Re-importing the same CSV against a populated DB must produce
+    zero `watchlist` and `watchlist_metadata` UPDATE/INSERT statements
+    — the importer is idempotent on unchanged content. The
+    `import_runs` INSERT still fires (the staleness signal records
+    each import attempt); only writes to the dedup-relevant tables
+    are pinned to zero here."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(argus_record_id="r1", identifier="aa:bb:cc:11:22:33"),
+            _row(argus_record_id="r2", identifier="aa:bb:cc:44:55:66"),
+            _row(argus_record_id="r3", identifier_type="oui", identifier="de:ad:be"),
+        ],
+    )
+    # Populate.
+    r1 = import_csv(db, path, OverrideConfig())
+    assert r1.imported_new == 3
+
+    # Capture mutating SQL on the re-import.
+    mutations_to_dedup_tables: list[str] = []
+
+    def cap(sql: str) -> None:
+        upper = sql.upper().lstrip()
+        if not upper.startswith(("INSERT", "UPDATE", "DELETE", "REPLACE")):
+            return
+        # Strip whitespace for matching.
+        s = " ".join(sql.split()).lower()
+        if (
+            "watchlist_metadata" in s
+            or s.startswith(("insert into watchlist(", "update watchlist "))
+        ):
+            mutations_to_dedup_tables.append(sql.strip())
+
+    db._conn.set_trace_callback(cap)
+    try:
+        r2 = import_csv(db, path, OverrideConfig())
+    finally:
+        db._conn.set_trace_callback(None)
+
+    assert r2.imported_new == 0
+    assert r2.updated == 0
+    assert r2.unchanged == 3
+    assert mutations_to_dedup_tables == [], (
+        f"no-op re-import must not write to watchlist or "
+        f"watchlist_metadata; got: {mutations_to_dedup_tables}"
+    )
+
+
+def test_upsert_metadata_short_circuits_when_fields_match(tmp_path):
+    """Direct unit test of the inner content-equality short-circuit
+    in `Database.upsert_metadata`. Calling the function twice with
+    identical fields against an existing row must NOT fire an
+    UPDATE — `updated_at` is unchanged across the second call. This
+    is layered defense behind the import-side gates; it makes the
+    function idempotent for any caller that reaches the UPDATE
+    branch."""
+    import time as _time
+
+    db = Database(str(tmp_path / "uxm.db"))
+    try:
+        with db._conn:
+            cur = db._conn.execute(
+                "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+                "VALUES (?, ?, ?, ?)",
+                ("aa:bb:cc:dd:ee:ff", "mac", "low", "uxm test"),
+            )
+            watchlist_id = int(cur.lastrowid)
+        fields = {
+            "argus_record_id": "uxm-1",
+            "device_category": "alpr",
+            "vendor": "Acme",
+            "source": "manufacturer_doc",
+            "confidence": 85,
+        }
+        db.upsert_metadata(watchlist_id, fields)
+        pre = db._conn.execute(
+            "SELECT updated_at FROM watchlist_metadata WHERE watchlist_id = ?",
+            (watchlist_id,),
+        ).fetchone()
+
+        # Second call — must short-circuit.
+        # Sleep > 1s so a clock-based UPDATE would be visible if it fired.
+        _time.sleep(1.1)
+        captured: list[str] = []
+
+        def cap(sql: str) -> None:
+            upper = sql.upper().lstrip()
+            if upper.startswith(("UPDATE", "INSERT")):
+                captured.append(sql.strip())
+
+        db._conn.set_trace_callback(cap)
+        try:
+            db.upsert_metadata(watchlist_id, fields)
+        finally:
+            db._conn.set_trace_callback(None)
+        post = db._conn.execute(
+            "SELECT updated_at FROM watchlist_metadata WHERE watchlist_id = ?",
+            (watchlist_id,),
+        ).fetchone()
+        assert post["updated_at"] == pre["updated_at"], (
+            "updated_at must not bump when fields are content-equal"
+        )
+        update_stmts = [s for s in captured if s.upper().lstrip().startswith("UPDATE")]
+        assert update_stmts == [], (
+            f"short-circuit must skip the UPDATE; got: {update_stmts}"
+        )
+    finally:
+        db.close()
+
+
+def test_upsert_metadata_still_updates_when_fields_differ(tmp_path):
+    """Inverse of the short-circuit test: when ANY caller-provided
+    field actually differs from the stored row, the UPDATE must
+    fire (and `updated_at` bumps). The short-circuit must not mask
+    legitimate writes."""
+    import time as _time
+
+    db = Database(str(tmp_path / "uxm2.db"))
+    try:
+        with db._conn:
+            cur = db._conn.execute(
+                "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+                "VALUES (?, ?, ?, ?)",
+                ("aa:bb:cc:dd:ee:ff", "mac", "low", "uxm test"),
+            )
+            watchlist_id = int(cur.lastrowid)
+        db.upsert_metadata(
+            watchlist_id,
+            {
+                "argus_record_id": "uxm-2",
+                "device_category": "alpr",
+                "vendor": "Acme",
+                "confidence": 85,
+            },
+        )
+        pre = db._conn.execute(
+            "SELECT updated_at, vendor FROM watchlist_metadata "
+            "WHERE watchlist_id = ?",
+            (watchlist_id,),
+        ).fetchone()
+        _time.sleep(1.1)
+        db.upsert_metadata(
+            watchlist_id,
+            {
+                "argus_record_id": "uxm-2",
+                "device_category": "alpr",
+                "vendor": "Acme Corp.",  # changed
+                "confidence": 85,
+            },
+        )
+        post = db._conn.execute(
+            "SELECT updated_at, vendor FROM watchlist_metadata "
+            "WHERE watchlist_id = ?",
+            (watchlist_id,),
+        ).fetchone()
+        assert post["vendor"] == "Acme Corp."
+        assert post["updated_at"] > pre["updated_at"], (
+            "updated_at must bump when a field actually changes"
+        )
+    finally:
+        db.close()
+
+
+
+# ---------------------------------------------------------------------------
 # Drop-bucket per-row logging (audit-3).
 # Counter-only drops left operators with no forensic trail; each drop
 # now emits one INFO log line carrying argus_record_id, the raw

@@ -186,12 +186,14 @@ def test_diag_import_argus_metadata_thrash(diag, tmp_path):
             bumped += 1
     diag.observed(f"rows with updated_at bumped despite no content change: {bumped}")
 
-    diag.notes("Per upsert_metadata (db.py:1842): when md_changed is True "
-               "in import_argus the function calls into upsert_metadata, "
-               "which UPDATEs updated_at unconditionally. The dry-exercise "
-               "logged 25 such rows on the bundled CSV's no-op re-import. "
-               "Any non-zero bumped count here corroborates that path is "
-               "still active at the unit level.")
+    diag.notes("Synthetic fixture has no peer-collide or in-import-dup "
+               "rows, so neither the v0.6.0 import-side gates nor the "
+               "inner upsert_metadata short-circuit are exercised here "
+               "— a no-bump observation holds on the synthetic CSV both "
+               "before and after the rework, for different reasons. The "
+               "bundled-CSV equivalent (which carries 25 thrashed rows "
+               "before the rework and 0 after) is "
+               "test_diag_import_argus_bundled_csv_dedup_shapes below.")
     db.close()
 
 
@@ -271,8 +273,225 @@ def test_diag_import_argus_admit_vs_drop(diag, tmp_path):
     diag.observed(f"watchlist_metadata row count: {md_count}")
 
     diag.notes("Reviewer cross-check: imported_new + sum(dropped_*) + "
-               "normalization_failed + errors SHOULD equal total_rows. Any "
-               "shortfall indicates rows silently disappearing. The "
-               "ssid_exact vs ssid_pattern split lands in watchlist as "
-               "pattern_type 'ssid' (for ssid_exact) and 'ssid_pattern'.")
+               "normalization_failed + errors + updated + unchanged "
+               "SHOULD equal total_rows. Any shortfall indicates rows "
+               "silently disappearing. The v0.6.0 dedup rework added "
+               "two `dropped_*` counters (dropped_peer_collision and "
+               "dropped_in_import_dup) — both must be in the sum for "
+               "the invariant to hold. The ssid_exact vs ssid_pattern "
+               "split lands in watchlist as pattern_type 'ssid' (for "
+               "ssid_exact) and 'ssid_pattern'.")
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — bundled-CSV per-Argus-record dedup shapes (v0.6.0 rework)
+#
+# The synthetic-CSV diag tests above (no_op_sql_trace, metadata_thrash)
+# don't reproduce the upstream-emitted dup shapes that drove the pre-
+# rework bundled-CSV counter inflation (31 false-new, 21 false-updated,
+# 25 metadata `updated_at` bumps; 99 mutating statements per re-import).
+# This test exercises the actual bundled CSV end-to-end and pins:
+# - second-run mutation count = 1 (only the import_runs INSERT)
+# - dropped_peer_collision / dropped_in_import_dup hit their expected
+#   values, derived from an independent CSV parse pass (not from
+#   re-running the importer's own counters)
+# - the counter math invariant balances both on first import and on
+#   no-op re-import
+# - a breakdown of the bucket A (peer-collide) and bucket B (in-import-
+#   dup) shapes lands in the diagnostic log so reviewers can cross-
+#   check the upstream-emission inventory documented in
+#   docs/ARGUS_DEDUP_SHAPES.md
+# ---------------------------------------------------------------------------
+
+
+def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
+    import collections
+    import importlib.resources
+
+    from lynceus.cli.import_argus import (
+        IDENTIFIER_TYPE_MAP,
+        parse_argus_csv,
+    )
+    from lynceus.patterns import (
+        canonicalize_mac_range_pattern,
+        normalize_pattern,
+        parse_mac_range_pattern,
+    )
+
+    bundle_path = str(
+        importlib.resources.files("lynceus.data").joinpath("default_watchlist.csv")
+    )
+    diag.fixture(f"bundled Argus CSV: {bundle_path}")
+
+    # ---- Independent CSV parse: derive ground-truth bucket inventory.
+    rows = parse_argus_csv(bundle_path)
+    diag.fixture(f"parsed {len(rows)} data rows")
+
+    argus_id_count = collections.Counter(r["argus_record_id"] for r in rows)
+    dup_argus_ids = {k: v for k, v in argus_id_count.items() if v > 1}
+
+    pattern_groups: dict[tuple[str, str], list[tuple[str, dict]]] = {}
+    for raw in rows:
+        argus_type = (raw["identifier_type"] or "").strip().lower()
+        if argus_type not in IDENTIFIER_TYPE_MAP:
+            continue
+        ptype = IDENTIFIER_TYPE_MAP[argus_type]
+        try:
+            if ptype == "mac_range":
+                pfx, plen = parse_mac_range_pattern(raw["identifier"])
+                canon = canonicalize_mac_range_pattern(pfx, plen)
+            else:
+                canon = normalize_pattern(ptype, raw["identifier"])
+        except Exception:
+            continue
+        pattern_groups.setdefault((canon, ptype), []).append(
+            (raw["argus_record_id"], raw)
+        )
+    nk_collide_groups = {
+        k: v
+        for k, v in pattern_groups.items()
+        if len({a for a, _ in v}) > 1
+    }
+
+    diag.fixture(
+        f"bucket B (in-import-dup): {len(dup_argus_ids)} distinct "
+        f"argus_record_ids appear >1 time, sum count "
+        f"{sum(dup_argus_ids.values())}"
+    )
+    diag.fixture(
+        f"bucket A (peer-collide): {len(nk_collide_groups)} (pattern, "
+        f"pattern_type) groups have >1 distinct argus_record_id, sum "
+        f"members {sum(len(v) for v in nk_collide_groups.values())}"
+    )
+
+    # Sample shape breakdown by canonical pattern_type
+    by_ptype: dict[str, int] = collections.Counter()
+    for (_, ptype), members in nk_collide_groups.items():
+        by_ptype[ptype] += 1
+    diag.fixture(f"bucket A breakdown by pattern_type: {dict(by_ptype)}")
+
+    # Sample concrete groups
+    diag.fixture("--- bucket A representative groups (first 5) ---")
+    for (canon, ptype), members in list(nk_collide_groups.items())[:5]:
+        mfgs = sorted({m[1].get("manufacturer", "") for m in members})
+        idents = sorted({m[1].get("identifier", "") for m in members})
+        argus = [m[0] for m in members]
+        diag.fixture(
+            f"  pattern={canon!r} type={ptype} argus_ids={argus} "
+            f"mfgs={mfgs} raw_idents={idents}"
+        )
+    diag.fixture("--- bucket B representative sets (first 5) ---")
+    for argus_id, count in list(dup_argus_ids.items())[:5]:
+        members = [r for r in rows if r["argus_record_id"] == argus_id]
+        mfgs = sorted({m.get("manufacturer", "") for m in members})
+        sources = sorted({m.get("source_type", "") for m in members})
+        diag.fixture(
+            f"  argus={argus_id} count={count} mfgs={mfgs} sources={sources}"
+        )
+
+    # ---- Exercise: two-pass import against a fresh DB.
+    db = Database(str(tmp_path / "bundled_diag.db"))
+
+    diag.exercise("import_csv() first run -- populates DB from bundled CSV")
+    r1 = import_csv(db, bundle_path, OverrideConfig())
+    diag.observed(
+        f"r1: total={r1.total_rows} new={r1.imported_new} "
+        f"updated={r1.updated} unchanged={r1.unchanged} "
+        f"dropped_peer_collision={r1.dropped_peer_collision} "
+        f"dropped_in_import_dup={r1.dropped_in_import_dup} "
+        f"dropped_unknown_type={r1.dropped_unknown_type} "
+        f"errors={r1.errors}"
+    )
+    inv1 = (
+        r1.imported_new + r1.updated + r1.unchanged
+        + r1.dropped_unknown_type + r1.dropped_geographic_filter
+        + r1.dropped_severity_drop + r1.dropped_mac_range
+        + r1.dropped_low_confidence + r1.dropped_peer_collision
+        + r1.dropped_in_import_dup + r1.normalization_failed + r1.errors
+    )
+    diag.observed(
+        f"r1 invariant sum={inv1} total_rows={r1.total_rows} "
+        f"match={inv1 == r1.total_rows}"
+    )
+
+    # ---- Exercise: no-op re-import, trace mutating SQL.
+    mutations: list[str] = []
+
+    def cap(sql: str) -> None:
+        upper = sql.upper().lstrip()
+        if upper.startswith(("INSERT", "UPDATE", "DELETE", "REPLACE")):
+            mutations.append(sql.strip())
+
+    db._conn.set_trace_callback(cap)
+    diag.exercise("import_csv() second run -- SAME CSV, no field changes")
+    r2 = import_csv(db, bundle_path, OverrideConfig())
+    db._conn.set_trace_callback(None)
+    diag.observed(
+        f"r2: total={r2.total_rows} new={r2.imported_new} "
+        f"updated={r2.updated} unchanged={r2.unchanged} "
+        f"dropped_peer_collision={r2.dropped_peer_collision} "
+        f"dropped_in_import_dup={r2.dropped_in_import_dup}"
+    )
+    inv2 = (
+        r2.imported_new + r2.updated + r2.unchanged
+        + r2.dropped_unknown_type + r2.dropped_geographic_filter
+        + r2.dropped_severity_drop + r2.dropped_mac_range
+        + r2.dropped_low_confidence + r2.dropped_peer_collision
+        + r2.dropped_in_import_dup + r2.normalization_failed + r2.errors
+    )
+    diag.observed(
+        f"r2 invariant sum={inv2} total_rows={r2.total_rows} "
+        f"match={inv2 == r2.total_rows}"
+    )
+    diag.observed(
+        f"second-run mutating-statement count: {len(mutations)}"
+    )
+    verbs: dict[str, int] = collections.Counter()
+    for s in mutations:
+        head = " ".join(s.split()[:3])
+        verbs[head] += 1
+    for head, count in verbs.most_common():
+        diag.observed(f"  {count:5d} × {head}")
+
+    # ---- Pinned assertions: numbers that should be stable across runs.
+    # First import: dropped counters derive directly from the bucket
+    # inventories above. The peer-collide count = sum(members-1) per
+    # nk-collide group (the loser of each collide). The in-import-dup
+    # count = sum(c-1) per dup-argus set, BUT only for sets where the
+    # first occurrence passed validation (a small number may be lower
+    # if the first occurrence was dropped for other reasons).
+    expected_peer_collide = sum(len(v) - 1 for v in nk_collide_groups.values())
+    expected_in_import_dup_upper = sum(c - 1 for c in dup_argus_ids.values())
+    diag.notes(
+        f"Pinned: dropped_peer_collision == sum(members-1) per "
+        f"nk-collide group = {expected_peer_collide}. "
+        f"dropped_in_import_dup <= sum(c-1) per dup-argus set = "
+        f"{expected_in_import_dup_upper}; the actual count can be "
+        f"lower if the first occurrence of a dup-argus set was "
+        f"dropped for an upstream reason (unknown_type, "
+        f"normalization_failed, etc.). 2nd-run mutation count must "
+        f"be exactly 1 (import_runs INSERT)."
+    )
+    assert r1.dropped_peer_collision == expected_peer_collide, (
+        f"first-run dropped_peer_collision={r1.dropped_peer_collision} "
+        f"expected {expected_peer_collide}"
+    )
+    assert r1.dropped_in_import_dup <= expected_in_import_dup_upper, (
+        f"first-run dropped_in_import_dup={r1.dropped_in_import_dup} "
+        f"exceeds upper bound {expected_in_import_dup_upper}"
+    )
+    assert inv1 == r1.total_rows
+    assert inv2 == r2.total_rows
+    assert r2.imported_new == 0
+    assert r2.updated == 0
+    assert r2.unchanged == r1.imported_new, (
+        f"all r1.imported_new rows must be unchanged on re-import; "
+        f"r2.unchanged={r2.unchanged} vs r1.imported_new={r1.imported_new}"
+    )
+    assert len(mutations) == 1, (
+        f"second-run mutating-statement count must be exactly 1 "
+        f"(import_runs INSERT); got {len(mutations)}: "
+        f"{[m.split()[:3] for m in mutations]}"
+    )
     db.close()
