@@ -11,6 +11,7 @@ import yaml
 
 from lynceus.cli import import_argus
 from lynceus.cli.import_argus import (
+    DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST,
     DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD,
     EXPECTED_HEADER,
     OverrideConfig,
@@ -3322,3 +3323,173 @@ def test_main_from_github_records_owner_repo_at_ref_source(
         assert latest["source"] == "someone/argus-fork@v2.0.0"
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# # meta: schema_version accept-list ingress check.
+# ---------------------------------------------------------------------------
+#
+# Defensive ingress hygiene per the Argus engineer §F.2. The importer
+# accepts a configurable allow-list of schema_version values (default
+# ["25", "26"] for the v1.4.1 transition window) and WARNs without
+# aborting on anything outside it. Missing schema_version (older
+# `# meta: argus_export v3 (CP11)` shapes) skips the check silently —
+# warning-on-absent would regress archived-export imports.
+
+
+def _warnings_for_schema_version(caplog) -> list:
+    return [
+        r
+        for r in caplog.records
+        if r.levelno == _logging.WARNING
+        and r.name == "lynceus.cli.import_argus"
+        and "schema_version" in r.getMessage()
+    ]
+
+
+def test_argus_schema_version_25_accepted_silently(tmp_path, db, caplog):
+    """schema_version=25 (pre-Phase-1 regen anchor) is in the default
+    accept-list — no warning, row imports."""
+    path = _write_csv_with_meta(
+        tmp_path / "v25.csv",
+        "# meta: schema_version=25, exported_at=2026-05-07T20:17:59Z, record_count=1",
+        [_row(argus_record_id="v25-1")],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+    assert _warnings_for_schema_version(caplog) == []
+    assert report.imported_new == 1
+
+
+def test_argus_schema_version_26_accepted_silently(tmp_path, db, caplog):
+    """schema_version=26 (v1.4.1 cutover) is in the default accept-list
+    — no warning, row imports."""
+    path = _write_csv_with_meta(
+        tmp_path / "v26.csv",
+        "# meta: schema_version=26, exported_at=2026-05-07T20:17:59Z, record_count=1",
+        [_row(argus_record_id="v26-1")],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+    assert _warnings_for_schema_version(caplog) == []
+    assert report.imported_new == 1
+
+
+def test_argus_schema_version_unknown_warns_imports_anyway(tmp_path, db, caplog):
+    """schema_version outside the accept-list (here ``"99"``) trips a
+    WARNING with the configured accept-list and the override key, but
+    does NOT abort — defensive posture preserves backward compat with
+    operators on older Argus exports."""
+    path = _write_csv_with_meta(
+        tmp_path / "v99.csv",
+        "# meta: schema_version=99, exported_at=2026-05-07T20:17:59Z, record_count=1",
+        [_row(argus_record_id="v99-1")],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+    warnings = _warnings_for_schema_version(caplog)
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert "'99'" in msg
+    assert "argus_schema_version_accept_list" in msg, (
+        "warning should hint the override key so an operator can tune"
+    )
+    assert report.imported_new == 1
+
+
+def test_argus_schema_version_custom_accept_list_via_overrides(tmp_path, db, caplog):
+    """Operator-supplied accept-list narrows the accepted set; values
+    no longer in the list start warning."""
+    path = _write_csv_with_meta(
+        tmp_path / "v25_narrowed.csv",
+        "# meta: schema_version=25, exported_at=2026-05-07T20:17:59Z, record_count=1",
+        [_row(argus_record_id="narr-1")],
+    )
+    overrides = OverrideConfig(argus_schema_version_accept_list=["27"])
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, overrides)
+    warnings = _warnings_for_schema_version(caplog)
+    assert len(warnings) == 1
+    assert "'25'" in warnings[0].getMessage()
+    assert report.imported_new == 1
+
+
+def test_argus_schema_version_missing_key_silent(tmp_path, db, caplog):
+    """rc2-era ``# meta: argus_export v3 (CP11)`` shape has no
+    schema_version key. Established codebase convention is silent
+    tolerance for missing meta fields; warning here would be a noisy
+    regression for archived-export imports."""
+    path = _write_csv_with_meta(
+        tmp_path / "free_form.csv",
+        "# meta: argus_export v3 (CP11)",
+        [_row(argus_record_id="ff-1")],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+    assert _warnings_for_schema_version(caplog) == []
+    assert report.imported_new == 1
+
+
+def test_argus_schema_version_accept_list_none_disables_check(tmp_path, db, caplog):
+    """Explicit None on the accept-list is the operator opt-out: even
+    a schema_version that would otherwise warn passes silently."""
+    path = _write_csv_with_meta(
+        tmp_path / "v99_disabled.csv",
+        "# meta: schema_version=99, exported_at=2026-05-07T20:17:59Z, record_count=1",
+        [_row(argus_record_id="dis-1")],
+    )
+    overrides = OverrideConfig(argus_schema_version_accept_list=None)
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, overrides)
+    assert _warnings_for_schema_version(caplog) == []
+    assert report.imported_new == 1
+
+
+def test_argus_schema_version_accept_list_empty_disables_check(tmp_path, db, caplog):
+    """Empty list is treated the same as None — operator opt-out."""
+    path = _write_csv_with_meta(
+        tmp_path / "v99_empty.csv",
+        "# meta: schema_version=99, exported_at=2026-05-07T20:17:59Z, record_count=1",
+        [_row(argus_record_id="emp-1")],
+    )
+    overrides = OverrideConfig(argus_schema_version_accept_list=[])
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, overrides)
+    assert _warnings_for_schema_version(caplog) == []
+    assert report.imported_new == 1
+
+
+def test_load_override_config_argus_schema_version_default(tmp_path):
+    """YAML without the key falls back to the built-in default
+    ["25", "26"]."""
+    p = tmp_path / "overrides.yaml"
+    p.write_text(yaml.safe_dump({}), encoding="utf-8")
+    cfg = load_override_config(str(p))
+    assert cfg.argus_schema_version_accept_list == list(
+        DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST
+    )
+
+
+def test_load_override_config_argus_schema_version_explicit_null(tmp_path):
+    """Explicit ``argus_schema_version_accept_list: null`` disables
+    the check. Distinct from key-absent (which uses the default)."""
+    p = tmp_path / "overrides.yaml"
+    p.write_text(
+        yaml.safe_dump({"argus_schema_version_accept_list": None}),
+        encoding="utf-8",
+    )
+    cfg = load_override_config(str(p))
+    assert cfg.argus_schema_version_accept_list is None
+
+
+def test_load_override_config_argus_schema_version_explicit_list(tmp_path):
+    """Operator-supplied list lands as-is, coerced to list[str] (YAML
+    ints get stringified so the comparison against schema_version
+    raw string values stays type-safe)."""
+    p = tmp_path / "overrides.yaml"
+    p.write_text(
+        yaml.safe_dump({"argus_schema_version_accept_list": [26, "27", 28]}),
+        encoding="utf-8",
+    )
+    cfg = load_override_config(str(p))
+    assert cfg.argus_schema_version_accept_list == ["26", "27", "28"]
