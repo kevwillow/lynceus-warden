@@ -132,7 +132,7 @@ To check current configuration without editing files, navigate to `/settings` in
 Lynceus ships a default watchlist as package data inside the wheel: `src/lynceus/data/default_watchlist.csv`.
 
 - **Source.** Snapshot from [Argus](https://github.com/kevwillow/argus-db), the companion RF-signature project. Lynceus is **not** redistributing the full Argus corpus — what's bundled is a point-in-time snapshot.
-- **Coverage.** ~22,500 records (exported 2026-05-17) across `mac`, `oui`, `mac_range`, `ble_manufacturer_id`, `ble_uuid`, `drone_remote_id_prefix`, `ssid`, and `ssid_pattern` identifier types. Categories include `drone`, `alpr`, `gunshot_detect`, `hacking_tool`, and `unknown`. The bundled `argus_ssid` rule fires on Flock-class cameras, Penguin trackers, and the FS Ext Battery family out of the box.
+- **Coverage.** ~22,500 records (exported 2026-05-17) across `mac`, `oui`, `mac_range`, `ble_manufacturer_id`, `ble_uuid`, `drone_remote_id_prefix`, `ssid`, and `ssid_pattern` identifier types. Categories include `drone`, `alpr`, `gunshot_detect`, `hacking_tool`, and `unknown`. Argus v1.4.1 extends the `device_category` enum with `automotive_telematics` (forward-compat — zero active rows at v1.4.1; Parrot Automotive arm + v1.4.2 cellular-IoT backlog will populate later). The bundled `argus_ssid` rule fires on Flock-class cameras, Penguin trackers, and the FS Ext Battery family out of the box.
 - **First-run.** `lynceus-setup` auto-imports the bundled CSV on first run, so a fresh install has a working watchlist out of the box.
 - **Refresh.** When a newer Argus export is available, refresh in place. The single-command path pulls the latest tagged release straight from GitHub:
 
