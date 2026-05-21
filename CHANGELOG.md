@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-21
+
+Release status: This release has not yet been validated against
+real Kismet + ntfy + systemd on Linux hardware. The test suite
+covers 2475 tests on Windows / 2491 expected on Linux at this
+commit (16-test POSIX delta unchanged from v0.5.0 — no
+`install.sh` changes in 0.6.0). Functional correctness asserted
+by tests + 22 diagnostic behavior-dump tests (`pytest -m
+diagnostic`); deployment behavior is asserted by
+`docs/DEPLOYMENT.md` and `docs/KALI_SMOKE_CHECKLIST.md` but
+unsmoked at this tag. Operators encountering issues should file
+via the project tracker with browser + Python version +
+relevant journalctl excerpt.
+
+Most likely class of bugs is UI-related — the backend has the
+deepest test coverage; the new `/alerts` keyboard-shortcut JS
+in particular has lighter coverage by its nature.
+
 ### Added
 
 - **Keyboard shortcuts on `/alerts` (minimum set).** Extends the
