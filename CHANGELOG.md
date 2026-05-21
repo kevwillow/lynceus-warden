@@ -104,6 +104,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no new URL params, no new sort vocab. CSV export of the
   per-rule_type breakdown is not in scope here.
 
+### Fixed
+
+- **Per-Argus-record dedup rework — no-op re-import is now
+  idempotent.** Before: re-importing the bundled Argus CSV against
+  a populated DB inflated counters (31 false-`new` + 21 false-
+  `updated` + 22264 `unchanged` against 22533 input rows) and
+  thrashed `updated_at` on 25 `watchlist_metadata` rows despite
+  zero source-data change — 99 mutating SQL statements per re-
+  import (52 × `UPDATE watchlist_metadata`, 46 × `UPDATE
+  watchlist`, 1 × `INSERT import_runs`). Two distinct upstream-
+  emitted dup shapes drove the symptom (the device_category
+  hypothesis previously recorded in BACKLOG.md was falsified by
+  the scout — 0 of 15 peer-collide groups differ on
+  device_category; see docs/ARGUS_DEDUP_SHAPES.md for the actual
+  shape inventory). After: the importer gates both shapes at per-
+  row dispatch and the second-run mutation count drops to 1 (the
+  `import_runs` INSERT, kept for the staleness signal). Counter
+  math invariant balances: bundled-CSV first import now reports
+  `22289 imported_new + 16 dropped_peer_collision + 11
+  dropped_in_import_dup + 217 dropped_unknown_type = 22533`. New
+  counters `dropped_peer_collision` and `dropped_in_import_dup`
+  appear in the importer report and the operator-facing stdout
+  summary. The pre-rework `false-new` / `false-updated` counter
+  inflation is resolved.
+  - Two new gates in `import_csv` (`src/lynceus/cli/import_argus.py`):
+    - **Peer-collide gate** — after the natural-key lookup
+      (`_watchlist_row_by_natural_key`) hits an existing watchlist
+      row, if that row already has a metadata side bound to a
+      different `argus_record_id`, the current row is gated
+      (`dropped_peer_collision`). First-occurrence wins. The
+      dominant Bucket A shapes are `mac_range` legacy bare-prefix
+      vs CIDR (8/15 groups), `ble_manufacturer_id` case/leading-
+      zero variants (6/15), and `ble_uuid` short-form (1/15).
+    - **Within-import dup gate** — a `seen_argus_ids` set local to
+      each `import_csv` call drops the second-and-beyond occurrence
+      of any `argus_record_id` within one CSV
+      (`dropped_in_import_dup`). First-occurrence wins. Dominant
+      Bucket B shape is Argus's `primary_registry` vs
+      `crowdsourced` OUI overlay (drone vendors).
+  - **Inner content-equality short-circuit in `upsert_metadata`**
+    (`src/lynceus/db.py`) — layered defense behind the import-side
+    gates. The UPDATE branch now fetches the stored row's fields
+    matching the caller's `fields` dict and skips the UPDATE
+    entirely when every requested field already equals the stored
+    value; `updated_at` does not bump. This makes the function
+    idempotent against unchanged content for any future caller.
+  - Schema unchanged; no migration; no change to the 1:1
+    `watchlist_id`/`argus_record_id` UNIQUE constraints on
+    `watchlist_metadata` or to the LEFT-JOIN consumers
+    (`get_watchlist_with_metadata`, `list_watchlist_with_metadata`,
+    `/watchlist` UI). Production DBs that already carry thrashed
+    `updated_at` values need no migration — the next import is now
+    idempotent against them anyway.
+  - Existing tests that pinned the pre-rework last-write-wins
+    contract updated in lockstep
+    (`test_ssid_exact_argus_sample_rows_all_land_as_ssid`,
+    `test_ble_service_uuid_short_and_padded_dedup_via_natural_key`,
+    `test_geographic_filter_unset_imports_all_scopes`, the cross-
+    repo reconciliation invariant, and the bundled-CSV end-to-end
+    Flock alert which now asserts DB-delegation directly rather
+    than via a `'low'` sentinel). 7 new regular-suite tests + 1
+    new diagnostic test pin the gates and the bundled-CSV
+    second-run mutation count.
+
 ## [0.5.0] - 2026-05-20
 
 Release status: This release has not yet been validated against

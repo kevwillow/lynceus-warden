@@ -104,24 +104,54 @@ stored data, fold at lookup — symmetric to the ssid_pattern matcher).
   until a real miss is observed.
 
 ### Per-Argus-record dedup model
-Current watchlist-natural-key dedup collapses same-pattern Argus rows
-differing only in `device_category`; `watchlist_metadata` is keyed by
-`watchlist_id` so the second row's `upsert_metadata` overwrites the
-first (last-write-wins on `device_category` / `vendor` / `argus_record_id`).
-Bounded operator impact unless device-category-based severity overrides
-(`severity_overrides.yaml`: `device_category_severity`, `suppress_categories`,
-`pattern_overrides`) are heavily used and depend on which side of a
-duplicate pair survives. Reconsider if operationally important — would
-need an `argus_record_id`-keyed metadata model and a row-level dispatch
-decision in `rules.py`.
-- **Observable symptoms** (pre-tag local-tool exercise, 2026-05-19):
-  - 31 false-new + 21 false-updated counters reported on a no-op
-    re-import of the same Argus CSV.
-  - 25 `watchlist_metadata` rows have `updated_at` thrashed on every
-    re-import even when no source data changed.
-  - Contradicts the previous `DEPLOYMENT.md §6` "only updates changed
-    rows" claim (now reworded — see af341be) until the dedup model is
-    reworked here.
+Operational symptom (pre-v0.6.0): re-importing the bundled Argus CSV
+inflated counters (31 false-new + 21 false-updated) and thrashed
+`updated_at` on 25 `watchlist_metadata` rows per re-import (99
+mutating SQL statements against unchanged content). The pre-v0.6.0
+hypothesis recorded here — "same-pattern Argus rows differing only
+in `device_category`" — was falsified by scouting in 2026-05-XX:
+**0 of 15** peer-collide groups in the bundled CSV differ on
+device_category. The actual upstream-emitted shapes are documented
+in [docs/ARGUS_DEDUP_SHAPES.md](docs/ARGUS_DEDUP_SHAPES.md).
+
+**Status: operational thrash fix landed in v0.6.0** via two import-
+side gates and a layered idempotency short-circuit in
+`upsert_metadata`. See the CHANGELOG `Fixed` entry under
+`[Unreleased]` for the full landing summary. Second-run mutation
+count on the bundled CSV is now 1 (`import_runs` INSERT); counter
+math invariant balances; new `dropped_peer_collision` and
+`dropped_in_import_dup` counters surface the gated rows in the
+operator-facing report.
+
+**Schema-side rework still possible if operationally useful**
+(v0.7.0+ candidate, conditional). The v0.6.0 fix preserves the
+1:1 `watchlist_metadata.watchlist_id UNIQUE` constraint and uses
+first-occurrence-wins. The collapsed peer-row's
+manufacturer/source/category data is dropped at import time,
+not persisted. If operators ever need access to per-peer-row
+metadata (e.g., severity override edge cases that depend on
+which device_category Flock-the-ALPR-vendor canonicalizes to —
+currently first-Argus-row-wins), the rework to consider is an
+`argus_record_id`-keyed `watchlist_metadata` (drop the
+`watchlist_id UNIQUE` constraint, allow 1:N), plus a row-level
+dispatch decision in `rules.py` to pick which peer's
+severity/category to apply per observation. Non-trivial migration
++ blast radius (LEFT-JOIN consumers across `get_watchlist_with_
+metadata`, `list_watchlist_with_metadata`, `/watchlist` UI,
+`/watchlist.csv` export, alert payload metadata embed). Defer
+until a concrete operator pain-point materializes; the v0.6.0 fix
+is the right resting place absent that.
+
+**Upstream-side context**: the Argus emission itself is the actual
+root cause of the dup shapes. Bucket A (peer-collide) reflects
+Argus emitting both legacy and canonical mac_range forms, and both
+short and zero-padded ble_manufacturer_id / ble_uuid forms, as
+distinct records. Bucket B (in-import-dup) reflects Argus emitting
+the same `argus_record_id` 2-3× with content drift across
+primary_registry vs crowdsourced sources. An upstream-side
+canonicalization in Argus would eliminate both buckets at source.
+See [docs/ARGUS_DEDUP_SHAPES.md](docs/ARGUS_DEDUP_SHAPES.md) for
+the inventory and the upstream-tracking pointer.
 
 ### Argus data quality observations relayed upstream
 The 2026-05-17 Argus export contains a `'Flock-*'` row typed as
