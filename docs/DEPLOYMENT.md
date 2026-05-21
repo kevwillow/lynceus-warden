@@ -212,10 +212,15 @@ lynceus-import-argus --from-github
 **Expected:** the importer fetches the latest Argus CSV from
 GitHub Releases, caches it under
 `<data-dir>/argus-cache/<ref>__argus_export.csv`, and reports the
-number of rows imported / updated / skipped. Idempotent — re-running
-is safe. Import counters reflect rows touched by the importer, not
-rows whose source data actually changed; some metadata rows update
-on no-op re-imports (tracked in BACKLOG).
+number of rows imported / updated / skipped / dropped. Idempotent —
+re-running against unchanged content writes only the `import_runs`
+staleness-signal row; the `watchlist` and `watchlist_metadata`
+tables are not touched (per the v0.6.0 per-Argus-record dedup
+rework). The report's `dropped_peer_collision` and
+`dropped_in_import_dup` counters surface upstream-emitted dup
+shapes the importer gates at per-row dispatch; see
+[`ARGUS_DEDUP_SHAPES.md`](ARGUS_DEDUP_SHAPES.md) for the bucket
+inventory.
 
 **Explanation:** The bundled watchlist that `lynceus-setup` imported
 is a point-in-time snapshot. `--from-github` pulls the latest tagged
