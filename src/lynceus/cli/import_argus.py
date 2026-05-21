@@ -85,6 +85,11 @@ DEFAULT_CATEGORY_SEVERITIES: dict[str, str] = {
 }
 
 VALID_SEVERITIES = ("high", "med", "low")
+# Ordering for the per-Argus-record dedup pre-pass tiebreak (v0.6.0
+# hotfix). Higher rank wins when collapsing peers / within-import
+# dups. Doesn't replace ``VALID_SEVERITIES`` (which is the validation
+# allow-list); used only by ``_severity_rank`` in ``_select_winners``.
+_SEVERITY_RANK: dict[str, int] = {"high": 3, "med": 2, "low": 1}
 DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD = 70
 
 # GitHub-fetch defaults for `--from-github`. Argus publishes its
@@ -495,6 +500,312 @@ def _watchlist_row_by_natural_key(db: Database, pattern: str, pattern_type: str)
     return dict(row) if row is not None else None
 
 
+@dataclass
+class _Candidate:
+    """A CSV row that has passed all per-row validation gates and is
+    ready for pre-pass selection + DB-write. Built by ``_classify_row``
+    in the first pass through the CSV; consumed by ``_select_winners``
+    (for tiebreak adjudication) and by the main DB-write loop in
+    ``import_csv``.
+
+    ``csv_index`` is the 0-based position in the parsed CSV — used for
+    deterministic tiebreaking when severity AND confidence are tied
+    (first-in-CSV-order wins).
+    """
+
+    csv_index: int
+    argus_id: str
+    pattern: str
+    pattern_type: str
+    severity: str
+    confidence: int
+    description: str | None
+    new_metadata: dict
+    mac_range_prefix: str | None
+    mac_range_prefix_length: int | None
+
+
+def _severity_rank(severity: str) -> int:
+    """Return the tiebreak rank for a resolved severity. Higher wins.
+
+    Used only by ``_select_winners`` for the per-Argus-record dedup
+    tiebreak; the surrounding ``VALID_SEVERITIES`` validation
+    allow-list remains the authority on which severity strings are
+    legal at write time. ``KeyError`` on an unexpected value would
+    indicate a contract bug between ``resolve_severity`` (the
+    producer) and this helper, not an operator-visible condition.
+    """
+    return _SEVERITY_RANK[severity]
+
+
+def _classify_row(
+    csv_index: int,
+    row: dict[str, str],
+    overrides: OverrideConfig,
+    min_confidence: int | None,
+    report: ImportReport,
+) -> _Candidate | None:
+    """First-pass per-row validation + canonicalization.
+
+    Runs every existing validation gate (unknown_type, geographic
+    filter, --min-confidence, severity_drop, normalization_failed,
+    empty argus_record_id / identifier) and increments the matching
+    ``report.dropped_*`` / ``report.normalization_failed`` /
+    ``report.errors`` counter when a gate fires; in those cases
+    returns ``None``. Otherwise returns a ``_Candidate`` carrying the
+    canonicalized pattern, resolved severity, and built metadata
+    fields — ready for the pre-pass selection in ``_select_winners``
+    and the DB-write loop in ``import_csv``.
+
+    Extracted from the per-row body of ``import_csv`` so the pre-pass
+    can adjudicate among admitted candidates without re-running the
+    validation gates (and without duplicating the canonicalization
+    logic).
+    """
+    try:
+        argus_id = row["argus_record_id"]
+        if not argus_id:
+            raise ValueError("row is missing argus_record_id")
+
+        # Argus may emit identifier_type in any case (e.g. BLE_SERVICE).
+        # Allowlist keys are lowercase; normalize before the lookup so
+        # uppercase rows aren't silently swallowed as dropped_unknown_type.
+        argus_type = (row["identifier_type"] or "").strip().lower()
+        if argus_type not in IDENTIFIER_TYPE_MAP:
+            report.dropped_unknown_type += 1
+            logger.info(
+                "argus import: skipping row argus_record_id=%s "
+                "identifier_type=%r reason=%s",
+                argus_id,
+                row["identifier_type"],
+                "unknown_identifier_type",
+            )
+            return None
+        pattern_type = IDENTIFIER_TYPE_MAP[argus_type]
+
+        scope = _empty_to_none(row["geographic_scope"])
+        if not _passes_geographic_filter(scope, overrides.geographic_filter):
+            report.dropped_geographic_filter += 1
+            return None
+
+        conf_str = row["confidence"]
+        if conf_str is None or conf_str == "":
+            raise ValueError("confidence is required")
+        try:
+            confidence = int(conf_str)
+        except ValueError as exc:
+            raise ValueError(f"confidence must be int, got {conf_str!r}") from exc
+
+        # Hard skip for --min-confidence. Distinct from
+        # overrides.confidence_downgrade_threshold, which downgrades
+        # severity but still imports the row.
+        if min_confidence is not None and confidence < min_confidence:
+            report.dropped_low_confidence += 1
+            logger.info(
+                "row argus_record_id=%r: skipped "
+                "(confidence=%d below --min-confidence=%d)",
+                argus_id,
+                confidence,
+                min_confidence,
+            )
+            return None
+
+        severity = resolve_severity(
+            manufacturer=_empty_to_none(row["manufacturer"]),
+            device_category=_empty_to_none(row["device_category"]),
+            confidence=confidence,
+            overrides=overrides,
+        )
+        if severity == "drop":
+            report.dropped_severity_drop += 1
+            return None
+
+        raw_pattern = row["identifier"]
+        if not raw_pattern:
+            raise ValueError("identifier is empty")
+        # Argus-side data quality check for ssid_exact: a literal `*`
+        # in an exact-typed identifier almost certainly indicates
+        # upstream miscategorization (the row was meant as
+        # ssid_pattern). Import anyway — the literal `*` never
+        # matches a real WiFi observation, so the row sits dormant
+        # until Argus fixes the typing — and warn loudly so the
+        # operator (and the next Argus refresh diff) sees it.
+        if argus_type == "ssid_exact" and "*" in raw_pattern:
+            report.ssid_exact_wildcard_warn += 1
+            logger.warning(
+                "argus import: ssid_exact identifier %r contains '*' — "
+                "likely Argus-side miscategorization (should be "
+                "ssid_pattern). Importing as ssid anyway; the literal "
+                "'*' will never match real WiFi observations. "
+                "argus_record_id=%s",
+                raw_pattern,
+                argus_id,
+            )
+        # Normalize at write time (L-RULES-1). The poller normalizes its
+        # observation MAC/UUID before the equality lookup against the
+        # watchlist table; a row stored in non-canonical form silently
+        # never matches and the alert loses its Argus metadata link.
+        #
+        # mac_range parses through a structured (prefix, length) pair
+        # rather than a single canonical string, so it takes a
+        # distinct path: parse_mac_range_pattern() validates and
+        # extracts the nibble metadata, and canonicalize_mac_range_pattern()
+        # re-renders to CIDR form for the watchlist.pattern column.
+        # Legacy bare-prefix shapes ('aa:bb:cc:d', 'aa:bb:cc:dd:e')
+        # are accepted dual-shape per the Argus-engineer handoff and
+        # logged so operators can watch the legacy count drop to zero
+        # once Argus canonicalizes upstream.
+        mac_range_prefix: str | None = None
+        mac_range_prefix_length: int | None = None
+        if pattern_type == "mac_range":
+            try:
+                mac_range_prefix, mac_range_prefix_length = parse_mac_range_pattern(
+                    raw_pattern
+                )
+            except ValueError as exc:
+                report.normalization_failed += 1
+                logger.warning(
+                    "row argus_record_id=%r: rejected for normalization: %s",
+                    argus_id,
+                    exc,
+                )
+                return None
+            pattern = canonicalize_mac_range_pattern(
+                mac_range_prefix, mac_range_prefix_length
+            )
+            if "/" not in raw_pattern:
+                logger.info(
+                    "argus import: mac_range legacy bare-prefix %r "
+                    "canonicalized to %r argus_record_id=%s",
+                    raw_pattern,
+                    pattern,
+                    argus_id,
+                )
+        else:
+            try:
+                pattern = normalize_pattern(pattern_type, raw_pattern)
+            except ValueError as exc:
+                report.normalization_failed += 1
+                logger.warning(
+                    "row argus_record_id=%r: rejected for normalization: %s",
+                    argus_id,
+                    exc,
+                )
+                return None
+        description = _empty_to_none(row["description"])
+        new_metadata = _build_metadata_fields(row, confidence)
+
+        return _Candidate(
+            csv_index=csv_index,
+            argus_id=argus_id,
+            pattern=pattern,
+            pattern_type=pattern_type,
+            severity=severity,
+            confidence=confidence,
+            description=description,
+            new_metadata=new_metadata,
+            mac_range_prefix=mac_range_prefix,
+            mac_range_prefix_length=mac_range_prefix_length,
+        )
+    except Exception as exc:
+        report.errors += 1
+        report.error_log.append(
+            f"row argus_record_id={row.get('argus_record_id', '?')!r}: {exc}"
+        )
+        return None
+
+
+def _select_winners(
+    candidates: list[_Candidate], report: ImportReport
+) -> list[_Candidate]:
+    """Two-phase pre-pass selection: highest-severity-wins per
+    ``argus_record_id`` (Bucket B), then per canonical
+    ``(pattern, pattern_type)`` (Bucket A).
+
+    Tiebreak chain (each tier breaks ties from the previous):
+    1. highest severity (``_severity_rank``: high > med > low)
+    2. highest confidence
+    3. earliest CSV order (lowest ``csv_index``)
+
+    Returns survivors in original CSV order so the downstream
+    DB-write loop sees rows in the order Argus emitted them.
+    Increments ``report.dropped_in_import_dup`` for Phase A losers
+    and ``report.dropped_peer_collision`` for Phase B losers. Both
+    counters represent the same conceptual buckets as the pre-hotfix
+    in-loop gates; only the WINNER selection criterion changes — the
+    TOTAL count of losers per CSV is unchanged.
+
+    The pre-pass operates only on candidates that passed
+    ``_classify_row`` — those already-failed rows incremented their
+    own ``dropped_*`` counter and never reach this stage.
+    """
+    if not candidates:
+        return []
+
+    def _tiebreak_key(c: _Candidate) -> tuple[int, int, int]:
+        # max() picks the candidate with the highest tuple. Negate
+        # csv_index so that, within ties on severity AND confidence,
+        # the EARLIER row (lower csv_index) wins.
+        return (_severity_rank(c.severity), c.confidence, -c.csv_index)
+
+    # Phase A — group by argus_record_id; highest-sev-wins per group.
+    by_argus: dict[str, list[_Candidate]] = {}
+    for c in candidates:
+        by_argus.setdefault(c.argus_id, []).append(c)
+    phase_a_winner_indices: set[int] = set()
+    for argus_id, members in by_argus.items():
+        if len(members) == 1:
+            phase_a_winner_indices.add(members[0].csv_index)
+            continue
+        winner = max(members, key=_tiebreak_key)
+        phase_a_winner_indices.add(winner.csv_index)
+        for m in members:
+            if m.csv_index != winner.csv_index:
+                report.dropped_in_import_dup += 1
+                logger.info(
+                    "argus import: skipping row argus_record_id=%s "
+                    "reason=in_import_dup (lost tiebreak to "
+                    "csv_index=%d sev=%s conf=%d)",
+                    m.argus_id,
+                    winner.csv_index,
+                    winner.severity,
+                    winner.confidence,
+                )
+
+    phase_a_survivors = [c for c in candidates if c.csv_index in phase_a_winner_indices]
+
+    # Phase B — group by canonical (pattern, pattern_type);
+    # highest-sev-wins per natural-key.
+    by_natural_key: dict[tuple[str, str], list[_Candidate]] = {}
+    for c in phase_a_survivors:
+        by_natural_key.setdefault((c.pattern, c.pattern_type), []).append(c)
+    phase_b_winner_indices: set[int] = set()
+    for key, members in by_natural_key.items():
+        if len(members) == 1:
+            phase_b_winner_indices.add(members[0].csv_index)
+            continue
+        winner = max(members, key=_tiebreak_key)
+        phase_b_winner_indices.add(winner.csv_index)
+        pattern, pattern_type = key
+        for m in members:
+            if m.csv_index != winner.csv_index:
+                report.dropped_peer_collision += 1
+                logger.info(
+                    "argus import: skipping row argus_record_id=%s "
+                    "reason=peer_collision pattern=%r pattern_type=%s "
+                    "(lost tiebreak to argus_record_id=%s sev=%s "
+                    "conf=%d)",
+                    m.argus_id,
+                    pattern,
+                    pattern_type,
+                    winner.argus_id,
+                    winner.severity,
+                    winner.confidence,
+                )
+
+    return [c for c in phase_a_survivors if c.csv_index in phase_b_winner_indices]
+
+
 def import_csv(
     db: Database,
     csv_path: str,
@@ -518,164 +829,40 @@ def import_csv(
     meta = parse_argus_meta(csv_path)
     report = ImportReport(total_rows=len(rows), dry_run=dry_run)
 
-    # Within-import dedup tracking. Argus occasionally repeats the same
-    # ``argus_record_id`` within a single CSV (the primary_registry /
-    # crowdsourced OUI overlay is the dominant shape). First occurrence
-    # wins; subsequent ones are gated below to keep the existing-md path
-    # from seeing a moving target and counting rewrites as updates.
-    # Fresh per ``import_csv`` call — not persisted across calls.
-    seen_argus_ids: set[str] = set()
+    # Pass 1 — per-row validation + canonicalization. Rows that fail
+    # any gate increment their respective ``dropped_*`` /
+    # ``normalization_failed`` / ``errors`` counter inside
+    # ``_classify_row`` and return None; everything that survives
+    # lands in ``candidates`` as a ``_Candidate`` ready for the
+    # pre-pass.
+    candidates: list[_Candidate] = []
+    for csv_index, row in enumerate(rows):
+        c = _classify_row(csv_index, row, overrides, min_confidence, report)
+        if c is not None:
+            candidates.append(c)
 
-    for row in rows:
+    # Pass 2 — pre-pass selection. Two phases of highest-severity-wins
+    # tiebreak: first by ``argus_record_id`` (Bucket B), then by
+    # canonical natural-key ``(pattern, pattern_type)`` (Bucket A).
+    # Losers increment ``dropped_in_import_dup`` and
+    # ``dropped_peer_collision`` respectively. See ``_select_winners``
+    # for the tiebreak chain and the per-bucket policy rationale; the
+    # in-loop set-based gate and the cross-row ``get_metadata_by_
+    # watchlist_id`` check the v0.6.0 rework originally used were
+    # implicit first-wins. The pre-pass replaces both at intra-CSV
+    # scope with an explicit, principled selection so operator-
+    # visible severity is not silently downgraded by Argus emission
+    # order (the Flock alpr/gunshot_detect case).
+    survivors = _select_winners(candidates, report)
+
+    # Pass 3 — DB writes, one per survivor. The within-import-dup and
+    # peer-collide gates are GONE from this loop — the pre-pass
+    # already filtered candidates down to the per-CSV winners; the
+    # main loop only adjudicates between "first import" and "re-import
+    # of same content" via the existing argus_record_id DB lookup.
+    for c in survivors:
         try:
-            argus_id = row["argus_record_id"]
-            if not argus_id:
-                raise ValueError("row is missing argus_record_id")
-
-            # Argus may emit identifier_type in any case (e.g. BLE_SERVICE).
-            # Allowlist keys are lowercase; normalize before the lookup so
-            # uppercase rows aren't silently swallowed as dropped_unknown_type.
-            argus_type = (row["identifier_type"] or "").strip().lower()
-            if argus_type not in IDENTIFIER_TYPE_MAP:
-                report.dropped_unknown_type += 1
-                logger.info(
-                    "argus import: skipping row argus_record_id=%s "
-                    "identifier_type=%r reason=%s",
-                    argus_id,
-                    row["identifier_type"],
-                    "unknown_identifier_type",
-                )
-                continue
-            pattern_type = IDENTIFIER_TYPE_MAP[argus_type]
-
-            scope = _empty_to_none(row["geographic_scope"])
-            if not _passes_geographic_filter(scope, overrides.geographic_filter):
-                report.dropped_geographic_filter += 1
-                continue
-
-            conf_str = row["confidence"]
-            if conf_str is None or conf_str == "":
-                raise ValueError("confidence is required")
-            try:
-                confidence = int(conf_str)
-            except ValueError as exc:
-                raise ValueError(f"confidence must be int, got {conf_str!r}") from exc
-
-            # Hard skip for --min-confidence. Distinct from
-            # overrides.confidence_downgrade_threshold, which downgrades
-            # severity but still imports the row.
-            if min_confidence is not None and confidence < min_confidence:
-                report.dropped_low_confidence += 1
-                logger.info(
-                    "row argus_record_id=%r: skipped "
-                    "(confidence=%d below --min-confidence=%d)",
-                    argus_id,
-                    confidence,
-                    min_confidence,
-                )
-                continue
-
-            severity = resolve_severity(
-                manufacturer=_empty_to_none(row["manufacturer"]),
-                device_category=_empty_to_none(row["device_category"]),
-                confidence=confidence,
-                overrides=overrides,
-            )
-            if severity == "drop":
-                report.dropped_severity_drop += 1
-                continue
-
-            raw_pattern = row["identifier"]
-            if not raw_pattern:
-                raise ValueError("identifier is empty")
-            # Argus-side data quality check for ssid_exact: a literal `*`
-            # in an exact-typed identifier almost certainly indicates
-            # upstream miscategorization (the row was meant as
-            # ssid_pattern). Import anyway — the literal `*` never
-            # matches a real WiFi observation, so the row sits dormant
-            # until Argus fixes the typing — and warn loudly so the
-            # operator (and the next Argus refresh diff) sees it.
-            if argus_type == "ssid_exact" and "*" in raw_pattern:
-                report.ssid_exact_wildcard_warn += 1
-                logger.warning(
-                    "argus import: ssid_exact identifier %r contains '*' — "
-                    "likely Argus-side miscategorization (should be "
-                    "ssid_pattern). Importing as ssid anyway; the literal "
-                    "'*' will never match real WiFi observations. "
-                    "argus_record_id=%s",
-                    raw_pattern,
-                    argus_id,
-                )
-            # Normalize at write time (L-RULES-1). The poller normalizes its
-            # observation MAC/UUID before the equality lookup against the
-            # watchlist table; a row stored in non-canonical form silently
-            # never matches and the alert loses its Argus metadata link.
-            #
-            # mac_range parses through a structured (prefix, length) pair
-            # rather than a single canonical string, so it takes a
-            # distinct path: parse_mac_range_pattern() validates and
-            # extracts the nibble metadata, and canonicalize_mac_range_pattern()
-            # re-renders to CIDR form for the watchlist.pattern column.
-            # Legacy bare-prefix shapes ('aa:bb:cc:d', 'aa:bb:cc:dd:e')
-            # are accepted dual-shape per the Argus-engineer handoff and
-            # logged so operators can watch the legacy count drop to zero
-            # once Argus canonicalizes upstream.
-            mac_range_prefix: str | None = None
-            mac_range_prefix_length: int | None = None
-            if pattern_type == "mac_range":
-                try:
-                    mac_range_prefix, mac_range_prefix_length = parse_mac_range_pattern(
-                        raw_pattern
-                    )
-                except ValueError as exc:
-                    report.normalization_failed += 1
-                    logger.warning(
-                        "row argus_record_id=%r: rejected for normalization: %s",
-                        argus_id,
-                        exc,
-                    )
-                    continue
-                pattern = canonicalize_mac_range_pattern(
-                    mac_range_prefix, mac_range_prefix_length
-                )
-                if "/" not in raw_pattern:
-                    logger.info(
-                        "argus import: mac_range legacy bare-prefix %r "
-                        "canonicalized to %r argus_record_id=%s",
-                        raw_pattern,
-                        pattern,
-                        argus_id,
-                    )
-            else:
-                try:
-                    pattern = normalize_pattern(pattern_type, raw_pattern)
-                except ValueError as exc:
-                    report.normalization_failed += 1
-                    logger.warning(
-                        "row argus_record_id=%r: rejected for normalization: %s",
-                        argus_id,
-                        exc,
-                    )
-                    continue
-            description = _empty_to_none(row["description"])
-            new_metadata = _build_metadata_fields(row, confidence)
-
-            # Within-import dup gate. Fires AFTER the validation gates
-            # (so a first occurrence with a parse failure doesn't lock
-            # out a valid second occurrence) and BEFORE the argus_id DB
-            # lookup (so the existing-md path doesn't see the same id
-            # twice in one run and report rewrites as updates).
-            if argus_id in seen_argus_ids:
-                report.dropped_in_import_dup += 1
-                logger.info(
-                    "argus import: skipping row argus_record_id=%s "
-                    "reason=in_import_dup (already seen in this CSV)",
-                    argus_id,
-                )
-                continue
-            seen_argus_ids.add(argus_id)
-
-            existing_md = db.get_metadata_by_argus_record_id(argus_id)
+            existing_md = db.get_metadata_by_argus_record_id(c.argus_id)
             existing_wl = (
                 _watchlist_row_for(db, existing_md["watchlist_id"])
                 if existing_md is not None
@@ -683,27 +870,16 @@ def import_csv(
             )
 
             wl_changed = existing_wl is not None and (
-                existing_wl["severity"] != severity
-                or (existing_wl["description"] or None) != (description or None)
+                existing_wl["severity"] != c.severity
+                or (existing_wl["description"] or None) != (c.description or None)
             )
             md_changed = existing_md is None or any(
-                existing_md.get(k) != v for k, v in new_metadata.items()
+                existing_md.get(k) != v for k, v in c.new_metadata.items()
             )
 
             if dry_run:
                 if existing_md is None:
-                    # Mirror the real-import peer-collide gate so the
-                    # dry-run preview agrees with the actual write
-                    # behavior on bundled-CSV-shape peer rows.
-                    wl_row = _watchlist_row_by_natural_key(
-                        db, pattern, pattern_type
-                    )
-                    if wl_row is not None and db.get_metadata_by_watchlist_id(
-                        int(wl_row["id"])
-                    ) is not None:
-                        report.dropped_peer_collision += 1
-                    else:
-                        report.imported_new += 1
+                    report.imported_new += 1
                 elif wl_changed or md_changed:
                     report.updated += 1
                 else:
@@ -711,45 +887,20 @@ def import_csv(
                 continue
 
             if existing_md is None:
-                # Argus side has no record: insert (or attach to an existing
-                # YAML-seeded watchlist row) and create the metadata side.
-                wl_row = _watchlist_row_by_natural_key(db, pattern, pattern_type)
+                # Argus side has no record for this argus_record_id:
+                # insert a new watchlist row, OR attach metadata to an
+                # existing YAML-seeded watchlist row that already
+                # matches the natural key.
+                wl_row = _watchlist_row_by_natural_key(db, c.pattern, c.pattern_type)
                 if wl_row is not None:
-                    # Peer-collide gate. The natural-key dedup on
-                    # ``watchlist`` collapsed this Argus row onto a
-                    # pre-existing watchlist row. If that watchlist
-                    # row ALREADY has a metadata side bound to a
-                    # different ``argus_record_id``, this row is a
-                    # peer-collision (e.g. mac_range CIDR vs legacy
-                    # bare-prefix, ble_manufacturer_id case variants)
-                    # — first one in wins, this one is dropped to
-                    # avoid the last-write-wins overwrite of
-                    # ``watchlist_metadata``. Seeded watchlist rows
-                    # without metadata yet fall through (existing_peer
-                    # is None) and attach normally.
-                    existing_peer = db.get_metadata_by_watchlist_id(
-                        int(wl_row["id"])
-                    )
-                    if existing_peer is not None:
-                        report.dropped_peer_collision += 1
-                        logger.info(
-                            "argus import: skipping row argus_record_id=%s "
-                            "reason=peer_collision pattern=%r pattern_type=%s "
-                            "already_bound_to=%s",
-                            argus_id,
-                            pattern,
-                            pattern_type,
-                            existing_peer.get("argus_record_id"),
-                        )
-                        continue
                     watchlist_id = int(wl_row["id"])
-                    if wl_row["severity"] != severity or (wl_row["description"] or None) != (
-                        description or None
+                    if wl_row["severity"] != c.severity or (wl_row["description"] or None) != (
+                        c.description or None
                     ):
                         with db._conn:
                             db._conn.execute(
                                 "UPDATE watchlist SET severity = ?, description = ? WHERE id = ?",
-                                (severity, description, watchlist_id),
+                                (c.severity, c.description, watchlist_id),
                             )
                 else:
                     with db._conn:
@@ -759,16 +910,16 @@ def import_csv(
                             "mac_range_prefix, mac_range_prefix_length) "
                             "VALUES (?, ?, ?, ?, ?, ?)",
                             (
-                                pattern,
-                                pattern_type,
-                                severity,
-                                description,
-                                mac_range_prefix,
-                                mac_range_prefix_length,
+                                c.pattern,
+                                c.pattern_type,
+                                c.severity,
+                                c.description,
+                                c.mac_range_prefix,
+                                c.mac_range_prefix_length,
                             ),
                         )
                         watchlist_id = int(cur.lastrowid)
-                db.upsert_metadata(watchlist_id, new_metadata)
+                db.upsert_metadata(watchlist_id, c.new_metadata)
                 report.imported_new += 1
             else:
                 watchlist_id = int(existing_md["watchlist_id"])
@@ -776,10 +927,10 @@ def import_csv(
                     with db._conn:
                         db._conn.execute(
                             "UPDATE watchlist SET severity = ?, description = ? WHERE id = ?",
-                            (severity, description, watchlist_id),
+                            (c.severity, c.description, watchlist_id),
                         )
                 if md_changed:
-                    db.upsert_metadata(watchlist_id, new_metadata)
+                    db.upsert_metadata(watchlist_id, c.new_metadata)
                 if wl_changed or md_changed:
                     report.updated += 1
                 else:
@@ -787,7 +938,7 @@ def import_csv(
         except Exception as exc:
             report.errors += 1
             report.error_log.append(
-                f"row argus_record_id={row.get('argus_record_id', '?')!r}: {exc}"
+                f"row argus_record_id={c.argus_id!r}: {exc}"
             )
 
     if not dry_run:
