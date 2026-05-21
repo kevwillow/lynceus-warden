@@ -247,6 +247,15 @@ SEVERITY_OVERRIDES_TEMPLATE = """\
 #   #   unknown=low.
 #   imsi_catcher: high
 #   drone: low
+#   # automotive_telematics: med
+#   # # Forward-compat category from Argus §F.1. Argus v1.4.1 ships the
+#   # # `automotive_telematics` device_category enum value but with zero
+#   # # active rows; the Parrot Automotive arm and v1.4.2 cellular-IoT
+#   # # vendor backlog will populate the category later. Seating the
+#   # # hint at `med` now so operator severity is already tuned when
+#   # # the data lands. (Argus engineer's "medium" → Lynceus's "med"
+#   # # literal; `medium` is not in VALID_SEVERITIES and would silently
+#   # # disable the override.)
 
 # pattern_overrides:          # LAYER: RUNTIME — daemon restart applies live
 #   # Row-level severity remap keyed by argus_record_id (16-hex

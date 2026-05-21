@@ -10,6 +10,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`automotive_telematics` severity seed in the scaffolded
+  severity_overrides template.** Forward-compat hygiene per the
+  Argus engineer §F.1. Argus v1.4.1 extends the `device_category`
+  enum with `automotive_telematics` (mig-0026 CP32 §1) but ships
+  zero active rows at v1.4.1 — the Parrot Automotive arm and the
+  v1.4.2 cellular-IoT vendor backlog will populate the category
+  later. The `SEVERITY_OVERRIDES_TEMPLATE` scaffolded by
+  `lynceus-setup` now seats a commented `automotive_telematics: med`
+  example inside the `device_category_severity:` block so operators
+  see the category in context when the data lands. The override is
+  commented-by-default and additive — no runtime change, no
+  template overwrite of operator-edited files. (Argus engineer's
+  "medium" recommendation transposed to Lynceus's `med` literal;
+  `medium` is not in `VALID_SEVERITIES` and would silently disable
+  the override.)
 - **`argus_schema_version_accept_list` ingress check.** Defensive
   hygiene per the Argus engineer §F.2 for the v1.4.1 consumer-prep
   window. The importer now reads the `# meta: schema_version=N`

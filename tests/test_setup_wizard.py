@@ -839,6 +839,10 @@ def test_severity_overrides_created_when_missing(tmp_path):
     assert "pattern_overrides" in text
     assert "geographic_filter" in text
     assert "argus_schema_version_accept_list" in text
+    # Forward-compat category seed (Argus §F.1) — zero active rows in
+    # v1.4.1, but the commented example should appear in the scaffold
+    # so operators see it in context when the data lands.
+    assert "automotive_telematics" in text
 
 
 def test_severity_overrides_not_overwritten_when_present(tmp_path):
