@@ -838,6 +838,7 @@ def test_severity_overrides_created_when_missing(tmp_path):
     assert "suppress_vendors" in text
     assert "pattern_overrides" in text
     assert "geographic_filter" in text
+    assert "argus_schema_version_accept_list" in text
 
 
 def test_severity_overrides_not_overwritten_when_present(tmp_path):

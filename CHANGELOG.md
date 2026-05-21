@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-21
+
+### Added
+
+- **`argus_schema_version_accept_list` ingress check.** Defensive
+  hygiene per the Argus engineer §F.2 for the v1.4.1 consumer-prep
+  window. The importer now reads the `# meta: schema_version=N`
+  value from incoming Argus CSV exports and matches it against an
+  operator-tunable accept-list (default `["25", "26"]` — covers the
+  pre-Phase-1 regen anchor at `"25"` and the v1.4.1 cutover at
+  `"26"`). Values outside the list trip a WARNING and the
+  configured accept-list is surfaced, plus a hint at the override
+  key for tuning; the import proceeds regardless — warn-don't-abort
+  posture preserves backward compat with operators on older Argus
+  exports. The accept-list lives in `severity_overrides.yaml`
+  alongside the other import-time tuning keys (`vendor_overrides`,
+  `geographic_filter`, `confidence_downgrade_threshold`); set it to
+  `null` or `[]` to disable the check entirely. Older exports
+  whose `# meta:` line carries no `schema_version` key (rc2-era
+  `# meta: argus_export v3 (CP11)` shape) pass silently — warning-
+  on-absent would be a noisy regression for archived-export
+  imports. Surfaces via 10 new tests in `test_import_argus.py`
+  (acceptance, custom accept-list, missing key, opt-out shapes,
+  loader-side default / null / list coercion).
+
 ## [0.6.0] - 2026-05-21
 
 Release status: This release has not yet been validated against
