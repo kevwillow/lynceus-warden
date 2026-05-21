@@ -304,6 +304,19 @@ SEVERITY_OVERRIDES_TEMPLATE = """\
 # confidence_downgrade_threshold: 70   # LAYER: IMPORT-TIME — re-import to apply
 # # Argus records below this confidence (0-100) get their severity downgraded
 # # one notch (high -> med, med -> low) at import. Set to 0 to disable.
+
+# argus_schema_version_accept_list:   # LAYER: IMPORT-TIME — re-import to apply
+#   # Operator-tunable accept-list for the Argus CSV's
+#   # `# meta: schema_version=N` ingress value. Values outside this
+#   # list trip a WARNING-without-abort during import; values in the
+#   # list are accepted silently. Defaults to ["25", "26"] (the
+#   # v1.4.1 transition window — pre-Phase-1 regen anchor exports
+#   # were tagged "25", v1.4.1 ships at "26"). Set to null or [] to
+#   # disable the check entirely; older Argus exports without a
+#   # schema_version key always pass silently (no regression for
+#   # archived-export imports).
+#   - "25"
+#   - "26"
 """
 
 

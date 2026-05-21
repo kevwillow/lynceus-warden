@@ -123,7 +123,7 @@ Configuration files live at XDG-aware paths:
 - **`--user` install:** `~/.config/lynceus/lynceus.yaml` (or `$XDG_CONFIG_HOME/lynceus/lynceus.yaml`).
 - **`--system` install:** `/etc/lynceus/lynceus.yaml`.
 
-Operator-local severity tuning lives alongside the main config in `severity_overrides.yaml`. Vendor overrides, device-category severity bumps, and a confidence-downgrade threshold all go there; the file is read by `lynceus-import-argus --override-file` so changes propagate at next import.
+Operator-local severity tuning lives alongside the main config in `severity_overrides.yaml`. Vendor overrides, device-category severity bumps, a confidence-downgrade threshold, and the Argus CSV `# meta: schema_version` accept-list (`argus_schema_version_accept_list`, default `["25", "26"]`) all go there; the file is read by `lynceus-import-argus --override-file` so changes propagate at next import.
 
 To check current configuration without editing files, navigate to `/settings` in the web UI. Capture state, watchlist data status, and system info are visible there. The page is read-only — to change settings, run `lynceus-setup --reconfigure`.
 
