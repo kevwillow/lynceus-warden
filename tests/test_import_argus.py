@@ -170,13 +170,13 @@ def test_ssid_exact_identifier_type_imports_as_ssid(tmp_path, db):
 def test_ssid_exact_argus_sample_rows_all_land_as_ssid(tmp_path, db):
     """Mirrors the actual Argus export contents at the 2026-05-17 snapshot:
     5 ssid_exact rows (``Flock`` x2, ``Flock-230503`` x2, ``Flock-*``).
-    The two pairs of duplicates differ in argus_record_id only, so the
-    natural-key dedup at write time produces 3 unique watchlist rows.
-    ``upsert_metadata`` is keyed by ``watchlist_id`` (last-write-wins),
-    so the duplicate pairs collapse to one metadata row each (3 total),
-    even though all 5 argus_record_ids are processed (report.imported_new
-    == 5). Asserts all four counts so a regression to the dedup, alias,
-    or upsert paths is loud."""
+    The two pairs of duplicates differ in argus_record_id only and
+    collide on the same (pattern, pattern_type) natural key. First
+    occurrence per pattern wins; the second peer in each pair lands
+    in ``dropped_peer_collision`` (the per-Argus-record dedup rework,
+    v0.6.0). 3 unique watchlist rows + 3 metadata rows; 3 imported_new
+    + 2 dropped_peer_collision. Asserts all counts so a regression to
+    the dedup, alias, or peer-collide gate is loud."""
     samples = [
         ("s-flock-1", "Flock"),
         ("s-flock-2", "Flock"),
@@ -207,7 +207,8 @@ def test_ssid_exact_argus_sample_rows_all_land_as_ssid(tmp_path, db):
 
     assert _wl_count(db) == 3
     assert _md_count(db) == 3
-    assert report.imported_new == 5
+    assert report.imported_new == 3
+    assert report.dropped_peer_collision == 2
 
 
 def test_ssid_exact_wildcard_logs_warning_and_imports_anyway(tmp_path, db, caplog):
@@ -654,11 +655,11 @@ def test_ble_service_uuid_short_and_padded_dedup_via_natural_key(tmp_path, db):
     rendering of the same SIG-assigned 16-bit UUID) both canonicalize
     to ``0000fd44-...-00805f9b34fb``. The importer's natural-key
     lookup (pattern, pattern_type) collapses them onto a single
-    watchlist row; the metadata side is keyed by watchlist_id and so
-    also collapses to one row (the second Argus row's metadata
-    overwrites the first via watchlist_id upsert). Both rows still
-    increment ``imported_new`` — the report counts CSV rows admitted,
-    not distinct rows persisted."""
+    watchlist row; the peer-collide gate (v0.6.0) drops the second
+    Argus row to avoid the prior last-write-wins overwrite of the
+    metadata. First Argus row imports (imported_new=1); second is
+    counted in ``dropped_peer_collision``. Single watchlist row +
+    single metadata row, bound to the first argus_record_id."""
     path = _write_csv(
         tmp_path / "wl.csv",
         [
@@ -675,9 +676,10 @@ def test_ble_service_uuid_short_and_padded_dedup_via_natural_key(tmp_path, db):
         ],
     )
     report = import_csv(db, path, OverrideConfig())
-    assert report.imported_new == 2  # both rows counted as admitted
+    assert report.imported_new == 1  # first row admitted
+    assert report.dropped_peer_collision == 1  # second row gated
     assert report.dropped_unknown_type == 0
-    assert _wl_count(db) == 1  # but only one watchlist row (dedup)
+    assert _wl_count(db) == 1  # one watchlist row (dedup)
 
 
 def test_ble_manufacturer_id_malformed_lands_in_normalization_failed(tmp_path, db):
@@ -1283,6 +1285,12 @@ def test_geographic_filter_empty_scope_dropped_when_filter_set(tmp_path, db):
 
 
 def test_geographic_filter_unset_imports_all_scopes(tmp_path, db):
+    """Three rows all share the default identifier (same canonical
+    pattern); without geographic filtering they all pass that gate,
+    but the peer-collide gate (v0.6.0) drops the second and third
+    onto the same watchlist row. ``dropped_geographic_filter`` remains
+    zero (the geographic gate didn't fire); the peer-collide gate
+    accounts for the dedup of identical-pattern rows."""
     path = _write_csv(
         tmp_path / "wl.csv",
         [
@@ -1292,7 +1300,8 @@ def test_geographic_filter_unset_imports_all_scopes(tmp_path, db):
         ],
     )
     report = import_csv(db, path, OverrideConfig())
-    assert report.imported_new == 3
+    assert report.imported_new == 1
+    assert report.dropped_peer_collision == 2
     assert report.dropped_geographic_filter == 0
 
 
@@ -2461,6 +2470,8 @@ def test_cross_repo_live_argus_csv_imports_without_errors(tmp_path, db):
         + report.dropped_geographic_filter
         + report.dropped_unknown_type
         + report.dropped_low_confidence
+        + report.dropped_peer_collision
+        + report.dropped_in_import_dup
         + report.normalization_failed
         + report.errors
     )

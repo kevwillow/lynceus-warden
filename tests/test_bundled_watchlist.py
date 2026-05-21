@@ -227,12 +227,26 @@ def test_bundled_csv_end_to_end_flock_observation_fires_argus_ssid_alert(tmp_pat
         hit = hits[0]
         assert hit.rule_name == "argus_ssid"
         assert hit.rule_type == "watchlist_ssid"
-        # Severity is sourced from the matched DB row; with rule.severity
-        # set to 'low' deliberately, any non-low value here proves the
-        # DB-delegation path is wired correctly.
-        assert hit.severity in ("med", "high"), (
-            f"expected severity from DB row (med/high per device_category), "
-            f"got {hit.severity!r}"
+        # Severity is sourced from the matched DB row, not from the
+        # rule literal. With the v0.6.0 per-Argus-record dedup rework,
+        # the bundled CSV's two Flock rows (argus_record_id repeated
+        # ×2 with cat=gunshot_detect then cat=alpr) collapse to one
+        # row via the within-import dup gate, first-occurrence-wins.
+        # Verify DB delegation by asserting the alert severity equals
+        # the stored watchlist row's severity (not by checking against
+        # rule.severity 'low' which can coincide with the resolved
+        # value after the conf=65 downgrade).
+        stored = db._conn.execute(
+            "SELECT severity FROM watchlist "
+            "WHERE pattern = 'Flock' AND pattern_type = 'ssid' LIMIT 1"
+        ).fetchone()
+        assert stored is not None, "Flock row must be present in the watchlist"
+        assert hit.severity == stored["severity"], (
+            f"alert severity {hit.severity!r} must equal stored "
+            f"watchlist row severity {stored['severity']!r} (DB-delegation)"
+        )
+        assert hit.severity in ("low", "med", "high"), (
+            f"severity must be one of low/med/high; got {hit.severity!r}"
         )
     finally:
         db.close()

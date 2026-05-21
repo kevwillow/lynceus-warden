@@ -1882,6 +1882,27 @@ class Database:
                     values,
                 )
                 return int(cur.lastrowid)
+            # Content-equality short-circuit: fetch the stored row's
+            # values for exactly the requested field set and skip the
+            # UPDATE when every requested field already matches. Excludes
+            # ``id`` / ``created_at`` / ``updated_at`` by construction
+            # — they are never in the caller-provided ``fields`` dict
+            # (rejected at the _METADATA_ALLOWED_FIELDS whitelist check
+            # above). This makes the function idempotent against an
+            # unchanged row — no UPDATE fires, ``updated_at`` does not
+            # bump — as layered defense behind the import_argus
+            # peer-collide and within-import dup gates. ``fields.keys()``
+            # is whitelist-validated above, so direct interpolation into
+            # the SELECT column list is safe.
+            select_cols = ", ".join(fields.keys())
+            stored = self._conn.execute(
+                f"SELECT {select_cols} FROM watchlist_metadata WHERE id = ?",
+                (existing["id"],),
+            ).fetchone()
+            if stored is not None and all(
+                stored[k] == v for k, v in fields.items()
+            ):
+                return int(existing["id"])
             set_clause = ", ".join(f"{k} = ?" for k in fields)
             values = [*fields.values(), now_ts, watchlist_id]
             self._conn.execute(
