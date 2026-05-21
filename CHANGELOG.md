@@ -128,21 +128,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   appear in the importer report and the operator-facing stdout
   summary. The pre-rework `false-new` / `false-updated` counter
   inflation is resolved.
-  - Two new gates in `import_csv` (`src/lynceus/cli/import_argus.py`):
-    - **Peer-collide gate** — after the natural-key lookup
-      (`_watchlist_row_by_natural_key`) hits an existing watchlist
-      row, if that row already has a metadata side bound to a
-      different `argus_record_id`, the current row is gated
-      (`dropped_peer_collision`). First-occurrence wins. The
-      dominant Bucket A shapes are `mac_range` legacy bare-prefix
-      vs CIDR (8/15 groups), `ble_manufacturer_id` case/leading-
-      zero variants (6/15), and `ble_uuid` short-form (1/15).
-    - **Within-import dup gate** — a `seen_argus_ids` set local to
-      each `import_csv` call drops the second-and-beyond occurrence
-      of any `argus_record_id` within one CSV
-      (`dropped_in_import_dup`). First-occurrence wins. Dominant
-      Bucket B shape is Argus's `primary_registry` vs
-      `crowdsourced` OUI overlay (drone vendors).
+  - Two new gates in `import_csv` (`src/lynceus/cli/import_argus.py`),
+    implemented as a two-phase pre-pass that runs after the
+    per-row validation gates (unknown_type, geographic_filter,
+    severity_drop, etc.) and before the main DB-write loop:
+    - **Peer-collide gate (Phase B)** — admitted candidates are
+      grouped by canonical `(pattern, pattern_type)`. Groups with
+      more than one member adjudicate via the highest-severity-
+      wins tiebreak (see below); the surviving winner reaches the
+      DB-write loop, losers increment `dropped_peer_collision`.
+      The dominant Bucket A shapes are `mac_range` legacy bare-
+      prefix vs CIDR (8/15 groups), `ble_manufacturer_id`
+      case/leading-zero variants (6/15), and `ble_uuid` short-form
+      (1/15).
+    - **Within-import dup gate (Phase A)** — admitted candidates
+      are first grouped by `argus_record_id`. Groups with more
+      than one member adjudicate via the same tiebreak chain;
+      losers increment `dropped_in_import_dup`. Phase A runs
+      before Phase B so the natural-key adjudication sees only
+      one survivor per `argus_record_id`. Dominant Bucket B shape
+      is Argus's `primary_registry` vs `crowdsourced` OUI overlay
+      (drone vendors).
+  - **Tiebreak chain for both gates** — when two or more
+    candidates collide within a group, the winner is selected by
+    a three-tier deterministic chain (each tier breaks ties from
+    the previous):
+    1. highest severity rank (`high` > `med` > `low` via
+       `_SEVERITY_RANK`)
+    2. highest confidence
+    3. earliest CSV index (first-in-CSV-order)
+    This restores operator-protective behavior: an early-in-CSV
+    `low`-severity peer no longer silently downgrades the alert
+    by winning over a later high-severity peer. The motivating
+    case was the bundled CSV's Flock dup pair (argus_record_id
+    `69248a5dad0c2eab` ×2, `cat=gunshot_detect` first then
+    `cat=alpr`, both conf=65 → med vs high pre-downgrade): an
+    implicit first-wins selection landed the gunshot_detect row
+    at severity `low`; highest-severity-wins lands the alpr row
+    at severity `med`. Audit of the bundled snapshot found 5 of
+    10 Bucket B dup sets carry severity drift between members
+    (DJI primary_registry vs crowdsourced for `48:1c:b9`,
+    `60:60:1f`, `34:d2:62`; Flock-Safety alpr vs gunshot_detect
+    for `Flock` and `Flock-230503`); 0 of 15 Bucket A groups
+    have severity drift in the current snapshot, so the
+    second-phase tiebreak is a no-op there today but the policy
+    is in place for future snapshots.
   - **Inner content-equality short-circuit in `upsert_metadata`**
     (`src/lynceus/db.py`) — layered defense behind the import-side
     gates. The UPDATE branch now fetches the stored row's fields
