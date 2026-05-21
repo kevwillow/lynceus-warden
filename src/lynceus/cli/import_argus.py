@@ -92,6 +92,19 @@ VALID_SEVERITIES = ("high", "med", "low")
 _SEVERITY_RANK: dict[str, int] = {"high": 3, "med": 2, "low": 1}
 DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD = 70
 
+# Accept-list for the Argus CSV's `# meta: schema_version=N` ingress
+# value. The Argus engineer publishes a counter that increments with
+# each Argus-side migration; v1.4.1 ships at 26 (mig-0026), but the
+# pre-Phase-1 regen anchor exports were still tagged "25". Lynceus
+# accepts both during the transition window; an operator may narrow
+# or widen the list via severity_overrides.yaml's
+# argus_schema_version_accept_list key, or disable the check entirely
+# by setting it to null / []. Unknown values WARN-don't-abort —
+# defensive posture preserves backward compat with older exports
+# (which carry `schema_version` keys outside this list, or no
+# `schema_version` key at all).
+DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST: tuple[str, ...] = ("25", "26")
+
 # GitHub-fetch defaults for `--from-github`. Argus publishes its
 # canonical CSV at exports/argus_export.csv on the kevwillow/argus-db
 # repository; the path is fixed by the Argus side of the contract.
@@ -125,6 +138,13 @@ class OverrideConfig:
     device_category_severity: dict[str, str] = field(default_factory=dict)
     geographic_filter: list[str] = field(default_factory=list)
     confidence_downgrade_threshold: int = DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD
+    # None or empty list disables the ingress check; any other list
+    # gates the `# meta: schema_version=N` value the importer accepts
+    # without WARNING. The check is warn-don't-abort regardless —
+    # operators on older Argus exports must not regress.
+    argus_schema_version_accept_list: list[str] | None = field(
+        default_factory=lambda: list(DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST)
+    )
 
 
 def load_override_config(path: str | None) -> OverrideConfig:
@@ -159,6 +179,23 @@ def load_override_config(path: str | None) -> OverrideConfig:
             f"cannot read override file {path}: {exc}. "
             f"Check filesystem permissions."
         ) from exc
+    # argus_schema_version_accept_list: operator-tunable. Three valid
+    # shapes in YAML:
+    #   - key absent          → built-in default ("25", "26")
+    #   - explicit null / []  → check disabled (warn-suppress)
+    #   - explicit list       → use as-is, coerced to list[str]
+    # Distinguish absent vs explicit-None via the sentinel
+    # ``_MISSING`` since ``raw.get("argus_schema_version_accept_list")``
+    # returns None for both cases.
+    _MISSING = object()
+    raw_accept = raw.get("argus_schema_version_accept_list", _MISSING)
+    accept_list: list[str] | None
+    if raw_accept is _MISSING:
+        accept_list = list(DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST)
+    elif raw_accept is None:
+        accept_list = None
+    else:
+        accept_list = [str(v) for v in raw_accept]
     return OverrideConfig(
         vendor_overrides=dict(raw.get("vendor_overrides") or {}),
         device_category_severity=dict(raw.get("device_category_severity") or {}),
@@ -166,6 +203,7 @@ def load_override_config(path: str | None) -> OverrideConfig:
         confidence_downgrade_threshold=int(
             raw.get("confidence_downgrade_threshold", DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD)
         ),
+        argus_schema_version_accept_list=accept_list,
     )
 
 
@@ -432,6 +470,43 @@ def parse_argus_meta(path: str) -> dict[str, str | int | None]:
             except ValueError:
                 pass
     return out
+
+
+def _check_argus_schema_version(
+    schema_version: object,
+    overrides: OverrideConfig,
+) -> None:
+    """Warn on unknown `# meta: schema_version=N` values; never abort.
+
+    Defensive ingress hygiene per the Argus engineer §F.2 — the
+    consumer accepts both "25" (pre-Phase-1 regen anchor) and "26"
+    (v1.4.1 cutover) during the transition window, with the accept-
+    list operator-tunable via severity_overrides.yaml. Behavior:
+
+      - accept_list is None / empty list: skip the check (operator
+        opt-out). No log.
+      - schema_version absent or None: skip silently. Older exports
+        with `# meta: argus_export v3 (CP11)` shape have no
+        schema_version key; warning here would be noisy regress for
+        archived-export imports.
+      - present and in accept_list: silent acceptance.
+      - present and NOT in accept_list: WARN-don't-abort, surface
+        the configured accept-list and the override key for tuning.
+    """
+    accept_list = overrides.argus_schema_version_accept_list
+    if not accept_list:
+        return
+    if schema_version is None or schema_version == "":
+        return
+    if str(schema_version) in accept_list:
+        return
+    logger.warning(
+        "argus import: unknown # meta: schema_version=%r (accept-list: %s). "
+        "Importing anyway; tune argus_schema_version_accept_list in "
+        "severity_overrides.yaml to silence.",
+        schema_version,
+        accept_list,
+    )
 
 
 def parse_argus_csv(path: str) -> list[dict[str, str]]:
@@ -827,6 +902,7 @@ def import_csv(
     """
     rows = parse_argus_csv(csv_path)
     meta = parse_argus_meta(csv_path)
+    _check_argus_schema_version(meta.get("schema_version"), overrides)
     report = ImportReport(total_rows=len(rows), dry_run=dry_run)
 
     # Pass 1 — per-row validation + canonicalization. Rows that fail
