@@ -311,13 +311,54 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
 
     from lynceus.cli.import_argus import (
         IDENTIFIER_TYPE_MAP,
+        _SEVERITY_RANK,
+        OverrideConfig as _OvCfg,
         parse_argus_csv,
+        resolve_severity,
     )
     from lynceus.patterns import (
         canonicalize_mac_range_pattern,
         normalize_pattern,
         parse_mac_range_pattern,
     )
+
+    def _resolved_sev(r: dict) -> str | None:
+        """Reproduce the importer's severity resolution for a CSV row
+        (default OverrideConfig) so the diag log can annotate winners
+        and losers per the highest-severity-wins tiebreak."""
+        try:
+            conf = int(r.get("confidence", "") or "0")
+        except ValueError:
+            return None
+        sev = resolve_severity(
+            manufacturer=r.get("manufacturer") or None,
+            device_category=r.get("device_category") or None,
+            confidence=conf,
+            overrides=_OvCfg(),
+        )
+        return sev if sev != "drop" else None
+
+    def _tiebreak_winner(members: list[dict], csv_indices: list[int]) -> int:
+        """Return the csv_index of the highest-severity-wins winner
+        among ``members``. Tiebreak chain mirrors
+        ``import_argus._select_winners``: severity rank → confidence
+        → earliest csv_index. ``members[i]`` corresponds to
+        ``csv_indices[i]`` 1-to-1."""
+        best_idx = -1
+        best_key: tuple[int, int, int] | None = None
+        for m, ci in zip(members, csv_indices, strict=True):
+            sev = _resolved_sev(m)
+            if sev is None:
+                continue
+            try:
+                conf = int(m["confidence"])
+            except (KeyError, ValueError):
+                conf = 0
+            key = (_SEVERITY_RANK[sev], conf, -ci)
+            if best_key is None or key > best_key:
+                best_key = key
+                best_idx = ci
+        return best_idx
 
     bundle_path = str(
         importlib.resources.files("lynceus.data").joinpath("default_watchlist.csv")
@@ -331,8 +372,13 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
     argus_id_count = collections.Counter(r["argus_record_id"] for r in rows)
     dup_argus_ids = {k: v for k, v in argus_id_count.items() if v > 1}
 
-    pattern_groups: dict[tuple[str, str], list[tuple[str, dict]]] = {}
-    for raw in rows:
+    # Each pattern_groups entry carries (csv_index, argus_id, raw_row)
+    # tuples so the diag log can annotate winner/loser per
+    # ``_select_winners``'s tiebreak chain. Diag analysis is parallel
+    # to (not via) the importer's own counter path so the audit
+    # cross-checks the production code rather than re-asserting it.
+    pattern_groups: dict[tuple[str, str], list[tuple[int, str, dict]]] = {}
+    for csv_idx, raw in enumerate(rows):
         argus_type = (raw["identifier_type"] or "").strip().lower()
         if argus_type not in IDENTIFIER_TYPE_MAP:
             continue
@@ -346,12 +392,12 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
         except Exception:
             continue
         pattern_groups.setdefault((canon, ptype), []).append(
-            (raw["argus_record_id"], raw)
+            (csv_idx, raw["argus_record_id"], raw)
         )
     nk_collide_groups = {
         k: v
         for k, v in pattern_groups.items()
-        if len({a for a, _ in v}) > 1
+        if len({a for _, a, _ in v}) > 1
     }
 
     diag.fixture(
@@ -371,24 +417,60 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
         by_ptype[ptype] += 1
     diag.fixture(f"bucket A breakdown by pattern_type: {dict(by_ptype)}")
 
-    # Sample concrete groups
-    diag.fixture("--- bucket A representative groups (first 5) ---")
+    # Sample concrete groups with winner/loser annotation per the
+    # highest-severity-wins tiebreak chain.
+    diag.fixture("--- bucket A representative groups (first 5) with tiebreak winners ---")
     for (canon, ptype), members in list(nk_collide_groups.items())[:5]:
-        mfgs = sorted({m[1].get("manufacturer", "") for m in members})
-        idents = sorted({m[1].get("identifier", "") for m in members})
-        argus = [m[0] for m in members]
-        diag.fixture(
-            f"  pattern={canon!r} type={ptype} argus_ids={argus} "
-            f"mfgs={mfgs} raw_idents={idents}"
-        )
-    diag.fixture("--- bucket B representative sets (first 5) ---")
+        idxs = [m[0] for m in members]
+        rows_for_tb = [m[2] for m in members]
+        winner_idx = _tiebreak_winner(rows_for_tb, idxs)
+        diag.fixture(f"  pattern={canon!r} type={ptype}")
+        for csv_idx, argus_id, raw in members:
+            marker = "WINS" if csv_idx == winner_idx else "loses"
+            diag.fixture(
+                f"    [{marker}] csv_idx={csv_idx} argus={argus_id} "
+                f"ident={raw.get('identifier')!r} "
+                f"mfg={raw.get('manufacturer')!r} "
+                f"sev={_resolved_sev(raw)} conf={raw.get('confidence')}"
+            )
+    diag.fixture("--- bucket B representative sets (first 5) with tiebreak winners ---")
     for argus_id, count in list(dup_argus_ids.items())[:5]:
-        members = [r for r in rows if r["argus_record_id"] == argus_id]
-        mfgs = sorted({m.get("manufacturer", "") for m in members})
-        sources = sorted({m.get("source_type", "") for m in members})
-        diag.fixture(
-            f"  argus={argus_id} count={count} mfgs={mfgs} sources={sources}"
-        )
+        member_pairs = [(i, r) for i, r in enumerate(rows) if r["argus_record_id"] == argus_id]
+        idxs = [p[0] for p in member_pairs]
+        rows_for_tb = [p[1] for p in member_pairs]
+        winner_idx = _tiebreak_winner(rows_for_tb, idxs)
+        diag.fixture(f"  argus={argus_id} count={count}")
+        for csv_idx, raw in member_pairs:
+            marker = "WINS" if csv_idx == winner_idx else "loses"
+            diag.fixture(
+                f"    [{marker}] csv_idx={csv_idx} "
+                f"ident={raw.get('identifier')!r} "
+                f"cat={raw.get('device_category')!r} "
+                f"mfg={raw.get('manufacturer')!r} "
+                f"src={raw.get('source_type')!r} "
+                f"sev={_resolved_sev(raw)} conf={raw.get('confidence')}"
+            )
+
+    # Count severity-drift sets (where tiebreak actually re-binds vs
+    # passive first-wins). Useful as the audit summary number in the
+    # diag log even when winners happen to coincide with first-in-CSV.
+    bucket_a_drift = 0
+    for (canon, ptype), members in nk_collide_groups.items():
+        sevs = {_resolved_sev(m[2]) for m in members} - {None}
+        if len(sevs) > 1:
+            bucket_a_drift += 1
+    bucket_b_drift = 0
+    for argus_id in dup_argus_ids:
+        member_rows = [r for r in rows if r["argus_record_id"] == argus_id]
+        sevs = {_resolved_sev(r) for r in member_rows} - {None}
+        if len(sevs) > 1:
+            bucket_b_drift += 1
+    diag.fixture(
+        f"severity-drift groups (where tiebreak rebinds the winner "
+        f"away from first-in-CSV-order): bucket_A={bucket_a_drift} of "
+        f"{len(nk_collide_groups)}, bucket_B={bucket_b_drift} of "
+        f"{len(dup_argus_ids)}"
+    )
 
     # ---- Exercise: two-pass import against a fresh DB.
     db = Database(str(tmp_path / "bundled_diag.db"))

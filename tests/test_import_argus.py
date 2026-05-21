@@ -732,10 +732,13 @@ def test_peer_collide_gate_drops_second_natural_key_collision(tmp_path, db):
     """Two Argus rows with distinct argus_record_ids that canonicalize
     to the same (pattern, pattern_type) — the dominant shape behind
     Bucket A (mac_range legacy bare-prefix vs CIDR, ble_manufacturer_id
-    case variants, ble_uuid short-form). First row wins;
-    ``dropped_peer_collision`` increments; the second row's metadata
-    never reaches `upsert_metadata` so the first row's
-    ``watchlist_metadata`` row is not overwritten."""
+    case variants, ble_uuid short-form). With both rows at identical
+    severity and confidence (default `alpr` cat, conf=85), the
+    tiebreak chain falls through to "earliest CSV index wins":
+    ``pc-bare`` is the Phase B winner, ``pc-cidr`` lands in
+    ``dropped_peer_collision``; the loser's metadata never reaches
+    `upsert_metadata` so the winner's ``watchlist_metadata`` row is
+    not overwritten."""
     path = _write_csv(
         tmp_path / "wl.csv",
         [
@@ -761,7 +764,7 @@ def test_peer_collide_gate_drops_second_natural_key_collision(tmp_path, db):
     md = db._conn.execute(
         "SELECT argus_record_id, vendor FROM watchlist_metadata"
     ).fetchone()
-    assert md["argus_record_id"] == "pc-bare"  # first occurrence wins
+    assert md["argus_record_id"] == "pc-bare"  # earliest CSV index tiebreak
     assert md["vendor"] == "Jacobs"
 
 
@@ -799,9 +802,11 @@ def test_peer_collide_gate_attaches_to_seeded_watchlist_row_without_md(tmp_path,
 def test_in_import_dup_gate_drops_second_argus_record_id_occurrence(tmp_path, db):
     """The same argus_record_id appearing twice in one CSV with
     content drift — the dominant Bucket B shape (primary_registry vs
-    crowdsourced OUI overlay). First occurrence wins; second drops
-    to ``dropped_in_import_dup`` rather than rewriting the metadata
-    row via the existing-md path."""
+    crowdsourced OUI overlay). The primary_registry row resolves to
+    severity=med (cat=drone at conf=80, no downgrade) while the
+    crowdsourced row resolves to severity=low (cat=drone at conf=65,
+    downgraded). Highest-severity-wins picks the primary_registry
+    row; the crowdsourced peer lands in ``dropped_in_import_dup``."""
     path = _write_csv(
         tmp_path / "wl.csv",
         [
@@ -871,6 +876,239 @@ def test_in_import_dup_gate_independent_of_peer_collide_gate(tmp_path, db):
         + report.normalization_failed
         + report.errors
     ) == report.total_rows == 4
+
+
+# ---------------------------------------------------------------------------
+# Tiebreak policy for peer-collide and within-import-dup pre-pass
+# (v0.6.0 hotfix). The pre-pass adjudicates among admitted candidates
+# using a three-tier chain:
+#   1. highest severity rank (high > med > low per _SEVERITY_RANK)
+#   2. highest confidence
+#   3. earliest CSV index
+# Each tier breaks ties from the previous tier. The tests below pin
+# each tier individually and the determinism contract across the
+# composed chain.
+# ---------------------------------------------------------------------------
+
+
+def test_tiebreak_highest_severity_wins_within_import_dup(tmp_path, db):
+    """Three CSV rows share the same argus_record_id with severities
+    low / high / med (deliberately not in descending or ascending
+    order). Highest-severity-wins picks the `high` row regardless of
+    its CSV position; the low and med rows land in
+    ``dropped_in_import_dup``. Without this policy, first-occurrence-
+    wins would have picked the `low` row and silently demoted the
+    operator-visible alert severity."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="sev-dup",
+                identifier="aa:bb:cc:11:22:33",
+                # alpr@conf=85 → high (no downgrade). But override
+                # forces the severity into a known place.
+                device_category="alpr",
+                manufacturer="LowVendor",
+                confidence="85",
+            ),
+            _row(
+                argus_record_id="sev-dup",
+                identifier="aa:bb:cc:11:22:33",
+                device_category="alpr",
+                manufacturer="HighVendor",
+                confidence="85",
+            ),
+            _row(
+                argus_record_id="sev-dup",
+                identifier="aa:bb:cc:11:22:33",
+                device_category="alpr",
+                manufacturer="MedVendor",
+                confidence="85",
+            ),
+        ],
+    )
+    ov = OverrideConfig(
+        vendor_overrides={
+            "LowVendor": "low",
+            "HighVendor": "high",
+            "MedVendor": "med",
+        }
+    )
+    report = import_csv(db, path, ov)
+    assert report.imported_new == 1
+    assert report.dropped_in_import_dup == 2
+    md = db._conn.execute(
+        "SELECT vendor FROM watchlist_metadata"
+    ).fetchone()
+    assert md["vendor"] == "HighVendor", (
+        f"highest-severity-wins must pick the 'high' row regardless "
+        f"of CSV position; got vendor={md['vendor']!r}"
+    )
+    wl = db._conn.execute(
+        "SELECT severity FROM watchlist"
+    ).fetchone()
+    assert wl["severity"] == "high"
+
+
+def test_tiebreak_highest_severity_wins_peer_collide(tmp_path, db):
+    """Two Argus rows with distinct argus_record_ids that
+    canonicalize to the same (pattern, pattern_type). The first row
+    resolves to low severity, the second to high. Highest-severity-
+    wins picks the second row; the first lands in
+    ``dropped_peer_collision``."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="pc-low",
+                identifier_type="ble_manufacturer_id",
+                identifier="0x004C",
+                manufacturer="LowVendor",
+                confidence="85",
+            ),
+            _row(
+                argus_record_id="pc-high",
+                identifier_type="ble_manufacturer_id",
+                # Same canonical pattern after normalization.
+                identifier="0x4C",
+                manufacturer="HighVendor",
+                confidence="85",
+            ),
+        ],
+    )
+    ov = OverrideConfig(
+        vendor_overrides={"LowVendor": "low", "HighVendor": "high"}
+    )
+    report = import_csv(db, path, ov)
+    assert report.imported_new == 1
+    assert report.dropped_peer_collision == 1
+    md = db._conn.execute(
+        "SELECT argus_record_id, vendor FROM watchlist_metadata"
+    ).fetchone()
+    assert md["argus_record_id"] == "pc-high"
+    assert md["vendor"] == "HighVendor"
+
+
+def test_tiebreak_confidence_breaks_severity_tie_within_import_dup(tmp_path, db):
+    """Both occurrences of the same argus_record_id resolve to the
+    same severity. Tiebreak falls through to highest confidence: the
+    conf=90 row wins over conf=70 regardless of CSV order."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="conf-tie",
+                identifier="aa:bb:cc:11:22:33",
+                manufacturer="LowConf",
+                confidence="70",
+            ),
+            _row(
+                argus_record_id="conf-tie",
+                identifier="aa:bb:cc:11:22:33",
+                manufacturer="HighConf",
+                confidence="90",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    assert report.dropped_in_import_dup == 1
+    md = db._conn.execute(
+        "SELECT vendor, confidence FROM watchlist_metadata"
+    ).fetchone()
+    assert md["vendor"] == "HighConf"
+    assert md["confidence"] == 90
+
+
+def test_tiebreak_csv_order_breaks_severity_and_confidence_tie(tmp_path, db):
+    """Both occurrences of the same argus_record_id resolve to the
+    same severity AND the same confidence. Tiebreak falls through to
+    earliest CSV index: the first row wins."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="csv-tie",
+                identifier="aa:bb:cc:11:22:33",
+                manufacturer="FirstVendor",
+                confidence="85",
+            ),
+            _row(
+                argus_record_id="csv-tie",
+                identifier="aa:bb:cc:11:22:33",
+                manufacturer="SecondVendor",
+                confidence="85",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    assert report.dropped_in_import_dup == 1
+    md = db._conn.execute(
+        "SELECT vendor FROM watchlist_metadata"
+    ).fetchone()
+    assert md["vendor"] == "FirstVendor"
+
+
+def test_tiebreak_is_deterministic_across_repeated_imports(tmp_path):
+    """Identical input CSV must produce identical winners across
+    independent runs. Re-running ``import_csv`` against a fresh DB
+    with the same CSV bytes must yield the same surviving
+    argus_record_ids in the same watchlist row order — the
+    deterministic tiebreak ensures the rework's idempotency carries
+    across operator re-runs, not just within a single import."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="det-1",
+                identifier_type="ble_manufacturer_id",
+                identifier="0x004C",
+                manufacturer="VendorA",
+                confidence="85",
+            ),
+            _row(
+                argus_record_id="det-2",
+                identifier_type="ble_manufacturer_id",
+                identifier="0x4C",            # canonicalizes same
+                manufacturer="VendorB",
+                confidence="85",
+            ),
+            _row(
+                argus_record_id="det-3",
+                identifier="aa:bb:cc:99:88:77",
+                manufacturer="VendorC",
+                confidence="85",
+            ),
+            _row(
+                argus_record_id="det-3",     # in-import dup
+                identifier="aa:bb:cc:99:88:77",
+                manufacturer="VendorD",
+                confidence="85",
+            ),
+        ],
+    )
+
+    def _import_fresh():
+        db = Database(str(tmp_path / "fresh.db"))
+        try:
+            import_csv(db, path, OverrideConfig())
+            md_rows = db._conn.execute(
+                "SELECT argus_record_id, vendor FROM watchlist_metadata "
+                "ORDER BY id"
+            ).fetchall()
+            return [(r["argus_record_id"], r["vendor"]) for r in md_rows]
+        finally:
+            db.close()
+            (tmp_path / "fresh.db").unlink()
+
+    run1 = _import_fresh()
+    run2 = _import_fresh()
+    run3 = _import_fresh()
+    assert run1 == run2 == run3, (
+        f"tiebreak must be deterministic; got: "
+        f"run1={run1} run2={run2} run3={run3}"
+    )
 
 
 def test_no_op_reimport_produces_zero_mutating_writes_to_watchlist_tables(
