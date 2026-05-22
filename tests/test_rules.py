@@ -1505,6 +1505,191 @@ def test_evaluate_watchlist_drone_id_prefix_delegation_without_db_logs_error(cap
     assert len(errors) == 1
 
 
+# ---- watchlist_ble_local_name delegation -----------------------------------
+
+
+def _ble_local_name_obs(
+    mac: str = "aa:bb:cc:dd:ee:ff",
+    ble_local_name: str | None = None,
+) -> DeviceObservation:
+    return DeviceObservation(
+        mac=mac,
+        device_type="ble",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-60,
+        ssid=None,
+        oui_vendor=None,
+        is_randomized=False,
+        ble_local_name=ble_local_name,
+    )
+
+
+def test_watchlist_ble_local_name_empty_patterns_accepted_delegation_mode():
+    rule = Rule(
+        name="del_bln",
+        rule_type="watchlist_ble_local_name",
+        severity="low",
+        patterns=[],
+    )
+    assert rule.patterns == []
+
+
+def test_watchlist_ble_local_name_non_empty_patterns_accepted_in_memory_mode():
+    """Non-empty patterns is the inline-rule shape; load-time
+    normalization preserves case so a rules.yaml entry 'Flock' still
+    matches the case-sensitive observation field."""
+    rule = Rule(
+        name="flock_inline",
+        rule_type="watchlist_ble_local_name",
+        severity="high",
+        patterns=["Flock", "Penguin"],
+    )
+    assert rule.patterns == ["Flock", "Penguin"]
+
+
+def test_watchlist_ble_local_name_rejects_malformed_pattern():
+    """Empty pattern strings inside a non-empty patterns list should
+    raise — the canonicalizer rejects empty/whitespace-only inputs."""
+    with pytest.raises(ValidationError):
+        Rule(
+            name="bad",
+            rule_type="watchlist_ble_local_name",
+            severity="low",
+            patterns=[""],
+        )
+
+
+@pytest.fixture
+def db_with_ble_local_name_row(tmp_path):
+    db_path = str(tmp_path / "rules_bln.db")
+    db = Database(db_path)
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES ('Penguin', 'ble_local_name', 'high', 'flock penguin')"
+        )
+    yield db
+    db.close()
+
+
+def test_evaluate_watchlist_ble_local_name_delegation_hit_sources_severity_from_db(
+    db_with_ble_local_name_row,
+):
+    rule = Rule(
+        name="del_bln",
+        rule_type="watchlist_ble_local_name",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_local_name_obs(ble_local_name="Penguin"),
+        is_new_device=False,
+        db=db_with_ble_local_name_row,
+    )
+    assert len(hits) == 1
+    assert hits[0].rule_name == "del_bln"
+    assert hits[0].severity == "high"  # from DB
+
+
+def test_evaluate_watchlist_ble_local_name_delegation_miss(db_with_ble_local_name_row):
+    rule = Rule(
+        name="del_bln",
+        rule_type="watchlist_ble_local_name",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_local_name_obs(ble_local_name="Albatross"),
+        is_new_device=False,
+        db=db_with_ble_local_name_row,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_ble_local_name_no_field_no_hit(db_with_ble_local_name_row):
+    """Same shape as the BLE manufacturer no-field case — the obs field
+    is None when capture.ble_friendly_names is disabled or when the
+    Kismet record carries no kismet.device.base.name field."""
+    rule = Rule(
+        name="del_bln",
+        rule_type="watchlist_ble_local_name",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_local_name_obs(ble_local_name=None),
+        is_new_device=False,
+        db=db_with_ble_local_name_row,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_ble_local_name_in_memory_path_severity_from_rule():
+    rule = Rule(
+        name="flock_inline",
+        rule_type="watchlist_ble_local_name",
+        severity="med",
+        patterns=["Flock"],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_local_name_obs(ble_local_name="Flock"),
+        is_new_device=False,
+    )
+    assert len(hits) == 1
+    assert hits[0].severity == "med"
+
+
+def test_evaluate_watchlist_ble_local_name_in_memory_case_sensitive_no_match():
+    """'FLOCK' and 'Flock' must not collapse — the matcher and the
+    canonicalizer both preserve case per BLE Core Spec §4.5.2."""
+    rule = Rule(
+        name="flock_inline",
+        rule_type="watchlist_ble_local_name",
+        severity="med",
+        patterns=["Flock"],
+    )
+    rs = Ruleset(rules=[rule])
+    hits = evaluate(
+        rs,
+        _ble_local_name_obs(ble_local_name="FLOCK"),
+        is_new_device=False,
+    )
+    assert hits == []
+
+
+def test_evaluate_watchlist_ble_local_name_delegation_without_db_logs_error(caplog):
+    rule = Rule(
+        name="del_bln",
+        rule_type="watchlist_ble_local_name",
+        severity="low",
+        patterns=[],
+    )
+    rs = Ruleset(rules=[rule])
+    with caplog.at_level(logging.ERROR, logger="lynceus.rules"):
+        hits = evaluate(
+            rs,
+            _ble_local_name_obs(ble_local_name="Penguin"),
+            is_new_device=False,
+        )
+    assert hits == []
+    errors = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR
+        and "watchlist_ble_local_name" in r.getMessage()
+    ]
+    assert len(errors) == 1
+
+
 # ---- runtime override smoke for the two new delegation branches ------------
 
 

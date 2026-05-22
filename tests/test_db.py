@@ -2331,6 +2331,65 @@ def test_resolve_matched_drone_id_prefix_for_eval_only_matches_own_pattern_type(
     assert db.resolve_matched_drone_id_prefix_for_eval("ABCD1234") is None
 
 
+# ---- resolve_matched_ble_local_name_for_eval ----
+
+
+def test_resolve_matched_ble_local_name_for_eval_hit(db):
+    wid = _add_simple(db, "Penguin", "ble_local_name", severity="high")
+    match = db.resolve_matched_ble_local_name_for_eval("Penguin")
+    assert match is not None
+    assert match.watchlist_id == wid
+    assert match.severity == "high"
+    assert match.device_category is None
+
+
+def test_resolve_matched_ble_local_name_for_eval_populates_metadata(db):
+    wid = _add_simple(db, "FS Ext Battery", "ble_local_name", severity="high")
+    _attach_metadata(db, wid, device_category="alpr", vendor="Flock Safety")
+    match = db.resolve_matched_ble_local_name_for_eval("FS Ext Battery")
+    assert match is not None
+    assert match.device_category == "alpr"
+    assert match.manufacturer == "Flock Safety"
+    assert match.argus_record_id == f"argus-{wid}"
+
+
+def test_resolve_matched_ble_local_name_for_eval_null_metadata_fields(db):
+    _add_simple(db, "Flock", "ble_local_name")
+    match = db.resolve_matched_ble_local_name_for_eval("Flock")
+    assert match is not None
+    assert match.device_category is None
+    assert match.manufacturer is None
+    assert match.argus_record_id is None
+
+
+def test_resolve_matched_ble_local_name_for_eval_miss(db):
+    _add_simple(db, "Penguin", "ble_local_name")
+    assert db.resolve_matched_ble_local_name_for_eval("Albatross") is None
+
+
+def test_resolve_matched_ble_local_name_for_eval_none_and_empty(db):
+    _add_simple(db, "Penguin", "ble_local_name")
+    assert db.resolve_matched_ble_local_name_for_eval(None) is None
+    assert db.resolve_matched_ble_local_name_for_eval("") is None
+
+
+def test_resolve_matched_ble_local_name_for_eval_case_sensitive(db):
+    """Case is significant per BLE Core Spec §4.5.2; 'Flock' must not
+    match a stored 'FLOCK' row. Guards against a regression where
+    someone adds COLLATE NOCASE to the SQL lookup."""
+    _add_simple(db, "FLOCK", "ble_local_name", severity="high")
+    assert db.resolve_matched_ble_local_name_for_eval("FLOCK") is not None
+    assert db.resolve_matched_ble_local_name_for_eval("Flock") is None
+    assert db.resolve_matched_ble_local_name_for_eval("flock") is None
+
+
+def test_resolve_matched_ble_local_name_for_eval_only_matches_own_pattern_type(db):
+    """A 'Penguin' ssid-typed row must not be returned by the
+    ble_local_name matcher — pattern_type is part of the natural key."""
+    _add_simple(db, "Penguin", "ssid", severity="high")
+    assert db.resolve_matched_ble_local_name_for_eval("Penguin") is None
+
+
 # ---------------------------- file mode (POSIX) ----------------------------
 
 

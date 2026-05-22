@@ -525,6 +525,70 @@ def test_resolve_drone_id_prefix_wins_over_ssid(db):
     )
 
 
+def test_resolve_ble_local_name_when_no_other_match(db):
+    """A ble_local_name watchlist row annotates the alert when no
+    stronger identifier matches."""
+    bln_id = _add_watchlist(db, "Penguin", "ble_local_name", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff",
+            ble_local_name="Penguin",
+        )
+        == bln_id
+    )
+
+
+def test_resolve_ble_local_name_returns_none_on_miss(db):
+    _add_watchlist(db, "Penguin", "ble_local_name", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff",
+            ble_local_name="Albatross",
+        )
+        is None
+    )
+
+
+def test_resolve_ble_local_name_only_consulted_when_passed(db):
+    """Backward-compat: a ble_local_name watchlist row planted in the
+    DB doesn't surface for callers that don't pass the kwarg."""
+    _add_watchlist(db, "Penguin", "ble_local_name", "high")
+    assert db.resolve_matched_watchlist_id(mac="aa:bb:cc:dd:ee:ff") is None
+
+
+def test_resolve_drone_id_prefix_wins_over_ble_local_name(db):
+    """drone_id_prefix slots before ble_local_name in the walk order —
+    a Remote-ID serial number is more identifier-specific than a BLE
+    friendly name."""
+    drone_id = _add_watchlist(db, "21239ESA2", "drone_id_prefix", "high")
+    _add_watchlist(db, "Penguin", "ble_local_name", "med")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff",
+            drone_id_prefix="21239ESA2",
+            ble_local_name="Penguin",
+        )
+        == drone_id
+    )
+
+
+def test_resolve_ble_local_name_wins_over_ssid(db):
+    """ble_local_name slots before ssid in the walk order — both are
+    operator-vendor-identifying, but BLE name is slightly more
+    identifier-specific (it carries the device's broadcast-time
+    friendly name; an SSID is the AP-side string)."""
+    bln_id = _add_watchlist(db, "FS Ext Battery", "ble_local_name", "high")
+    _add_watchlist(db, "EvilSSID", "ssid", "med")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="11:22:33:44:55:66",
+            ssid="EvilSSID",
+            ble_local_name="FS Ext Battery",
+        )
+        == bln_id
+    )
+
+
 def test_resolve_full_walk_order_ble_manufacturer_then_mac_range_then_drone(db):
     """All three rc5-extended branches at once: confirm the full
     walk order. ble_manufacturer_id is preferred over the planted
