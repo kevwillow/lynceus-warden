@@ -14,6 +14,7 @@ from lynceus.cli.import_argus import (
     DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST,
     DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD,
     EXPECTED_HEADER,
+    IDENTIFIER_TYPE_MAP,
     OverrideConfig,
     import_csv,
     load_override_config,
@@ -565,6 +566,39 @@ def test_ble_local_name_distinct_case_emissions_each_admit(tmp_path, db):
         )
     )
     assert patterns == ["FLOCK", "Flock"]
+
+
+def test_imei_tac_identifier_type_forward_compat_admits(tmp_path, db):
+    """Forward-compat admission for Argus v1.5.0's mig-0027 CP33
+    imei_tac slot. v1.5.0 ships 0 imei_tac rows, but the structural
+    admission (IDENTIFIER_TYPE_MAP entry + migration 021 CHECK
+    relaxation) lands ahead of v1.5.x backfills so a synthetic row
+    admits at both the Python (IDENTIFIER_TYPE_MAP) and DB
+    (watchlist.pattern_type CHECK) surfaces — not dropped as
+    dropped_unknown_type, not failed at INSERT with IntegrityError.
+
+    No matcher, no device_category, no severity assignment lands in
+    this cycle: this is admission-only. The map slot is locked at
+    1:1 (imei_tac -> imei_tac) per the ble_local_name precedent."""
+    assert IDENTIFIER_TYPE_MAP["imei_tac"] == "imei_tac"
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="imei-tac-1",
+                identifier_type="imei_tac",
+                identifier="35209900",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    assert report.dropped_unknown_type == 0
+    row = db._conn.execute(
+        "SELECT pattern, pattern_type FROM watchlist"
+    ).fetchone()
+    assert row["pattern_type"] == "imei_tac"
+    assert row["pattern"] == "35209900"
 
 
 def test_ble_local_name_no_longer_falls_to_unknown_type(tmp_path, db):

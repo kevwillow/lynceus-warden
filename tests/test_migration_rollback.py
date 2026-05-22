@@ -111,7 +111,7 @@ def db_path(tmp_path):
 
 
 def test_rollback_to_zero_then_reapply(db_path):
-    """Full chain: apply 001..020, roll back to 0, re-apply 001..020.
+    """Full chain: apply 001..021, roll back to 0, re-apply 001..021.
 
     Confirms (a) every down file is syntactically valid and applies
     cleanly on an empty-table DB, (b) the schema returns to the
@@ -124,7 +124,7 @@ def test_rollback_to_zero_then_reapply(db_path):
     db = Database(db_path)
     forward_shape = _schema_shape(db)
     forward_versions = db.applied_versions()
-    assert forward_versions == list(range(1, 21))
+    assert forward_versions == list(range(1, 22))
 
     with caplog_warning("lynceus.db"):
         rolled = db.rollback_to(0)
@@ -145,7 +145,7 @@ def test_rollback_to_zero_then_reapply(db_path):
 
 
 def test_rollback_one_step_each(db_path):
-    """For every applied version V from 20 down to 1, roll back ONE step
+    """For every applied version V from 21 down to 1, roll back ONE step
     and confirm:
       (a) applied_versions drops by exactly V (or skips V if absent),
       (b) the resulting schema matches what was in place AFTER V-1 had
@@ -183,12 +183,12 @@ def test_rollback_one_step_each(db_path):
         shapes_at[version] = _schema_shape(sentinel_db)
         applied_far = version
     sentinel_db.close()
-    assert applied_far == 20
+    assert applied_far == 21
 
     # Now run the real per-step rollback test on the primary db_path.
     db = Database(db_path)
     irreversible = {10}
-    for v in range(20, 0, -1):
+    for v in range(21, 0, -1):
         with caplog_warning("lynceus.db"):
             rolled = db.rollback_to(v - 1)
         assert rolled == [v], f"expected one-step rollback of {v}, got {rolled}"
@@ -211,7 +211,7 @@ def test_rollback_one_step_each(db_path):
 
 @pytest.mark.parametrize(
     "version",
-    [v for v in range(1, 21) if v != 10],  # 010 is IRREVERSIBLE
+    [v for v in range(1, 22) if v != 10],  # 010 is IRREVERSIBLE
 )
 def test_per_migration_up_down_up(db_path, version):
     """Drive each reversible migration through one up->down->up cycle and
@@ -274,6 +274,7 @@ def test_per_migration_up_down_up(db_path, version):
         (14, "devices", "device_type", "remote_id"),
         (19, "watchlist", "pattern_type", "ssid_pattern"),
         (20, "watchlist", "pattern_type", "ble_local_name"),
+        (21, "watchlist", "pattern_type", "imei_tac"),
     ],
 )
 def test_conditional_rollback_aborts_with_disallowed_row(
@@ -336,7 +337,7 @@ def test_conditional_rollback_aborts_with_disallowed_row(
 
 
 def test_rollback_to_specific_target(db_path):
-    """Forward-apply 001..020, roll back to 015 (so 016..020 revert),
+    """Forward-apply 001..021, roll back to 015 (so 016..021 revert),
     assert schema matches the post-015 forward-applied shape."""
     # Build the post-015 sentinel shape on a parallel DB.
     sentinel = Database(db_path + ".sentinel-015")
@@ -347,9 +348,9 @@ def test_rollback_to_specific_target(db_path):
     assert expected_versions == list(range(1, 16))
 
     db = Database(db_path)
-    assert db.applied_versions() == list(range(1, 21))
+    assert db.applied_versions() == list(range(1, 22))
     rolled = db.rollback_to(15)
-    assert sorted(rolled) == [16, 17, 18, 19, 20]
+    assert sorted(rolled) == [16, 17, 18, 19, 20, 21]
     assert db.applied_versions() == expected_versions
     assert _schema_shape(db) == expected_shape
     db.close()

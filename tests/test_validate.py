@@ -707,7 +707,7 @@ def test_rollback_subcommand_to_zero(tmp_path, capsys):
     from lynceus.db import Database
 
     db_path = str(tmp_path / "lynceus.db")
-    Database(db_path).close()  # forward-apply 001..020 via __init__
+    Database(db_path).close()  # forward-apply 001..021 via __init__
 
     exit_code = v.main(
         ["rollback", "--db", db_path, "--target-version", "0", "--yes"]
@@ -721,7 +721,7 @@ def test_rollback_subcommand_to_zero(tmp_path, capsys):
     # versions match the full chain after the re-init — proves the
     # rollback was atomic + the forward path is still functional.
     db = Database(db_path)
-    assert db.applied_versions() == list(range(1, 21))
+    assert db.applied_versions() == list(range(1, 22))
     db.close()
 
 
