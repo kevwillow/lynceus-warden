@@ -51,6 +51,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dir found; site-config written to a non-default location. Each
   surfaces as a one-line note so the operator can act without
   re-reading the entire run log.
+- **`install.sh` post-install hint expanded into a numbered Next
+  Steps block.** The previous two-line "Need Kismet? Run X. Already
+  have it? Run Y." was too thin for a fresh-host operator who hadn't
+  yet discovered `docs/DEPLOYMENT.md`. The new hint walks through
+  install Kismet (with three distinct paths surfaced: apt-distro
+  full bootstrap, other-distro `--skip-install`, already-have-Kismet),
+  log out + back in (group propagation caveat), start Kismet + create
+  read-only API key, configure Lynceus, then run — adapting to scope
+  so `--user` is pointed at `lynceus-quickstart` (foreground
+  dev/demo) and `--system` is pointed at `sudo systemctl enable
+  --now lynceus.service lynceus-ui.service` plus the opt-in
+  `lynceus-refresh.timer`. Block ends with pointers to
+  `docs/DEPLOYMENT.md` (full runbook + troubleshooting) and
+  `docs/SMOKE.md` (post-install verification); the runbook is the
+  source of truth, install.sh's hint is a getting-started signpost.
+  install.sh remains offline (no new network operations introduced).
 
 ## [0.6.1] - 2026-05-22
 
