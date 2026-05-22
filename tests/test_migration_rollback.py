@@ -12,7 +12,7 @@ SQL (CREATE TABLE statement strings) are explicitly NOT compared —
 the goal is "schema structurally equivalent after roundtrip", not
 "byte-identical CREATE statements".
 
-Conditional-reverse migrations (011, 013, 014, 019) are tested both
+Conditional-reverse migrations (011, 013, 014, 019, 020) are tested both
 ways:
 - Empty-table roundtrip: down succeeds, schema returns to pre-state.
 - Loaded-table abort: insert a row of the newly-admitted type, then
@@ -111,7 +111,7 @@ def db_path(tmp_path):
 
 
 def test_rollback_to_zero_then_reapply(db_path):
-    """Full chain: apply 001..019, roll back to 0, re-apply 001..019.
+    """Full chain: apply 001..020, roll back to 0, re-apply 001..020.
 
     Confirms (a) every down file is syntactically valid and applies
     cleanly on an empty-table DB, (b) the schema returns to the
@@ -124,7 +124,7 @@ def test_rollback_to_zero_then_reapply(db_path):
     db = Database(db_path)
     forward_shape = _schema_shape(db)
     forward_versions = db.applied_versions()
-    assert forward_versions == list(range(1, 20))
+    assert forward_versions == list(range(1, 21))
 
     with caplog_warning("lynceus.db"):
         rolled = db.rollback_to(0)
@@ -145,7 +145,7 @@ def test_rollback_to_zero_then_reapply(db_path):
 
 
 def test_rollback_one_step_each(db_path):
-    """For every applied version V from 19 down to 1, roll back ONE step
+    """For every applied version V from 20 down to 1, roll back ONE step
     and confirm:
       (a) applied_versions drops by exactly V (or skips V if absent),
       (b) the resulting schema matches what was in place AFTER V-1 had
@@ -183,12 +183,12 @@ def test_rollback_one_step_each(db_path):
         shapes_at[version] = _schema_shape(sentinel_db)
         applied_far = version
     sentinel_db.close()
-    assert applied_far == 19
+    assert applied_far == 20
 
     # Now run the real per-step rollback test on the primary db_path.
     db = Database(db_path)
     irreversible = {10}
-    for v in range(19, 0, -1):
+    for v in range(20, 0, -1):
         with caplog_warning("lynceus.db"):
             rolled = db.rollback_to(v - 1)
         assert rolled == [v], f"expected one-step rollback of {v}, got {rolled}"
@@ -211,7 +211,7 @@ def test_rollback_one_step_each(db_path):
 
 @pytest.mark.parametrize(
     "version",
-    [v for v in range(1, 20) if v != 10],  # 010 is IRREVERSIBLE
+    [v for v in range(1, 21) if v != 10],  # 010 is IRREVERSIBLE
 )
 def test_per_migration_up_down_up(db_path, version):
     """Drive each reversible migration through one up->down->up cycle and
@@ -273,6 +273,7 @@ def test_per_migration_up_down_up(db_path, version):
         (13, "watchlist", "pattern_type", "drone_id_prefix"),
         (14, "devices", "device_type", "remote_id"),
         (19, "watchlist", "pattern_type", "ssid_pattern"),
+        (20, "watchlist", "pattern_type", "ble_local_name"),
     ],
 )
 def test_conditional_rollback_aborts_with_disallowed_row(
@@ -335,8 +336,8 @@ def test_conditional_rollback_aborts_with_disallowed_row(
 
 
 def test_rollback_to_specific_target(db_path):
-    """Forward-apply 001..019, roll back to 015 (so 016, 017, 018, 019
-    revert), assert schema matches the post-015 forward-applied shape."""
+    """Forward-apply 001..020, roll back to 015 (so 016..020 revert),
+    assert schema matches the post-015 forward-applied shape."""
     # Build the post-015 sentinel shape on a parallel DB.
     sentinel = Database(db_path + ".sentinel-015")
     sentinel.rollback_to(15)
@@ -346,9 +347,9 @@ def test_rollback_to_specific_target(db_path):
     assert expected_versions == list(range(1, 16))
 
     db = Database(db_path)
-    assert db.applied_versions() == list(range(1, 20))
+    assert db.applied_versions() == list(range(1, 21))
     rolled = db.rollback_to(15)
-    assert sorted(rolled) == [16, 17, 18, 19]
+    assert sorted(rolled) == [16, 17, 18, 19, 20]
     assert db.applied_versions() == expected_versions
     assert _schema_shape(db) == expected_shape
     db.close()
@@ -377,7 +378,7 @@ def test_irreversible_migration_logs_warning_and_skips_sql(db_path):
         "SELECT pattern FROM watchlist WHERE pattern_type='mac'"
     ).fetchone()[0]
 
-    # Roll back through 010 (target 9 so 19..10 all revert).
+    # Roll back through 010 (target 9 so 20..10 all revert).
     with caplog_warning("lynceus.db") as records:
         rolled = db.rollback_to(9)
 

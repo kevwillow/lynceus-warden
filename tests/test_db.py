@@ -191,6 +191,7 @@ def test_migrations_dir_lists_both_files(db):
         "017_rule_type_snoozes.sql",
         "018_watchful_recurrence.sql",
         "019_watchlist_ssid_pattern.sql",
+        "020_pattern_type_ble_local_name.sql",
     ]
 
 
