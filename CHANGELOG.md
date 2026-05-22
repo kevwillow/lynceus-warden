@@ -10,6 +10,106 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`ble_local_name` pattern_type admission (mig-020 + coordinated
+  Argus v1.4.2 release boundary).** Lynceus admits the Bluetooth
+  Core Spec §4.5.2 Complete Local Name as a new watchlist
+  pattern_type, ahead of Argus v1.4.2's
+  `IDENTIFIER_TYPE_TO_PATTERN_TYPE` promotion so the consumer-side
+  gate (`IDENTIFIER_TYPE_MAP` in `lynceus-import-argus`) does not
+  drop the 20 v1.4.1 rows Argus is about to start emitting in
+  larger volume. Operationally motivating yield: Flock Safety BLE
+  device names (`'Penguin'`, `'FS Ext Battery'`, `'Flock'`,
+  `'FLOCK'`, `'Flock-*'` shape variants) — v1.4.0 yield was 3
+  rows (below the audit's `NEGLIGIBLE_YIELD_THRESHOLD=5`); v1.4.1
+  jumps 6.7× to 20, closing the residual with `admit` per
+  `docs/ARGUS_RESIDUALS.md`. Surfaces, end-to-end:
+
+  - **Migration 020** (`020_pattern_type_ble_local_name.sql`)
+    relaxes the `watchlist.pattern_type` CHECK to admit
+    `'ble_local_name'`. Mirrors mig-019 byte-for-byte: full table
+    rebuild under `PRAGMA foreign_keys=OFF`, AUTOINCREMENT
+    ROWIDs preserved, `mac_range_prefix` /
+    `mac_range_prefix_length` carried verbatim, partial index
+    recreated, FK references preserved by-reference. The paired
+    `_down.sql` is conditional-rollback (rollback aborts if any
+    ble_local_name rows present, per the rc4 idiom).
+
+  - **Canonicalizer `_normalize_ble_local_name`** in
+    `patterns.py`. Defensive validation only (non-empty after
+    outer-whitespace strip, 64-char length cap, type check); no
+    case folding (case-sensitive per spec — `'FLOCK'` and
+    `'Flock'` are distinct rows). 64-char cap is conservative:
+    well above the v1.4.0 max observed (14 chars,
+    `'FS Ext Battery'`), well below the 248-byte Complete Local
+    Name ceiling. Mirrors the SSID pass-through shape; equality
+    only (substring / regex semantics are a separate deferred
+    work item, the `ssid_pattern` parallel-track for
+    `ble_local_name`, deferred to v1.4.3+).
+
+  - **Importer admission** via a single
+    `IDENTIFIER_TYPE_MAP['ble_local_name'] = 'ble_local_name'`
+    entry in `lynceus-import-argus`. The 3 ble_local_name rows
+    in `src/lynceus/data/default_watchlist.csv` (previously
+    silently counted as `dropped_unknown_type` on first
+    bootstrap) now admit; existing operator deployments pick up
+    the new rows on the next refresh.
+
+  - **Observation field rename** `obs.ble_name → obs.ble_local_name`
+    for symmetry with the pattern_type, so the rule matcher
+    equality-checks `obs.ble_local_name` against a
+    `pattern_type='ble_local_name'` DB row directly. Scope is the
+    Pydantic field only; the `devices.ble_name` SQLite column,
+    `db.update_device_ble_name` method, `_extract_ble_name`
+    helper, `capture_ble_name` parameter, and
+    `capture.ble_friendly_names` config key all retain their
+    historical names — they describe the Kismet field / DB
+    column / capture-knob concept, not the watchlist pattern_type
+    concept, and renaming them would force unnecessary migration
+    churn or break operator config.
+
+  - **Runtime rule `watchlist_ble_local_name`** in `rules.py`.
+    Mirrors `watchlist_drone_id_prefix`: empty `rule.patterns`
+    delegates matching to the watchlist DB (severity sourced
+    from the matched row); non-empty in-memory equality-matches
+    against `rule.patterns` (severity sourced from the rule).
+    Validator normalizes any inline patterns through
+    `patterns.normalize_pattern('ble_local_name', p)` so a
+    `rules.yaml` typo (trailing whitespace, empty string) does
+    not silently dead-end at runtime. Depends on
+    `capture.ble_friendly_names` being enabled in
+    `lynceus.yaml` — without it `obs.ble_local_name` stays
+    `None` and the rule fires zero alerts. Backed by
+    `db.resolve_matched_ble_local_name_for_eval`, slotting
+    between `drone_id_prefix` and `ssid` in
+    `db.resolve_matched_watchlist_id`'s annotation tiebreak
+    chain so `alerts.matched_watchlist_id` carries the Argus
+    metadata link for ble_local_name matches.
+
+  - **Operator surface**: setup wizard's `DELEGATION_RULES`
+    grows an 8th entry (`argus_ble_local_name`); the bundled
+    `config/rules.yaml` carries a commented-out 8th template
+    block under a new "ble_local_name delegation (v0.6.1+)"
+    section (default OFF per privacy-conservative posture); the
+    `AllowlistPatternType` literal + `_entry_matches` branch in
+    `allowlist.py` mirror the existing
+    `drone_id_prefix` / `ble_manufacturer_id` shape so an
+    operator can suppress a Flock-camera alert by name; the
+    `/watchlist` filter dropdown, `/allowlist` add-form
+    dropdown, and `/settings` watchlist-freshness card all
+    enumerate the new pattern_type. The
+    `db._WATCHLIST_PATTERN_TYPES` tuple grows in lockstep so
+    `watchlist_pattern_type_counts` and the list-watchlist
+    filter validator stay in sync.
+
+  Test surfaces (count by file, post-pass): 7 in `test_db`, 10
+  in `test_rules`, 4 in `test_alert_linkage`, 3 in
+  `test_import_argus`, 4 in `test_allowlist`, 2 in
+  `test_setup_wizard`, 9 in `test_patterns` — plus migration
+  rollback parametrize for `(20, ..., 'ble_local_name')`. The
+  `docs/ARGUS_RESIDUALS.md` audit closes the verdict
+  (`drop-entirely → admit`) and notes the coordinated Argus
+  v1.4.2 release boundary.
+
 - **`automotive_telematics` severity seed in the scaffolded
   severity_overrides template.** Forward-compat hygiene per the
   Argus engineer §F.1. Argus v1.4.1 extends the `device_category`
