@@ -743,12 +743,13 @@ class Database:
         ble_service_uuids: tuple[str, ...] = (),
         ble_manufacturer_id: str | None = None,
         drone_id_prefix: str | None = None,
+        ble_local_name: str | None = None,
     ) -> int | None:
         """Pick the most-specific watchlist row matching this observation.
 
         Tiebreaker order:
           mac > oui > ble_manufacturer_id > mac_range >
-          drone_id_prefix > ssid > ble_uuid
+          drone_id_prefix > ble_local_name > ssid > ble_uuid
 
         Returns the watchlist row id, or None when no row matches.
 
@@ -766,16 +767,29 @@ class Database:
         mac/oui hit always wins because both are stronger evidence
         for *this specific device* than a vendor-wide BLE company id.
 
-        drone_id_prefix slots between mac_range and ssid — a device
-        serial prefix is more identifier-specific than a free-form
-        SSID but less so than a covered MAC range; falling after
-        mac_range mirrors the oui-before-mac_range pattern (a
-        curated mac_range catching the device's MAC takes
+        drone_id_prefix slots between mac_range and ble_local_name —
+        a device serial prefix is more identifier-specific than a
+        BLE friendly name but less so than a covered MAC range;
+        falling after mac_range mirrors the oui-before-mac_range
+        pattern (a curated mac_range catching the device's MAC takes
         precedence over a Remote-ID serial that may have been
-        spoofed). Both new branches are no-op when the observation
-        carries None for the corresponding field, which is the
-        default for every code path that doesn't go through
-        kismet.parse_kismet_device's extraction layer.
+        spoofed).
+
+        ble_local_name slots between drone_id_prefix and ssid — a BLE
+        Core Spec §4.5.2 Complete Local Name is operator-vendor-
+        identifying (Flock's 'Penguin' / 'FS Ext Battery' / 'Flock*'
+        family) but less unique than a Remote-ID serial number prefix,
+        and slightly more identifier-specific than a free-form SSID
+        which is also operator-vendor-identifying but lives on the
+        Wi-Fi side. Both ble_local_name and ssid require their
+        respective capture flags (capture.ble_friendly_names /
+        capture.probe_ssids); the field is None when the flag is off,
+        which short-circuits this branch to no-op.
+
+        Each new branch is no-op when the observation carries None
+        for the corresponding field, which is the default for every
+        code path that doesn't go through kismet.parse_kismet_device's
+        extraction layer.
         """
         if mac is not None:
             match = self._lookup_simple_watchlist_match("mac", mac)
@@ -801,6 +815,12 @@ class Database:
         if drone_id_prefix:
             match = self._lookup_simple_watchlist_match(
                 "drone_id_prefix", drone_id_prefix
+            )
+            if match is not None:
+                return match.watchlist_id
+        if ble_local_name:
+            match = self._lookup_simple_watchlist_match(
+                "ble_local_name", ble_local_name
             )
             if match is not None:
                 return match.watchlist_id
@@ -1065,6 +1085,26 @@ class Database:
         if not company_id:
             return None
         return self._lookup_simple_watchlist_match("ble_manufacturer_id", company_id)
+
+    def resolve_matched_ble_local_name_for_eval(
+        self, ble_local_name: str | None
+    ) -> ResolvedWatchlistMatch | None:
+        """Watchlist row for an exact BLE local-name match, or None.
+
+        ``ble_local_name`` is the BLE Core Spec §4.5.2 Complete Local
+        Name in the canonical persistent form (case-sensitive, outer
+        whitespace stripped — see patterns._normalize_ble_local_name).
+        Callers passing an observation field can use it directly: the
+        Kismet extraction in kismet._extract_ble_name returns a
+        non-empty trimmed string, which is already in canonical form
+        for equality lookup. Used by rules.evaluate's
+        watchlist_ble_local_name branch when rule.patterns is empty
+        (delegation mode). Falsy ``ble_local_name`` short-circuits to
+        None.
+        """
+        if not ble_local_name:
+            return None
+        return self._lookup_simple_watchlist_match("ble_local_name", ble_local_name)
 
     def resolve_matched_drone_id_prefix_for_eval(
         self, drone_id: str | None

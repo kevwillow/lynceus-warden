@@ -28,6 +28,7 @@ RuleType = Literal[
     "ble_uuid",
     "watchlist_ble_manufacturer_id",
     "watchlist_drone_id_prefix",
+    "watchlist_ble_local_name",
     "new_non_randomized_device",
     "watchful_recurrence",
 ]
@@ -98,6 +99,7 @@ class Rule(BaseModel):
         elif self.rule_type in (
             "watchlist_ble_manufacturer_id",
             "watchlist_drone_id_prefix",
+            "watchlist_ble_local_name",
         ):
             # Same delegation-capable shape as the four types above.
             # Empty patterns = delegate to the watchlist DB; non-empty
@@ -138,6 +140,14 @@ class Rule(BaseModel):
             try:
                 normalized = [
                     normalize_pattern("drone_id_prefix", p) for p in self.patterns
+                ]
+            except ValueError as e:
+                raise ValueError(f"rule {self.name!r}: {e}") from e
+            object.__setattr__(self, "patterns", normalized)
+        elif self.rule_type == "watchlist_ble_local_name":
+            try:
+                normalized = [
+                    normalize_pattern("ble_local_name", p) for p in self.patterns
                 ]
             except ValueError as e:
                 raise ValueError(f"rule {self.name!r}: {e}") from e
@@ -1146,6 +1156,76 @@ def evaluate(
                     continue
                 msg = (
                     f"Drone Remote-ID {obs.drone_id_prefix} on watchlist "
+                    f"(watchlist_id={match.watchlist_id}): "
+                    f"{rule.description or rule.name} (mac {obs.mac})"
+                )
+                hits.append(
+                    RuleHit(
+                        rule_name=rule.name,
+                        rule_type=rule.rule_type,
+                        severity=effective_severity,
+                        message=msg,
+                        mac=obs.mac,
+                    )
+                )
+        elif rule.rule_type == "watchlist_ble_local_name":
+            # Equality-shape delegation, mirroring watchlist_drone_id_prefix.
+            # The observation's ble_local_name is None when
+            # capture.ble_friendly_names is disabled or when the Kismet
+            # record carries no kismet.device.base.name field — both
+            # short-circuit to no match. Case-sensitive per Bluetooth
+            # Core Spec §4.5.2 (Complete Local Name); equality is at the
+            # canonical-string level, no substring / regex (substring
+            # semantics are a separate deferred work item, the
+            # ssid_pattern parallel-track for ble_local_name).
+            if obs.ble_local_name is None:
+                continue
+            if rule.patterns:
+                # In-memory match path. Severity sourced from the rule.
+                if obs.ble_local_name in rule.patterns:
+                    msg = (
+                        f"BLE local name {obs.ble_local_name!r} on "
+                        f"watchlist: {rule.description or rule.name} "
+                        f"(mac {obs.mac})"
+                    )
+                    hits.append(
+                        RuleHit(
+                            rule_name=rule.name,
+                            rule_type=rule.rule_type,
+                            severity=rule.severity,
+                            message=msg,
+                            mac=obs.mac,
+                        )
+                    )
+            else:
+                # Delegation path. Severity sourced from the matched
+                # DB row — see the watchlist_mac branch above for the
+                # architectural rationale.
+                if db is None:
+                    logger.error(
+                        "delegation rule %r (watchlist_ble_local_name, "
+                        "empty patterns) evaluated without db; skipping.",
+                        rule.name,
+                    )
+                    continue
+                match = db.resolve_matched_ble_local_name_for_eval(
+                    obs.ble_local_name
+                )
+                if match is None:
+                    continue
+                effective_severity = _apply_runtime_overrides(
+                    match_severity=match.severity,
+                    match_device_category=match.device_category,
+                    match_manufacturer=match.manufacturer,
+                    match_argus_record_id=match.argus_record_id,
+                    match_watchlist_id=match.watchlist_id,
+                    rule_name=rule.name,
+                    overrides=severity_overrides,
+                )
+                if effective_severity is None:
+                    continue
+                msg = (
+                    f"BLE local name {obs.ble_local_name!r} on watchlist "
                     f"(watchlist_id={match.watchlist_id}): "
                     f"{rule.description or rule.name} (mac {obs.mac})"
                 )

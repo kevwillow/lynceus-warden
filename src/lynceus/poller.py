@@ -365,6 +365,7 @@ def poll_once(
                     ble_service_uuids=obs.ble_service_uuids,
                     ble_manufacturer_id=obs.ble_manufacturer_id,
                     drone_id_prefix=obs.drone_id_prefix,
+                    ble_local_name=obs.ble_local_name,
                 )
             for hit in hits:
                 # Rule_type snooze gate. Sequenced BEFORE dedup because
