@@ -111,7 +111,7 @@ DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD = 70
 # defensive posture preserves backward compat with older exports
 # (which carry `schema_version` keys outside this list, or no
 # `schema_version` key at all).
-DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST: tuple[str, ...] = ("25", "26")
+DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST: tuple[str, ...] = ("25", "26", "27")
 
 # GitHub-fetch defaults for `--from-github`. Argus publishes its
 # canonical CSV at exports/argus_export.csv on the kevwillow/argus-db
