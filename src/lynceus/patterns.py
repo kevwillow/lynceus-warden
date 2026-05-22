@@ -36,6 +36,12 @@ Pattern types (matching the column values stored in ``watchlist.pattern_type``):
                    spec; normalizing would silently change matching behaviour.
                    L-RULES-10 (SSID case/whitespace handling) is a deliberate
                    v0.4.x deferral, not a v0.4.0 P0.
+* ``ble_local_name`` – defensive validation only (non-empty, length cap
+                   at 64 chars, type check). No canonicalization: BLE
+                   local names are case-sensitive per Bluetooth Core
+                   Spec §4.5.2 (Complete Local Name); mirrors the SSID
+                   pass-through branch. Equality at the string level
+                   against the observation's ``ble_local_name`` field.
 
 The ``mac_range`` pattern type is intentionally NOT handled by
 ``normalize_pattern`` because it returns a structured (prefix, length)
@@ -371,6 +377,55 @@ def _normalize_drone_id_prefix(pattern: str) -> str:
     return raw
 
 
+# ble_local_name parsing. Argus emits the Bluetooth Core Spec §4.5.2
+# Complete Local Name verbatim — exact strings, no canonicalization
+# beyond defensive validation. Verified against the v1.4.0 audit
+# (3 rows: 'Penguin', 'Flock', 'FS Ext Battery') and the v1.4.1
+# handoff (20 rows; 'Flock-*' shape variants plus 'FLOCK'). Max
+# observed length is 14 chars ('FS Ext Battery'); the 64-char cap
+# here is conservative — well above the observed max with safety
+# margin, well below the 248-byte spec ceiling.
+#
+# Case preservation. BLE local names are case-sensitive per the
+# spec (mirrors the SSID convention in normalize_pattern's
+# pass-through branch). Lowercasing 'FLOCK' would silently merge
+# it with 'Flock' in the watchlist, dropping a distinct Argus
+# emission. Comparison at observation time is exact-equality
+# against the canonical Kismet field
+# ``kismet.device.base.name`` extracted in
+# ``kismet._extract_ble_local_name``.
+#
+# Equality only. Substring / regex semantics are a separate,
+# deferred work item (the ssid_pattern parallel-track for
+# ble_local_name, deferred to v1.4.3+); Argus emits exact
+# strings today and the runtime matcher equality-compares the
+# canonical stored form.
+_BLE_LOCAL_NAME_MAX_LEN = 64
+
+
+def _normalize_ble_local_name(pattern: str) -> str:
+    if not isinstance(pattern, str):
+        raise ValueError(
+            f"ble_local_name pattern must be a string, "
+            f"got {type(pattern).__name__}"
+        )
+    # Strip only outer whitespace; preserve internal spaces (e.g.
+    # 'FS Ext Battery'). An all-whitespace-or-empty input is
+    # rejected — it cannot match any real BLE advertisement and
+    # storing it would be operator-visible noise.
+    stripped = pattern.strip()
+    if not stripped:
+        raise ValueError("ble_local_name pattern is empty")
+    if len(stripped) > _BLE_LOCAL_NAME_MAX_LEN:
+        raise ValueError(
+            f"ble_local_name pattern {pattern!r}: length {len(stripped)} "
+            f"exceeds {_BLE_LOCAL_NAME_MAX_LEN}-char cap (Argus emits "
+            f"3-20 chars today; the cap is conservative and well below "
+            f"the Bluetooth Core Spec 248-byte Complete Local Name ceiling)"
+        )
+    return stripped
+
+
 def normalize_pattern(pattern_type: str, pattern: str) -> str:
     """Return the canonical persistent form of ``pattern`` for ``pattern_type``.
 
@@ -389,6 +444,8 @@ def normalize_pattern(pattern_type: str, pattern: str) -> str:
         return _normalize_ble_manufacturer_id(pattern)
     if pattern_type == "drone_id_prefix":
         return _normalize_drone_id_prefix(pattern)
+    if pattern_type == "ble_local_name":
+        return _normalize_ble_local_name(pattern)
     if pattern_type == "ssid":
         # SSIDs are case-sensitive per 802.11; do not normalize.
         return pattern
