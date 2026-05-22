@@ -2514,6 +2514,7 @@ def test_watchlist_pattern_type_counts_empty_returns_zero_for_each_type(db):
         "mac_range": 0,
         "ble_manufacturer_id": 0,
         "drone_id_prefix": 0,
+        "ble_local_name": 0,
     }
 
 
