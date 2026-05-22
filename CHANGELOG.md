@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-05-22
+
+### Added
+
+- **Argus `schema_version=27` now accepted silently.** Argus v1.5.0
+  bumps the schema version to 27. The importer's accept-list (added
+  in v0.6.1) grows to cover `25 / 26 / 27`, so v1.5.0 exports import
+  without tripping the "unknown schema version" warning. Other values
+  still warn; the warn-don't-abort posture is unchanged.
+
+- **Forward-compat slot for `imei_tac` identifier_type.** Argus v1.5.0
+  adds `imei_tac` (IMEI Type Allocation Code — the first 8 digits of
+  an IMEI, populated via regulatory channels) as a new
+  identifier_type. It ships at 0 rows initially, with backfills
+  arriving in v1.5.x. Migration 021 admits `imei_tac` in the
+  watchlist `pattern_type` CHECK and the importer's identifier-type
+  map gains the matching entry. Without the migration, the first
+  v1.5.x backfill would fail the SQLite CHECK on INSERT. Runtime
+  alerting on `imei_tac` is deferred — there is no Kismet-observable
+  surface for IMEI TAC values, so no matcher, no `device_category`
+  default, and no severity default land in this release. Once Argus
+  publishes a concrete TAC corpus, runtime alerting can be wired up;
+  same posture as `icao_24bit_address`.
+
 ## [0.6.1] - 2026-05-22
 
 ### Fixed
