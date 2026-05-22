@@ -78,6 +78,16 @@ IDENTIFIER_TYPE_MAP: dict[str, str] = {
     # release boundary with Argus v1.4.2's
     # IDENTIFIER_TYPE_TO_PATTERN_TYPE promotion.
     "ble_local_name": "ble_local_name",
+    # Forward-compat structural slot for Argus v1.5.0 (mig-0027 CP33).
+    # IMEI TAC (Type Allocation Code, first 8 digits of an IMEI) is
+    # populated via regulatory channels — there is no Kismet-observable
+    # surface, so no matcher, no device_category, and no severity
+    # default ship in this cycle. Admission-only: with migration 021
+    # extending the watchlist.pattern_type CHECK, the importer accepts
+    # imei_tac rows the moment Argus starts emitting them (v1.5.0
+    # ships 0 rows; v1.5.x backfills land cleanly). 1:1 self-map per
+    # ble_local_name precedent.
+    "imei_tac": "imei_tac",
 }
 
 # Per-spec built-in severity defaults. Categories not listed default to "low".
