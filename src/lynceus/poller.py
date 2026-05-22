@@ -233,8 +233,8 @@ def poll_once(
                         stored,
                         db.PROBE_SSIDS_PER_DEVICE_CAP,
                     )
-            if config.capture.ble_friendly_names and obs.ble_name:
-                db.update_device_ble_name(obs.mac, obs.ble_name)
+            if config.capture.ble_friendly_names and obs.ble_local_name:
+                db.update_device_ble_name(obs.mac, obs.ble_local_name)
             db.insert_sighting(
                 mac=obs.mac,
                 ts=obs.last_seen,

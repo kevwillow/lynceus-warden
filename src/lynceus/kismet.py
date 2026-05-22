@@ -61,7 +61,17 @@ class DeviceObservation(BaseModel):
     ble_service_uuids: tuple[str, ...] = ()
     seen_by_sources: tuple[str, ...] = ()
     probe_ssids: tuple[str, ...] | None = None
-    ble_name: str | None = None
+    # BLE Core Spec §4.5.2 Complete Local Name extracted from the
+    # Kismet device record via _extract_ble_name (gated on
+    # capture_ble_name / capture.ble_friendly_names). Field name
+    # matches the watchlist pattern_type 'ble_local_name' so the
+    # rule matcher can read obs.ble_local_name against a pattern_type=
+    # 'ble_local_name' DB row directly. None when capture is disabled
+    # or the field is absent in the record. The devices.ble_name
+    # column (migrations 006/014) is a separate forensic surface and
+    # retains its historical name — renaming the column would force
+    # an unnecessary table-rebuild migration.
+    ble_local_name: str | None = None
     # Canonical persistent form of the Bluetooth SIG 16-bit Company
     # Identifier extracted from the BTLE advertisement payload — 4
     # lowercase hex chars, no '0x' prefix (e.g. '004c' for Apple).
@@ -508,7 +518,7 @@ def parse_kismet_device(
         ble_service_uuids=ble_service_uuids,
         seen_by_sources=seen_by_sources,
         probe_ssids=probe_ssids,
-        ble_name=ble_name,
+        ble_local_name=ble_name,
         ble_manufacturer_id=ble_manufacturer_id,
         drone_id_prefix=drone_id_prefix,
         # Only carry the full Kismet record forward when evidence
