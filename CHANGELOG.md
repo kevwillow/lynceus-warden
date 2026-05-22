@@ -10,1529 +10,299 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **`lynceus-bootstrap-kismet --skip-install` now works on any Linux,
-  not just the apt-matrix distros.** The v1 distro gate fired before
-  `--skip-install` was checked, so the flag's advertised "I'll install
-  Kismet myself, just do the rest" contract was a no-op on any distro
-  outside Debian/Ubuntu/Kali: Parrot, Mint, Devuan, etc. operators
-  got the unsupported-distro message + exit 0 regardless of the flag,
-  and the interface-config + kismet-group steps never ran. The gate
-  now guards ONLY the apt-install path. Interface auto-detection,
-  `kismet_site.conf` patching, and group membership are
-  distro-agnostic and run on any Linux host that has Kismet present
-  (or that the operator is about to install Kismet on via their
-  distro's own tooling). The default-path behaviour (unsupported
-  distro, no `--skip-install`) is preserved — pointer + exit 0 — so
-  existing flows are unchanged.
-- **`lynceus-bootstrap-kismet` no longer assumes Kismet's site config
-  lives at `/etc/kismet/`.** Apt installs do land it there, but
-  from-source builds use the `./configure --prefix=/usr/local`
-  default at `/usr/local/etc/kismet/`, and the v1 helper would either
-  write to the wrong place or fail silently on a from-source host.
-  The helper now probes both candidate directories and writes to
-  whichever exists. If neither exists (Kismet not yet installed), it
-  warns clearly naming both candidates and exits 0 instead of
-  writing to a guessed path — the operator can install Kismet, then
-  re-run with `--skip-install`. The closing-hint block surfaces
-  which path was patched when it differs from `/etc/kismet/` so
-  from-source operators aren't surprised.
-- **`lynceus-bootstrap-kismet`'s closing hint reflects what actually
-  happened on the run.** The v1 hint was a static "go set the
-  password and create an API key" block printed identically whether
-  the run installed Kismet, skipped install, or was blocked by a
-  missing config directory. It now adapts to: apt-install skipped on
-  unsupported distro; Kismet not on PATH; no site-config dir found;
-  site-config written to a non-default location. Each surfaces as a
-  one-line note above the numbered steps so the operator can act
-  without re-reading the entire run log.
-- **Raspberry Pi OS regression-protection.** The project's primary
-  deployment target had no test pinning its `/etc/os-release`
-  fingerprint to the supported branch of `detect_distro`. Added a
-  parametrised case pinning RPi OS Bookworm (`ID=debian` +
-  `VERSION_CODENAME=bookworm`) to the Debian/bookworm match. RPi OS
-  Bookworm needed no code change — it falls through to the existing
-  Debian branch automatically (the Bullseye-era `ID=raspbian` value
-  was retired upstream when RPi OS rebased onto Debian Bookworm) —
-  but the test catches any future regression to detection that
-  would silently break Pi deployments. Legacy Raspbian operators
-  now have the `--skip-install` universal path above as a working
-  workflow.
-- **`install.sh`'s post-install hint no longer leaves fresh-host
-  operators wondering "what now?".** The v1 two-line "Need Kismet?
-  Run X. Already have it? Run Y." was too thin for an operator who
-  hadn't yet discovered `docs/DEPLOYMENT.md` — the actual ceremony
-  (install Kismet, log out + back in, start Kismet, set admin
-  password, create read-only API key, configure Lynceus, run) was
-  invisible from the install output. The hint is now a numbered
-  Next Steps block (via a shared `print_next_steps` helper) that
-  walks the operator through each step, surfaces three Kismet-install
-  paths (apt-distro full bootstrap, other-distro `--skip-install`,
-  already-have-Kismet), and adapts to scope so `--user` is pointed
-  at `lynceus-quickstart` (foreground dev/demo) and `--system` at
-  `sudo systemctl enable --now lynceus.service lynceus-ui.service`
-  plus the opt-in `lynceus-refresh.timer`. Block ends with pointers
-  to `docs/DEPLOYMENT.md` (full runbook + troubleshooting) and
-  `docs/SMOKE.md` (post-install verification); the runbook is the
-  source of truth, install.sh's hint is a getting-started signpost.
-  install.sh remains offline (no new network operations introduced).
+- **`lynceus-bootstrap-kismet --skip-install` now works on every Linux
+  distro.** Previously the flag only worked on Debian, Ubuntu, and Kali.
+  Operators on Mint, Parrot, Devuan, etc. saw an "unsupported distro"
+  message and the script exited without doing anything — even though
+  `--skip-install` was meant to say "I'll install Kismet myself, just do
+  the rest." The flag now does what it says: configure the interface,
+  patch `kismet_site.conf`, and add you to the `kismet` group, on any
+  Linux host.
+
+- **Bootstrap finds Kismet's config no matter how it was installed.**
+  Apt installs put the config at `/etc/kismet/`; from-source builds use
+  `/usr/local/etc/kismet/`. The script now checks both locations. If
+  neither exists (Kismet not installed yet), it prints a clear message
+  instead of writing to a guessed path.
+
+- **Bootstrap's closing hints match what actually ran.** The "what to
+  do next" message used to be identical regardless of whether Kismet
+  got installed, was skipped, or hit a snag. It now adapts to the
+  outcome.
+
+- **Raspberry Pi OS regression guard.** Pi is the main deployment
+  target but had no test pinning its OS detection. Added one. Pi OS
+  Bookworm continues to work (it identifies as Debian Bookworm); the
+  test catches any future change that would silently break Pi
+  deployments.
+
+- **`install.sh` now walks you through the next steps.** The old
+  two-line hint left fresh operators wondering what to do. Install now
+  ends with a numbered Next Steps block: install Kismet (three paths
+  depending on your distro and whether you already have it), log out
+  and back in, start Kismet, set the admin password, create an API
+  key, configure Lynceus, run. Adapts to `--user` vs `--system`. Points
+  to `docs/DEPLOYMENT.md` for the full runbook and `docs/SMOKE.md` for
+  post-install verification.
 
 ### Added
 
-- **`ble_local_name` pattern_type admission (mig-020 + coordinated
-  Argus v1.4.2 release boundary).** Lynceus admits the Bluetooth
-  Core Spec §4.5.2 Complete Local Name as a new watchlist
-  pattern_type, ahead of Argus v1.4.2's
-  `IDENTIFIER_TYPE_TO_PATTERN_TYPE` promotion so the consumer-side
-  gate (`IDENTIFIER_TYPE_MAP` in `lynceus-import-argus`) does not
-  drop the 20 v1.4.1 rows Argus is about to start emitting in
-  larger volume. Operationally motivating yield: Flock Safety BLE
-  device names (`'Penguin'`, `'FS Ext Battery'`, `'Flock'`,
-  `'FLOCK'`, `'Flock-*'` shape variants) — v1.4.0 yield was 3
-  rows (below the audit's `NEGLIGIBLE_YIELD_THRESHOLD=5`); v1.4.1
-  jumps 6.7× to 20, closing the residual with `admit` per
-  `docs/ARGUS_RESIDUALS.md`. Surfaces, end-to-end:
+- **Detect Flock Safety devices by their Bluetooth name.** Lynceus can
+  now watch for specific BLE device names (the "Complete Local Name"
+  from the Bluetooth spec) — useful for Flock devices that broadcast
+  names like `Penguin`, `FS Ext Battery`, `Flock`, `FLOCK`, and
+  `Flock-*` variants. This bumps Flock detection from 3 watchlist rows
+  to 20 — a 6.7× yield jump for the most operationally relevant
+  target. Names match case-sensitively and exactly (wildcards are
+  planned for a later release). Surfaces in the watchlist filter
+  dropdown, the `/allowlist` add-form, the setup wizard (now 8
+  delegation rules), and a commented-out template in
+  `config/rules.yaml` (off by default for privacy). Requires
+  `capture.ble_friendly_names: true` in `lynceus.yaml` to fire —
+  without it, BLE names aren't captured at all.
 
-  - **Migration 020** (`020_pattern_type_ble_local_name.sql`)
-    relaxes the `watchlist.pattern_type` CHECK to admit
-    `'ble_local_name'`. Mirrors mig-019 byte-for-byte: full table
-    rebuild under `PRAGMA foreign_keys=OFF`, AUTOINCREMENT
-    ROWIDs preserved, `mac_range_prefix` /
-    `mac_range_prefix_length` carried verbatim, partial index
-    recreated, FK references preserved by-reference. The paired
-    `_down.sql` is conditional-rollback (rollback aborts if any
-    ble_local_name rows present, per the rc4 idiom).
+- **Placeholder severity setting for automotive telematics.** Argus
+  v1.4.1 added an `automotive_telematics` device category but hasn't
+  shipped any rows in it yet (coming in v1.4.2). The setup wizard now
+  seeds a commented example so the category shows up in your config
+  when the data arrives. No runtime change.
 
-  - **Canonicalizer `_normalize_ble_local_name`** in
-    `patterns.py`. Defensive validation only (non-empty after
-    outer-whitespace strip, 64-char length cap, type check); no
-    case folding (case-sensitive per spec — `'FLOCK'` and
-    `'Flock'` are distinct rows). 64-char cap is conservative:
-    well above the v1.4.0 max observed (14 chars,
-    `'FS Ext Battery'`), well below the 248-byte Complete Local
-    Name ceiling. Mirrors the SSID pass-through shape; equality
-    only (substring / regex semantics are a separate deferred
-    work item, the `ssid_pattern` parallel-track for
-    `ble_local_name`, deferred to v1.4.3+).
-
-  - **Importer admission** via a single
-    `IDENTIFIER_TYPE_MAP['ble_local_name'] = 'ble_local_name'`
-    entry in `lynceus-import-argus`. The 3 ble_local_name rows
-    in `src/lynceus/data/default_watchlist.csv` (previously
-    silently counted as `dropped_unknown_type` on first
-    bootstrap) now admit; existing operator deployments pick up
-    the new rows on the next refresh.
-
-  - **Observation field rename** `obs.ble_name → obs.ble_local_name`
-    for symmetry with the pattern_type, so the rule matcher
-    equality-checks `obs.ble_local_name` against a
-    `pattern_type='ble_local_name'` DB row directly. Scope is the
-    Pydantic field only; the `devices.ble_name` SQLite column,
-    `db.update_device_ble_name` method, `_extract_ble_name`
-    helper, `capture_ble_name` parameter, and
-    `capture.ble_friendly_names` config key all retain their
-    historical names — they describe the Kismet field / DB
-    column / capture-knob concept, not the watchlist pattern_type
-    concept, and renaming them would force unnecessary migration
-    churn or break operator config.
-
-  - **Runtime rule `watchlist_ble_local_name`** in `rules.py`.
-    Mirrors `watchlist_drone_id_prefix`: empty `rule.patterns`
-    delegates matching to the watchlist DB (severity sourced
-    from the matched row); non-empty in-memory equality-matches
-    against `rule.patterns` (severity sourced from the rule).
-    Validator normalizes any inline patterns through
-    `patterns.normalize_pattern('ble_local_name', p)` so a
-    `rules.yaml` typo (trailing whitespace, empty string) does
-    not silently dead-end at runtime. Depends on
-    `capture.ble_friendly_names` being enabled in
-    `lynceus.yaml` — without it `obs.ble_local_name` stays
-    `None` and the rule fires zero alerts. Backed by
-    `db.resolve_matched_ble_local_name_for_eval`, slotting
-    between `drone_id_prefix` and `ssid` in
-    `db.resolve_matched_watchlist_id`'s annotation tiebreak
-    chain so `alerts.matched_watchlist_id` carries the Argus
-    metadata link for ble_local_name matches.
-
-  - **Operator surface**: setup wizard's `DELEGATION_RULES`
-    grows an 8th entry (`argus_ble_local_name`); the bundled
-    `config/rules.yaml` carries a commented-out 8th template
-    block under a new "ble_local_name delegation (v0.6.1+)"
-    section (default OFF per privacy-conservative posture); the
-    `AllowlistPatternType` literal + `_entry_matches` branch in
-    `allowlist.py` mirror the existing
-    `drone_id_prefix` / `ble_manufacturer_id` shape so an
-    operator can suppress a Flock-camera alert by name; the
-    `/watchlist` filter dropdown, `/allowlist` add-form
-    dropdown, and `/settings` watchlist-freshness card all
-    enumerate the new pattern_type. The
-    `db._WATCHLIST_PATTERN_TYPES` tuple grows in lockstep so
-    `watchlist_pattern_type_counts` and the list-watchlist
-    filter validator stay in sync.
-
-  Test surfaces (count by file, post-pass): 7 in `test_db`, 10
-  in `test_rules`, 4 in `test_alert_linkage`, 3 in
-  `test_import_argus`, 4 in `test_allowlist`, 2 in
-  `test_setup_wizard`, 9 in `test_patterns` — plus migration
-  rollback parametrize for `(20, ..., 'ble_local_name')`. The
-  `docs/ARGUS_RESIDUALS.md` audit closes the verdict
-  (`drop-entirely → admit`) and notes the coordinated Argus
-  v1.4.2 release boundary.
-
-- **`automotive_telematics` severity seed in the scaffolded
-  severity_overrides template.** Forward-compat hygiene per the
-  Argus engineer §F.1. Argus v1.4.1 extends the `device_category`
-  enum with `automotive_telematics` (mig-0026 CP32 §1) but ships
-  zero active rows at v1.4.1 — the Parrot Automotive arm and the
-  v1.4.2 cellular-IoT vendor backlog will populate the category
-  later. The `SEVERITY_OVERRIDES_TEMPLATE` scaffolded by
-  `lynceus-setup` now seats a commented `automotive_telematics: med`
-  example inside the `device_category_severity:` block so operators
-  see the category in context when the data lands. The override is
-  commented-by-default and additive — no runtime change, no
-  template overwrite of operator-edited files. (Argus engineer's
-  "medium" recommendation transposed to Lynceus's `med` literal;
-  `medium` is not in `VALID_SEVERITIES` and would silently disable
-  the override.)
-- **`argus_schema_version_accept_list` ingress check.** Defensive
-  hygiene per the Argus engineer §F.2 for the v1.4.1 consumer-prep
-  window. The importer now reads the `# meta: schema_version=N`
-  value from incoming Argus CSV exports and matches it against an
-  operator-tunable accept-list (default `["25", "26"]` — covers the
-  pre-Phase-1 regen anchor at `"25"` and the v1.4.1 cutover at
-  `"26"`). Values outside the list trip a WARNING and the
-  configured accept-list is surfaced, plus a hint at the override
-  key for tuning; the import proceeds regardless — warn-don't-abort
-  posture preserves backward compat with operators on older Argus
-  exports. The accept-list lives in `severity_overrides.yaml`
-  alongside the other import-time tuning keys (`vendor_overrides`,
-  `geographic_filter`, `confidence_downgrade_threshold`); set it to
-  `null` or `[]` to disable the check entirely. Older exports
-  whose `# meta:` line carries no `schema_version` key (rc2-era
-  `# meta: argus_export v3 (CP11)` shape) pass silently — warning-
-  on-absent would be a noisy regression for archived-export
-  imports. Surfaces via 10 new tests in `test_import_argus.py`
-  (acceptance, custom accept-list, missing key, opt-out shapes,
-  loader-side default / null / list coercion).
+- **Warning if an Argus export's schema version is unexpected.** The
+  importer now checks the `schema_version` in incoming Argus CSV
+  exports against an accept-list (default: versions 25 and 26).
+  Unknown versions print a warning but the import still proceeds —
+  preserves backward compat for old exports. Tunable in
+  `severity_overrides.yaml`; set to `null` or `[]` to disable. Old
+  exports that don't carry a `schema_version` field pass silently.
 
 ## [0.6.0] - 2026-05-21
 
-Release status: This release has not yet been validated against
-real Kismet + ntfy + systemd on Linux hardware. The test suite
-covers 2475 tests on Windows / 2491 expected on Linux at this
-commit (16-test POSIX delta unchanged from v0.5.0 — no
-`install.sh` changes in 0.6.0). Functional correctness asserted
-by tests + 22 diagnostic behavior-dump tests (`pytest -m
-diagnostic`); deployment behavior is asserted by
-`docs/DEPLOYMENT.md` and `docs/KALI_SMOKE_CHECKLIST.md` but
-unsmoked at this tag. Operators encountering issues should file
-via the project tracker with browser + Python version +
-relevant journalctl excerpt.
-
-Most likely class of bugs is UI-related — the backend has the
-deepest test coverage; the new `/alerts` keyboard-shortcut JS
-in particular has lighter coverage by its nature.
+Release status: This release has not yet been validated against real
+Kismet + ntfy + systemd on Linux hardware. The test suite covers 2475
+tests on Windows / 2491 on Linux at this commit, plus 22 diagnostic
+tests. Functional correctness is asserted by tests; deployment
+behavior is documented in `docs/DEPLOYMENT.md` and
+`docs/KALI_SMOKE_CHECKLIST.md` but unsmoked at this tag. If you hit
+issues, file via the project tracker with browser + Python version +
+relevant journalctl excerpt. The most likely class of bugs is
+UI-related — the new `/alerts` keyboard-shortcut JS in particular has
+lighter coverage by its nature.
 
 ### Added
 
-- **Keyboard shortcuts on `/alerts` (minimum set).** Extends the
-  existing `Esc` precedent (reset filters) into a small, hands-
-  on-home-row navigation set so an operator triaging an alert
-  queue doesn't have to reach for the mouse to focus the search
-  bar or page forward. The minimum set: `/` focuses the
-  rule/message search input; `n` advances to the next page; `p`
-  to the previous page; `?` toggles a non-modal floating help
-  panel that lists the shortcuts; `Esc` closes the help panel if
-  open and otherwise falls through to the established reset-
-  filters behavior. The handler is a single document-level
-  `keydown` listener with a shared input-shadowing guard --
-  letter and symbol shortcuts skip when focus is inside an
-  `<input>`, `<textarea>`, `<select>`, or `[contenteditable]`,
-  so typing a `/` or `?` into the search field lands the
-  character in the field as a character (GitHub / Gmail
-  convention). Modifier-held chords (Ctrl/Cmd/Alt) are also
-  skipped so OS and browser shortcuts win; Shift is intentionally
-  not in the guard since `?` needs Shift on US layouts. The help
-  overlay is non-modal (no focus trap, no backdrop), rendered
-  as an always-present `<aside hidden>` so screen readers and
-  no-JS clients see nothing and the `?` shortcut just flips the
-  attribute. Progressive-enhancement posture is preserved:
-  every shortcut has a non-JS equivalent (click the search field;
-  click prev/next; click reset-filters), so the page is fully
-  usable with JS disabled. Vanilla event listeners only -- no
-  hotkeys library, no JS framework. The page-count line carries
-  a small "Press `?` for keyboard shortcuts" hint so the set is
-  discoverable without prior knowledge. Scope is `/alerts` only;
-  propagation to `/rules`, `/watchlist`, and `/allowlist` is
-  deferred to follow-on prompts once the JS shape is settled
-  here. A row-selection cluster (`j`/`k` to move a highlight,
-  `a` to ack the selected row, `Enter` to open detail) is also
-  deferred -- it requires a "currently selected row" UI primitive
-  that doesn't exist today, plus focus-vs-selection semantics
-  and a11y design that warrants its own pass.
+- **Keyboard shortcuts on `/alerts`.** Triage the alert queue without
+  reaching for the mouse:
 
-- **Sub-day granularity on `/alerts` absolute date range.** The
-  `since` / `until` URL params on `/alerts` (and the lockstep CSV
-  export at `/alerts.csv` and bulk-ack POST at
-  `/alerts/ack-all-visible`) now accept `YYYY-MM-DDTHH:MM` /
-  `YYYY-MM-DDTHH:MM:SS` datetime strings in addition to the
-  pre-existing `YYYY-MM-DD` date-only form. An operator triaging
-  an incident can express a window like "Tuesday 14:00 to
-  Wednesday 09:00" directly in the filter bar; previously the only
-  way to narrow to a sub-day stretch was to pick a wider relative
-  `window` bucket (e.g. `24h`) and visually filter, which both
-  overstated the range and broke down for anything older than 30d.
-  The picker UI swaps `<input type="date">` for
-  `<input type="datetime-local">`; datetime values are interpreted
-  verbatim as UTC (no JS conversion, no new TZ config key --
-  single-operator deployment, operator does the mental math for
-  non-UTC, same posture as everywhere else in the webui). Date-only
-  bookmarks are preserved byte-for-byte: `since=YYYY-MM-DD`
-  promotes to UTC midnight, `until=YYYY-MM-DD` promotes to
-  `23:59:59`, exactly as before. Datetime `until` does NOT promote
-  to end-of-day -- the operator-supplied minute IS the boundary,
-  matching the picker's affordance. Mix-and-match works
-  (`since=date&until=datetime` parses each independently); one-
-  sided ranges (`since` alone or `until` alone) work; combining
-  with the relative `window=` selector preserves the established
-  MAX-combine behavior (tighter lower bound wins, not "absolute
-  overrides relative"). Malformed input switches from the pre-rc6
-  strict HTTP 400 to silent clamp-to-no-clause, matching the
-  `rule_type` / `window` / `has_note` posture on the same page so
-  a stale bookmark or fat-fingered submission lands on the
-  unfiltered page rather than an error. No schema changes, no
-  migrations -- the DB layer was already `ts >= ?` / `ts <= ?` on
-  epoch seconds and is granularity-agnostic; the rc6 extension is
-  purely in the query-param parsing helper plus the picker widget.
-  Configurable browser-local timezone display and CSV-export-of-
-  datetime-range are deferred.
+  - `/` — focus the search bar
+  - `n` — next page
+  - `p` — previous page
+  - `?` — toggle a help panel listing all shortcuts
+  - `Esc` — close the help panel, or reset filters if the panel is
+    already closed
 
-- **Per-rule_type fires breakdown on `/rules`.** The page already
-  showed per-rule_name fire counts and per-rule_type snooze
-  controls, but operators had to mentally sum rule_name rows to get
-  type-level totals like "watchlist_mac total fires (last 24h)".
-  A new "fires by rule_type" summary section now sits above the
-  per-rule_name list, surfacing fire count + last fired + snooze
-  state at the type level in one place. The same `since=` window
-  param drives both views in lockstep across `1h / 24h / 7d / 30d
-  / all`; flipping the dropdown updates both summary and per-name
-  list in one round-trip. The summary also carries inline
-  snooze / unsnooze controls so the operator can drive a type-
-  level snooze from the type-level view rather than picking an
-  arbitrary rule_name article. Section ordering is count_desc with
-  rule_type as tiebreaker so the highest-volume types lead.
-  Iteration scope is the unique rule_types present in the loaded
-  ruleset (matches per-rule_name behavior; the operator's
-  rules.yaml view is authoritative); types with zero fires in the
-  window still render so snooze affordances stay reachable. The
-  section is independent of the `status=` filter -- that filter
-  narrows the per-rule_name list only; hiding snoozed types from
-  the type-level view would defeat its purpose. No schema changes,
-  no new URL params, no new sort vocab. CSV export of the
-  per-rule_type breakdown is not in scope here.
+  Shortcuts don't fire while you're typing in a text field (so `/` and
+  `?` land as characters in the search box) or when you're holding
+  Ctrl / Cmd / Alt (so OS and browser shortcuts still win). The page
+  remains fully usable with JavaScript disabled — every shortcut has a
+  mouse equivalent. A small "Press `?` for keyboard shortcuts" hint
+  sits near the page counter for discoverability. Scope is `/alerts`
+  only for now; other pages to follow. Row-selection shortcuts
+  (`j` / `k` / `a` / `Enter`) are deferred — they need a selected-row
+  UI primitive that doesn't exist yet.
+
+- **Hour-and-minute precision on `/alerts` date filters.** You can now
+  filter by something like "Tuesday 14:00 to Wednesday 09:00" directly
+  in the filter bar. Previously only whole days worked, which
+  overstated any sub-day window. Date pickers swap from date-only to
+  datetime-local; times are interpreted as UTC (no timezone config —
+  single-operator deployment, you do the mental math, same as
+  everywhere else in the UI). Old date-only bookmarks still work:
+  `since=YYYY-MM-DD` becomes midnight UTC, `until=YYYY-MM-DD` becomes
+  23:59:59 UTC, exactly as before. Malformed input is silently
+  ignored (lands you on the unfiltered page) rather than throwing an
+  error. No schema changes, no migration.
+
+- **Per-rule-type fire counts on `/rules`.** The page already showed
+  fire counts per rule name, but you had to add them up by hand to get
+  type-level totals like "all `watchlist_mac` fires in the last 24h."
+  A new summary section shows this directly, with inline snooze
+  controls so you can snooze an entire rule type from the type-level
+  view. The same time window controls both summary and detail list.
+  Sorted by fire count, highest first; types with zero fires in the
+  window still appear so their snooze controls stay reachable.
 
 ### Fixed
 
-- **Per-Argus-record dedup rework — no-op re-import is now
-  idempotent.** Before: re-importing the bundled Argus CSV against
-  a populated DB inflated counters (31 false-`new` + 21 false-
-  `updated` + 22264 `unchanged` against 22533 input rows) and
-  thrashed `updated_at` on 25 `watchlist_metadata` rows despite
-  zero source-data change — 99 mutating SQL statements per re-
-  import (52 × `UPDATE watchlist_metadata`, 46 × `UPDATE
-  watchlist`, 1 × `INSERT import_runs`). Two distinct upstream-
-  emitted dup shapes drove the symptom (the device_category
-  hypothesis previously recorded in BACKLOG.md was falsified by
-  the scout — 0 of 15 peer-collide groups differ on
-  device_category; see docs/ARGUS_DEDUP_SHAPES.md for the actual
-  shape inventory). After: the importer gates both shapes at per-
-  row dispatch and the second-run mutation count drops to 1 (the
-  `import_runs` INSERT, kept for the staleness signal). Counter
-  math invariant balances: bundled-CSV first import now reports
-  `22289 imported_new + 16 dropped_peer_collision + 11
-  dropped_in_import_dup + 217 dropped_unknown_type = 22533`. New
-  counters `dropped_peer_collision` and `dropped_in_import_dup`
-  appear in the importer report and the operator-facing stdout
-  summary. The pre-rework `false-new` / `false-updated` counter
-  inflation is resolved.
-  - Two new gates in `import_csv` (`src/lynceus/cli/import_argus.py`),
-    implemented as a two-phase pre-pass that runs after the
-    per-row validation gates (unknown_type, geographic_filter,
-    severity_drop, etc.) and before the main DB-write loop:
-    - **Peer-collide gate (Phase B)** — admitted candidates are
-      grouped by canonical `(pattern, pattern_type)`. Groups with
-      more than one member adjudicate via the highest-severity-
-      wins tiebreak (see below); the surviving winner reaches the
-      DB-write loop, losers increment `dropped_peer_collision`.
-      The dominant Bucket A shapes are `mac_range` legacy bare-
-      prefix vs CIDR (8/15 groups), `ble_manufacturer_id`
-      case/leading-zero variants (6/15), and `ble_uuid` short-form
-      (1/15).
-    - **Within-import dup gate (Phase A)** — admitted candidates
-      are first grouped by `argus_record_id`. Groups with more
-      than one member adjudicate via the same tiebreak chain;
-      losers increment `dropped_in_import_dup`. Phase A runs
-      before Phase B so the natural-key adjudication sees only
-      one survivor per `argus_record_id`. Dominant Bucket B shape
-      is Argus's `primary_registry` vs `crowdsourced` OUI overlay
-      (drone vendors).
-  - **Tiebreak chain for both gates** — when two or more
-    candidates collide within a group, the winner is selected by
-    a three-tier deterministic chain (each tier breaks ties from
-    the previous):
-    1. highest severity rank (`high` > `med` > `low` via
-       `_SEVERITY_RANK`)
-    2. highest confidence
-    3. earliest CSV index (first-in-CSV-order)
-    This restores operator-protective behavior: an early-in-CSV
-    `low`-severity peer no longer silently downgrades the alert
-    by winning over a later high-severity peer. The motivating
-    case was the bundled CSV's Flock dup pair (argus_record_id
-    `69248a5dad0c2eab` ×2, `cat=gunshot_detect` first then
-    `cat=alpr`, both conf=65 → med vs high pre-downgrade): an
-    implicit first-wins selection landed the gunshot_detect row
-    at severity `low`; highest-severity-wins lands the alpr row
-    at severity `med`. Audit of the bundled snapshot found 5 of
-    10 Bucket B dup sets carry severity drift between members
-    (DJI primary_registry vs crowdsourced for `48:1c:b9`,
-    `60:60:1f`, `34:d2:62`; Flock-Safety alpr vs gunshot_detect
-    for `Flock` and `Flock-230503`); 0 of 15 Bucket A groups
-    have severity drift in the current snapshot, so the
-    second-phase tiebreak is a no-op there today but the policy
-    is in place for future snapshots.
-  - **Inner content-equality short-circuit in `upsert_metadata`**
-    (`src/lynceus/db.py`) — layered defense behind the import-side
-    gates. The UPDATE branch now fetches the stored row's fields
-    matching the caller's `fields` dict and skips the UPDATE
-    entirely when every requested field already equals the stored
-    value; `updated_at` does not bump. This makes the function
-    idempotent against unchanged content for any future caller.
-  - Schema unchanged; no migration; no change to the 1:1
-    `watchlist_id`/`argus_record_id` UNIQUE constraints on
-    `watchlist_metadata` or to the LEFT-JOIN consumers
-    (`get_watchlist_with_metadata`, `list_watchlist_with_metadata`,
-    `/watchlist` UI). Production DBs that already carry thrashed
-    `updated_at` values need no migration — the next import is now
-    idempotent against them anyway.
-  - Existing tests that pinned the pre-rework last-write-wins
-    contract updated in lockstep
-    (`test_ssid_exact_argus_sample_rows_all_land_as_ssid`,
-    `test_ble_service_uuid_short_and_padded_dedup_via_natural_key`,
-    `test_geographic_filter_unset_imports_all_scopes`, the cross-
-    repo reconciliation invariant, and the bundled-CSV end-to-end
-    Flock alert which now asserts DB-delegation directly rather
-    than via a `'low'` sentinel). 12 new regular-suite tests + 1
-    new diagnostic test pin the gates, the highest-severity-wins
-    tiebreak, and the bundled-CSV second-run mutation count.
+- **Re-importing the same Argus CSV no longer fakes "new" or
+  "updated" entries.** Before this fix, re-importing the bundled
+  Argus CSV against an already-populated database falsely reported
+  31 "new" + 21 "updated" rows (out of 22,533 input rows) and ran 99
+  unnecessary SQL writes — even though nothing in the source had
+  actually changed. Two distinct duplicate shapes in the upstream
+  Argus data caused this; both are now caught at import time. A
+  no-op re-import now produces exactly 1 SQL write (the import-run
+  log entry).
+
+  As a side benefit, when duplicates do exist in the source CSV, the
+  importer now picks the highest-severity entry instead of whichever
+  appeared first in the file. The motivating case was a Flock Safety
+  row pair where the first-in-file entry would have been flagged
+  `low` and the second `med` — previously the `low` entry silently
+  won; now the `med` one does. Counter math now balances cleanly:
+  `imported_new + dropped_peer_collision + dropped_in_import_dup +
+  dropped_unknown_type = total_input_rows`.
+
+  Two new counters (`dropped_peer_collision` and
+  `dropped_in_import_dup`) appear in import reports. No schema
+  changes, no migration — existing databases with thrashed timestamps
+  need nothing; the next import is idempotent against them.
 
 ## [0.5.0] - 2026-05-20
 
-Release status: This release has not yet been validated against
-real Kismet + ntfy + systemd on Linux hardware. The test suite
-covers 2434 tests on Windows / 2450 expected on Linux, with the
-16-test delta being POSIX-specific install.sh and chmod-mode
-checks that don't run on non-POSIX platforms. Functional
-correctness is asserted by tests + 21 diagnostic behavior-dump
-tests; deployment behavior is asserted by `docs/DEPLOYMENT.md`
-and `docs/KALI_SMOKE_CHECKLIST.md` but unsmoked. Operators
-encountering issues should file via the project tracker with
-browser + Python version + relevant journalctl excerpt.
-
-Most likely class of bugs is UI-related — the backend has the
-deepest test coverage; operator-facing templates and the JS
-keyboard shortcut have lighter coverage by their nature.
+Release status: This release has not yet been validated against real Kismet + ntfy + systemd on Linux hardware. The test suite covers 2434 tests on Windows / 2450 on Linux at this commit, plus 21 diagnostic tests. Functional correctness is asserted by tests; deployment behavior is documented in `docs/DEPLOYMENT.md` and `docs/KALI_SMOKE_CHECKLIST.md` but unsmoked at this tag. If you hit issues, file via the project tracker with browser + Python version + relevant journalctl excerpt. The most likely class of bugs is UI-related — the keyboard-shortcut JS and the operator-facing templates have lighter coverage by their nature.
 
 ### Added
 
-- **Clearer filtered indicator + Esc keyboard shortcut on
-  `/alerts`.** Replaces the bare "reset filters" link with a
-  single summary line that names which filters are active and
-  their values, e.g.
-  `Filtered by: severity=high, since=2026-05-01, q=apple
-  -- reset filters  (or press Esc)`. Single source of truth for
-  filter state; operator no longer has to scan the form to
-  understand why a result count is narrow. Pressing `Esc`
-  navigates to the reset-filters link's href, with an
-  input-focus guard so typing into `q` / `search` or selecting
-  from a dropdown is unaffected. First keyboard shortcut on the
-  webui; chosen as the universal cancel/clear convention and
-  surfaced in the visible "(or press Esc)" hint so the shortcut
-  documents itself on the page. Scope: `/alerts` only; the
-  watchful / watchlist / allowlist pages keep their existing
-  bare-link rendering.
+- **Clearer filtered indicator on `/alerts`, plus `Esc` to reset.** The bare "reset filters" link is replaced with a single summary that names which filters are active and their values, e.g. `Filtered by: severity=high, since=2026-05-01, q=apple -- reset filters (or press Esc)`. No more scanning the form to figure out why a result count is narrow. Pressing `Esc` resets filters, with an input-focus guard so typing into the search box is unaffected. First keyboard shortcut on the webui; scoped to `/alerts` only. The watchful / watchlist / allowlist pages keep their existing bare-link rendering.
 
-- **Deployment runbook (docs/DEPLOYMENT.md).** End-to-end install
-  walkthrough for a fresh Kali / Debian / Ubuntu host: prerequisites,
-  clone + install, Kismet bootstrap, API key creation, lynceus-setup
-  configuration, optional Argus refresh, lynceus-validate
-  preflight, systemd enable (system install) or
-  lynceus-quickstart foreground (dev/demo), and smoke verification.
-  Each step carries action + expected output + brief
-  explanation so the operator can paste the command directly and
-  tell whether it worked. Cross-references CONFIGURATION.md,
-  RULES.md, NTFY_SETUP.md, and SMOKE.md rather than duplicating
-  them. A "Common issues" section covers the five operator-facing
-  failure modes that surface most often (Kismet API key
-  auto-detect, PATH not picking up `lynceus-*`, adapter not in
-  monitor mode, ntfy topic mismatch, systemd unit permission-
-  denied). README gains a "Getting started" link to the new
-  runbook; the existing README §Installation + §Quick start
-  sections are unchanged.
+- **`docs/DEPLOYMENT.md` — end-to-end install runbook.** Walks a fresh Kali / Debian / Ubuntu host through prerequisites, clone + install, Kismet bootstrap, API key creation, `lynceus-setup`, optional Argus refresh, `lynceus-validate` preflight, systemd enable (system install) or `lynceus-quickstart` foreground (dev/demo), and smoke verification. Each step carries action + expected output + brief explanation, so you can paste and tell whether it worked. A "Common issues" section covers the five failure modes that surface most often: Kismet API key auto-detect, PATH not picking up `lynceus-*`, adapter not in monitor mode, ntfy topic mismatch, and systemd unit permission-denied. README gains a "Getting started" link to the new runbook.
 
-- **Migration rollback paths (operator-facing, opt-in destructive
-  flow).** Every shipped DB migration (001..019) now ships a paired
-  `NNN_<name>_down.sql` rollback file alongside its forward
-  counterpart in `src/lynceus/migrations/`. A new
-  `lynceus-validate rollback --target-version N` subcommand walks
-  the applied chain in descending order, applying paired down files
-  and updating the `schema_migrations` bookkeeping table per step.
-  Defaults to the canonical DB path for `--scope user|system`; the
-  `--db PATH` override accepts an off-canonical install or a copy.
-  Interactive runs prompt for an explicit `yes` confirmation;
-  scripted/non-tty use requires `--yes`. The legacy no-subcommand
-  invocation (`lynceus-validate --scope user`) is preserved
-  verbatim for operator scripts. Three response classes: pure
-  CREATE→DROP migrations (001..004, 008, 012, 017, 018) reverse
-  cleanly; ADD COLUMN migrations (005, 006, 009, 015, 016) reverse
-  via a portable table-rebuild that preserves the pre-3.35-SQLite
-  floor; CHECK-relaxation migrations (011, 013, 014, 019) reverse
-  via a rebuild with the tighter CHECK and abort with
-  `CHECK constraint failed` if rows of the now-disallowed type
-  exist (operator deletes them or restores from backup and
-  re-runs). Migration 010 (`normalize_watchlist_patterns`) is
-  IRREVERSIBLE — its down file carries the sentinel comment
-  `IRREVERSIBLE:` which the runner detects: WARNING logged,
-  schema_migrations row removed so the chain can continue, no SQL
-  executed. **BACK UP YOUR DB BEFORE INVOKING ROLLBACK.** See
-  [docs/CONFIGURATION.md §Database migration rollback](docs/CONFIGURATION.md#database-migration-rollback)
-  for the full operator flow.
+- **Migration rollback via `lynceus-validate rollback --target-version N`.** Every shipped DB migration (001..019) now ships a paired down-file, and the new subcommand walks the applied chain in descending order to undo them. Defaults to the canonical DB path for `--scope user|system`; `--db PATH` overrides for off-canonical installs or copies. Interactive runs prompt for an explicit `yes`; scripted use requires `--yes`. The legacy `lynceus-validate --scope user` invocation is preserved verbatim for existing scripts. Most migrations reverse cleanly. CHECK-relaxation migrations (011, 013, 014, 019) abort with `CHECK constraint failed` if rows of the now-disallowed type exist — delete them or restore from backup, then re-run. Migration 010 (watchlist-pattern normalization) is IRREVERSIBLE; the runner logs a WARNING, marks it un-applied so the chain can continue, and runs no SQL. **BACK UP YOUR DB BEFORE INVOKING ROLLBACK.** See [`docs/CONFIGURATION.md` §Database migration rollback](docs/CONFIGURATION.md#database-migration-rollback) for the full flow.
 
-- **`/watchlist.csv`: streaming CSV export of the filtered watchlist
-  result set.** Sibling of `/alerts.csv` (below) on the watchlist
-  surface. "Export CSV" link adjacent to the pagination summary on
-  the `/watchlist` list page; href carries the current filter query
-  string through (pattern_type, severity, device_category, q).
-  Pagination is bypassed — the export covers every matching row,
-  up to the full ~22k-row Argus corpus. Filename:
-  `watchlist-YYYYMMDDTHHMMSSZ.csv` (ISO UTC timestamp, sorts
-  lexicographically). Content-Type: `text/csv; charset=utf-8`.
-  Column projection is wider than the compact `/watchlist` list
-  page: surfaces the full `watchlist_metadata` join so operators
-  exporting get the same Argus provenance the
-  `/watchlist/<id>` detail page renders — `argus_record_id,
-  device_category, confidence, vendor, source, source_url,
-  source_excerpt, fcc_id, geographic_scope, first_seen` (both
-  ISO UTC and unix), `last_verified` (both), `notes`. Plus the
-  watchlist row itself: `id, pattern, pattern_type, severity,
-  description, mac_range_prefix, mac_range_prefix_length`. CSV
-  escaping via `csv.QUOTE_MINIMAL` round-trips commas / quotes /
-  newlines safely. LEFT JOIN preserves yaml-seeded / bundled
-  rows that have no `watchlist_metadata` partner: those export
-  with empty cells across the 14 metadata-join columns (no
-  `None` / `null` leakage). Response genuinely streamed via
-  FastAPI `StreamingResponse` over a new
-  `Database.iter_watchlist_filtered(...)` cursor-iterating
-  helper; no row cap. Invalid filter values silent-fall-back
-  to "all" (matches list-route clamp posture); `q` capped at
-  100 chars (400 above). No CSRF.
+- **`/watchlist.csv` — streaming CSV export of the filtered watchlist.** Sibling of `/alerts.csv`. "Export CSV" link sits next to the pagination summary on `/watchlist`; the href carries the current filter query string (pattern_type, severity, device_category, q). Pagination is bypassed — the export covers every matching row, up to the full ~22k-row Argus corpus. Filename: `watchlist-YYYYMMDDTHHMMSSZ.csv` (ISO UTC, sorts lexicographically). Column projection is wider than the list page: surfaces the full Argus provenance you'd otherwise click through to per-row (`argus_record_id`, `device_category`, `confidence`, `vendor`, `source`, `source_url`, `source_excerpt`, `fcc_id`, `geographic_scope`, `first_seen`, `last_verified`, `notes`) plus the row itself. YAML-seeded rows without Argus metadata export with empty cells in the metadata columns. Streamed; no row cap. Invalid filter values silently fall back to "all" (matches the list route); `q` capped at 100 chars.
 
-- **`/alerts.csv`: streaming CSV export of the filtered alerts result
-  set.** New "Export CSV" link adjacent to the pagination summary on
-  the `/alerts` list page. The href carries the current query string
-  through, so the download mirrors the visible filter state exactly
-  (severity, acknowledged, since/until, search, rule_type, q,
-  window, has_note, has_action). Pagination is bypassed — the
-  export covers every matching row, not just the visible page.
-  Filename: `alerts-YYYYMMDDTHHMMSSZ.csv` (ISO UTC timestamp,
-  sorts lexicographically, avoids filter-string sanitization
-  hazards). Content-Type: `text/csv; charset=utf-8`. Column order
-  is stable and parser-friendly: `id, ts_iso_utc, ts_unix,
-  severity, rule_name, rule_type, mac, message, acknowledged,
-  note, note_updated_at_iso_utc, matched_watchlist_id,
-  matched_pattern, matched_pattern_type, matched_vendor,
-  matched_confidence, matched_device_category,
-  matched_argus_record_id, device_type, oui_vendor, action_taken`.
-  Both watchlist + watchlist_metadata join fields surface so the
-  operator gets full Argus provenance offline (no need to click
-  through to each `/alerts/<id>` page for vendor / confidence /
-  category context). `action_taken` is the per-row union of the
-  three signals the `has_action` filter recognizes — active
-  snooze / permanent allowlist / non-archived watchful tracking —
-  computed unconditionally for the export (the YAML loads run
-  on every export request, unlike the list route's lazy load
-  when has_action is engaged, because every row needs the
-  signal). Response is genuinely streamed via FastAPI
-  `StreamingResponse` over a new
-  `Database.iter_alerts_with_match(filters)` cursor-iterating
-  helper, so memory stays roughly constant in the row size for
-  arbitrarily large filtered sets — no row cap. Invalid severity
-  still 400s; other invalid filter values silent-fall-back to
-  "all", mirroring the list-route clamp posture exactly. No
-  CSRF (GET-only, no state mutation).
+- **`/alerts.csv` — streaming CSV export of the filtered alerts.** "Export CSV" link next to the pagination summary on `/alerts`. The href carries the current query string, so the download mirrors the visible filter state exactly (severity, acknowledged, since/until, search, rule_type, q, window, has_note, has_action). Pagination is bypassed. Filename: `alerts-YYYYMMDDTHHMMSSZ.csv`. Column order is stable and parser-friendly, with both watchlist and Argus-provenance join fields surfaced so you get vendor / confidence / category offline without clicking through. Streamed; no row cap. Invalid severity still 400s; other invalid filter values silent-fall-back to "all". No CSRF (GET-only).
 
-- **`/alerts` has_action filter: triage-state-aware dropdown.** Parallels
-  the rc6 `has_note` filter and closes the same loop on the other half
-  of the triage workflow: "alerts I've already taken an action on." The
-  dropdown — `any / with action taken / without action taken`, default
-  `any` — lives next to `has_note` in the filter form. An alert counts
-  as "actioned" when ANY of three signals applies: a per-alert snooze
-  (active mac/oui entry in `allowlist_ui.yaml`), a permanent allowlist
-  match (active mac/oui entry in `allowlist.yaml`), or watchful tracking
-  (the alert's MAC has a non-archived row in `watchful_recurrence`).
-  The watchful signal is mac-scoped (transitive) — every alert from a
-  MAC under an active watchful entry inherits the action status,
-  matching the actual suppression effect the operator opted into.
-  Expired snoozes are skipped, mirroring `Allowlist.is_allowed`'s
-  semantics: a lapsed snooze effectively reverts the alert to
-  "without action." `rule_type_snoozes` (migration 017) is
-  intentionally NOT in scope here — that surface is system-wide, not
-  per-alert engagement, so rule-type-snoozed alerts continue to show
-  as "without action." Notes are also out of scope — that's the
-  separate `has_note` filter, and the two compose for workflows like
-  `?has_action=with_action&has_note=without_note` ("actioned but
-  unannotated"). The filter composes with every existing `/alerts`
-  filter, drives pagination counts off the filtered set, and mirrors
-  cleanly into `/alerts/ack-all-visible` so bulk-ack never writes
-  against a different filter than the operator sees. Invalid values
-  silently fall back to `any` (no 400), matching the established
-  filter-input convention. The two allowlist YAML files are loaded
-  lazily — only when `has_action` is engaged — so the default
-  `/alerts` page stays YAML-cost-free. Allowlist pattern types other
-  than `mac` and `oui` are out of scope (alerts don't carry live
-  SSID/BLE/drone context); `mac_range` is matchable in principle and
-  is tracked as a follow-up that must extend both this filter and the
-  alert-detail `_match_mac_in_entries` helper in lockstep so the two
-  surfaces never disagree.
+- **`/alerts` `has_action` filter: triage-state-aware dropdown.** `any / with action taken / without action taken`, default `any`, alongside the existing `has_note`. An alert counts as "actioned" if any of three signals applies: a per-alert snooze (active entry in `allowlist_ui.yaml`), a permanent allowlist match (active entry in `allowlist.yaml`), or watchful tracking (the alert's MAC has a non-archived watchful row). The watchful signal is mac-scoped — every alert from a MAC under an active watchful entry inherits the actioned status, matching the actual suppression effect. Expired snoozes are skipped. Rule-type snoozes are intentionally NOT in scope (that surface is system-wide, not per-alert). Notes are also out of scope — combine with `has_note` for workflows like `?has_action=with_action&has_note=without_note` ("actioned but unannotated"). Composes with every existing filter; pagination counts honor it; bulk-ack via `/alerts/ack-all-visible` mirrors it cleanly. Allowlist YAML loads are lazy — only when `has_action` is engaged — so the default `/alerts` page stays YAML-cost-free. Pattern types other than `mac` and `oui` are out of scope here (see the `mac_range` parity bullet below for the follow-up).
 
-- **Per-alert snooze: operator-pickable duration.** The snooze form
-  on the alert detail page grows a duration selector offering five
-  options — `1h / 24h / 7d / 30d / forever` — replacing the previous
-  bare "Snooze for 24h" button. The shared overlap with the watchful
-  triage button (`24h / 7d / 30d / forever`) uses the same vocabulary
-  and the same seconds; `1h` is new and lives on per-alert snooze
-  only ("shut up about this for an hour while I look into it"), with
-  the watchful triage selector deliberately left at its four-option
-  set since 1h doesn't fit recurrence-tracking semantics. Default is
-  still `24h` — a form submission without a `snooze_duration` param
-  produces the same `expires_at` and the same
-  `"snoozed 24h via webui"` provenance note as before, so existing
-  links / scripts continue to behave identically. The `forever`
-  option writes a NULL `expires_at` (yaml end-state identical to the
-  Allowlist button) but records distinct provenance
-  (`"snoozed forever via webui"`) so operators reading
-  `allowlist_ui.yaml` can tell which surface produced the entry. The
-  POST route grew strict validation matching `/alerts/{id}/watch`'s
-  shape — an unknown duration value returns 400 with no yaml
-  side-effect. CSRF protection and the `confirm()` safety pattern
-  are unchanged (confirm text is now duration-agnostic:
-  `"Snooze alerts for {mac}?"`).
+- **Per-alert snooze: operator-pickable duration.** The snooze form on the alert detail page grows a duration selector: `1h / 24h / 7d / 30d / forever`, replacing the bare "Snooze for 24h" button. Default stays `24h`, and a form submission without a duration produces the same `expires_at` and provenance note as before, so existing links / scripts behave identically. `1h` is new and lives on per-alert snooze only ("shut up about this for an hour while I look into it"); the watchful triage selector stays at four options since 1h doesn't fit recurrence-tracking semantics. The `forever` option writes a NULL `expires_at` but records distinct provenance (`"snoozed forever via webui"`) so you can tell from `allowlist_ui.yaml` which surface produced the entry. Unknown duration values return 400 with no YAML side-effect. CSRF and the `confirm()` safety prompt are unchanged.
 
-- **Per-rule_type snooze.** New `rule_type_snoozes` table (migration
-  017) lets operators silence all alerts from a specific rule_type
-  for a bounded window (1h / 4h / 24h / 7d / 30d). Snooze controls
-  live on the `/rules` page per row: rule_types without an active
-  snooze get a collapsible "snooze…" form with the duration dropdown
-  and an optional note; rule_types with an active snooze get a 💤
-  badge (expiry rendered as both relative and absolute time in the
-  tooltip), the optional note, and an "unsnooze" button. A new
-  `status=all|snoozed|active` filter on the page lets operators
-  narrow to "what's currently silenced?" without scanning the full
-  list. Distinct from per-alert snooze, which suppresses a specific
-  observation via the allowlist; rule_type snooze mutes the entire
-  rule class at the alert-emit boundary. The underlying rule still
-  evaluates (so `rules.evaluate` returns the same `RuleHit` shape it
-  always did), but `db.add_alert`, evidence capture, and notifier
-  emit are all gated during the window — the operator's whole point
-  in snoozing is "don't page me", so suppressing the DB row while
-  leaking the alert to ntfy would defeat the feature. Expired
-  snoozes are filtered at gate-check time and physically deleted on
-  the poller cycle. A periodic INFO log line in the daemon
-  (`rule_type snooze suppressed N alert(s) in last ~Ts: <breakdown>`)
-  surfaces per-rule_type suppression counts to `journalctl` so
-  operators can confirm the snooze is doing its job beyond the badge
-  on `/rules`. Re-snoozing a rule_type that already has an active
-  snooze overwrites the prior expires_at (INSERT OR REPLACE), so
-  operators extending or shortening a window don't have to unsnooze
-  first. CSRF enforced via the existing global middleware;
-  duration_seconds is strictly whitelisted at the POST handler.
+- **Per-rule_type snooze.** New `rule_type_snoozes` table (migration 017) lets you silence all alerts from a specific rule_type for a bounded window (`1h / 4h / 24h / 7d / 30d`). Controls live on `/rules` per row: rule_types without an active snooze get a collapsible "snooze..." form with a duration dropdown and optional note; snoozed ones get a badge (expiry rendered relative and absolute in the tooltip), the note, and an "unsnooze" button. A new `status=all|snoozed|active` filter on the page lets you narrow to "what's currently silenced?". Distinct from per-alert snooze: rule-type snooze mutes the whole rule class at the alert-emit boundary — the rule still evaluates, but DB write, evidence capture, and ntfy emit are all gated during the window (the operator's whole point in snoozing is "don't page me"). Expired snoozes are filtered at gate-check time and physically deleted on the poller cycle. A periodic INFO line in the daemon — `rule_type snooze suppressed N alert(s) in last ~Ts: <breakdown>` — surfaces suppression counts to `journalctl` so you can confirm it's doing its job beyond the badge. Re-snoozing an active rule_type overwrites the prior expiry (no need to unsnooze first).
 
-- **Watchful snooze (Phase 1: backend foundation).** The daemon-side
-  machinery for the recurrence-aware third snooze surface lands
-  first; the operator UI follows in Phase 2. New `watchful_recurrence`
-  table (migration 018) tracks per-MAC observations under watchful
-  snooze, counts sightings on a >=24h gap debounce (inclusive
-  boundary), and emits a synthetic `watchful_recurrence` rule_type
-  alert at ntfy priority 4 on the 4th sighting (1 initial + 3
-  counted recurrences). Lifecycle is timestamp-derived
-  (`escalated_at`, `archived_at`) rather than a separate state
-  enum, with the audit predicate
-  `escalated_at IS NOT NULL AND archived_at IS NOT NULL`
-  distinguishing escalated-then-aged-out from never-escalated rows.
-  The 90-day no-observation auto-archive runs on the poller cycle
-  (alongside the rule_type snooze and evidence prune housekeeping)
-  and is the SOLE lifecycle clock for unactioned entries;
-  `snooze_expires_at` gates the original alert pipeline for the
-  MAC but does not drive any housekeeping. Gate ordering is
-  allowlist -> watchful tracking -> rule eval -> per-rule_type
-  snooze -> per-alert snooze -> emit, so allowlist precedence
-  wins: an allowlisted MAC under watchful snooze sees no
-  `sighting_count` increment and no escalation alert. The
-  `watchful_recurrence` rule_type integrates with existing surfaces
-  (`/alerts` filter, `/rules` stats, per-rule_type snooze gate)
-  without UI-specific work -- `/alerts` filter dropdowns are
-  data-driven, and per-rule_type snooze on `watchful_recurrence`
-  suppresses the escalation alert while detection state continues.
-  A new `priority_override: int | None = None` parameter on
-  `Notifier.send` plumbs priority 4 from the watchful emit-site
-  without touching the three-tier `Severity` literal -- the
-  severity / priority decoupling is intentional (severity stays
-  `high` for `/alerts` / `/rules` rendering; priority drops to 4
-  for the scare-factor mitigation, NOT a default-mapping
-  oversight). Phase 2 (operator UI, `/watchful` page, `/alerts`
-  triage button, POST routes, weekly digest) follows; Phase 1
-  ships with the four dormant Phase 2 columns
-  (`confirmed_safe`, `flagged_for_investigation`, `operator_note`,
-  `reset_count`) already on the table to avoid a migration 019.
-  Backward compat: with no entries in `watchful_recurrence`, poll
-  cycles are byte-identical to pre-Phase-1 behavior. See
-  `docs/WATCHFUL_SNOOZE_DESIGN.md` for the full design rationale
-  and the OQ resolutions that shaped Phase 1.
+- **Watchful snooze — backend.** Recurrence-aware third snooze surface; the daemon-side machinery lands first, UI follows in the next bullets. New `watchful_recurrence` table (migration 018) tracks per-MAC observations under watchful snooze, counts sightings on a >=24h gap debounce, and emits a synthetic `watchful_recurrence` rule_type alert at ntfy priority 4 on the 4th sighting (1 initial + 3 counted recurrences). A 90-day no-observation auto-archive runs on the poller cycle (alongside rule_type snooze and evidence-prune housekeeping). Gate ordering is allowlist -> watchful -> rule eval -> rule_type snooze -> per-alert snooze -> emit, so allowlist precedence wins: an allowlisted MAC under watchful snooze sees no sighting count increment and no escalation alert. Severity stays `high` for `/alerts` and `/rules` rendering; only the ntfy priority drops to 4 for the scare-factor mitigation. With no entries in the table, poll cycles are byte-identical to pre-feature behavior.
 
-- **Watchful snooze (Phase 2a: operator-action backend).** The
-  HTTP-and-DB plumbing for the five operator actions on watchful
-  entries plus the triage entry-point from `/alerts`. No UI yet --
-  Phase 2b wires up the buttons -- but the backend is complete and
-  CSRF-protected so the UI layer is a pure rendering job. Six new
-  `db.py` helpers cover the action surface:
-  `dismiss_watchful_recurrence` (archive, idempotent on
-  already-archived); `promote_watchful_to_allowlist` (allowlist
-  write + archive coupled atomically -- yaml write first, DB UPDATE
-  under `archived_at IS NULL` second, best-effort yaml rollback if
-  a concurrent archive sneaks in between);
-  `reset_watchful_recurrence` (the OQ-8 walk-back from escalated:
-  `escalated_at -> NULL`, `sighting_count -> 1`, `last_seen_at` to
-  now, `reset_count` incremented; only valid from the escalated
-  state); `flag_watchful_for_investigation` (flag + replace
-  `operator_note`, entry stays active so sightings keep counting
-  per Phase 1); `mark_watchful_confirmed_safe` (flag + replace
-  note + archive; deliberately does NOT create an allowlist entry
-  -- the operator's signal is "this entry is benign", not "never
-  alert me on this MAC again"); and `create_watchful_from_alert`
-  (builds a row from an `alerts.id`, copying `mac` and
-  `matched_watchlist_id`, with snooze_duration in
-  `{forever, 24h, 7d, 30d}`). Six matching POST routes in
-  `webui/app.py`: `/alerts/{id}/watch` for triage from the alert
-  list, and `/watchful/{id}/{dismiss,promote,reset,investigate,
-  confirm-safe}` for the action surface. All return 303 redirects
-  (operator-facing forms, not JSON APIs), validate snooze duration
-  against a fixed vocabulary at the POST handler, cap operator
-  notes at 4096 chars, and use HTTPException 400 for stateful
-  preconditions (matches the existing "alert has no MAC" pattern).
-  The auto-archive housekeeping sweep coexists cleanly with
-  operator-driven archives -- its `WHERE archived_at IS NULL`
-  filter renders operator-archived rows invisible without
-  coordination. Backward compat: no schema change (the Phase 2
-  dormant columns landed in migration 018) and no Phase 1 path
-  modified.
+- **Watchful snooze — operator actions.** HTTP-and-DB plumbing for the five operator actions on watchful entries, plus the triage entry-point from `/alerts`. CSRF-protected throughout. Routes: `/alerts/{id}/watch` to start watching from the alert list, and `/watchful/{id}/{dismiss,promote,reset,investigate,confirm-safe}` for the action surface. All return 303 redirects, validate snooze duration against `{forever, 24h, 7d, 30d}`, cap operator notes at 4096 chars, and return 400 for stateful preconditions. The auto-archive sweep coexists cleanly with operator-driven archives. `promote` writes to `allowlist.yaml` and archives atomically (YAML first, DB second, best-effort YAML rollback on race). `confirm-safe` archives but does NOT create an allowlist entry — the operator's signal is "this entry is benign", not "never alert me on this MAC again". No schema change.
 
-- **Watchful snooze (Phase 2b: operator-facing UI).** Closes the
-  Phase 2 feature loop. A new `/watchful` page lists tracked
-  devices with filter (status / state / window / MAC substring),
-  pagination (25 / 50 / 100 / 200; default 50), per-entry action
-  buttons, and a recurrence-digest section. A new `/watchful/<id>`
-  detail page mirrors `/alerts/<id>` with full row state,
-  cross-links to the source alert / matched watchlist row /
-  device record, and the same action panel. The topnav gains a
-  `/watchful` entry between `/alerts` and `/devices`. The
-  `/alerts` list grows a per-row "Watch" button (snooze duration
-  `24h / 7d / 30d / forever`, default `30d` per the locked
-  decision) that posts to the existing Phase 2a triage route.
-  All five Phase 2a action POSTs now redirect to
-  `/watchful?success=<token>` so the operator stays in context
-  and sees a success banner per the `/rules` flash convention.
-  Per-entry action visibility honors the state-guard invariant:
-  reset only renders on escalated entries, all five render on
-  escalated, four render on tracking (reset hidden), zero render
-  on archived (entries are read-only). Promote and confirmed-safe
-  are visually distinct -- the two are NOT the same action and
-  conflating them would silently break the operator's
-  threat-model intuition: promote (red, &#x1F6AB;, "never alert
-  me on this MAC again") creates a permanent allowlist entry;
-  confirmed-safe (green, &check;, "close as benign") does NOT.
-  The recurrence digest is a section on `/watchful` (per locked
-  decision 7d, not a separately-emitted notification): groups
-  escalations from the last 8 ISO weeks by week of `escalated_at`,
-  renders a collapsible MAC list per week, most recent first.
-  Operator-facing copy stays in the non-alarmist register per
-  the locked scare-factor mitigation: "watchful", "recurrence",
-  "sighting", "tracked device" rather than "threat" / "intrusion"
-  / "danger". Three new read-side `db.py` helpers
-  (`count_watchful_recurrence`, `list_watchful_recurrence`,
-  `list_recent_watchful_escalations`) drive the page; the COUNT
-  and SELECT share a filter-clause builder for pagination
-  consistency. No write-path additions and no schema change.
+- **Watchful snooze — UI.** Closes the loop. New `/watchful` page lists tracked devices with filter (status / state / window / MAC substring), pagination (25 / 50 / 100 / 200; default 50), per-entry action buttons, and a recurrence-digest section. A new `/watchful/<id>` detail page mirrors `/alerts/<id>` with full state, cross-links to source alert / matched watchlist row / device record, and the same action panel. Topnav gains `/watchful` between `/alerts` and `/devices`. `/alerts` grows a per-row "Watch" button (`24h / 7d / 30d / forever`, default `30d`) that posts to the triage route. All five action POSTs redirect to `/watchful?success=<token>` so you stay in context and see a banner per the `/rules` flash convention. Action visibility honors the state guard: reset only on escalated entries; archived entries are read-only. Promote (red, "never alert me on this MAC again") and confirmed-safe (green, "close as benign") are visually distinct — conflating them would silently break the threat-model intuition. The recurrence digest is a section on `/watchful` (not a separately-emitted notification): groups escalations from the last 8 ISO weeks, most recent first. Copy stays non-alarmist: "watchful", "recurrence", "sighting", "tracked device" rather than "threat" / "intrusion" / "danger".
 
-- **SSID dimension activated end-to-end.** Three changes land
-  together; the `watchlist_ssid` rule type is unchanged on the
-  operator-facing surface but its DB-delegation mode now dispatches
-  two pattern_types from the watchlist DB under one rule. The
-  bundled `argus_ssid` rule is enabled by default and the bundled
-  `default_watchlist.csv` is refreshed from Argus's 2026-05-17
-  snapshot so fresh installs alert on Flock-class equipment out of
-  the box.
+- **SSID dimension activated end-to-end.** Three changes land together. The `watchlist_ssid` rule type is unchanged on the operator-facing surface, but its DB-delegation mode now dispatches both exact-match and substring patterns from one rule, the bundled `argus_ssid` rule is enabled by default, and the bundled `default_watchlist.csv` is refreshed from the 2026-05-17 Argus snapshot so fresh installs alert on Flock-class equipment out of the box.
 
-  - Migration 019 extends `watchlist.pattern_type` CHECK to admit
-    `ssid_pattern`. Same full-table-rebuild shape as migration 013
-    (SQLite cannot ALTER a CHECK in place); preserves the partial
-    index on `mac_range`. L-RULES-10 case-folding for the existing
-    case-sensitive `ssid` type stays deferred -- case-insensitivity
-    is scoped to the new `ssid_pattern` matcher only.
+  Migration 019 admits `ssid_pattern` in the watchlist `pattern_type` CHECK. A new substring matcher (case-insensitive) joins the existing exact-match path: exact is consulted first, substring falls back on miss; severity flows from whichever DB row fires.
 
-  - `db.resolve_matched_ssid_pattern_for_eval` is a sibling to the
-    existing exact-match helper. SQL is `? LIKE '%' || pattern ||
-    '%' COLLATE NOCASE` with a defensive `pattern != ''` filter
-    (empty needle would otherwise match every observation). The
-    `watchlist_ssid` evaluate branch consults exact first, then
-    falls back to substring on miss; severity flows from whichever
-    DB row fires.
+  `lynceus-import-argus` learns the `ssid_pattern` identifier. The 5 ssid_pattern rows from the Argus snapshot (`flock`, `Flock`, `FLOCK`, `FS Ext Battery`, `Penguin`) flow into the watchlist at the `device_category`-derived severity. Rows whose `ssid_exact` value contains a literal `*` (e.g. Argus's `Flock-*` row) log a WARNING and are imported anyway — the `*` never matches a real WiFi observation, so the row sits dormant until Argus fixes the typing upstream.
 
-  - `lynceus-import-argus` IDENTIFIER_TYPE_MAP gains
-    `ssid_pattern -> ssid_pattern` (one-to-one, mirrors the rc5
-    `ssid_exact -> ssid` alias). The 5 ssid_pattern rows from the
-    Argus snapshot (`flock`, `Flock`, `FLOCK`, `FS Ext Battery`,
-    `Penguin`) now flow into the watchlist DB at the
-    `device_category`-derived severity. Per-row data-quality check:
-    ssid_exact rows containing `*` (e.g. Argus's `Flock-*` row) log
-    a WARNING and are imported anyway -- the literal `*` never
-    matches a real WiFi observation, so the row sits dormant
-    until Argus fixes the typing upstream. New
-    `ImportReport.ssid_exact_wildcard_warn` counter surfaces the
-    occurrence at the importer's render output.
+  `default_watchlist.csv` refresh: 22533 records exported 2026-05-17, replacing the prior 63-row / zero-SSID-coverage snapshot. `config/rules.yaml`'s `argus_ssid` template is uncommented and enabled. `docs/ARGUS_RESIDUALS.md` updated to reflect `ssid_pattern` moving from deferred to admitted (deferred drops from 2 types / 21 rows to 1 type / 16 rows).
 
-  - `default_watchlist.csv` bundle refresh: 22533 records at
-    schema_version 21, exported 2026-05-17T15:53:27Z. Replaces the
-    v8 / 63-row / zero-SSID-coverage prior snapshot. Column shape
-    unchanged. `config/rules.yaml` `argus_ssid` template is
-    uncommented and enabled. NOTICE.md updated to match the new
-    exported_at; `docs/ARGUS_RESIDUALS.md` moves `ssid_pattern`
-    from `defer-pending-smoke` to `admit`, recomputes the summary
-    (deferred drops from 2 types / 21 rows to 1 type / 16 rows).
+  Operationally: a Kismet observation of `Flock-230503` (exact ssid) or `My-Penguin-AP` (substring) now alerts at the matched row's severity on a fresh install with the bundled config.
 
-  Operationally meaningful: a Kismet observation of `'Flock-230503'`
-  (exact ssid) or `'My-Penguin-AP'` (substring ssid_pattern) now
-  alerts at the matched row's severity on a fresh install with the
-  bundled config.
-
-- **`mac_range` parity in /alerts `has_action` filter + alert-detail
-  "Allowlisted" badge.** Operators allowlisting a vendor block via
-  a `mac_range` entry (e.g. `aa:bb:cc:d/28`) now see their affected
-  alerts flagged as actioned on the list filter AND get the
-  Allowlisted status on each alert's detail page. Both surfaces
-  previously covered only `mac` and `oui` pattern types; the third
-  type matchable from `alert.mac` alone was a deliberate omission
-  with the lockstep follow-up captured in `BACKLOG.md`. Implementation
-  reuses the existing bit-level matcher (lifted to
-  `lynceus.patterns.mac_in_mac_range`, a public helper alongside
-  `parse_mac_range_pattern`) on both surfaces: the alert-detail
-  Python path calls it directly via `_match_mac_in_entries`, and the
-  /alerts SQL filter calls it via a deterministic SQLite scalar
-  function registered on every `Database` connection. Same helper
-  drives the live poll path, the detail page, the CSV export's
-  per-row `action_taken` column, and the list-page filter -- no
-  per-surface re-implementation that could drift. /28 and /36 are
-  the only prefix lengths `parse_mac_range_pattern` admits (both
-  nibble-aligned), so no operator-visible caveat about prefix
-  alignment.
+- **`mac_range` parity in `/alerts` `has_action` filter and the alert-detail "Allowlisted" badge.** Operators allowlisting a vendor block via a `mac_range` entry (e.g. `aa:bb:cc:d/28`) now see affected alerts flagged as actioned on the list filter AND get the Allowlisted status on each alert's detail page. Both surfaces previously covered only `mac` and `oui` — `mac_range` was the deliberate omission tracked in `BACKLOG.md`. The same bit-level matcher drives the live poll path, the detail page, the CSV export's `action_taken` column, and the list-page filter — no per-surface re-implementation that could drift. `/28` and `/36` are the only prefix lengths admitted (both nibble-aligned), so no operator-visible caveat about prefix alignment.
 
 ### Performance
 
-- **`/watchlist/<id>` detail route: single-row JOIN instead of
-  list-then-filter-in-Python.** New `Database.get_watchlist_with_metadata(id)`
-  helper mirrors `list_watchlist_with_metadata`'s column projection
-  but indexes by `w.id` with a `LIMIT 1`. The previous route shape
-  loaded every row in `watchlist` (up to ~22k after a full Argus
-  import) and ran `next(r for r in rows if r["id"] == id)` in
-  Python on every detail-page request — exactly the scaling
-  footgun the `list_watchlist_filtered` docstring already calls
-  out for the list page. Behavior is unchanged for operators —
-  the same template renders, the same fields surface, the same
-  404 path via `not_found.html` for missing ids; the route now
-  reads one row per request instead of all of them. Topnav
-  active-state coverage on `/watchlist/<id>` is also pinned so
-  the highlight can't silently regress (mirrors the existing
-  `/watchful/<id>` pin).
+- **`/watchlist/<id>` detail page: single-row read instead of full-table scan.** The route used to load every watchlist row (up to ~22k after a full Argus import) and pick the matching one in Python on every detail-page request. It now reads one row per request. Same template, same fields, same 404 path for missing ids — just no longer the scaling footgun the docstring already called out for the list page.
 
 ### Fixed
 
-- **`/alerts?has_action=with_action` no longer 500s when NULL-mac
-  alerts coexist with any `mac_range` allowlist entry.** The SQL
-  clause for the `with_action` branch invoked `mac_in_mac_range(a.mac,
-  ?)` (a Python UDF that calls `.replace` on its arg) without a
-  NULL-mac guard, so any NULL-mac alert in the table caused
-  `OperationalError: user-defined function raised exception` from the
-  query and a 500 response. NULL-mac alerts are legitimate (pre-
-  migration-015 historical rows; certain `new_non_randomized_device`
-  early failures). Each `mac_in_mac_range` predicate now carries an
-  inner `mac IS NOT NULL AND ...` guard so the UDF is never invoked
-  with a NULL arg. With the fix, `with_action` returns 200 and
-  excludes NULL-mac alerts (they can't carry a mac-keyed action
-  signal); `without_action` behavior is unchanged. Failure mode
-  surfaced by the diagnostic test
-  `tests/test_diag_filters.py::test_diag_has_action_null_mac_invocation`
-  (commit 9483137); regression pinned in `tests/test_webui.py`.
+- **`/alerts?has_action=with_action` no longer 500s when NULL-mac alerts coexist with a `mac_range` allowlist entry.** The `with_action` SQL clause invoked the mac-range matcher (a Python UDF) without a NULL guard, so any NULL-mac alert in the table caused the query to raise and the page to 500. NULL-mac alerts are legitimate (pre-migration-015 historical rows; certain `new_non_randomized_device` early failures). Each predicate now carries an inner `mac IS NOT NULL AND ...` guard. `with_action` returns 200 and excludes NULL-mac alerts (they can't carry a mac-keyed action signal); `without_action` behavior is unchanged.
 
 ### Documentation
 
-- **Multi-rule emit policy made explicit.** A single observation that
-  matches N enabled rules emits N RuleHits (one per matching rule),
-  each carrying its own severity sourced from its own DB row (for
-  delegation rules — `watchlist_mac`, `watchlist_oui`, `watchlist_ssid`,
-  `watchlist_mac_range`, `ble_uuid` with empty `patterns`) or from
-  `rule.severity` (for in-memory pattern rules). There is no
-  "highest-severity wins", "first-match wins", or "merge into one
-  alert" resolution step in `rules.evaluate()`: every matching rule
-  is its own alert row. A device on the watchlist by mac, oui, AND
-  ssid will produce three alert rows at three potentially-different
-  severities for the same poll-cycle observation. This is intentional —
-  the audit-first design treats each rule as an independent reason to
-  surface the observation, and the dedup window (configurable, default
-  N minutes) collapses near-duplicates downstream so the ntfy stream
-  doesn't drown in repeats. Confirmed by the diagnostic test
-  `tests/test_diag_rules.py::test_diag_rules_severity_resolution` (mac
-  rule + oui rule both matching → 2 hits with the per-DB-row severities
-  preserved). Behavior is locked; the BACKLOG carries a future-
-  consideration entry for an opt-in "single-emit with resolved severity"
-  mode if operators ask for it.
+- **Multi-rule emit policy made explicit.** A single observation that matches N enabled rules emits N alerts — one per matching rule, each carrying its own severity from its own DB row (for `watchlist_*` and `ble_uuid` delegation rules) or from `rule.severity` (for in-memory pattern rules). There is no "highest-severity wins", "first-match wins", or "merge into one alert" step: every matching rule is its own alert. A device on the watchlist by mac, oui, AND ssid produces three alert rows at three potentially-different severities for the same observation. This is intentional — the audit-first design treats each rule as an independent reason to surface the observation, and the dedup window (configurable, default N minutes) collapses near-duplicates downstream so ntfy doesn't drown in repeats. Behavior is locked; `BACKLOG.md` carries a future-consideration entry for an opt-in single-emit-with-resolved-severity mode if operators ask for it.
 
 ## [0.4.0-rc6] - 2026-05-17
 
-Mostly cleanup. rc5 shipped the big feature push — `/watchlist` search,
-filter, and pagination; `/rules` statistics; `lynceus-export-config`;
-the Argus residuals audit. rc6 closes the two normalization gaps that
-audit surfaced, corrects one audit verdict that turned out to be wrong
-on inspection, and adds the per-alert triage-note surface (plus a
-matching `/alerts` filter) that operators were quietly working around
-with external trackers.
+Mostly cleanup. rc5 shipped the big feature push — `/watchlist` search, filter, and pagination; `/rules` statistics; `lynceus-export-config`; the Argus residuals audit. rc6 closes two normalization gaps the audit surfaced, corrects one audit verdict that was wrong on inspection, and adds per-alert triage notes (plus a matching `/alerts` filter) that operators were working around with external trackers.
 
 ### Fixed
 
-- **Importer admits 17 Argus rows that previously dropped as
-  `unknown_type`.** The rc5 residuals audit (`docs/ARGUS_RESIDUALS.md`)
-  flagged that `ble_company_id` (7 rows) and `ble_service_uuid`
-  (10 rows) were semantic duplicates of the already-admitted
-  `ble_manufacturer_id` and `ble_uuid` pattern types — separated only
-  by the Argus type label and a couple of input-shape variants (16-bit
-  and 32-bit Bluetooth SIG short forms, plus Argus's dual-form
-  rendering like `"fd5a / 0x0075"` for the Samsung SmartTag / Tile Tag
-  rows). The importer now aliases the two Argus types one-way onto the
-  existing pattern types, and the `ble_uuid` canonicalizer accepts the
-  4-hex and 8-hex short forms (expanded against the Bluetooth Core
-  Spec §3.2.1 base UUID `00000000-0000-1000-8000-00805f9b34fb`) plus
-  the dual-form shape (UUID half taken, paired company-id commentary
-  dropped). Canonical output forms unchanged; pattern_type set
-  unchanged; no schema migration. The admit count moves
-  22,294 → 22,311; dropped 239 → 222; the audit's
-  `admit-via-normalization` bucket is now empty.
+- **Importer now admits 17 Argus rows that previously dropped as `unknown_type`.** The rc5 residuals audit (`docs/ARGUS_RESIDUALS.md`) flagged `ble_company_id` (7 rows) and `ble_service_uuid` (10 rows) as semantic duplicates of the already-admitted `ble_manufacturer_id` and `ble_uuid` types — separated only by the Argus label and a couple of input-shape variants (16-bit and 32-bit Bluetooth SIG short forms, plus Argus's dual-form rendering like `"fd5a / 0x0075"` for Samsung SmartTag / Tile rows). The importer now accepts both. Admit count moves 22,294 → 22,311; dropped 239 → 222. No schema change, no migration.
 
-- **`device_class_id` audit verdict corrected from
-  `plausible-needs-smoke` to `drop-entirely`.** The rc5 audit deferred
-  49 `device_class_id` rows — the largest deferred category — on the
-  basis of plausibility rather than evidence. Going row-by-row showed
-  all 49 are DJI drone model-class enum codes pulled from the
-  `RUB-SysSec/DroneSecurity` decoder's `DRONEID_DRONE_TYPES` table
-  (e.g. `'1'='Inspire 1'`). Those are labels for decoding the DroneID
-  device-type byte, not per-device identifiers — admitting them would
-  alert on every DJI drone of a given model class in range, the same
-  unbounded-fanout posture the audit already records for
-  `rf_channel`. Per-device Remote-ID coverage is already handled by
-  the admitted `drone_id_prefix` (ANSI/CTA-2063-A serial-number
-  prefix). The audit's source table is updated with the evidence; the
-  regenerated report shifts `defer-pending-smoke` from 3 / 70 to
-  2 / 21 and `drop-entirely` from 26 / 152 to 27 / 201. Total dropped
-  row count is unchanged at 222 — the row was always dropped; only
-  the reason changed.
+- **Corrected one audit verdict from "needs smoke" to "drop entirely".** The rc5 audit deferred 49 `device_class_id` rows on plausibility. Going row-by-row, all 49 are DJI drone model-class enum codes (e.g. `'1'='Inspire 1'`) — labels for decoding the DroneID device-type byte, not per-device identifiers. Admitting them would alert on every DJI drone of that model class in range. Per-device Remote-ID coverage is already handled by the admitted `drone_id_prefix`. The audit report is regenerated; total dropped row count is unchanged at 222 — only the reason changed.
 
 ### Added
 
-- **Per-alert triage notes.** Closes the "what did I conclude about
-  this alert?" gap operators were working around with external
-  trackers. Migration 016 adds a nullable `note TEXT` column plus a
-  `note_updated_at INTEGER` column to `alerts`. Notes are written
-  only from the alert detail page (the daemon's add-alert path never
-  touches the column); the server stores stripped text plus an
-  epoch-seconds timestamp, enforces a 4096-character cap, and treats
-  empty / whitespace-only text as "clear" (both columns return to
-  NULL). The alert detail page gains a triage-notes section with the
-  current note rendered in a `<pre>` (preserves line breaks), a
-  relative-time "Last updated N ago" stamp, an editable textarea
-  (4096-char `maxlength`), and Save / Clear buttons (Clear behind a
-  `confirm()` prompt). The `/alerts` list page shows a 📝 indicator on
-  rows that carry a note, with a 50-character tooltip preview — the
-  full rationale stays on the detail page so it isn't visible over the
-  shoulder. Plain text only, one note per alert (replace-on-update);
-  markdown rendering, multi-operator history, and a note-history
-  table are all explicitly deferred. CSRF is enforced via the
-  existing global middleware.
+- **Per-alert triage notes.** Closes the "what did I conclude about this alert?" gap operators were working around with external trackers. The alert detail page gains a notes section: an editable textarea (4096-char cap), Save and Clear buttons (Clear behind a confirm prompt), and a relative "Last updated N ago" stamp. Notes are plain text, one per alert, replace-on-update — markdown, history, and multi-operator audit trail are deferred. Empty or whitespace-only text clears the note. Migration 016 adds nullable `note` and `note_updated_at` columns to `alerts`. The `/alerts` list shows a small indicator on rows that carry a note, with a 50-character tooltip preview — the full rationale stays on the detail page so it isn't visible over the shoulder.
 
-- **`/alerts` `has_note` filter dropdown.** Pairs the list-page 📝
-  indicator with a narrow-by-state filter so the triage workflow loop
-  closes: notes → indicator → filter. Three values: `any` (default;
-  renders byte-identical to pre-filter behaviour), `with_note`
-  (filters to alerts where `note IS NOT NULL`), and `without_note`
-  (the inverse). Invalid values silently fall back to `any`, matching
-  the `rule_type` / `window` convention. Both the COUNT query and the
-  page query consume the same internal filter helper, so the totals
-  and rows stay aligned under combined filters;
-  `/alerts/ack-all-visible` POSTs mirror the GET clamp exactly so
-  bulk-ack always operates on the same set the operator can see. The
-  template carries `has_note` through the ack-all-visible hidden
-  inputs and the prev/next pagination links; the default `any` is
-  omitted from URLs so the no-params baseline stays clean. No new
-  indexes — `note IS [NOT] NULL` full-scans cheaply at current scale;
-  a partial index is a follow-up if filter latency surfaces.
+- **`has_note` filter on `/alerts`.** Pairs with the list-page note indicator so the triage loop closes: notes → indicator → filter. Three values: `any` (default, unchanged behaviour), `with_note`, and `without_note`. Invalid values fall back to `any`, matching the existing `rule_type` / `window` convention. Bulk-ack via `/alerts/ack-all-visible` honours the filter exactly, so it always operates on the set the operator can see. Pagination links carry the filter through; the default `any` is omitted from URLs so the no-params baseline stays clean.
 
 ## [0.4.0-rc5] - 2026-05-17
 
+Release status: alerting for `ble_manufacturer_id` and `drone_id_prefix` rule types needs Kismet probe-path verification on real hardware before it fires on live observations — the import, DB, rules engine, wizard, and `/watchlist` UI all work, but until the Kismet field paths are confirmed against a real capture, the observation fields read `None` and the delegation rules fire zero alerts. See the bullet below for the workaround.
+
 ### Added
 
-- **`/watchlist` search, filter, and pagination.** A full Argus import
-  lands ~22k rows in the watchlist, and the pre-rc5 page rendered every
-  row in a single template pass — genuinely unbrowsable past a few
-  thousand rows. The rc5 surface adds a filter bar (substring `q`
-  across pattern / manufacturer / argus_record_id / device_category,
-  plus dropdowns for `pattern_type`, `severity`, and `device_category`)
-  and offset pagination matching the `/alerts` convention (`page` +
-  `page_size` in {25, 50, 100, 200}, default 50). The "I know I
-  imported a specific Argus row — where is it?" pain point finally has
-  a real answer: type the row's `argus_record_id` substring (or its
-  manufacturer, or its pattern) into `q` and the row surfaces. Filter
-  state round-trips through the URL so a filtered view is bookmarkable
-  and shareable. With this landing, the three list pages (`/alerts`,
-  `/allowlist`, `/watchlist`) all share the same filter+pagination
-  idiom — consistent operator muscle memory and a single source of
-  truth for the math.
+- **`/watchlist` gets search, filter, and pagination.** A full Argus import lands ~22k rows, and the pre-rc5 page rendered every one in a single pass — genuinely unbrowsable. The page now has a filter bar (substring `q` across pattern / manufacturer / argus_record_id / device_category, plus dropdowns for `pattern_type`, `severity`, and `device_category`) and offset pagination matching `/alerts` (`page` + `page_size` in {25, 50, 100, 200}, default 50). The "where did I just import that row to?" pain finally has an answer: type the `argus_record_id` substring into `q` and the row surfaces. Filter state round-trips through the URL so a filtered view is bookmarkable. Invalid filter values silently fall back to "all"; out-of-range pages clamp to the last valid page (no 404 on a typo'd `?page=999`). The `device_category` dropdown is populated live from the DB, with `(uncategorized)` as a dedicated option for YAML-seeded rows that lack a category. No schema change, no new indexes — 22k-row scans complete well under the 500ms perf budget.
 
-  The default render (no query params) is byte-equivalent to pre-rc5:
-  severity-by-importance, then pattern alphabetical, with `id` as the
-  deterministic tiebreaker so pagination doesn't flicker. Invalid
-  filter values silently fall back to "all" (a stale bookmark with
-  `severity=foo` lands on the unfiltered page rather than returning
-  400), and an out-of-range page clamps silently to the last valid
-  page (no 404 on a typo'd `?page=999`). The `device_category`
-  dropdown is populated live from a `SELECT DISTINCT` against
-  `watchlist_metadata`; NULL category surfaces as a dedicated
-  `(uncategorized)` option backed by a `__none__` sentinel, so the
-  YAML-seeded and bundled rows can be triaged separately from
-  Argus-imported rows.
+- **`/rules` shows per-rule fire count and "last fired" stamp.** Answers "is this rule worth keeping?" at a glance. Each rule row carries its fire count over a configurable window plus a relative "last fired" stamp ("3h ago" / "5d ago" / "—" if never). A `since` dropdown matches the `/alerts` convention (`1h` / `24h` / `7d` / `30d` / `all`) with `7d` as the default, so a fresh visit reads "what fired this week." Sort defaults to `rules.yaml` order; opt into `count_desc` / `count_asc` via the sort dropdown for "high-volume rules first." URL params round-trip — `/rules?since=24h&sort=count_desc` bookmarks exactly that view. No schema change, no caching; stats aggregate live from the `alerts` table on every render.
 
-  No schema change, no new indexes — the 22k-row scans against
-  `watchlist` complete well under the 500ms perf budget on SQLite,
-  and indexing ahead of demonstrated need would trade insert/import
-  cost for read cost that isn't there yet.
+- **`lynceus-export-config` — bundle config (and optionally state) into a portable `tar.gz`.** Closes the missing "save / share / back up my config" surface alongside `lynceus-validate`, `lynceus-bootstrap-kismet`, and `lynceus-setup`. Four use cases: backup before an upgrade, machine-to-machine migration, sanitized snapshot for support, template-sharing with another operator.
 
-- **`/rules` per-rule fire count and last-fired statistics.** Answers
-  the "is this rule worth keeping?" question at a glance: each rule
-  row now carries its fire count over a configurable time window plus
-  a relative-time "last fired" stamp ("3h ago" / "5d ago" / "—" if
-  never). A `since` dropdown matches the `/alerts` convention
-  (`1h` / `24h` / `7d` / `30d` / `all`) with `7d` as the default
-  recency anchor, so a fresh visit reads "what fired this week" rather
-  than diluting against the lifetime of the deployment. The default
-  `sort=default` preserves the rules.yaml ordering, so an operator
-  with a pre-rc5 `/rules` bookmark sees byte-equivalent row order on
-  first visit; the `count_desc` and `count_asc` sort options are
-  opt-in via the sort dropdown for "show me the high-volume rules
-  first" reads. Stats are aggregated live from the `alerts` table on
-  every render — a single grouped count query backed by the existing
-  `idx_alerts_ts` index — so there's no schema change, no caching, and
-  no invalidation surface to maintain. URL params round-trip for
-  shareability: `/rules?since=24h&sort=count_desc` bookmarks exactly
-  that view.
+  **Safe by default.** A bare invocation produces a config-only archive with credentials redacted — `kismet_api_key`, `ntfy_auth_token`, `ntfy_topic`, and `user:pass@` userinfo in `ntfy_url`. Paste-into-chat-safe. Redaction is line-based and preserves your comments, key ordering, and whitespace.
 
-- **`lynceus-export-config` — operator-facing CLI that bundles config
-  (and optionally state) into a portable `tar.gz` archive.** Closes
-  the missing "save / share / back up my config" surface in the CLI
-  suite, complementing `lynceus-validate` (verify a config),
-  `lynceus-bootstrap-kismet` (initial Kismet install), and
-  `lynceus-setup` (interactive wizard). Four operator use cases are
-  in scope:
+  **Opt-outs are explicit.** `--include-secrets` disables redaction (for personal backups you're keeping on your own host). `--include-state` adds the SQLite database (and any `.db-shm` / `.db-wal` sidecars) under `state/` in the archive — off by default because the DB can be large and carries observed MACs. State files are never redacted; an anonymized state export is deferred.
 
-  - Backup before an upgrade.
-  - Machine-to-machine migration.
-  - Sharing a sanitized snapshot with the maintainer for support.
-  - Template-sharing with another operator.
+  **Self-describing archive.** Layout is `lynceus-export-<scope>-<UTC-timestamp>/` with `README.txt` (restore guide), `manifest.json` (version, scope, timestamp, redaction policy, per-file sha256), `config/<name>.yaml`, and (when included) `state/`. Re-hashing on restore catches transport damage.
 
-  **Safe by default.** A bare invocation produces a config-only
-  archive with credentials redacted — `kismet_api_key`,
-  `ntfy_auth_token`, `ntfy_topic`, and `user:pass@` userinfo in
-  `ntfy_url` — so an operator who copy-pastes the bundle into a chat
-  or a support ticket does not leak secrets. The redactor lives in
-  `src/lynceus/redact.py` alongside the existing ntfy-topic shape
-  helpers; redaction is line-based and preserves operator comments,
-  key ordering, and whitespace. Block-scalar (`|`) and folded (`>`)
-  forms of credential fields are not produced by the wizard and are
-  not specially recognized.
+  **Other flags.** `--scope {user,system,auto}` defaults to `auto`. `--output` refuses to overwrite (unless `--force`), refuses a directory, refuses an unwritable parent. `--dry-run` prints the inventory and produces no archive. Cross-platform (pure `tarfile` + `pathlib`, no shell calls), read-only, no network, no daemon dependency. Registered in both `pyproject.toml` and `install.sh`.
 
-  **Opt-outs are explicit, never default.**
+- **Auto-refresh timer for the Argus watchlist (`lynceus-refresh.service` + `lynceus-refresh.timer`).** Closes the loop with the rc4 staleness indicator — the indicator detects stale data, the timer prevents it. Default cadence is `OnCalendar=weekly` with `RandomizedDelaySec=30min` (spreads load across deployments) and `Persistent=true` (catches missed runs after reboots), comfortably faster than the default 30-day `watchlist_staleness_warn_days`. The oneshot service re-runs `lynceus-import-argus --scope system --from-github` under `User=lynceus` with the same hardening posture as `lynceus.service`.
 
-  - `--include-secrets` disables redaction. For personal backups where
-    the operator intends a full restore and is keeping the archive on
-    their own host. Never appropriate for an archive being shared.
-  - `--include-state` adds the SQLite database (and any
-    `lynceus.db-shm` / `lynceus.db-wal` sidecars present) under
-    `state/` in the archive. Off by default because the DB can be
-    large and carries observed MAC addresses. State files are NEVER
-    redacted — they're observational data, not config, and scrubbing
-    them would defeat the purpose of `--include-state`. An anonymized
-    state export (`--include-state-anonymized`) is deferred, not
-    promised.
-
-  **Self-describing archive.** The internal layout is:
-
-  ```
-  lynceus-export-<scope>-<UTC-timestamp>/
-    README.txt           # restore guide + redaction notes
-    manifest.json        # machine-readable inventory
-    config/<name>.yaml   # five config files (redacted by default)
-    state/               # only with --include-state
-      lynceus.db
-      lynceus.db-shm     # only when present on the source
-      lynceus.db-wal     # only when present on the source
-  ```
-
-  `manifest.json` records the Lynceus version, the UTC export
-  timestamp (ISO-8601), the resolved scope (`user` or `system`), the
-  originating exporter command, the redaction policy
-  (`redaction_applied: true|false`) and the full list of redacted
-  fields, plus one entry per bundled file with its `size_bytes`,
-  `sha256`, and `redacted` flag. Missing-on-source files are
-  enumerated under `missing`; unreadable files (permission denied,
-  etc.) under `errored`. Re-hashing a file on restore and comparing
-  to the manifest catches transport damage. `README.txt` spells out
-  the canonical restore paths for user and system scope and tells the
-  receiver to replace `<REDACTED>` placeholders before the next
-  daemon restart.
-
-  **Path resolution.** `--scope {user,system,auto}` defaults to
-  `auto`, which probes the existing config resolver and falls back to
-  `user` if neither scope has a `lynceus.yaml`. Config files are read
-  from the scope's canonical directory, except that `rules_path` /
-  `allowlist_path` / `severity_overrides_path` settings inside
-  `lynceus.yaml` are honoured when present (the same fields the
-  daemon already follows). `allowlist_ui.yaml` is derived alongside
-  the operator-curated primary so daemon-managed UI entries are
-  bundled too.
-
-  **Output safety.**
-
-  - Refuses to overwrite an existing `--output` path; `--force` is the
-    explicit opt-in. The failure mode this prevents is operators
-    accidentally clobbering a prior export.
-  - Refuses an `--output` that resolves to a directory.
-  - Refuses an `--output` whose parent directory does not exist or
-    isn't writable.
-  - The default output filename is
-    `lynceus-export-<scope>-<UTC-timestamp>.tar.gz` in the current
-    working directory. The compact `YYYYMMDDTHHMMSSZ` form sorts
-    cleanly and matches the archive's internal root directory name.
-
-  **Dry-run.** `--dry-run` prints the inventory (per-file path + size,
-  total count + bytes, scope, redaction state, included fields) and
-  produces no archive. Useful for confirming that the redaction set
-  covers what the operator expects.
-
-  **Cross-platform.** Implementation uses `tarfile` and `pathlib` only
-  — no shell calls — so it runs on both Linux (primary target) and
-  Windows (dev box).
-
-  **No network, no daemon dependency, read-only.** The CLI never
-  writes outside `--output`, never mutates a source file, and does
-  not require the daemon to be running. Operators who want to verify
-  an archive before sharing can extract it on a fresh host and run
-  `lynceus-validate` against the restored configs.
-
-  Registered as a console script in both `pyproject.toml`
-  `[project.scripts]` and `install.sh`'s `CONSOLE_SCRIPTS` block,
-  matching the pattern set by `lynceus-validate` and
-  `lynceus-bootstrap-kismet`.
-
-- **Auto-refresh systemd timer for the Argus watchlist
-  (`lynceus-refresh.service` + `lynceus-refresh.timer`).** Closes the
-  loop with the rc4 staleness indicator: the indicator detects stale
-  data; the timer prevents it from going stale in the first place.
-  Default cadence is `OnCalendar=weekly` with
-  `RandomizedDelaySec=30min` (spreads load across deployments) and
-  `Persistent=true` (catches up missed runs after reboots),
-  comfortably faster than the default 30-day
-  `watchlist_staleness_warn_days` threshold so the `/settings` "stale"
-  badge stays cold once the timer is enabled. The oneshot service
-  re-runs `lynceus-import-argus --scope system --from-github` and runs
-  as the same `User=lynceus` with the same hardening posture as
-  `lynceus.service` (`NoNewPrivileges`, `ProtectSystem=strict`,
-  restricted address families).
-
-  **Default-off — operator opt-in only.** `install.sh --system` copies
-  both unit files to `/etc/systemd/system/` and runs `daemon-reload`,
-  but does NOT enable the timer. Enabling the timer is the only
-  Lynceus surface that opts a host into a recurring outbound network
-  call, so it stays an explicit operator decision —
-  `install.sh`'s offline-invariant header comment still holds. The
-  post-install summary, `lynceus-setup --system`'s closing pointer,
-  and the README under "Bundled threat data → Auto-refresh" all
-  surface the same one-liner:
+  **Default-off — operator opt-in.** `install.sh --system` copies both unit files and runs `daemon-reload` but does NOT enable the timer. Enabling it is the only Lynceus surface that opts a host into recurring outbound network calls, so it stays an explicit decision. The `install.sh` offline invariant still holds. Enable with:
 
   ```sh
   sudo systemctl enable --now lynceus-refresh.timer
   ```
 
-  Operators who want a different cadence (daily, monthly, custom
-  `OnCalendar` spec) use a drop-in override via
-  `sudo systemctl edit lynceus-refresh.timer`. Timer cadence is kept
-  out-of-band from `talos.yaml` on purpose — mixing the two would
-  create overlapping config surfaces with no single-source-of-truth
-  answer for which wins.
+  Want a different cadence? `sudo systemctl edit lynceus-refresh.timer` and write a drop-in. A transient GitHub outage fails the oneshot run and journals under `journalctl -u lynceus-refresh.service`; the next scheduled fire retries. No `Restart=` directive — tight retry loops on a sustained outage burn through the GitHub API budget. `uninstall.sh` removes the unit files; `--purge` also wipes `/var/lib/lynceus/`. User-scope installs don't ship the timer.
 
-  **Failure semantics.** A transient GitHub outage, network blip, or
-  malformed export fails the oneshot run; systemd journals it under
-  `journalctl -u lynceus-refresh.service`; the next scheduled fire
-  retries. No `Restart=` directive — tight retry loops on a sustained
-  outage burn through the GitHub API budget and never resolve. The
-  daemon is unaffected: SQLite WAL mode tolerates the concurrent
-  reader/writer between the importer's oneshot write and the daemon's
-  continuous read/write loop.
+- **`/alerts` filter bar grows `rule_type` / `q` / `window`, and `/alerts` + `/allowlist` share pagination.** Both pages now route through a single helper with the same `per_page` set (`{25, 50, 100, 200}`, default `50`), the same footer copy, and the same clamp-silently semantics for out-of-range inputs. New `/alerts` filters:
 
-  `uninstall.sh` removes both new unit files alongside the daemon and
-  UI units; a `--purge` run also wipes `/var/lib/lynceus` (which
-  holds the `argus-cache/` subdirectory the refresh populates).
-  User-scope installs do not ship the timer (no systemd integration
-  on `--user`); the bundled-watchlist + on-demand
-  `lynceus-import-argus --from-github` story is unchanged for that
-  scope.
+  - `rule_type=<literal>` — narrow by the rule's `rule_type`. Invalid values fall back to "any" rather than 400.
+  - `q=<substring>` — case-insensitive substring against MAC, message, and manufacturer. Distinct from the pre-existing `search` (which matches `rule_name` + `message`); both apply alongside if both are set.
+  - `window=1h|24h|7d|30d` — relative time window resolved server-side at request time. A shared link means the same recency to any operator. Combines with absolute `since` / `until` by taking the tighter lower bound.
 
-- **`/alerts` filter bar grows `rule_type` / `q` / `window`, and
-  `/alerts` + `/allowlist` share a unified pagination model.**
-  Fulfills the "pagination deferred" promise from the `/allowlist`
-  management surface bullet below: rather than two divergent
-  paginators, both pages now route through a single pagination helper
-  (`src/lynceus/webui/pagination.py`) with the same allowed `per_page`
-  set (`{25, 50, 100, 200}`, default `50`), the same footer copy
-  (`Page N of M · K total · per_page=PP`), and the same clamp-silently
-  semantics for out-of-range inputs. New `/alerts` filter dimensions:
+  Pre-rc5 query params keep byte-identical semantics — bookmarked URLs resolve unchanged. `page_size=10` is dropped (move to `25`); other invalid values silently fall back to `50` rather than 400.
 
-  - `rule_type=<literal>` — narrows by the rule's `rule_type`. The
-    full set is derived at module load from
-    `typing.get_args(rules.RuleType)`, so a new literal added to that
-    type alias automatically appears in the dropdown — no manual list
-    to drift. Invalid values fall back to "any" rather than 400, so
-    stale URLs survive a `RuleType` extension.
-  - `q=<substring>` — case-insensitive substring against MAC, message,
-    and manufacturer (via the existing `watchlist_metadata` LEFT JOIN,
-    with `COALESCE` NULL-safety for alerts without a MAC or without a
-    matched watchlist row). Distinct from the pre-existing `search`
-    filter (which matches `rule_name` + `message`); both apply
-    alongside if both are set.
-  - `window=1h|24h|7d|30d` — relative time window resolved server-side
-    at request time. Anchors "what does this URL show" to the
-    recipient's open-time clock so a shared link means the same
-    recency to any operator. Combines with the pre-existing absolute
-    `since` / `until` by taking the tighter (more-recent) lower bound
-    on the timestamp axis.
+  **Schema change: `alerts.rule_type TEXT`** (migration 015). The value was carried in-memory since day one but never persisted; the new filter forced it. Historical rows pre-rc5 carry `NULL`; "any" includes them, a specific `rule_type=...` excludes them.
 
-  Pre-rc5 query params on `/alerts` (`severity`, `acknowledged`,
-  `since`, `until`, `search`, `page`, `page_size`) keep byte-identical
-  semantics — bookmarked URLs from earlier versions resolve unchanged.
-  The pre-existing `page_size` validation widens slightly: invalid
-  values now silently fall back to the default (`50`) rather than 400;
-  the allowed set drops `10` (operators relying on dense renders move
-  to `25`).
+  Out-of-range behaviour is "clamp silently" rather than 4xx — `?page=999` lands on the last valid page, `?per_page=37` falls back to default, `?rule_type=bogus` ignores the filter. Stale bookmarks survive ruleset extensions. The `/alerts/ack-all-visible` POST mirrors the GET filter set byte-identical, so bulk-ack can never act on alerts the operator can't see.
 
-  **Schema change: `alerts.rule_type TEXT`** (migration 015). The
-  rule-type value has been carried in-memory since the project
-  started but the alert writer dropped it on the floor; the new
-  filter forced persistence. Historical rows pre-rc5 carry `NULL`
-  (the `rule_name → rule_type` mapping requires the loaded ruleset
-  and isn't recoverable retroactively); the filter default ("any")
-  includes them and a specific `rule_type=...` filter excludes them —
-  the honest answer for "unknown type." No new index: `rule_type`
-  filtering composes with the existing `ts DESC + LIMIT` slice and
-  the `ts` index dominates in practice. A `(rule_type, ts)` composite
-  is a future optimization gated on combined-filter `COUNT(*)`
-  latency.
+- **`/allowlist` management surface — search, filter, add, bulk remove.** Closes the "edit `allowlist_ui.yaml` by hand" gap that's existed since the per-alert mutation routes landed. You can now do the full lifecycle from the browser.
 
-  **`/alerts/ack-all-visible` filter set mirrors the page GET
-  byte-identical.** The bulk-write surface MUST see the same filtered
-  set the operator sees on the page; a divergence (e.g. a new filter
-  wired to GET but not to the POST) would silently ack alerts the
-  operator can't see — worst-class bug class for a non-reversible
-  bulk operation. Every new filter is plumbed through both surfaces
-  in the same commit.
+  **Filter bar.** Four query params, all AND together, all round-trip through the URL:
 
-  **`/allowlist` pagination.** Reuses the same pagination helper with
-  the same per_page set, default, and footer copy. Pagination is
-  applied in Python on the already-filtered list because the
-  allowlist lives in YAML on disk, not a DB table — the math is
-  identical to `/alerts`, only the slice substrate differs. Filter
-  dimensions are unchanged in this bullet (only pagination added).
+  - `q=<substring>` — case-insensitive against pattern + note.
+  - `source=primary|ui|all` — primary = your `allowlist.yaml`, UI = daemon-managed `allowlist_ui.yaml`.
+  - `status=active|snoozed|expired|all` — expired entries are no longer suppressing but stay rendered so you can bulk-clean them.
+  - `type=mac|oui|ssid|mac_range|ble_uuid|ble_manufacturer_id|drone_id_prefix|all`.
 
-  **Out-of-range behaviour is "clamp silently" rather than
-  "raise 4xx."** Operator UX wins for an entirely non-mutating GET
-  surface: `?page=999` lands on the last valid page; `?per_page=37`
-  falls back to default; `?rule_type=bogus` ignores the filter rather
-  than 400. Stale bookmarks survive a rule-set extension, a per_page
-  set change, or a typo.
+  **Add-entry form.** Collapsible `<details>` above the table; expands on validation error so the rejected input survives the round-trip. Inputs pass through the same canonicalization the importer uses, so a pasted uppercase MAC or `0x004C`-shaped manufacturer id ends up in canonical form. Successful add redirects with a one-shot flash.
 
-  **Single source of truth for filters across COUNT and the page
-  query.** The alerts count and the page query share the same
-  filter-clause builder, so the "K total" the footer prints can't
-  drift from the rows actually rendered — otherwise the pagination
-  math becomes a lie. Same shape on `/allowlist` (one filter pass,
-  one slice).
+  **Bulk remove.** Checkboxes on UI-source rows only. The handler reads the file once, filters in memory, and emits a single atomic write covering all N selections — one mtime tick for the poller's reload watcher rather than N.
 
-- **`/allowlist` management surface — search, filter, add entry, and
-  bulk remove.** Closes the "edit `allowlist_ui.yaml` by hand to
-  manage allowlists" gap that has existed since the snooze/allowlist
-  UI prompt added per-alert mutation routes but left the management
-  view read-only. Operators can now do the full lifecycle from the
-  browser without dropping to a shell.
+  **Primary file is hard read-only.** The daemon never writes to `allowlist.yaml`. The UI enforces this by construction: primary rows render with a `[primary]` badge and no checkbox; a hostile submission enlisting a primary key alongside legitimate UI keys fails atomically (HTTP 400, no partial removes). `POST /allowlist/add` writes only to `allowlist_ui.yaml`.
 
-  **Filter bar.** GET-form on `/allowlist` accepts four query
-  parameters and round-trips them through the URL:
+  Allowlist entries now accept all seven pattern types (the four added since `mac`/`oui`/`ssid` — `mac_range`, `ble_uuid`, `ble_manufacturer_id`, `drone_id_prefix`), so an alert keyed off any watchlist type has an allowlist counterpart.
 
-  - `q=<substring>` — case-insensitive substring match against
-    `pattern` + `note`.
-  - `source=primary|ui|all` — discriminates entries by the file they
-    came from. Primary = operator-curated `allowlist.yaml`; UI =
-    daemon-managed `allowlist_ui.yaml`.
-  - `status=active|snoozed|expired|all` — `active` = no `expires_at`;
-    `snoozed` = future `expires_at`; `expired` = past `expires_at`.
-    Expired entries are no longer suppressing alerts at poll time,
-    but they stay rendered so operators can bulk-clean them.
-  - `type=mac|oui|ssid|mac_range|ble_uuid|ble_manufacturer_id|drone_id_prefix|all`
-    — narrows by `pattern_type`.
+- **`lynceus-bootstrap-kismet` — new helper that takes a fresh Debian / Ubuntu / Kali host from "no Kismet installed" to "ready for `lynceus-setup`."** Closes the "what do I do before running lynceus-setup?" gap.
 
-  All four AND together; an empty result renders an inline empty-state
-  with a reset link. Filters are server-side over the merged
-  primary+UI in-memory list; no DB schema, no new indexes.
+  Scope is bounded by Kismet's apt-repo coverage: Debian (`bookworm`, `trixie`), Ubuntu (`focal`, `jammy`, `noble`, `plucky`), Kali. On any other distro it prints a pointer to <https://www.kismetwireless.net/packages/> and exits 0.
 
-  **Add-entry form.** Collapsible `<details>` section above the table;
-  expands automatically on a validation error so the rejected input
-  survives the round-trip with an inline error message. Inputs pass
-  through the same canonicalization helpers (`normalize_pattern`,
-  `parse_mac_range_pattern`) the importer uses, so an operator
-  pasting an uppercase MAC, a Cisco-dotted MAC, an `0x004C`-shaped
-  manufacturer id, or a legacy bare-prefix mac_range gets the same
-  canonical row the importer would write — and an invalid one
-  surfaces the validator's exception verbatim, never a write to disk.
-  Successful add redirects to `/allowlist?success=add` with a
-  one-shot flash message.
+  What it does, in order: refuses to run if not root (exit 2), reads `/etc/os-release` for the distro gate, installs Kismet via apt if not already on PATH (with `DEBIAN_FRONTEND=noninteractive` to bypass the suid-root prompt), auto-detects Wi-Fi monitor-mode-capable interfaces and Bluetooth controllers (Y/n per interface with default Y), patches `/etc/kismet/kismet_site.conf` append-only with `source=<iface>:type=linuxwifi` or `:type=linuxbluetooth` lines (atomic write, idempotent — your `name=` / `channel_list=` customizations are preserved), adds `$SUDO_USER` to the `kismet` group, then prints next steps (log out + back in, start Kismet, set password, create the API key, run `sudo lynceus-setup`).
 
-  **Bulk remove.** Checkboxes on UI-source rows only; the form wraps
-  the table and POSTs to `/allowlist/bulk_remove`. The handler reads
-  the UI file once, filters in memory, and emits a single atomic
-  write covering all N selections — bulk operations land as exactly
-  one mtime tick for the poller's reload watcher rather than N. The
-  single-entry remove path is left unchanged; bulk uses its own path
-  so the atomic-write contract is obvious by name.
+  **`install.sh` stays offline.** This script is the one that uses the network for apt; the threat-model invariant that `install.sh` curls no third parties is unchanged.
 
-  **Primary-source read-only protection (hard invariant).** The
-  daemon never writes to `allowlist.yaml`. The /allowlist surface
-  enforces this by construction:
+  **Idempotent on every step** — re-running on a partially-set-up host skips work already done. Flags: `--skip-install` (Kismet already present), `--interface <name>` (repeatable, with `--interface-type {wifi,bt}`), `--no-network` (refuse apt — for air-gapped hosts, implies `--skip-install`), `--dry-run` (preview only), `--yes` (accept all defaults — for scripted bootstrap). Exit codes: 0 success / unsupported-distro, 1 recoverable failure, 2 tool-level failure.
 
-  - Primary rows render with a `[primary]` badge and a dash in the
-    checkbox cell — there is no DOM input to select them. The
-    bulk-remove form can't see them.
-  - The `POST /allowlist/bulk_remove` handler load-with-source on
-    every request and refuses the entire batch with HTTP 400 if any
-    submitted composite key matches a primary entry — no partial
-    removes. A hostile form submission that enlists a primary key
-    alongside legitimate UI keys fails atomically; the UI rows are
-    not silently deleted while the operator is told the primary
-    refused.
-  - `POST /allowlist/add` writes only to `allowlist_ui.yaml`. The
-    primary file's bytes (and mtime) are unchanged across the
-    request, verified by a test fixture that snapshots an operator
-    comment + entry block round-trip.
+  Wired into `install.sh`'s `CONSOLE_SCRIPTS` symlink layer and `pyproject.toml`; the post-install hint and the `lynceus-setup` "if Kismet isn't installed" block both point at it. End-to-end testing is manual-smoke against a fresh Debian/Ubuntu/Kali VM.
 
-  **AllowlistEntry pattern_type extension (backend).** Previously the
-  allowlist only suppressed `mac`/`oui`/`ssid` alerts — the four
-  pattern types the watchlist gained later (`mac_range`, `ble_uuid`,
-  `ble_manufacturer_id`, `drone_id_prefix`) had no allowlist
-  counterpart, so an operator who wanted to silence an alert keyed
-  off one of them had to fall back to the device's MAC and lose the
-  broader-shape suppression. AllowlistEntry now accepts all seven
-  types; each is matched against the same observation field the
-  watchlist branch matches against, so suppression and alerting see
-  the same truth (no drift). The validator routes every type through
-  `lynceus.patterns` so the canonical form stored in
-  `allowlist_ui.yaml` is byte-identical to the form stored in
-  `watchlist.pattern` for the same input — equality lookups stay
-  direct.
+- **`lynceus-setup` auto-locates an existing Kismet API key.** The wizard reads Kismet's per-user `~/.kismet/session.db` (under `--system` also checks `$SUDO_USER`'s home and `/root/.kismet/`) and picks the best match: a key named `lynceus`, else `readonly`, else `admin`, else the first non-empty token. On hit, it shows the source path, a redacted preview (`abcd…wxyz`), and asks `Use this key? [Y/n]`. Y skips the manual copy-paste flow.
 
-  **Pagination deferred.** Assumes small-to-medium allowlists (<500
-  entries) where every entry fits on one screen. Pagination lands as
-  a unified webui-pagination prompt alongside `/alerts` filtering
-  later in this rc. Bulk operations are correspondingly bounded by
-  what fits in a single render rather than enforced server-side;
-  operators with thousands of allowlist entries are out of scope for
-  v1.
+  Purely additive: every failure mode (missing file, malformed JSON, no usable entry, Windows host) silently falls through to the existing manual walkthrough. The located key is never echoed in full — only the head/tail preview. No new dependencies, no new config fields, no network calls, read-only against Kismet's files.
 
-- **`lynceus-bootstrap-kismet` — new operator-facing helper that takes
-  a fresh Debian / Ubuntu / Kali host from "no Kismet installed" to
-  "Kismet installed, capture interfaces configured, kismet group set
-  up, ready for the operator to open the web UI, set a password, and
-  generate the API key `lynceus-setup` will pick up."** Closes the
-  "what do I do before running lynceus-setup?" gap for new operators.
+- **`GET /healthz.json` — machine-readable health endpoint for monitoring integration.** Returns JSON with overall status plus per-check details (DB reachability, daemon liveness, watchlist freshness, ruleset count, alert counts). Read-only, no auth, derived from existing DB + filesystem state — no new tables, no heartbeat infrastructure, no daemon-side changes.
 
-  Scope is bounded by Kismet's apt-repo coverage: Debian (`bookworm`,
-  `trixie`), Ubuntu (`focal`, `jammy`, `noble`, `plucky`), and Kali.
-  On any other distro the script prints a pointer to
-  <https://www.kismetwireless.net/packages/> and exits 0 — the
-  operator isn't broken, they just need to install Kismet by hand.
-
-  What it does, in order:
-
-  1. Refuses to run if not root; exits 2.
-  2. Reads `/etc/os-release` to gate on supported distro.
-  3. If `kismet` is not on PATH and `--skip-install` was not passed:
-     downloads the Kismet GPG key (via stdlib `urllib`, no `wget`
-     dependency), dearmors it through `gpg --dearmor` to
-     `/usr/share/keyrings/kismet-archive-keyring.gpg`, writes the
-     codename-specific
-     `deb [signed-by=…] https://www.kismetwireless.net/repos/apt/release/<codename> <codename> main`
-     line to `/etc/apt/sources.list.d/kismet.list`, runs
-     `apt-get update`, and runs
-     `DEBIAN_FRONTEND=noninteractive apt-get install -y kismet`. The
-     noninteractive frontend matters — Kismet's postinst defaults to
-     prompting for "Install with suid root?" and would hang an
-     unattended run.
-  4. Detects Wi-Fi monitor-mode-capable interfaces via `iw dev` +
-     `iw phy <phy> info` parsing (looking for the `* monitor` bullet
-     in `Supported interface modes:`), and Bluetooth controllers via
-     `/sys/class/bluetooth/hci*` (sysfs is the canonical source —
-     works regardless of whether `bluetoothctl` is installed). Per
-     interface, asks Y/n with default Y so the common case is hitting
-     Enter through.
-  5. Patches `/etc/kismet/kismet_site.conf` append-only: each selected
-     Wi-Fi interface gets a `source=<iface>:type=linuxwifi` line, each
-     BT controller gets `source=<iface>:type=linuxbluetooth`.
-     Idempotent — an interface that already heads an existing
-     `source=` line is skipped regardless of suffix, so operator
-     customizations (`name=…`, `channel_list=…`) are preserved.
-     Atomic write via `tempfile.mkstemp` + `os.replace` so a Kismet
-     daemon reading the file mid-update never sees a partial write.
-  6. Adds the invoking operator (`$SUDO_USER`) to the `kismet` group
-     if not already a member. If the group does not exist — the
-     .deb's postinst should create it — the script does NOT silently
-     `groupadd`. It surfaces the missing group as an error pointing
-     back to the package install, because a missing group is a signal
-     that `apt install kismet` didn't behave as expected and adding
-     the operator to a hand-rolled group would not give them capture
-     capabilities.
-  7. Prints the closing block: log out + back in (group membership
-     doesn't propagate to running shells), how to start Kismet
-     (`systemctl start kismet` or foreground for first-launch
-     password setup), the web-UI URL, the API-key creation walkthrough
-     (`Settings → API Keys → Create`, `Name: lynceus, Role: readonly`),
-     and `sudo lynceus-setup`.
-
-  **`install.sh` stays offline.** This script is the one that uses
-  the network for apt operations; the boundary is preserved
-  intentionally. The threat-model invariant that an operator can read
-  `install.sh` before running it without that script then curling
-  third parties is unchanged.
-
-  **Idempotent on every step.** Re-running on a partially-set-up
-  host: already-installed Kismet → "kismet binary already on PATH",
-  skip apt install (or re-run if the operator says Y);
-  already-configured apt source → skip add-source, just
-  `apt-get update`; pre-existing `kismet_site.conf` → diff and append
-  missing lines only; operator already in `kismet` group → skip
-  `usermod`. Second run is safe to invoke from any
-  partially-successful first run.
-
-  Flags:
-
-  - `--skip-install` — Kismet is already present (manual build,
-    different package, etc.); skip the apt steps but still do
-    interface config + permissions.
-  - `--interface <name>` (repeatable) — bypass auto-detection and
-    configure these interfaces explicitly. Pairs with
-    `--interface-type {wifi,bt}` (default `wifi`).
-  - `--no-network` — refuse any apt / network operation. Implies
-    `--skip-install`. For operators who installed Kismet from
-    air-gapped media.
-  - `--dry-run` — print every command + file write, but execute
-    nothing. Operator prompts still appear so the preview reflects
-    the choices that would actually be made.
-  - `--yes` — accept every Y/n prompt with its default (most are Y;
-    the "re-install on top of existing Kismet?" prompt defaults to N).
-    For scripted bootstrap.
-
-  Exit codes: 0 success or unsupported-distro, 1 recoverable failure
-  (operator action: fix + re-run), 2 tool-level failure (not root,
-  not Linux).
-
-  Wired into `install.sh`'s `CONSOLE_SCRIPTS` symlink layer (same
-  pattern the `lynceus-validate` addition followed) and into
-  `pyproject.toml`'s `[project.scripts]`. `install.sh`'s post-install
-  hint block now mentions `sudo lynceus-bootstrap-kismet` alongside
-  `lynceus-setup`, and the `lynceus-setup` wizard's "If Kismet isn't
-  installed or running yet" context block points operators at it as a
-  concrete option. End-to-end testing requires a fresh
-  Debian/Ubuntu/Kali VM and is manual-smoke territory.
-
-- **`lynceus-setup` Kismet API key prompt now auto-locates an existing
-  key from disk before falling through to the manual copy-paste
-  flow.** The wizard reads Kismet's per-user `~/.kismet/session.db`
-  (under `--system` it also checks the invoking operator's
-  `SUDO_USER` home, then `/root/.kismet/`), parses the JSON array of
-  `{token, name, role, ...}` objects Kismet has written there since
-  the 2022-08 Boost.Beast server rewrite, and picks the best match: a
-  key named `lynceus`, else a `readonly` key, else `admin`, else the
-  first non-empty token.
-
-  On hit, the wizard shows the source path, a redacted preview
-  (first 4 chars + ellipsis + last 4 chars — short keys collapse to a
-  `***` placeholder), and asks `Use this key? [Y/n]`. Y stores the
-  key and skips the manual prompt + walkthrough. N falls through to
-  the existing manual walkthrough unchanged.
-
-  Auto-locate is purely additive — every failure mode (missing file,
-  unreadable, malformed JSON, no usable entry, Windows host) results
-  in a silent fall-through to the existing manual flow. The operator
-  only ever sees `Searching for an existing API key on disk...`
-  followed by `Found a key in <path>` or `no existing key found`;
-  permission denials, parse errors, and filesystem paths beyond the
-  located one are never surfaced.
-
-  **Redaction contract:** the located key is never echoed in full —
-  only the head/tail preview. Tests assert the sentinel key value
-  never appears in captured stdout or stderr under any flow,
-  including the accept-the-key path where the key ends up in the
-  generated `lynceus.yaml`.
-
-  Closes the "where do I find this?" friction that the rc5
-  walkthrough explained but didn't eliminate. An operator with a
-  working Kismet install no longer has to log into the web UI to
-  copy-paste a key the wizard could read for them.
-
-  No new dependencies, no new config fields (candidate paths are
-  hardcoded per scope), no network calls. Read-only — the wizard
-  never writes to Kismet's config files.
-
-- **`GET /healthz.json` — machine-readable health endpoint for
-  monitoring integration.** Returns JSON with overall status plus
-  per-check details (DB reachability, daemon liveness, watchlist
-  freshness, ruleset count, alert counts). Read-only, no auth,
-  derived entirely from existing DB + filesystem state — no new
-  tables, no heartbeat infrastructure, no daemon-side changes.
-
-  HTTP semantics follow the standard monitoring convention: 200 when
-  the top-level status is `ok`, 503 when it is `error`. Currently
-  only the DB-reachable check can flip the top-level status; the
-  other checks return `status: ok` with values the monitoring tool
-  can apply its own thresholds against. When the DB is unreachable
-  the response carries only the `db` check (the others can't be
-  computed without DB access).
+  HTTP semantics follow the standard monitoring convention: 200 when status is `ok`, 503 when `error`. Currently only the DB-reachable check flips the top-level status; the rest return `ok` with values your monitoring tool can threshold against.
 
   Response shape:
 
@@ -1556,86 +326,31 @@ with external trackers.
         }
       }
 
-  The `poller` check carries two signals — `last_poll_at` (from
-  `poller_state.last_poll_ts`, written by the daemon every tick,
-  proxies "daemon process alive") and `last_observation_at`
-  (`MAX(sightings.ts)`, proxies "Kismet returning data"). Both are
-  index-backed single-row lookups; sub-second response on a populated
-  DB. The `watchlist.stale` boolean uses the same
-  `watchlist_staleness_warn_days` threshold the startup log line and
-  `/settings` card already use.
+  The `poller` check carries `last_poll_at` (daemon-alive proxy) and `last_observation_at` (Kismet-returning-data proxy). The `watchlist.stale` boolean uses the same `watchlist_staleness_warn_days` threshold the startup log and `/settings` card already use.
 
-  **Shape-stability commitment:** existing keys never disappear in
-  future releases; future releases only add keys. Monitoring tools
-  can pin against this shape without expecting churn.
+  **Shape-stability commitment:** existing keys never disappear; future releases only add keys. Pin against this shape without expecting churn. The existing HTML `/healthz` (topnav, `docs/SMOKE.md`, `lynceus-quickstart` readiness probe) is unchanged.
 
-  **Path choice — new sibling, not replacement.** The existing
-  `/healthz` HTML page (linked from the topnav, grep'd by
-  `docs/SMOKE.md`, polled for HTTP 200 by `lynceus-quickstart`) is
-  kept unchanged. The JSON endpoint lives at `/healthz.json` so the
-  human-facing nav, the smoke runbook, and the quickstart readiness
-  probe all stay untouched. Content-negotiation single-path design
-  was considered and rejected: a `curl` without
-  `Accept: application/json` would get HTML, which monitoring tools
-  then try to parse as JSON — fragile against the shape-stability
-  commitment.
-
-  Example invocation:
+  Example:
 
       curl -sS http://127.0.0.1:8765/healthz.json | jq .
 
-  Polling at the typical 30s cadence adds no measurable load — every
-  query is index-backed.
+  Polling at 30s adds no measurable load. Out of scope for v1: auth, Prometheus `/metrics`, response caching, configurable thresholds.
 
-  Out of scope for v1 (future polish): authentication, Prometheus
-  text-format exposition at `/metrics`, response caching,
-  configurable thresholds, top-level status flips on non-DB failures,
-  daemon-side heartbeat infrastructure.
+- **`lynceus-validate` CLI — read-only configuration validator.** Catches typos, schema errors, malformed values, and missing referenced paths at edit time instead of at the next daemon restart. Wraps the existing loaders so the diagnoses match what the daemon would hit.
 
-- **`lynceus-validate` CLI — read-only configuration validator.**
-  Catches typos, schema errors, malformed values, and missing
-  referenced paths at edit time instead of at the next daemon
-  restart. Wraps the existing loaders so the diagnoses are exactly
-  what the daemon would hit — no separate validation logic to drift.
+  Covers the five files you may maintain:
 
-  Covers the five files an operator may maintain:
+  - `lynceus.yaml` — Pydantic schema check; missing-file ERROR for each populated `*_path` reference.
+  - `rules.yaml` — surfaces ruleset loader errors (duplicate names, invalid `rule_type`, malformed patterns); empty ruleset is a WARNING.
+  - `severity_overrides.yaml` — louder at edit time than the daemon. Unknown top-level keys get a Levenshtein hint (`'supress_categories' -- did you mean 'suppress_categories'?`); unknown Argus categories WARN; `pattern_overrides` keys not matching the 16-hex `argus_record_id` shape ERROR.
+  - `allowlist.yaml` — Pydantic validation; entries with `expires_at` in the past WARN.
+  - `allowlist_ui.yaml` — same shape; missing file is normal.
 
-  - `lynceus.yaml` — Pydantic schema check; missing-file ERROR for
-    each populated `*_path` reference.
-  - `rules.yaml` — surfaces the ruleset loader's errors (duplicate
-    names, invalid `rule_type`, malformed patterns, delegation-shape
-    violations); an empty ruleset is a WARNING.
-  - `severity_overrides.yaml` — louder at edit time than the daemon.
-    The runtime loader is lenient by design (malformed values land as
-    WARNING + pass-through so the poller never crashes); the
-    validator promotes those to ERROR. Adds edit-time-only checks:
-    unknown top-level keys get a Levenshtein-distance hint
-    (`'supress_categories' -- did you mean 'suppress_categories'?`),
-    unknown Argus device categories WARN, `pattern_overrides` keys
-    not matching the 16-hex `argus_record_id` shape ERROR.
-  - `allowlist.yaml` — Pydantic validation; entries with `expires_at`
-    in the past WARN ("it will never match — consider removing").
-  - `allowlist_ui.yaml` — same shape; missing file is normal (no UI
-    writes yet).
+  Exit-code contract (stable for CI / pre-commit use): `0` no errors, `1` errors found, `2` tool-level failure. Scope handling matches `lynceus-import-argus` (`--scope user` default or `--scope system`). Output is plain ASCII (no ANSI, no emoji) so you can grep / awk it. `--quiet` suppresses OK + WARNING for CI use.
 
-  Exit-code contract is stable for CI / pre-commit hook use:
-
-  - `0` — no errors (warnings may exist).
-  - `1` — errors found.
-  - `2` — tool-level failure (config dir unreachable).
-
-  Scope handling matches `lynceus-import-argus`: `--scope user`
-  (default) or `--scope system`. The validator never modifies any
-  file — pure read-only. Output is plain ASCII (no ANSI color, no
-  emoji) so operators can grep / awk it from scripts. `--quiet`
-  suppresses OK and WARNING lines for CI usage where only ERRORs
-  matter.
-
-  Example invocation:
+  Example:
 
       sudo lynceus-validate --scope system
-
-  Example output:
 
       Validating Lynceus configuration (scope: system)
 
@@ -1650,1420 +365,173 @@ with external trackers.
 
       Summary: 2 errors, 0 warnings across 2 files
 
-  Cross-file checks against live DB state (e.g. validating that
-  `pattern_overrides` keys correspond to real `argus_record_id`
-  values in the watchlist) are deliberately out of scope for v1; the
-  validator never opens the DB. A future `--check-db` flag could add
-  that.
+  The validator never opens the DB; cross-file checks against live DB state are out of scope for v1.
 
-- **Alert detail page gains triage buttons: Allowlist, Snooze 24h,
-  Remove.** Operators triaging a false-positive alert no longer need
-  to edit `allowlist.yaml` and restart the daemon — one click on
-  `/alerts/<id>` writes a MAC-keyed entry to the daemon-managed
-  `allowlist_ui.yaml` sibling, the poller picks it up on its next
-  tick via the mtime watch, and future alerts for that device are
-  suppressed immediately. Builds on the allowlist backend reshape
-  (`expires_at` + `added_at`, split storage, runtime reload, atomic
-  writers) that landed earlier in this rc.
+- **Alert detail page gains triage buttons: Allowlist, Snooze 24h, Remove.** Triaging a false positive no longer means editing `allowlist.yaml` and restarting — one click on `/alerts/<id>` writes a MAC-keyed entry to `allowlist_ui.yaml`, the poller picks it up on the next tick via the mtime watch, and future alerts for that device are suppressed immediately.
 
   Three POST routes under `/alerts/{id}`:
 
-  - `/allowlist` — writes a permanent (no `expires_at`) entry, note
-    prefix `added via webui at <ISO>`.
-  - `/snooze` — writes an entry with `expires_at = now + 86400`
-    seconds, note prefix `snoozed 24h via webui at <ISO>`. The fixed
-    24h window is the only operator-comfort cadence available from
-    the UI; custom durations are deliberately out of scope (operators
-    wanting non-24h windows edit the YAML directly).
-  - `/allowlist/remove` — idempotent removal by MAC. Returns 303
-    whether the entry existed or not; the redirect re-renders the
-    truth, which is more useful than a stale error.
+  - `/allowlist` — permanent entry (no `expires_at`), note prefix `added via webui at <ISO>`.
+  - `/snooze` — entry with `expires_at = now + 86400`. The fixed 24h window is the only UI cadence; custom durations stay YAML-only.
+  - `/allowlist/remove` — idempotent removal by MAC. Returns 303 whether the entry existed or not.
 
-  All three share the same validation set: alert exists (404
-  otherwise), alert carries a MAC (400 otherwise — alerts without a
-  MAC, e.g. per-source-count rules, can't be triaged this way),
-  `allowlist_path` is configured (400 otherwise — there's no file to
-  write to). CSRF protection is the standard `_csrf` form field plus
-  `lynceus_csrf` cookie that the existing middleware enforces;
-  forged POSTs return 403.
+  All three share the same validation: alert exists (404 otherwise), alert carries a MAC (400 otherwise — alerts without one can't be triaged this way), `allowlist_path` is configured (400 otherwise). CSRF protection is the standard `_csrf` form field + `lynceus_csrf` cookie.
 
-  The alert-detail template renders one of three states in a new
-  `triage` article, distinct from the existing `actions` (ack/unack)
-  article so the two concerns stay visually separate:
+  The detail page renders one of three triage states: **not allowlisted** (Allowlist + Snooze 24h buttons), **permanently allowlisted** (status line + Remove button if the match came from the UI sibling; explanatory hint pointing at `allowlist.yaml` if it came from the primary — the daemon cannot edit that file), **snoozed** ("Snoozed until <ISO> (N hours remaining)" with Cancel snooze button on UI-sibling matches). The triage section is omitted entirely when `allowlist_path` is unset or the alert has no MAC.
 
-  - **State 1 (not allowlisted):** Allowlist + Snooze 24h buttons.
-    Vanilla `window.confirm()` on submit — no modal framework, no JS
-    dependency.
-  - **State 2 (permanently allowlisted):** "Allowlisted (added
-    YYYY-MM-DD HH:MM UTC)" status. A Remove button if the match came
-    from the daemon-managed UI sibling; an explanatory hint pointing
-    at `allowlist.yaml` if the match came from the operator-curated
-    primary (the daemon cannot edit that file, so a button there
-    would silently no-op).
-  - **State 3 (snoozed):** "Snoozed until YYYY-MM-DD HH:MM UTC (N
-    hours remaining)" status. Cancel snooze button on UI-sibling
-    matches; same primary-file hint otherwise. Hours-remaining is
-    computed against the request's `now_ts` and rounded up so a
-    partial hour shows as ≥ 1.
+- **Allowlist supports temporary entries via `expires_at`, and the daemon picks up edits without a restart.** Three operator-facing changes land together:
 
-  The triage section is omitted entirely when `allowlist_path` is
-  unset or when the alert carries no MAC. The existing /alerts/<id>
-  render path is otherwise unchanged.
+  - `AllowlistEntry` gains optional `expires_at` (Unix epoch seconds; `None` = permanent) and `added_at`. Both default to `None` so existing `allowlist.yaml` files parse unchanged. Entries past their `expires_at` are silently skipped at poll time — the "snooze expired" path.
 
-  **Closes the documented limitation in the `pattern_overrides` note**
-  that pointed operators at allowlist edits for non-Argus row
-  suppression. The allowlist remains the right tool for that case;
-  the YAML-edit-and-restart friction is now gone.
+  - The poller stat()s the allowlist file(s) before every tick and reloads when mtime moves. Daemon restart is no longer required for allowlist edits. A deleted primary triggers a WARNING and the daemon retains its last-known-good entries rather than dropping every suppression at once (defends against mid-rename and fat-fingered-rm). Each reload emits a single INFO line: `allowlist reloaded: N operator entries + M UI entries`.
 
-- **Allowlist supports temporary entries via `expires_at`, and the
-  daemon picks up edits without a restart.** Three operator-facing
-  changes land together to set up the operator-comfort UI work
-  tracked separately:
+  - Storage splits into two files. `allowlist.yaml` (operator-curated primary, path from `Config.allowlist_path`) is read-only from the daemon's perspective — your hand-formatting, comments, and key ordering are preserved indefinitely. A sibling `allowlist_ui.yaml` (path derived by inserting `_ui` before the suffix, e.g. `/etc/lynceus/allowlist.yaml` → `/etc/lynceus/allowlist_ui.yaml`) is daemon-managed: created on first write, merged into the in-memory allowlist at load. Absent is normal pre-first-write; a malformed UI file logs WARNING and is treated as empty so a corrupt sibling can't cripple suppression; a malformed primary logs ERROR and is treated as empty (pre-rc5 would have crashed the poller init).
 
-  - `AllowlistEntry` gains two optional fields: `expires_at` (Unix
-    epoch seconds; `None` means permanent) and `added_at` (Unix epoch
-    seconds at which the entry was created). Both default to `None`
-    so existing operator-curated `allowlist.yaml` files parse
-    unchanged. Entries whose `expires_at` is at or before the
-    evaluation clock are silently skipped at poll time — that is the
-    "snooze expired" path.
+  The existing audit INFO line at the suppression site keeps its `Allowlist suppressed watchlist hit: rule=… mac=… severity=…` prefix verbatim — `journalctl` greps are unaffected — and appends ` (expires <ISO>)` only when the matched entry has an `expires_at`.
 
-  - The poller stat()s the allowlist file(s) before every poll tick
-    and reloads the in-memory `Allowlist` when either mtime has moved.
-    Daemon restart is no longer required for allowlist edits. A
-    missing file maps to sentinel mtime 0.0, so a file appearing for
-    the first time and a file being deleted both register as changes
-    — except that a deleted primary triggers a WARNING and the daemon
-    retains its last-known-good entries rather than dropping every
-    suppression at once (defends against the operator-mid-rename /
-    fat-fingered-rm case). Each reload emits a single INFO line of
-    the form `allowlist reloaded: N operator entries + M UI entries`.
+- **`ble_manufacturer_id` and `drone_id_prefix` rows from Argus now land in the watchlist.** Pre-rc5, every row of these two types hit the importer's identifier-type gate and dropped to `dropped_unknown_type` without reaching the DB. Against the live `argus_export.csv` snapshot at `exported_at=2026-05-14T22:34:07Z`:
 
-  - Allowlist storage splits into two YAML files. `allowlist.yaml`
-    (the operator-curated primary, path set via
-    `Config.allowlist_path`) is read-only from the daemon's
-    perspective — Lynceus never writes to it, so hand-formatting,
-    comments, and key ordering are preserved indefinitely. A sibling
-    `allowlist_ui.yaml` (path derived by inserting `_ui` before the
-    suffix, e.g. `/etc/lynceus/allowlist.yaml` →
-    `/etc/lynceus/allowlist_ui.yaml`) is daemon-managed: created on
-    first write by the UI mutation routes, and merged into the
-    in-memory allowlist transparently at load. An absent UI file is
-    the normal pre-first-write state and is not an error; a malformed
-    UI file logs WARNING and is treated as empty so a corrupt sibling
-    cannot cripple suppression. A malformed primary logs ERROR and is
-    treated as empty — the startup ERROR line in journalctl is the
-    surfacing path for an operator's syntax slip; pre-rc5 behaviour
-    would have crashed the poller init.
+  - `ble_manufacturer_id`: 3,969 rows (Bluetooth SIG 16-bit Company Identifiers, e.g. `0x004C` for Apple).
+  - `drone_id_prefix`: 427 rows (ANSI/CTA-2063-A Remote-ID serial prefixes, e.g. `21239ESA2`).
 
-  Two writer helpers ship in the allowlist module so the UI routes
-  have a stable API to call: an append-and-create-atomically writer
-  for additions, and a canonical-pattern remover that returns whether
-  it actually matched. Concurrent UI writes are last-write-wins by
-  file mtime — the cadence is operator-driven (manual button clicks)
-  so locking is not warranted at this scale.
+  `dropped_unknown_type` for that snapshot moves from 4,635 → 239 — exactly the sum of the two new types.
 
-  The existing `Allowlist.is_allowed(obs)` signature gains an optional
-  `now_ts: int | None = None` parameter (default to wall clock) and
-  the return type changes from `bool` to `AllowlistEntry | None` —
-  the matched entry's `expires_at` is what lets the poller annotate
-  the suppression audit line. Callers that only needed a boolean keep
-  working because `None` is falsy and `AllowlistEntry` is truthy; the
-  four in-tree tests that asserted strict `is True` / `is False`
-  identity were updated to `is not None` / `is None`.
+  Migration 013 rebuilds the `watchlist` table to relax the `pattern_type` CHECK (mirroring migration 011's mac_range pattern; SQLite cannot modify a CHECK via `ALTER TABLE`). No new metadata columns: both new types are equality-shaped at the string level. Canonical forms: `ble_manufacturer_id` lowercases and strips the `0x` prefix (`'0x004C'` → `'004c'`) so the runtime equality against Kismet's bare-hex emission is direct; `drone_id_prefix` preserves case (`'21239ESA2'` → `'21239ESA2'`) because ANSI/CTA-2063-A serials are case-sensitive per the standard.
 
-  The existing audit INFO line at the allowlist-suppression site
-  keeps its `Allowlist suppressed watchlist hit: rule=… mac=… severity=…`
-  prefix verbatim — operators grepping for it across journalctl
-  history are unaffected — and appends ` (expires <ISO>)` only when
-  the matched entry carries a non-None `expires_at`. Permanent
-  suppressions emit the same line they always did.
+- **`watchlist_ble_manufacturer_id` and `watchlist_drone_id_prefix` rule types.** Same empty-patterns-delegates-to-DB shape established by `watchlist_mac` / `watchlist_oui` / `watchlist_ssid` / `ble_uuid` in rc4: a single empty-patterns rule of the new type enables alert-firing for every matching watchlist row of that type; severity comes from the matched DB row; the runtime override layer (`suppress_vendors`, `suppress_categories`, `pattern_overrides`, `device_category_severity`) applies transparently. Non-empty patterns also accepted and normalized at load time (so `0x004C` in `rules.yaml` matches the bare-hex `004c` on the observation). The setup wizard grows two per-type prompts, each gated by a row-count check so operators with an empty pattern_type don't see them. Re-run `lynceus-setup --reconfigure` to add the new types to an existing install.
 
-- **`identifier_type='ble_manufacturer_id'` and
-  `identifier_type='drone_id_prefix'` rows from Argus now land in the
-  watchlist instead of being silently dropped.** Pre-rc5, every row
-  of these two types hit the importer's identifier-type allowlist
-  gate, fell to the `dropped_unknown_type` counter, and never reached
-  the DB. Against Argus's live `argus_export.csv` snapshot at
-  `exported_at=2026-05-14T22:34:07Z`:
+  **CAVEAT — runtime alerting needs Kismet probe-path verification.** The Kismet device parser gained two new optional observation fields (`ble_manufacturer_id`, `drone_id_prefix`) populated via best-effort extractors that walk a small table of likely Kismet field paths. These paths come from public Kismet schema docs, NOT a live capture — the codebase had no prior consumer of either surface. Until the paths are confirmed and corrected against a real Kismet emission, both fields read `None` on real hardware and the delegation rules fire zero alerts. The import + DB + rules-engine + wizard pipeline is load-bearing in the meantime: rows land in the watchlist DB, appear in the `/watchlist` UI, and show on the `/settings` count card; only the alert-time match against a live observation is gated on probe-path verification. Promoting a confirmed path to the front of the probe table is a one-line edit.
 
-  - `ble_manufacturer_id`: 3,969 rows (Bluetooth SIG 16-bit Company
-    Identifiers, e.g. `0x004C` for Apple).
-  - `drone_id_prefix`: 427 rows (ANSI/CTA-2063-A Remote-ID
-    serial-number prefixes, e.g. `21239ESA2`).
+  **Drone Remote-ID structural gates closed.** The initial rc5 cut shipped with two gates that blocked Remote-ID observations independent of probe-path uncertainty: the Kismet type map admitted only Wi-Fi / BTLE / Bluetooth, and the `devices.device_type` CHECK constraint from migration 001 would have rejected the Remote-ID category. Both are now closed: migration 014 rebuilds `devices` to add `'remote_id'` to the CHECK; the type map maps `'Remote ID'` and `'Remote ID Drone'` to the new category; the drone-ID probe table is re-anchored on the canonical `kismet.device.base.*` paths (`kismet.device.base.remote_id.serial_number` / `.uas_id`) with the older `remoteid.device.basic_id.*` paths retained as fallbacks; the `/devices?device_type=...` query handler admits the new value (the dropdown still lists three types — pass the query param directly for a Remote-ID-only view, dropdown polish tracked separately).
 
-  The `dropped_unknown_type` counter for that snapshot moves from
-  4,635 → 239 — a 4,396-row drop, exactly the sum of the two new
-  types. Residual types (`ble_company_id`, `ble_service_uuid`,
-  `chipset_codename`, `firmware_build_*`, etc.) remain deferred to
-  future prompts.
+- **Annotation walk now covers all 7 pattern_types.** Alerts fired by the two new delegation rule types were landing with `matched_watchlist_id=NULL` because the rc4 annotation walk only knew the original five types — `rule_name` and severity were right, but the alert → watchlist-row click-through, ntfy enrichment, and audit trail all keyed off `matched_watchlist_id` and went cold. The walk now covers all seven in tiebreaker order: `mac > oui > ble_manufacturer_id > mac_range > drone_id_prefix > ssid > ble_uuid`. The poller passes the new observation fields through to the annotation call. No DB schema change.
 
-  Migration 013 (`013_pattern_type_extension.sql`) rebuilds the
-  `watchlist` table to relax the `pattern_type` CHECK constraint,
-  mirroring migration 011's mac_range pattern: full table rebuild
-  under `PRAGMA foreign_keys=OFF` (SQLite cannot modify a CHECK via
-  `ALTER TABLE` per SQLite docs §7), AUTOINCREMENT ROWIDs preserved,
-  the `mac_range_prefix` / `mac_range_prefix_length` columns and the
-  partial index from 011 carried across unchanged. No new metadata
-  columns: both new types are equality-shaped at the string level and
-  reuse the existing simple-watchlist match SELECT.
-
-  Two new canonicalizers in `lynceus.patterns`:
-
-  - `ble_manufacturer_id`: `'0x004C'` → `'004c'` (4-hex-char
-    lowercase, no `'0x'` prefix, zero-padded). Lowercase chosen so
-    the runtime equality lookup against a Kismet
-    advertisement-decoded field (most likely delivered as bare hex)
-    is a direct string compare. Defensive rejects: empty,
-    just-prefix, >4 hex chars (16-bit constraint is hard), non-hex.
-  - `drone_id_prefix`: `'21239ESA2'` → `'21239ESA2'` (uppercase ASCII
-    alphanumeric, 3-32 chars). Uppercase mirrors Argus's emission
-    verbatim — ANSI/CTA-2063-A serials are case-sensitive per the
-    standard; lowercasing would silently break equality against real
-    serials. Defensive rejects: empty, <3 or >32 chars,
-    non-alphanumeric, non-ASCII.
-
-- **`watchlist_ble_manufacturer_id` and `watchlist_drone_id_prefix`
-  rule types — extends the rc4 delegation pattern to two more
-  identifier types.** Same empty-patterns-delegates-to-DB shape
-  established by `watchlist_mac` / `watchlist_oui` /
-  `watchlist_ssid` / `ble_uuid` in rc4: a single empty-patterns rule
-  of the new type enables alert-firing for every matching row of that
-  pattern_type in the watchlist DB; severity is sourced from the
-  matched DB row (NOT from `rule.severity`, which is IGNORED for
-  delegation, per the rc4 architectural divergence documented under
-  `watchlist_mac_range`); the existing runtime override layer
-  (`suppress_vendors`, `suppress_categories`, `pattern_overrides`,
-  `device_category_severity`) applies transparently with no changes.
-
-  Three additions land together:
-
-  - New matchers for the two new pattern types delegate to the
-    existing simple-watchlist lookup so the SQL cannot drift from the
-    annotation path that stamps `matched_watchlist_id`.
-
-  - `rules.evaluate` admits the two new rule types and extends the
-    validator carve-out: both accept empty AND non-empty patterns
-    (the delegation-capable shape; no required-empty constraint like
-    `watchlist_mac_range`, since equality match on a single
-    canonical-string field is a sensible in-memory shape too).
-    Non-empty patterns are normalized at load time through
-    `patterns.normalize_pattern` so an inline `0x004C` in rules.yaml
-    matches the bare-hex `004c` carried on the observation.
-
-  - The wizard's enable-alerting flow grows two more per-type prompts,
-    each gated by a watchlist row-count check — operators with an
-    empty pattern_type don't see the prompt. Operators who already
-    enabled alerting can re-run `lynceus-setup --reconfigure` to add
-    the new types; the existing rules.yaml overwrite-protection
-    (default N) stays in force.
-
-  **CAVEAT — runtime alerting depends on Kismet probe-path
-  verification at smoke time.** `DeviceObservation` gains two new
-  optional fields (`ble_manufacturer_id`, `drone_id_prefix`) and the
-  Kismet device parser populates them via two best-effort extractors
-  that walk a small table of likely Kismet field paths. These paths
-  are derived from public Kismet schema documentation, NOT confirmed
-  against a live capture — the Lynceus codebase had no prior consumer
-  of either surface. Until the paths are confirmed and corrected
-  against a real Kismet emission, both fields read `None` on real
-  hardware and the delegation rules fire zero alerts. The import + DB
-  + rules-engine + wizard pipeline is load-bearing in the meantime:
-  rows land in the watchlist DB, appear in the `/watchlist` UI, and
-  contribute to the `/settings` count card; only the alert-time match
-  against a live observation is gated on the Kismet half being wired
-  up.
-
-  **Drone Remote-ID type-layer gates closed (mid-rc5).** The initial
-  rc5 cut shipped with two structural gates that blocked Remote-ID
-  observations independently of the probe-path uncertainty: the
-  Kismet type map admitted only Wi-Fi / BTLE / Bluetooth device
-  types, dropping records typed `'Remote ID'` before they reached the
-  drone-id extractor; and the `devices.device_type` CHECK constraint
-  from migration 001 would have rejected the corresponding internal
-  category even if the type-map gate were lifted. Both are now
-  closed:
-
-  - **`migrations/014_devices_remote_id.sql`** rebuilds the `devices`
-    table to extend the `device_type` CHECK from
-    `('wifi','ble','bt_classic')` to add `'remote_id'`, mirroring
-    migration 011 / 013's full-table-rebuild discipline (SQLite
-    cannot modify a CHECK via `ALTER TABLE` per SQLite docs §7;
-    `PRAGMA foreign_keys=OFF` during the rebuild so the inbound FKs
-    from `sightings.mac` and `alerts.mac` don't fire during the
-    intermediate `DROP TABLE`; the additive migration-006 columns
-    `probe_ssids` and `ble_name` are carried across verbatim). The
-    new internal category name matches the existing
-    lowercase-with-underscores convention used by `'bt_classic'`.
-    The naming axis is intentionally distinct from the watchlist
-    `pattern_type` (`'drone_id_prefix'`, admitted by migration 013):
-    the watchlist type names *what is matched* (a serial prefix),
-    the device_type names *what category of device emitted it* (a
-    Remote-ID broadcaster, conceptually a peer of wifi / ble /
-    bt_classic at the radio-source layer).
-
-  - **Kismet type-map extension.** Two Remote-ID Kismet device-type
-    strings now map to the new `'remote_id'` internal category:
-    `'Remote ID'` and `'Remote ID Drone'`. Defensive multi-alias
-    coverage — Kismet's exact emission for ASTM F3411 Remote-ID
-    devices varies by version + datasource configuration, so
-    confirming the specific live string is an operator-smoke step and
-    adding it is a one-line edit. The existing four mappings are
-    unchanged.
-
-  - **Drone-ID probe-path refinement.** The probe table is re-anchored
-    on the canonical `kismet.device.base.*` convention every other
-    top-level Kismet field uses. Two new probe paths take the front
-    of the table — `kismet.device.base.remote_id.serial_number` and
-    `kismet.device.base.remote_id.uas_id` — with the original
-    `remoteid.device.basic_id.*` paths retained as fallbacks for
-    older / alternate Kismet RID datasources. First match wins;
-    promoting the confirmed live path to the front is a one-line
-    edit.
-
-  - **Device-type filter API parity.** The DB-level device-types and
-    the corresponding hard-coded validator on the
-    `/devices?device_type=...` query handler admit the new
-    `'remote_id'` value so the DB-level filter API and the UI route
-    are in sync. The `/devices` filter dropdown template is unchanged
-    and still lists only the original three types; operators who
-    want a Remote-ID-only view can pass the query parameter directly.
-    Adding the dropdown option is a separate UI polish item, tracked
-    outside this caveat.
-
-  The four touches together collapse the rc5 caveat from "two
-  structural gates AND probe-path verification" to "probe-path
-  verification at smoke time" for both `drone_id_prefix` and
-  `ble_manufacturer_id`.
-
-- **Annotation-path closure for `ble_manufacturer_id` and
-  `drone_id_prefix` (rc5 in-flight).** Surfaced during the type-layer
-  gate work: the rc4 annotation path walked only the original five
-  pattern_types (`mac > oui > mac_range > ssid > ble_uuid`), so
-  alerts fired by the two new delegation rule types
-  (`watchlist_ble_manufacturer_id`, `watchlist_drone_id_prefix`)
-  landed with `matched_watchlist_id=NULL`. The right `rule_name` and
-  DB-sourced severity flowed through, but the alert → watchlist-row
-  click-through, ntfy enrichment, and the audit trail all keyed off
-  `matched_watchlist_id` and went cold for these two rule_types.
-
-  The walk now covers all seven pattern_types in tiebreaker order:
-
-      mac > oui > ble_manufacturer_id > mac_range >
-      drone_id_prefix > ssid > ble_uuid
-
-  `ble_manufacturer_id` slots between `oui` and `mac_range` (same
-  vendor-level specificity tier as `oui`, 16-bit BLE Company
-  Identifier instead of the 24-bit IEEE OUI — a direct `mac`/`oui`
-  hit on the same observation outranks the vendor-wide BLE company
-  id). `drone_id_prefix` slots between `mac_range` and `ssid` (a
-  serial-shaped device identifier is stronger evidence than a
-  free-form SSID string, weaker than a curated mac_range catching the
-  device's MAC). Both new branches are no-op when the observation
-  carries `None` for the corresponding field, preserving the existing
-  5-type behaviour for every caller that doesn't pass the new kwargs.
-
-  The poller is updated in lockstep to pass `obs.ble_manufacturer_id`
-  and `obs.drone_id_prefix` through to the annotation call, so alerts
-  for the two new rule_types now stamp `matched_watchlist_id`
-  correctly. No DB schema change.
-
-  **Operator UX note for BT- and Remote-ID-capable deployments.**
-  Operators running Kismet with the BT scanner enabled gain a
-  watchlist of 3,969 BLE manufacturer signatures the moment they
-  re-import the Argus CSV. Once the Kismet field-path verification
-  lands, those signatures fire alerts on every BLE advertisement
-  carrying a watchlisted manufacturer id — defensive coverage
-  against manufacturer-specific surveillance hardware that broadcasts
-  via BTLE. Equivalently for operators running Kismet with the
-  Remote-ID datasource enabled: 427 drone serial-prefix signatures
-  land in the watchlist and start firing once the observation-surface
-  gates are resolved.
-
-  Builds on the rc4 delegation extension (`watchlist_mac`,
-  `watchlist_oui`, `watchlist_ssid`, `ble_uuid` delegation branches)
-  and the rc4 mac_range work. Each prompt has extended the same
-  pattern to more identifier types; this rc5 takes it to 7 of the 10
-  most-populous Argus types.
+  **Operator UX note for BT- and Remote-ID-capable deployments.** Operators running Kismet with the BT scanner enabled gain 3,969 BLE manufacturer signatures on re-import; Remote-ID-enabled deployments gain 427 drone serial-prefix signatures. Both fire alerts as soon as the Kismet probe-path verification lands.
 
 ### Documentation
 
-- **Argus residual types audit.** Added a per-type residual analysis
-  at `docs/ARGUS_RESIDUALS.md` characterizing the ~239 Argus rows
-  currently dropped by the importer as `unknown_type`, plus a
-  re-runnable diagnostic script at `scripts/audit_residuals.py` that
-  regenerates the report against any Argus snapshot. The report
-  enumerates 31 distinct residual identifier_types in the current
-  snapshot, with each row classified by Kismet observation surface —
-  `verified-lynceus` (already extracted in the Kismet parser),
-  `verified-kismet-docs` (in Kismet's documented schema),
-  `plausible-needs-smoke` (likely observable but unconfirmed),
-  `no-observation-surface` (static manufacturer / spec metadata
-  Kismet does not emit), or `normalization-variant` (same concept as
-  an admitted pattern_type, blocked only by case / hex-shape /
-  dual-form rendering). Per-type recommendation falls out
-  mechanically from surface + yield: `admit` /
-  `admit-via-normalization` / `defer-pending-smoke` / `drop-entirely`.
-  With the `ble_manufacturer_id` + `drone_id_prefix` admissions
-  landed earlier in rc5, the residual count dropped from ~4,635 to
-  239; the audit answers the natural follow-up "which of those 239
-  are worth a third admission" with concrete data rather than
-  guesswork, and surfaces two normalization gaps (`ble_company_id`,
-  `ble_service_uuid`) that overlap admitted pattern_types and would
-  be fixed in the importer's normalization layer rather than via new
-  Kismet surfaces. The script lives in `scripts/` and is intentionally
-  not a `[project.scripts]` entry — operator surface stays unchanged.
+- **Argus residuals audit.** New `docs/ARGUS_RESIDUALS.md` characterizes the ~239 Argus rows still dropped as `unknown_type`, plus a re-runnable diagnostic at `scripts/audit_residuals.py` that regenerates the report against any Argus snapshot. Each of the 31 distinct residual types is classified by Kismet observation surface (`verified-lynceus`, `verified-kismet-docs`, `plausible-needs-smoke`, `no-observation-surface`, `normalization-variant`) with a mechanical per-type recommendation. Surfaces two normalization gaps (`ble_company_id`, `ble_service_uuid`) that overlap admitted pattern_types and would be fixed in the importer's normalization layer rather than via new Kismet surfaces. The script lives in `scripts/` and is deliberately not a `[project.scripts]` entry — operator surface stays unchanged.
 
-- **Doc-rot sweep across operator-visible docs.** `SECURITY.md`
-  version refreshed from `0.3.0-rc1` to `0.4.0-rc5` (two
-  occurrences). `PROJECT_STATUS.md` refreshed for 0.4 reality:
-  current-version line, hardware-tested section reworded to describe
-  the rc5 shakedown rather than the v0.3 forward look. `SMOKE.md`
-  header drops its stale `(v0.2)` pin (the checklist still applies
-  through 0.4). `WINDOWS_DEV.md` drops the "live reload is on the
-  v0.3 backlog" promise — live reload remains deferred without a
-  version target per `BACKLOG.md`, and the example `git clone`
-  command targets the current `lynceus-warden` name.
-  `CONFIGURATION.md` webui-routes tables grow `/watchlist`,
-  `/settings`, `/healthz.json`, the rc5 `/alerts` filter additions
-  (`rule_type` / `q` / `window`), the `/allowlist` management
-  surface (`/allowlist/add`, `/allowlist/bulk_remove`), and the
-  per-alert allowlist + snooze mutations. No prose rewritten for
-  stylistic reasons; only confirmed rot fixed.
+- **Doc-rot sweep.** `SECURITY.md` version refreshed from `0.3.0-rc1` to `0.4.0-rc5`. `PROJECT_STATUS.md` reworded for 0.4 reality. `SMOKE.md` header drops its stale `(v0.2)` pin. `WINDOWS_DEV.md` drops the "live reload is on the v0.3 backlog" promise and points `git clone` at `lynceus-warden`. `docs/CONFIGURATION.md` webui-routes tables grow `/watchlist`, `/settings`, `/healthz.json`, the rc5 `/alerts` filter additions, the `/allowlist` management routes (`/allowlist/add`, `/allowlist/bulk_remove`), and the per-alert allowlist + snooze mutations. Confirmed rot only — no stylistic rewrites.
 
 ### Changed
 
-- **`lynceus-setup` Kismet + ntfy sections now ship with inline
-  context blocks for first-time operators.** Pre-rc5, the wizard
-  asked `Kismet API token (input hidden):` with no preceding
-  explanation — an operator who had just installed Kismet had to go
-  elsewhere to figure out where API keys live, what role to pick, and
-  what the topic in the ntfy prompt was even for. After this change
-  each section opens with a `═══`-underlined header, a short
-  explanation of what the value is and why Lynceus needs it, and (for
-  the Kismet API key) a step-by-step walkthrough of where to generate
-  one in the Kismet web UI. The ntfy section also calls out the
-  topic-as-shared-secret property up front so the operator picks
-  something unguessable rather than reading the warning after the
-  fact in the generated `lynceus.yaml`.
+- **`lynceus-setup` Kismet + ntfy sections ship with inline context for first-time operators.** Pre-rc5, the wizard asked `Kismet API token (input hidden):` with no preceding explanation — a fresh operator had to go elsewhere to figure out where API keys live, what role to pick, and what the ntfy topic was for. Each section now opens with a `═══`-underlined header, a short explanation of what the value is and why Lynceus needs it, and (for the Kismet API key) a step-by-step walkthrough of where to generate one in the Kismet web UI. The ntfy section calls out the topic-as-shared-secret property up front so you pick something unguessable rather than reading the warning after the fact in the generated `lynceus.yaml`.
 
-  No prompts were added, removed, or reordered. Default values are
-  unchanged. Existing operators who already know the answers tab
-  through at the same pace as before — the context blocks render
-  above each prompt but never block input. The output is plain ASCII
-  + box-drawing characters (no emoji, no ANSI color, no new
-  dependency), so it still looks right when tee'd into an install
-  log.
+  No prompts were added, removed, or reordered. Defaults are unchanged. Existing operators tab through at the same pace. Plain ASCII + box-drawing only (no emoji, no ANSI), so it still looks right tee'd into an install log.
 
-- **`vendor_severity` — runtime vendor-level severity remap on
-  `severity_overrides.yaml`.** Closes the runtime override matrix at
-  vendor × remap. The three earlier rc5 bullets shipped category
-  remap, vendor suppression, and row-level remap; this bullet adds
-  the missing cell — vendor-level severity tuning without enumerating
-  individual rows. Operator UX: "all devices from this vendor should
-  be high" is now a single line in the override file instead of N
-  entries under `pattern_overrides` or a manual sweep across
-  `device_category_severity` entries. The override matrix closes to a
-  coherent shape: **remap × {category, vendor, row} + suppress ×
-  {category, vendor}**.
+- **`vendor_severity` — runtime vendor-level severity remap on `severity_overrides.yaml`.** Closes the runtime override matrix at vendor × remap. "All devices from this vendor should be `high`" is now a single line instead of N entries under `pattern_overrides` or a manual sweep across `device_category_severity`. The matrix closes to **remap × {category, vendor, row} + suppress × {category, vendor}**.
 
-  **Schema.** `vendor_severity: dict[str, severity]`. Keys are
-  manufacturer strings — the same canonical vendor string the
-  watchlist row carries on `watchlist_metadata.vendor`, projected as
-  `manufacturer` on the resolved match (same naming asymmetry as
-  `suppress_vendors`). Values are severity literals (`"low"` /
-  `"med"` / `"high"`). Keys normalized at load time (lowercase +
-  strip) so casing and accidental whitespace don't matter — same
-  normalization shape as `suppress_vendors`, applied to both sides of
-  the comparison at eval time.
+  **Schema.** `vendor_severity: dict[str, severity]`. Keys are manufacturer strings (matched against `watchlist_metadata.vendor`); values are `"low"` / `"med"` / `"high"`. Keys normalized at load time (lowercase + strip) and matched case-insensitive exact — `"  Axon Enterprise, Inc.  "`, `"axon enterprise, inc."`, and `"AXON ENTERPRISE, INC."` all match the same row. Substring / regex deliberately not supported (`"Apple"` would otherwise match `"Pineapple Computing"`).
 
-  **Comparison is case-insensitive exact match.** Mirrors
-  `suppress_vendors`. So `"  Axon Enterprise, Inc.  "`,
-  `"axon enterprise, inc."`, and `"AXON ENTERPRISE, INC."` all match
-  the same row. Substring / regex matching is deliberately NOT
-  supported — `"Apple"` would otherwise match `"Pineapple Computing"`
-  (use individual entries; for the per-row carve-out case, use
-  `pattern_overrides`).
-
-  **Precedence (most-specific wins).** Inserted between
-  `pattern_overrides` and `device_category_severity`:
+  **Precedence (most-specific wins):**
 
   1. `suppress_vendors` — vendor suppress.
   2. `suppress_categories` — category suppress.
   3. `pattern_overrides` — row-level remap.
-  4. `vendor_severity` (NEW) — vendor-level remap.
+  4. `vendor_severity` (new) — vendor-level remap.
   5. `device_category_severity` — category-level remap.
 
-  Vendor remap wins over category remap because manufacturer is the
-  more specific axis. Row remap wins over vendor remap because a
-  specific row is more specific than a vendor. Suppression at either
-  layer always wins over any remap — per-row UNSUPPRESS is explicitly
-  NOT a feature, and the same holds at the vendor axis. NULL
-  manufacturer (no metadata, or metadata with NULL vendor) skips the
-  vendor remap check entirely and falls through to the category
-  remap — same gating shape as `suppress_vendors`.
+  Suppression at either layer always wins over any remap — per-row UNSUPPRESS is explicitly not a feature. NULL manufacturer falls through to the category remap.
 
-  **Why a separate key rather than extending `vendor_overrides` at
-  runtime.** `vendor_overrides`' `"drop"` sentinel means
-  skip-at-import; a runtime interpretation would silently overload
-  the meaning and produce a footgun. `suppress_vendors` (rc5) and
-  `vendor_severity` (this bullet) are the cleanly-designed runtime
-  cousins. `vendor_overrides` stays import-time-only by design.
+  **Why not extend `vendor_overrides` at runtime.** `vendor_overrides`' `"drop"` sentinel means skip-at-import; a runtime interpretation would silently overload the meaning and produce a footgun. `vendor_overrides` stays import-time-only by design.
 
-  **Per-entry tolerant parsing.** Same posture as `pattern_overrides`:
-  non-string keys, empty-after-strip keys, and invalid severity
-  values each drop with a WARNING; the rest of the dict parses
-  normally. One malformed entry must never disable the whole layer.
+  **Tolerant parsing.** Non-string keys, empty-after-strip keys, and invalid severity values each drop with a WARNING; the rest of the dict parses normally. One malformed entry never disables the whole layer.
 
-  **Other touches.** The wizard's `severity_overrides.yaml` starter
-  template gains a `vendor_severity:` block adjacent to
-  `vendor_overrides` for logical grouping with other vendor-keyed
-  entries, with the `# LAYER: RUNTIME` tag and a worked example
-  targeting surveillance-camera vendors. The `/settings` web UI card
-  lists `vendor_severity` in the runtime-keys group alongside the
-  four existing runtime keys.
-
-  **Deliberate non-scope.**
-
-  - `vendor_overrides` is UNCHANGED — its import-time `"drop"`
-    sentinel keeps its skip-at-import semantic.
-  - `suppress_vendors` semantics are UNCHANGED — vendor suppression
-    stays as the gate it is today.
-  - No DB schema changes. The `watchlist_metadata.vendor` column has
-    been carried since migration 004 and was already surfaced through
-    the eval path by the `suppress_vendors` bullet — this bullet
-    plugs the existing field into a new transform.
-  - In-memory pattern rules (rules with non-empty `patterns`)
-    continue to source severity from the rule and are unaffected by
-    `vendor_severity` — runtime overrides apply only to DB-delegation
-    matches.
-  - No substring or regex matching. Case-insensitive exact match
-    only, mirroring `suppress_vendors`.
-  - No per-vendor UNSUPPRESS knob. Suppression at either layer is a
-    deliberate operator statement that the vendor remap cannot
-    override.
-
-  Cross-references the `suppress_vendors` and `pattern_overrides`
-  bullets as the prerequisite chain: `suppress_vendors` projected
-  `manufacturer` onto the resolved match and established the
-  vendor-axis comparison shape; `pattern_overrides` established the
-  per-match-metadata-gate pattern this bullet extends to the vendor
-  remap. Together with those two bullets and the original runtime
-  severity-overrides + `suppress_categories` work, the matrix now
-  reads as a tidy 2×3 grid: severity tuning at row, vendor, or
-  category × {remap, suppress} — with the suppress-row cell
-  deliberately left empty (the allowlist mechanism handles per-row
-  suppression for both Argus and non-Argus rows).
+  The wizard's `severity_overrides.yaml` starter template gains a `vendor_severity:` block adjacent to `vendor_overrides` with a `# LAYER: RUNTIME` tag and a worked example targeting surveillance-camera vendors. The `/settings` runtime-keys card lists it alongside the four existing runtime keys. In-memory pattern rules (rules with non-empty `patterns`) are unaffected — runtime overrides apply only to DB-delegation matches. No DB schema change.
 
 ### Fixed
 
-- **Poller now logs a grep-able INFO line on every ruleset load.**
-  Pre-rc5 the poller silently called the ruleset loader at init,
-  leaving operators no startup signal that `rules.yaml` had actually
-  been read. Symmetric with the watchlist-staleness line (rc4) and
-  the runtime severity-overrides line (rc4 pre-smoke fix), every
-  operator-configurable startup load now ships with a deterministic
-  literal:
+- **Poller now logs a grep-able INFO line on every ruleset load.** Pre-rc5 the loader was called silently at init, leaving no startup signal that `rules.yaml` had actually been read. Symmetric with the watchlist-staleness and runtime-severity-overrides lines:
 
       loaded ruleset from <path>: N active rules
       loaded ruleset from <path>: N active rules (M disabled)
       no rules_path configured; ruleset is empty — no alerts will fire
 
-  `active` mirrors the existing `rule.enabled` gate (a disabled rule
-  is loaded into the ruleset but never evaluated). The empty-state
-  line catches the failure mode where the wizard wrote `rules.yaml`
-  but `rules_path` was never wired in `lynceus.yaml` — pre-fix the
-  daemon would run with no alerting and no log line explaining why.
+  The empty-state line catches the failure mode where the wizard wrote `rules.yaml` but `rules_path` was never wired in `lynceus.yaml` — pre-fix the daemon ran with no alerting and no log line explaining why.
 
-- **`/settings` watchlist-freshness card breakdown extends to all 7
-  pattern_types.** rc5 landed `ble_manufacturer_id` and
-  `drone_id_prefix` in the DB and in the importer, but the template
-  line on the freshness card was never extended past the five rc4
-  types. Operators saw the new rows in `lynceus-import-argus` stdout
-  and could `SELECT` them out of SQLite, but the /settings card
-  silently rendered zero for both. The data was correct in the
-  backing dict (the pattern-type-counts helper returns all 7 keys);
-  only the Jinja was stale. Caught pre-smoke during runbook
-  verification against `settings.html`. The card now lists all 7
-  keys; the docstring on the helper also flags the DB/template
-  coupling so the next pattern_type addition gets the template
-  extension too.
+- **`/settings` watchlist-freshness card now lists all 7 pattern_types.** rc5 landed `ble_manufacturer_id` and `drone_id_prefix` in the DB and importer, but the Jinja template on the freshness card was never extended past the five rc4 types. Operators saw the new rows in `lynceus-import-argus` stdout and could `SELECT` them out of SQLite, but the card silently rendered zero for both. The backing helper was already returning all 7 keys; only the template was stale. Caught pre-smoke during runbook verification.
 
 ## [0.4.0-rc4] - 2026-05-15
 
 ### Added
 
-- **`identifier_type='mac_range'` rows from Argus now land in the
-  watchlist instead of being silently dropped.** Pre-rc4, every
-  mac_range row hit the importer's identifier-type allowlist gate,
-  fell to the `dropped_mac_range` counter, and never reached the DB.
-  Argus's live `argus_export.csv` snapshot at
-  `exported_at=2026-05-14T22:34:07Z` carried ~17,798 mac_range rows
-  out of 22,532 total — ~64.49% as `/28` (MA-M, 7-hex prefix e.g.
-  `'aa:bb:cc:d/28'`), ~35.44% as `/36` (MA-S / IAB, 9-hex prefix
-  e.g. `'aa:bb:cc:dd:e/36'`), plus 12 legacy bare-prefix rows
-  (~0.07%) queued for upstream canonicalization. All of these were
-  missing from the Lynceus watchlist and could not contribute to
-  detections.
+- **Argus `mac_range` rows now land in the watchlist.** Pre-rc4, every `mac_range` row from Argus hit the importer's identifier-type gate and was silently dropped — about 17,798 of 22,532 rows in the current Argus export, none of which could contribute to detections. Migration 011 relaxes the watchlist `pattern_type` check to admit `mac_range`, adds nibble-precision prefix columns, and a partial index over them. The importer accepts both canonical CIDR shapes (`aa:bb:cc:d/28`, `aa:bb:cc:dd:e/36`) and legacy bare-prefix rows (canonicalized on disk with one INFO log line per row so you can watch the legacy count drop to zero). Unrecognized shapes go to the existing `normalization_failed` counter rather than being silently accepted.
 
-  Migration 011 (`011_watchlist_mac_range.sql`) rebuilds the
-  `watchlist` table to relax the `pattern_type` CHECK constraint
-  (adding `'mac_range'` to the whitelist) and adds two
-  nibble-precision prefix columns — `mac_range_prefix` (lowercase
-  hex, no separators) and `mac_range_prefix_length` (28 or 36 in
-  current Argus emission) — both NULL for non-mac_range rows. A
-  partial index on `(prefix_length, prefix) WHERE pattern_type =
-  'mac_range'` keeps non-mac_range rows out of the index and leaves
-  OUI equality lookups completely unaffected. SQLite cannot modify a
-  CHECK constraint via `ALTER TABLE`, so the migration does a full
-  table rebuild under `PRAGMA foreign_keys=OFF` per SQLite docs §7;
-  the inbound FKs from `alerts.matched_watchlist_id` and
-  `watchlist_metadata.watchlist_id` are preserved by-reference and
-  do not fire during the intermediate `DROP TABLE`.
+  This rc lands the schema + import path only — `mac_range` rows appear in the watchlist UI but the poller cannot yet match a sighted MAC against them. Runtime matching arrives in the next bullet.
 
-  The importer parses both Argus shapes via a new
-  `parse_mac_range_pattern` helper in `lynceus.patterns`. Canonical
-  CIDR (`'aa:bb:cc:d/28'`, `'aa:bb:cc:dd:e/36'`) round-trips
-  unchanged into `watchlist.pattern`; legacy bare-prefix
-  (`'aa:bb:cc:d'`, `'aa:bb:cc:dd:e'`) is accepted dual-shape per the
-  Argus-engineer handoff and canonicalized on disk so the watchlist
-  UI renders uniform shape regardless of input. Each legacy row
-  emits one per-row INFO log line (`argus import: mac_range legacy
-  bare-prefix '<raw>' canonicalized to '<canonical>'
-  argus_record_id=<id>`) so operators can grep their import logs to
-  watch the legacy count drop to zero once Argus canonicalizes
-  upstream. Unrecognized shapes (wrong group count, non-hex
-  characters, unsupported prefix length like `/24`, mismatched
-  declared-vs-shape length) are rejected loudly and routed to the
-  existing `normalization_failed` counter rather than silently
-  accepted — a new length surfacing means an Argus wire-contract
-  change worth raising on.
+- **`watchlist_mac_range` rule type — first DB-delegated rule in Lynceus.** Closes the runtime-matching gap above. A single empty-patterns `watchlist_mac_range` entry in `rules.yaml` enables alert-firing for every matching `mac_range` row in the watchlist DB — no need to duplicate patterns across the DB and `rules.yaml`. `/36` matches sort ahead of `/28` (more specific wins); `/watchlist` detail renders the prefix length plus a block-class annotation (MA-M `/28` = 1,048,576 addresses; MA-S/IAB `/36` = 4,096).
 
-  **Intermediate state — runtime matching follows in a sibling
-  rc.** After this rc, mac_range rows appear in the watchlist table
-  and the watchlist UI, but the poller cannot yet match a sighted
-  MAC against a watchlisted range. Alerts on MACs inside watchlisted
-  mac_range prefixes will start firing once the follow-up rc lands
-  runtime prefix-matching against the new partial index. This
-  intermediate state is intentional and keeps the diff bisect-clean:
-  the schema + import path land first, the runtime match wires up
-  second.
+  **Severity comes from the matched DB row, NOT `rule.severity`.** The importer wrote per-row severity from `device_category` at import time; reading it back at alert time is the only path that respects that data. The bundled `config/rules.yaml` template calls this out where the example sits.
 
-- **`watchlist_mac_range` rule type — first DB-delegated rule in
-  Lynceus.** Closes the runtime-matching gap from the previous
-  bullet. The redrafted design (after archaeological confirmation
-  that no existing watchlist DB → rules engine bridge existed in the
-  codebase) establishes a new architectural pattern: a rule type
-  whose matching is delegated to the watchlist DB at evaluate-time,
-  rather than checked against `rule.patterns` in memory. A single
-  empty-patterns `watchlist_mac_range` entry in `rules.yaml` enables
-  alert-firing for every matching mac_range row in the watchlist DB
-  — operators no longer have to duplicate patterns across the DB and
-  rules.yaml for mac_range coverage.
+  **Alert volume after enabling.** Shipped commented-out; default is OFF. Uncommenting enables alert-firing for any MAC inside any of the 17,786 IEEE-registry rows imported by `lynceus-import-argus`. All of those rows carry `device_category = 'unknown'`, which maps to `low` — so enabling fires `low` alerts at whatever rate observed MACs fall inside the IEEE allocations Argus catalogued (predominantly enterprise / embedded / medical / industrial vendors). If `low` is the wrong tier for this volume, tune via `severity_overrides.yaml` (see runtime layer below) or use the allowlist to scope by geography.
 
-  Three changes land together:
+- **DB delegation extended to `watchlist_mac`, `watchlist_oui`, `watchlist_ssid`, and `ble_uuid`.** Before this change, only `watchlist_mac_range` fired via DB delegation; the 63 bundled `default_watchlist.csv` rows plus every Argus-imported mac/oui/ssid/ble_uuid row stayed inert unless you manually copied their patterns into `rules.yaml`. Now a single empty-patterns rule per type fires alerts for every matching DB row of that type — same idiom as `watchlist_mac_range`. Rules with non-empty patterns see byte-identical behaviour.
 
-  - **`db.resolve_matched_mac_range(mac)`** returns a watchlist match
-    (watchlist_id, severity, prefix_length) or `None`. It hits the
-    partial index from migration 011 — two indexed lookups per call
-    (/36 first, then /28) so the more-specific match sorts ahead of
-    the less-specific one. Falsy `mac` short-circuits to `None`;
-    uppercase observation MACs are lowercased at the boundary to
-    harden against the silent-no-match class of bug. `/28` and
-    `/36` ranges covering the same MAC are forbidden by IEEE design;
-    if both surface defensively, a single WARNING is logged carrying
-    both watchlist_ids and the more-specific `/36` row wins. The
-    annotation path (`resolve_matched_watchlist_id`) gains a
-    mac_range branch between the oui and ssid checks using the same
-    private helper, so alerts fired by mac_range rules get
-    `matched_watchlist_id` stamped without re-issuing the WARNING.
+  All four ship commented-out in `config/rules.yaml`; default OFF. The matched row's severity flows into the alert (rule severity is ignored for empty-patterns delegation). Per-row severity is populated by `lynceus-import-argus` from `device_category`:
 
-  - **`rules.evaluate` admits `watchlist_mac_range`** and gains an
-    optional keyword-only `db` parameter. The 18 pre-existing
-    rules-evaluate callsites all pass without modification — the
-    optional-kwarg signature change is verified non-breaking by an
-    explicit regression test. The validator carve-out
-    (`rule_type == "watchlist_mac_range"` REQUIRES empty patterns,
-    mirror of the `new_non_randomized_device` carve-out) is the
-    first such requirement among `watchlist_*` types.
+  - `imsi_catcher`, `alpr`, `hacking_tool` → `high`
+  - `body_cam`, `drone`, `gunshot_detect`, `in_vehicle_router` → `med`
+  - `unknown` and anything unlisted → `low`
 
-  - **`/watchlist` detail page** renders the prefix length (`/28` or
-    `/36`) plus a block-class annotation (MA-M, 1,048,576 addresses
-    vs MA-S / IAB, 4,096 addresses) for mac_range entries. The
-    annotation is presentational but operationally useful —
-    "vendor `/28` owns a million MACs" and "specific device
-    identifier" get different responses from a triager. The list
-    page needs no template change; the write-time canonicalization
-    above makes `pattern` render uniformly.
+  Before enabling a delegation entry, run `lynceus-list-watchlist --pattern-type mac` (and the other three types) to see the severity distribution in your DB. If a category's default is wrong for your environment, tune via `--override-file severity_overrides.yaml` at import time, or via the runtime layer below.
 
-  **Architectural divergence — severity is sourced from the matched
-  DB row, NOT from `rule.severity`.** Every other `watchlist_*` rule
-  type populates the alert's severity from `rule.severity`; for
-  `watchlist_mac_range` the alert's severity comes from
-  `watchlist.severity` of the matched row, which the importer writes
-  from `device_category → severity` defaults at import time. The
-  divergence is deliberate: the importer wrote per-row severity for
-  a reason, and reading it back at alert time is the only path that
-  respects that data. `rule.severity` is ignored for this rule type
-  — the bundled `config/rules.yaml` template's commented-out example
-  calls this out explicitly so operators don't expect the field to
-  apply.
+- **Runtime severity layer — `severity_overrides.yaml` now applies at alert time, not just at import time.** Pre-rc4, the wizard scaffolded the file and `lynceus-import-argus --override-file` consumed it, but the daemon never read it. Retuning severities meant re-importing the full ~22,500-row Argus corpus. Now the poller reads the file at startup and transforms DB-delegation matches at alert construction.
 
-  **Operator UX — alert volume after enabling.** A
-  `watchlist_mac_range` entry is shipped commented-out in
-  `config/rules.yaml`; default is OFF. Uncommenting enables
-  alert-firing for any MAC inside any of the 17,786 IEEE-registry
-  rows imported by lynceus-import-argus. All of these rows have
-  `device_category = 'unknown'`, which maps to severity `"low"` in
-  the importer's `DEFAULT_CATEGORY_SEVERITIES`. So enabling the rule
-  will produce `low`-severity alerts at whatever rate observed MACs
-  fall inside the IEEE allocations Argus catalogued. The 17,786 rows
-  cover Mitsubishi Electric, Becton Dickinson, Airgain, and similar
-  enterprise / embedded / medical / industrial vendors —
-  predominantly enterprise scan surfaces, sparse on residential. If
-  `"low"` is the wrong tier for this volume, tune
-  `DEFAULT_CATEGORY_SEVERITIES['unknown']` before enabling the rule,
-  or use the allowlist to scope the detection geographically. The
-  default severity is intentionally not changed in this rc — that's
-  an operator-policy conversation, not a code-level decision.
+  Two keys take effect at runtime:
 
-  This pattern is a natural migration target for the other
-  `watchlist_*` rule types in a future rc, which would close the
-  broader UX gap surfaced by the archaeology: today every watchlist
-  DB row is inert unless operators manually duplicate its pattern
-  into rules.yaml. That migration is deliberately out of scope here;
-  this rc establishes the precedent cleanly.
+  - **`device_category_severity`** (existing key, now both layers). Import bakes per-category remap into `watchlist.severity` at write time (unchanged); runtime re-applies the same map at alert time. Set `unknown: med` in the file, restart the daemon, and the 17,786 IEEE-registry `mac_range` rows fire at `med` on the next poll. No re-import.
+  - **`suppress_categories`** (new, runtime only). A delegation match whose `device_category` is in the list emits no alert (no row in `alerts`, no ntfy push). The watchlist row stays; only alert emission is silenced. An INFO log line per suppression names the rule, category, and watchlist row for forensics.
 
-  Cross-references the schema+importer half of this arc in the
-  prior bullet (migration 011, `parse_mac_range_pattern`); the full
-  arc reads in order down the page.
+  Opt-in: set `severity_overrides_path` in `lynceus.yaml` to your file. Unset means runtime layer disabled; malformed YAML logs a WARNING and falls back to pass-through (the poller never crashes on this file). In-memory pattern rules (non-empty `patterns`) are unaffected — runtime overrides apply only to DB-delegation matches. The import-time consumer is byte-identical pre/post.
 
-- **Watchlist delegation extension — `watchlist_mac`,
-  `watchlist_oui`, `watchlist_ssid`, and `ble_uuid` now accept the
-  empty-patterns-delegates-to-DB semantic.** Closes the broader
-  DB-delegation gap that the prior bullet flagged as a natural
-  follow-up. Before this change, only `watchlist_mac_range` fired
-  alerts via DB delegation; the 63 rows shipped via the bundled
-  `default_watchlist.csv` plus every Argus-imported
-  mac/oui/ssid/ble_uuid row remained inert unless operators manually
-  duplicated their patterns into `rules.yaml`. After this change, a
-  single empty-patterns rule per type enables alert-firing for every
-  matching DB row of that type — same one-line idiom that the prior
-  bullet established for `watchlist_mac_range`.
+  The wizard's starter file gains inline `# LAYER:` tags on each section (`IMPORT-TIME` / `RUNTIME` / `BOTH`) so you can see at a glance whether a change needs a re-import or just a daemon restart. The `/settings` severity-overrides card mirrors the same wording.
 
-  Three changes land together:
+- **`lynceus-setup` enable-alerting flow — wizard now wires up alerts end-to-end.** Pre-rc4, running the wizard left you with a configured daemon and imported watchlist but no alerts: you had to copy `config/rules.yaml`, uncomment the right delegation entries by hand, and add `rules_path` to `lynceus.yaml`. The wizard now drives all three.
 
-  - Four new matchers (`mac`, `oui`, `ssid`, `ble_uuid`) returning a
-    watchlist match (`watchlist_id`, `severity`) or `None`. The four
-    delegate to a single private helper that also backs the
-    annotation path used by `matched_watchlist_id` stamping, so the
-    eval path and the annotation path can never drift on what counts
-    as a match. The OUI matcher takes a full MAC and slices the
-    first 8 chars internally (mirror of the annotation path's
-    `mac[:8]` derivation); the ble_uuid matcher takes the obs's UUID
-    list and returns the first watchlisted UUID, mirroring the
-    existing in-memory ble_uuid eval branch's first-match behaviour.
+  Between bundled-watchlist import and "Setup complete", a single gate fires: `Enable Argus-backed alerting? [y/N]`. Default is NO — an operator who hits Enter completes the wizard in the exact pre-rc4 state (no alerts). Saying yes prompts per-rule-type with the current DB row count (`Enable watchlist_mac_range (17,786 MAC ranges)? [y/N]`); types with zero rows are skipped silently. Selected entries land as active in a fresh `rules.yaml` at the scope-appropriate path (`/etc/lynceus/rules.yaml` under `--system`, `~/.config/lynceus/rules.yaml` under `--user`); the rest ship as commented templates. `rules_path` then gets appended to the already-written `lynceus.yaml`.
 
-  - `rules.evaluate` gains delegation paths for the four rule types.
-    Each existing in-memory branch wraps in `if rule.patterns:`
-    (preserved verbatim) and adds an `else:` delegation branch
-    consulting the corresponding DB matcher. Severity is sourced
-    from the matched DB row in the delegation case, from
-    `rule.severity` in the in-memory case (the prior bullet's
-    severity-from-row pattern, now established as the convention for
-    every DB-delegated path). Rules with non-empty patterns see
-    byte-identical behaviour — the in-memory branch's code is
-    untouched, just indented one level under the new `if`.
+  Re-runs treat hand-edits as sacred: if `rules.yaml` already exists, a separate `Overwrite? [y/N]` prompt fires (default NO). Declining leaves the file untouched but still wires `rules_path` when previously unset — recovers the "I copied the file but never wired it up" case. All defaults are NO, matching Lynceus's privacy-conservative posture: a wizard run with all defaults gets a Lynceus that observes but does not alert. `new_non_randomized_device` and any custom pattern-bearing rules still require manual edits.
 
-  - **Validator restructured** — the rule validator no longer relies
-    on a generic `startswith("watchlist_")` branch to require
-    non-empty patterns. Each rule type's empty/non-empty admission
-    is now spelled out explicitly: `watchlist_mac_range` REQUIRES
-    empty (prior bullet's carve-out unchanged),
-    `new_non_randomized_device` REQUIRES empty (existing carve-out
-    unchanged), and the four delegation-capable types accept BOTH
-    shapes. Spelling each policy out individually means a future
-    hypothetical `watchlist_X` lands in an explicit branch rather
-    than silently inheriting whichever default is most recent.
+- **`suppress_vendors` — runtime manufacturer-level alert suppression.** Sits adjacent to `suppress_categories` on the same runtime layer: a delegation alert whose matched watchlist row carries a manufacturer in the list emits no alert. The watchlist row stays in the DB; only alert emission is silenced. Edit the file, restart the daemon, no re-import.
 
-  **Backward compatibility — non-negotiable, verified end-to-end.**
-  Operators running pre-existing deployments with non-empty
-  `watchlist_mac` / `watchlist_oui` / `watchlist_ssid` / `ble_uuid`
-  rules see ZERO behavioural change. Verified by per-type "in-memory
-  path severity from rule unchanged" regression tests, and by every
-  existing test in the rules and alert-linkage suites continuing to
-  pass without modification. The validator change relaxes empty
-  patterns from "rejected" to "accepted as delegation idiom" for the
-  four affected types, so two pre-existing tests that asserted the
-  old "empty rejected" behaviour were updated to assert the new
-  semantic — this is the only test modification in scope, and it's
-  on the precise behaviour this rc deliberately changes.
+  Comparison is case-insensitive exact match — entries are normalized (lowercase + strip) at load and at eval. So `"  Mitsubishi Electric US, Inc.  "`, `"mitsubishi electric us, inc."`, and `"MITSUBISHI ELECTRIC US, INC."` all match. Substring / regex was rejected: `"Apple"` would otherwise match `"Pineapple Computing"`. Configure with the canonical vendor string from the watchlist row — the same value Argus emits in its `manufacturer` column.
 
-  **Operator UX — alert volume after enabling.** All four entries
-  ship commented-out in `config/rules.yaml`; default is OFF.
-  Uncommenting an entry enables alert-firing for every matching
-  watchlist row of that type. The matched DB row's severity flows
-  into the alert directly (NOT `rule.severity`, which is ignored for
-  the delegation case — the rules.yaml comment is explicit). Per-row
-  severity is populated by `lynceus-import-argus` from
-  `device_category` via `DEFAULT_CATEGORY_SEVERITIES`:
+  Precedence: `suppress_vendors` checks first (most specific), then `suppress_categories`, then `device_category_severity`. Vendor wins because manufacturer is the more specific axis. NULL manufacturer rows skip the check entirely and fall through. `vendor_overrides` is unchanged — its import-time `"drop"` sentinel keeps its skip-at-import semantic; `suppress_vendors` is strictly additive at runtime.
 
-  - `imsi_catcher` → `high`
-  - `alpr` → `high`
-  - `hacking_tool` → `high`
-  - `body_cam` → `med`
-  - `drone` → `med`
-  - `gunshot_detect` → `med`
-  - `in_vehicle_router` → `med`
-  - `unknown` → `low`
-  - any category not listed → `low`
+- **`pattern_overrides` — runtime row-level severity remap by `argus_record_id`.** Closes the runtime severity-tuning matrix at the row axis. Use case: "the specific Flock camera at my workplace → high; everything else in `alpr` → low." Without this knob you could only set `alpr → low` (and lose the workplace signal) or `alpr → high` (and over-alert on every camera).
 
-  The 63 bundled rows in `default_watchlist.csv` are populated per
-  the same map. Operators planning to enable a delegation entry
-  should `lynceus-list-watchlist --pattern-type mac` (and the other
-  three types) first to see the `severity` distribution of what's
-  actually in their DB; the alert volume after enabling scales with
-  the count of matching observations and the imported per-category
-  severity. If a category's default severity is wrong for an
-  operator's environment, tune via
-  `--override-file severity_overrides.yaml` at import time (the
-  existing `OverrideConfig` path) before enabling the delegation
-  entry. Runtime `severity_overrides.yaml` consumption is still
-  backlog — operators wanting per-category severity tuning today
-  still do it via the import-time `OverrideConfig`, not at evaluate
-  time.
+  Schema: `pattern_overrides: dict[str, severity]`. Keys are the 16-hex `argus_record_id` Argus emits (case-normalized at load time so copy-paste case doesn't matter); values are `low` / `med` / `high`. Precedence sits between suppression and category remap: `suppress_vendors` → `suppress_categories` → `pattern_overrides` → `device_category_severity`. Suppression at either layer always wins over a row-level remap — per-row UNSUPPRESS is explicitly not a feature; use the allowlist for per-row alert suppression instead.
 
-  Cross-references the prior bullet as the architectural precedent
-  (`watchlist_mac_range` was the first DB-delegated rule type; this
-  bullet completes the broader story by extending the same pattern
-  to the other four). The prior bullet introduced the empty-patterns
-  idiom and the severity-from-row divergence; this bullet
-  generalizes both as the convention.
+  Argus-imported rows only. The 63 bundled `default_watchlist.csv` rows and any rows added via `lynceus-seed-watchlist` without metadata have no stable identifier and skip the check. For non-Argus row-level tuning, use `device_category_severity` (category granularity) or the allowlist (per-row suppression). Load-time validation is per-entry tolerant: bad keys or values get a WARNING and drop, the rest of the dict parses. The wizard's starter template gains a `pattern_overrides:` block with an inline SQL query you can paste to find an `argus_record_id` for a row of interest.
 
-- **Runtime severity-overrides layer — `severity_overrides.yaml` now
-  applies at alert time, not just at import time.** Closes the final
-  archaeology backlog item. Pre-this-rc, the wizard scaffolded
-  `severity_overrides.yaml` and `lynceus-import-argus --override-file`
-  consumed it (`vendor_overrides`, `geographic_filter`,
-  `confidence_downgrade_threshold`, `device_category_severity`), but
-  the daemon never read the file. Operators wanting to retune
-  severities after import had to re-import the entire Argus corpus
-  (~22,500 rows) to see the new severities applied. Now the poller
-  reads the same file at startup and applies a runtime transform on
-  DB-delegation matches at alert construction.
+- **Watchlist staleness indicator — startup WARNING + `/settings` freshness card.** Pre-rc4 the daemon ran silently against whatever was last imported; boot a system that had been off for two months and you had no way to tell threat data was 60+ days behind. The settings page's "last imported" field made it worse by surfacing a per-row local-clock proxy that flipped to "now" on every re-import of a stale CSV.
 
-  Two new behaviours. Both are runtime-layer-only — the import-time
-  consumer in `lynceus-import-argus` is unchanged.
+  Migration 012 adds an `import_runs` table that persists one row per successful `lynceus-import-argus`: local-clock `imported_at`, Argus-side `exported_at` parsed from the CSV's `# meta:` line, the canonical Argus-side `record_count`, and a free-form `source` (absolute path for `--input`, `owner/repo@ref` for `--from-github`). The poller reads the most-recent row at startup; the `/settings` freshness card reads it on every render. Both surfaces agree by construction.
 
-  - **`device_category_severity` (existing key, now BOTH layers).**
-    Import bakes the per-category remap into `watchlist.severity` at
-    write time (unchanged); runtime re-applies the same map at alert
-    time on top of whatever was baked. An operator changing
-    `unknown: med` in the file → daemon restart → the 17,786
-    IEEE-registry mac_range rows (baked `low`) fire at `med` on the
-    next poll cycle. No re-import. The same key flows consistently
-    to both layers.
+  Startup log shapes:
 
-  - **`suppress_categories` (NEW key, runtime only).** A delegation
-    match whose `device_category` is in this list emits no alert —
-    the alert is suppressed entirely (no row in `alerts`, no ntfy
-    push). The watchlist row stays present; only alert emission is
-    silenced. Useful when an operator wants to retain enrichment
-    metadata for a category without producing alerts on it. An INFO
-    log line per suppression names the rule, category, and
-    watchlist_id so operators have a forensic trail.
+  - Within threshold: `INFO watchlist: N rows total, most recent Argus import D days ago (exported YYYY-MM-DD)`.
+  - Over threshold: `WARNING watchlist: N rows total, most recent Argus import D days ago (exported YYYY-MM-DD); consider 'lynceus-import-argus --from-github' to refresh`.
+  - No imports recorded (fresh install): `INFO watchlist: N rows total, no Argus import metadata recorded`. Deliberately INFO, not WARNING — a fresh install where you haven't run the importer yet is the expected state right after `lynceus-setup`.
 
-  Three structural changes:
-
-  - The delegation-match objects (mac_range + simple-watchlist
-    matches) gain a `device_category: str | None` field. Both
-    private lookup helpers LEFT JOIN onto `watchlist_metadata` to
-    surface the category. The JOIN is indexed on `watchlist_id`;
-    cost is negligible against the primary equality / prefix lookup.
-    NULL category (the 63 bundled `default_watchlist.csv` rows that
-    ship without metadata) means the runtime layer passes through —
-    no remap, no suppression applies.
-
-  - A new runtime-side view of `severity_overrides.yaml` reads only
-    the two runtime-relevant keys; pydantic `extra="ignore"` lets
-    the parser tolerate the full superset of keys the wizard's
-    starter file documents — a file containing only import-time keys
-    yields an empty runtime view that fast-paths through. Missing
-    file → INFO + None; malformed YAML / OSError / validation error
-    → WARNING + None. The poller never crashes because of a
-    malformed override file.
-
-  - `rules.evaluate` gains a runtime-overrides kwarg (mirror of the
-    prior bullet's `db=` addition). All five DB-delegation eval
-    branches (mac_range + the four extension types) call a shared
-    transform after the DB match and before the alert is constructed.
-    Precedence is documented as suppress > remap > pass-through. The
-    pass-through fast-path short-circuits when overrides is None /
-    empty / the match has no `device_category` — byte-identical
-    alerts to pre-this-rc behaviour.
-
-  **Backward compatibility — verified end-to-end.**
-
-  - In-memory pattern rules (non-empty patterns) are unchanged;
-    severity stays rule-sourced. Runtime overrides apply only to
-    DB-delegation matches. Explicit regression test in the rules
-    test suite.
-  - The import-time `OverrideConfig` consumption in the importer is
-    byte-identical pre/post (separate code path, separate parser
-    instance). `vendor_overrides`, `geographic_filter`, and
-    `confidence_downgrade_threshold` remain import-time-only with
-    their existing semantics.
-  - `DEFAULT_CATEGORY_SEVERITIES` in the importer is unchanged —
-    still controls what gets baked at import time. Runtime overrides
-    apply on top.
-  - The full pre-this-rc test suite passes without modification
-    (modulo additive `device_category` assertions on the matchers,
-    which surface the new field without changing existing behaviour).
-
-  **Operator UX — what changed in `severity_overrides.yaml`.**
-
-  - The wizard's starter file now carries inline `# LAYER:` tags on
-    each section: `IMPORT-TIME` (re-import to apply), `RUNTIME`
-    (daemon restart applies live), or `BOTH`
-    (`device_category_severity` only). The user-facing explanation
-    block enumerates the two layers explicitly. Operators
-    reconfiguring see the per-layer effect of each section inline
-    rather than having to read source.
-  - The webui `/settings` severity-overrides card mirrors the same
-    wording — import-time keys vs runtime keys, with the action
-    required to apply changes.
-  - `Config` gains a `severity_overrides_path: str | None` field.
-    Defaults to None (opt-in for the runtime layer); set to the same
-    path the wizard scaffolds to activate runtime overrides. The
-    wizard does NOT currently auto-persist this path into
-    `lynceus.yaml` — operators opt in by adding the line.
-
-  **Deliberate deferral — `vendor_overrides` at runtime.**
-  `vendor_overrides` stays import-time-only this rc. Its `"drop"`
-  sentinel today means "skip the row at import" — a runtime
-  interpretation would silently overload that meaning to mean
-  "suppress the alert" instead, which is a footgun worth designing
-  deliberately. A future `suppress_vendors` key (named to avoid the
-  `vendor_overrides`/`"drop"` semantic clash) is the right shape,
-  and that's a dedicated design pass, not a one-line schema
-  addition.
-
-  Cross-references the `watchlist_mac_range` and delegation
-  extension bullets as the prerequisite chain: the prior bullets
-  introduced DB-delegated rule types; this rc adds the runtime
-  severity layer that operators can tune without re-importing.
-
-- **`lynceus-setup` enable-alerting flow — operator path from
-  `sudo lynceus-setup` to alerts-firing is now wizard-driven.**
-  Closes the deployment-UX gap surfaced by the Kali live-smoke
-  runbook. Pre-this-bullet, an operator who ran the wizard got a
-  configured daemon with the bundled watchlist imported but no
-  alerts fired — they had to (1) copy `config/rules.yaml` to the
-  scope-appropriate path, (2) uncomment the right delegation entries
-  by hand, and (3) edit `lynceus.yaml` to add `rules_path`. The
-  runbook called all three out as manual Phase 1 steps because the
-  wizard did not. Now the wizard's closing arc, between the
-  bundled-watchlist auto-import and the "Setup complete" hint block,
-  drives an interactive flow that lands all three artefacts on the
-  operator's behalf.
-
-  Three things happen when the operator opts in:
-
-  - **Top-level gate.** `Enable Argus-backed alerting? [y/N]`
-    appears once. Default is NO. An operator who answers no — or
-    just hits Enter — completes the wizard in the exact behavioural
-    state Lynceus has today: no `rules.yaml` created, `rules_path`
-    unset, daemon runs with an empty `Ruleset`. The pre-bullet
-    behaviour is preserved as the default; the new flow is strictly
-    additive.
-
-  - **Per-rule_type prompts.** For each of the five delegation types
-    (`watchlist_mac_range`, `watchlist_mac`, `watchlist_oui`,
-    `watchlist_ssid`, `ble_uuid`) the wizard prompts once with the
-    current DB row count for context — e.g. `Enable
-    watchlist_mac_range (17,786 MAC ranges)? [y/N]`. Default is NO.
-    Types whose count is zero have their prompt skipped entirely;
-    an operator with no data of that type sees no misleading prompt
-    and gets no empty rule emitted. Counts come from a single
-    `SELECT pattern_type, COUNT(*) FROM watchlist GROUP BY
-    pattern_type` against the canonical scope DB path — read-only,
-    no migrations run.
-
-  - **`rules.yaml` write + `rules_path` wire.** When at least one
-    type is enabled the wizard writes a fresh `rules.yaml` at
-    `<config-dir>/rules.yaml` — under `--system` that's
-    `/etc/lynceus/rules.yaml` (atomic, 0640 root:lynceus, same
-    contract as `lynceus.yaml`); under `--user` it's
-    `~/.config/lynceus/rules.yaml` (atomic, 0600). Selected entries
-    are active; the others ship as commented-out templates the
-    operator can enable later by hand. The file parses cleanly
-    through the ruleset loader. The wizard then appends
-    `rules_path: "<path>"` to the already-written `lynceus.yaml`
-    (append-mode preserves the atomic-write file mode set during
-    the original render).
-
-  **Idempotency for re-runs.** `--reconfigure` alone is NOT
-  authorization to clobber an existing `rules.yaml` — the wizard
-  treats hand-edits as sacred. When the target `rules.yaml` already
-  exists, a separate `Overwrite? [y/N]` prompt fires (default NO).
-  If the operator declines, the file is left untouched but
-  `rules_path` is still wired in `lynceus.yaml` when previously
-  unset — this recovers the "I manually copied the file but never
-  wired it up" case that the runbook had as a separate hand-edit
-  step. If the operator confirms overwrite, the new selections
-  replace the file.
-
-  **Defaults are NO at every prompt** — gate, per-type, and
-  overwrite. This matches Lynceus's existing privacy-conservative
-  posture (probe SSID capture defaults off, severity overrides empty
-  by default, ntfy URL blank skips notifications entirely). An
-  operator who runs the wizard with all defaults gets a Lynceus that
-  observes but does not alert, same as pre-rc4. Alerts are
-  explicitly opt-in.
-
-  **Out of scope.** The flow only covers the five delegation rule
-  types — `new_non_randomized_device` and any custom pattern-bearing
-  rules continue to require manual `rules.yaml` edits. The bundled
-  `config/rules.yaml` template stays as-is; the wizard generates a
-  derived file at the scope-appropriate path rather than copying the
-  template verbatim.
-
-  Cross-references the `watchlist_mac_range`, delegation extension
-  (the other four DB-delegated types), and runtime severity-overrides
-  bullets as the prerequisite chain: the prior bullets landed the
-  rule types the wizard now enables; the runtime severity-overrides
-  layer is what makes the resulting alerts tunable without
-  re-importing. Together with that prior bullet, this bullet closes
-  the operator-deployment loop for the whole Argus integration arc
-  — `sudo lynceus-setup` → answer the prompts → alerts fire on the
-  next poll, no manual file edits required for the common case.
-
-- **`suppress_vendors` — runtime manufacturer-level alert suppression
-  on `severity_overrides.yaml`.** Closes the runtime severity-tuning
-  story end-to-end. The runtime severity-overrides bullet above
-  explicitly deferred runtime vendor suppression because overloading
-  `vendor_overrides`' import-time `"drop"` sentinel would silently
-  change its meaning — that bullet named `suppress_vendors` as the
-  right path, and this bullet ships it.
-
-  The new key sits adjacent to `suppress_categories` on the same
-  RUNTIME layer: a delegation alert whose matched watchlist row
-  carries a manufacturer in the list emits no alert (no DB alert
-  row, no ntfy push). The matching watchlist row stays in the DB;
-  only alert emission is silenced. Operator UX is the same as
-  `suppress_categories`: edit the file, restart the daemon, no
-  re-import.
-
-  **Comparison is case-insensitive exact match.** Entries are
-  normalized at load time (lowercase + strip) and stored in that
-  form; the eval-time check normalizes the matched row's
-  manufacturer the same way before comparison. So
-  `"  Mitsubishi Electric US, Inc.  "`, `"mitsubishi electric us,
-  inc."`, and `"MITSUBISHI ELECTRIC US, INC."` all match the same
-  row. Substring / regex matching was considered and rejected: an
-  entry like `"Apple"` would otherwise match `"Pineapple Computing"`.
-  Operators configure with the canonical vendor string from the
-  watchlist row — the same string the Argus CSV exports in its
-  `manufacturer` column.
-
-  **Manufacturer source.** Sourced from `watchlist_metadata.vendor`
-  (named `manufacturer` on the Python side to mirror the Argus CSV
-  column the value ultimately comes from — same naming asymmetry as
-  the importer's `manufacturer` kwarg → `vendor` DB column mapping).
-  NULL manufacturer (rows without a metadata row, or with a metadata
-  row whose vendor is NULL) → the `suppress_vendors` check skips
-  entirely and the match falls through to the category-driven checks.
-
-  **Precedence (most-specific wins).** Inserted as the FIRST check:
-
-  1. `suppress_vendors` (NEW) — normalized manufacturer match →
-     suppress.
-  2. `suppress_categories` — `device_category` match → suppress.
-  3. `device_category_severity` — `device_category` remap.
-
-  Vendor wins over category because manufacturer is the more
-  specific axis. When both keys would suppress the same match, the
-  INFO log line names the vendor (forensic precision for operators
-  debugging dropped alerts).
-
-  **Per-entry tolerant parsing.** Non-string entries and entries
-  that are empty after whitespace-strip get a WARNING and are
-  dropped from the loaded set; the rest of the list still parses.
-  One malformed entry must never disable the whole runtime layer.
-  This matches the loader's existing posture: every failure mode for
-  the runtime layer is benign (the importer's separate code path
-  stays unaffected; the poller continues with pass-through
-  semantics).
-
-  **Other touches.** Both private lookup helpers extend their LEFT
-  JOIN to also project `watchlist_metadata.vendor AS manufacturer`
-  (single JOIN, no extra round-trip — cost is negligible against
-  the primary equality / prefix lookup). The runtime-overrides
-  loader gains a `suppress_vendors: frozenset[str]` field and
-  includes it in its empty check so a file populated only with
-  vendor suppressions does not short-circuit to the pass-through
-  fast-path.
-
-  **Deliberate non-scope.**
-
-  - `vendor_overrides` is UNCHANGED — its import-time `"drop"`
-    sentinel keeps its skip-at-import semantic. `suppress_vendors`
-    is strictly additive at runtime. The wizard's starter template
-    now points operators at `suppress_vendors` for runtime
-    suppression on already-imported rows; the "future-key"
-    disclaimer on `vendor_overrides` is dropped (no longer future).
-  - No `suppress_vendors_severity` remap key. Vendor-level severity
-    adjustment is a future prompt; designing it properly is a
-    separate pass — same reasoning as the original deferral of
-    runtime vendor suppression.
-  - No substring or regex matching. Exact case-insensitive only.
-  - No DB schema changes. The `watchlist_metadata.vendor` column has
-    been in place since migration 004; this bullet just surfaces it
-    through the eval path.
-  - In-memory pattern rules (rules with non-empty `patterns`)
-    continue to source severity from the rule and are unaffected by
-    `suppress_vendors` — runtime overrides apply only to
-    DB-delegation matches.
-
-  Cross-references the delegation extension (the four other
-  DB-delegated rule types beyond `watchlist_mac_range`) and the
-  runtime severity-overrides bullets as the prerequisite chain: the
-  extension landed the rule types whose matches now carry a
-  manufacturer; the runtime overrides layer is what
-  `suppress_vendors` plugs into. Together with those bullets the
-  runtime severity-tuning story closes: an operator can now reassign
-  severity by category (`device_category_severity`), silence
-  categories (`suppress_categories`), or silence vendors
-  (`suppress_vendors`), all at alert time, all with a daemon
-  restart, no re-import.
-
-- **`pattern_overrides` — runtime row-level severity remap keyed by
-  `argus_record_id` on `severity_overrides.yaml`.** Closes the
-  runtime severity-tuning matrix at the row axis. The three
-  preceding bullets gave operators category-level remap,
-  category-level suppress, and vendor-level suppress. This bullet
-  adds the finest-grained knob: target a single specific watchlist
-  row by its stable Argus identifier and assign a per-row severity.
-
-  Use case: "the specific Flock camera at my workplace → high;
-  everything else in `alpr` → low." Without `pattern_overrides` an
-  operator could only set `alpr → low` and lose the workplace
-  signal, or set `alpr → high` and over-alert on every camera in the
-  corpus. The new key carves the specific row out of the category
-  default.
-
-  **Schema.** `pattern_overrides: dict[str, severity]`. Keys are the
-  16-hex SHA-256 prefix Argus emits as its consumer-facing identifier
-  and Lynceus stores in `watchlist_metadata.argus_record_id` (column
-  from migration 004). Values are severity literals (`"low"` /
-  `"med"` / `"high"`). Keys are normalized to lowercase at load time
-  so case-of-paste doesn't matter — the production shape is
-  lowercase but the web UI and DB inspection surfaces render the
-  value verbatim, and a copy-paste from either could land in mixed
-  case.
-
-  **Precedence (most-specific wins).** Slotted between the
-  suppression gates and the category remap:
-
-  1. `suppress_vendors` — manufacturer suppress.
-  2. `suppress_categories` — category suppress.
-  3. `pattern_overrides` (NEW) — row-level remap.
-  4. `device_category_severity` — category-level remap.
-
-  Suppression at either layer always wins over the row-level remap
-  — per-row UNSUPPRESS is explicitly NOT a feature, by design. An
-  operator who wants a vendor or category alert to fire again on a
-  specific row must lift the suppression at the layer it was set.
-  (A symmetric per-row suppression knob is also out of scope; the
-  existing allowlist mechanism handles per-row alert suppression
-  for both Argus and non-Argus rows.)
-
-  **Limitation: Argus-imported rows only.** Only rows that carry an
-  `argus_record_id` in `watchlist_metadata` can be targeted via
-  `pattern_overrides`. The 63 bundled `default_watchlist.csv` rows
-  and any rows operators add via `lynceus-seed-watchlist` without
-  metadata have no stable identifier to key on; their
-  `pattern_overrides` check skips entirely and they fall through to
-  the category layer. For non-Argus row-level severity tuning, use
-  `device_category_severity` (category granularity) or the allowlist
-  mechanism (per-row suppression).
-
-  **Load-time validation.** Per-entry tolerant parsing: a key that
-  isn't exactly 16 hex chars after normalization is dropped with a
-  WARNING; a value that isn't a known severity literal (including
-  non-string YAML scalars) is dropped with a WARNING; one malformed
-  entry never disables the rest of the dict. Whether the
-  `argus_record_id` corresponds to a real row in the DB is NOT
-  checked at load time — operators may legitimately carry a stale
-  entry across a re-import (the row will be re-added and the
-  override will start applying again). The eval-time check is a
-  simple dict-membership test that pass-throughs on miss.
-
-  **Other touches.** Both private lookup helpers extend their LEFT
-  JOIN to project `watchlist_metadata.argus_record_id`. The wizard's
-  `severity_overrides.yaml` starter template gains a
-  `pattern_overrides:` block adjacent to `device_category_severity`
-  (both are remaps) with the `# LAYER: RUNTIME` tag and an inline
-  SQL query operators can paste to find an `argus_record_id` for a
-  row of interest. The `/settings` web UI card lists
-  `pattern_overrides` in the runtime-keys group.
-
-  **Deliberate non-scope.** No DB schema changes. No per-row
-  suppression (allowlist handles that). No raw-pattern-keyed
-  overrides (pattern + pattern_type tuple). No DB-validity check on
-  `argus_record_id` keys at load time. In-memory pattern rules
-  (non-empty `patterns`) keep their rule-sourced severity and are
-  unaffected — runtime overrides apply only to DB-delegation
-  matches.
-
-  Cross-references the delegation extension, the runtime
-  severity-overrides bullet, and the `suppress_vendors` bullet as
-  the prerequisite chain: the extension landed the rule types whose
-  matches now carry an `argus_record_id`; the runtime overrides
-  layer is what `pattern_overrides` plugs into; `suppress_vendors`
-  established the per-match metadata-gate pattern this bullet
-  extends to a third axis. Together the four bullets close the
-  severity-tuning matrix at remap × {category, row} + suppress ×
-  {category, vendor}.
-
-- **Watchlist staleness indicator — startup WARNING + `/settings`
-  freshness card.** Surfaces the age of imported Argus data so an
-  operator who hasn't refreshed in months sees a clear signal before
-  alerts fire on stale threat intel. Pre-rc4 the daemon ran silently
-  against whatever was last imported; an operator who booted a
-  system that had been off for two months had no way to tell their
-  threat data was 60+ days behind without manually checking. The
-  settings page's existing "last imported" field was misleading on
-  this front: it surfaced `MAX(updated_at) FROM watchlist_metadata`
-  (a per-row local-clock proxy that flipped to "now" whenever an
-  operator re-imported a stale CSV) rather than the Argus-side
-  `exported_at`.
-
-  **Three surfaces, one source of truth.** A new `import_runs` table
-  (migration 012) persists one row per successful
-  `lynceus-import-argus` write: the local-clock `imported_at`, the
-  Argus-side `exported_at` parsed from the CSV's `# meta:` line, the
-  canonical Argus-side `record_count`, and a free-form `source`
-  (absolute path for `--input`, `owner/repo@ref` for
-  `--from-github`). The poller's startup staleness check reads the
-  most-recent row; the /settings freshness card reads it on every
-  render. Both surfaces agree by construction — an operator who sees
-  a WARNING in journalctl can open /settings and see the same
-  numbers without reconciling.
-
-  **Startup log line, three shapes.**
-
-  - Within threshold: `INFO watchlist: N rows total, most recent
-    Argus import D days ago (exported YYYY-MM-DD)`.
-  - Over threshold: `WARNING watchlist: N rows total, most recent
-    Argus import D days ago (exported YYYY-MM-DD); consider
-    'lynceus-import-argus --from-github' to refresh`.
-  - No imports recorded (fresh install, never ran the importer):
-    `INFO watchlist: N rows total, no Argus import metadata
-    recorded`. Deliberately NOT a WARNING — a fresh install where
-    the operator hasn't run `lynceus-import-argus` yet is the
-    expected state right after `lynceus-setup`, and warning would be
-    noise.
-
-  **Configurable threshold.** New
-  `watchlist_staleness_warn_days: int = 30` config field. 30 days
-  matches Argus's nominal release cadence; kiosk / air-gapped
-  operators on a slower cadence tune via this field. Validated as
-  `>= 1` (a 0-day threshold would WARN at every startup). The wizard
-  doesn't prompt for it — operators tune via manual `lynceus.yaml`
-  edit, in line with other operability fields like
-  `alert_dedup_window_seconds`.
-
-  **/settings 'Watchlist freshness' card.** New card alongside the
-  existing watchlist data card. Renders:
-
-  - Status badge — fresh (within N days) / stale (older than N
-    days), using the existing card-status visual conventions.
-  - Argus exported date, locally imported date, age in days, source
-    string, Argus-side record count.
-  - Pattern-type breakdown (mac / oui / ssid / ble_uuid / mac_range
-    counts) — rendered in both has-import and no-import branches
-    because it reflects the LIVE watchlist contents, not the import
-    metadata. Same numbers operators see in the importer's stdout
-    summary.
-  - Refresh hint with the exact command, surfaced only in the stale
-    branch. Read-only — no "Force refresh" button; the boundary
-    stands.
-
-  **Replaces the misleading proxy.** The
-  `last_imported_ts = MAX(updated_at)` field on the existing
-  "watchlist data" card is removed — the new card renders both
-  Argus-side `exported_at` and local-clock `imported_at` so the
-  re-import-of-stale-CSV case is forensically clear instead of
-  ambiguous.
-
-  **Importer changes.**
-
-  - A new `parse_argus_meta(path)` helper parses the
-    `# meta: key=value, ...` line that prefixes every Argus CSV.
-    Per-field tolerant: malformed `exported_at` / `record_count`
-    lands as None for just that field; unknown keys (Argus adds new
-    pairs over time) are ignored; a free-form meta line (the
-    rc2-era shape) parses to all-Nones cleanly. The parser is
-    additive — the existing `parse_argus_csv` API is unchanged, so
-    call sites continue to receive a plain `list[dict]` without
-    modification.
-  - The importer's `import_csv` gains a keyword-only
-    `source: str | None` parameter and writes one `import_runs` row
-    on every successful (non-`--dry-run`) import. Failure to record
-    the run downgrades to a WARNING; the watchlist write already
-    succeeded and the staleness signal is observability-only.
-  - The GitHub-fetch helper now returns `(cached_path, resolved_ref)`
-    so the caller can build the `owner/repo@ref` source string
-    without a duplicate ref-resolution call (the latter is a
-    network round-trip on the default unspecified-ref path).
-
-  **DB layer.**
-
-  - Migration 012 (`012_import_runs.sql`). One table
-    `import_runs(id, imported_at INT NOT NULL, exported_at INT,
-    source TEXT, record_count INTEGER)` plus an index on
-    `imported_at DESC` for the single-row most-recent lookup. No FK
-    out to watchlist / watchlist_metadata — an import run is a
-    standalone event, not bound to any specific row.
-
-  **Deliberate non-scope.** No ntfy push for staleness (future
-  polish; startup WARNING + /settings card is the MVP). No periodic
-  re-check at runtime (startup-only). No "Force refresh" button on
-  /settings (read-only UI boundary). No retroactive backfill —
-  imports from before migration 012 landed don't appear on the card;
-  the next refresh starts the signal cleanly.
+  New `watchlist_staleness_warn_days: int = 30` config field (matches Argus's nominal release cadence; tune via `lynceus.yaml` for slower cadences). Validated `>= 1`. The `/settings` 'Watchlist freshness' card renders status badge, Argus exported date, locally imported date, age in days, source string, record count, and a pattern-type breakdown. Refresh hint shows the exact command, only in the stale branch. Read-only — no "Force refresh" button. The misleading `last_imported_ts = MAX(updated_at)` field on the existing watchlist data card is removed. Imports from before migration 012 don't appear on the card; the next refresh starts the signal cleanly.
 
 ### Fixed
 
-- **Runtime severity-overrides loader now logs INFO at every load
-  outcome, not only on missing-file.** Surfaced during pre-smoke
-  review of the Kali live-validation runbook against the as-shipped
-  code. The runbook promised "an INFO line confirming the runtime
-  severity-overrides file was loaded ... grep for 'severity_override'
-  or 'runtime override'" — but the initial implementation logged
-  INFO only on the missing-file path. The successful-load path and
-  the disabled-via-None path (operator hadn't set
-  `severity_overrides_path` in `lynceus.yaml`) both returned
-  silently. An operator running the smoke and grepping journalctl at
-  startup would have seen nothing and been unable to tell whether
-  the runtime layer was active, disabled, or silently pass-through
-  because of an unset config field — exactly the diagnostic blind
-  spot the runbook step was meant to prevent.
+- **Runtime severity-overrides loader now logs INFO at every load outcome, not just on missing-file.** The Kali live-validation runbook promised "an INFO line confirming the runtime severity-overrides file was loaded" but the initial implementation logged INFO only on the missing-file path; successful-load and disabled-via-None returned silently. Three new INFO lines now cover the three non-failure outcomes — active-keys (names the path and the count of active remaps and suppressions), empty-keys (parses cleanly but no runtime keys uncommented; layer is effectively pass-through), and `severity_overrides_path` unset (names the field and points at the canonical paths under `--system` and `--user`). All three are greppable via the literal `runtime severity overrides`. The four failure modes (missing file, unreadable file, malformed YAML, validation error) still log at WARNING and are unchanged.
 
-  Three new INFO lines now cover the three load outcomes that
-  return non-failure (the four failure modes — missing file,
-  unreadable file, malformed YAML, validation error — already
-  logged at WARNING and are unchanged):
+- **`lynceus-import-argus --from-github` default `--repo` was pointing at a non-existent repository.** rc3 hard-coded `kevlattice/argus` as the default; the actual Argus repo is `kevwillow/argus-db`. The headline rc3 feature 404'd on the `/releases/latest` API call and operators saw an opaque `HTTPError` instead of a successful refresh. Passing `--repo OWNER/NAME` for a fork still works the same way.
 
-  - Active-keys path: `runtime severity overrides loaded from
-    <path>: N category remap(s), M suppressed category(ies). Edits
-    take effect on daemon restart.` Self-describing — an operator
-    who expected 3 remaps but sees 1 knows the parser was selective.
-    Counts at startup are the runbook's happy-path grep target.
-  - Empty-keys path: `runtime severity overrides loaded from <path>
-    but contain no active runtime keys (device_category_severity /
-    suppress_categories); runtime layer is effectively pass-through.
-    Edit the file and restart the daemon to activate.` Distinguishes
-    a wizard-default-state file (parses cleanly, no runtime keys
-    uncommented) from one where the operator's edits actually took
-    effect.
-  - None path (`severity_overrides_path` unset):
-    `severity_overrides_path not set in lynceus.yaml; runtime
-    override layer disabled. Set the field to your
-    severity_overrides.yaml path (e.g.
-    /etc/lynceus/severity_overrides.yaml under --system, or
-    ~/.config/lynceus/severity_overrides.yaml under --user) and
-    restart the daemon to enable.` Names the config field by exact
-    name + points at the canonical paths so an operator who skipped
-    the relevant lynceus.yaml edit sees the actionable hint without
-    grepping source.
+- **`lynceus-import-argus --from-github` no longer crashes when the Argus repo has no published GitHub Releases.** rc4 still required `/repos/{repo}/releases/latest` to return a tag, but `kevwillow/argus-db` ships its CSV on every commit and does not cut formal Releases. The API returned 404, `raise_for_status()` raised `HTTPError`, and `--from-github` was unusable. The resolver now treats a 404 on `/releases/latest` as "no published releases" and falls back to the `main` branch with a WARNING (`No published releases for {repo}; falling back to 'main'. Pin a tag with --ref for reproducibility.`). Other non-200 statuses (500, 403) still propagate — a transient GitHub outage must not silently degrade to importing whatever `main` happens to be.
 
-  All three are greppable via the literal `runtime severity
-  overrides`.
+- **`lynceus-import-argus --override-file` is now scope-strict.** Pre-fix, the argparse default was hard-coded to `/etc/lynceus/severity_overrides.yaml` regardless of `--scope`. On a host with a system install (`/etc/lynceus` is `0750 root:lynceus`), an unprivileged user running the importer with `--scope user` hit the system path via the default and crashed with `PermissionError`. The flag now defaults to `None`; resolution is scope-aware — user-scope only probes the user-scope path, system-scope only the system path, no cross-scope fallback. Explicit `--override-file <path>` is used verbatim. `PermissionError` on the probe is now converted into an actionable message that names the offending path.
 
-- **`lynceus-import-argus --from-github` default `--repo` was
-  pointing at a non-existent repository.** rc3 hard-coded
-  `kevlattice/argus` as the default; the actual Argus repo is
-  `kevwillow/argus-db`. The headline rc3 feature 404'd on the
-  `/releases/latest` API call before it could even start the raw
-  fetch, and operators saw an opaque `HTTPError` instead of a
-  successful refresh. The default repo now resolves correctly;
-  passing `--repo OWNER/NAME` for a fork still works the same way.
-
-- **`lynceus-import-argus --from-github` no longer crashes when the
-  Argus repo has no published GitHub Releases.** rc4 still required
-  `/repos/{repo}/releases/latest` to return a tag, but
-  `kevwillow/argus-db` ships its CSV on every commit and does not
-  cut formal Release objects (its README is explicit that release
-  cadence is discretionary; the GitHub sidebar reads "No releases
-  published"). The API returned 404, `raise_for_status()` raised
-  `HTTPError`, and `--from-github` was unusable until Argus
-  published its first Release — wrong dependency to bake in. The
-  ref resolver now treats a 404 on `/releases/latest` as "no
-  published releases" and falls back to the `main` branch, logging
-  a WARNING (`No published releases for {repo}; falling back to
-  'main'. Pin a tag with --ref for reproducibility.`) so operators
-  can see at a glance whether they got a release tag or a branch
-  HEAD. Other non-200 statuses (500, 403) still propagate — a
-  transient GitHub outage must not silently degrade to importing
-  whatever `main` happens to be. Surfaced by the rc4 live smoke
-  against the real Argus repo.
-
-- **`lynceus-import-argus --override-file` is now scope-strict and
-  no longer crashes for unprivileged `--scope user` runs on a host
-  that also carries a `--system` install.** Pre-fix, the argparse
-  default was hard-coded to `/etc/lynceus/severity_overrides.yaml`
-  regardless of `--scope`. On a Linux host with the system-scope
-  install (`/etc/lynceus` is `0750 root:lynceus` by design), an
-  unprivileged user running the importer hit the system path via
-  the default and crashed with `PermissionError` inside
-  `Path.is_file()`. The flag now defaults to `None`; resolution
-  derives from the scope-aware path helper — user-scope only ever
-  probes the user-scope path, system-scope only the system path, no
-  cross-scope fallback. Explicit `--override-file <path>` is used
-  verbatim and bypasses scope-derived defaults entirely. The
-  override loader also converts `PermissionError` on the probe into
-  a `RuntimeError` that names the offending path, so operators see
-  an actionable message instead of a bare traceback. Surfaced by
-  the rc4 live smoke; the bug was latent in every prior
-  `lynceus-import-argus` ship but only triggers on mixed user+system
-  installs.
-
-- **`lynceus-setup` refuses sudo-without-`--system` to prevent
-  silent scope misplacement.** Reproduced in the rc4 live smoke:
-  `sudo lynceus-setup --reconfigure` (no `--system`) silently
-  regenerated `/root/.config/lynceus/lynceus.yaml` while the system
-  daemon kept reading `/etc/lynceus/lynceus.yaml` — the operator
-  believed they had reconfigured the daemon, but the daemon was
-  still running the stale pre-reconfigure config. The wizard
-  followed its scope rules literally (`euid=0`, scope defaults to
-  user, `Path.home()` is `/root`) but the operator-facing result was
-  divergence between intent and effect. The wizard now refuses
-  early when `euid=0` and `--system` is not passed, prints both
-  correct invocations side-by-side, and exits 2. Three legitimate
-  combinations are unchanged: root + `--system` (system install),
-  non-root + no flag (user install), non-root + `--system` (still
-  hits the pre-existing "use sudo" preflight). Windows is a no-op
-  for the new check — there's no euid to read, so no sudo trap to
-  fall into. After upgrading, operators who hit this bug in rc4
-  should re-run `sudo lynceus-setup --system --reconfigure` to
-  bring `/etc/lynceus/lynceus.yaml` back into sync with their
-  intended configuration.
+- **`lynceus-setup` refuses sudo-without-`--system` to prevent silent scope misplacement.** Reproduced in the rc4 live smoke: `sudo lynceus-setup --reconfigure` (no `--system`) silently regenerated `/root/.config/lynceus/lynceus.yaml` while the system daemon kept reading `/etc/lynceus/lynceus.yaml` — operator believed they'd reconfigured the daemon, but it was still running the stale config. The wizard now refuses early when `euid=0` and `--system` is not passed, prints both correct invocations side-by-side, and exits 2. Three legitimate combinations are unchanged: root + `--system`, non-root alone, non-root + `--system` (still hits the existing "use sudo" preflight). Windows is a no-op. After upgrading, operators who hit this in rc4 should re-run `sudo lynceus-setup --system --reconfigure` to bring `/etc/lynceus/lynceus.yaml` back into sync.
 
 ### Changed
 
-- **All `kevlattice/lynceus` GitHub URLs replaced with
-  `kevwillow/lynceus-warden`** to reflect the upstream account
-  rename + repo rename. Surfaces touched: `pyproject.toml`
-  (Homepage / Repository / Issues, which flow into the wheel's
-  PKG-INFO and PyPI metadata), `SECURITY.md` (private-advisory and
-  public-issues URLs), the `git clone` URL in the README, and the
-  `Documentation=` line in both systemd unit files (visible in
-  `systemctl status` and journalctl context). The
-  `kevwillow/lynceus.git` → `kevwillow/lynceus-warden.git`
-  GitHub-side redirect is still active, so older clones continue to
-  push and pull, but new clones should use the canonical URL.
+- **All `kevlattice/lynceus` GitHub URLs replaced with `kevwillow/lynceus-warden`** to reflect the upstream account + repo rename. Touches `pyproject.toml` (Homepage / Repository / Issues, which flow into PyPI metadata), `SECURITY.md`, the `git clone` URL in the README, and the `Documentation=` line in both systemd unit files (visible in `systemctl status` and journalctl context). The GitHub-side redirect from `kevwillow/lynceus.git` to `kevwillow/lynceus-warden.git` is still active, so older clones continue to push and pull — but new clones should use the canonical URL.
 
 ## [0.4.0-rc3] - 2026-05-15
 
@@ -3079,589 +547,127 @@ with external trackers.
 
 ### Added
 
-- **`lynceus-import-argus --from-github`.** Argus-watchlist refresh
-  collapses from a three-step manual flow (scp the CSV, find the
-  right `--db` path, run the importer) into a single command. The
-  new flag fetches `exports/argus_export.csv` from
-  [`kevwillow/argus-db`](https://github.com/kevwillow/argus-db) over
-  HTTPS and runs the existing idempotent, migration-aware import.
-  Default ref is the *latest tagged release* (NOT the tip of
-  `main`) — a single bad push must not poison every operator who
-  refreshes. Explicit `--ref` overrides the default (tag / branch /
-  commit all work; `--ref main` is allowed for operators who
-  consciously want the bleeding edge). `--repo OWNER/NAME` swaps the
-  source repo for forks. Pulled artifacts land in
-  `<data-dir>/argus-cache/<ref>__argus_export.csv` so each refresh
-  leaves a forensic trail.
+- **`lynceus-import-argus --from-github` for one-command watchlist refresh.** Fetches `exports/argus_export.csv` from [`kevwillow/argus-db`](https://github.com/kevwillow/argus-db) over HTTPS and runs the existing idempotent import — replacing the old three-step scp + find-the-db + import flow. Defaults to the latest tagged release (not `main`) so one bad upstream push can't poison every operator. `--ref` overrides (tag, branch, or commit; `--ref main` allowed for bleeding-edge), and `--repo OWNER/NAME` swaps the source for forks. Fetched CSVs land in `<data-dir>/argus-cache/<ref>__argus_export.csv` for a forensic trail. No GitHub token required. TLS verify on, 15s/30s timeouts. `install.sh` stays OFFLINE; only this one CLI talks to the network. `--input` remains for air-gapped operators — the two flags are mutually exclusive, exactly one required.
 
-  Network access is confined to this one CLI by design:
-  `install.sh` stays offline (its header invariant), the daemon and
-  the web UI don't change, and the bundled-watchlist first-run
-  import in `lynceus-setup` continues to read from the wheel. The
-  `--from-github` path uses `requests` with default `verify=True`
-  TLS and bounded timeouts (15s for the API release lookup, 30s for
-  the raw fetch). No GitHub API token is required — both
-  `/releases/latest` and `raw.githubusercontent.com` work
-  unauthenticated. `--input` remains for air-gapped operators; the
-  two flags are mutually exclusive, exactly one is required.
+- **`lynceus-import-argus --db` now defaults to the canonical scope path.** Previously `--db` was required, so every invocation hand-rolled `/var/lib/lynceus/lynceus.db` or `~/.local/share/lynceus/lynceus.db`. Now the same XDG-aware resolver the setup wizard and daemon use picks the right path when `--db` is omitted. New `--scope user|system` selects the default scope (defaults to `user`); pass `--db` explicitly to override. Existing scripts passing `--db` are unaffected.
 
-- **`--db` now defaults to the canonical scope path** in
-  `lynceus-import-argus`. Pre-change the flag was required, so
-  every operator had to hand-roll `/var/lib/lynceus/lynceus.db`
-  (under `--system`) or `~/.local/share/lynceus/lynceus.db` (under
-  `--user`) every time. The flag now resolves to the scope-aware DB
-  path helper when omitted — same XDG-aware resolver the setup
-  wizard and the daemon already consult — so the common case is a
-  no-flag invocation. New `--scope user|system` picks the default
-  scope (defaults to `user`); pass `--db` explicitly to override.
-  Existing scripts passing `--db` keep working unchanged.
+- **Scope-aware uninstall in `install.sh --uninstall`.** Now accepts both `--user` and `--system`, closing the gap where only system installs had a clean reversal path. Flag order is now free: `--uninstall --user` and `--user --uninstall` both work. `--purge` now errors unless `--uninstall` is also passed. `--user --purge` deletes `~/.config/lynceus`, `~/.local/share/lynceus`, and `~/.local/state/lynceus` (the latter two hold `lynceus.db` and logs). Without `--purge`, only the venv at `~/.local/share/lynceus/.venv` is removed — your database survives. If no `--user` install artifact is found, the script prints where it looked and suggests `sudo install.sh --uninstall --system` in case you picked the wrong scope, then exits 0 rather than running no-op `rm`s.
 
-- **Scope-aware uninstall.** `install.sh --uninstall` now accepts
-  both `--user` and `--system`, closing the gap where only
-  `--system` installs had a clean reversal path. The internal `MODE`
-  variable was split into orthogonal `ACTION` (install / uninstall)
-  and `SCOPE` (user / system), so `--uninstall --user` and
-  `--user --uninstall` are order-independent and the dispatch table
-  is `case "$ACTION:$SCOPE"`. Pre-flight is now action-aware:
-  `python3` and `python3-venv` are install-only requirements
-  (uninstall must work on a host where Python is already gone), and
-  `systemctl` is gated on `SCOPE=system` (covers both
-  install-system and uninstall-system). `--purge` now errors unless
-  `--uninstall` is also passed, making the previously-implicit
-  "purge only applies to uninstall" relationship explicit at the
-  CLI surface.
-
-  `--user --purge` semantics: deletes `~/.config/lynceus`,
-  `~/.local/share/lynceus`, and `~/.local/state/lynceus` (the latter
-  two contain `lynceus.db` and logs). Without `--purge`, the venv
-  at `~/.local/share/lynceus/.venv` is removed (the install
-  artifact) but the surrounding data dir is preserved, so the
-  operator's database survives a non-purge uninstall. If no
-  `--user` install artifact is found anywhere, the script prints
-  the checked paths and suggests `sudo install.sh --uninstall
-  --system` in case the operator picked the wrong scope, then
-  exits 0 rather than running a chain of no-op `rm`s.
-
-- **Top-level `uninstall.sh` wrapper.** Operators look for an
-  `uninstall.sh` next to `install.sh`; we now ship one. Thin shell
-  wrapper — not a Python entry point, doesn't touch
-  `pyproject.toml` or the `CONSOLE_SCRIPTS` array. Auto-detects
-  scope by venv marker (`~/.local/share/lynceus/.venv` for `--user`,
-  `/opt/lynceus/.venv` for `--system`), refuses to guess if both
-  markers exist (lists them, asks the operator to be explicit),
-  prints where it looked if neither is present, and otherwise execs
-  `install.sh --uninstall --user|--system` with `--purge` and
-  `--dry-run` passed through. Like `install.sh`, it's intentionally
-  OFFLINE — no network access of any kind.
+- **Top-level `uninstall.sh` wrapper.** Operators look for an `uninstall.sh` next to `install.sh`; we now ship one. Thin shell wrapper — auto-detects scope by venv marker (`~/.local/share/lynceus/.venv` for `--user`, `/opt/lynceus/.venv` for `--system`), refuses to guess if both exist (lists them, asks you to be explicit), prints where it looked if neither is present, and otherwise execs `install.sh --uninstall --user|--system` with `--purge` and `--dry-run` passed through. Like `install.sh`, it is OFFLINE — no network access of any kind.
 
 ## [0.4.0-rc2] - 2026-05-15
 
 ### Security
 
-- **Allowlist suppression of watchlist hits is now audit-logged.**
-  Previously the allowlist-then-evaluate ordering in the poll loop
-  meant an allowlist entry could silently disable any watchlist rule
-  whose pattern overlapped with the allowlisted device — anyone with
-  write access to the allowlist file got an undocumented watchlist
-  kill-switch with zero log signal. The poll loop now re-evaluates
-  rules on the allowlisted-suppression path and emits an INFO line
-  per suppressed watchlist hit (`Allowlist suppressed watchlist hit:
-  rule=<name> mac=<mac> severity=<sev>`), so operators can grep
-  journalctl to review whether their allowlist is too permissive.
-  The audit pass costs one extra `evaluate()` call per allowlisted
-  observation; allowlists are operator-curated and typically small,
-  and the visibility win is worth the cost. Docstrings on the
-  relevant code paths now make the precedence ordering explicit so
-  future refactors don't drop the audit signal.
-  `new_non_randomized_device` hits are intentionally excluded from
-  the audit log — the whole point of allowlisting is to silence the
-  "first time we've seen this known device" path, and logging it
-  would just mean every allowlisted device gets one INFO line per
-  poll cycle.
+- **Allowlist suppression of watchlist hits is now audit-logged.** Previously the allowlist-then-evaluate ordering meant an allowlist entry could silently disable any watchlist rule whose pattern overlapped — anyone with write access to the allowlist file got an undocumented watchlist kill-switch with zero log signal. The poll loop now re-evaluates rules on the allowlisted-suppression path and emits an INFO line per suppressed hit: `Allowlist suppressed watchlist hit: rule=<name> mac=<mac> severity=<sev>`. Grep `journalctl` to review whether your allowlist is too permissive. `new_non_randomized_device` hits are intentionally excluded — the whole point of allowlisting is to silence those, and logging would mean one INFO line per allowlisted device per poll cycle.
 
-- **ntfy topic no longer leaks in notifier logs, wizard summary, or
-  probe-failure prints.** The topic is a shared-secret URL path
-  component on public ntfy brokers — anyone who knows it can both
-  subscribe to alerts and publish forged ones. The webui already
-  redacted it via a private helper; three other surfaces still
-  rendered it verbatim:
+- **ntfy topic no longer leaks in notifier logs, wizard summary, or probe-failure output.** The topic is a shared-secret URL path component on public ntfy brokers — anyone who knows it can both subscribe and publish forged alerts. The web UI already redacted it; three other surfaces did not:
 
-  - **The notifier** logged the full POST URL on every network
-    failure AND embedded the `requests` exception's string form,
-    which itself typically embeds the URL+topic — so the secret
-    landed in journalctl twice per failure.
-  - **`lynceus-setup` wizard summary** printed the raw topic to
-    stdout at the end of a run, where it lingers in terminal
-    scrollback and any tee'd install log.
-  - **The wizard's ntfy probe failure path** returned `str(exc)`
-    verbatim, which the wizard then printed; same
-    exception-body-embeds-URL leak as the notifier.
+  - The notifier logged the full POST URL on every network failure plus the `requests` exception string (which itself embeds the URL) — leaking the topic twice per failure into `journalctl`.
+  - `lynceus-setup` wizard printed the raw topic to stdout at the end of a run, lingering in scrollback and any tee'd install log.
+  - The wizard's ntfy probe printed `str(exc)` verbatim on failure — same exception-embeds-URL leak.
 
-  All three now route through a new `lynceus.redact` module that
-  exposes `redact_ntfy_topic` (the existing webui helper, lifted to
-  a shared location and made public) and `redact_topic_in_url`
-  (parses the URL, redacts only the final path segment, preserves
-  query and fragment). The previously-private redactor in the webui
-  is gone; the webui now imports the shared version so every surface
-  speaks one consistent redaction shape (`prefix•••suffix`).
-
-  The notifier and the wizard probe now log only the exception type
-  name plus the topic-redacted URL on failure; full exception detail
-  is reserved for explicit DEBUG operation. The trade-off is a small
-  loss of debug context in default-INFO journalctl in exchange for a
-  guarantee that the topic cannot leak via the warning line —
-  operators who need the full exception body can enable DEBUG
-  temporarily.
+  All three now redact the topic to `prefix•••suffix` form. The notifier and wizard probe log only the exception type name plus the topic-redacted URL on failure; full exception detail is reserved for DEBUG operation.
 
 ### Added
 
-- **Dark mode for the web UI.** Auto-follows the OS via
-  `prefers-color-scheme: dark`, with a small `theme: auto / light /
-  dark` toggle button in the topnav for operators who want to
-  override. The toggle cycles auto → light → dark → auto and
-  persists the choice to `localStorage` (`lynceus-theme` key), so it
-  sticks across page navigations and reloads. Pico CSS v2.1.1
-  (already vendored) handles the dark palette for every standard
-  semantic element — body, text, links, tables, forms, buttons, nav,
-  article, borders — and `lynceus.css` adds matching dark variants
-  for the project-custom surface (severity / confidence / status
-  badges, the topnav border, the sparkline bar fill, the
-  severity-tinted alert rows, and the table-scroll fade gradient).
-  The toggle sets `data-theme` on `<html>`, which Pico and
-  `lynceus.css` overrides both honor coherently from a single flag.
-  Light-mode rendering is byte-identical to pre-change (the `:root`
-  defaults preserve the prior color literals exactly), so operators
-  who keep their OS in light mode and never touch the toggle see no
-  visual change. A tiny synchronous `<head>` bootstrap reads the
-  stored choice before the stylesheet loads, so operators on a
-  forced theme do not see a flash of `prefers-color-scheme` between
-  first paint and the deferred `lynceus.js` running.
+- **Dark mode for the web UI.** Auto-follows the OS via `prefers-color-scheme: dark`, with a `theme: auto / light / dark` toggle in the topnav. Cycles auto → light → dark → auto and persists to `localStorage` (`lynceus-theme` key) across reloads. Pico CSS handles standard elements; `lynceus.css` adds matching dark variants for severity / confidence / status badges, topnav border, sparkline bar fill, severity-tinted alert rows, and the table-scroll fade gradient. Light-mode rendering is byte-identical to pre-change — operators who keep their OS in light and never touch the toggle see no visual change. A small synchronous `<head>` bootstrap reads the stored choice before the stylesheet loads, so there is no flash of `prefers-color-scheme` on a forced theme.
 
-- **`lynceus-import-argus --min-confidence N` row-skip flag.**
-  Hard-skips rows where `confidence < N` before any DB write;
-  skipped rows land in a new `dropped_low_confidence` counter
-  surfaced in both the per-bucket and the trailing-summary lines of
-  the operator-facing report, plus a per-row INFO log line
-  (`argus_record_id` + actual confidence) so the count is
-  debuggable instead of opaque. Deliberately distinct from the
-  YAML-configured `confidence_downgrade_threshold` (which downgrades
-  severity tier — high→med→low — but still imports the row):
-  `--min-confidence` is a hard pre-DB filter, the threshold is a
-  severity nudge. Both can be active simultaneously and operate
-  independently. The intended workflow is a high-confidence-first
-  smoke test — `--min-confidence=80 --dry-run` against the incoming
-  push to confirm the high-conf subset lands cleanly before
-  re-running without the flag to ingest the full export. Default is
-  unset (no filtering), so the flag is opt-in and existing import
-  scripts are unaffected.
+- **`lynceus-import-argus --min-confidence N` row-skip flag.** Hard-skips rows where `confidence < N` before any DB write; skipped rows land in a new `dropped_low_confidence` counter shown in both per-bucket and trailing-summary report lines, plus a per-row INFO log so the count is debuggable. Distinct from the YAML-configured `confidence_downgrade_threshold` (which downgrades severity tier — `high` → `med` → `low` — but still imports the row): `--min-confidence` is a hard pre-DB filter, the threshold is a severity nudge. Both can be active simultaneously. Intended workflow: `--min-confidence=80 --dry-run` against an incoming push to confirm the high-conf subset lands cleanly, then re-run without the flag for the full export. Default unset (no filtering), so existing scripts are unaffected.
 
-- **`evidence_snapshots.do_not_publish` column** (migration 009).
-  Forward-compat for v0.5.0 public-feed export — no producers or
-  consumers in v0.4.0. Defaults to 0; surfaced in the
-  evidence-for-alert lookup so future consumers can read it without
-  a second query. Adding the column now while the table is small
-  avoids a destructive migration when v0.5.0 ships.
+- **`evidence_snapshots.do_not_publish` column** (migration 009). Forward-compat for v0.5.0 public-feed export — no producers or consumers in v0.4.0. Defaults to 0. Adding the column now while the table is small avoids a destructive migration when v0.5.0 ships.
 
 ### Documentation
 
-- **SECURITY.md gains a "Data at rest" section** documenting that
-  `lynceus.db` is unencrypted, that `evidence_snapshots` carries the
-  most sensitive data Lynceus has shipped (probe SSIDs gated by
-  capture toggle, operator GPS gated by `evidence_store_gps`), and
-  that the WAL sidecar retains rows after a logical `DELETE`.
-  Includes the `PRAGMA wal_checkpoint(TRUNCATE)` recipe for
-  operators who need to flush the WAL before a backup or hand-off.
-- **CONFIGURATION.md field-reference table now lists the v0.4.0
-  evidence knobs** (`evidence_capture_enabled`,
-  `evidence_retention_days`, `evidence_store_gps`).
+- **`SECURITY.md` gains a "Data at rest" section.** Documents that `lynceus.db` is unencrypted, that `evidence_snapshots` carries the most sensitive data Lynceus has shipped (probe SSIDs gated by `capture.probe_ssids`, operator GPS gated by `evidence_store_gps`), and that the WAL sidecar retains rows after a logical `DELETE`. Includes the `PRAGMA wal_checkpoint(TRUNCATE)` recipe for operators who need to flush WAL before a backup or hand-off.
+
+- **`CONFIGURATION.md` field-reference table now lists the v0.4.0 evidence knobs** (`evidence_capture_enabled`, `evidence_retention_days`, `evidence_store_gps`).
 
 ### Performance
 
-- **`captured_at` index for the evidence retention prune.**
-  Migration 008 adds `evidence_captured_at_idx` so the daily
-  `DELETE FROM evidence_snapshots WHERE captured_at < ?` no longer
-  falls back to a full table scan. The pre-existing
-  `(mac, captured_at DESC)` index leads with `mac` and is not
-  usable for an unconstrained range scan; this becomes a real cost
-  on Pi-class hardware after weeks of operation on a busy site.
+- **`captured_at` index for the evidence retention prune** (migration 008). The daily `DELETE FROM evidence_snapshots WHERE captured_at < ?` no longer falls back to a full table scan. The pre-existing `(mac, captured_at DESC)` index leads with `mac` and is not usable for an unconstrained range scan; this becomes a real cost on Pi-class hardware after weeks of operation on a busy site.
 
 ### Changed
 
-- **`lynceus-import-argus` now emits a per-row INFO log line on
-  every identifier_type drop.** Pre-change, `mac_range` rows and
-  rows carrying an unknown `identifier_type` were silently swallowed
-  into the `dropped_mac_range` / `dropped_unknown_type` counters —
-  visible in the final report total, but with zero row-level
-  forensic trail. An operator who imported an Argus export and saw
-  the unknown-type count jump had no way to learn *which*
-  identifier_type values Argus had pushed without re-grepping the
-  source CSV. The new log lines carry `argus_record_id` and the raw
-  (case-preserved) identifier_type value plus a stable reason token
-  (`mac_range_unsupported` / `unknown_identifier_type`), so the
-  forensic question is answered by
-  `journalctl | grep "argus import: skipping"`. INFO not WARNING
-  because these are *expected* drops per the Argus §4.4 contract,
-  not anomalies — they must surface for debuggability but must not
-  upgrade the ntfy notification threshold or screen-flood on large
-  imports. The immediate consumer is the next Argus push: any new
-  identifier_type Argus emits behind us will now be visible in the
-  first operator's import log rather than being lost to the
-  unknown-type bucket.
+- **`lynceus-import-argus` now emits a per-row INFO log line on every `identifier_type` drop.** Pre-change, `mac_range` rows and rows carrying an unknown `identifier_type` were silently swallowed into the `dropped_mac_range` / `dropped_unknown_type` counters — visible in the final report but with no row-level trail. The new lines carry `argus_record_id`, the raw identifier_type value, and a stable reason token (`mac_range_unsupported` / `unknown_identifier_type`), so the forensic question is answered by `journalctl | grep "argus import: skipping"`. INFO not WARNING because these are expected drops per the Argus contract, not anomalies — they must surface for debuggability but must not upgrade the ntfy threshold or screen-flood on large imports.
 
 ### Fixed
 
-- **Importer now tolerates four timestamp shapes in the Argus CSV's
-  `first_seen` / `last_verified` columns.** Pre-fix, the parser
-  only accepted the space-separated `"%Y-%m-%d %H:%M:%S"` shape —
-  but on 2026-05-14 Argus codified its canonical emission as
-  ISO-8601 UTC with `Z` suffix at seconds precision (e.g.
-  `"2026-05-14T06:13:42Z"`), and the older write-paths that fed the
-  dataset had historically emitted at least four distinct shapes
-  anyway. The strict parser rejected every Z-form value with
-  `ValueError`, surfacing in the per-row `errors` bucket and
-  silently dropping the matching watchlist rows. Smoke against the
-  live `argus_export.csv` (22,532 rows) showed **50 imported / 53
-  errors** pre-fix, every error of the form `time data '...Z' does
-  not match format '%Y-%m-%d %H:%M:%S'`. Post-fix, the same dry-run
-  reports **103 imported / 0 errors** with the expected
-  reconciliation (103 + 17,794 `mac_range` + 4,635 `unknown_type` =
-  22,532); the 50→103 delta is rows that previously failed on a
-  Z-form `last_verified` value mid-row, now parsed cleanly. The
-  parser now accepts: canonical Z form (`"2026-05-14T06:13:42Z"`),
-  ISO with explicit UTC offset
-  (`"2026-05-14T06:13:42.204792+00:00"`, the pre-canonicalization
-  dominant shape), space-separated treated as UTC
-  (`"2026-05-06 00:30:28"`, backward compat with archived exports),
-  and date-only midnight UTC (`"2026-05-10"`, preserves the only
-  signal a date-only row carries). Non-zero offsets are coerced to
-  UTC. Unparseable shapes still raise `ValueError` so a future
-  fifth shape surfaces immediately in the existing row-error path
-  rather than landing silently. Defense in depth with the
-  Argus-side canonicalization: either side could have fixed it
-  alone, both is more robust against archived pre-canonicalization
-  exports an operator may replay.
+- **Importer now tolerates four timestamp shapes in the Argus CSV's `first_seen` / `last_verified` columns.** Pre-fix, the parser only accepted the space-separated `"%Y-%m-%d %H:%M:%S"` shape — but Argus codified its canonical emission as ISO-8601 UTC with `Z` suffix (e.g. `"2026-05-14T06:13:42Z"`), and older write-paths had emitted at least four distinct shapes. The strict parser rejected every Z-form value and silently dropped the matching watchlist rows. Smoke against the live 22,532-row export showed **50 imported / 53 errors** pre-fix; post-fix the same dry-run reports **103 imported / 0 errors**. The parser now accepts: canonical Z form, ISO with explicit UTC offset, space-separated treated as UTC (backward compat with archived exports), and date-only midnight UTC. Non-zero offsets are coerced to UTC. Unparseable shapes still raise so a future fifth shape surfaces immediately rather than landing silently.
 
-- **Migration 007 (`evidence_snapshots`) now uses `IF NOT EXISTS`
-  guards on its three CREATE statements** (one table, two indexes).
-  Re-running the SQL on a DB where 007's objects exist but the
-  `schema_migrations` row was never written (interrupted runner,
-  crash mid-script) is now a no-op rather than raising
-  `sqlite3.OperationalError: table evidence_snapshots already
-  exists`. Narrow partial-apply hardening from the v0.4.0
-  diagnostic backlog — the broader migration-runner atomicity work
-  (per-migration transactions and a recovery path that reconciles
-  the on-disk schema with `schema_migrations`) stays deferred to
-  v0.4.1. Other migrations are unchanged in this pass; a follow-up
-  sweep will apply the same guards to 001-006 and 008-010 once the
-  runner work lands.
+- **Migration 007 (`evidence_snapshots`) now uses `IF NOT EXISTS` guards on its CREATE statements.** Re-running on a DB where 007's objects exist but the `schema_migrations` row was never written (interrupted runner, crash mid-script) is now a no-op rather than raising `sqlite3.OperationalError: table evidence_snapshots already exists`. Narrow partial-apply hardening — the broader migration-runner atomicity work stays deferred to v0.4.1. A follow-up sweep will apply the same guards to the other migrations.
 
-- **Watchlist patterns are now normalized at write time.** Pre-fix,
-  `lynceus-seed-watchlist` and `lynceus-import-argus` inserted
-  operator-supplied patterns verbatim. The poller normalizes its
-  observation MAC to lowercase colon-separated form (and BLE UUIDs
-  to lowercase hyphen-separated form) before the equality lookup
-  in the annotation path, so a watchlist row stored as
-  `"AA:BB:CC:DD:EE:FF"` silently never linked to the alert that
-  fired for `"aa:bb:cc:dd:ee:ff"`. The alert was still written (the
-  rules engine had already matched the pattern via the in-memory
-  rule), but `matched_watchlist_id` landed `NULL` — dropping the
-  entire Argus metadata enrichment chain (vendor, confidence, source
-  URL, severity hint) that v0.4.0 surfaces on the alert detail page.
-  The bug was structural: any seed/import path that didn't happen to
-  use canonical lowercase silently broke the Argus integration
-  contract.
+- **Watchlist patterns are now normalized at write time.** Pre-fix, `lynceus-seed-watchlist` and `lynceus-import-argus` inserted operator-supplied patterns verbatim. The poller normalizes its observation MAC to lowercase colon-separated form before lookup, so a watchlist row stored as `"AA:BB:CC:DD:EE:FF"` silently never linked to the alert that fired for `"aa:bb:cc:dd:ee:ff"`. The alert was still written, but `matched_watchlist_id` landed `NULL` — dropping the entire Argus metadata enrichment (vendor, confidence, source URL, severity hint) from the alert detail page. Both the YAML seeder and the Argus CSV importer now canonicalize before insert: lowercase, colon-separated MACs, lowercase BLE UUIDs (hyphens preserved), case-sensitive SSIDs pass through. Migration 010 normalizes pre-existing rows in place; idempotent. `lynceus-import-argus` adds a `normalization_failed` counter to its report; `lynceus-seed-watchlist` emits a WARNING per rejection plus a rolled-up summary.
 
-  A new `lynceus.patterns.normalize_pattern` helper is now the
-  single source of truth for canonical persistent form, called by
-  both the YAML seeder and the Argus CSV importer before insert.
-  Accepts the separator variants found in the wild (Cisco-dotted
-  MACs, hyphen MACs, IEEE-distribution flat-hex OUIs — that last
-  form closes the OUI normalization gap) and rejects anything that
-  can't be coerced. SSIDs pass through unchanged (case-sensitive
-  per IEEE 802.11 — separate SSID-case deferral remains for v0.4.x).
-  Short 16-bit / 32-bit BLE UUIDs are rejected rather than silently
-  expanded; the Bluetooth-base expansion is a separate fix tracked
-  under the Kismet short-UUID hardware finding.
+- **`lynceus-import-argus` now case-normalizes `identifier_type` before the allowlist check.** Pre-fix, a row from Argus with `identifier_type="BLE_SERVICE"` (uppercase) missed the lowercase keys in the importer's type map and silently dropped into `dropped_unknown_type` with no per-row log line. The importer now lowercases and strips whitespace before lookup, so high-confidence `ble_service` rows that happen to ship as `BLE_SERVICE` are no longer lost without warning.
 
-  Migration 010 normalizes pre-existing rows in place: `LOWER` +
-  collapse `-`/`.`/space to `:` for `mac`/`oui`, `LOWER` only for
-  `ble_uuid` (canonical UUID form keeps hyphens). SSID rows are
-  intentionally not touched. Idempotent — re-running on
-  already-canonical input is a no-op. Exotic input forms (flat
-  12-hex MACs, dehyphenated 32-hex UUIDs) won't be perfectly
-  normalized by the SQL pass but the next seed/import run lands
-  them in canonical form via the new helper; chasing perfect
-  SQL-side normalization isn't worth the regex/UDF complexity for a
-  corner case.
+- **Freshly-created user-mode databases are now `chmod 0600` on POSIX.** Previously the file landed at the process umask (typically `0644` — world-readable on multi-user boxes). System-mode installs already get `0640 root:lynceus` from setup; this fix only affects user-mode where evidence rows could otherwise be readable by any local account. Existing databases keep operator-set modes; the chmod runs only on first creation. No-op on Windows.
 
-  `lynceus-import-argus` reports a new `normalization_failed`
-  counter on its report, surfaced in the operator-facing summary so
-  silent drops are visible at the end of an import run.
-  `lynceus-seed-watchlist` emits a per-rejection WARNING and a
-  single rolling-up summary WARNING when any rejections occurred.
-  This matters specifically for the next Argus push — fixing
-  pre-push is the right ordering since we don't know how their
-  export normalizes patterns.
+- **Alert detail page hides the GPS section when stored coordinates are non-finite.** Belt-and-suspenders against a pre-`evidence_store_gps` install or hand-edited DB row carrying `inf` / `nan`: the OSM URL would otherwise render as `mlat=nan&mlon=...` and the visible coordinate line would say "nan, 0". The handler now zeroes out the GPS fields and logs a WARNING when it detects non-finite values.
 
-- **`lynceus-import-argus` now case-normalizes `identifier_type`
-  before the allowlist check.** Symmetrical with the pattern-value
-  normalization fix above: that one canonicalized the *identifier*
-  (the pattern string itself) at write time, this one canonicalizes
-  the *identifier_type* column at read time. Pre-fix, a row from
-  Argus with `identifier_type="BLE_SERVICE"` (uppercase) missed the
-  lowercase keys in the importer's identifier-type map and silently
-  dropped into the `dropped_unknown_type` counter — visible in the
-  final report total but with no per-row log line, so operators
-  reviewing import stdout would see the count drop without learning
-  which type variants Argus had pushed. The importer now does
-  `(row["identifier_type"] or "").strip().lower()` before the
-  allowlist lookup; the whitespace strip also handles BOM /
-  trailing-space edge cases for free. This matters specifically for
-  the next Argus push: high-confidence `ble_service` rows that
-  happen to ship as `BLE_SERVICE` would otherwise be lost without
-  warning.
+- **OpenStreetMap link on the alert detail page now opens in a new tab.** Previously had `rel="noopener noreferrer"` but no `target="_blank"`, so clicking it navigated off the alert page and dropped pagination/filter context. Now matches the watchlist `source_url` link's behaviour.
 
-- **Freshly-created user-mode databases are now `chmod 0600` on
-  POSIX.** Previously the file landed at the process umask
-  (typically `0644` — world-readable on multi-user boxes).
-  System-mode installs already get `0640 root:lynceus` from setup;
-  this fix only affects user-mode where evidence rows could
-  otherwise be readable by any local account. Existing databases
-  keep operator-set modes; the chmod runs only on first creation.
-  No-op on Windows.
+- **Evidence capture now honors the `capture.probe_ssids` and `capture.ble_friendly_names` toggles.** Previously the verbatim Kismet record stored in `evidence_snapshots.kismet_record_json` bypassed both toggles, so an operator who explicitly disabled probe capture still had every probed SSID for every alerting device persisted to disk. Evidence capture now redacts the record per the active capture config before serialization (the upstream record is never mutated).
 
-- **Alert detail page hides the GPS section when stored coordinates
-  are non-finite.** Belt-and-suspenders against a
-  pre-evidence-store-gps install or hand-edited DB row carrying
-  `inf` / `nan`: the OSM URL would otherwise render as
-  `mlat=nan&mlon=...&map=18/nan/...` and the visible coordinate line
-  would say "nan, 0". The handler now zeroes out the GPS context
-  fields and logs a WARNING when it detects non-finite values.
+- **`bytes` / `bytearray` fields in Kismet records are now hex-encoded in evidence JSON** instead of stringified as a Python repr. Old output was tool-hostile blobs like `"b'\\xff\\xfe'"`; new output is clean hex (`"fffe"`) that round-trips through any JSON consumer.
 
-- **OpenStreetMap link on the alert detail page now opens in a new
-  tab.** Previously had `rel="noopener noreferrer"` but no
-  `target="_blank"`, so clicking it navigated the operator off the
-  alert page and dropped any pagination/filter context. Now matches
-  the watchlist `source_url` link's behaviour.
+- **Non-finite floats in Kismet records (`inf`, `nan`) are now serialized as `null` in evidence JSON** instead of the non-standard `Infinity` / `NaN` tokens. Strict JSON parsers (FOIA-export pipelines, journalist tooling) reject those tokens; a single Kismet RRD slot carrying a sentinel value used to render the entire snapshot non-portable.
 
-- **Evidence capture now honors the `capture.probe_ssids` and
-  `capture.ble_friendly_names` toggles.** Previously the verbatim
-  Kismet record stored in `evidence_snapshots.kismet_record_json`
-  bypassed both toggles, so an operator who explicitly disabled
-  probe capture still had every probed SSID for every alerting
-  device persisted to disk. Evidence capture now redacts the record
-  per the active capture config before serialization
-  (deep-copy-safe — the upstream record is never mutated).
+- **`raw_record` is no longer attached to in-memory device observations when evidence capture is disabled.** Each Kismet device record can be tens of KB; for poll batches of hundreds of devices that was multi-MB of needless retention every tick when the evidence path would never consume it.
 
-- **`bytes` / `bytearray` fields in Kismet records are now
-  hex-encoded in evidence JSON** instead of stringified as a Python
-  repr. Previous `default=str` produced ugly tool-hostile blobs like
-  `"b'\\xff\\xfe'"`; the new custom default emits clean hex
-  (`"fffe"`) that round-trips through any JSON consumer.
+- **Capture-failure log line no longer leaks exception body content.** `json.dumps` failures can carry offending field values (BLE friendly names, SSIDs, vendor strings) in the exception message; logging via `%s` echoed those values into `journalctl` outside Lynceus's privacy controls. The WARNING line now includes only the exception type name; full traceback is reserved for DEBUG operation.
 
-- **Non-finite floats in Kismet records (`inf`, `nan`) are now
-  serialized as `null` in evidence JSON** instead of the
-  non-standard `Infinity` / `NaN` tokens. Strict JSON parsers
-  (FOIA-export pipelines, journalist tooling) reject those tokens;
-  a single Kismet RRD slot carrying a sentinel value used to render
-  the entire snapshot non-portable.
+- **GPS in evidence rows is now opt-in.** The geopoint in a Kismet device record is the receiver's GPS fix, not the observed device's, so persisting it on every alert was building a high-resolution operator-movement log retained for the full `evidence_retention_days` window. New config flag `evidence_store_gps` (default `false`) gates the GPS columns; when off, `gps_lat` / `gps_lon` / `gps_alt` / `gps_captured_at` stay NULL even when the Kismet record contains location data.
 
-- **`raw_record` is no longer attached to `DeviceObservation` when
-  evidence capture is disabled.** Each Kismet device record can be
-  tens of KB; for poll batches of hundreds of devices that was
-  multi-MB of needless retention every tick when the evidence path
-  would never consume it. The Kismet parser now takes an
-  evidence-enabled flag, threaded down from the poll loop via the
-  Kismet client.
-
-- **Capture-failure log line no longer leaks exception body
-  content.** `json.dumps` failures can carry offending field values
-  (BLE friendly names, SSIDs, vendor strings) in the exception
-  message; logging the exception via `%s` echoed those values into
-  journalctl outside Lynceus's privacy controls. The WARNING line
-  now includes only the exception type name; full traceback is
-  reserved for explicit DEBUG-mode operation.
-
-- **GPS in evidence rows is now opt-in.** The geopoint in a Kismet
-  device record is the receiver's GPS fix, not the observed device's,
-  so persisting it on every alert was building a high-resolution
-  operator-movement log retained for the full
-  `evidence_retention_days` window. New config flag
-  `evidence_store_gps` (default `false`) gates the GPS columns; when
-  off, `gps_lat` / `gps_lon` / `gps_alt` / `gps_captured_at` stay
-  NULL even when the Kismet record contains location data.
-
-  - **BREAKING (pre-release):** `evidence_store_gps` defaults to
-    `false`. Operators who want GPS in evidence rows must enable it
-    explicitly. Existing rows in `evidence_snapshots` from a
-    pre-release v0.4.0 still carry whatever GPS values were captured
-    at the time; only future captures are gated.
+  - **BREAKING (pre-release):** `evidence_store_gps` defaults to `false`. Operators who want GPS in evidence rows must enable it explicitly. Existing rows in `evidence_snapshots` from a pre-release v0.4.0 still carry whatever GPS values were captured at the time; only future captures are gated.
 
 ### Added
 
-- **Evidence snapshots table, alert-time capture, retention prune.**
-  When an alert fires, Lynceus now persists a full evidence snapshot
-  to a new `evidence_snapshots` table: the Kismet device record at
-  that moment (verbatim JSON), the recent RSSI history pulled from
-  Kismet's signal RRD (60-sample minute_vec), and the GPS fix when
-  one is present. This is the foundational layer for transparency
-  reporting, FOIA requests, journalism use cases, and the v0.4.1
-  movement-aware alerting that needs recent per-device evidence.
+- **Evidence snapshots: alert-time capture and daily retention prune.** When an alert fires, Lynceus now persists a full evidence snapshot to a new `evidence_snapshots` table: the Kismet device record at that moment (verbatim JSON), the recent RSSI history from Kismet's signal RRD (60-sample minute_vec), and the GPS fix when one is present and `evidence_store_gps` is enabled. Foundational layer for transparency reporting, FOIA requests, journalism use cases, and the v0.4.1 movement-aware alerting that needs recent per-device evidence.
 
-  - Schema migration `007_evidence_snapshots.sql` adds the table
-    with a foreign key onto `alerts(id) ON DELETE CASCADE` plus
-    `(alert_id)` and `(mac, captured_at DESC)` indexes for the
-    "recent evidence for this device" lookup pattern.
-  - New config knobs `evidence_capture_enabled` (default true; the
-    operator off-switch for storage-constrained Pis) and
-    `evidence_retention_days` (default 90, validated to [1, 3650]).
-  - New `lynceus.evidence` module exports `capture_evidence` and
-    `prune_old_evidence`. Capture is wrapped in a broad try/except —
-    a malformed Kismet record must never derail the alert path —
-    and failures log at WARNING (not ERROR).
-  - Daily housekeeping: `maybe_prune_evidence` runs at most once per
-    24h from the poll loop, tracked under a new
-    `last_evidence_prune_ts` poller-state key.
-  - Alert detail page surfaces evidence with RSSI sparkline and GPS
-    link. `/alerts/{id}` now renders an Evidence section with the
-    captured Kismet record (collapsed `<details>` with pre-formatted
-    JSON), an inline SVG sparkline of the 60-sample RSSI history
-    (no external chart library — Lynceus stays offline-capable),
-    and an OpenStreetMap link for the captured GPS fix when present
-    (not Google Maps — privacy posture matters here). Older alerts
-    that predate v0.4.0, or alerts where capture was disabled,
-    render a "No evidence captured" placeholder.
-  - CLI export commands intentionally deferred to a follow-up
-    prompt.
+  - Migration `007_evidence_snapshots.sql` adds the table with `ON DELETE CASCADE` from `alerts(id)` plus `(alert_id)` and `(mac, captured_at DESC)` indexes.
+  - New config knobs: `evidence_capture_enabled` (default `true`; off-switch for storage-constrained Pis) and `evidence_retention_days` (default 90, validated to [1, 3650]).
+  - Capture is wrapped in a broad try/except — a malformed Kismet record must never derail the alert path — and failures log at WARNING, not ERROR.
+  - Daily housekeeping runs at most once per 24h from the poll loop.
+  - Alert detail page `/alerts/{id}` surfaces evidence: the captured Kismet record in a collapsed `<details>` block, an inline SVG sparkline of the 60-sample RSSI history (no external chart library — Lynceus stays offline-capable), and an OpenStreetMap link for the captured GPS fix when present (not Google Maps — privacy posture matters here). Older alerts that predate v0.4.0, or alerts where capture was disabled, render a "No evidence captured" placeholder.
+  - CLI export commands intentionally deferred to a follow-up.
 
 ## [0.3.0-rc2] - 2026-05-08
 
 ### Fixed
 
-- **Setup wizard crashed on a fresh box during the bundled-watchlist
-  import** because the data directory (e.g.
-  `~/.local/share/lynceus`, `/var/lib/lynceus`) didn't exist yet,
-  and sqlite refused to open the target DB with "unable to open
-  database file". The wizard now creates the data and log
-  directories defensively before invoking `lynceus-import-argus`.
+- **Setup wizard no longer crashes on a fresh box during the bundled-watchlist import.** On a clean install the data directory (`~/.local/share/lynceus`, `/var/lib/lynceus`) didn't exist yet, and sqlite refused to open the DB with "unable to open database file". The wizard now creates the data and log directories before invoking `lynceus-import-argus`.
 
 ### Added
 
-- **Bluetooth capture source selection** in `lynceus-setup`. On
-  Linux the wizard enumerates `/sys/class/bluetooth/` for `hci*`
-  adapters and, when one is present, offers to append it to
-  `kismet_sources` so Tier 1 BLE enrichment has a Kismet source to
-  draw on. macOS and Windows print a one-line note explaining that
-  BT enumeration is not implemented and the operator should
-  configure Kismet's BT source manually.
-- **ntfy skip support.** Pressing Enter at the broker URL prompt now
-  skips ntfy entirely — empty strings are written for `ntfy_url`
-  and `ntfy_topic`, the publish probe is suppressed, and the
-  daemon's existing `NullNotifier` fallback handles the empty config
-  gracefully. When the URL is set, an empty topic re-prompts (topic
-  is required if URL is set).
+- **Bluetooth source selection in `lynceus-setup`.** On Linux the wizard enumerates `hci*` adapters and, when one is present, offers to append it to `kismet_sources` so Tier 1 BLE enrichment has a source to draw on. macOS and Windows print a one-line note saying BT enumeration isn't implemented — configure Kismet's BT source manually.
+- **ntfy is now skippable in the wizard.** Pressing Enter at the broker URL prompt skips ntfy entirely — `ntfy_url` and `ntfy_topic` are written empty, the publish probe is suppressed, and the daemon's null-notifier fallback handles it. If you do set a URL, an empty topic re-prompts (topic is required when URL is set).
 
 ### Changed
 
-- **Severity-overrides path prompt** now prints an explanation block
-  describing what the file does before asking for a path, and
-  validates the input with a light heuristic — `na`, `skip`, `none`,
-  and other bare alphabetic strings are rejected with "That doesn't
-  look like a file path" instead of silently landing in the wrong
-  place.
-- **Optional 'additional Argus CSV' prompt has been retired.** It
-  was redundant on top of the bundled-watchlist auto-import, and
-  the trailing yes/no/path-prompt loop was a frequent source of
-  copy-paste-the-wrong-string mistakes. The wizard now closes with
-  a one-line hint pointing operators at `lynceus-import-argus
-  --input <path>` for later imports.
+- **Severity-overrides prompt explains itself and rejects obvious non-paths.** The prompt now prints what `severity_overrides.yaml` is for before asking for a path, and inputs like `na`, `skip`, or `none` are rejected with "That doesn't look like a file path" instead of silently landing in the wrong place.
+- **Retired the optional "additional Argus CSV" prompt.** It was redundant on top of the bundled-watchlist auto-import, and its yes/no/path loop was a frequent source of copy-paste mistakes. The wizard now closes with a one-line hint pointing at `lynceus-import-argus --input <path>` for later imports.
 
 ## [0.3.0-rc1] - 2026-05-08
 
 ### Added
 
-- **Argus integration** — first-class support for the Argus
-  surveillance-equipment signature dataset:
+- **Argus integration.** First-class support for the Argus surveillance-equipment signature dataset. Migration `004_watchlist_metadata` adds a metadata table storing Argus record id, device category, confidence, vendor, source attribution, FCC id, geographic scope, and verification timestamps alongside each watchlist entry. `lynceus-seed-watchlist` accepts an optional `metadata:` block per entry. New `lynceus-import-argus` CLI ingests the Argus dual-artifact CSV (signatures + metadata) into the watchlist. A new `/watchlist` page lists entries and per-device detail surfaces vendor, category, confidence, source, and notes. Alerts now record `matched_watchlist_id` (migration `005_alert_watchlist_link`) so triage carries metadata end-to-end, and the `/alerts` view plus the ntfy notification body include vendor and confidence so push notifications are actionable without opening the UI.
 
-  - DB schema migration (`004_watchlist_metadata.sql`) adding a
-    `watchlist_metadata` table that stores Argus record id, device
-    category, confidence, vendor, source attribution, FCC id,
-    geographic scope, and verification timestamps alongside each
-    watchlist entry.
-  - `lynceus-seed-watchlist` YAML loader extended to accept an
-    optional `metadata:` block per entry, persisted into
-    `watchlist_metadata`.
-  - New `lynceus-import-argus` CLI for ingesting the Argus
-    dual-artifact CSV format (signatures + metadata) into the
-    watchlist + metadata tables.
-  - New `/watchlist` web UI with list and detail pages that surface
-    vendor, category, confidence, source, and notes.
-  - Alert-to-watchlist linkage: alerts now record
-    `matched_watchlist_id` (migration `005_alert_watchlist_link.sql`)
-    so triage can carry metadata end-to-end from detection through
-    review.
-  - Alert UI enriched with the matched watchlist's metadata (vendor,
-    category, confidence, source link).
-  - ntfy notification body enriched with vendor and confidence so
-    push notifications are actionable without opening the UI.
+- **Tier 1 passive metadata capture.** Migration `006_tier1_capture` adds `probe_ssids` and `ble_name` columns to devices. WiFi probe-request SSID capture is opt-in via `capture.probe_ssids` (default off, privacy-conservative). BLE friendly-name capture from GAP advertisements is on by default. The BLE service-UUID enrichment dictionary now covers more consumer-tracker and accessory profiles.
 
-- **Tier 1 passive metadata capture** (migration
-  `006_tier1_capture.sql` adds `probe_ssids` and `ble_name` columns
-  on `devices`):
+- **CLI tooling for getting a fresh install running without hand-editing YAML.** `lynceus-quickstart` brings up the daemon and web UI together against a sane default config for dev/demo use. `lynceus-setup` is the interactive wizard — live Kismet and ntfy connection probes, optional Argus dataset import, and a first-run auto-import of the bundled default watchlist.
 
-  - WiFi probe-request SSID capture, opt-in via
-    `capture.probe_ssids`, **default off** to preserve a
-    privacy-conservative posture out of the box.
-  - BLE friendly-name capture from GAP advertisements, default on.
-  - Expanded BLE service-UUID enrichment dictionary covering more
-    consumer-tracker and accessory profiles.
+- **Read-only `/settings` page** in the web UI surfacing capture configuration, Kismet and ntfy connection status, watchlist origin breakdown, and basic system info. Sensitive values (Kismet API token, ntfy topic) are redacted server-side. Observability only — no mutation endpoints.
 
-- **CLI tooling** for getting a fresh install running without
-  hand-editing YAML:
+- **Release packaging for first-class Linux deployment.** `install.sh` (Linux-only) supports `--user`, `--system`, `--uninstall`, `--purge`, and `--dry-run`. Ships `lynceus.service` and `lynceus-ui.service` systemd units with a hardened sandbox profile (`NoNewPrivileges`, `ProtectSystem`, namespace restrictions).
 
-  - `lynceus-quickstart` — dev/demo launcher that brings up the
-    daemon and web UI together against a sane default config.
-  - `lynceus-setup` — interactive configuration wizard with live
-    Kismet and ntfy connection probes, optional Argus dataset
-    import, and a first-run auto-import of the bundled default
-    watchlist.
-
-- **Read-only `/settings` page** in the web UI surfacing capture
-  configuration, Kismet and ntfy connection status, watchlist origin
-  breakdown, and basic system info. Sensitive values (Kismet API
-  token, ntfy topic) are redacted server-side. No mutation endpoints
-  — the page is observability only.
-
-- **Release packaging** for first-class Linux deployment:
-
-  - `install.sh` (Linux-only) supporting `--user`, `--system`,
-    `--uninstall`, `--purge`, and `--dry-run`.
-  - systemd unit files (`lynceus.service`, `lynceus-ui.service`)
-    with a hardened sandbox profile (`NoNewPrivileges`,
-    `ProtectSystem`, namespace restrictions, and related
-    directives).
-
-- **Bundled default watchlist data**:
-  `src/lynceus/data/default_watchlist.csv` ships inside the wheel as
-  package data, and `lynceus-setup` auto-imports it on first run so
-  a fresh install boots with a useful baseline.
+- **Bundled default watchlist.** A baseline Argus-derived watchlist ships inside the wheel, and `lynceus-setup` auto-imports it on first run so a fresh install boots with something useful.
 
 ### Changed
 
-- **DB schema** moved forward three migrations on top of the v0.2
-  baseline: added `watchlist_metadata` (004), added
-  `alerts.matched_watchlist_id` with a foreign key to `watchlist`
-  (005), and added the `probe_ssids` and `ble_name` capture columns
-  to `devices` (006). Existing v0.2 databases upgrade in place.
-- **Filesystem paths** — the codebase now follows XDG-aware
-  conventions consistently for config, data, and state directories,
-  replacing the ad-hoc paths used in v0.2. `--user` installs land
-  under `~/.config/lynceus`, `~/.local/share/lynceus`, and
-  `~/.local/state/lynceus`; `--system` installs land under
-  `/etc/lynceus`, `/var/lib/lynceus`, and `/var/log/lynceus`.
-- **Test suite** grew substantially from the v0.2 baseline, covering
-  Argus import, tier 1 capture, watchlist metadata rendering, the
-  setup wizard, and the install/systemd surface.
+- **DB schema** moves forward three migrations on top of v0.2: `004_watchlist_metadata`, `005_alert_watchlist_link`, and `006_tier1_capture`. Existing v0.2 databases upgrade in place.
+- **Filesystem paths now follow XDG conventions.** `--user` installs land under `~/.config/lynceus/`, `~/.local/share/lynceus/`, and `~/.local/state/lynceus/`; `--system` installs land under `/etc/lynceus/`, `/var/lib/lynceus/`, and `/var/log/lynceus/`. Replaces the ad-hoc paths used in v0.2.
 
 ## [0.2.0] - 2026-05-04
 
