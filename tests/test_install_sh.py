@@ -619,3 +619,146 @@ def test_install_sh_system_dry_run_mentions_refresh_units():
     # The post-install hint must surface the opt-in command so operators
     # discover the timer exists.
     assert "systemctl enable --now lynceus-refresh.timer" in out
+
+
+# ---- Touch C: enriched post-install "Next steps" hint block --------------
+#
+# install.sh's post-install hint used to be a two-line "Need Kismet? Run
+# X. Already have it? Run Y." Touch C expands it into a numbered
+# getting-started block: install Kismet (with distinct paths for
+# supported-apt distros vs other distros via --skip-install), log out
+# and back in, start Kismet + create API key, configure Lynceus, then
+# either lynceus-quickstart (--user) or systemctl enable (--system),
+# with pointers to DEPLOYMENT.md and SMOKE.md for the full runbook.
+#
+# These are grep-based on install.sh content so they run on every
+# platform without a bash dependency. A live dry-run assertion lives
+# in the Linux-only test at the bottom of this section.
+
+
+def test_install_sh_hint_helper_function_exists():
+    """The hint logic is centralised in print_next_steps() to keep the
+    bash readable and the per-scope adaptation cheap. install_user and
+    install_system both delegate to it instead of duplicating the
+    Kismet / Setup / Run block."""
+    content = INSTALL_SH.read_text()
+    assert "print_next_steps()" in content, (
+        "install.sh must define print_next_steps() as a shared helper"
+    )
+    # Both modes must call it.
+    install_user_block = content.split("install_user()", 1)[1].split("install_system()", 1)[0]
+    install_system_block = content.split("install_system()", 1)[1].split("uninstall_user()", 1)[0]
+    assert "print_next_steps user" in install_user_block, (
+        "install_user() must invoke print_next_steps with 'user' scope"
+    )
+    assert "print_next_steps system" in install_system_block, (
+        "install_system() must invoke print_next_steps with 'system' scope"
+    )
+
+
+def test_install_sh_hint_distinguishes_kismet_install_paths():
+    """The hint must distinguish three Kismet-install scenarios for
+    operators: the supported-distro apt path, the other-distro
+    --skip-install path (now a working universal-Linux flow), and
+    already-have-Kismet. Without this distinction operators on Parrot
+    / Mint / Devuan never discover that --skip-install is now their
+    path."""
+    content = INSTALL_SH.read_text()
+    next_steps_block = content.split("print_next_steps()", 1)[1].split("# --- modes", 1)[0]
+    # Supported-apt-distro: full bootstrap. Use Debian as a sentinel
+    # since the matrix lists it explicitly; if a future refactor
+    # changes the list of distro names this assertion needs updating.
+    assert "Debian" in next_steps_block and "Ubuntu" in next_steps_block
+    # Other-distro path mentions --skip-install explicitly so it's
+    # discoverable.
+    assert "--skip-install" in next_steps_block
+    # Upstream packaging URL is the pointer for non-apt-matrix distros.
+    assert "kismetwireless.net/packages" in next_steps_block
+
+
+def test_install_sh_hint_references_runbook_and_smoke_docs():
+    """The hint must end by pointing at docs/DEPLOYMENT.md (full
+    runbook + troubleshooting) and docs/SMOKE.md (post-install
+    verification). The hint block stays a getting-started block, not
+    a manual; the docs hold the long form."""
+    content = INSTALL_SH.read_text()
+    next_steps_block = content.split("print_next_steps()", 1)[1].split("# --- modes", 1)[0]
+    assert "docs/DEPLOYMENT.md" in next_steps_block, (
+        "hint must point at docs/DEPLOYMENT.md for the full runbook"
+    )
+    assert "docs/SMOKE.md" in next_steps_block, (
+        "hint must point at docs/SMOKE.md for post-install verification"
+    )
+
+
+def test_install_sh_hint_adapts_to_install_scope():
+    """The hint adapts to --user vs --system so operators don't see a
+    step that doesn't apply: --system gets `sudo systemctl enable
+    --now lynceus.service`; --user gets `lynceus-quickstart`. Both
+    are conditional on the scope argument inside print_next_steps()."""
+    content = INSTALL_SH.read_text()
+    next_steps_block = content.split("print_next_steps()", 1)[1].split("# --- modes", 1)[0]
+    # System-scope step is gated by an `if`/`==`/`system` check on scope.
+    assert "scope" in next_steps_block
+    # The two scope-specific commands must both appear in the helper
+    # body somewhere -- the gate selects which one prints at runtime.
+    assert "systemctl enable --now lynceus.service lynceus-ui.service" in next_steps_block, (
+        "system-scope branch must offer enable+start of daemon + UI units"
+    )
+    assert "lynceus-quickstart" in next_steps_block, (
+        "user-scope branch must offer lynceus-quickstart for dev/demo"
+    )
+
+
+def test_install_sh_user_dry_run_prints_new_hint_block():
+    """Live dry-run check on the --user path. Asserts the numbered
+    "Next steps" block lands in the actual stdout, not just in the
+    file content."""
+    if sys.platform != "linux":
+        pytest.skip("install.sh is Linux-only; skipping bash-driven dry-run")
+    if shutil.which("bash") is None:
+        pytest.skip("bash not on PATH")
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        sandbox_home = Path(td) / "home"
+        sandbox_home.mkdir()
+        env = {"HOME": str(sandbox_home)}
+        if "VIRTUAL_ENV" in os.environ:
+            env["VIRTUAL_ENV"] = ""
+        r = _run(["--user", "--dry-run"], env_extra=env)
+        assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+        out = r.stdout + r.stderr
+        assert "Next steps:" in out
+        # Step 1 (Install Kismet) surfaces both supported + other-distro
+        # paths so the operator sees --skip-install as an option.
+        assert "sudo lynceus-bootstrap-kismet" in out
+        assert "--skip-install" in out
+        # User scope -> step 5 is lynceus-quickstart, NOT systemctl.
+        assert "lynceus-quickstart" in out
+        # Docs pointer surfaces.
+        assert "docs/DEPLOYMENT.md" in out
+
+
+def test_install_sh_system_dry_run_prints_new_hint_block():
+    """Live dry-run check on the --system path. Mirrors the user-scope
+    test but asserts the system-scope branch (systemctl enable
+    --now lynceus.service) and that lynceus-quickstart is NOT
+    offered as a "run" step (it's a dev/demo command, scope-inappropriate
+    for a daemon-managed system install)."""
+    if sys.platform != "linux":
+        pytest.skip("install.sh is Linux-only; skipping bash-driven dry-run")
+    if shutil.which("systemctl") is None:
+        pytest.skip("systemctl not on PATH; --system pre-flight would fail")
+    r = _run(["--system", "--dry-run"])
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "Next steps:" in out
+    assert "sudo lynceus-bootstrap-kismet" in out
+    assert "--skip-install" in out
+    # System-scope branch fires: enable + start of daemon + UI units.
+    assert "systemctl enable --now lynceus.service lynceus-ui.service" in out
+    # lynceus-quickstart is a --user dev/demo helper; it must NOT
+    # appear as a Next-Step on the --system path.
+    assert "lynceus-quickstart" not in out
+    # Docs pointer surfaces.
+    assert "docs/DEPLOYMENT.md" in out
