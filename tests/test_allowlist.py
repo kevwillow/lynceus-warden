@@ -477,6 +477,7 @@ def _ble_obs(
     *,
     uuids: tuple[str, ...] = (),
     manuf_id: str | None = None,
+    local_name: str | None = None,
 ) -> DeviceObservation:
     return DeviceObservation(
         mac=mac,
@@ -489,6 +490,7 @@ def _ble_obs(
         is_randomized=False,
         ble_service_uuids=uuids,
         ble_manufacturer_id=manuf_id,
+        ble_local_name=local_name,
     )
 
 
@@ -578,6 +580,44 @@ def test_is_allowed_drone_id_prefix_no_match_when_field_none():
         entries=[AllowlistEntry(pattern="ABC1234", pattern_type="drone_id_prefix")]
     )
     assert al.is_allowed(_remote_id_obs(None)) is None
+
+
+def test_is_allowed_ble_local_name_match():
+    """A 'Penguin' allowlist entry suppresses an alert that would
+    otherwise fire via the watchlist_ble_local_name delegation."""
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="Penguin", pattern_type="ble_local_name")]
+    )
+    matched = al.is_allowed(_ble_obs(local_name="Penguin"))
+    assert matched is not None
+    assert matched.pattern == "Penguin"
+
+
+def test_is_allowed_ble_local_name_no_match_when_field_none():
+    """A non-BLE observation (or a BLE record without a Local Name
+    in the advertisement) carries None and short-circuits the
+    allowlist branch."""
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="Penguin", pattern_type="ble_local_name")]
+    )
+    assert al.is_allowed(_ble_obs(local_name=None)) is None
+
+
+def test_is_allowed_ble_local_name_case_sensitive():
+    """BLE local names are case-sensitive per spec; an allowlist
+    entry 'FLOCK' does NOT suppress a 'Flock' observation."""
+    al = Allowlist(
+        entries=[AllowlistEntry(pattern="FLOCK", pattern_type="ble_local_name")]
+    )
+    assert al.is_allowed(_ble_obs(local_name="Flock")) is None
+    assert al.is_allowed(_ble_obs(local_name="FLOCK")) is not None
+
+
+def test_ble_local_name_entry_normalizes_empty_rejection():
+    """An empty allowlist pattern is rejected at construction time
+    (mirrors the watchlist canonicalizer's reject-empty contract)."""
+    with pytest.raises(ValidationError):
+        AllowlistEntry(pattern="", pattern_type="ble_local_name")
 
 
 # --------------------------- load_allowlist_with_source ----------------------

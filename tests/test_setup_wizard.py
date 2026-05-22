@@ -3715,6 +3715,71 @@ def test_delegation_rules_contains_two_new_rc5_entries():
     )
 
 
+def test_delegation_rules_contains_v061_ble_local_name_entry():
+    """Source-of-truth check: DELEGATION_RULES carries the v0.6.1
+    ble_local_name entry with the right (rule_type, pattern_type)
+    pair. Drift between this tuple, the rules.py RuleType Literal,
+    db.py _WATCHLIST_PATTERN_TYPES, or migration 020's CHECK
+    constraint surfaces here."""
+    by_name = {n: (rt, pt) for (n, rt, pt, _l, _d) in wiz.DELEGATION_RULES}
+    assert by_name["argus_ble_local_name"] == (
+        "watchlist_ble_local_name",
+        "ble_local_name",
+    )
+
+
+def test_enable_alerting_only_ble_local_name_picks_writes_one_rule(
+    monkeypatch, tmp_path
+):
+    """v0.6.1 user journey: operator with a fresh-bootstrap DB
+    (Flock Safety BLE names land via the bundled CSV's 3 v1.4.0
+    ble_local_name rows) picks ONLY the new type. Active
+    rules.yaml contains exactly argus_ble_local_name."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 5,
+            "oui": 2,
+            "ssid": 1,
+            "ble_uuid": 3,
+            "ble_manufacturer_id": 3969,
+            "drone_id_prefix": 427,
+            "ble_local_name": 3,
+        },
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(
+                gate="y",
+                # Eight type prompts in DELEGATION_RULES order
+                # (mac_range, mac, oui, ssid, ble_uuid,
+                # ble_manufacturer_id, drone_id_prefix, ble_local_name).
+                # Only the last is enabled.
+                type_answers=["n", "n", "n", "n", "n", "n", "n", "y"],
+            )
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    rule_names = {rule["name"] for rule in rules_data["rules"]}
+    assert rule_names == {"argus_ble_local_name"}
+    rule_types = {rule["rule_type"] for rule in rules_data["rules"]}
+    assert rule_types == {"watchlist_ble_local_name"}
+    # Severity placeholder remains the documented "ignored" low —
+    # the runtime severity sources from the matched DB row.
+    assert rules_data["rules"][0]["severity"] == "low"
+    assert rules_data["rules"][0]["patterns"] == []
+
+
 def test_enable_alerting_zero_count_type_skips_prompt(monkeypatch, tmp_path):
     """Touch 6 case: a pattern_type with zero rows in the DB has its
     per-type prompt skipped entirely. The remaining types' prompts are
