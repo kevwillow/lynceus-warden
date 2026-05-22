@@ -15,6 +15,21 @@ cycle (migration 019 + the case-insensitive substring matcher in
 defer-pending-smoke to admit. Numbers below reflect the post-admit
 counts.
 
+Refresh note (2026-05-21, v0.6.1): `ble_local_name` was admitted in
+this cycle (migration 020 + ``patterns._normalize_ble_local_name``
++ the watchlist_ble_local_name rule_type), moving 3 v1.4.0 rows
+plus the 20 v1.4.1 rows due to land via the coordinated Argus
+v1.4.2 release from drop-entirely to admit. The v1.4.0 verdict
+(drop-entirely on yield grounds — 3 rows, below the
+``NEGLIGIBLE_YIELD_THRESHOLD=5``) was correct at the prior yield;
+v1.4.1's 6.7× jump (3 → 20) closes the residual with admit.
+Numbers in the table below reflect the snapshot at audit time
+(schema_version 21, 3 rows) since the audit was generated before
+the v1.4.1 ingest; the verdict column has been updated to admit
+to reflect the resolution. The Argus side IDENTIFIER_TYPE_TO_
+PATTERN_TYPE promotion for ``ble_local_name`` ships in v1.4.2
+alongside this Lynceus change.
+
 ## Per-type breakdown
 
 | Type | Argus rows | Sample values | Surface verification | Recommendation |
@@ -33,7 +48,7 @@ counts.
 | `frequency_band` | 4 | `GSM900`, `DCS1800`, `GSM850`, `PCS1900` | no-observation-surface | drop-entirely |
 | `rf_protocol_constant` | 4 | `ZC_root_seq=600,147`, `gold_seed=0x12345678 Nc=1600 len=1200`, `CRC_INIT=0x3692 CRC_POLY=0x11021`, `DroneID_packet_len=91 bytes (DRONEID_MAX_LEN), wire-read 177 bytes (raw+overhead)` | no-observation-surface | drop-entirely |
 | `ble_characteristic` | 3 | `9b51c418-d3d6-4dab-95a6-a22f3ca01b6e`, `628913a6-8701-40ff-a3ce-8f453ff0818d`, `0000200b-0000-1000-1b7f-430ea194e6cf` | plausible-needs-smoke | drop-entirely |
-| `ble_local_name` | 3 | `Penguin`, `Flock`, `FS Ext Battery` | verified-lynceus | drop-entirely |
+| `ble_local_name` | 3 | `Penguin`, `Flock`, `FS Ext Battery` | verified-lynceus | admit (v0.6.1: migration 020, coordinated with Argus v1.4.2) |
 | `gpt_partition_uuid` | 3 | `9bc13cdc-82e0-88d5-c693-103191f3d2a9`, `8902fc35-5b77-4647-e84b-8da793dff88c`, `6eb751a5-1ae1-1088-0027-860b563d12e5` | no-observation-surface | drop-entirely |
 | `operator_profile` | 3 | `builtin-lowes`, `builtin-home-depot`, `builtin-simon-property-group` | no-observation-surface | drop-entirely |
 | `x509_cert_sha256_prefix` | 3 | `e7d558a043b8e9eb`, `28c69882dead59ad`, `57158eaf1814d78f` | no-observation-surface | drop-entirely |
@@ -67,7 +82,7 @@ Detailed surface rationale for each residual type. The table above shows the cla
 - **`frequency_band`** (no-observation-surface): Cellular band label (``GSM900``, ``DCS1800``) — Kismet does not emit a band-label field; closest is per-device frequency in MHz, which carries different semantics.
 - **`rf_protocol_constant`** (no-observation-surface): PHY-layer protocol constants (Zadoff-Chu seeds, gold polynomials, CRC init/poly) — static spec values, not per-device emissions.
 - **`ble_characteristic`** (plausible-needs-smoke): BLE GATT characteristic UUID. Kismet does not enumerate GATT services in its default device emission (only advertised service UUIDs); confirming requires a live capture against a connected device.
-- **`ble_local_name`** (verified-lynceus): Kismet emits the BLE friendly name at ``kismet.device.base.name`` — already harvested in ``src/lynceus/kismet.py`` (``_BLE_NAME_FIELD``) when ``capture.ble_friendly_names`` is enabled.
+- **`ble_local_name`** (verified-lynceus, admitted v0.6.1): Kismet emits the BLE friendly name at ``kismet.device.base.name`` — already harvested in ``src/lynceus/kismet.py`` (``_BLE_NAME_FIELD``) when ``capture.ble_friendly_names`` is enabled. Lynceus v0.6.1 admits the pattern_type via migration 020 + ``patterns._normalize_ble_local_name`` + the ``watchlist_ble_local_name`` rule_type. The observation field was renamed ``obs.ble_name → obs.ble_local_name`` for symmetry with the pattern_type. Coordinated with Argus v1.4.2's ``IDENTIFIER_TYPE_TO_PATTERN_TYPE`` promotion; the consumer (Lynceus) admits first so the next Argus emission lands without dropping at the IDENTIFIER_TYPE_MAP gate. v1.4.0 yield was 3 rows (Flock Safety BLE device names: ``Penguin``, ``Flock``, ``FS Ext Battery``); v1.4.1 yield jumps 6.7× to 20 rows (adds ``FLOCK``, ``Flock-*`` shape variants).
 - **`gpt_partition_uuid`** (no-observation-surface): GPT partition UUID from firmware image inspection — static metadata, never broadcast.
 - **`operator_profile`** (no-observation-surface): Argus-internal operator profile (``builtin-lowes``, ``builtin-home-depot``) — taxonomy metadata.
 - **`x509_cert_sha256_prefix`** (no-observation-surface): X.509 certificate hash prefix — TLS handshake artifact, not in Kismet's device emission surface.
@@ -85,10 +100,10 @@ Detailed surface rationale for each residual type. The table above shows the cla
 
 ## Summary
 
-- **admit**: 1 type(s), 5 row(s)  *(rc6: ssid_pattern admitted via migration 019)*
+- **admit**: 2 type(s), 8 row(s)  *(rc6: ssid_pattern via migration 019; v0.6.1: ble_local_name via migration 020, coordinated with Argus v1.4.2)*
 - **admit-via-normalization**: 0 type(s), 0 row(s)
 - **defer-pending-smoke**: 1 type(s), 16 row(s)
-- **drop-entirely**: 27 type(s), 201 row(s)
+- **drop-entirely**: 26 type(s), 198 row(s)
 - **needs-classification**: 0 type(s), 0 row(s)
 
 ## Methodology
