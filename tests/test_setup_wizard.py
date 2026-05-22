@@ -3342,6 +3342,7 @@ def test_count_watchlist_by_pattern_type_missing_db_returns_zeros(tmp_path):
         "ble_uuid": 0,
         "ble_manufacturer_id": 0,
         "drone_id_prefix": 0,
+        "ble_local_name": 0,
     }
 
 
@@ -3611,12 +3612,13 @@ def test_enable_alerting_all_types_writes_five_active_rules(monkeypatch, tmp_pat
     assert data["rules_path"] == str(rules_file)
 
 
-def test_enable_alerting_all_seven_types_writes_seven_active_rules(
+def test_enable_alerting_all_eight_types_writes_eight_active_rules(
     monkeypatch, tmp_path
 ):
-    """rc5 case: all 7 delegation pattern_types present in the DB,
-    operator answers Y at every prompt → rules.yaml carries all 7
-    delegation entries active. Names verified against DELEGATION_RULES."""
+    """v0.6.1 case: all 8 delegation pattern_types present in the DB
+    (rc5 set + ble_local_name from mig-020), operator answers Y at
+    every prompt → rules.yaml carries all 8 delegation entries
+    active. Names verified against DELEGATION_RULES."""
     target = _stub_path_resolution(monkeypatch, tmp_path)
     config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
     _stub_bundled_import(monkeypatch)
@@ -3632,6 +3634,7 @@ def test_enable_alerting_all_seven_types_writes_seven_active_rules(
             "ble_uuid": 3,
             "ble_manufacturer_id": 3969,
             "drone_id_prefix": 427,
+            "ble_local_name": 20,
         },
     )
     rc = wiz.run_wizard(
@@ -3639,7 +3642,7 @@ def test_enable_alerting_all_seven_types_writes_seven_active_rules(
         input_fn=_input_seq(
             _alerting_full_inputs(
                 gate="y",
-                type_answers=["y", "y", "y", "y", "y", "y", "y"],
+                type_answers=["y", "y", "y", "y", "y", "y", "y", "y"],
             )
         ),
         getpass_fn=_getpass_seq(["tok"]),
@@ -3649,7 +3652,7 @@ def test_enable_alerting_all_seven_types_writes_seven_active_rules(
     rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
     rule_types = {rule["rule_type"] for rule in rules_data["rules"]}
     assert rule_types == {rt for (_n, rt, _pt, _l, _d) in wiz.DELEGATION_RULES}
-    assert len(rules_data["rules"]) == 7
+    assert len(rules_data["rules"]) == 8
     data = yaml.safe_load(target.read_text(encoding="utf-8"))
     assert data["rules_path"] == str(rules_file)
 

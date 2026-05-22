@@ -1875,6 +1875,7 @@ class Database:
         "mac_range",
         "ble_manufacturer_id",
         "drone_id_prefix",
+        "ble_local_name",
     )
     _METADATA_OPTIONAL_FIELDS = (
         "confidence",

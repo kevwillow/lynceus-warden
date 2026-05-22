@@ -1125,6 +1125,13 @@ DELEGATION_RULES: tuple[tuple[str, str, str, str, str], ...] = (
         "drone Remote-ID prefixes",
         "Argus drone Remote-ID prefix watchlist (ANSI/CTA-2063-A)",
     ),
+    (
+        "argus_ble_local_name",
+        "watchlist_ble_local_name",
+        "ble_local_name",
+        "BLE local names",
+        "Argus BLE local-name watchlist (Flock Safety device names)",
+    ),
 )
 
 
