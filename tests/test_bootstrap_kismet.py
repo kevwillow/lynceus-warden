@@ -314,6 +314,15 @@ def test_main_refuses_non_root(monkeypatch, capsys):
 
 
 def test_main_unsupported_distro_exits_zero(monkeypatch, capsys, tmp_path):
+    """Default-path behaviour preserved: unsupported distro WITHOUT
+    --skip-install gets the manual-install pointer + exit 0.
+
+    Contract clarification (Touch A): the distro gate now guards ONLY
+    the apt-install path. With --skip-install the apt matrix doesn't
+    apply and the flow continues -- see
+    test_main_unsupported_distro_with_skip_install_proceeds for that
+    branch.
+    """
     monkeypatch.setattr(bk, "_is_root", lambda: True)
     monkeypatch.setattr("sys.platform", "linux")
     # Don't accidentally touch the real host's OS at all.
@@ -321,7 +330,7 @@ def test_main_unsupported_distro_exits_zero(monkeypatch, capsys, tmp_path):
     code = bk.run(_args())
     assert code == 0
     captured = capsys.readouterr()
-    assert "not supported" in captured.out
+    assert "not in the Kismet-apt matrix" in captured.out
     assert "kismetwireless.net/packages" in captured.out
 
 
@@ -338,11 +347,14 @@ def test_main_dry_run_does_not_invoke_apt(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(bk, "_group_exists", lambda g: True)
     monkeypatch.setattr(bk, "_user_in_group", lambda u, g: False)
 
-    # Redirect kismet_site.conf path into tmp so we don't try to
-    # write /etc/kismet (which would be denied anyway).
-    monkeypatch.setattr(
-        bk, "KISMET_SITE_CONF_PATH", tmp_path / "kismet_site.conf"
-    )
+    # Redirect the site-conf candidate set into tmp so resolve picks
+    # up a writable directory instead of trying /etc/kismet (denied
+    # anyway). Touch A replaced the single KISMET_SITE_CONF_PATH
+    # constant with a candidate-tuple KISMET_SITE_CONF_DIRS to support
+    # both apt and from-source layouts.
+    kismet_dir = tmp_path / "kismet"
+    kismet_dir.mkdir()
+    monkeypatch.setattr(bk, "KISMET_SITE_CONF_DIRS", (kismet_dir,))
 
     # No subprocess should actually run on the dry-run path: assert by
     # monkeypatching subprocess.run to a sentinel that raises if called.
@@ -361,14 +373,16 @@ def test_main_dry_run_does_not_invoke_apt(monkeypatch, tmp_path, capsys):
     assert code == 0
     assert sentinel_called == []
     # Also: the kismet_site.conf file was not created.
-    assert not (tmp_path / "kismet_site.conf").exists()
+    assert not (kismet_dir / "kismet_site.conf").exists()
 
     captured = capsys.readouterr()
     assert "DRY-RUN" in captured.out
 
 
 def test_main_missing_kismet_group_errors(monkeypatch, tmp_path, capsys):
-    """If the .deb hasn't created the kismet group, we surface, don't paper over."""
+    """If the .deb hasn't created the kismet group on a supported
+    distro, we surface, don't paper over.
+    """
     monkeypatch.setattr(bk, "_is_root", lambda: True)
     monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setattr(bk, "detect_distro", lambda *a, **kw: ("kali", "kali"))
@@ -378,11 +392,310 @@ def test_main_missing_kismet_group_errors(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(bk, "detect_bluetooth_interfaces", lambda *a, **kw: [])
     monkeypatch.setattr(bk, "_real_operator_user", lambda: "alice")
     monkeypatch.setattr(bk, "_group_exists", lambda g: False)
+    # Touch A: also block site-conf path-detection so it doesn't try
+    # to read /etc/kismet on the host running the test.
+    monkeypatch.setattr(bk, "KISMET_SITE_CONF_DIRS", (tmp_path / "absent",))
 
     code = bk.run(_args(skip_install=True, yes=True))
     assert code == 1
     captured = capsys.readouterr()
     assert "kismet" in captured.err and "group" in captured.err
+    # Supported-distro phrasing -- mentions dpkg / postinst.
+    assert "postinst" in captured.err or "dpkg" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Touch A: universal --skip-install + adaptive behaviour matrix
+# ---------------------------------------------------------------------------
+#
+# The v1 distro gate fired BEFORE --skip-install was checked, so the
+# flag's contract ("apt is my problem; do the rest") was a no-op on any
+# distro outside Debian/Ubuntu/Kali. The cases below pin the new
+# behaviour so a future refactor doesn't quietly regress it.
+
+
+def _stub_run_environment(monkeypatch, tmp_path, *, kismet_on_path: bool):
+    """Common run() scaffolding: root, linux, no real subprocess, no
+    real interface enumeration, a controlled SUDO_USER already in the
+    kismet group (so the usermod step is a no-op). Returns the tmp
+    kismet config dir (which the caller may create or leave absent
+    depending on which branch they're exercising).
+    """
+    monkeypatch.setattr(bk, "_is_root", lambda: True)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(bk, "_kismet_installed", lambda: kismet_on_path)
+    monkeypatch.setattr(bk, "detect_wifi_monitor_capable", lambda: [])
+    monkeypatch.setattr(bk, "detect_bluetooth_interfaces", lambda *a, **kw: [])
+    monkeypatch.setattr(bk, "_real_operator_user", lambda: "alice")
+    monkeypatch.setattr(bk, "_group_exists", lambda g: True)
+    # Already in the group -- so usermod is skipped and subprocess.run
+    # never fires from this code path. Tests exercising the missing-
+    # group branch override this.
+    monkeypatch.setattr(bk, "_user_in_group", lambda u, g: True)
+    # Block any accidental subprocess call -- the matrix tests below
+    # never want apt or usermod to actually fire.
+    def _refuse(*args, **kwargs):
+        raise AssertionError(f"subprocess.run unexpectedly called: {args!r}")
+    monkeypatch.setattr(bk.subprocess, "run", _refuse)
+    kismet_dir = tmp_path / "kismet"
+    return kismet_dir
+
+
+def test_main_unsupported_distro_with_skip_install_proceeds(
+    monkeypatch, tmp_path, capsys
+):
+    """Unsupported distro + --skip-install + Kismet on PATH: skip the
+    apt path, write kismet_site.conf if interfaces are selected, exit 0.
+    """
+    kismet_dir = _stub_run_environment(monkeypatch, tmp_path, kismet_on_path=True)
+    kismet_dir.mkdir()
+    monkeypatch.setattr(bk, "KISMET_SITE_CONF_DIRS", (kismet_dir,))
+    monkeypatch.setattr(bk, "detect_distro", lambda *a, **kw: (None, None))
+
+    code = bk.run(_args(skip_install=True, yes=True))
+    assert code == 0
+    out = capsys.readouterr().out
+    # Up-front banner about the unsupported-but-skipping branch.
+    assert "Unsupported distro" in out
+    assert "--skip-install given" in out
+    # Closing pointer's adaptive notes block fires.
+    assert "apt-install path was skipped" in out
+    # No "not in the Kismet-apt matrix" pointer (that's the default-path
+    # exit message, suppressed when --skip-install is present).
+    assert "not in the Kismet-apt matrix" not in out
+
+
+def test_main_unsupported_distro_skip_install_warns_when_kismet_missing(
+    monkeypatch, tmp_path, capsys
+):
+    """Unsupported distro + --skip-install + Kismet NOT on PATH: still
+    exit 0, but the closing pointer flags missing-binary so the
+    operator knows the obvious next move.
+    """
+    kismet_dir = _stub_run_environment(monkeypatch, tmp_path, kismet_on_path=False)
+    kismet_dir.mkdir()
+    monkeypatch.setattr(bk, "KISMET_SITE_CONF_DIRS", (kismet_dir,))
+    monkeypatch.setattr(bk, "detect_distro", lambda *a, **kw: (None, None))
+
+    code = bk.run(_args(skip_install=True, yes=True))
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Kismet was not installed by this script" in out
+    assert "kismetwireless.net/packages" in out
+
+
+def test_main_supported_distro_skip_install_proceeds(
+    monkeypatch, tmp_path, capsys
+):
+    """Supported distro + --skip-install: existing behaviour preserved
+    (skip apt, run config + group steps). This was already exercised by
+    test_main_missing_kismet_group_errors but exit-0 path was not.
+    """
+    kismet_dir = _stub_run_environment(monkeypatch, tmp_path, kismet_on_path=True)
+    kismet_dir.mkdir()
+    monkeypatch.setattr(bk, "KISMET_SITE_CONF_DIRS", (kismet_dir,))
+    monkeypatch.setattr(bk, "detect_distro", lambda *a, **kw: ("kali", "kali"))
+
+    code = bk.run(_args(skip_install=True, yes=True))
+    assert code == 0
+    out = capsys.readouterr().out
+    # Supported-distro banner fires; the unsupported-skip note does not.
+    assert "Detected distro: kali" in out
+    assert "apt-install path was skipped" not in out
+
+
+def test_main_no_network_implies_skip_install(monkeypatch, tmp_path, capsys):
+    """--no-network is documented as implying --skip-install. Confirm
+    the unified handling: no apt is attempted, and the unsupported-
+    distro + --no-network combination behaves like --skip-install.
+    """
+    kismet_dir = _stub_run_environment(monkeypatch, tmp_path, kismet_on_path=True)
+    kismet_dir.mkdir()
+    monkeypatch.setattr(bk, "KISMET_SITE_CONF_DIRS", (kismet_dir,))
+    monkeypatch.setattr(bk, "detect_distro", lambda *a, **kw: (None, None))
+
+    code = bk.run(_args(skip_install=False, no_network=True, yes=True))
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "--no-network implies --skip-install" in out
+    # The unsupported-distro + skip note fires (because --no-network
+    # implied --skip-install upstream).
+    assert "Unsupported distro" in out
+
+
+def test_main_unsupported_distro_no_skip_install_unchanged(
+    monkeypatch, tmp_path, capsys
+):
+    """Default-path: unsupported distro and no --skip-install exits
+    early with the pointer. Pinned so a future refactor doesn't
+    quietly turn the default path into "always try to configure".
+    """
+    monkeypatch.setattr(bk, "_is_root", lambda: True)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(bk, "detect_distro", lambda *a, **kw: (None, None))
+    # If we got past the gate this would explode -- the matrix tests
+    # mock these out; this test does NOT, so an early-exit is the only
+    # way it returns 0.
+    code = bk.run(_args())
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "not in the Kismet-apt matrix" in out
+
+
+# ---------------------------------------------------------------------------
+# resolve_site_conf_path: auto-detection between apt and from-source layouts
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_site_conf_path_prefers_etc_kismet(tmp_path):
+    etc = tmp_path / "etc"
+    usr_local = tmp_path / "usr_local"
+    etc.mkdir()
+    usr_local.mkdir()
+    # Both exist; the apt-convention dir wins because it's first in
+    # the candidate tuple.
+    out = bk.resolve_site_conf_path((etc, usr_local))
+    assert out == etc / "kismet_site.conf"
+
+
+def test_resolve_site_conf_path_falls_back_to_usr_local(tmp_path):
+    """From-source build default --prefix=/usr/local lays Kismet's
+    config under /usr/local/etc/kismet/. If only that dir exists, we
+    use it -- no need for operator hand-editing on from-source hosts.
+    """
+    etc = tmp_path / "etc"  # NOT created
+    usr_local = tmp_path / "usr_local"
+    usr_local.mkdir()
+    out = bk.resolve_site_conf_path((etc, usr_local))
+    assert out == usr_local / "kismet_site.conf"
+
+
+def test_resolve_site_conf_path_returns_none_when_neither_exists(tmp_path):
+    """Operator is likely mid-install. The caller surfaces a warning
+    rather than guessing a path the operator would then have to fix.
+    """
+    out = bk.resolve_site_conf_path(
+        (tmp_path / "etc", tmp_path / "usr_local")
+    )
+    assert out is None
+
+
+def test_main_warns_when_site_conf_dir_missing(monkeypatch, tmp_path, capsys):
+    """Interfaces selected but neither candidate dir exists: warn loudly
+    naming both candidates, do NOT write anywhere, do NOT exit non-zero.
+    """
+    monkeypatch.setattr(bk, "_is_root", lambda: True)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(bk, "detect_distro", lambda *a, **kw: ("kali", "kali"))
+    monkeypatch.setattr(bk, "_kismet_installed", lambda: True)
+    # Interface selection MUST yield at least one entry so we exercise
+    # the "would-write-but-no-dir" branch (an empty selection skips the
+    # patcher entirely, not what we're testing).
+    monkeypatch.setattr(bk, "detect_wifi_monitor_capable", lambda: ["wlan0"])
+    monkeypatch.setattr(bk, "detect_bluetooth_interfaces", lambda *a, **kw: [])
+    monkeypatch.setattr(bk, "_real_operator_user", lambda: "alice")
+    monkeypatch.setattr(bk, "_group_exists", lambda g: True)
+    # Already in group -- usermod is skipped so subprocess refuser stays clean.
+    monkeypatch.setattr(bk, "_user_in_group", lambda u, g: True)
+    # Both candidates point at tmp paths that don't exist.
+    absent_etc = tmp_path / "absent_etc"
+    absent_usr_local = tmp_path / "absent_usr_local"
+    monkeypatch.setattr(
+        bk, "KISMET_SITE_CONF_DIRS", (absent_etc, absent_usr_local)
+    )
+    # Refuse subprocess so we'd notice if anything tried to apt or usermod.
+    def _refuse(*args, **kwargs):
+        raise AssertionError(f"subprocess.run unexpectedly called: {args!r}")
+    monkeypatch.setattr(bk.subprocess, "run", _refuse)
+
+    code = bk.run(_args(skip_install=True, yes=True))
+    assert code == 0
+    out = capsys.readouterr().out
+    # The in-line warning at the patch site fires.
+    assert "no Kismet config directory found" in out
+    assert str(absent_etc) in out
+    assert str(absent_usr_local) in out
+    # The closing-pointer adaptive note also surfaces.
+    assert "No kismet_site.conf was written" in out
+    # Neither candidate was created.
+    assert not absent_etc.exists()
+    assert not absent_usr_local.exists()
+
+
+def test_main_uses_usr_local_kismet_when_only_it_exists(
+    monkeypatch, tmp_path, capsys
+):
+    """From-source build path-detection end-to-end: only
+    /usr/local/etc/kismet/ exists; patcher writes there; closing
+    pointer surfaces the non-default location."""
+    monkeypatch.setattr(bk, "_is_root", lambda: True)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(bk, "detect_distro", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(bk, "_kismet_installed", lambda: True)
+    monkeypatch.setattr(bk, "detect_wifi_monitor_capable", lambda: ["wlan0"])
+    monkeypatch.setattr(bk, "detect_bluetooth_interfaces", lambda *a, **kw: [])
+    monkeypatch.setattr(bk, "_real_operator_user", lambda: "alice")
+    monkeypatch.setattr(bk, "_group_exists", lambda g: True)
+    # Already in group -- usermod skipped so the subprocess refuser stays clean.
+    monkeypatch.setattr(bk, "_user_in_group", lambda u, g: True)
+    def _refuse(*args, **kwargs):
+        raise AssertionError(f"subprocess.run unexpectedly called: {args!r}")
+    monkeypatch.setattr(bk.subprocess, "run", _refuse)
+    # Order matches the production tuple: etc first, usr_local second.
+    absent_etc = tmp_path / "absent_etc"
+    usr_local = tmp_path / "usr_local_kismet"
+    usr_local.mkdir()
+    monkeypatch.setattr(
+        bk, "KISMET_SITE_CONF_DIRS", (absent_etc, usr_local)
+    )
+
+    code = bk.run(_args(skip_install=True, yes=True))
+    assert code == 0
+    # Site-conf was written to the fallback dir, not the apt dir.
+    written = usr_local / "kismet_site.conf"
+    assert written.exists()
+    assert "source=wlan0:type=linuxwifi" in written.read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    # Adaptive note surfaces the non-default path.
+    assert "non-default" in out
+    assert str(written) in out
+
+
+# ---------------------------------------------------------------------------
+# Touch B: Raspberry Pi OS regression-protection
+# ---------------------------------------------------------------------------
+#
+# Raspberry Pi OS Bookworm (the project's primary deployment target as
+# of this writing) reports ID=debian + VERSION_CODENAME=bookworm --
+# the Bullseye-era ID=raspbian was retired when the underlying Debian
+# tracked Bookworm (verified against the raspberrypi/bookworm-feedback
+# issue tracker). This means RPi OS Bookworm is automatically covered
+# by the existing SUPPORTED_DEBIAN_CODENAMES set with no code change
+# needed. We pin the fingerprint here so a future change to the
+# detection logic that doesn't recognise ID=debian + bookworm would
+# fail this test and surface the regression before it ships.
+
+
+RPI_OS_BOOKWORM_OS_RELEASE = """\
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+VERSION_CODENAME=bookworm
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+"""
+
+
+def test_detect_distro_rpi_os_bookworm_supported(tmp_path):
+    """Raspberry Pi OS Bookworm's os-release falls through to the
+    Debian branch (ID=debian + VERSION_CODENAME=bookworm), so RPi OS
+    is supported with no additional code in the distro matrix.
+    """
+    p = _write_os_release(tmp_path, RPI_OS_BOOKWORM_OS_RELEASE)
+    assert bk.detect_distro(p) == ("debian", "bookworm")
 
 
 # ---------------------------------------------------------------------------

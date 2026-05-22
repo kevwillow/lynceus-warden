@@ -280,7 +280,7 @@ def _apt_source_configured() -> bool:
 
 
 def resolve_site_conf_path(
-    dirs: tuple[Path, ...] = KISMET_SITE_CONF_DIRS,
+    dirs: tuple[Path, ...] | None = None,
 ) -> Path | None:
     """Return ``<dir>/kismet_site.conf`` for the first existing dir in
     ``dirs``, or ``None`` if none exist.
@@ -289,8 +289,13 @@ def resolve_site_conf_path(
     and the from-source-build default (``/usr/local/etc/kismet/``).
     When neither dir exists Kismet is not installed in a layout we
     recognise; the caller warns rather than guessing a path.
+
+    When ``dirs`` is None, the candidate set is read from
+    ``KISMET_SITE_CONF_DIRS`` at call time -- intentionally a late
+    lookup so monkeypatching that module global in tests works.
     """
-    for d in dirs:
+    candidates = dirs if dirs is not None else KISMET_SITE_CONF_DIRS
+    for d in candidates:
         if d.is_dir():
             return d / KISMET_SITE_CONF_FILENAME
     return None
