@@ -2,8 +2,8 @@
 # Each rule is evaluated against every supported device observation. See README
 # for the schema; rule_type is one of watchlist_mac, watchlist_oui,
 # watchlist_ssid, watchlist_mac_range, ble_uuid,
-# watchlist_ble_manufacturer_id, watchlist_drone_id_prefix, or
-# new_non_randomized_device.
+# watchlist_ble_manufacturer_id, watchlist_drone_id_prefix,
+# watchlist_ble_local_name, or new_non_randomized_device.
 rules:
   # Hak5 WiFi Pineapple uses a recognizable OUI prefix — flag it on sight.
   - name: hak5_pineapple_oui
@@ -143,3 +143,19 @@ rules:
   #   severity: low  # ignored — actual severity comes from the matched row
   #   patterns: []
   #   description: "Argus drone Remote-ID prefix watchlist (ANSI/CTA-2063-A)"
+
+  # ---- ble_local_name delegation (v0.6.1+) ----
+  #
+  # Matches the BLE Core Spec §4.5.2 Complete Local Name (Flock
+  # Safety device names: 'Penguin', 'FS Ext Battery', 'Flock',
+  # 'FLOCK', 'Flock-*' variants). Equality at the string level,
+  # case-sensitive per spec. Depends on capture.ble_friendly_names
+  # being enabled in lynceus.yaml; without it the obs.ble_local_name
+  # field stays None and this rule fires zero alerts. Default is
+  # OFF (privacy-conservative posture). Uncomment to enable.
+  #
+  # - name: argus_ble_local_name
+  #   rule_type: watchlist_ble_local_name
+  #   severity: low  # ignored — actual severity comes from the matched row
+  #   patterns: []
+  #   description: "Argus BLE local-name watchlist (Flock Safety device names)"

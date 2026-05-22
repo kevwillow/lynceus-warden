@@ -54,6 +54,7 @@ AllowlistPatternType = Literal[
     "ble_uuid",
     "ble_manufacturer_id",
     "drone_id_prefix",
+    "ble_local_name",
 ]
 
 
@@ -161,6 +162,11 @@ def _entry_matches(entry: AllowlistEntry, obs: DeviceObservation) -> bool:
         return (
             obs.drone_id_prefix is not None
             and obs.drone_id_prefix == entry.pattern
+        )
+    if pt == "ble_local_name":
+        return (
+            obs.ble_local_name is not None
+            and obs.ble_local_name == entry.pattern
         )
     # AllowlistPatternType keeps this branch unreachable; the explicit
     # False keeps mypy / type-checkers happy without raising on data

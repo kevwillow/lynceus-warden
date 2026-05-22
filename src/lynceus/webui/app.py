@@ -256,10 +256,13 @@ _ALLOWLIST_PER_PAGE_DEFAULT: int = 50
 _WATCHLIST_PER_PAGE_ALLOWED: tuple[int, ...] = (25, 50, 100, 200)
 _WATCHLIST_PER_PAGE_DEFAULT: int = 50
 
-# Pattern_type filter options for /watchlist. All 7 currently-
-# supported types -- migration 013 expanded the v0.3 set to admit
-# ble_manufacturer_id and drone_id_prefix, so the dropdown enumerates
-# every type an Argus import or yaml seed can produce.
+# Pattern_type filter options for /watchlist. Migration 013 expanded
+# the v0.3 set to admit ble_manufacturer_id / drone_id_prefix, and
+# mig-020 added ble_local_name; the dropdown enumerates every type an
+# Argus import or yaml seed can produce. (ssid_pattern from mig-019
+# is intentionally absent here — it's matched alongside ssid under
+# the same watchlist_ssid rule_type and treated as one operator-
+# facing surface; tracking the gap is out of scope for this change.)
 _WATCHLIST_PATTERN_TYPES: tuple[str, ...] = (
     "mac",
     "oui",
@@ -268,6 +271,7 @@ _WATCHLIST_PATTERN_TYPES: tuple[str, ...] = (
     "mac_range",
     "ble_manufacturer_id",
     "drone_id_prefix",
+    "ble_local_name",
 )
 
 # Sentinel for the "(uncategorized)" device_category dropdown option
@@ -332,6 +336,7 @@ ALLOWLIST_PATTERN_TYPES: tuple[str, ...] = (
     "ble_uuid",
     "ble_manufacturer_id",
     "drone_id_prefix",
+    "ble_local_name",
 )
 
 
