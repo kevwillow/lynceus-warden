@@ -511,6 +511,91 @@ def test_drone_id_prefix_identifier_type_imports_uppercase_canonical(tmp_path, d
     assert row["pattern"] == "21239ESA2"
 
 
+def test_ble_local_name_identifier_type_imports_case_preserved(tmp_path, db):
+    """Argus emits BLE Core Spec §4.5.2 Complete Local Name strings
+    (Flock Safety device names — 'Penguin', 'Flock', 'FS Ext Battery').
+    Canonical persistent form is the input verbatim (case preserved,
+    outer whitespace stripped) per the SSID pass-through convention."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="bln1",
+                identifier_type="ble_local_name",
+                identifier="Penguin",
+            )
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 1
+    assert report.dropped_unknown_type == 0
+    row = db._conn.execute(
+        "SELECT pattern, pattern_type FROM watchlist"
+    ).fetchone()
+    assert row["pattern_type"] == "ble_local_name"
+    assert row["pattern"] == "Penguin"
+
+
+def test_ble_local_name_distinct_case_emissions_each_admit(tmp_path, db):
+    """Per the v1.4.1 corpus, 'Flock' and 'FLOCK' are distinct Argus
+    rows. Case-preservation in the canonicalizer must not collapse
+    them — a runtime alert keyed off obs.ble_local_name=='FLOCK' must
+    fire against the FLOCK row, not the Flock row."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="bln-mixed",
+                identifier_type="ble_local_name",
+                identifier="Flock",
+            ),
+            _row(
+                argus_record_id="bln-upper",
+                identifier_type="ble_local_name",
+                identifier="FLOCK",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 2
+    patterns = sorted(
+        r["pattern"]
+        for r in db._conn.execute(
+            "SELECT pattern FROM watchlist WHERE pattern_type='ble_local_name'"
+        )
+    )
+    assert patterns == ["FLOCK", "Flock"]
+
+
+def test_ble_local_name_no_longer_falls_to_unknown_type(tmp_path, db):
+    """Regression: pre-v0.6.1 these rows hit dropped_unknown_type.
+    Confirm a representative v1.4.0/v1.4.1 sample (Penguin, Flock,
+    FS Ext Battery) admits via the importer."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="bln-p",
+                identifier_type="ble_local_name",
+                identifier="Penguin",
+            ),
+            _row(
+                argus_record_id="bln-f",
+                identifier_type="ble_local_name",
+                identifier="Flock",
+            ),
+            _row(
+                argus_record_id="bln-fs",
+                identifier_type="ble_local_name",
+                identifier="FS Ext Battery",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.imported_new == 3
+    assert report.dropped_unknown_type == 0
+
+
 def test_ble_manufacturer_id_no_longer_falls_to_unknown_type(tmp_path, db):
     """Regression: pre-rc5 these rows hit dropped_unknown_type. Confirm
     a mixed CSV with both new types lands them as imported, not dropped."""
