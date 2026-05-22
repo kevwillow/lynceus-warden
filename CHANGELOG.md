@@ -6,69 +6,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-22
+
 ### Fixed
 
-- **`lynceus-bootstrap-kismet --skip-install` is now a universal-Linux
-  path.** The v1 distro gate fired before `--skip-install` was checked,
-  so the flag's advertised "I'll install Kismet myself, just do the
-  rest" contract was a no-op on any distro outside Debian/Ubuntu/Kali:
-  Parrot, Mint, Devuan, etc. operators got the unsupported-distro
-  message + exit 0 regardless of the flag, and the interface-config +
-  kismet-group steps never ran. The gate now guards ONLY the apt-
-  install path. Interface auto-detection, `kismet_site.conf` patching,
-  and group membership are distro-agnostic and run on any Linux host
-  that has Kismet present (or that the operator is about to install
-  Kismet on via their distro's own tooling). The default-path
-  behaviour (unsupported distro, no `--skip-install`) is preserved —
-  pointer + exit 0 — so existing flows are unchanged.
-
-### Added
-
-- **`kismet_site.conf` path auto-detection.** Apt installs land
-  Kismet's config under `/etc/kismet/`; from-source builds use the
-  `./configure --prefix=/usr/local` default at
-  `/usr/local/etc/kismet/`. `lynceus-bootstrap-kismet` now probes both
-  candidate directories and writes to whichever exists. If neither
-  exists (Kismet not yet installed), the helper warns clearly naming
-  both candidates and exits 0 instead of writing to a guessed path —
-  the operator can install Kismet, then re-run with `--skip-install`.
-  The closing-hint block surfaces which path was patched when it
-  differs from `/etc/kismet/` so from-source operators aren't
-  surprised.
-- **Raspberry Pi OS regression-protection test.** Pins the RPi OS
-  Bookworm `/etc/os-release` fingerprint (`ID=debian` +
-  `VERSION_CODENAME=bookworm`) to the supported branch of
-  `detect_distro`. RPi OS Bookworm needed no code change — it falls
-  through to the existing Debian branch automatically — but the test
-  catches any future regression to detection that would silently
-  break the project's primary deployment target. The Bullseye-era
-  `ID=raspbian` value was retired upstream in Bookworm; legacy
-  Raspbian operators now have the `--skip-install` universal path
-  above as a working workflow.
-- **Closing-hint adaptation.** The "what now?" block at the end of
-  `lynceus-bootstrap-kismet` now distinguishes between: apt-install
-  skipped on unsupported distro; Kismet not on PATH; no site-config
-  dir found; site-config written to a non-default location. Each
-  surfaces as a one-line note so the operator can act without
-  re-reading the entire run log.
-- **`install.sh` post-install hint expanded into a numbered Next
-  Steps block.** The previous two-line "Need Kismet? Run X. Already
-  have it? Run Y." was too thin for a fresh-host operator who hadn't
-  yet discovered `docs/DEPLOYMENT.md`. The new hint walks through
-  install Kismet (with three distinct paths surfaced: apt-distro
-  full bootstrap, other-distro `--skip-install`, already-have-Kismet),
-  log out + back in (group propagation caveat), start Kismet + create
-  read-only API key, configure Lynceus, then run — adapting to scope
-  so `--user` is pointed at `lynceus-quickstart` (foreground
-  dev/demo) and `--system` is pointed at `sudo systemctl enable
-  --now lynceus.service lynceus-ui.service` plus the opt-in
-  `lynceus-refresh.timer`. Block ends with pointers to
-  `docs/DEPLOYMENT.md` (full runbook + troubleshooting) and
+- **`lynceus-bootstrap-kismet --skip-install` now works on any Linux,
+  not just the apt-matrix distros.** The v1 distro gate fired before
+  `--skip-install` was checked, so the flag's advertised "I'll install
+  Kismet myself, just do the rest" contract was a no-op on any distro
+  outside Debian/Ubuntu/Kali: Parrot, Mint, Devuan, etc. operators
+  got the unsupported-distro message + exit 0 regardless of the flag,
+  and the interface-config + kismet-group steps never ran. The gate
+  now guards ONLY the apt-install path. Interface auto-detection,
+  `kismet_site.conf` patching, and group membership are
+  distro-agnostic and run on any Linux host that has Kismet present
+  (or that the operator is about to install Kismet on via their
+  distro's own tooling). The default-path behaviour (unsupported
+  distro, no `--skip-install`) is preserved — pointer + exit 0 — so
+  existing flows are unchanged.
+- **`lynceus-bootstrap-kismet` no longer assumes Kismet's site config
+  lives at `/etc/kismet/`.** Apt installs do land it there, but
+  from-source builds use the `./configure --prefix=/usr/local`
+  default at `/usr/local/etc/kismet/`, and the v1 helper would either
+  write to the wrong place or fail silently on a from-source host.
+  The helper now probes both candidate directories and writes to
+  whichever exists. If neither exists (Kismet not yet installed), it
+  warns clearly naming both candidates and exits 0 instead of
+  writing to a guessed path — the operator can install Kismet, then
+  re-run with `--skip-install`. The closing-hint block surfaces
+  which path was patched when it differs from `/etc/kismet/` so
+  from-source operators aren't surprised.
+- **`lynceus-bootstrap-kismet`'s closing hint reflects what actually
+  happened on the run.** The v1 hint was a static "go set the
+  password and create an API key" block printed identically whether
+  the run installed Kismet, skipped install, or was blocked by a
+  missing config directory. It now adapts to: apt-install skipped on
+  unsupported distro; Kismet not on PATH; no site-config dir found;
+  site-config written to a non-default location. Each surfaces as a
+  one-line note above the numbered steps so the operator can act
+  without re-reading the entire run log.
+- **Raspberry Pi OS regression-protection.** The project's primary
+  deployment target had no test pinning its `/etc/os-release`
+  fingerprint to the supported branch of `detect_distro`. Added a
+  parametrised case pinning RPi OS Bookworm (`ID=debian` +
+  `VERSION_CODENAME=bookworm`) to the Debian/bookworm match. RPi OS
+  Bookworm needed no code change — it falls through to the existing
+  Debian branch automatically (the Bullseye-era `ID=raspbian` value
+  was retired upstream when RPi OS rebased onto Debian Bookworm) —
+  but the test catches any future regression to detection that
+  would silently break Pi deployments. Legacy Raspbian operators
+  now have the `--skip-install` universal path above as a working
+  workflow.
+- **`install.sh`'s post-install hint no longer leaves fresh-host
+  operators wondering "what now?".** The v1 two-line "Need Kismet?
+  Run X. Already have it? Run Y." was too thin for an operator who
+  hadn't yet discovered `docs/DEPLOYMENT.md` — the actual ceremony
+  (install Kismet, log out + back in, start Kismet, set admin
+  password, create read-only API key, configure Lynceus, run) was
+  invisible from the install output. The hint is now a numbered
+  Next Steps block (via a shared `print_next_steps` helper) that
+  walks the operator through each step, surfaces three Kismet-install
+  paths (apt-distro full bootstrap, other-distro `--skip-install`,
+  already-have-Kismet), and adapts to scope so `--user` is pointed
+  at `lynceus-quickstart` (foreground dev/demo) and `--system` at
+  `sudo systemctl enable --now lynceus.service lynceus-ui.service`
+  plus the opt-in `lynceus-refresh.timer`. Block ends with pointers
+  to `docs/DEPLOYMENT.md` (full runbook + troubleshooting) and
   `docs/SMOKE.md` (post-install verification); the runbook is the
   source of truth, install.sh's hint is a getting-started signpost.
   install.sh remains offline (no new network operations introduced).
-
-## [0.6.1] - 2026-05-22
 
 ### Added
 
