@@ -365,28 +365,28 @@ def test_parse_ble_name_flag_off_yields_none():
     raw = _ble_raw_with_name("06:aa:bb:cc:dd:ee", "Kev's AirPods")
     obs = parse_kismet_device(raw, capture_ble_name=False)
     assert obs is not None
-    assert obs.ble_name is None
+    assert obs.ble_local_name is None
 
 
 def test_parse_ble_name_flag_on_extracts_name():
     raw = _ble_raw_with_name("06:aa:bb:cc:dd:ee", "Kev's AirPods")
     obs = parse_kismet_device(raw, capture_ble_name=True)
     assert obs is not None
-    assert obs.ble_name == "Kev's AirPods"
+    assert obs.ble_local_name == "Kev's AirPods"
 
 
 def test_parse_ble_name_empty_string_yields_none():
     raw = _ble_raw_with_name("06:aa:bb:cc:dd:ee", "")
     obs = parse_kismet_device(raw, capture_ble_name=True)
     assert obs is not None
-    assert obs.ble_name is None
+    assert obs.ble_local_name is None
 
 
 def test_parse_ble_name_skipped_for_wifi_devices():
     raw = _wifi_raw_with_probes("00:11:22:33:44:55", [])
     obs = parse_kismet_device(raw, capture_ble_name=True)
     assert obs is not None
-    assert obs.ble_name is None
+    assert obs.ble_local_name is None
 
 
 # ============================== poller ======================================
@@ -624,7 +624,7 @@ def test_poller_ble_name_on_persists_string(db, db_path):
         ssid=None,
         oui_vendor="Apple",
         is_randomized=True,
-        ble_name="Kev's AirPods",
+        ble_local_name="Kev's AirPods",
     )
     cfg = _make_config(
         db_path,
@@ -645,7 +645,7 @@ def test_poller_ble_name_off_keeps_column_null(db, db_path):
         ssid=None,
         oui_vendor="Apple",
         is_randomized=True,
-        ble_name=None,
+        ble_local_name=None,
     )
     cfg = _make_config(
         db_path,
@@ -670,7 +670,7 @@ def test_poller_ble_name_latest_write_wins(db, db_path):
         ssid=None,
         oui_vendor="Apple",
         is_randomized=True,
-        ble_name="OldName",
+        ble_local_name="OldName",
     )
     obs2 = DeviceObservation(
         mac="06:aa:bb:cc:dd:03",
@@ -681,7 +681,7 @@ def test_poller_ble_name_latest_write_wins(db, db_path):
         ssid=None,
         oui_vendor="Apple",
         is_randomized=True,
-        ble_name="NewName",
+        ble_local_name="NewName",
     )
     poll_once(_SingleObsClient([obs1]), db, cfg, 1700001000)
     poll_once(_SingleObsClient([obs2]), db, cfg, 1700002000)
@@ -716,7 +716,7 @@ def test_poller_default_config_keeps_probes_off_ble_on(db, db_path):
         ssid=None,
         oui_vendor="Apple",
         is_randomized=True,
-        ble_name="DefaultName",
+        ble_local_name="DefaultName",
     )
     poll_once(_SingleObsClient([wifi_obs, ble_obs]), db, cfg, 1700001000)
     wifi_row = db._conn.execute(
