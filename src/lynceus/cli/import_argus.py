@@ -70,6 +70,14 @@ IDENTIFIER_TYPE_MAP: dict[str, str] = {
     "ble_manufacturer_id": "ble_manufacturer_id",
     "ble_company_id": "ble_manufacturer_id",
     "drone_id_prefix": "drone_id_prefix",
+    # Bluetooth Core Spec §4.5.2 Complete Local Name. Verified
+    # against Argus v1.4.0 (3 rows) + v1.4.1 (20 rows handoff
+    # signal). Equality-shape admission: the canonicalizer in
+    # patterns._normalize_ble_local_name does defensive validation
+    # only, mirroring the SSID pass-through shape. Coordinated
+    # release boundary with Argus v1.4.2's
+    # IDENTIFIER_TYPE_TO_PATTERN_TYPE promotion.
+    "ble_local_name": "ble_local_name",
 }
 
 # Per-spec built-in severity defaults. Categories not listed default to "low".
