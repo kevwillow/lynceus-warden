@@ -464,6 +464,77 @@ def test_normalize_drone_id_prefix_rejects_non_ascii():
         normalize_pattern("drone_id_prefix", "ABCDé")
 
 
+# ------------------------------ ble_local_name -------------------------------
+
+
+def test_normalize_ble_local_name_argus_canonical_form_round_trips():
+    """Argus emits exact strings (case-sensitive per Bluetooth Core Spec
+    §4.5.2 Complete Local Name); the canonicalizer is validation-only,
+    so every well-formed sample round-trips unchanged."""
+    assert normalize_pattern("ble_local_name", "Penguin") == "Penguin"
+    assert normalize_pattern("ble_local_name", "Flock") == "Flock"
+    assert normalize_pattern("ble_local_name", "FS Ext Battery") == "FS Ext Battery"
+
+
+def test_normalize_ble_local_name_preserves_case():
+    """Case is significant — 'FLOCK' and 'Flock' are distinct rows in
+    the Argus emission. Mirrors the SSID case-preservation contract."""
+    assert normalize_pattern("ble_local_name", "FLOCK") == "FLOCK"
+    assert normalize_pattern("ble_local_name", "Flock") == "Flock"
+    assert normalize_pattern("ble_local_name", "flock") == "flock"
+
+
+def test_normalize_ble_local_name_preserves_internal_whitespace():
+    """Internal spaces matter ('FS Ext Battery'); only outer whitespace
+    is stripped."""
+    assert (
+        normalize_pattern("ble_local_name", "  FS Ext Battery  ")
+        == "FS Ext Battery"
+    )
+
+
+def test_normalize_ble_local_name_rejects_empty():
+    with pytest.raises(ValueError, match="empty"):
+        normalize_pattern("ble_local_name", "")
+
+
+def test_normalize_ble_local_name_rejects_whitespace_only():
+    """All-whitespace strips to empty and is rejected — no BLE
+    advertisement carries that shape; storing it would be noise."""
+    with pytest.raises(ValueError, match="empty"):
+        normalize_pattern("ble_local_name", "   ")
+
+
+def test_normalize_ble_local_name_rejects_exceeds_length_cap():
+    """64-char defensive cap. Argus emits 3-20 chars today; a 65-char
+    input is well outside the expected range and should surface as an
+    actionable error rather than be silently truncated or stored."""
+    with pytest.raises(ValueError, match="64-char"):
+        normalize_pattern("ble_local_name", "A" * 65)
+
+
+def test_normalize_ble_local_name_admits_at_cap_boundary():
+    """The cap is inclusive of 64 chars — exactly-64 admits."""
+    name = "A" * 64
+    assert normalize_pattern("ble_local_name", name) == name
+
+
+def test_normalize_ble_local_name_rejects_non_string():
+    """The dispatcher passes through whatever the caller hands it;
+    a non-string input must fail loudly rather than silently coerce."""
+    with pytest.raises(ValueError, match="must be a string"):
+        normalize_pattern("ble_local_name", 42)  # type: ignore[arg-type]
+
+
+def test_normalize_pattern_unknown_pattern_type_still_passes_through(caplog):
+    """Regression guard for the dispatcher: an unknown pattern_type
+    must still pass-through unchanged with a debug log — adding
+    ble_local_name must not change that contract."""
+    with caplog.at_level(logging.DEBUG, logger="lynceus.patterns"):
+        out = normalize_pattern("future_unknown_type", "foo")
+    assert out == "foo"
+
+
 # ------------------------------ mac_in_mac_range -----------------------------
 #
 # The public helper backs both the allowlist live-poll match path
