@@ -3460,6 +3460,38 @@ def test_argus_schema_version_26_accepted_silently(tmp_path, db, caplog):
     assert report.imported_new == 1
 
 
+def test_argus_schema_version_27_accepted_silently(tmp_path, db, caplog):
+    """schema_version=27 (v1.5.0 bootstrap, mig-0027 CP33) is in the
+    default accept-list — no warning, row imports."""
+    path = _write_csv_with_meta(
+        tmp_path / "v27.csv",
+        "# meta: schema_version=27, exported_at=2026-05-07T20:17:59Z, record_count=1",
+        [_row(argus_record_id="v27-1")],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+    assert _warnings_for_schema_version(caplog) == []
+    assert report.imported_new == 1
+
+
+def test_argus_schema_version_28_adjacent_warns_imports_anyway(tmp_path, db, caplog):
+    """schema_version=28 sits one step above the current accept-list
+    ceiling. Confirms the boundary is pinned: bumping the ceiling to
+    "27" did NOT widen admission speculatively. Same WARN-don't-abort
+    contract as the existing far-out "99" case."""
+    path = _write_csv_with_meta(
+        tmp_path / "v28.csv",
+        "# meta: schema_version=28, exported_at=2026-05-07T20:17:59Z, record_count=1",
+        [_row(argus_record_id="v28-1")],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+    warnings = _warnings_for_schema_version(caplog)
+    assert len(warnings) == 1
+    assert "'28'" in warnings[0].getMessage()
+    assert report.imported_new == 1
+
+
 def test_argus_schema_version_unknown_warns_imports_anyway(tmp_path, db, caplog):
     """schema_version outside the accept-list (here ``"99"``) trips a
     WARNING with the configured accept-list and the override key, but
