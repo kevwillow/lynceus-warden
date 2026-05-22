@@ -29,10 +29,18 @@ Non-destructive + idempotent. Re-runnable from any state:
   * pre-existing kismet_site.conf?      append-only, never overwrite
   * operator already in kismet group?   skip usermod
 
-Bounded to Debian/Ubuntu/Kali in v1. Other distros get a clear
-"manual install required" pointer to https://www.kismetwireless.net/packages/
-and a clean exit 0 -- they aren't broken, they just need to install
-Kismet by hand.
+Apt-install path is bounded to Debian/Ubuntu/Kali (which includes
+Raspberry Pi OS Bookworm: it reports ID=debian so it falls into
+the Debian branch automatically). On any other distro the default
+path prints a "manual install required" pointer and exits 0.
+
+``--skip-install`` (or its alias ``--no-network``) takes the apt
+matrix out of the picture entirely: interface auto-detection,
+kismet_site.conf patching (in /etc/kismet/ or /usr/local/etc/kismet/,
+auto-detected), and group membership all run on any Linux host that
+has Kismet present (or that the operator is about to install Kismet
+on). This is the path Parrot OS, Mint, Devuan, etc. operators use
+after installing Kismet via their own distro's tooling.
 
 Exit codes:
   0 -- success, OR unsupported distro (operator action: install manually)
@@ -68,7 +76,17 @@ KISMET_KEYRING_PATH = Path("/usr/share/keyrings/kismet-archive-keyring.gpg")
 KISMET_SOURCES_LIST_PATH = Path("/etc/apt/sources.list.d/kismet.list")
 KISMET_PACKAGE = "kismet"
 KISMET_GROUP = "kismet"
-KISMET_SITE_CONF_PATH = Path("/etc/kismet/kismet_site.conf")
+# Candidate directories Kismet may have laid down its config under,
+# probed in order. /etc/kismet/ is the apt-package convention;
+# /usr/local/etc/kismet/ is what Kismet's own build-from-source
+# emits with the default --prefix=/usr/local. We auto-detect rather
+# than hardcoding so --skip-install operators on from-source builds
+# don't have to hand-edit afterward.
+KISMET_SITE_CONF_DIRS: tuple[Path, ...] = (
+    Path("/etc/kismet"),
+    Path("/usr/local/etc/kismet"),
+)
+KISMET_SITE_CONF_FILENAME = "kismet_site.conf"
 KISMET_WEB_UI_URL = "http://localhost:2501"
 
 UNSUPPORTED_POINTER_URL = "https://www.kismetwireless.net/packages/"
@@ -259,6 +277,23 @@ def _apt_source_configured() -> bool:
     so we always own a known-good copy.
     """
     return KISMET_SOURCES_LIST_PATH.exists()
+
+
+def resolve_site_conf_path(
+    dirs: tuple[Path, ...] = KISMET_SITE_CONF_DIRS,
+) -> Path | None:
+    """Return ``<dir>/kismet_site.conf`` for the first existing dir in
+    ``dirs``, or ``None`` if none exist.
+
+    Used to handle both the apt-package convention (``/etc/kismet/``)
+    and the from-source-build default (``/usr/local/etc/kismet/``).
+    When neither dir exists Kismet is not installed in a layout we
+    recognise; the caller warns rather than guessing a path.
+    """
+    for d in dirs:
+        if d.is_dir():
+            return d / KISMET_SITE_CONF_FILENAME
+    return None
 
 
 def _group_exists(group: str) -> bool:
@@ -750,26 +785,90 @@ def _prompt_yes_no(
 _CLOSING_RULE = "=" * 60
 
 
-def print_closing_pointer(operator: str | None) -> None:
+def print_closing_pointer(
+    operator: str | None,
+    *,
+    skip_install: bool = False,
+    distro_supported: bool = True,
+    kismet_on_path: bool = True,
+    site_conf_path: Path | None = None,
+    site_conf_skipped: bool = False,
+) -> None:
     """The "what now?" block. Always the last thing printed on a
-    success path. Mentions the kismet group log-out caveat even when
-    the operator was already in the group -- it's harmless and
-    avoids a "did I miss a step?" moment.
+    success path.
+
+    Adapts to what actually happened on this run:
+
+    - ``skip_install`` + ``distro_supported=False``: note that apt
+      install was skipped because the distro isn't in the matrix.
+    - ``kismet_on_path=False``: tell the operator Kismet is not on
+      PATH and point them at the upstream packaging.
+    - ``site_conf_skipped=True``: warn that no kismet_site.conf was
+      written because neither candidate dir existed.
+    - ``site_conf_path`` set + non-default: surface which path was
+      patched so a from-source operator isn't surprised.
+
+    The kismet-group log-out caveat is mentioned even when the
+    operator was already in the group -- harmless, and avoids a
+    "did I miss a step?" moment.
     """
     relog_target = operator if operator else "your operator user"
     _print("")
     _print(_CLOSING_RULE)
     _print("Kismet bootstrap complete.")
     _print("")
+
+    # Up-front notes about anything unusual that happened.
+    notes: list[str] = []
+    if skip_install and not distro_supported:
+        notes.append(
+            "apt-install path was skipped: this distro is not in the "
+            "Kismet-apt matrix (Debian/Ubuntu/Kali). Interface config "
+            "+ permissions were still applied where possible."
+        )
+    if not kismet_on_path:
+        notes.append(
+            "Kismet was not installed by this script and is not on PATH. "
+            f"Install it per https://www.kismetwireless.net/packages/ "
+            f"(or your distro's package manager), then re-run "
+            f"lynceus-bootstrap-kismet --skip-install."
+        )
+    if site_conf_skipped:
+        candidates = ", ".join(str(d) for d in KISMET_SITE_CONF_DIRS)
+        notes.append(
+            f"No kismet_site.conf was written: none of the candidate "
+            f"directories exist ({candidates}). Install Kismet first, "
+            f"then re-run with --skip-install to apply interface config."
+        )
+    elif site_conf_path is not None and site_conf_path.parent != KISMET_SITE_CONF_DIRS[0]:
+        notes.append(
+            f"kismet_site.conf was written to {site_conf_path} "
+            f"(non-default — from-source build layout detected)."
+        )
+
+    if notes:
+        _print("Notes:")
+        for n in notes:
+            for i, line in enumerate(_wrap_note(n)):
+                prefix = "  - " if i == 0 else "    "
+                _print(prefix + line)
+        _print("")
+
     _print("Next steps:")
     _print(
         f"  1. Log out and log back in as {relog_target} so the kismet"
     )
     _print("     group takes effect (current shells don't pick up new groups).")
-    _print("  2. Start Kismet:")
-    _print("       sudo systemctl start kismet")
-    _print("     OR (foreground, for first-launch password setup):")
-    _print("       kismet")
+    if kismet_on_path:
+        _print("  2. Start Kismet:")
+        _print("       sudo systemctl start kismet")
+        _print("     OR (foreground, for first-launch password setup):")
+        _print("       kismet")
+    else:
+        _print("  2. Install Kismet (see note above), then start it:")
+        _print("       sudo systemctl start kismet")
+        _print("     OR (foreground, for first-launch password setup):")
+        _print("       kismet")
     _print(f"  3. Open the web UI:    {KISMET_WEB_UI_URL}")
     _print("  4. Set your password (Kismet prompts on first launch).")
     _print("  5. Generate an API key:")
@@ -781,24 +880,44 @@ def print_closing_pointer(operator: str | None) -> None:
     _print(_CLOSING_RULE)
 
 
+def _wrap_note(text: str, width: int = 66) -> list[str]:
+    """Soft-wrap a note paragraph to ``width`` cols on word boundaries."""
+    words = text.split()
+    lines: list[str] = []
+    current = ""
+    for w in words:
+        if current and len(current) + 1 + len(w) > width:
+            lines.append(current)
+            current = w
+        else:
+            current = f"{current} {w}".strip()
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
 def print_unsupported_pointer(distro_id: str | None) -> None:
-    """Unsupported-distro message. Clean exit 0 -- the operator isn't
-    broken, they just need to install Kismet manually.
+    """Unsupported-distro message printed when no ``--skip-install`` was
+    given. Clean exit 0 -- the operator isn't broken, they just need to
+    install Kismet manually.
+
+    With ``--skip-install`` the apt path is bypassed entirely and the
+    main flow proceeds; this pointer is only shown on the default path.
     """
     label = distro_id or "unknown"
     _print("")
     _print(_CLOSING_RULE)
-    _print(f"Distro '{label}' is not supported by the Kismet apt repo.")
+    _print(f"Distro '{label}' is not in the Kismet-apt matrix.")
     _print("")
-    _print("lynceus-bootstrap-kismet handles Debian, Ubuntu, and Kali only")
-    _print("in v1. On any other distro, install Kismet manually following")
-    _print("the official packaging instructions:")
+    _print("The apt-install path of lynceus-bootstrap-kismet handles")
+    _print("Debian, Ubuntu, and Kali only. On other distros, install")
+    _print("Kismet manually following the official packaging instructions:")
     _print("")
     _print(f"  {UNSUPPORTED_POINTER_URL}")
     _print("")
-    _print("Then re-run lynceus-bootstrap-kismet with --skip-install to")
-    _print("get the interface configuration + permissions steps, or skip")
-    _print("straight to: sudo lynceus-setup")
+    _print("Then re-run lynceus-bootstrap-kismet --skip-install to get")
+    _print("the interface configuration + group-membership steps (now")
+    _print("supported on any Linux), or skip straight to: sudo lynceus-setup")
     _print(_CLOSING_RULE)
 
 
@@ -955,20 +1074,37 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
         )
         return 2
 
-    distro_id, codename = detect_distro()
-    if distro_id is None:
-        print_unsupported_pointer(distro_id)
-        return 0
-
-    _print(
-        f"Detected distro: {distro_id} (codename: {codename}). "
-        f"Proceeding with Kismet bootstrap."
-    )
-
     # Install path -- gated by --skip-install and --no-network.
     if args.no_network and not args.skip_install:
         _print("--no-network implies --skip-install; will not run apt operations.")
     skip_install = args.skip_install or args.no_network
+
+    # Distro gate: in v1 this fired before --skip-install was checked,
+    # which meant the flag's advertised "I'll install Kismet myself,
+    # just do the rest" contract didn't actually work on any distro
+    # outside the apt matrix. Now the gate guards ONLY the apt-install
+    # path; interface config + group membership are distro-agnostic and
+    # run anywhere Linux + Kismet are present.
+    distro_id, codename = detect_distro()
+    distro_supported = distro_id is not None
+
+    if not distro_supported and not skip_install:
+        # Default-path behaviour preserved: unsupported distro without
+        # --skip-install gets the "install manually" pointer + exit 0.
+        print_unsupported_pointer(distro_id)
+        return 0
+
+    if distro_supported:
+        _print(
+            f"Detected distro: {distro_id} (codename: {codename}). "
+            f"Proceeding with Kismet bootstrap."
+        )
+    else:
+        _print(
+            "Unsupported distro for the Kismet apt-install path "
+            "(handled distros: Debian, Ubuntu, Kali). --skip-install "
+            "given; continuing with interface config + permissions only."
+        )
 
     if not skip_install:
         if _kismet_installed():
@@ -997,25 +1133,46 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
                     "is not on PATH. Investigate before re-running."
                 )
 
+    # Site-config dir auto-detection. Apt/distro installs land under
+    # /etc/kismet/; from-source builds default to /usr/local/etc/kismet/.
+    site_conf_path = resolve_site_conf_path()
+
     # Interface selection -- always run (configures even on
     # --skip-install / --no-network).
     wifi_selected, bt_selected = _select_interfaces(args, input_fn)
 
+    site_conf_skipped = False
     if not wifi_selected and not bt_selected:
         _print(
             "\nNo interfaces selected for kismet_site.conf. Skipping "
             "config patch."
         )
+    elif site_conf_path is None:
+        # Kismet config dir isn't laid down yet. Don't guess a path --
+        # warn clearly with both candidates so the operator can install
+        # Kismet then re-run with --skip-install.
+        candidates = ", ".join(str(d) for d in KISMET_SITE_CONF_DIRS)
+        _print(
+            f"\nWARNING: no Kismet config directory found. Looked for: "
+            f"{candidates}. Skipping kismet_site.conf patch -- install "
+            f"Kismet first, then re-run with --skip-install to apply "
+            f"interface config."
+        )
+        site_conf_skipped = True
     else:
+        _print(f"\nUsing kismet_site.conf at {site_conf_path}")
         patch_kismet_site_conf(
-            KISMET_SITE_CONF_PATH,
+            site_conf_path,
             wifi_selected,
             bt_selected,
             dry_run=args.dry_run,
         )
 
     # Group membership -- the .deb postinst creates the group + sets
-    # capabilities; we only need to add the operator to it.
+    # capabilities; on non-apt installs (from-source, manual) the
+    # operator may have created the group themselves or Kismet may
+    # have done it during install. Either way, surface a missing group
+    # rather than paper over.
     operator = _real_operator_user()
     if operator is None:
         _print(
@@ -1026,23 +1183,43 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
         _print(f"  sudo usermod -aG {KISMET_GROUP} <user>")
     else:
         if not _group_exists(KISMET_GROUP):
-            # Don't paper over a missing group -- that's a signal that
-            # the package install didn't behave as expected and the
-            # operator needs to investigate before adding capabilities
-            # via some other path.
-            _err(
-                f"\nERROR: {KISMET_GROUP!r} group does not exist. The Kismet "
-                f".deb is expected to create it during postinst; if it "
-                f"isn't there, the package install didn't complete "
-                f"cleanly. Check `dpkg -l kismet` and the install log."
-            )
+            # On supported distros, missing group means the apt postinst
+            # didn't behave -- worth investigating before adding caps
+            # via some other path. On unsupported distros it likely
+            # means Kismet's group ceremony hasn't run yet (operator
+            # is mid-install). Same exit 1 either way; the message
+            # tells them which case they're in.
+            if distro_supported:
+                _err(
+                    f"\nERROR: {KISMET_GROUP!r} group does not exist. The "
+                    f"Kismet .deb is expected to create it during "
+                    f"postinst; if it isn't there, the package install "
+                    f"didn't complete cleanly. Check `dpkg -l kismet` "
+                    f"and the install log."
+                )
+            else:
+                _err(
+                    f"\nERROR: {KISMET_GROUP!r} group does not exist. On a "
+                    f"non-apt Kismet install, this usually means Kismet "
+                    f"is not installed yet, or the build did not create "
+                    f"the group. Install Kismet first (see "
+                    f"https://www.kismetwireless.net/packages/), then "
+                    f"re-run with --skip-install."
+                )
             return 1
         if _user_in_group(operator, KISMET_GROUP):
             _print(f"\n{operator} is already in the {KISMET_GROUP} group; skipping usermod.")
         else:
             add_user_to_kismet_group(operator, dry_run=args.dry_run)
 
-    print_closing_pointer(operator)
+    print_closing_pointer(
+        operator,
+        skip_install=skip_install,
+        distro_supported=distro_supported,
+        kismet_on_path=_kismet_installed(),
+        site_conf_path=site_conf_path,
+        site_conf_skipped=site_conf_skipped,
+    )
     return 0
 
 
