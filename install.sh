@@ -279,6 +279,79 @@ note_path_if_missing() {
     log "    source ~/.bashrc"
 }
 
+# --- post-install "next steps" hint ----------------------------------------
+#
+# Prints a numbered getting-started block at the end of a successful
+# install. Adapts to install scope so a --user install doesn't tell the
+# operator to enable a system-wide systemd unit, and a --system install
+# uses sudo + --scope system on the wizard. Detailed runbook lives in
+# docs/DEPLOYMENT.md; we reference it rather than duplicating content.
+
+print_next_steps() {
+    local scope="$1"  # user | system
+    local sudo_pfx setup_scope run_step
+
+    if [[ "$scope" == "system" ]]; then
+        sudo_pfx="sudo "
+        setup_scope=" --system"
+    else
+        sudo_pfx=""
+        setup_scope=""
+    fi
+
+    log ""
+    log "Next steps:"
+    log ""
+    log "  1. Install Kismet (the data source Lynceus polls)."
+    log "     Pick the line that matches your host:"
+    log "       Debian / Ubuntu / Kali / Raspberry Pi OS (Bookworm):"
+    log "           sudo lynceus-bootstrap-kismet"
+    log "         (apt repo + kismet package + interface config + group)"
+    log "       Other Linux distros (Parrot, Mint, Devuan, Fedora, Arch):"
+    log "         install Kismet via your distro's package manager or"
+    log "         https://www.kismetwireless.net/packages/, then:"
+    log "           sudo lynceus-bootstrap-kismet --skip-install"
+    log "         (interface config + group only; apt path is skipped)"
+    log "       Already have Kismet:"
+    log "           sudo lynceus-bootstrap-kismet --skip-install"
+    log ""
+    log "  2. Log out and log back in so the kismet group takes effect"
+    log "     (running shells don't pick up new groups)."
+    log ""
+    log "  3. Start Kismet and create a read-only API key for Lynceus:"
+    log "         sudo systemctl start kismet"
+    log "         open http://localhost:2501  # set admin password on first visit"
+    log "         Settings -> API Keys -> Create  (name: lynceus, role: readonly)"
+    log ""
+    log "  4. Configure Lynceus:"
+    log "         ${sudo_pfx}lynceus-setup${setup_scope}"
+    log "     The wizard auto-locates the API key from ~/.kismet/session.db"
+    log "     (no copy-paste in the common case), prompts for ntfy + probe-"
+    log "     SSID capture, generates lynceus.yaml, and auto-imports the"
+    log "     bundled threat-data watchlist."
+    log ""
+
+    if [[ "$scope" == "system" ]]; then
+        log "  5. Enable Lynceus (production):"
+        log "         sudo systemctl enable --now lynceus.service lynceus-ui.service"
+        log ""
+        log "  6. (Optional) Enable weekly Argus watchlist refresh."
+        log "     Default off so install.sh stays offline-by-default; this is"
+        log "     the only Lynceus surface that opts the host into a recurring"
+        log "     outbound network call:"
+        log "         sudo systemctl enable --now lynceus-refresh.timer"
+    else
+        log "  5. Run Lynceus (dev / demo, foreground):"
+        log "         lynceus-quickstart"
+        log "     Launches the daemon + web UI and opens a browser tab;"
+        log "     Ctrl+C shuts both down cleanly."
+    fi
+
+    log ""
+    log "Full runbook + troubleshooting:  docs/DEPLOYMENT.md"
+    log "Post-install verification:       docs/SMOKE.md"
+}
+
 # --- modes -----------------------------------------------------------------
 
 install_user() {
@@ -298,17 +371,7 @@ install_user() {
 
     log ""
     log "User install complete."
-    log "Next: run 'lynceus-setup' to configure, then 'lynceus-quickstart'"
-    log "for dev/demo, or enable a systemd --user unit for production."
-    log ""
-    log "Watchlist data:"
-    log "  Bundled watchlist auto-imports on first 'lynceus-setup' run."
-    log "  Refresh later: lynceus-import-argus --from-github           # network"
-    log "                 lynceus-import-argus --input <path-to-csv>   # air-gapped"
-    log ""
-    log "Kismet (the data source Lynceus polls):"
-    log "  Need Kismet installed?  sudo lynceus-bootstrap-kismet"
-    log "  Already have Kismet?    lynceus-setup"
+    print_next_steps user
 }
 
 install_system() {
@@ -362,23 +425,7 @@ install_system() {
 
     log ""
     log "System install complete."
-    log "Next:"
-    log "  sudo lynceus-setup --system           # generate /etc/lynceus/lynceus.yaml"
-    log "  sudo systemctl enable --now lynceus.service lynceus-ui.service"
-    log ""
-    log "Watchlist data:"
-    log "  Bundled watchlist auto-imports on first 'sudo lynceus-setup --system' run."
-    log "  Refresh later: sudo lynceus-import-argus --scope system --from-github         # network"
-    log "                 sudo lynceus-import-argus --scope system --input <path-to-csv> # air-gapped"
-    log ""
-    log "Auto-refresh (weekly, default off):"
-    log "  Enable:        sudo systemctl enable --now lynceus-refresh.timer"
-    log "  Change cadence (drop-in override):"
-    log "                 sudo systemctl edit lynceus-refresh.timer"
-    log ""
-    log "Kismet (the data source Lynceus polls):"
-    log "  Need Kismet installed?  sudo lynceus-bootstrap-kismet"
-    log "  Already have Kismet?    sudo lynceus-setup --system"
+    print_next_steps system
 }
 
 uninstall_user() {
