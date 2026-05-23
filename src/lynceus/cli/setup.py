@@ -164,6 +164,14 @@ DEFAULT_NTFY_BROKER = "https://ntfy.sh"
 DEFAULT_RSSI_THRESHOLD = -70
 DEFAULT_UI_PORT = 8765
 PROBE_TIMEOUT_SECONDS = 5.0
+# Bound the bundled-watchlist subprocess so a stuck lynceus-import-argus
+# (rare; usually completes in <10s on the few-thousand-row bundled CSV)
+# cannot wedge --system setup at the import step with no visible
+# progress. 120s is a generous ceiling — any real import that needs
+# longer wants to be the operator's explicit follow-up
+# `lynceus-import-argus --from-github` rather than the wizard's
+# auto-import.
+BUNDLED_IMPORT_TIMEOUT_SECONDS = 120
 
 SEVERITY_OVERRIDES_EXPLANATION = """\
 Severity overrides let you customize how Lynceus rates threats. By
@@ -1036,7 +1044,27 @@ def import_bundled_watchlist(db_path: str, override_file: str | None) -> tuple[b
                 )
             except FileNotFoundError:
                 return False, "import failed: lynceus-import-argus not found on PATH"
-            stdout, stderr = proc.communicate()
+            # Bound the wait so a stuck child cannot wedge --system setup
+            # silently. The previous unbounded communicate() would leave
+            # the wizard hanging with no progress output if
+            # lynceus-import-argus itself hung on, say, a malformed DB
+            # file or a stuck sqlite lock — the operator-visible symptom
+            # was identical to the "after-completion silent hang" the
+            # explicit-completion-marker fix addresses below.
+            try:
+                stdout, stderr = proc.communicate(
+                    timeout=BUNDLED_IMPORT_TIMEOUT_SECONDS
+                )
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                return False, (
+                    f"import failed: lynceus-import-argus exceeded "
+                    f"{BUNDLED_IMPORT_TIMEOUT_SECONDS}s timeout (process killed)"
+                )
             rc = proc.returncode
     except (FileNotFoundError, OSError) as e:
         return False, f"import failed: {e}"
@@ -1873,6 +1901,18 @@ and enter the topic exactly as written.
         "or enable the systemd service for production."
     )
     print(f"UI will be available at http://127.0.0.1:{DEFAULT_UI_PORT}")
+    # Explicit end-of-wizard marker. Without this the shell prompt
+    # returns mixed with the last hint line and operators perceive
+    # --system as hanging silently after completion — there's no
+    # visible "the wizard is done, you're back in the shell now"
+    # signal. The flush ensures the marker hits the terminal before
+    # control returns regardless of how sys.stdout.reconfigure in
+    # main() left the buffering policy.
+    print()
+    print("─" * 60)
+    print(f"Setup complete — exiting. Config at {target}.")
+    print("─" * 60)
+    sys.stdout.flush()
     return 0
 
 
