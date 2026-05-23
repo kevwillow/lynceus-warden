@@ -204,11 +204,13 @@ def create_wizard_app(
     # ordinals; with Touch 6 landed, every step ordinal 1..TOTAL_STEPS
     # has a literal route, so /step/<unknown> 404s via FastAPI's
     # default unmatched-route handler.
+    from lynceus.setup.web.review import register_review_routes
     from lynceus.setup.web.steps_capture import register_capture_steps
     from lynceus.setup.web.steps_kismet import register_kismet_steps
     from lynceus.setup.web.steps_severity_rules import register_severity_rules_steps
     register_kismet_steps(app)
     register_capture_steps(app)
     register_severity_rules_steps(app)
+    register_review_routes(app)
 
     return app
