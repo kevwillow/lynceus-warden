@@ -1,0 +1,35 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; ntfy topic{% endblock %}
+{% block step_indicator %}{% include "_progress.html" %}{% endblock %}
+{% block content %}
+  <h1>Step 8: ntfy topic</h1>
+  <p>
+    The topic IS the shared secret &mdash; anyone who knows it can
+    see your alerts and impersonate the publisher. Pick something
+    hard to guess. A random suggestion is below; leave the field
+    blank to accept it, or type your own (6-64 chars,
+    letters/digits/_/-).
+  </p>
+  <p>
+    Suggested topic: <code>{{ suggested }}</code>
+  </p>
+  {% if error %}<p class="wizard-error"><strong>error:</strong> {{ error }}</p>{% endif %}
+  <form method="post" action="{{ url_with_token('/step/8') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="suggested" value="{{ suggested }}">
+    <label>
+      Topic name (blank to accept the suggestion)
+      <input
+        type="text"
+        name="ntfy_topic"
+        value="{{ ntfy_topic or '' }}"
+        autocomplete="off"
+        maxlength="64"
+      >
+    </label>
+    <div class="wizard-footer">
+      <a href="{{ url_with_token('/step/7') }}" role="button" class="secondary">&larr; Previous</a>
+      <button type="submit">Next &rarr;</button>
+    </div>
+  </form>
+{% endblock %}

@@ -1,0 +1,48 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; ntfy probe{% endblock %}
+{% block step_indicator %}{% include "_progress.html" %}{% endblock %}
+{% block content %}
+  <h1>Step 9: ntfy probe</h1>
+  {% if skipped %}
+    <p>Probes skipped. Continuing without sending a test notification.</p>
+    <form method="post" action="{{ url_with_token('/step/9') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="action" value="continue">
+      <div class="wizard-footer">
+        <a href="{{ url_with_token('/step/8') }}" role="button" class="secondary">&larr; Previous</a>
+        <button type="submit">Next &rarr;</button>
+      </div>
+    </form>
+  {% elif probe_ok %}
+    <p>
+      <strong>ntfy publish OK.</strong> Check your subscriber for the
+      test message. If you didn't get it, verify the topic name on
+      your phone matches what you typed in step 8.
+    </p>
+    <form method="post" action="{{ url_with_token('/step/9') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="action" value="continue">
+      <div class="wizard-footer">
+        <a href="{{ url_with_token('/step/8') }}" role="button" class="secondary">&larr; Previous</a>
+        <button type="submit">Next &rarr;</button>
+      </div>
+    </form>
+  {% else %}
+    <p class="wizard-error">
+      <strong>ntfy probe failed:</strong>
+      <code>{{ probe_error or 'unknown error' }}</code>
+    </p>
+    <p>
+      Continuing anyway is fine &mdash; the config will still be
+      written and you can iterate on the topic/URL later via
+      <code>lynceus-setup --reconfigure</code>.
+    </p>
+    <form method="post" action="{{ url_with_token('/step/9') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <div class="wizard-footer">
+        <button type="submit" name="action" value="cancel" class="secondary">Cancel wizard</button>
+        <button type="submit" name="action" value="continue">Continue anyway &rarr;</button>
+      </div>
+    </form>
+  {% endif %}
+{% endblock %}

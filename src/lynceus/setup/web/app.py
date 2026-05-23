@@ -201,10 +201,13 @@ def create_wizard_app(
         )
 
     # Real step routes — register before the parameterized catch-all
-    # so literal /step/<N> matches first. Touches 4-7 land one per
-    # section; placeholder catch-all below handles the rest.
+    # so literal /step/<N> matches first. Each section module
+    # registers its own ordinals; the placeholder catch-all below
+    # picks up whichever steps are still pending Touches 6-7.
+    from lynceus.setup.web.steps_capture import register_capture_steps
     from lynceus.setup.web.steps_kismet import register_kismet_steps
     register_kismet_steps(app)
+    register_capture_steps(app)
 
     @app.get("/step/{n}", response_class=HTMLResponse)
     async def step_placeholder(request: Request, n: int) -> HTMLResponse:

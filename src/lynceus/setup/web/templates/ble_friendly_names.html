@@ -1,0 +1,28 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; BLE friendly names{% endblock %}
+{% block step_indicator %}{% include "_progress.html" %}{% endblock %}
+{% block content %}
+  <h1>Step 6: BLE friendly names</h1>
+  <p>
+    Capture BLE advertised names? These are broadcast publicly with
+    intent (e.g. <code>Kev's iPhone</code>, <code>AirPods Pro</code>),
+    so less sensitive than probe SSIDs &mdash; Lynceus default is ON.
+  </p>
+  <form method="post" action="{{ url_with_token('/step/6') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+    <fieldset>
+      <label>
+        <input type="radio" name="ble_friendly_names" value="yes" {% if ble_friendly_names %}checked{% endif %}>
+        Yes &mdash; capture BLE names (recommended)
+      </label>
+      <label>
+        <input type="radio" name="ble_friendly_names" value="no" {% if not ble_friendly_names %}checked{% endif %}>
+        No
+      </label>
+    </fieldset>
+    <div class="wizard-footer">
+      <a href="{{ url_with_token('/step/5') }}" role="button" class="secondary">&larr; Previous</a>
+      <button type="submit">Next &rarr;</button>
+    </div>
+  </form>
+{% endblock %}
