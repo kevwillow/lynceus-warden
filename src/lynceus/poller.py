@@ -6,6 +6,7 @@ import argparse
 import datetime as _dt
 import logging
 import signal
+import sys
 import time
 from pathlib import Path
 
@@ -863,6 +864,84 @@ class Poller:
             self.db.close()
 
 
+# --- TTY-gated startup banner ----------------------------------------------
+#
+# Shown only when stdout is a TTY: direct invocation like
+# ``lynceus --config foo.yaml`` from a terminal. Suppressed under
+# ``lynceus-quickstart`` (which pipes stdout to TeeSupervisor) and under
+# systemd (which captures stdout to journalctl) because ASCII art is
+# noise in both cases. Service-mode startup logs a single INFO line
+# ``Lynceus daemon started, N rules active, watching M interfaces``
+# instead — operators grepping ``journalctl -u lynceus.service`` get a
+# clear start marker without the box-drawing garbage.
+
+_STARTUP_BANNER = r""" _
+| |   _   _ _ __   ___ ___ _   _ ___
+| |  | | | | '_ \ / __/ _ \ | | / __|
+| |__| |_| | | | | (_|  __/ |_| \__ \
+|_____\__, |_| |_|\___\___|\__,_|___/
+      |___/   - the watcher daemon -"""
+
+
+def emit_startup_banner(
+    *,
+    active_rules: int,
+    source_count: int,
+    file=None,
+    is_tty: bool | None = None,
+) -> None:
+    """Emit the startup announcement.
+
+    TTY: ASCII banner plus a dynamic subtitle naming version,
+    rule-count, and interface count. Service mode (no TTY): one INFO
+    log line carrying the same counts. ``is_tty`` defaults to
+    ``file.isatty()`` (or ``sys.stdout.isatty()`` when ``file`` is
+    None) — overridable so unit tests can exercise both branches
+    without needing a real pty.
+
+    A failure to flush stdout is swallowed: the banner is a courtesy,
+    not load-bearing, and a closed-stdout scenario must not crash
+    daemon startup.
+    """
+    out = file if file is not None else sys.stdout
+    if is_tty is None:
+        is_tty = out.isatty() if hasattr(out, "isatty") else False
+
+    if is_tty:
+        subtitle = (
+            f"v{__version__}  •  watching {active_rules} rules across "
+            f"{source_count} interfaces  •  ctrl-c to stop"
+        )
+        print(_STARTUP_BANNER, file=out)
+        print(subtitle, file=out)
+        print(file=out)
+        try:
+            out.flush()
+        except Exception:
+            pass
+    else:
+        logger.info(
+            "Lynceus daemon started, %d rules active, watching %d interfaces",
+            active_rules,
+            source_count,
+        )
+
+
+def _count_active_rules(poller: Poller) -> int:
+    """Total rules with ``enabled`` truthy; mirrors the existing INFO
+    line emitted by Poller.__init__ so the banner agrees with what
+    operators already see in their logs."""
+    return sum(1 for r in poller.ruleset.rules if r.enabled)
+
+
+def _count_kismet_sources(config: Config) -> int:
+    """0 when ``kismet_sources`` is unset (treated as no filter); the
+    banner-side count matches the operator's lynceus.yaml literally so
+    a wrong banner number always points to a wrong config rather than
+    a wrong derivation."""
+    return len(config.kismet_sources) if config.kismet_sources else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lynceus")
     parser.add_argument("--config", required=True)
@@ -874,6 +953,10 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
         logging.basicConfig(level=config.log_level)
         poller = Poller(config)
+        emit_startup_banner(
+            active_rules=_count_active_rules(poller),
+            source_count=_count_kismet_sources(config),
+        )
         if args.once:
             poller.run_once()
         else:
