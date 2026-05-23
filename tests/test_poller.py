@@ -16,6 +16,7 @@ from lynceus.poller import (
     STATE_KEY_LAST_POLL,
     Poller,
     build_kismet_client,
+    emit_startup_banner,
     log_watchlist_staleness,
     main,
     poll_once,
@@ -231,6 +232,57 @@ def test_main_version_flag(capsys):
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
     assert __version__ in captured.out or __version__ in captured.err
+
+
+# --------------------- TTY-gated startup banner -----------------------------
+#
+# Banner shows on direct invocation (`lynceus --config foo.yaml` from a
+# terminal); suppressed under quickstart (stdout piped to TeeSupervisor)
+# and systemd (stdout captured to journalctl). Service-mode startup logs
+# a single INFO line carrying the same counts so operators grepping
+# journalctl see a clear start marker without box-drawing garbage.
+
+
+def test_emit_startup_banner_tty_prints_ascii_banner_and_subtitle(capsys):
+    emit_startup_banner(active_rules=12, source_count=2, is_tty=True)
+    out = capsys.readouterr().out
+    # ASCII banner: the recognisable figlet-LYNCEUS upper line.
+    assert "the watcher daemon" in out
+    # Dynamic subtitle: version + counts + ctrl-c hint.
+    assert __version__ in out
+    assert "12 rules" in out
+    assert "2 interfaces" in out
+    assert "ctrl-c to stop" in out
+
+
+def test_emit_startup_banner_non_tty_suppresses_banner_logs_one_line(caplog, capsys):
+    caplog.set_level(logging.INFO, logger="lynceus.poller")
+    emit_startup_banner(active_rules=7, source_count=1, is_tty=False)
+    # Banner suppressed entirely in service mode — operators grep
+    # journalctl, the ASCII art would be noise.
+    out = capsys.readouterr().out
+    assert "the watcher daemon" not in out
+    # One clear INFO line with the same counts so the start signal is
+    # still visible.
+    matching = [
+        rec.getMessage()
+        for rec in caplog.records
+        if "Lynceus daemon started" in rec.getMessage()
+    ]
+    assert len(matching) == 1
+    assert "7 rules active" in matching[0]
+    assert "1 interfaces" in matching[0]
+
+
+def test_emit_startup_banner_isatty_defaults_to_stdout_when_unset(monkeypatch, capsys):
+    """Without an explicit is_tty override, the helper consults
+    file.isatty() so production calls work correctly. capsys replaces
+    stdout with a non-TTY buffer, which is the same shape the systemd
+    capture sees — so without an override we get the service-mode
+    branch and the banner is suppressed."""
+    emit_startup_banner(active_rules=3, source_count=0)
+    out = capsys.readouterr().out
+    assert "the watcher daemon" not in out
 
 
 # --------------------- rules / allowlist integration ---------------------
