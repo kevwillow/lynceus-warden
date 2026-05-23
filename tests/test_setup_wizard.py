@@ -896,6 +896,17 @@ def test_run_wizard_end_to_end_smoke(monkeypatch, tmp_path, capsys):
     assert str(target) in out
     # UI URL hint
     assert "http://127.0.0.1:" in out
+    # Explicit end-of-wizard marker. Without this final visible boundary
+    # the shell prompt returns mixed with the last hint line and operators
+    # perceive --system as having hung silently. The marker must be the
+    # LAST thing the wizard prints so the operator sees a clear "done"
+    # signal between the hints and the shell prompt.
+    assert "Setup complete — exiting." in out
+    # Position check: the explicit-exit marker comes AFTER the UI URL
+    # hint (i.e. it really is the trailing line, not something printed
+    # mid-flow). A regression that moves "Setup complete — exiting." up
+    # would re-introduce the perception-hang.
+    assert out.rindex("Setup complete — exiting.") > out.rindex("http://127.0.0.1:")
 
 
 # ---- main() ----------------------------------------------------------------
@@ -1262,6 +1273,43 @@ def test_bundled_import_failure_when_command_missing(monkeypatch, tmp_path):
     ok, msg = wiz.import_bundled_watchlist(db_path="db.sqlite", override_file=None)
     assert ok is False
     assert "import failed" in msg
+
+
+def test_bundled_import_timeout_kills_process_and_returns_error(monkeypatch, tmp_path):
+    """A stuck lynceus-import-argus must not wedge --system setup. The
+    previous unbounded communicate() left the wizard hanging with no
+    progress output if the child hung on, say, a malformed DB or a
+    stuck sqlite lock — operator-visible symptom identical to the
+    after-completion silent hang. Pinning the timeout + kill path so
+    a regression to unbounded would fail this test."""
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta:\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+
+    killed = {"flag": False}
+
+    def fake_popen(args, **kwargs):
+        proc = MagicMock()
+
+        def fake_communicate(timeout=None):
+            # First call (with timeout) simulates the hang.
+            if not killed["flag"]:
+                raise wiz.subprocess.TimeoutExpired(cmd=args, timeout=timeout)
+            return ("", "")
+
+        def fake_kill():
+            killed["flag"] = True
+
+        proc.communicate.side_effect = fake_communicate
+        proc.kill.side_effect = fake_kill
+        return proc
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, msg = wiz.import_bundled_watchlist(db_path="db.sqlite", override_file=None)
+    assert ok is False
+    assert "timeout" in msg
+    assert str(wiz.BUNDLED_IMPORT_TIMEOUT_SECONDS) in msg
+    assert killed["flag"], "proc.kill() must fire when communicate() times out"
 
 
 # ---- prompt-recording helper ----------------------------------------------
