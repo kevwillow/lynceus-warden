@@ -57,6 +57,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -681,6 +682,29 @@ def _atomic_write_text(path: Path, content: str, *, mode: int = 0o644) -> None:
     _atomic_write_bytes(path, content.encode("utf-8"), mode=mode)
 
 
+def backup_kismet_site_conf(path: Path, *, dry_run: bool) -> Path | None:
+    """Rename ``path`` to ``<path>.bak-<unix-ts>`` so a fresh write can follow.
+
+    Returns the backup path on success, or ``None`` when ``path`` does not
+    exist (nothing to back up — a fresh write will land cleanly without
+    any rename). In dry-run, prints the rename and returns the path that
+    WOULD have been created so the closing hint stays accurate.
+
+    The unix-ts suffix lets the operator run ``--reset-config`` repeatedly
+    without overwriting prior backups. Operators recovering a clobbered
+    customisation use ``mv kismet_site.conf.bak-<ts> kismet_site.conf``.
+    """
+    if not path.exists():
+        return None
+    ts = int(time.time())
+    backup = path.parent / f"{path.name}.bak-{ts}"
+    if dry_run:
+        _print(f"DRY-RUN: rename {path} -> {backup}")
+        return backup
+    path.rename(backup)
+    return backup
+
+
 def patch_kismet_site_conf(
     path: Path,
     wifi_ifaces: Iterable[str],
@@ -798,6 +822,7 @@ def print_closing_pointer(
     kismet_on_path: bool = True,
     site_conf_path: Path | None = None,
     site_conf_skipped: bool = False,
+    backup_path: Path | None = None,
 ) -> None:
     """The "what now?" block. Always the last thing printed on a
     success path.
@@ -849,6 +874,11 @@ def print_closing_pointer(
         notes.append(
             f"kismet_site.conf was written to {site_conf_path} "
             f"(non-default — from-source build layout detected)."
+        )
+    if backup_path is not None:
+        notes.append(
+            f"--reset-config: previous kismet_site.conf was backed up to "
+            f"{backup_path}. Restore with: mv {backup_path} {site_conf_path}"
         )
 
     if notes:
@@ -977,6 +1007,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Refuse any apt / network operation. Implies --skip-install. "
             "Useful for offline operators who installed Kismet manually."
+        ),
+    )
+    p.add_argument(
+        "--reset-config",
+        action="store_true",
+        help=(
+            "Back up the existing kismet_site.conf to "
+            "kismet_site.conf.bak-<unix-ts>, then write a fresh file from "
+            "the current interface detection. Use after removing an adapter "
+            "so the prior source= line doesn't linger. Operator hand-edits "
+            "outside the source= block (e.g. httpd_*, log_prefix) are "
+            "preserved in the .bak file and can be restored with mv."
         ),
     )
     p.add_argument(
@@ -1147,6 +1189,7 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
     wifi_selected, bt_selected = _select_interfaces(args, input_fn)
 
     site_conf_skipped = False
+    backup_path: Path | None = None
     if not wifi_selected and not bt_selected:
         _print(
             "\nNo interfaces selected for kismet_site.conf. Skipping "
@@ -1165,6 +1208,20 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
         )
         site_conf_skipped = True
     else:
+        if args.reset_config:
+            backup_path = backup_kismet_site_conf(
+                site_conf_path, dry_run=args.dry_run
+            )
+            if backup_path is not None:
+                _print(
+                    f"\n--reset-config: backed up existing "
+                    f"{site_conf_path} -> {backup_path}"
+                )
+            else:
+                _print(
+                    f"\n--reset-config: no existing {site_conf_path} to "
+                    f"back up; writing fresh."
+                )
         _print(f"\nUsing kismet_site.conf at {site_conf_path}")
         patch_kismet_site_conf(
             site_conf_path,
@@ -1224,6 +1281,7 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
         kismet_on_path=_kismet_installed(),
         site_conf_path=site_conf_path,
         site_conf_skipped=site_conf_skipped,
+        backup_path=backup_path,
     )
     return 0
 
