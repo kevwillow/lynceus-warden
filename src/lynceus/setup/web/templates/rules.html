@@ -1,0 +1,51 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; rules engine{% endblock %}
+{% block step_indicator %}{% include "_progress.html" %}{% endblock %}
+{% block content %}
+  <h1>Step 12: Argus-backed alerting</h1>
+  <p>
+    Lynceus can fire alerts on devices matching the imported
+    watchlist. Each rule type is independent and disabled by default
+    &mdash; opt in only to the categories you care about.
+  </p>
+  <form method="post" action="{{ url_with_token('/step/12') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+    <fieldset>
+      <label>
+        <input type="checkbox" name="enable_alerting" {% if enable_alerting %}checked{% endif %}>
+        <strong>Enable Argus-backed alerting</strong>
+        (top-level gate &mdash; leave off to skip the rules engine entirely)
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Per-rule-type enables</legend>
+      <p>
+        <small>
+          Row counts come from the daemon database at this scope; on a
+          first install they read zero until the bundled watchlist is
+          imported (which happens in the apply phase &mdash; Phase 2b).
+          You can pre-stage opt-ins now and the apply will respect
+          them.
+        </small>
+      </p>
+      {% for row in rule_rows %}
+        <label>
+          <input
+            type="checkbox"
+            name="enable_{{ row.rule_type }}"
+            {% if row.rule_type in enabled_rule_types %}checked{% endif %}
+          >
+          <code>{{ row.rule_type }}</code>
+          &mdash; {{ row.label }}
+          ({{ "{:,}".format(row.count) }} row{% if row.count != 1 %}s{% endif %})
+          <br>
+          <small>{{ row.description }}</small>
+        </label>
+      {% endfor %}
+    </fieldset>
+    <div class="wizard-footer">
+      <a href="{{ url_with_token('/step/11') }}" role="button" class="secondary">&larr; Previous</a>
+      <button type="submit">Review &rarr;</button>
+    </div>
+  </form>
+{% endblock %}

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -200,33 +200,15 @@ def create_wizard_app(
             },
         )
 
-    # Real step routes — register before the parameterized catch-all
-    # so literal /step/<N> matches first. Each section module
-    # registers its own ordinals; the placeholder catch-all below
-    # picks up whichever steps are still pending Touches 6-7.
+    # Real step routes. Each section module registers its own
+    # ordinals; with Touch 6 landed, every step ordinal 1..TOTAL_STEPS
+    # has a literal route, so /step/<unknown> 404s via FastAPI's
+    # default unmatched-route handler.
     from lynceus.setup.web.steps_capture import register_capture_steps
     from lynceus.setup.web.steps_kismet import register_kismet_steps
+    from lynceus.setup.web.steps_severity_rules import register_severity_rules_steps
     register_kismet_steps(app)
     register_capture_steps(app)
-
-    @app.get("/step/{n}", response_class=HTMLResponse)
-    async def step_placeholder(request: Request, n: int) -> HTMLResponse:
-        # Placeholder route. Touches 5-7 replace each remaining ordinal
-        # with a real form route. The placeholder stays useful even
-        # after some real routes land: a /step/<n> for an
-        # unimplemented step still renders a "placeholder" page rather
-        # than 404.
-        if n < 1 or n > TOTAL_STEPS:
-            raise HTTPException(status_code=404, detail="step out of range")
-        return templates.TemplateResponse(
-            request=request,
-            name="step_placeholder.html",
-            context={
-                "version": __version__,
-                "step_titles": STEP_TITLES,
-                "total_steps": TOTAL_STEPS,
-                "step_index": n,
-            },
-        )
+    register_severity_rules_steps(app)
 
     return app
