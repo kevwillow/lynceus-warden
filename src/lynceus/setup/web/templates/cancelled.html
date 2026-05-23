@@ -1,0 +1,19 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; cancelled{% endblock %}
+{% block content %}
+  <h1>Wizard cancelled</h1>
+  <p>
+    No configuration was written. Your existing
+    <code>{{ target_path }}</code> (if any) is unchanged.
+  </p>
+  <p>
+    You can close this tab and stop the wizard server with
+    <kbd>Ctrl-C</kbd> in the terminal where you ran
+    <code>lynceus-setup --web</code>. To restart, re-run the same
+    command &mdash; a fresh setup token is generated each time.
+  </p>
+  <p>
+    <a href="{{ url_with_token('/') }}">Return to the welcome page</a>
+  </p>
+{% endblock %}
+{% block footer %}{# Suppress the Cancel link on the cancelled page itself. #}{% endblock %}

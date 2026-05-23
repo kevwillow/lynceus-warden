@@ -1,0 +1,23 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; step {{ step_index }}{% endblock %}
+{% block step_indicator %}{% include "_progress.html" %}{% endblock %}
+{% block content %}
+  <h1>Step {{ step_index }}: {{ step_titles[step_index - 1] }}</h1>
+  <p>
+    <em>Placeholder.</em> The real form for this step lands in a later
+    F6 Phase 2a touch. See <code>BACKLOG.md</code> / the in-flight
+    wizard touches for the schedule.
+  </p>
+  <div class="wizard-footer">
+    {% if step_index > 1 %}
+      <a href="{{ url_with_token('/step/' ~ (step_index - 1)) }}" role="button" class="secondary">&larr; Previous</a>
+    {% else %}
+      <a href="{{ url_with_token('/') }}" role="button" class="secondary">&larr; Welcome</a>
+    {% endif %}
+    {% if step_index < total_steps %}
+      <a href="{{ url_with_token('/step/' ~ (step_index + 1)) }}" role="button">Next &rarr;</a>
+    {% else %}
+      <a href="{{ url_with_token('/review') }}" role="button">Continue to review &rarr;</a>
+    {% endif %}
+  </div>
+{% endblock %}

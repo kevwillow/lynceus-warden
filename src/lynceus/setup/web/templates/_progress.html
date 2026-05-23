@@ -1,0 +1,14 @@
+{# Step indicator partial. Caller supplies ``step_index`` (1-based)
+   and the template reads ``step_titles`` and ``total_steps`` from the
+   render context (both set by the route handler). On the landing
+   page, step_index is 0; the indicator is hidden then. #}
+{% if step_index and step_index > 0 %}
+  <div class="wizard-step-indicator">
+    <small>Step {{ step_index }} of {{ total_steps }} &mdash; {{ step_titles[step_index - 1] }}</small>
+    <ol>
+      {% for title in step_titles %}
+        <li {% if loop.index == step_index %}class="current"{% endif %}>{{ title }}</li>
+      {% endfor %}
+    </ol>
+  </div>
+{% endif %}

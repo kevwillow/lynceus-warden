@@ -6,25 +6,97 @@ operator invokes ``lynceus-setup --web``, gates every non-exempt
 route on a per-run setup token, reuses the existing
 ``CSRFMiddleware`` for state-changing routes, and serves a multi-
 page form. Phase 2a ships the scaffold; routes for the form pages
-land in Touches 3-7 below.
+land in Touches 4-7 below.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from lynceus import __version__
 from lynceus.setup.web.auth import SetupTokenMiddleware
 from lynceus.setup.web.session import SessionStore
-from lynceus.webui.csrf import CSRFMiddleware
+from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 
-# Exempt paths skip the setup-token check. ``/healthz`` is a liveness
-# probe; ``/static`` is added in Touch 3 when the wizard mounts the
-# webui static assets. Touch 1 keeps just liveness.
-TOKEN_EXEMPT_PATHS: tuple[str, ...] = ("/healthz",)
+# Paths exempt from setup-token gating. ``/healthz`` is a liveness
+# probe; ``/static`` is exempt so the operator's browser can fetch
+# CSS without re-attaching the token to every asset URL (Pico assets
+# are public anyway). Equal-or-child-of matching in the middleware
+# means ``/static`` covers ``/static/pico.min.css`` without exempting
+# ``/staticthing``.
+TOKEN_EXEMPT_PATHS: tuple[str, ...] = ("/healthz", "/static")
+
+# Ordered titles for the wizard's form steps. The progress indicator
+# template reads this; the placeholder ``/step/<n>`` routes use the
+# tuple length as the upper bound. Touches 4-7 below replace each
+# placeholder with the real form route while keeping the same ordinal.
+# Adding or reordering steps belongs in one place: here.
+STEP_TITLES: tuple[str, ...] = (
+    "Kismet URL",
+    "Kismet API key",
+    "Kismet probe",
+    "Kismet sources",
+    "Probe SSIDs",
+    "BLE friendly names",
+    "ntfy URL",
+    "ntfy topic",
+    "ntfy probe",
+    "RSSI threshold",
+    "Severity overrides",
+    "Rules engine",
+)
+TOTAL_STEPS: int = len(STEP_TITLES)
+
+
+def _resolve_wizard_templates_dir() -> Path:
+    """Locate the wizard templates directory.
+
+    Mirrors ``webui.app._resolve_templates_dir``: prefer
+    ``importlib.resources`` (works inside an installed wheel), fall
+    back to the source tree for editable installs and tests.
+    """
+    try:
+        from importlib.resources import files
+
+        p = Path(str(files("lynceus.setup.web") / "templates"))
+        if p.is_dir():
+            return p
+    except (ModuleNotFoundError, TypeError, OSError):
+        pass
+    p = Path(__file__).resolve().parent / "templates"
+    if p.is_dir():
+        return p
+    raise FileNotFoundError("Could not locate lynceus-setup wizard templates directory.")
+
+
+def _resolve_webui_static_dir() -> Path:
+    """Locate ``lynceus.webui``'s static dir for re-mounting.
+
+    The wizard piggybacks on the dashboard's pico.css to avoid
+    duplicating the asset (operator decision: shared mount). If the
+    dashboard ever ships a wizard-incompatible CSS change, the wizard
+    can carve out its own ``setup/web/static`` later — for now the
+    shared mount is intentional.
+    """
+    try:
+        from importlib.resources import files
+
+        p = Path(str(files("lynceus.webui") / "static"))
+        if p.is_dir():
+            return p
+    except (ModuleNotFoundError, TypeError, OSError):
+        pass
+    from lynceus import webui  # local import to avoid eager dashboard loading
+
+    p = Path(webui.__file__).resolve().parent / "static"
+    if p.is_dir():
+        return p
+    raise FileNotFoundError("Could not locate lynceus.webui static directory.")
 
 
 def create_wizard_app(
@@ -57,6 +129,29 @@ def create_wizard_app(
     app.state.skip_probes = skip_probes
     app.state.session_store = SessionStore()
 
+    templates = Jinja2Templates(directory=str(_resolve_wizard_templates_dir()))
+    templates.env.globals["csrf_token"] = lambda request: get_csrf_token(request)
+
+    # url_with_token: helper so templates can produce token-bearing
+    # links without hand-concatenating ``?token=``. Bound per-request
+    # because the token comes from app.state, not the request.
+    def _url_with_token(path: str) -> str:
+        # Tokens are URL-safe base64 (token_urlsafe), so no escaping is
+        # needed. Strip any leading slash dup so call sites can pass
+        # either form.
+        if not path.startswith("/"):
+            path = "/" + path
+        return f"{path}?token={setup_token}"
+
+    templates.env.globals["url_with_token"] = _url_with_token
+    app.state.templates = templates
+
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(_resolve_webui_static_dir())),
+        name="static",
+    )
+
     # Middleware order: ``add_middleware`` wraps LIFO, so the LAST
     # added is OUTERMOST. We want the token gate to run first (cheap
     # reject of unauth requests before CSRF state setup), so CSRF is
@@ -73,11 +168,55 @@ def create_wizard_app(
         return JSONResponse({"status": "ok", "service": "lynceus-setup-web"})
 
     @app.get("/", response_class=HTMLResponse)
-    async def root_placeholder(request: Request) -> HTMLResponse:
-        return HTMLResponse(
-            "<!doctype html><title>lynceus-setup</title>"
-            "<h1>lynceus-setup wizard</h1>"
-            "<p>Wizard route stubs go here (Touch 3+).</p>"
+    async def landing(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="landing.html",
+            context={
+                "version": __version__,
+                "scope": scope,
+                "target_path": str(target_path),
+                "step_titles": STEP_TITLES,
+                "total_steps": TOTAL_STEPS,
+                "step_index": 0,
+            },
+        )
+
+    @app.get("/cancel", response_class=HTMLResponse)
+    async def cancel(request: Request) -> HTMLResponse:
+        # Clear in-flight session state on cancel. The session store is
+        # in-memory, but clearing makes the operator's "start over"
+        # path predictable even if they re-open the wizard URL.
+        app.state.session_store.clear()
+        return templates.TemplateResponse(
+            request=request,
+            name="cancelled.html",
+            context={
+                "version": __version__,
+                "target_path": str(target_path),
+                "step_titles": STEP_TITLES,
+                "total_steps": TOTAL_STEPS,
+                "step_index": 0,
+            },
+        )
+
+    @app.get("/step/{n}", response_class=HTMLResponse)
+    async def step_placeholder(request: Request, n: int) -> HTMLResponse:
+        # Placeholder route. Touches 4-7 replace each ordinal with a
+        # real form route. The placeholder stays useful even after
+        # some real routes land: a /step/<n> for an unimplemented
+        # step still renders a "placeholder" page rather than 404.
+        if n < 1 or n > TOTAL_STEPS:
+            raise HTTPException(status_code=404, detail="step out of range")
+        return templates.TemplateResponse(
+            request=request,
+            name="step_placeholder.html",
+            context={
+                "version": __version__,
+                "step_titles": STEP_TITLES,
+                "total_steps": TOTAL_STEPS,
+                "step_index": n,
+            },
         )
 
     return app

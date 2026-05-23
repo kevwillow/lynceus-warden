@@ -80,6 +80,7 @@ lynceus = [
     "migrations/*.sql",
     "webui/templates/*.html",
     "webui/static/*",
+    "setup/web/templates/*.html",
 ]
 "lynceus.data" = [
     "*.csv",
