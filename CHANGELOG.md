@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Browser-based `lynceus-setup --web` wizard (scaffolding; apply
+  pipeline still pending).** A second frontend for the first-run
+  configuration ceremony. Invoke `lynceus-setup --web` and the
+  command prints a loopback URL with a single-use setup token; opening
+  that URL in a browser starts a 12-step form that mirrors the
+  interactive CLI flow question-for-question (Kismet URL / API key
+  auto-locate + paste / probe / source selection / capture privacy /
+  ntfy URL / topic / probe / RSSI / severity overrides / alerting +
+  per-rule-type enables). Every page validates input through the same
+  `Config` constructor the daemon loads from disk, so the wizard can
+  never produce a configuration the daemon will refuse. A `/review`
+  page renders the validated config with secrets redacted (Kismet API
+  key head/tail; ntfy topic head + bullets + tail), and
+  `/apply-preview.json` exposes the same validated config as JSON for
+  scripts. Loopback-bound by default on port 8766 (one above the
+  `lynceus-ui` default 8765 to avoid collision with a running
+  dashboard); `--bind 0.0.0.0` is the explicit remote opt-out, and
+  `--port` overrides the default. Every route is gated on a per-run
+  token validated with `secrets.compare_digest`, and POST routes
+  reuse the existing CSRF middleware unchanged. Two operator-visible
+  notes: (1) the **apply step is a placeholder in this release** — the
+  wizard validates and previews but does NOT yet write `lynceus.yaml`,
+  scaffold the severity overrides file, run the bundled-watchlist
+  import, or write `rules.yaml`; to finish today, stop the wizard
+  and re-run as `lynceus-setup --reconfigure` (the CLI flow). (2)
+  Probes (Kismet, ntfy) run synchronously in the request and respect
+  the existing `--skip-probes` flag, so a flaky network won't hang
+  the browser longer than the existing 5-second probe timeout. The
+  full apply pipeline + SSE progress streaming land in the next
+  phase of this arc.
+
 ### Changed
 
 - **Internal refactor: `lynceus-setup` now drives its file-write chain
