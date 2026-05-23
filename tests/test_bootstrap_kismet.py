@@ -410,6 +410,49 @@ def test_main_help_advertises_reset_config(capsys):
     assert "--reset-config" in out
 
 
+def test_closing_pointer_advertises_reset_config_on_normal_run(capsys):
+    """Discoverability: a normal bootstrap run (no --reset-config) shows
+    a one-line tip pointing operators at the flag for future re-runs
+    after adapter removal. Without this, --reset-config is only
+    discoverable via --help or the changelog — meaning operators who
+    physically remove an adapter and re-run keep accumulating stale
+    source= lines without ever learning the cleanup exists."""
+    bk.print_closing_pointer(
+        operator="kev",
+        skip_install=False,
+        distro_supported=True,
+        kismet_on_path=True,
+        site_conf_path=Path("/etc/kismet/kismet_site.conf"),
+        site_conf_skipped=False,
+        backup_path=None,  # the normal-run case
+    )
+    out = capsys.readouterr().out
+    assert "--reset-config" in out
+    assert "removed an adapter" in out
+
+
+def test_closing_pointer_omits_reset_config_tip_when_just_used(capsys):
+    """The operator who just used --reset-config does NOT need to be told
+    the flag exists — surfacing the tip in that case would be noise
+    layered on top of the existing 'previous kismet_site.conf was
+    backed up to ...' note. Pinning the suppression keeps the closing
+    block focused on what's still actionable."""
+    bk.print_closing_pointer(
+        operator="kev",
+        skip_install=False,
+        distro_supported=True,
+        kismet_on_path=True,
+        site_conf_path=Path("/etc/kismet/kismet_site.conf"),
+        site_conf_skipped=False,
+        backup_path=Path("/etc/kismet/kismet_site.conf.bak-1234567890"),
+    )
+    out = capsys.readouterr().out
+    # Backup note still appears (Touch 1's existing behavior).
+    assert "backed up" in out
+    # ...but the discoverability tip does not — operator already knows.
+    assert "removed an adapter" not in out
+
+
 # ---------------------------------------------------------------------------
 # main() exit paths -- non-root, unsupported distro
 # ---------------------------------------------------------------------------
