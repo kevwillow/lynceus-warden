@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Internal refactor: `lynceus-setup` now drives its file-write chain
+  through a new `lynceus.setup` package.** No operator-visible
+  behavior change — the wizard's prompts, output lines, exit codes,
+  and the `--system` permissions sequence are byte-for-byte identical
+  to v0.6.3. The deterministic write+import+chown chain
+  (`write_config`, `scaffold_severity_overrides`, `import_bundled_
+  watchlist`, the post-import sqlite chown loop) moved out of
+  `lynceus.cli.setup` into `lynceus.setup.core.apply_config(...)`,
+  which returns an `ApplyReport` (one structured `ApplyStep` per
+  phase). The interactive prompt helpers moved alongside into
+  `lynceus.setup.prompts`. `lynceus.cli.setup` becomes a thinner CLI
+  frontend that builds a validated `Config` from the prompted
+  answers and hands it to `apply_config`. Foundation for the
+  forthcoming run-once web wizard (Phase 2 of the install-flow webui
+  arc) which will plug a different progress sink + a different
+  prompt layer into the same core. Known parity gap carried forward:
+  the wizard scaffolds `severity_overrides.yaml` but does NOT
+  persist `severity_overrides_path` into `lynceus.yaml` — a quirk
+  that pre-dates this refactor; flagged here to be revisited when
+  Phase 3's persistent admin pages land.
+
 ## [0.6.3] - 2026-05-23
 
 ### Added
