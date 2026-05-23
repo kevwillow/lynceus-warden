@@ -26,9 +26,10 @@ from urllib.parse import urlsplit
 import requests
 
 from .. import __version__, paths
-from ..config import DEFAULT_KISMET_URL
+from ..config import DEFAULT_KISMET_URL, CaptureConfig, Config
 from ..kismet import KismetClient
 from ..redact import redact_ntfy_topic, redact_topic_in_url
+from ..setup.models import ApplyStep
 
 # Re-exports from setup.core so existing test imports survive the Touch 2
 # move. The 200 setup-wizard tests reach for ``wiz._atomic_write``,
@@ -61,6 +62,28 @@ from ..setup.core import (  # noqa: F401  (test-namespace re-exports)
     subprocess,
     write_config,
 )
+
+
+# --- CLI progress sink ------------------------------------------------------
+
+
+class CLIProgressSink:
+    """Synchronous ``ProgressSink`` implementation for the CLI wizard.
+
+    Phase 1 records steps without printing. ``run_wizard`` reads the
+    returned ``ApplyReport`` after ``apply_config`` completes and
+    reconstructs the legacy output (summary block, bundled-import
+    message, group-ownership summary) in the exact order the
+    pre-refactor wizard printed it. Keeping the sink silent here
+    preserves stdout byte-for-byte against the 200-test baseline; the
+    Phase 2 web wizard will plug in an SSE-streaming sink instead.
+    """
+
+    def __init__(self) -> None:
+        self.steps: list[ApplyStep] = []
+
+    def record(self, step: ApplyStep) -> None:
+        self.steps.append(step)
 
 logger = logging.getLogger(__name__)
 
@@ -1171,36 +1194,55 @@ and enter the topic exactly as written.
         )
     sev_path = Path(sev_path_str)
 
-    # Write config
-    content = render_config_yaml(answers)
+    # Drive the deterministic file-write + bundled-import + chown chain
+    # through ``apply_config``. The CLI sink records each ApplyStep
+    # silently; the legacy per-phase prints (summary block, bundled
+    # message, group-ownership summary) are reconstructed below from
+    # the returned ApplyReport so the wizard's stdout stays byte-for-
+    # byte identical to v0.6.3. ``enabled_rule_types=None`` keeps the
+    # alerting flow OUT of apply_config — it stays here in the CLI
+    # frontend so per-type prompts can still show post-import row
+    # counts (the legacy UX).
+    config = Config(
+        kismet_url=answers["kismet_url"],
+        kismet_api_key=answers["kismet_api_key"],
+        kismet_sources=answers["kismet_sources"],
+        capture=CaptureConfig(
+            probe_ssids=answers["probe_ssids"],
+            ble_friendly_names=answers["ble_friendly_names"],
+        ),
+        ntfy_url=answers["ntfy_url"] or None,
+        ntfy_topic=answers["ntfy_topic"] or None,
+        min_rssi=answers["min_rssi"],
+    )
+    cli_sink = CLIProgressSink()
     try:
-        write_config(target, content)
-        if scope == "system":
-            _apply_system_perms_to_file(target)
-
-        sev_created = scaffold_severity_overrides(sev_path)
-        if scope == "system":
-            # Apply on every system run, not just when newly scaffolded:
-            # an existing file inherited from a botched rc1 install may
-            # still be 0600 root:root and unreadable by the daemon.
-            _apply_system_perms_to_file(sev_path)
-
-        # Defensive: ensure data + log directories exist before we hand off
-        # to lynceus-import-argus. On a fresh box neither exists, and
-        # sqlite refuses to open ``<missing>/lynceus.db`` with "unable to
-        # open database file". Under --system the daemon (User=lynceus)
-        # also needs to OWN these directories, otherwise the first poll
-        # fails with "attempt to write a readonly database".
-        data_dir = paths.default_data_dir(scope)
-        log_dir = paths.default_log_dir(scope)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        log_dir.mkdir(parents=True, exist_ok=True)
-        if scope == "system":
-            _apply_system_perms_to_dir(data_dir)
-            _apply_system_perms_to_dir(log_dir)
+        report = apply_config(
+            config,
+            scope=scope,
+            target_path=target,
+            severity_overrides_path=sev_path,
+            enabled_rule_types=None,
+            run_bundled_import=True,
+            progress=cli_sink,
+        )
     except SetupError as exc:
         print(f"Setup failed: {exc}", file=sys.stderr)
         return 1
+
+    # Extract per-step results so the legacy prints below can carry the
+    # same data they used to read from local variables.
+    scaffold_step = next(s for s in report.steps if s.name == "scaffold_severity_overrides")
+    sev_created = bool(scaffold_step.detail and scaffold_step.detail.get("scaffolded"))
+    import_step = next(s for s in report.steps if s.name == "import_bundled_watchlist")
+    bundled_ok = import_step.status == "ok"
+    bundled_msg = import_step.message
+    chown_step = next(s for s in report.steps if s.name == "chown_db_files")
+    chowned_db_files: list[Path] = (
+        [Path(p) for p in chown_step.detail["files"]]
+        if chown_step.detail and "files" in chown_step.detail
+        else []
+    )
 
     # Summary
     print()
@@ -1222,44 +1264,19 @@ and enter the topic exactly as written.
     else:
         print(f"  severity overrides: {sev_path} (existing, not modified)")
 
-    # Auto-import bundled threat data when shipped. Silent skip when absent.
-    # Resolve DB path via the canonical paths helper so the bundled threat
-    # data lands where the daemon will actually read from
-    # (``/var/lib/lynceus/lynceus.db`` under --system, the per-user XDG
-    # data dir under --user) instead of the operator's CWD.
+    # Bundled-import message — apply_config already ran the import.
+    # Resolve the same db_path string the alerting flow below queries
+    # against (the canonical default_db_path for this scope).
     db_path_str = str(paths.default_db_path(scope))
     print()
-    bundled_ok, bundled_msg = import_bundled_watchlist(
-        db_path=db_path_str,
-        override_file=str(sev_path),
-    )
-    if bundled_msg != BUNDLED_ABSENT_MESSAGE:
-        if bundled_ok:
-            print(f"Imported bundled threat data: {bundled_msg}.")
-        else:
-            print(
-                f"Bundled threat-data import failed: {bundled_msg}. "
-                "You can retry later with lynceus-import-argus."
-            )
-
-    # System-mode ownership for the freshly written DB and any sqlite
-    # sidecars (lynceus.db-wal, lynceus.db-shm). The DB must be OWNED
-    # by lynceus (not just group-readable) so the daemon can write to
-    # it — root:lynceus 0640 would let the first poll fail with "attempt
-    # to write a readonly database". We reuse the dir helper because it
-    # already does the ``lynceus:lynceus`` lookup; mode is overridden to
-    # 0o640 to keep DB files non-executable.
-    chowned_db_files: list[Path] = []
-    if scope == "system" and bundled_ok:
-        try:
-            db_path = Path(db_path_str)
-            for candidate in sorted(db_path.parent.glob(db_path.name + "*")):
-                if candidate.is_file():
-                    _apply_system_perms_to_dir(candidate, mode=0o640)
-                    chowned_db_files.append(candidate)
-        except SetupError as exc:
-            print(f"Setup failed: {exc}", file=sys.stderr)
-            return 1
+    if import_step.status == "ok":
+        print(f"Imported bundled threat data: {bundled_msg}.")
+    elif import_step.status == "failed":
+        print(
+            f"Bundled threat-data import failed: {bundled_msg}. "
+            "You can retry later with lynceus-import-argus."
+        )
+    # status == "skipped" (BUNDLED_ABSENT_MESSAGE): silent, same as legacy.
 
     # Enable-alerting flow (opt-in). Runs after the bundled-watchlist
     # import so the per-type prompts can show real row counts, and

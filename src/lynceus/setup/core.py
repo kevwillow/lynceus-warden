@@ -77,6 +77,40 @@ def _frontend_is_windows() -> bool:
     return _frontend._is_windows()
 
 
+def _frontend_render_config_yaml(answers: dict) -> str:
+    """Late lookup of ``render_config_yaml`` through the CLI frontend.
+
+    Same compat shim as ``_frontend_is_windows``: the legacy test
+    ``test_existing_rules_path_in_lynceus_yaml_does_not_duplicate``
+    patches ``wiz.render_config_yaml`` to inject a pre-existing
+    ``rules_path:`` and asserts that the post-render append-rules-path
+    code path detects the existing key and skips the duplicate. The
+    patched render must reach ``apply_config``'s render call, which
+    would otherwise resolve to this module's local binding and miss
+    the patch.
+    """
+    from lynceus.cli import setup as _frontend
+    return _frontend.render_config_yaml(answers)
+
+
+def _frontend_import_bundled_watchlist(
+    db_path: str, override_file: str | None
+) -> tuple[bool, str]:
+    """Late lookup of ``import_bundled_watchlist`` through the CLI frontend.
+
+    Seven legacy tests stub the bundled-import subprocess via
+    ``monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)``
+    and drive ``run_wizard`` end-to-end. After the move, ``apply_config``
+    calling ``import_bundled_watchlist`` directly would hit this
+    module's binding, not the patched ``wiz.`` binding. Routing through
+    ``cli.setup`` at call time preserves the test seam.
+    """
+    from lynceus.cli import setup as _frontend
+    return _frontend.import_bundled_watchlist(
+        db_path=db_path, override_file=override_file
+    )
+
+
 # --- Atomic writes + system-mode permissions --------------------------------
 #
 # rc1 had three independent footguns in the way it laid down state under
@@ -769,7 +803,7 @@ def apply_config(
             progress.record(step)
 
     # 1. write_config — render + atomic write + perms under --system.
-    content = render_config_yaml(_answers_from_config(config))
+    content = _frontend_render_config_yaml(_answers_from_config(config))
     if config.rules_path:
         # Single-render path: caller pre-decided alerting and pre-set
         # Config.rules_path, so emit it inline rather than appending
@@ -853,7 +887,7 @@ def apply_config(
     db_path = paths.default_db_path(scope)
     bundled_ok = False
     if run_bundled_import:
-        bundled_ok, bundled_msg = import_bundled_watchlist(
+        bundled_ok, bundled_msg = _frontend_import_bundled_watchlist(
             db_path=str(db_path),
             override_file=str(severity_overrides_path),
         )
