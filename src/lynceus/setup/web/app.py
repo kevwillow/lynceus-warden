@@ -200,12 +200,19 @@ def create_wizard_app(
             },
         )
 
+    # Real step routes — register before the parameterized catch-all
+    # so literal /step/<N> matches first. Touches 4-7 land one per
+    # section; placeholder catch-all below handles the rest.
+    from lynceus.setup.web.steps_kismet import register_kismet_steps
+    register_kismet_steps(app)
+
     @app.get("/step/{n}", response_class=HTMLResponse)
     async def step_placeholder(request: Request, n: int) -> HTMLResponse:
-        # Placeholder route. Touches 4-7 replace each ordinal with a
-        # real form route. The placeholder stays useful even after
-        # some real routes land: a /step/<n> for an unimplemented
-        # step still renders a "placeholder" page rather than 404.
+        # Placeholder route. Touches 5-7 replace each remaining ordinal
+        # with a real form route. The placeholder stays useful even
+        # after some real routes land: a /step/<n> for an
+        # unimplemented step still renders a "placeholder" page rather
+        # than 404.
         if n < 1 or n > TOTAL_STEPS:
             raise HTTPException(status_code=404, detail="step out of range")
         return templates.TemplateResponse(

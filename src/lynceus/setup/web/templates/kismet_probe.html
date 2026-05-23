@@ -1,0 +1,58 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; Kismet probe{% endblock %}
+{% block step_indicator %}{% include "_progress.html" %}{% endblock %}
+{% block content %}
+  <h1>Step 3: Kismet probe</h1>
+  {% if skipped %}
+    <p>
+      Probes are skipped (you passed <code>--skip-probes</code>).
+      Source selection on the next page will use OS interface
+      enumeration as a fallback.
+    </p>
+    <form method="post" action="{{ url_with_token('/step/3') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="action" value="continue">
+      <div class="wizard-footer">
+        <a href="{{ url_with_token('/step/2') }}" role="button" class="secondary">&larr; Previous</a>
+        <button type="submit">Next &rarr;</button>
+      </div>
+    </form>
+  {% elif probe_ok %}
+    <p>
+      <strong>Kismet reachable.</strong> Version
+      <code>{{ probe_version or 'unknown' }}</code>.
+      {% if sources_count is not none %}
+        Found {{ sources_count }} datasource(s) configured.
+      {% else %}
+        Could not query datasources; the next page will fall back to
+        OS interface enumeration.
+      {% endif %}
+    </p>
+    <form method="post" action="{{ url_with_token('/step/3') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="action" value="continue">
+      <div class="wizard-footer">
+        <a href="{{ url_with_token('/step/2') }}" role="button" class="secondary">&larr; Previous</a>
+        <button type="submit">Next &rarr;</button>
+      </div>
+    </form>
+  {% else %}
+    <p class="wizard-error">
+      <strong>Kismet probe failed:</strong>
+      <code>{{ probe_error or 'unknown error' }}</code>
+    </p>
+    <p>
+      You can continue anyway &mdash; the next page will fall back to
+      OS interface enumeration so you can finish the wizard offline
+      and re-run <code>lynceus-setup --reconfigure</code> once Kismet
+      is up.
+    </p>
+    <form method="post" action="{{ url_with_token('/step/3') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <div class="wizard-footer">
+        <button type="submit" name="action" value="cancel" class="secondary">Cancel wizard</button>
+        <button type="submit" name="action" value="continue">Continue anyway &rarr;</button>
+      </div>
+    </form>
+  {% endif %}
+{% endblock %}
