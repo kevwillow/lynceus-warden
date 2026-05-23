@@ -14,14 +14,11 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import importlib.resources
 import json
 import logging
 import os
 import re
 import secrets
-import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -33,126 +30,39 @@ from ..config import DEFAULT_KISMET_URL
 from ..kismet import KismetClient
 from ..redact import redact_ntfy_topic, redact_topic_in_url
 
+# Re-exports from setup.core so existing test imports survive the Touch 2
+# move. The 200 setup-wizard tests reach for ``wiz._atomic_write``,
+# ``wiz.subprocess.Popen``, ``wiz.SetupError``, etc. via this module's
+# namespace; pulling the same names back here keeps every test seam
+# pointing at the same objects without editing 200 test imports.
+from ..setup.core import (  # noqa: F401  (test-namespace re-exports)
+    BUNDLED_ABSENT_MESSAGE,
+    BUNDLED_IMPORT_TIMEOUT_SECONDS,
+    BUNDLED_WATCHLIST_PACKAGE,
+    BUNDLED_WATCHLIST_RESOURCE,
+    DEFAULT_UI_PORT,
+    DELEGATION_RULES,
+    SEVERITY_OVERRIDES_TEMPLATE,
+    SetupError,
+    _apply_system_perms_to_dir,
+    _apply_system_perms_to_file,
+    _atomic_write,
+    _is_windows,
+    _yaml_bool,
+    _yaml_str,
+    append_rules_path_to_config,
+    apply_config,
+    count_watchlist_by_pattern_type,
+    import_bundled_watchlist,
+    importlib,
+    render_config_yaml,
+    render_rules_yaml,
+    scaffold_severity_overrides,
+    subprocess,
+    write_config,
+)
+
 logger = logging.getLogger(__name__)
-
-
-# --- Errors -----------------------------------------------------------------
-
-
-class SetupError(Exception):
-    """Raised by the wizard helpers for operator-actionable failures.
-
-    Caught at the ``run_wizard`` boundary and rendered to stderr with a
-    non-zero exit code. Distinguished from ad-hoc ``RuntimeError`` so a
-    test can assert exactly which failure mode it's exercising.
-    """
-
-
-# --- Atomic writes + system-mode permissions --------------------------------
-#
-# rc1 had three independent footguns in the way it laid down state under
-# ``--system`` mode:
-#
-#   * Bug 6: config written 0600 root:root → ``User=lynceus`` daemon could
-#     not read it → unit failed on first start.
-#   * S1:    data_dir + lynceus.db owned by root → daemon could not write
-#     → first poll failed with "attempt to write a readonly database".
-#   * S2:    secrets-bearing config briefly world-readable between
-#     ``write_text`` and the follow-up ``chmod`` (race window in BOTH user
-#     and system mode).
-#
-# The fix is a coordinated change: ``_atomic_write`` collapses the S2
-# race by setting the target mode at fd-creation time, and the
-# ``_apply_system_perms_*`` helpers give system mode a clean ownership
-# story (``root:lynceus 0640`` for files, ``lynceus:lynceus 0750`` for
-# directories the daemon must write to). User mode behaviour is
-# unchanged — the helpers are wired in only when ``scope == "system"``.
-
-
-def _atomic_write(path: Path, content: str, *, mode: int = 0o600) -> None:
-    """Write ``content`` to ``path`` with ``mode`` set at creation time.
-
-    Closes the S2 race: the legacy "write the file then chmod" two-step
-    leaves a window in which the file exists with umask-derived bits
-    (typically world-readable ``0o644``) before the chmod lands. Anyone
-    reading the file in that interval sees the secret-bearing config
-    in the clear. Setting the mode in the ``os.open`` flags eliminates
-    the window — the file never exists on disk with permissions broader
-    than requested.
-
-    On Windows the POSIX mode bits are meaningless, so we fall back to
-    ``path.write_text`` to match the chmod-skip pattern used elsewhere.
-    """
-    if _is_windows():
-        path.write_text(content, encoding="utf-8")
-        return
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(content)
-
-
-def _apply_system_perms_to_file(path: Path, *, group: str = "lynceus", mode: int = 0o640) -> None:
-    """Set ``root:<group>`` ownership and ``mode`` on a system-mode file.
-
-    Used for ``/etc/lynceus/lynceus.yaml`` and the severity-overrides
-    file: the config is owned by root (so a compromised daemon cannot
-    rewrite its own config) but readable by the lynceus group (so the
-    ``User=lynceus`` daemon can actually load it).
-    """
-    if _is_windows():
-        return
-    if sys.platform == "darwin":
-        raise SetupError("--system mode is Linux-only with systemd; not supported on macOS.")
-    import grp
-
-    try:
-        gid = grp.getgrnam(group).gr_gid
-    except KeyError as exc:
-        raise SetupError(
-            f"Group '{group}' does not exist. "
-            "Run `sudo ./install.sh --system` first to create the system user/group."
-        ) from exc
-    os.chown(str(path), 0, gid)
-    os.chmod(str(path), mode)
-
-
-def _apply_system_perms_to_dir(
-    path: Path,
-    *,
-    owner: str = "lynceus",
-    group: str = "lynceus",
-    mode: int = 0o750,
-) -> None:
-    """Set ``<owner>:<group>`` ownership and ``mode`` on a system-mode dir.
-
-    Used for ``/var/lib/lynceus`` and ``/var/log/lynceus``: the daemon
-    needs to create files in these directories, so they must be owned
-    by the lynceus user, not root. Same shape as
-    ``_apply_system_perms_to_file`` but resolves a UID too.
-    """
-    if _is_windows():
-        return
-    if sys.platform == "darwin":
-        raise SetupError("--system mode is Linux-only with systemd; not supported on macOS.")
-    import grp
-    import pwd
-
-    try:
-        uid = pwd.getpwnam(owner).pw_uid
-    except KeyError as exc:
-        raise SetupError(
-            f"User '{owner}' does not exist. "
-            "Run `sudo ./install.sh --system` first to create the system user/group."
-        ) from exc
-    try:
-        gid = grp.getgrnam(group).gr_gid
-    except KeyError as exc:
-        raise SetupError(
-            f"Group '{group}' does not exist. "
-            "Run `sudo ./install.sh --system` first to create the system user/group."
-        ) from exc
-    os.chown(str(path), uid, gid)
-    os.chmod(str(path), mode)
 
 
 # --- Defaults ---------------------------------------------------------------
@@ -162,16 +72,7 @@ def _apply_system_perms_to_dir(
 # truth.
 DEFAULT_NTFY_BROKER = "https://ntfy.sh"
 DEFAULT_RSSI_THRESHOLD = -70
-DEFAULT_UI_PORT = 8765
 PROBE_TIMEOUT_SECONDS = 5.0
-# Bound the bundled-watchlist subprocess so a stuck lynceus-import-argus
-# (rare; usually completes in <10s on the few-thousand-row bundled CSV)
-# cannot wedge --system setup at the import step with no visible
-# progress. 120s is a generous ceiling — any real import that needs
-# longer wants to be the operator's explicit follow-up
-# `lynceus-import-argus --from-github` rather than the wizard's
-# auto-import.
-BUNDLED_IMPORT_TIMEOUT_SECONDS = 120
 
 SEVERITY_OVERRIDES_EXPLANATION = """\
 Severity overrides let you customize how Lynceus rates threats. By
@@ -193,157 +94,7 @@ A starter file with explanatory comments will be created at the path
 below. You can edit it any time. Press Enter to accept the default.
 """
 
-SEVERITY_OVERRIDES_TEMPLATE = """\
-# Lynceus severity overrides — consumed by TWO layers:
-#
-#   IMPORT-TIME (lynceus-import-argus --override-file): keys
-#     vendor_overrides, geographic_filter, confidence_downgrade_threshold.
-#     Edits require re-importing to apply.
-#
-#   RUNTIME (the poller / daemon): keys device_category_severity,
-#     suppress_categories, suppress_vendors, pattern_overrides,
-#     vendor_severity. Edits require only a daemon restart;
-#     already-imported rows fire at the new severity (or are
-#     suppressed) without re-importing.
-#
-# Each section is optional. Uncomment and edit only what you want to change.
-# Each section below carries an inline `# LAYER:` tag so it's clear which
-# layer (and what action) the change requires.
-
-# vendor_overrides:           # LAYER: IMPORT-TIME — re-import to apply
-#   # Force a specific severity for any record from this manufacturer at
-#   # IMPORT time. Use the literal string "drop" to skip records from a
-#   # vendor entirely — that "drop" is import-skip semantics (the row
-#   # never lands in the DB). For RUNTIME-only vendor suppression on
-#   # already-imported rows, use suppress_vendors below instead; for
-#   # RUNTIME-only vendor severity tuning, use vendor_severity below.
-#   "ACME Surveillance Inc": high
-#   "Hobbyist Drone Co":     drop
-
-# vendor_severity:            # LAYER: RUNTIME — daemon restart applies live
-#   # Vendor-level severity remap. Maps manufacturer strings
-#   # (case-insensitive exact match on the watchlist row's
-#   # manufacturer, same comparison shape as suppress_vendors below)
-#   # to a severity literal (low / med / high). The runtime remap
-#   # counterpart to suppress_vendors: tune severity across every
-#   # device from a vendor without enumerating individual rows.
-#   #
-#   # Precedence: more specific than device_category_severity (a
-#   # vendor remap on an alpr device wins over alpr → med); less
-#   # specific than pattern_overrides (a row-level remap on the same
-#   # row wins over the vendor remap). Suppression at either layer
-#   # (suppress_vendors / suppress_categories) always wins — vendor
-#   # remap is not an UNSUPPRESS knob.
-#   #
-#   # Distinct from import-time vendor_overrides above: that key's
-#   # "drop" sentinel means skip-at-import. vendor_severity is a
-#   # separate RUNTIME key so the "drop" semantic stays unambiguous.
-#   #
-#   # Example: bump every surveillance camera vendor to high
-#   # regardless of category:
-#   #   "Axon Enterprise, Inc.": high
-#   #   "Flock Safety":          high
-
-# device_category_severity:   # LAYER: BOTH — daemon restart applies live
-#   # Remap the severity for an Argus device_category.
-#   # Import time bakes this into the watchlist row at write time;
-#   # the poller re-applies it at alert time on top of whatever was
-#   # baked, so an edit takes effect on the next daemon restart with
-#   # no re-import needed. Built-ins:
-#   #   imsi_catcher=high, alpr=high, body_cam=med, drone=med,
-#   #   gunshot_detect=med, hacking_tool=high, in_vehicle_router=med,
-#   #   unknown=low.
-#   imsi_catcher: high
-#   drone: low
-#   # automotive_telematics: med
-#   # # Forward-compat category from Argus §F.1. Argus v1.4.1 ships the
-#   # # `automotive_telematics` device_category enum value but with zero
-#   # # active rows; the Parrot Automotive arm and v1.4.2 cellular-IoT
-#   # # vendor backlog will populate the category later. Seating the
-#   # # hint at `med` now so operator severity is already tuned when
-#   # # the data lands. (Argus engineer's "medium" → Lynceus's "med"
-#   # # literal; `medium` is not in VALID_SEVERITIES and would silently
-#   # # disable the override.)
-
-# pattern_overrides:          # LAYER: RUNTIME — daemon restart applies live
-#   # Row-level severity remap keyed by argus_record_id (16-hex
-#   # stable Argus identifier on watchlist_metadata.argus_record_id).
-#   # More specific than device_category_severity above — carves
-#   # individual rows out of the category-level default. Less
-#   # specific than suppress_categories / suppress_vendors above:
-#   # if either suppression layer fires for a row, this remap is
-#   # never consulted (per-row UNSUPPRESS is not a feature). Only
-#   # rows imported from Argus have argus_record_id populated;
-#   # operator-supplied rows seeded via lynceus-seed-watchlist
-#   # without metadata fall through to the category layer.
-#   #
-#   # Find an argus_record_id for a row of interest with:
-#   #   sqlite3 lynceus.db "SELECT m.argus_record_id, w.pattern,
-#   #                              w.severity, m.vendor
-#   #                       FROM watchlist w
-#   #                       JOIN watchlist_metadata m
-#   #                         ON w.id = m.watchlist_id
-#   #                       LIMIT 5;"
-#   #
-#   # Example: bump a specific row from baked low → high.
-#   #   "a1b2c3d4e5f60718": high
-
-# suppress_categories:        # LAYER: RUNTIME — daemon restart applies live
-#   # Categories listed here produce NO alerts at runtime, even if
-#   # delegation rules in rules.yaml are active for the matched
-#   # pattern_type. The matching row stays in the watchlist DB (the
-#   # importer is unaffected); only alert emission is suppressed.
-#   # Useful when an operator wants to keep enrichment metadata for
-#   # a category without producing alerts on it.
-#   # - some_category
-
-# suppress_vendors:           # LAYER: RUNTIME — daemon restart applies live
-#   # Manufacturers listed here produce NO alerts at runtime, even if
-#   # delegation rules in rules.yaml are active for the matched
-#   # pattern_type. Comparison is case-insensitive exact match
-#   # (lowercase + whitespace-trim normalization applied to both sides),
-#   # so casing and accidental leading/trailing spaces do not matter —
-#   # but partial substrings do NOT match (use vendor_overrides above
-#   # for import-time skip-by-substring).
-#   # Use the canonical vendor string from the watchlist row (the same
-#   # string the Argus CSV exports in the `manufacturer` column).
-#   # Runtime cousin of vendor_overrides' "drop" sentinel; the watchlist
-#   # row stays in the DB, only alert emission is silenced. Vendor
-#   # suppression takes precedence over the category-driven keys above.
-#   # - "Mitsubishi Electric US, Inc."
-
-# geographic_filter:          # LAYER: IMPORT-TIME — re-import to apply
-#   # Only import records whose geographic_scope matches one of these values
-#   # (records with scope "global" are always kept). Empty/unset = no filter.
-#   - US
-#   - global
-
-# confidence_downgrade_threshold: 70   # LAYER: IMPORT-TIME — re-import to apply
-# # Argus records below this confidence (0-100) get their severity downgraded
-# # one notch (high -> med, med -> low) at import. Set to 0 to disable.
-
-# argus_schema_version_accept_list:   # LAYER: IMPORT-TIME — re-import to apply
-#   # Operator-tunable accept-list for the Argus CSV's
-#   # `# meta: schema_version=N` ingress value. Values outside this
-#   # list trip a WARNING-without-abort during import; values in the
-#   # list are accepted silently. Defaults to ["25", "26"] (the
-#   # v1.4.1 transition window — pre-Phase-1 regen anchor exports
-#   # were tagged "25", v1.4.1 ships at "26"). Set to null or [] to
-#   # disable the check entirely; older Argus exports without a
-#   # schema_version key always pass silently (no regression for
-#   # archived-export imports).
-#   - "25"
-#   - "26"
-"""
-
-
 # --- Path resolution --------------------------------------------------------
-
-
-def _is_windows() -> bool:
-    """Indirection point for tests — monkeypatch this rather than ``os.name``,
-    which would also flip pathlib's native Path subclass at runtime."""
-    return os.name == "nt"
 
 
 def user_config_dir() -> Path:
@@ -916,171 +667,6 @@ def probe_ntfy(
     return False, f"HTTP {response.status_code}"
 
 
-# --- Config write -----------------------------------------------------------
-
-
-def render_config_yaml(answers: dict) -> str:
-    """Build the lynceus.yaml content with section comments. Hand-rolled so
-    the operator gets explanatory comments, not a bare yaml.safe_dump."""
-    sources_lines = ["kismet_sources:"]
-    for src in answers["kismet_sources"]:
-        sources_lines.append(f"  - {src}")
-    lines = [
-        "# Lynceus configuration — generated by lynceus-setup.",
-        "# Edit this file directly, or re-run `lynceus-setup --reconfigure`.",
-        "",
-        "# --- Kismet source ---",
-        "# REST API endpoint and the cookie token used to authenticate.",
-        f"kismet_url: {answers['kismet_url']}",
-        f"kismet_api_key: {_yaml_str(answers['kismet_api_key'])}",
-        "",
-        "# --- Capture sources ---",
-        "# Inclusive filter on Kismet source (adapter) names. Only observations",
-        "# from listed sources are processed; others are silently dropped.",
-        *sources_lines,
-        "",
-        "# --- Tier 1 passive metadata capture ---",
-        "# Privacy-sensitive toggles. probe_ssids reveals device WiFi history",
-        "# (off by default). ble_friendly_names captures BLE GAP advertisement",
-        "# names — broadcast publicly with intent (on by default).",
-        "capture:",
-        f"  probe_ssids: {_yaml_bool(answers['probe_ssids'])}",
-        f"  ble_friendly_names: {_yaml_bool(answers['ble_friendly_names'])}",
-        "",
-        "# --- Notifications (ntfy) ---",
-        "# Topic acts as the shared secret — anyone who knows it can publish",
-        "# AND subscribe. Pick something unguessable. Empty strings disable ntfy.",
-        f"ntfy_url: {_yaml_str(answers['ntfy_url'])}",
-        f"ntfy_topic: {_yaml_str(answers['ntfy_topic'])}",
-        "",
-        "# --- RSSI floor ---",
-        "# Drop observations weaker than this RSSI in dBm. -70 is reasonable",
-        "# indoors; -85 is more permissive.",
-        f"min_rssi: {int(answers['min_rssi'])}",
-        "",
-        "# --- Web UI ---",
-        f"ui_bind_port: {DEFAULT_UI_PORT}",
-        "",
-    ]
-    return "\n".join(lines)
-
-
-def _yaml_str(value: str) -> str:
-    """Quote a string for safe inclusion in a single-line YAML value."""
-    if value is None:
-        return "null"
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def _yaml_bool(value: bool) -> str:
-    return "true" if value else "false"
-
-
-def write_config(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, content)
-
-
-def scaffold_severity_overrides(path: Path) -> bool:
-    """Create the default override file if it doesn't already exist.
-    Returns True when newly created, False when an existing file was kept."""
-    if path.exists():
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, SEVERITY_OVERRIDES_TEMPLATE)
-    return True
-
-
-# --- Argus import -----------------------------------------------------------
-
-
-BUNDLED_WATCHLIST_PACKAGE = "lynceus.data"
-BUNDLED_WATCHLIST_RESOURCE = "default_watchlist.csv"
-BUNDLED_ABSENT_MESSAGE = "no bundled watchlist"
-
-
-def import_bundled_watchlist(db_path: str, override_file: str | None) -> tuple[bool, str]:
-    """Auto-import the bundled default_watchlist.csv when shipped in
-    ``lynceus.data``. Returns ``(success, message)``.
-
-    Silently returns ``(False, "no bundled watchlist")`` when the data
-    package or CSV resource is missing — that is the expected case for
-    source builds without bundled threat data, not an error. On subprocess
-    failure returns ``(False, "import failed: <reason>")`` with stderr (or
-    stdout) captured in the reason. On success returns ``(True, <summary>)``
-    where the summary is the import_argus summary line if recognisable.
-    """
-    try:
-        resource = importlib.resources.files(BUNDLED_WATCHLIST_PACKAGE).joinpath(
-            BUNDLED_WATCHLIST_RESOURCE
-        )
-    except (ModuleNotFoundError, FileNotFoundError):
-        return False, BUNDLED_ABSENT_MESSAGE
-    try:
-        present = resource.is_file()
-    except (FileNotFoundError, OSError):
-        return False, BUNDLED_ABSENT_MESSAGE
-    if not present:
-        return False, BUNDLED_ABSENT_MESSAGE
-
-    try:
-        with importlib.resources.as_file(resource) as csv_path:
-            cmd = [
-                "lynceus-import-argus",
-                "--input",
-                str(csv_path),
-                "--db",
-                db_path,
-            ]
-            if override_file:
-                cmd += ["--override-file", override_file]
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-            except FileNotFoundError:
-                return False, "import failed: lynceus-import-argus not found on PATH"
-            # Bound the wait so a stuck child cannot wedge --system setup
-            # silently. The previous unbounded communicate() would leave
-            # the wizard hanging with no progress output if
-            # lynceus-import-argus itself hung on, say, a malformed DB
-            # file or a stuck sqlite lock — the operator-visible symptom
-            # was identical to the "after-completion silent hang" the
-            # explicit-completion-marker fix addresses below.
-            try:
-                stdout, stderr = proc.communicate(
-                    timeout=BUNDLED_IMPORT_TIMEOUT_SECONDS
-                )
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                try:
-                    proc.communicate(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
-                return False, (
-                    f"import failed: lynceus-import-argus exceeded "
-                    f"{BUNDLED_IMPORT_TIMEOUT_SECONDS}s timeout (process killed)"
-                )
-            rc = proc.returncode
-    except (FileNotFoundError, OSError) as e:
-        return False, f"import failed: {e}"
-
-    if rc != 0:
-        detail = (stderr or stdout or f"exit code {rc}").strip().splitlines()
-        reason = detail[-1] if detail else f"exit code {rc}"
-        return False, f"import failed: {reason}"
-
-    summary = next(
-        (line for line in stdout.splitlines() if line.lstrip().startswith("imported")),
-        "imported successfully",
-    )
-    return True, summary
-
-
 # --- Enable-alerting flow ---------------------------------------------------
 #
 # The wizard's closing arc — between the bundled-watchlist auto-import and
@@ -1093,171 +679,13 @@ def import_bundled_watchlist(db_path: str, override_file: str | None) -> tuple[b
 # selected delegation entries active, rules_path wired into
 # lynceus.yaml) interactively. Default is NO at every prompt to match
 # Lynceus's privacy-conservative posture: alerts are opt-in.
-
-# Each tuple: (rule_name in YAML, rule_type, pattern_type in DB, plural
-# label used in the prompt, description shown in rules.yaml).
 #
-# rule_type / pattern_type intentionally diverge for ble_uuid: the
-# pattern_type column in the watchlist table is ``ble_uuid``, and the
-# rule_type used by rules.py is also ``ble_uuid`` (without the
-# ``watchlist_`` prefix the four other delegation types carry — see
-# rules.py:27 / 75 / 98). Match what an operator will read in their
-# generated rules.yaml rather than inventing a third name.
-DELEGATION_RULES: tuple[tuple[str, str, str, str, str], ...] = (
-    (
-        "argus_mac_range",
-        "watchlist_mac_range",
-        "mac_range",
-        "MAC ranges",
-        "Argus mac_range corpus — IEEE registry sub-allocations",
-    ),
-    (
-        "argus_mac",
-        "watchlist_mac",
-        "mac",
-        "MAC addresses",
-        "Argus + bundled exact-MAC watchlist",
-    ),
-    (
-        "argus_oui",
-        "watchlist_oui",
-        "oui",
-        "vendor prefixes",
-        "Argus + bundled OUI watchlist",
-    ),
-    (
-        "argus_ssid",
-        "watchlist_ssid",
-        "ssid",
-        "SSID patterns",
-        "Argus + bundled SSID watchlist",
-    ),
-    (
-        "argus_ble_uuid",
-        "ble_uuid",
-        "ble_uuid",
-        "BLE UUIDs",
-        "Argus + bundled BLE service-UUID watchlist",
-    ),
-    (
-        "argus_ble_manufacturer_id",
-        "watchlist_ble_manufacturer_id",
-        "ble_manufacturer_id",
-        "BLE manufacturer IDs",
-        "Argus BLE manufacturer-ID watchlist (Bluetooth SIG company IDs)",
-    ),
-    (
-        "argus_drone_id_prefix",
-        "watchlist_drone_id_prefix",
-        "drone_id_prefix",
-        "drone Remote-ID prefixes",
-        "Argus drone Remote-ID prefix watchlist (ANSI/CTA-2063-A)",
-    ),
-    (
-        "argus_ble_local_name",
-        "watchlist_ble_local_name",
-        "ble_local_name",
-        "BLE local names",
-        "Argus BLE local-name watchlist (Flock Safety device names)",
-    ),
-)
-
-
-def count_watchlist_by_pattern_type(db_path: str) -> dict[str, int]:
-    """Return a ``{pattern_type: count}`` map of watchlist rows.
-
-    Every delegation-relevant pattern_type appears as a key; missing
-    types map to 0. If the database file is absent, unreadable, or
-    lacks the ``watchlist`` table (source build with no bundled CSV,
-    never imported), every key maps to 0 and the caller silently skips
-    every per-type prompt — the wizard offers no alerting flow when
-    there's nothing to alert on.
-    """
-    counts = {pattern_type: 0 for (_, _, pattern_type, _, _) in DELEGATION_RULES}
-    if not Path(db_path).exists():
-        return counts
-    try:
-        conn = sqlite3.connect(db_path)
-        try:
-            rows = conn.execute(
-                "SELECT pattern_type, COUNT(*) FROM watchlist GROUP BY pattern_type"
-            ).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        logger.warning("watchlist count query failed for %s: %s", db_path, exc)
-        return counts
-    for pattern_type, n in rows:
-        if pattern_type in counts:
-            counts[pattern_type] = int(n)
-    return counts
-
-
-def render_rules_yaml(enabled_rule_types: set[str]) -> str:
-    """Build rules.yaml content with selected delegation rule_types active.
-
-    Every delegation entry appears in the output. Entries whose
-    rule_type is in ``enabled_rule_types`` are uncommented and active;
-    the rest ship as commented-out templates the operator can enable
-    later by hand. The bundled ``config/rules.yaml`` template is the
-    structural model; the generated file is leaner (delegation-only,
-    no in-memory pattern examples) so the file an operator opens after
-    the wizard runs is small enough to scan top-to-bottom.
-
-    Severity for delegation matches is sourced from the matched
-    watchlist row (see rules.py:643+), not from the ``severity`` field
-    below — the inline comment on each entry reminds the operator.
-    """
-    lines = [
-        "# Lynceus detection rules — generated by lynceus-setup.",
-        "# Edit this file directly to enable additional rule_types, or",
-        "# re-run `lynceus-setup --reconfigure` to regenerate it.",
-        "#",
-        "# Each entry below corresponds to a delegation rule_type. An",
-        "# ACTIVE entry alerts on every matching row of that pattern_type",
-        "# currently in the watchlist DB. The `severity` field is",
-        "# IGNORED for delegation — the emitted alert's severity comes",
-        "# from the matched watchlist row's severity column (populated",
-        "# by lynceus-import-argus from device_category).",
-        "#",
-        "# To enable a rule_type later: uncomment its block.",
-        "# To disable: comment the block back out.",
-        "",
-        "rules:",
-    ]
-    for index, (name, rule_type, _pt, _label, description) in enumerate(DELEGATION_RULES):
-        if index > 0:
-            lines.append("")
-        active = rule_type in enabled_rule_types
-        prefix = "  " if active else "  # "
-        lines.extend(
-            [
-                f"{prefix}- name: {name}",
-                f"{prefix}  rule_type: {rule_type}",
-                f"{prefix}  severity: low  # ignored — actual severity comes from the matched row",
-                f"{prefix}  patterns: []",
-                f'{prefix}  description: "{description}"',
-            ]
-        )
-    lines.append("")
-    return "\n".join(lines)
-
-
-def append_rules_path_to_config(target: Path, rules_path: Path) -> None:
-    """Append a ``rules_path:`` setting to an existing lynceus.yaml.
-
-    The wizard writes lynceus.yaml before the enable-alerting flow
-    runs, so the rules_path chosen during that flow lands as an append
-    on the already-secure file. Appending preserves the file's
-    existing mode (set atomically by ``_atomic_write`` during the
-    original ``write_config`` call) and avoids re-applying the
-    system-mode chown/chmod we already did.
-    """
-    with target.open("a", encoding="utf-8") as fh:
-        fh.write("\n# --- Rules engine ---\n")
-        fh.write("# Path to rules.yaml, wired by lynceus-setup's\n")
-        fh.write("# enable-alerting flow. Unset → no rules load → no alerts fire.\n")
-        fh.write(f"rules_path: {_yaml_str(str(rules_path))}\n")
+# The data-shape constants (``DELEGATION_RULES``) and the writers
+# (``count_watchlist_by_pattern_type``, ``render_rules_yaml``,
+# ``append_rules_path_to_config``) moved to ``lynceus.setup.core`` in
+# F6 Phase 1. They are re-exported at the top of this module so the
+# orchestration below — which is interactive and stays in the CLI —
+# can keep its existing names.
 
 
 def run_enable_alerting_flow(
