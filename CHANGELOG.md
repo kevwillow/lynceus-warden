@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`lynceus-bootstrap-kismet --reset-config` clears stale adapter
+  entries.** Previously, re-running bootstrap after physically removing
+  an adapter left the old `source=<iface>` line in `kismet_site.conf`
+  forever — the patcher was append-only by design (to preserve
+  operator hand-edits like `:channel_list=...`), and had no way to
+  drop a line. The new flag backs up the existing
+  `kismet_site.conf` to `kismet_site.conf.bak-<unix-ts>` (so any
+  non-source hand-edits like `httpd_*`, `server_name`, `log_prefix`
+  survive in the backup, recoverable by `mv` back), then writes a
+  fresh file from the current interface detection. Default behaviour
+  unchanged — re-runs without the flag still preserve everything.
+
 ## [0.6.2] - 2026-05-22
 
 ### Added
