@@ -15,6 +15,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Defaults exposed for the CLI argparse layer in ``lynceus.cli.setup``.
+# Bind defaults to loopback because the wizard is a single-operator,
+# single-machine ceremony; ``--bind 0.0.0.0`` is the explicit opt-out
+# (mirrors ``Config.ui_allow_remote`` for the persistent dashboard).
+# Port is one above ``Config.ui_bind_port`` (8765) so the wizard
+# doesn't collide with a running ``lynceus-ui.service``.
+DEFAULT_WIZARD_BIND: str = "127.0.0.1"
+DEFAULT_WIZARD_PORT: int = 8766
+
 
 def generate_setup_token() -> str:
     """Fresh single-use setup token for one wizard run."""

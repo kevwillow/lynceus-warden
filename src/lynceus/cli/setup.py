@@ -1225,6 +1225,32 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip Kismet and ntfy connectivity tests (e.g. configuring offline).",
     )
+    # --- Web wizard flags (F6 Phase 2a) -------------------------------------
+    # The CLI flow is the default; --web swaps the interactive terminal
+    # prompts for a browser-driven multi-page form. Apply pipeline still
+    # lands in Phase 2b — Phase 2a only validates and previews.
+    p.add_argument(
+        "--web",
+        action="store_true",
+        help="Run the wizard as a local web app instead of the interactive CLI flow.",
+    )
+    p.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=(
+            "Port for --web (default: 8766, one above the lynceus-ui default 8765). "
+            "Ignored without --web."
+        ),
+    )
+    p.add_argument(
+        "--bind",
+        default=None,
+        help=(
+            "Bind host for --web (default: 127.0.0.1). Pass 0.0.0.0 to opt into "
+            "remote access. Ignored without --web."
+        ),
+    )
     p.add_argument(
         "--version",
         action="version",
@@ -1260,7 +1286,38 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if getattr(args, "web", False):
+        return _run_web_wizard(args)
     return run_wizard(args)
+
+
+def _run_web_wizard(args: argparse.Namespace) -> int:
+    """Dispatch ``--web`` to the FastAPI wizard sub-app.
+
+    Resolves scope and target path the same way the CLI flow does,
+    then hands off to ``run_wizard_server``. Defaults for ``--port``
+    and ``--bind`` come from ``lynceus.setup.web.server`` so the
+    operator-visible defaults live next to the code that consumes
+    them.
+    """
+    from ..setup.web.server import (
+        DEFAULT_WIZARD_BIND,
+        DEFAULT_WIZARD_PORT,
+        run_wizard_server,
+    )
+
+    scope = determine_scope(args)
+    target_path = resolve_config_path(scope, args.output)
+    host = args.bind if args.bind is not None else DEFAULT_WIZARD_BIND
+    port = args.port if args.port is not None else DEFAULT_WIZARD_PORT
+    return run_wizard_server(
+        host=host,
+        port=port,
+        scope=scope,
+        target_path=target_path,
+        reconfigure=args.reconfigure,
+        skip_probes=args.skip_probes,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
