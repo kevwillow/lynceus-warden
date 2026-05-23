@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`lynceus-setup --system` no longer hangs silently after completing.**
+  Operators running `sudo lynceus-setup --system` would see the
+  wizard's last hint line ("UI will be available at...") and then a
+  shell prompt that appeared mixed with that line, with no clear
+  "the wizard is done" signal — indistinguishable from a hang. The
+  wizard now prints an explicit `Setup complete — exiting.` boundary
+  (with a flushed stdout) as its final visible line so the
+  end-of-flow handoff is unambiguous. As defensive insurance against
+  a separate failure mode, the bundled-watchlist auto-import
+  subprocess now has a 120s timeout — if `lynceus-import-argus`
+  itself ever hangs (stuck sqlite lock, malformed DB), the wizard
+  kills it and surfaces a clear "exceeded timeout (process killed)"
+  error instead of waiting forever.
+
 - **`lynceus-bootstrap-kismet --reset-config` clears stale adapter
   entries.** Previously, re-running bootstrap after physically removing
   an adapter left the old `source=<iface>` line in `kismet_site.conf`
