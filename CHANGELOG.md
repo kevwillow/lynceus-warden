@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Startup banner when running the daemon foreground in a terminal.**
+  Direct invocation (`lynceus --config foo.yaml` from a terminal) now
+  shows an ASCII-art "LYNCEUS" banner with a dynamic subtitle
+  (version, active rule count, interface count, ctrl-c-to-stop hint)
+  before the poll loop begins. TTY-gated: under `lynceus-quickstart`
+  (which pipes stdout) and under systemd (which captures stdout to
+  journalctl) the banner is suppressed and a single
+  `Lynceus daemon started, N rules active, watching M interfaces`
+  INFO log line goes out instead, so operators grepping
+  `journalctl -u lynceus.service` see a clear start marker without
+  box-drawing garbage.
+
 ### Fixed
 
 - **`lynceus-setup --system` no longer hangs silently after completing.**
