@@ -912,6 +912,20 @@ def print_closing_pointer(
     _print("  6. Run: sudo lynceus-setup")
     _print("     (lynceus-setup auto-locates the API key from disk;")
     _print("      you typically won't need to copy-paste it.)")
+    # Re-run discoverability tip. The operator who just used --reset-config
+    # obviously knows about it; everyone else gets a one-liner so a
+    # future adapter removal doesn't strand a stale source= line they
+    # don't know how to clean up.
+    if backup_path is None:
+        _print("")
+        _print(
+            "Tip: removed an adapter since the last run? Re-run with "
+            "--reset-config"
+        )
+        _print(
+            "     to back up the existing kismet_site.conf and write a "
+            "fresh one."
+        )
     _print(_CLOSING_RULE)
 
 
