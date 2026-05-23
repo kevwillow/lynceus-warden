@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-05-23
+
 ### Added
 
 - **Startup banner when running the daemon foreground in a terminal.**
@@ -47,6 +49,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   survive in the backup, recoverable by `mv` back), then writes a
   fresh file from the current interface detection. Default behaviour
   unchanged — re-runs without the flag still preserve everything.
+  The bootstrap script's closing "Next steps" block now ends with a
+  one-line tip pointing at `--reset-config` for future re-runs after
+  adapter removal, so the flag is discoverable without reading
+  `--help` or the changelog. The tip is suppressed when the operator
+  has just used `--reset-config` (the existing "previous
+  kismet_site.conf was backed up to ..." note already covers it).
 
 ## [0.6.2] - 2026-05-22
 
