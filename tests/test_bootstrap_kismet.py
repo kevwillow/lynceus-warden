@@ -288,6 +288,129 @@ def test_patch_kismet_site_conf_dry_run_does_not_write(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# backup_kismet_site_conf + --reset-config flag
+# ---------------------------------------------------------------------------
+#
+# --reset-config covers the "I removed an adapter and re-ran bootstrap but
+# the stale source= line is still in kismet_site.conf" operator complaint.
+# Default behaviour stays append-only (regression-pinned below); the flag
+# opts in to a backup-then-fresh rewrite.
+
+
+def test_backup_kismet_site_conf_returns_none_when_absent(tmp_path):
+    target = tmp_path / "kismet_site.conf"
+    assert bk.backup_kismet_site_conf(target, dry_run=False) is None
+
+
+def test_backup_kismet_site_conf_renames_to_bak_with_unix_ts(tmp_path):
+    target = tmp_path / "kismet_site.conf"
+    target.write_text("source=wlan_old:type=linuxwifi\n", encoding="utf-8")
+    backup = bk.backup_kismet_site_conf(target, dry_run=False)
+    assert backup is not None
+    assert backup.name.startswith("kismet_site.conf.bak-")
+    # ts suffix is digits only — lets the operator sort by timestamp and
+    # repeated --reset-config runs won't collide on second-resolution.
+    suffix = backup.name.removeprefix("kismet_site.conf.bak-")
+    assert suffix.isdigit()
+    # Original moved, backup carries the content.
+    assert not target.exists()
+    assert backup.read_text(encoding="utf-8") == "source=wlan_old:type=linuxwifi\n"
+
+
+def test_backup_kismet_site_conf_dry_run_returns_path_without_renaming(tmp_path):
+    target = tmp_path / "kismet_site.conf"
+    target.write_text("source=wlan_old:type=linuxwifi\n", encoding="utf-8")
+    backup = bk.backup_kismet_site_conf(target, dry_run=True)
+    assert backup is not None
+    assert backup.name.startswith("kismet_site.conf.bak-")
+    # File is untouched in dry-run; the returned path is a preview.
+    assert target.exists()
+    assert not backup.exists()
+
+
+def _setup_run_env(monkeypatch, conf_dir: Path) -> None:
+    """Wire bk.run into a tmp_path conf dir, mocked away from the real host."""
+    monkeypatch.setattr(bk, "_is_root", lambda: True)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(bk, "detect_distro", lambda *a, **kw: ("kali", "kali"))
+    monkeypatch.setattr(bk, "_kismet_installed", lambda: True)
+    monkeypatch.setattr(bk, "_apt_source_configured", lambda: True)
+    monkeypatch.setattr(bk, "detect_wifi_monitor_capable", lambda: [])
+    monkeypatch.setattr(bk, "detect_bluetooth_interfaces", lambda *a, **kw: [])
+    monkeypatch.setattr(bk, "KISMET_SITE_CONF_DIRS", (conf_dir,))
+    # Group / usermod path: pretend we're a non-root operator already
+    # in the kismet group so the orchestrator doesn't try to usermod.
+    monkeypatch.setattr(bk, "_real_operator_user", lambda: "kev")
+    monkeypatch.setattr(bk, "_group_exists", lambda group: True)
+    monkeypatch.setattr(bk, "_user_in_group", lambda user, group: True)
+
+
+def test_run_without_reset_config_preserves_stale_source_line(monkeypatch, tmp_path):
+    """Default behaviour regression guard: without --reset-config, a stale
+    source= line from a prior run stays in kismet_site.conf. The operator
+    must opt in to the rewrite — flipping the default would surprise every
+    operator who carried hand-edits across re-runs."""
+    conf_dir = tmp_path / "kismet"
+    conf_dir.mkdir()
+    target = conf_dir / "kismet_site.conf"
+    target.write_text(
+        "# operator hand-edit\nsource=wlan_old:type=linuxwifi\n",
+        encoding="utf-8",
+    )
+    _setup_run_env(monkeypatch, conf_dir)
+    # Re-run with only wlan0 selected — wlan_old should still be present.
+    rc = bk.run(_args(interface=["wlan0"], interface_type="wifi"))
+    assert rc == 0
+    body = target.read_text(encoding="utf-8")
+    assert "source=wlan_old" in body
+    assert "source=wlan0:type=linuxwifi" in body
+    # No backup file was created on the default path.
+    assert not any(p.name.startswith("kismet_site.conf.bak-") for p in conf_dir.iterdir())
+
+
+def test_run_with_reset_config_drops_stale_source_line(monkeypatch, tmp_path, capsys):
+    """The flag's contract: a source= line for an interface no longer
+    selected disappears from the resulting kismet_site.conf, the previous
+    file lands as a .bak-<ts> sibling, and the closing hint surfaces the
+    backup path so operators know where to recover from."""
+    conf_dir = tmp_path / "kismet"
+    conf_dir.mkdir()
+    target = conf_dir / "kismet_site.conf"
+    target.write_text(
+        "# operator hand-edit\n"
+        "server_name=Custom\n"
+        "source=wlan_old:type=linuxwifi\n",
+        encoding="utf-8",
+    )
+    _setup_run_env(monkeypatch, conf_dir)
+    rc = bk.run(_args(interface=["wlan0"], interface_type="wifi", reset_config=True))
+    assert rc == 0
+    body = target.read_text(encoding="utf-8")
+    # Stale line is gone, fresh line present.
+    assert "source=wlan_old" not in body
+    assert "source=wlan0:type=linuxwifi" in body
+    # Backup file exists with the operator's prior content intact.
+    backups = sorted(p for p in conf_dir.iterdir() if p.name.startswith("kismet_site.conf.bak-"))
+    assert len(backups) == 1
+    backup_body = backups[0].read_text(encoding="utf-8")
+    assert "server_name=Custom" in backup_body
+    assert "source=wlan_old" in backup_body
+    # Closing hint mentions the backup path so the operator can recover.
+    captured = capsys.readouterr()
+    assert "--reset-config" in captured.out
+    assert backups[0].name in captured.out
+
+
+def test_main_help_advertises_reset_config(capsys):
+    """argparse --help should surface the flag so operators see it without
+    reading the source."""
+    with pytest.raises(SystemExit):
+        bk.main(["--help"])
+    out = capsys.readouterr().out
+    assert "--reset-config" in out
+
+
+# ---------------------------------------------------------------------------
 # main() exit paths -- non-root, unsupported distro
 # ---------------------------------------------------------------------------
 
@@ -300,6 +423,7 @@ def _args(**overrides):
         no_network=False,
         dry_run=False,
         yes=True,  # default tests off-interactive
+        reset_config=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
