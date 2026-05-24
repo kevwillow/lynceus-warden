@@ -1,6 +1,6 @@
 # Lynceus local development on Windows
 
-This guide describes running Lynceus against a fixture-driven fake Kismet on a Windows development machine. The actual capture path requires a Pi with a real WiFi monitor adapter and Kismet; that's covered in [deploy/README.md](../deploy/README.md) and [docs/SMOKE.md](SMOKE.md). This guide is for everything else: building, testing, running the daemon, exercising the web UI, and verifying behavior before deploying.
+This guide describes running Lynceus against a fixture-driven fake Kismet on a Windows development machine. The actual capture path requires a Pi with a real WiFi monitor adapter and Kismet; that's covered in the [README install section](../README.md#installation) and [docs/SMOKE.md](SMOKE.md). This guide is for everything else: building, testing, running the daemon, exercising the web UI, and verifying behavior before deploying.
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ pip install -e ".[dev]"
 pytest -v -m "not slow"
 ```
 
-The fast suite should report ~410+ tests passing. The wheel-build test (`-m slow`) takes another 30–60 seconds and is gated behind `pytest -v` (no marker filter).
+The fast suite should report ~2800+ tests passing on Windows (the 18-test delta vs Linux is POSIX-only `install.sh` and `chmod`-mode tests that auto-skip on Windows). The wheel-build test (`-m slow`) takes another 30–60 seconds and is gated behind `pytest -v` (no marker filter).
 
 ## Running the daemon against a fixture
 
@@ -39,6 +39,16 @@ lynceus --config lynceus.yaml
 ```
 
 Every poll cycle (default 5s in the dev config) the console should print devices processed from the fixture. Adjust `poll_interval_seconds` upward if the log gets too chatty.
+
+## Trying the setup wizard on Windows
+
+The configuration wizard `lynceus-setup` (added end-to-end in v0.7.0) ships with a browser-based frontend that's particularly useful during Windows development. The CLI flow works on Windows too, but Windows terminals don't render every Unicode glyph the CLI uses (v0.6.3 reconfigured stdout to UTF-8, and v0.7.0 did the same for stderr, but the browser path sidesteps the issue entirely). Run:
+
+```powershell
+lynceus-setup --web --skip-probes --output lynceus.yaml
+```
+
+`--skip-probes` is the right posture here — there's no real Kismet to probe in the dev environment. The wizard prints a loopback URL with a single-use token; open it in your browser, walk through the 12 steps, and click Apply. The resulting `lynceus.yaml` is byte-compatible with the CLI flow's output and the daemon will load it directly.
 
 ## Running the web UI
 
