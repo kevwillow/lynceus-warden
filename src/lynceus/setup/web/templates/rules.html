@@ -3,6 +3,14 @@
 {% block step_indicator %}{% include "_progress.html" %}{% endblock %}
 {% block content %}
   <h1>Step 12: Argus-backed alerting</h1>
+  <article>
+    <strong>First-install note:</strong> the row counts below will all
+    read <code>0</code>. That's expected &mdash; the bundled Argus
+    watchlist (about 22,000 entries across all categories) is imported
+    when you click Apply on the Review page at the end of the wizard.
+    You can pre-enable any rule types you want here; the apply step
+    will respect them and the counts will populate afterward.
+  </article>
   <p>
     Lynceus can fire alerts on devices matching the imported
     watchlist. Each rule type is independent and disabled by default
@@ -19,15 +27,6 @@
     </fieldset>
     <fieldset>
       <legend>Per-rule-type enables</legend>
-      <p>
-        <small>
-          Row counts come from the daemon database at this scope; on a
-          first install they read zero until the bundled watchlist is
-          imported (which happens in the apply phase &mdash; Phase 2b).
-          You can pre-stage opt-ins now and the apply will respect
-          them.
-        </small>
-      </p>
       {% for row in rule_rows %}
         <label>
           <input
