@@ -323,14 +323,20 @@ async def _run_apply_task(
     the server if Done never fires. The timer is stashed on the
     session so /done can cancel it.
     """
-    sink = SSEProgressSink(queue, loop)
     # Capture the new terminal state separately from session.apply_state
     # so the finally block can arm the grace timer BEFORE flipping state
     # (Finding 4.1). The default "running" means CancelledError mid-
-    # to_thread leaves state at "running" — same behavior as pre-fix
-    # (Finding 7.2 covers cancellation in batch 2).
+    # to_thread leaves state at "running" — Finding 7.2 in finally
+    # converts that to a terminal "failed".
     new_state: str = "running"
+    # Finding 2.2: keep sink construction INSIDE the try so a raising
+    # __init__ doesn't skip the finally and leave the SSE consumer
+    # blocked on the never-posted sentinel. Sink is None on the
+    # construction-failure path; the except / finally branches that
+    # read sink.records guard against it.
+    sink: SSEProgressSink | None = None
     try:
+        sink = SSEProgressSink(queue, loop)
         report = await asyncio.to_thread(
             apply_config,
             config,
@@ -346,17 +352,25 @@ async def _run_apply_task(
     except Exception as exc:
         logger.exception("apply_config raised in wizard background task")
         tb = traceback.format_exc()
+        # Finding 2.2: guard the synthetic message build against a
+        # broken __str__ on the underlying exception — letting it
+        # propagate here would skip the partial-report write and
+        # strand apply_state at "running".
+        try:
+            exc_str = str(exc)
+        except Exception:
+            exc_str = "<unprintable>"
         synthetic = ApplyStep(
             name="apply_config",
             status="failed",
-            message=f"{type(exc).__name__}: {exc}",
+            message=f"{type(exc).__name__}: {exc_str}",
             detail={"traceback": tb},
         )
         # Push to the queue so the live stream surfaces the failure
         # before the operator hits the completion page.
         await queue.put(serialize_step(synthetic))
-        partial_steps = (*sink.records, synthetic)
-        session.apply_report = ApplyReport(steps=partial_steps)
+        prior_records = tuple(sink.records) if sink is not None else ()
+        session.apply_report = ApplyReport(steps=(*prior_records, synthetic))
         new_state = "failed"
     finally:
         # Finding 7.2: asyncio.CancelledError is a BaseException, not
@@ -377,12 +391,17 @@ async def _run_apply_task(
                 detail=None,
             )
             if session.apply_report is None:
+                prior_records = tuple(sink.records) if sink is not None else ()
                 session.apply_report = ApplyReport(
-                    steps=(*sink.records, cancel_step),
+                    steps=(*prior_records, cancel_step),
                 )
             new_state = "failed"
-        # Sentinel: SSE generator breaks on None and closes the stream.
-        await queue.put(None)
+        # Finding 1.5: put_nowait (not await put) so a CancelledError
+        # landing right at the sentinel-push point cannot skip the
+        # sentinel and leave SSE consumers blocked on the never-
+        # arriving None. The queue is unbounded so QueueFull cannot
+        # fire.
+        queue.put_nowait(None)
         # Schedule the walked-away grace timer (Touch 3). If Done
         # POSTs first, it cancels this task. The scheduling lives in
         # a module-local helper so Touch 3 can import + override it
@@ -724,7 +743,28 @@ async def apply_stream_get(request: Request) -> Response:
                     # cleanly rather than relying on onerror.
                     yield "event: end\ndata: {}\n\n"
                     break
-                yield f"data: {json.dumps(item)}\n\n"
+                # Finding 2.5: defend against an item that bypasses
+                # _json_safe (a future caller enqueues a raw object).
+                # Without this guard, json.dumps would raise mid-
+                # generator, the stream would die without the closing
+                # event, and the client's onerror path would fire
+                # without a definitive reason. Emit an error event +
+                # the closing end so the client gets a clean close.
+                try:
+                    payload = json.dumps(item)
+                except (TypeError, ValueError) as exc:
+                    logger.exception(
+                        "SSE generator failed to serialize queue item; "
+                        "emitting event: error and closing the stream"
+                    )
+                    try:
+                        err_payload = json.dumps({"error": str(exc)})
+                    except Exception:
+                        err_payload = '{"error": "unserializable"}'
+                    yield f"event: error\ndata: {err_payload}\n\n"
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                yield f"data: {payload}\n\n"
         finally:
             # Mark drained so a subsequent reconnect 410s rather
             # than hanging on the now-empty queue. Cleanup runs on
