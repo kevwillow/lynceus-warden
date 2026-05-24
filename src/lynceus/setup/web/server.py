@@ -3,8 +3,13 @@
 Called from ``lynceus.cli.setup.main`` when the operator passes
 ``--web``. Generates a fresh per-run setup token, builds the wizard
 app, prints the bound URL with the token to stdout, then starts the
-ASGI server. The token is printed once; if the operator loses it
-they re-launch the wizard to get a new one.
+ASGI server.
+
+We construct ``uvicorn.Server`` explicitly (rather than calling the
+``uvicorn.run`` convenience wrapper) so the ``/done`` handler in
+``review.py`` can signal a clean shutdown via
+``server.should_exit = True``. The server instance is stashed on
+``app.state.server`` for the handler to reach.
 """
 
 from __future__ import annotations
@@ -43,6 +48,13 @@ def run_wizard_server(
 
     Prints the URL with the token before binding so an operator who
     cancels with Ctrl-C still has the URL in their scrollback.
+
+    The uvicorn Server is built explicitly and stashed on
+    ``app.state.server`` so the /done handler can flip
+    ``server.should_exit = True`` for a clean shutdown after the
+    operator clicks Done. Ctrl-C continues to work via uvicorn's
+    own signal handler — the manual fallback.
+
     Returns 0 once uvicorn exits cleanly.
     """
     import uvicorn
@@ -62,11 +74,19 @@ def run_wizard_server(
     print("open this URL in your browser:")
     print(f"  http://{host}:{port}/?token={setup_token}")
 
-    uvicorn.run(
+    config = uvicorn.Config(
         app,
         host=host,
         port=port,
         log_level="info",
         access_log=True,
     )
+    server = uvicorn.Server(config)
+    # Expose the server so the /done handler in review.py can signal a
+    # clean shutdown. The handler does ``request.app.state.server
+    # .should_exit = True`` after a brief delay so the "shutting down"
+    # response flushes before the socket closes.
+    app.state.server = server
+
+    server.run()
     return 0

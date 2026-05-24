@@ -1,0 +1,26 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; server shutting down{% endblock %}
+{% block content %}
+  <h1>Wizard server shutting down</h1>
+  <p>
+    Configuration target: <code>{{ target_path }}</code>
+    ({{ scope }} scope).
+  </p>
+  <p>
+    The wizard's HTTP server is closing now. You can close this
+    browser tab. If the daemon isn't already running, start it via
+    your usual route:
+  </p>
+  <ul>
+    <li><code>lynceus-quickstart</code> &mdash; dev / demo loop on
+      the current shell.</li>
+    <li><code>sudo systemctl enable --now lynceus.service</code>
+      &mdash; production (systemd, system scope).</li>
+  </ul>
+  <p>
+    The persistent dashboard is at
+    <code>http://127.0.0.1:8765</code> once
+    <code>lynceus-ui.service</code> is running.
+  </p>
+{% endblock %}
+{% block footer %}{# No Cancel / nav on the shutdown page; the server is closing. #}{% endblock %}

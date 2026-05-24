@@ -62,6 +62,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Touch 3 teardown constants. APPLY_GRACE_SECONDS is the
+# "operator walked away" safety net per the dynamic choice (Done +
+# Ctrl-C + 10-min auto-exit): if the apply finishes and Done never
+# fires, the server self-exits after this many seconds so the
+# wizard doesn't leak as an orphan process. DONE_SHUTDOWN_DELAY_SECONDS
+# gives the "Server shutting down" response time to flush before the
+# socket closes. Tests monkeypatch both to short values so the test
+# suite doesn't stall.
+APPLY_GRACE_SECONDS: float = 600.0
+DONE_SHUTDOWN_DELAY_SECONDS: float = 0.5
+
 # Map of Config field path (Pydantic loc tuple joined with ".") to
 # the wizard step ordinal that owns it. Drives the "Edit step X"
 # links the review page surfaces when validation fails on a
@@ -352,19 +363,88 @@ async def _run_apply_task(
 
 
 def _schedule_apply_grace_shutdown(app_state, session: WizardSession) -> None:
-    """Schedule a delayed-shutdown task after apply completes.
+    """Schedule the post-apply 10-minute walked-away timer.
 
-    Stash it on ``session.apply_grace_task`` so the /done handler
-    can cancel it when the operator clicks Done. Touch 3 implements
-    the timing constant and the uvicorn signal; this Touch-1 stub
-    is a placeholder that becomes live once the server-shutdown
-    path lands.
+    Per the dynamic teardown decision (Done click + Ctrl-C + 10-min
+    grace window): apply completion arms a timer that triggers a
+    clean ``server.should_exit = True`` after
+    ``APPLY_GRACE_SECONDS``. The /done handler cancels this timer
+    when the operator clicks Done — Done is the primary signal, the
+    timer is just the safety net for an operator who walks away.
+
+    Stored on ``session.apply_grace_task`` so /done can cancel it.
+    No-op (with a debug log) if no server instance is exposed on
+    app.state (test-only path where uvicorn was mocked away).
     """
-    # Implemented in Touch 3 (teardown). Defined here so the apply
-    # path doesn't grow another awkward conditional once the timer
-    # exists. For now this is a no-op; tests for the grace timer
-    # land alongside the /done handler.
-    return None
+    server = getattr(app_state, "server", None)
+    if server is None:
+        logger.debug("grace shutdown skipped: no app.state.server (test path?)")
+        return
+    session.apply_grace_task = asyncio.create_task(
+        _grace_shutdown(server, APPLY_GRACE_SECONDS)
+    )
+
+
+async def _grace_shutdown(server, delay: float) -> None:
+    """Sleep then signal shutdown. CancelledError means /done took
+    over and we should stand down silently."""
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        # /done cancelled us — this is the normal path, not an error.
+        raise
+    logger.info(
+        "apply grace window (%.0fs) elapsed without /done click; signaling shutdown",
+        delay,
+    )
+    server.should_exit = True
+
+
+async def _shutdown_after_delay(server, delay: float) -> None:
+    """Wait briefly so the calling response can flush, then signal
+    shutdown. Used by the /done handler."""
+    await asyncio.sleep(delay)
+    if server is not None:
+        server.should_exit = True
+
+
+async def done_post(request: Request) -> HTMLResponse:
+    """Operator clicked Done on the completion page.
+
+    Cancels any pending grace-window timer (Done is the explicit
+    signal that supersedes it), schedules a brief-delay shutdown
+    via ``server.should_exit = True``, and returns a "Setup complete
+    — server shutting down" page so the operator's browser sees a
+    confirmation before the socket closes.
+
+    No-op on the shutdown if ``app.state.server`` isn't exposed
+    (test-only path where uvicorn was mocked). The page still
+    renders so behavioral tests can assert it without booting
+    uvicorn.
+    """
+    state = request.app.state
+    session = _session(request)
+
+    # Cancel the grace timer. CancelledError on the awaiting
+    # _grace_shutdown is the documented "Done won the race" path.
+    if session.apply_grace_task is not None and not session.apply_grace_task.done():
+        session.apply_grace_task.cancel()
+        session.apply_grace_task = None
+
+    server = getattr(state, "server", None)
+    if server is not None:
+        # Schedule the shutdown; don't await it here or we'd block
+        # the response. The brief delay gives the HTML below time to
+        # land in the operator's browser before uvicorn tears the
+        # socket down.
+        asyncio.create_task(_shutdown_after_delay(server, DONE_SHUTDOWN_DELAY_SECONDS))
+
+    return _render(
+        request,
+        "done.html",
+        scope=state.scope,
+        target_path=str(state.target_path),
+    )
 
 
 async def apply_post(request: Request) -> Response:
@@ -555,4 +635,10 @@ def register_review_routes(app: "FastAPI") -> None:
         "/apply-stream",
         apply_stream_get,
         methods=["GET"],
+    )
+    app.add_api_route(
+        "/done",
+        done_post,
+        methods=["POST"],
+        response_class=HTMLResponse,
     )
