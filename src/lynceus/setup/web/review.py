@@ -447,6 +447,45 @@ async def apply_progress_get(request: Request) -> Response:
     )
 
 
+async def apply_complete_get(request: Request) -> Response:
+    """Render the completion summary from session.apply_report.
+
+    State-aware: idle → /review (no apply ran), running →
+    /apply-progress (browser may have raced ahead of the SSE end
+    event), terminal (completed/failed) → render the template.
+
+    The completion summary shows one row per ApplyStep with status
+    icon + message + collapsible detail. On the failed path,
+    surfaces the first failed step prominently and offers a Re-run
+    button (which POSTs to /apply); the Done button POSTs to /done
+    on every path (Touch 3 wires the actual shutdown).
+    """
+    state = request.app.state
+    session = _session(request)
+    if session.apply_state == "idle":
+        return _redirect(request, "/review")
+    if session.apply_state == "running":
+        return _redirect(request, "/apply-progress")
+    # Terminal state.
+    report = session.apply_report
+    failed_step = None
+    if report is not None:
+        for s in report.steps:
+            if s.status == "failed":
+                failed_step = s
+                break
+    overall_ok = session.apply_state == "completed"
+    return _render(
+        request,
+        "apply_complete.html",
+        report=report,
+        failed_step=failed_step,
+        overall_ok=overall_ok,
+        scope=state.scope,
+        target_path=str(state.target_path),
+    )
+
+
 async def apply_stream_get(request: Request) -> Response:
     """SSE endpoint. Drains session.apply_queue.
 
@@ -505,6 +544,11 @@ def register_review_routes(app: "FastAPI") -> None:
     app.add_api_route(
         "/apply-progress",
         apply_progress_get,
+        methods=["GET"],
+    )
+    app.add_api_route(
+        "/apply-complete",
+        apply_complete_get,
         methods=["GET"],
     )
     app.add_api_route(

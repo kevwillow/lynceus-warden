@@ -1,0 +1,89 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; setup {% if overall_ok %}complete{% else %}failed{% endif %}{% endblock %}
+{% block content %}
+  {% if overall_ok %}
+    <h1>Setup complete</h1>
+    <p>
+      Configuration written to <code>{{ target_path }}</code>
+      ({{ scope }} scope). Lynceus is now ready to start.
+    </p>
+  {% else %}
+    <h1>Apply failed</h1>
+    <p class="wizard-error">
+      The apply pipeline did not complete cleanly. See the per-step
+      transcript below for the failure point. The previous CLI flow
+      (<code>lynceus-setup {% if scope == "system" %}--system {% endif %}--reconfigure</code>)
+      is always an alternative if the web wizard's failure is
+      environmental.
+    </p>
+    {% if failed_step %}
+      <p>
+        Failure at step <code>{{ failed_step.name }}</code>:
+        {{ failed_step.message }}
+        {% if failed_step.detail and failed_step.detail.traceback %}
+          <details>
+            <summary>traceback</summary>
+            <pre><code>{{ failed_step.detail.traceback }}</code></pre>
+          </details>
+        {% endif %}
+      </p>
+    {% endif %}
+  {% endif %}
+
+  <article>
+    <header><strong>Apply transcript</strong></header>
+    <ol style="list-style: none; padding-left: 0;">
+      {% for step in report.steps %}
+        <li>
+          {% if step.status == "ok" %}✅
+          {% elif step.status == "skipped" %}⏭
+          {% else %}❌
+          {% endif %}
+          <code>{{ step.name }}</code> &mdash; {{ step.message }}
+          {% if step.detail %}
+            <details>
+              <summary>detail</summary>
+              <dl>
+                {% for k, v in step.detail.items() %}
+                  <dt><code>{{ k }}</code></dt>
+                  <dd>
+                    {% if v is string and "\n" in v %}
+                      <pre><code>{{ v }}</code></pre>
+                    {% else %}
+                      <code>{{ v }}</code>
+                    {% endif %}
+                  </dd>
+                {% endfor %}
+              </dl>
+            </details>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ol>
+  </article>
+
+  <article>
+    <header><strong>{% if overall_ok %}Finish{% else %}Next steps{% endif %}</strong></header>
+    {% if not overall_ok %}
+      <p>
+        <strong>Re-run:</strong> the apply chain is largely idempotent
+        (atomic writes, idempotent chowns, per-record-dedup'd bundled
+        import) so re-running after fixing an environmental issue is
+        usually safe. The previous failure was at step
+        {% if failed_step %}<code>{{ failed_step.name }}</code>{% else %}an unknown point{% endif %};
+        re-running restarts the chain from the beginning. If the
+        underlying issue is permissions or a missing system group,
+        fix it first.
+      </p>
+      <form method="post" action="{{ url_with_token('/apply') }}" style="display: inline;">
+        <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+        <button type="submit" class="secondary">Re-run apply</button>
+      </form>
+    {% endif %}
+    <form method="post" action="{{ url_with_token('/done') }}" style="display: inline;">
+      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      <button type="submit">Done &mdash; stop wizard server</button>
+    </form>
+  </article>
+{% endblock %}
+{% block footer %}{# No Cancel link on the completion page; the apply has run, idempotent re-run path is above. #}{% endblock %}
