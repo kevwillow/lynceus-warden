@@ -329,6 +329,10 @@ print_next_steps() {
     log "     (no copy-paste in the common case), prompts for ntfy + probe-"
     log "     SSID capture, generates lynceus.yaml, and auto-imports the"
     log "     bundled threat-data watchlist."
+    log "     Or, for a browser-based wizard with the same questions:"
+    log "         ${sudo_pfx}lynceus-setup${setup_scope} --web"
+    log "     (prints a loopback URL with a single-use token; open it in"
+    log "     a browser to walk through the same 12-step flow)."
     log ""
 
     if [[ "$scope" == "system" ]]; then
