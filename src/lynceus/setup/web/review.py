@@ -636,6 +636,24 @@ async def apply_stream_get(request: Request) -> Response:
             {"error": "apply stream already drained"},
             status_code=410,
         )
+    if session.apply_stream_active:
+        # Finding 1.4: a generator is already draining the queue.
+        # Two concurrent consumers would steal each other's records
+        # via queue.get() (each item goes to exactly one consumer),
+        # leaving one tab with a corrupt transcript and the other
+        # possibly hung on the sentinel side of the split. Reject
+        # the second connection rather than fan-out.
+        return JSONResponse(
+            {"error": "apply stream already has an active consumer"},
+            status_code=409,
+        )
+    # Set the active flag synchronously here, BEFORE returning the
+    # StreamingResponse. The generator body only runs when Starlette
+    # starts iterating it, so a check-set inside the generator would
+    # leave a TOCTOU window between two near-simultaneous GETs.
+    # Single-process uvicorn with no await between check (above) and
+    # this set keeps the pair event-loop-atomic.
+    session.apply_stream_active = True
 
     async def event_stream():
         try:
@@ -653,6 +671,7 @@ async def apply_stream_get(request: Request) -> Response:
             # both the normal sentinel exit and the GeneratorExit
             # path (client disconnect mid-stream).
             session.apply_stream_consumed = True
+            session.apply_stream_active = False
 
     return StreamingResponse(
         event_stream(),

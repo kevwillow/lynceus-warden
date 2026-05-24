@@ -64,6 +64,12 @@ class WizardSession:
     # "terminal state but queue still has events for the operator's
     # first/only consumer to tail" (200). See Findings 2.3, 5.1.
     apply_stream_consumed: bool = False
+    # Set on entry to the SSE generator, cleared in its finally.
+    # Distinct from apply_stream_consumed: "currently draining" vs
+    # "has drained". Blocks the multi-tab event-stealing case where
+    # two operators' /apply-progress pages each call queue.get() and
+    # split the step records between them. See Finding 1.4.
+    apply_stream_active: bool = False
 
 
 class SessionStore:
