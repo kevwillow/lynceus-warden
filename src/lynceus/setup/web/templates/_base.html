@@ -10,13 +10,29 @@
          defined; `body>main` provides loose centering with the
          framework's default ~1200px max-width which is too wide for a
          single-column form. Pin an explicit narrower max-width on
-         `.container` to keep line lengths readable at desktop widths.
-         Falls back to 100% width below ~720px (mobile). */
-      .container { max-width: 720px; margin-left: auto; margin-right: auto; }
+         `.container` AND override body>main's wider responsive caps
+         (specificity: 0,1,0 vs 0,0,2 — .container wins by selector
+         weight, but make the intent explicit). Centered via auto
+         margins with a small viewport-side gutter so the card edge
+         never butts against the browser chrome on tablets. */
+      main.container { max-width: 720px; margin-left: auto; margin-right: auto; padding-left: 1rem; padding-right: 1rem; }
       .wizard-step-indicator { font-size: 0.85em; color: var(--muted-color); margin-bottom: 0.5em; }
       .wizard-step-indicator ol { list-style: decimal inside; padding: 0; margin: 0.2em 0; }
       .wizard-step-indicator ol li { display: inline; margin-right: 0.6em; }
       .wizard-step-indicator ol li.current { font-weight: bold; color: var(--color); }
+      /* Section divider under each step's H1 so the prose intro and
+         the form interactives below have a visible boundary. */
+      main.container > h1 { border-bottom: 1px solid var(--pico-muted-border-color, #cfd8dc); padding-bottom: 0.4em; margin-bottom: 0.8em; }
+      /* Card-style background on the step's <form> so the input row
+         visually separates from the prose intro above. Pico classless
+         doesn't style <form> with a background — without this the
+         form flows directly off the paragraph and the page reads as
+         a wall of text. */
+      main.container > form { background: var(--pico-card-background-color, #f4f6f8); border: 1px solid var(--pico-muted-border-color, #cfd8dc); border-radius: var(--pico-border-radius, 0.25rem); padding: 1.25em 1.5em; margin-top: 1em; }
+      /* Fieldsets inside the form get a subtle inset so a multi-row
+         section (Kismet sanity panel, BLE friendly-name list) reads
+         as a grouped block rather than free-floating inputs. */
+      main.container > form fieldset { background: var(--pico-background-color, #ffffff); border: 1px solid var(--pico-muted-border-color, #e0e6ea); border-radius: var(--pico-border-radius, 0.25rem); padding: 0.75em 1em; margin-bottom: 1em; }
       .wizard-footer { margin-top: 2em; display: flex; justify-content: space-between; gap: 1em; }
       /* Pico styles <a role="button"> and <button> with the same base
          rules but they end up visibly different sizes in wizard-footer:
