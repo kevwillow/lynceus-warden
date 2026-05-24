@@ -1,6 +1,8 @@
 # Lynceus systemd deployment
 
-Terse install steps for the wheel-install path. The full guide lives in the project README.
+> **Most operators want [install.sh](../install.sh)** — see the [README install section](../README.md#installation). It sets up the venv, lays the units down, and creates the system user with the right perms in one step. The manual pip path below is here for operators who explicitly want to do the steps themselves (e.g., custom prefix, packaging into a container, debugging install.sh's logic against the canonical recipe).
+
+Terse install steps for the manual wheel-install path. The full guide lives in the project README.
 
 ## Prerequisites
 
@@ -23,4 +25,4 @@ A Linux host (Raspberry Pi OS or any systemd-based distro), Python 3.11+, and a 
 
 ## Web UI (optional)
 
-There is a separate `lynceus-ui` process that serves a small read-only dashboard. Install it with `deploy/lynceus-ui.service` (it uses the same systemd hardening as the main `lynceus` service) and visit `http://127.0.0.1:8765` from the Pi itself. By default it only listens on localhost, on purpose. If you want to reach it from another machine, set both `ui_bind_host` and `ui_allow_remote: true` in `lynceus.yaml` — but be careful: in v0.2 the UI has no login, so anyone who can reach the address can read everything in the database. Don't expose it to a network you don't trust.
+There is a separate `lynceus-ui` process that serves a small read-only dashboard. Install it with `deploy/lynceus-ui.service` (it uses the same systemd hardening as the main `lynceus` service) and visit `http://127.0.0.1:8765` from the Pi itself. By default it only listens on localhost, on purpose. If you want to reach it from another machine, set both `ui_bind_host` and `ui_allow_remote: true` in `lynceus.yaml` — but be careful: the UI has no login, so anyone who can reach the address can read everything in the database. Don't expose it to a network you don't trust.
