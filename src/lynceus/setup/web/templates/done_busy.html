@@ -1,0 +1,30 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; apply still in progress{% endblock %}
+{% block content %}
+  <h1>Apply still in progress</h1>
+  <p class="wizard-error">
+    The apply pipeline is still running for this session. The
+    wizard server cannot shut down until it finishes — tearing
+    down uvicorn mid-apply would leave the worker thread writing
+    against a closing executor and risk partial state on disk.
+  </p>
+  <p>
+    The usual cause is two browser tabs: one with a stale
+    <code>/apply-complete</code> page from a prior run, and one
+    with the live <code>/apply-progress</code> stream. Watching
+    the live stream from the active tab is the safe path forward.
+  </p>
+  <p>
+    <a href="{{ url_with_token('/apply-progress') }}" role="button">
+      Open live progress page
+    </a>
+  </p>
+  <p>
+    <small>
+      Once apply completes, the post-apply grace timer auto-exits
+      the wizard server (10 min) if you don't click Done from the
+      completion page first.
+    </small>
+  </p>
+{% endblock %}
+{% block footer %}{# No Cancel / nav while apply is running; the live progress page is the action. #}{% endblock %}

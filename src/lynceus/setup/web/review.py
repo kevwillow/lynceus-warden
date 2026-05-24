@@ -103,7 +103,13 @@ def _redirect(request: Request, path: str) -> RedirectResponse:
     return RedirectResponse(f"{path}?token={token}", status_code=303)
 
 
-def _render(request: Request, name: str, **context) -> HTMLResponse:
+def _render(
+    request: Request,
+    name: str,
+    *,
+    status_code: int = 200,
+    **context,
+) -> HTMLResponse:
     from lynceus import __version__
     from lynceus.setup.web.app import STEP_TITLES, TOTAL_STEPS
 
@@ -118,6 +124,7 @@ def _render(request: Request, name: str, **context) -> HTMLResponse:
         request=request,
         name=name,
         context=base,
+        status_code=status_code,
     )
 
 
@@ -494,12 +501,19 @@ async def done_post(request: Request) -> Response:
     state = request.app.state
     session = _session(request)
 
-    # Finding 3.1: refuse Done mid-apply.
+    # Finding 3.1: refuse Done mid-apply. Render a styled HTML page
+    # rather than the bare text/plain default — Finding 1.3 (PRESHIP):
+    # the only realistic path here is the operator with a stale
+    # /apply-complete tab from a prior run, who DOES see this in their
+    # browser; unstyled text with no link forward is a worse UX than
+    # the rest of the wizard's state-aware redirects. Status stays 409.
     if session.apply_state == "running":
-        return Response(
-            "apply still in progress; wait for the completion page "
-            "or for the post-apply grace timer to expire",
+        return _render(
+            request,
+            "done_busy.html",
             status_code=409,
+            scope=state.scope,
+            target_path=str(state.target_path),
         )
 
     # Cancel the grace timer. CancelledError on the awaiting
