@@ -98,6 +98,15 @@
       preview</a> remains available for operators who want to diff
       the wizard's output against an existing file before applying.
     </p>
+    {% if reconfigure %}
+      <p class="wizard-error">
+        <strong>Hand-edits will be overwritten:</strong> if you have
+        hand-edited <code>lynceus.yaml</code> or <code>rules.yaml</code>
+        since the last apply, those edits will be clobbered by
+        re-running — the wizard rewrites both files from the form
+        answers it just captured.
+      </p>
+    {% endif %}
     <form method="post" action="{{ url_with_token('/apply') }}"
           onsubmit="this.querySelector('button[type=submit]').disabled = true;">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">

@@ -257,6 +257,7 @@ async def review_get(request: Request) -> HTMLResponse:
         summary=_summarize(session.answers, config),
         scope=state.scope,
         target_path=str(state.target_path),
+        reconfigure=state.reconfigure,
     )
 
 
