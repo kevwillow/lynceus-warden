@@ -603,8 +603,14 @@ async def apply_post(request: Request) -> Response:
         session.apply_report = None
         # Reset the consumed flag so /apply-stream serves the new
         # run's events rather than 410-ing on the prior run's drained
-        # state.
+        # state. Reset the active flag too — Finding 1.1 (PRESHIP): if
+        # a prior generator was garbage-collected unstarted (client
+        # disconnect between handler return and Starlette's first
+        # await), the generator's finally never fired and the flag
+        # stayed True; without this reset every future SSE consumer on
+        # the session 409s and the operator is wedged until restart.
         session.apply_stream_consumed = False
+        session.apply_stream_active = False
         session.apply_task = task
     return _redirect(request, "/apply-progress")
 
