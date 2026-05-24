@@ -359,6 +359,28 @@ async def _run_apply_task(
         session.apply_report = ApplyReport(steps=partial_steps)
         new_state = "failed"
     finally:
+        # Finding 7.2: asyncio.CancelledError is a BaseException, not
+        # an Exception, so the `except Exception` branch above does
+        # not catch it. If the task was cancelled mid-to_thread
+        # (uvicorn shutdown / future cancel path) new_state stays at
+        # its initial "running" value and the finally would assign
+        # that back to session.apply_state — leaving the session
+        # stranded so /apply-complete bounces to /apply-progress
+        # which hangs on the empty SSE queue. Synthesize a failed
+        # step here so the session reaches a terminal state and the
+        # operator's completion page can render.
+        if new_state == "running":
+            cancel_step = ApplyStep(
+                name="apply_config",
+                status="failed",
+                message="apply task cancelled before completion",
+                detail=None,
+            )
+            if session.apply_report is None:
+                session.apply_report = ApplyReport(
+                    steps=(*sink.records, cancel_step),
+                )
+            new_state = "failed"
         # Sentinel: SSE generator breaks on None and closes the stream.
         await queue.put(None)
         # Schedule the walked-away grace timer (Touch 3). If Done
