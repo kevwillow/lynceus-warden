@@ -14,16 +14,16 @@ output** before proceeding — later steps assume earlier ones
 passed.
 
 The smoke session runs against the version on `main` at push
-time: `lynceus 0.4.0rc6`. Substitute the actual version if you
+time: `lynceus 0.7.0`. Substitute the actual version if you
 bumped before pushing.
 
 > **Note on the suite count delta.** Windows-side baseline is
-> **2434 passed / 16 platform-skipped / 21 diagnostic-deselected**.
-> The 16 skipped tests are POSIX-only (install.sh bash-driven
+> **2812 passed / 18 platform-skipped / 22 diagnostic-deselected**.
+> The 18 skipped tests are POSIX-only (install.sh bash-driven
 > tests + `chmod` round-trip tests + POSIX file-mode tests in
 > `test_setup_wizard.py`). On Linux they all run, so the
-> expected Linux total is **2450 passed / 0 skipped** (still
-> with 21 diagnostic tests deselected by default).
+> expected Linux total is **2830 passed / 0 skipped** (still
+> with 22 diagnostic tests deselected by default).
 
 ---
 
@@ -79,7 +79,7 @@ pip install -e ".[dev]"
 ```
 
 **Expected:** clean install; `pip list | grep lynceus` shows
-`lynceus 0.4.0rc6` (editable). `.venv/bin/lynceus`,
+`lynceus 0.7.0` (editable). `.venv/bin/lynceus`,
 `lynceus-ui`, `lynceus-import-argus`, `lynceus-validate`,
 `lynceus-setup`, `lynceus-quickstart`,
 `lynceus-bootstrap-kismet`, `lynceus-export-config`,
@@ -99,12 +99,12 @@ kept in sync; a drift would surface here).
 pytest tests/ --tb=short
 ```
 
-**Expected:** `2450 passed in <N>s`.
+**Expected:** `2830 passed in <N>s`.
 
 Breakdown vs Windows:
-- 2434 tests run on both platforms.
-- 16 tests run only on POSIX (install.sh bash-driven tests +
-  `chmod`/file-mode tests). They contribute the +16 delta.
+- 2812 tests run on both platforms.
+- 18 tests run only on POSIX (install.sh bash-driven tests +
+  `chmod`/file-mode tests). They contribute the +18 delta.
 
 **Flag:** any failure. Specifically:
 - `test_packaging.py::test_wheel_install_finds_migrations` —
@@ -126,9 +126,9 @@ Breakdown vs Windows:
 pytest -m diagnostic
 ```
 
-**Expected:** `21 passed, 2450 deselected`.
+**Expected:** `22 passed, 2830 deselected`.
 
-**Flag:** anything other than 21 passed. The diagnostic suite
+**Flag:** anything other than 22 passed. The diagnostic suite
 is observation-only — failures here mean a surface assumption
 has drifted between Windows and Linux runs.
 
@@ -144,7 +144,7 @@ python -m build --wheel
 ls -la dist/
 ```
 
-**Expected:** `dist/lynceus-0.4.0rc6-py3-none-any.whl` exists.
+**Expected:** `dist/lynceus-0.7.0-py3-none-any.whl` exists.
 
 **Flag:** build failure → check the build log for missing
 package-data files (most likely `migrations/*.sql` or
@@ -198,7 +198,7 @@ lynceus-seed-watchlist --help | head -5
 ```
 
 **Expected:**
-- `--version` prints `lynceus-validate 0.4.0rc6`.
+- `--version` prints `lynceus-validate 0.7.0`.
 - Every `--help` exits 0 with usage text.
 
 **Flag:** non-zero exit or `ImportError` traceback. Most
@@ -326,16 +326,16 @@ pytest tests/ -v 2>&1 | tail -5
 **Expected:**
 
 ```
-==== 2450 passed in <N>s ====
+==== 2830 passed in <N>s ====
 ```
 
-**Flag:** if Linux total ≠ 2450:
-- More than 2450 → new tests landed since this checklist
+**Flag:** if Linux total ≠ 2830:
+- More than 2830 → new tests landed since this checklist
   was written; update the expected count.
-- Less than 2450 → either a test is failing silently, or
+- Less than 2830 → either a test is failing silently, or
   Linux is skipping tests that should run. Run with
   `pytest tests/ --co -q | wc -l` and confirm collection
-  count (expect `2450/2471 tests collected (21 deselected)`),
+  count (expect `2830/2853 tests collected (22 deselected)`),
   then `pytest tests/ -v` and check the SKIPPED list.
 
 ---
