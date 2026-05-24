@@ -4,7 +4,7 @@ Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchli
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Status: v0.6.1](https://img.shields.io/badge/Status-v0.6.1-blue.svg)](#project-status)
+[![Status: v0.7.0](https://img.shields.io/badge/Status-v0.7.0-blue.svg)](#project-status)
 [![Counter-Surveillance](https://img.shields.io/badge/Counter--Surveillance-passive%20only-1f6feb.svg)](#privacy--threat-model)
 [![Watching the Watchers](https://img.shields.io/badge/Watching-the%20Watchers-black.svg)](#what-lynceus-does)
 
@@ -19,11 +19,11 @@ Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchli
 
 ## Project status
 
-**Personal-use RF security monitoring tool. v0.6.1.**
+**Personal-use RF security monitoring tool. v0.7.0.**
 
-This is not a hardened public product. It is a personal project, feature-complete for v0.6.1, with Kali hardware-smoke validation pending. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
+This is not a hardened public product. It is a personal project, feature-complete for v0.7.0, with Kali hardware-smoke validation pending. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
 
-Test count: **2526 passing on Windows / 2542 expected on Linux** at v0.6.1 (the 16-test delta is POSIX-only `install.sh` + `chmod`-mode tests that skip on non-POSIX hosts). Up from 2475 at v0.6.0, 2434 at v0.5.0, 1215 at v0.4.0-rc4, and 888 at v0.3.0-rc1. A separate diagnostic suite of **22 behavior-dump tests** (`pytest -m diagnostic`) is run pre-push for pre-flight observation and is excluded from the default suite.
+Test count: **2812 passing on Windows / 2830 expected on Linux** at v0.7.0 (the 18-test delta is POSIX-only `install.sh` + `chmod`-mode tests that skip on non-POSIX hosts). Up from 2526 at v0.6.1, 2475 at v0.6.0, 2434 at v0.5.0, 1215 at v0.4.0-rc4, and 888 at v0.3.0-rc1. A separate diagnostic suite of **22 behavior-dump tests** (`pytest -m diagnostic`) is run pre-push for pre-flight observation and is excluded from the default suite.
 
 ## What Lynceus does
 
@@ -110,7 +110,7 @@ facing failure modes that surface most often.
 
 1. **Install Lynceus.** `./install.sh --user` from a clone.
 2. **Install Kismet (if you don't already have it).** On Debian/Ubuntu/Kali, `sudo lynceus-bootstrap-kismet` adds the official Kismet apt repo, installs the `kismet` package, detects Wi-Fi monitor-capable + Bluetooth interfaces, patches `/etc/kismet/kismet_site.conf` (append-only, preserves your edits), and adds you to the `kismet` group. Idempotent; safe to re-run. `install.sh` itself remains offline by design — this helper is the one CLI that handles the network-using install step. On other distros, install Kismet manually per <https://www.kismetwireless.net/packages/> and skip this step. Then log out and back in (so the `kismet` group takes effect), start Kismet (`sudo systemctl start kismet` or foreground `kismet`), open <http://localhost:2501>, set the admin password, and create an API key under `Settings → API Keys` (name `lynceus`, role `readonly`).
-3. **Configure Lynceus.** Run `lynceus-setup`. The wizard probes Kismet and ntfy, generates `lynceus.yaml`, auto-locates the API key from `~/.kismet/session.db` (no copy-paste needed in the common case), and prompts explicitly for probe SSID capture with a privacy explanation (off unless you opt in). It also offers to add a Bluetooth capture source (when an `hci*` adapter is detected) and auto-imports the bundled threat data. Press Enter at the ntfy prompt to skip notifications entirely. To refresh the Argus watchlist later, run `lynceus-import-argus --from-github` (or `--input <path-to-csv>` for an air-gapped host).
+3. **Configure Lynceus.** Run `lynceus-setup` (or `lynceus-setup --web` for the browser-based wizard — same questions, friendlier for headless / SSH-tunneled hosts and operators new to YAML). Either flow probes Kismet and ntfy, generates `lynceus.yaml`, auto-locates the API key from `~/.kismet/session.db` (no copy-paste needed in the common case), and prompts explicitly for probe SSID capture with a privacy explanation (off unless you opt in). It also offers to add a Bluetooth capture source (when an `hci*` adapter is detected) and auto-imports the bundled threat data. Press Enter at the ntfy prompt to skip notifications entirely. To refresh the Argus watchlist later, run `lynceus-import-argus --from-github` (or `--input <path-to-csv>` for an air-gapped host).
 4. **Run.** For dev/demo, `lynceus-quickstart` launches the daemon, the UI, and a browser tab in the foreground; Ctrl+C shuts it down. For production, `sudo systemctl enable --now lynceus.service lynceus-ui.service`.
 5. **Verify.** Open the UI, watch sightings populate, browse `/watchlist` for the bundled threat data, and visit `/settings` to confirm capture state, Kismet/ntfy connectivity, and the watchlist origin breakdown.
 
@@ -185,7 +185,7 @@ Both units are hardened (`NoNewPrivileges=yes`, `ProtectSystem=strict`, restrict
 | `lynceus` | Poller daemon (entry point of `lynceus.service`). |
 | `lynceus-ui` | Web UI (entry point of `lynceus-ui.service`). |
 | `lynceus-quickstart` | Foreground dev/demo launcher (daemon + UI + browser). |
-| `lynceus-setup` | Interactive configuration wizard. |
+| `lynceus-setup` | Interactive configuration wizard. Add `--web` for a browser-driven flow on loopback port 8766 (single-use token; same prompts, validated through the same `Config` constructor). |
 | `lynceus-seed-watchlist` | Add watchlist entries from a YAML file. |
 | `lynceus-import-argus` | Import an Argus CSV export. `--from-github` pulls the latest release from `kevwillow/argus-db`; `--input <path>` reads a local file. `--db` defaults to the canonical scope path. |
 | `lynceus-validate` | Config preflight + DB migration rollback. The legacy no-subcommand form runs the read-only config validator; `lynceus-validate rollback --target-version N` reverses applied migrations with an opt-in confirmation flow. |
