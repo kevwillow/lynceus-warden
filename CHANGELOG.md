@@ -6,227 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
-
-- **Web wizard UX polish from operator smoke.** Browser smoke on
-  Windows surfaced four classes of paper cuts on the otherwise-
-  functional wizard. Polish-only — no route logic, validation, or
-  apply-pipeline changes:
-  - **Step 12 (rules engine) clarity.** The "row counts read 0 on
-    first install" explanation was buried inside the per-rule-type
-    `<small>` caption, where the operator read the table of zeros
-    as "no data to import" and bounced. Moved to a top-of-page
-    callout that names the bundled watchlist size (~22,000 entries)
-    and explicitly says the import runs when you click Apply.
-  - **Internal-phase language sweep.** Step 12 still referenced
-    "Phase 2b" — internal release-planning nomenclature that
-    leaked into operator-facing copy (same class as the Phase 2a
-    landing leak fixed earlier in this Unreleased section).
-    Rewritten in operator terms; sweep test pins no template
-    contains "Phase 1/2/3".
-  - **Visual centering.** The wizard's `<main>` carried
-    `class="container"` but the bundled Pico is the classless
-    build (which provides no `.container` rule), so the class was
-    a no-op and the layout relied on Pico's default `body>main`
-    rules — wide and uncentered-feeling on the 1024–1280px range
-    of the smoke session. Pinned an explicit narrow max-width
-    (720px) on `.container` in `_base.html`'s inline `<style>`
-    block for single-column form readability.
-  - **CLI / web parity enrichment on six pages.** The web wizard
-    was missing substantive context the CLI flow's `_print_context`
-    blocks carry: Step 1 (Kismet URL) now surfaces the
-    `lynceus-bootstrap-kismet` helper and the two-things framing;
-    Step 2 (API key) carries the full five-step Kismet-UI
-    walkthrough plus the persistence-scope reassurance; Step 4
-    (Kismet sources) carries the concrete
-    `source=wlan1:name=external_wifi → pick external_wifi` example
-    and the silent-drop warning on the fallback branch; Step 7
-    (ntfy URL) carries the two-prompts overview, the shared-secret
-    framing surfaced before the opt-in decision, and the self-host
-    distinction; Step 8 (ntfy topic) carries the phone-subscribe
-    walkthrough (install app → tap + → enter topic exactly); Step
-    11 (severity overrides) carries the import-time vs runtime
-    two-layer model so an operator editing the file post-install
-    knows whether their edit needs re-import or just daemon
-    restart.
-
-### Fixed
-
-- **Web wizard pre-smoke hardening (Phase 2 batch 1).** Eight findings
-  from the pre-smoke diagnostic (`PHASE_2_DIAGNOSTIC.md`) addressed
-  before the wizard goes to operator smoke. Operator-visible:
-  - The review page's Apply button article previously claimed
-    "Phase 2a note: the Apply button below confirms what WOULD be
-    applied; it does not write the config to disk yet." That copy is
-    now corrected — clicking Apply runs the full write+chown
-    pipeline, progress streams live to the next page, and the
-    completion page offers a Re-run on failure.
-  - Cancel-during-apply protection. The Cancel link (rendered on
-    every wizard page's footer) previously cleared the session
-    store mid-apply, orphaning the in-flight task and letting the
-    operator re-walk the wizard with a fresh idle session that
-    spawned a SECOND concurrent apply against the same target
-    paths. /cancel now redirects to /apply-progress and refuses to
-    clear when an apply is running.
-  - Done-during-apply protection. POST /done previously scheduled
-    server shutdown regardless of apply state — uvicorn would tear
-    the loop down while the worker thread was mid-pipeline,
-    leaving partial state on disk. /done now refuses with 409 when
-    an apply is in flight.
-  - SSE reconnect cleanup. EventSource reconnect after the apply
-    completed previously hung indefinitely on an empty drained
-    queue. /apply-stream now returns 410 on post-drain reconnect
-    and 404 when no apply has ever started. Concurrent /apply-stream
-    connections to the same session (multi-tab) now return 409 on
-    the second consumer instead of competing for queue.get()
-    items and corrupting each other's transcript.
-  - Re-run hand-edit warning. The completion page's Re-run section
-    now warns that hand-edits to lynceus.yaml or rules.yaml since
-    the last apply will be clobbered (pre-existing _atomic_write
-    behavior, now documented at the point of action).
-
-  See `PHASE_2_DIAGNOSTIC.md` for the full finding-by-finding
-  detail and the eight commits that landed in this batch (cited by
-  SHA in each finding's body).
-
-- **Web wizard pre-smoke hardening (Phase 2 batch 2).** Five minor-
-  severity findings from the same diagnostic addressed as a follow-
-  on hardening pass. Not operator-visible at the page level —
-  defenses against degenerate failure modes that would otherwise
-  strand the apply state machine or kill the SSE stream silently:
-  apply_post creates the background task before flipping state
-  (rollback on task-create failure); _run_apply_task's finally
-  flips state to "failed" on cancellation rather than leaving it
-  stranded at "running"; an asyncio.Lock guards the apply_state
-  check-then-set so future await insertions cannot open a TOCTOU
-  window; the Apply and Re-run forms disable their submit buttons
-  on click (defense in depth behind the server-side 409); and the
-  SSE generator path is hardened (sentinel via put_nowait so
-  cancellation cannot skip it, sink construction inside the try,
-  guarded synthetic-step message build, json.dumps wrapped to
-  emit event: error + event: end rather than dying mid-byte).
-  See `PHASE_2_DIAGNOSTIC.md` for the per-finding SHAs.
-
-- **Pre-push hardening before v0.7.0.** A second adversarial pass
-  over the batch 1 + batch 2 fix code itself, the Phase 1
-  apply_config core, and the CLI wizard flow surfaced eight
-  fix-able findings (`PRESHIP_DIAGNOSTIC.md`). Addressed before
-  the bundle push. Operator-visible:
-  - **Stranded SSE 409 wedge.** apply_post reset
-    apply_stream_consumed on the re-run branch but not
-    apply_stream_active; if a prior /apply-stream generator was
-    garbage-collected unstarted (sub-millisecond client
-    disconnect during the SSE handshake), the active flag stayed
-    True for the life of the wizard process and every future
-    /apply-stream consumer 409'd. apply_post now resets both
-    flags on re-run.
-  - **Missing hand-edit warning on the first-apply path.** The
-    --reconfigure overwrite warning batch 1 added to the
-    apply-complete Re-run section was missing from the review
-    page's Apply article. Operators running --reconfigure over a
-    previously-applied (and possibly hand-edited) lynceus.yaml
-    now see the same warning at the moment of action, gated on
-    --reconfigure (first-install path stays clean).
-  - **Styled /done 409 page.** The /done 409 mid-apply (the
-    two-tabs race with a stale completion page) previously
-    returned bare text/plain. Renders done_busy.html now —
-    explains the cause and links to /apply-progress.
-  - **Done button disable-on-click.** Batch 2 added
-    disable-on-click to the Apply and Re-run forms but missed
-    the Done form on the same completion page. Double-click on
-    Done previously stranded the first shutdown_task to
-    asyncio's weak ref (reopening the GC fragility Finding
-    P2.3.4 closed for the apply task). Done form now carries
-    the same onsubmit handler.
-  - **Cleaner Ctrl-C / Ctrl-D exit.** The interactive CLI wizard
-    previously surfaced EOFError (Ctrl-D / stdin closed) and
-    KeyboardInterrupt (Ctrl-C) as unhandled-exception
-    tracebacks. run_wizard now catches both at its boundary and
-    exits 130 with "Wizard cancelled — no changes written." to
-    stderr.
-  - **No-wifi-sources dead-end at step 4.** When Kismet's probe
-    succeeded but reported no Wi-Fi datasource (real-world: no
-    adapter, adapter not in monitor mode, kismet-group
-    membership missing), the web wizard previously dead-ended:
-    Next button re-rendered the same error, only escape was
-    Previous or the global Cancel link. The page now renders a
-    diagnostic article naming the three common causes, points
-    at lynceus-bootstrap-kismet --reset-config as the helper,
-    and replaces the Next button with a Cancel-wizard submit
-    button so the operator has a clear path forward.
-
-  Defense in depth on the latent failure modes (not page-level
-  operator-visible): synchronous probes (probe_kismet,
-  probe_kismet_sources, probe_ntfy) now dispatch via
-  asyncio.to_thread so a slow probe no longer blocks concurrent
-  tab requests on the wizard's event loop; sys.stderr is
-  reconfigured to UTF-8 alongside sys.stdout so a Windows
-  cp1252 console can't crash on a non-ASCII logger.exception
-  during the apply-failed path.
-
-  See `PRESHIP_DIAGNOSTIC.md` for the per-finding SHAs.
+## [0.7.0] - 2026-05-24
 
 ### Added
 
 - **Browser-based `lynceus-setup --web` wizard.** A second frontend
-  for the first-run configuration ceremony, fully functional end to
-  end. Invoke `lynceus-setup --web` and the command prints a loopback
-  URL with a single-use setup token; opening that URL in a browser
-  starts a 12-step form that mirrors the interactive CLI flow
-  question-for-question (Kismet URL / API key auto-locate + paste /
-  probe / source selection / capture privacy / ntfy URL / topic /
-  probe / RSSI / severity overrides / alerting + per-rule-type
-  enables). Every page validates input through the same `Config`
-  constructor the daemon loads from disk, so the wizard can never
-  produce a configuration the daemon will refuse. The `/review` page
-  renders the validated config with secrets redacted (Kismet API key
-  head/tail; ntfy topic head + bullets + tail), and clicking Apply
-  runs the same `apply_config` side-effect chain the CLI flow
-  executes (write `lynceus.yaml`, scaffold severity overrides,
-  create data + log dirs with system-mode permissions, import the
-  bundled watchlist, write `rules.yaml` when alerting was enabled).
-  Live per-step progress streams to the browser via Server-Sent
-  Events while the apply runs; the completion page renders the
-  per-step transcript with status icons and offers a Re-run button
-  on failure (the chain is idempotent — atomic writes, idempotent
-  chowns, per-record-dedup'd bundled import). Clicking Done at the
-  end cleanly shuts down the wizard's HTTP server; Ctrl-C in the
-  launching terminal is the manual fallback, and a 10-minute
-  post-apply grace window auto-exits if the operator walks away
-  without clicking Done. Loopback-bound by default on port 8766
-  (one above the `lynceus-ui` default 8765 to avoid collision with
-  a running dashboard); `--bind 0.0.0.0` is the explicit remote
-  opt-out, and `--port` overrides the default. Every route is gated
-  on a per-run setup token validated with `secrets.compare_digest`,
-  and POST routes reuse the existing CSRF middleware unchanged.
-  Probes (Kismet, ntfy) run synchronously in the request and respect
-  the existing `--skip-probes` flag, so a flaky network won't hang
-  the browser longer than the existing 5-second probe timeout. The
-  CLI flow (`lynceus-setup` without `--web`) is unchanged when this
-  flag is absent.
+  for the first-run configuration ceremony. Invoke `lynceus-setup
+  --web` and the command prints a loopback URL with a single-use
+  setup token; opening that URL in a browser walks you through a
+  12-step form that mirrors the interactive CLI flow question-for-
+  question (Kismet URL / API key / probe / source selection /
+  capture toggles / ntfy URL and topic / RSSI / severity overrides /
+  per-rule-type alerting opt-ins). Every page validates input
+  through the same `Config` constructor the daemon loads from disk,
+  so the wizard can't produce a configuration the daemon will
+  refuse. The review page renders the validated config with secrets
+  redacted (Kismet API key head/tail, ntfy topic head + bullets +
+  tail), and clicking Apply runs the same write + chown + bundled-
+  import chain the CLI wizard executes — live progress streams to
+  the browser step-by-step via Server-Sent Events, and the
+  completion page renders a per-step transcript with status icons.
+  Re-run is offered on failure (atomic file writes and dedup'd
+  bundled import make the apply chain safe to re-run); when
+  re-running over an existing config, the page warns that
+  hand-edits to `lynceus.yaml` or `rules.yaml` since the last apply
+  will be clobbered. Clicking Done cleanly shuts down the wizard
+  server; Ctrl-C in the launching terminal is the manual fallback,
+  and a 10-minute post-apply grace window auto-exits if you walk
+  away without clicking Done. Loopback-bound by default on port
+  8766 (one above `lynceus-ui`'s default 8765 to avoid collision
+  with a running dashboard); `--bind 0.0.0.0` is the explicit
+  remote opt-out, and `--port` overrides the default. The CLI flow
+  (`lynceus-setup` without `--web`) is unchanged when this flag is
+  absent.
 
 ### Changed
 
-- **Internal refactor: `lynceus-setup` now drives its file-write chain
-  through a new `lynceus.setup` package.** No operator-visible
-  behavior change — the wizard's prompts, output lines, exit codes,
-  and the `--system` permissions sequence are byte-for-byte identical
-  to v0.6.3. The deterministic write+import+chown chain
-  (`write_config`, `scaffold_severity_overrides`, `import_bundled_
-  watchlist`, the post-import sqlite chown loop) moved out of
-  `lynceus.cli.setup` into `lynceus.setup.core.apply_config(...)`,
-  which returns an `ApplyReport` (one structured `ApplyStep` per
-  phase). The interactive prompt helpers moved alongside into
-  `lynceus.setup.prompts`. `lynceus.cli.setup` becomes a thinner CLI
-  frontend that builds a validated `Config` from the prompted
-  answers and hands it to `apply_config`. Foundation for the
-  forthcoming run-once web wizard (Phase 2 of the install-flow webui
-  arc) which will plug a different progress sink + a different
-  prompt layer into the same core. Known parity gap carried forward:
-  the wizard scaffolds `severity_overrides.yaml` but does NOT
-  persist `severity_overrides_path` into `lynceus.yaml` — a quirk
-  that pre-dates this refactor; flagged here to be revisited when
-  Phase 3's persistent admin pages land.
+- **Internal refactor: `lynceus-setup` now drives its file-write
+  chain through a shared core.** No operator-visible behavior
+  change — the wizard's prompts, output lines, exit codes, and the
+  `--system` permissions sequence are byte-for-byte identical to
+  v0.6.3. The deterministic write + import + chown chain moved out
+  of the CLI module into a new `lynceus.setup` package that returns
+  a structured per-step report. This is the foundation that lets
+  the new web wizard reuse the exact same apply logic with a
+  different progress sink. Known parity quirk carried forward: the
+  wizard scaffolds `severity_overrides.yaml` but does NOT persist
+  `severity_overrides_path` into `lynceus.yaml` — pre-dates this
+  refactor, flagged for future cleanup.
+
+### Fixed
+
+- **`lynceus-setup` (CLI) exits cleanly on Ctrl-C or Ctrl-D.**
+  Previously, hitting Ctrl-C mid-wizard surfaced an unhandled-
+  exception traceback to stderr; Ctrl-D (or stdin closing) raised
+  an `EOFError` traceback for the same reason. Both signals now
+  exit cleanly with `Wizard cancelled — no changes written.` to
+  stderr and exit code 130. No files are written on cancellation.
+  A companion fix reconfigures `sys.stderr` to UTF-8 alongside the
+  v0.6.3 stdout reconfigure, closing a latent Windows cp1252 crash
+  path during apply-failure logging.
 
 ## [0.6.3] - 2026-05-23
 
@@ -301,7 +140,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   default, and no severity default land in this release. Once Argus
   publishes a concrete TAC corpus, runtime alerting can be wired up;
   same posture as `icao_24bit_address`.
-
 ## [0.6.1] - 2026-05-22
 
 ### Fixed
