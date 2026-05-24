@@ -84,14 +84,19 @@
   <article>
     <header><strong>Apply</strong></header>
     <p>
-      <strong>Phase 2a note:</strong> the Apply button below confirms
-      what WOULD be applied; it does not write the config to disk yet.
-      The full apply pipeline (write yaml, scaffold overrides, import
-      bundled watchlist, write rules.yaml, chown system files) lands
-      in Phase 2b. Until then,
-      <a href="{{ url_with_token('/apply-preview.json') }}">the JSON
-      preview</a> is the contract Phase 2b's apply route will
-      consume.
+      Clicking Apply runs the configuration to disk: writes
+      <code>lynceus.yaml</code>, scaffolds
+      <code>severity_overrides.yaml</code>, imports the bundled
+      watchlist, writes <code>rules.yaml</code> when alerting is
+      enabled, and (under <code>--system</code> scope) chowns the
+      created files to the daemon's system user. Progress streams
+      live to the next page; on failure the completion page offers
+      a Re-run button — the chain is idempotent (atomic writes,
+      idempotent chowns, per-record-dedup'd bundled import), so
+      re-running after fixing an environmental issue is safe.
+      <a href="{{ url_with_token('/apply-preview.json') }}">The JSON
+      preview</a> remains available for operators who want to diff
+      the wizard's output against an existing file before applying.
     </p>
     <form method="post" action="{{ url_with_token('/apply') }}">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
