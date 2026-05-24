@@ -28,7 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   device passthrough), a manual-text fallback lets a remote operator
   still type the Kismet source name. The RSSI threshold page (step
   10) replaces the negative-dBm number input with a range slider
-  whose extremes are labelled "more permissive" and "stricter" — so
+  whose extremes are labelled with the concrete trade-off in operator terms ("catches more weak / distant devices, more false positives" vs "catches fewer; only strong / nearby devices, higher confidence") plus a tip below naming the -80 dBm default — so
   the operator drags toward intent without ever resolving the
   sign-convention confusion that v0.7.1's inline copy didn't land.
   Previous/Next button sizing across every step template is
