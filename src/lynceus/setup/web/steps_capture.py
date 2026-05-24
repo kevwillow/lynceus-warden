@@ -18,6 +18,7 @@ in session.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from typing import TYPE_CHECKING
 
@@ -205,7 +206,15 @@ async def ntfy_probe_get(request: Request) -> HTMLResponse:
             probe_ok=None,
             probe_error=None,
         )
-    ok, error = probe_ntfy(session.answers["ntfy_url"], session.answers["ntfy_topic"])
+    # Finding 3.6 (PRESHIP): probe_ntfy is synchronous (requests.post
+    # with PROBE_TIMEOUT_SECONDS=5). Dispatch via asyncio.to_thread so
+    # the event loop stays responsive during the probe — same shape
+    # as the Kismet probe handler.
+    ok, error = await asyncio.to_thread(
+        probe_ntfy,
+        session.answers["ntfy_url"],
+        session.answers["ntfy_topic"],
+    )
     session.answers["ntfy_probe_ok"] = ok
     session.answers["ntfy_probe_error"] = error
     return _render(

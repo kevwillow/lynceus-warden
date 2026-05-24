@@ -22,6 +22,7 @@ parallel validators.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request
@@ -223,10 +224,21 @@ async def kismet_probe_get(request: Request) -> HTMLResponse:
         # them back to the URL prompt rather than crashing the probe.
         return _redirect(request, "/step/1")
 
-    ok, version, error = probe_kismet(kismet_url, kismet_api_key)
+    # Finding 3.6 (PRESHIP): probe_kismet and probe_kismet_sources
+    # are synchronous (requests.get with PROBE_TIMEOUT_SECONDS=5).
+    # Calling them directly from an async handler blocks the event
+    # loop for up to 5s per probe, queueing any concurrent requests
+    # (e.g., a second tab opening /apply-progress mid-probe). Wrap
+    # in asyncio.to_thread so the event loop stays responsive —
+    # same pattern the apply pipeline uses for apply_config.
+    ok, version, error = await asyncio.to_thread(
+        probe_kismet, kismet_url, kismet_api_key
+    )
     sources_list = None
     if ok:
-        sources_list = probe_kismet_sources(kismet_url, kismet_api_key)
+        sources_list = await asyncio.to_thread(
+            probe_kismet_sources, kismet_url, kismet_api_key
+        )
     session.answers["kismet_probe_ok"] = ok
     session.answers["kismet_probe_version"] = version
     session.answers["kismet_probe_error"] = error
