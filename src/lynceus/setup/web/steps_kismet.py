@@ -32,6 +32,7 @@ from lynceus.cli.setup import (
     _kismet_api_key_candidate_paths,
     _read_kismet_api_key,
     _redact_kismet_api_key,
+    enumerate_capture_adapters,
     enumerate_wireless_interfaces,
     probe_kismet,
     probe_kismet_sources,
@@ -272,27 +273,12 @@ async def kismet_probe_post(request: Request) -> HTMLResponse:
 # ---- Step 4: Kismet sources ------------------------------------------------
 
 
-def _split_sources(sources_list):
-    if sources_list is None:
-        return [], []
-    wifi = [s for s in sources_list if s.get("driver") == "linuxwifi"]
-    bt = [s for s in sources_list if s.get("driver") == "linuxbluetooth"]
-    return wifi, bt
-
-
 def _source_label(source: dict) -> str:
-    # Surface enough probe-response fields that the operator can
-    # unambiguously match a wizard-rendered source row against
-    # Kismet's web-UI Datasources page. v0.7.0 Linux smoke surfaced
-    # that the bare "external_wifi (interface: wlan1)" label left
-    # operators guessing on hosts with multiple Wi-Fi sources:
-    # capture_interface (e.g. wlan1mon, what tcpdump shows) and
-    # the Kismet-issued UUID disambiguate the match exactly.
-    #
-    # Format mirrors cli/setup.py's `_format_source_label` for the
-    # interface + capture pair, with the Kismet UUID appended (the
-    # web UI has more horizontal room than the numbered CLI prompt
-    # so the longer label fits cleanly).
+    # Sanity-check panel label for Kismet's probed datasource list.
+    # Surfaces enough probe-response fields that the operator can
+    # unambiguously match a row against Kismet's web-UI Datasources page —
+    # capture_interface (what tcpdump shows) and the Kismet UUID
+    # disambiguate when multiple Wi-Fi sources share a name.
     name = source.get("name") or ""
     iface = source.get("interface") or ""
     capture = source.get("capture_interface") or ""
@@ -309,24 +295,62 @@ def _source_label(source: dict) -> str:
     return name
 
 
+def _kismet_name_for_adapter(adapter: dict, sources_list: list[dict] | None) -> str | None:
+    """Return the Kismet source ``name=`` for an OS adapter, if Kismet's
+    probe already configured one matching this interface (or its capture
+    interface). Returns None when Kismet doesn't yet know about it — the
+    operator's checkbox value then defaults to the OS-side interface name
+    and the silent-drop warning explains they must align Kismet's
+    ``source=`` line with that name."""
+    if not sources_list:
+        return None
+    iface = adapter["name"]
+    for src in sources_list:
+        if src.get("interface") == iface or src.get("capture_interface") == iface:
+            return src.get("name") or None
+    return None
+
+
+def _build_adapter_rows(sources_list: list[dict] | None) -> list[dict]:
+    """Enumerate OS adapters + annotate each with its matched Kismet name
+    (if any). Returned rows feed the step 4 checkbox list and carry both
+    the OS-side label fields and the form ``value`` that POST will store
+    into ``kismet_sources`` when checked."""
+    rows: list[dict] = []
+    for adapter in enumerate_capture_adapters():
+        kismet_name = _kismet_name_for_adapter(adapter, sources_list)
+        rows.append(
+            {
+                "name": adapter["name"],
+                "kind": adapter["kind"],
+                "mac": adapter["mac"],
+                "kismet_name": kismet_name,
+                # Prefer Kismet's configured name when known (matches the
+                # poller's source filter); otherwise the OS interface
+                # name (operator is responsible for aligning Kismet's
+                # source= line — the silent-drop warning calls this out).
+                "value": kismet_name or adapter["name"],
+            }
+        )
+    return rows
+
+
 async def kismet_sources_get(request: Request) -> HTMLResponse:
     session = _session(request)
     sources_list = session.answers.get("kismet_probe_sources")
-    wifi, bt = _split_sources(sources_list)
-    interfaces = []
-    if sources_list is None:
-        # Probe failed (or skipped) — fall back to enumerated interfaces.
-        interfaces = enumerate_wireless_interfaces() or []
-    wifi_choices = [(s["name"], _source_label(s)) for s in wifi if s.get("name")]
-    bt_choices = [(s["name"], _source_label(s)) for s in bt if s.get("name")]
+    adapter_rows = _build_adapter_rows(sources_list)
+    kismet_panel_labels = (
+        [_source_label(s) for s in sources_list if s.get("name")]
+        if sources_list
+        else []
+    )
     return _render(
         request,
         "kismet_sources.html",
         step_index=4,
         probed=(sources_list is not None),
-        wifi_choices=wifi_choices,
-        bt_choices=bt_choices,
-        interfaces=interfaces,
+        adapter_rows=adapter_rows,
+        kismet_panel_labels=kismet_panel_labels,
         kismet_sources=session.answers.get("kismet_sources", []),
         error=None,
     )
@@ -335,44 +359,39 @@ async def kismet_sources_get(request: Request) -> HTMLResponse:
 async def kismet_sources_post(request: Request) -> HTMLResponse:
     session = _session(request)
     form = await request.form()
-    # Finding 7.1 (PRESHIP): the "probed and no wifi_choices"
-    # dead-end branch renders a Cancel-wizard submit button (the
-    # operator can't supply a source on that page — Kismet itself
-    # has none configured). Honor the action=cancel intent here so
-    # the button reaches /cancel rather than re-rendering the same
-    # error page.
+    # Cancel button (rendered on the no-adapters dead-end) short-circuits
+    # to /cancel instead of re-rendering the same error page.
     if form.get("action") == "cancel":
         return _redirect(request, "/cancel")
-    wifi_source = (form.get("wifi_source") or "").strip()
-    wifi_iface = (form.get("wifi_interface") or "").strip()
-    bt_enable = form.get("bt_enable") == "on"
-    bt_source = (form.get("bt_source") or "").strip()
+
+    selected = [s.strip() for s in form.getlist("kismet_sources") if s and s.strip()]
+    # Free-text fallback for hosts where OS enumeration found nothing
+    # (Windows dev, remote operators driving the wizard against a Pi
+    # whose sysfs the browser can't reach, etc.).
+    manual = (form.get("manual_source") or "").strip()
+    if manual:
+        selected.append(manual)
 
     sources_list = session.answers.get("kismet_probe_sources")
-    wifi, bt = _split_sources(sources_list)
-    chosen_wifi = wifi_source or wifi_iface
-    if not chosen_wifi:
-        wifi_choices = [(s["name"], _source_label(s)) for s in wifi if s.get("name")]
-        bt_choices = [(s["name"], _source_label(s)) for s in bt if s.get("name")]
-        interfaces = []
-        if sources_list is None:
-            interfaces = enumerate_wireless_interfaces() or []
+    if not selected:
+        adapter_rows = _build_adapter_rows(sources_list)
+        kismet_panel_labels = (
+            [_source_label(s) for s in sources_list if s.get("name")]
+            if sources_list
+            else []
+        )
         return _render(
             request,
             "kismet_sources.html",
             step_index=4,
             probed=(sources_list is not None),
-            wifi_choices=wifi_choices,
-            bt_choices=bt_choices,
-            interfaces=interfaces,
+            adapter_rows=adapter_rows,
+            kismet_panel_labels=kismet_panel_labels,
             kismet_sources=session.answers.get("kismet_sources", []),
-            error="Pick a Wi-Fi source (or enter an interface name).",
+            error="Pick at least one capture source (or enter an interface name).",
         )
 
-    chosen: list[str] = [chosen_wifi]
-    if bt_enable and bt_source:
-        chosen.append(bt_source)
-    session.answers["kismet_sources"] = chosen
+    session.answers["kismet_sources"] = selected
     return _redirect(request, "/step/5")
 
 

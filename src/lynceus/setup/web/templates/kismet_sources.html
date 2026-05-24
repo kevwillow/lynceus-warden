@@ -2,104 +2,99 @@
 {% block title %}lynceus-setup &mdash; Kismet sources{% endblock %}
 {% block step_indicator %}{% include "_progress.html" %}{% endblock %}
 {% block content %}
-  <h1>Step 4: Kismet sources</h1>
+  <h1>Step 4: Capture sources</h1>
+  <p>
+    Pick the adapters lynceus should accept observations from. Each
+    checkbox is an OS-side network interface; checked rows go into the
+    <code>kismet_sources</code> filter in <code>lynceus.yaml</code>.
+  </p>
   {% if error %}<p class="wizard-error"><strong>error:</strong> {{ error }}</p>{% endif %}
+
+  {% if probed and kismet_panel_labels %}
+    <article>
+      <header><strong>Kismet currently has these sources configured</strong></header>
+      <ul>
+        {% for label in kismet_panel_labels %}
+          <li><code>{{ label }}</code></li>
+        {% endfor %}
+      </ul>
+      <small>
+        Sanity check &mdash; rows below that match by interface are
+        pre-labelled with their Kismet name. Rows without a match still
+        select fine; just align Kismet's <code>source=</code> line with
+        the interface name (see the silent-drop warning below).
+      </small>
+    </article>
+  {% endif %}
+
   <form method="post" action="{{ url_with_token('/step/4') }}">
     <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
-    {% if probed and wifi_choices %}
+
+    {% if adapter_rows %}
       <fieldset>
-        <legend>Wi-Fi datasource</legend>
-        {% for name, label in wifi_choices %}
+        <legend>Local capture adapters</legend>
+        {% set has_unmatched = adapter_rows | selectattr("kismet_name", "none") | list %}
+        {% for row in adapter_rows %}
           <label>
-            <input type="radio" name="wifi_source" value="{{ name }}" {% if loop.first %}checked{% endif %}>
-            <code>{{ label }}</code>
+            <input type="checkbox" name="kismet_sources" value="{{ row.value }}">
+            <strong><code>{{ row.name }}</code></strong>
+            <small>
+              [{{ "Wi-Fi" if row.kind == "wifi" else "Bluetooth" }}]
+              {% if row.mac %}MAC <code>{{ row.mac }}</code>{% endif %}
+              {% if row.kismet_name %}
+                &mdash; Kismet calls this <code>{{ row.kismet_name }}</code>
+              {% else %}
+                &mdash; not yet configured in Kismet
+              {% endif %}
+            </small>
           </label>
         {% endfor %}
       </fieldset>
-    {% elif probed and not wifi_choices %}
-      <article class="wizard-error">
-        <strong>Kismet is reachable but reports no Wi-Fi datasource.</strong>
-        <p>Common causes:</p>
-        <ul>
-          <li>No Wi-Fi adapter installed on the Kismet host.</li>
-          <li>Adapter not in monitor mode (Kismet refused to start the source).</li>
-          <li>Kismet user lacks the right group membership (typically the
-            <code>kismet</code> group).</li>
-        </ul>
-        <p>
-          Fix the underlying Kismet config (typically
-          <code>/etc/kismet/kismet_site.conf</code>), e.g.
-          <code>source=wlan1:name=external_wifi</code>, then restart Kismet
-          and re-run this wizard. <code>sudo lynceus-bootstrap-kismet
-          --reset-config</code> can rewrite Kismet's config in place if
-          you'd rather start from a known-good baseline.
-        </p>
-        <p>
+
+      {% if has_unmatched %}
+        <p class="wizard-error">
           <small>
-            The wizard can't continue from this page until Kismet has at
-            least one Wi-Fi source — pick a path: Previous to retry the
-            probe after fixing Kismet, or Cancel to exit the wizard and
-            come back after.
+            Some rows above aren't configured in Kismet yet. After
+            applying lynceus.yaml, edit
+            <code>/etc/kismet/kismet_site.conf</code> (or rerun
+            <code>sudo lynceus-bootstrap-kismet</code>) so each
+            <code>source=</code> line's <code>name=</code> matches what
+            you picked here &mdash; otherwise the poller silently drops
+            every observation from that adapter (no alerts, no error,
+            empty database).
           </small>
         </p>
-      </article>
-    {% else %}
-      <p>
-        Falling back to OS interface enumeration (Kismet probe failed
-        or was skipped). Verify the value you pick matches the
-        <code>name=</code> in your Kismet source line, e.g.
-        <code>source=wlan1:name=external_wifi</code> &rarr; pick
-        <code>external_wifi</code>.
-      </p>
-      <p class="wizard-error">
-        <small>
-          If the value you pick doesn't match the <code>name=</code>
-          on the Kismet side, the poller will silently drop every
-          observation &mdash; no alerts, no error, just nothing in
-          the database. Double-check the name now.
-        </small>
-      </p>
-      {% if interfaces %}
-        <label>
-          Wi-Fi interface
-          <select name="wifi_interface">
-            {% for iface in interfaces %}
-              <option value="{{ iface }}">{{ iface }}</option>
-            {% endfor %}
-          </select>
-        </label>
-      {% else %}
-        <label>
-          Wi-Fi interface name (e.g. <code>wlan0</code>)
-          <input type="text" name="wifi_interface" value="" required>
-        </label>
       {% endif %}
-    {% endif %}
-
-    {% if probed and bt_choices %}
-      <fieldset>
-        <legend>Bluetooth datasource (optional)</legend>
+    {% else %}
+      <article class="wizard-error">
+        <strong>No capture adapters detected on this host.</strong>
+        <p>
+          Common causes: running the wizard on a host with no Wi-Fi or
+          Bluetooth hardware (a dev box, a container without device
+          passthrough), or running it remotely against a target machine
+          whose <code>/sys/class/net</code> and
+          <code>/sys/class/bluetooth</code> the wizard process can't
+          read.
+        </p>
+        <p>
+          You can still continue by typing the capture interface name
+          below (e.g. <code>wlan1</code>). It must match the
+          <code>name=</code> in your Kismet <code>source=</code> line
+          (e.g. <code>source=wlan1:name=external_wifi</code> &rarr;
+          enter <code>external_wifi</code>). If the names don't align
+          the poller silently drops every observation &mdash; double-
+          check now.
+        </p>
         <label>
-          <input type="checkbox" name="bt_enable">
-          Add a Bluetooth capture source (required for Tier 1 BLE
-          enrichment)
+          Capture source name
+          <input type="text" name="manual_source" value="" placeholder="e.g. wlan1 or external_wifi">
         </label>
-        {% for name, label in bt_choices %}
-          <label>
-            <input type="radio" name="bt_source" value="{{ name }}" {% if loop.first %}checked{% endif %}>
-            <code>{{ label }}</code>
-          </label>
-        {% endfor %}
-      </fieldset>
+      </article>
     {% endif %}
 
     <div class="wizard-footer">
       <a href="{{ url_with_token('/step/3') }}" role="button" class="secondary">&larr; Previous</a>
-      {% if probed and not wifi_choices %}
-        <button type="submit" name="action" value="cancel" class="secondary">Cancel wizard</button>
-      {% else %}
-        <button type="submit">Next &rarr;</button>
-      {% endif %}
+      <button type="submit">Next &rarr;</button>
     </div>
   </form>
 {% endblock %}
