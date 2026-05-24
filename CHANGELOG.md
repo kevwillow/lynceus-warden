@@ -107,6 +107,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   emit event: error + event: end rather than dying mid-byte).
   See `PHASE_2_DIAGNOSTIC.md` for the per-finding SHAs.
 
+- **Pre-push hardening before v0.7.0.** A second adversarial pass
+  over the batch 1 + batch 2 fix code itself, the Phase 1
+  apply_config core, and the CLI wizard flow surfaced eight
+  fix-able findings (`PRESHIP_DIAGNOSTIC.md`). Addressed before
+  the bundle push. Operator-visible:
+  - **Stranded SSE 409 wedge.** apply_post reset
+    apply_stream_consumed on the re-run branch but not
+    apply_stream_active; if a prior /apply-stream generator was
+    garbage-collected unstarted (sub-millisecond client
+    disconnect during the SSE handshake), the active flag stayed
+    True for the life of the wizard process and every future
+    /apply-stream consumer 409'd. apply_post now resets both
+    flags on re-run.
+  - **Missing hand-edit warning on the first-apply path.** The
+    --reconfigure overwrite warning batch 1 added to the
+    apply-complete Re-run section was missing from the review
+    page's Apply article. Operators running --reconfigure over a
+    previously-applied (and possibly hand-edited) lynceus.yaml
+    now see the same warning at the moment of action, gated on
+    --reconfigure (first-install path stays clean).
+  - **Styled /done 409 page.** The /done 409 mid-apply (the
+    two-tabs race with a stale completion page) previously
+    returned bare text/plain. Renders done_busy.html now —
+    explains the cause and links to /apply-progress.
+  - **Done button disable-on-click.** Batch 2 added
+    disable-on-click to the Apply and Re-run forms but missed
+    the Done form on the same completion page. Double-click on
+    Done previously stranded the first shutdown_task to
+    asyncio's weak ref (reopening the GC fragility Finding
+    P2.3.4 closed for the apply task). Done form now carries
+    the same onsubmit handler.
+  - **Cleaner Ctrl-C / Ctrl-D exit.** The interactive CLI wizard
+    previously surfaced EOFError (Ctrl-D / stdin closed) and
+    KeyboardInterrupt (Ctrl-C) as unhandled-exception
+    tracebacks. run_wizard now catches both at its boundary and
+    exits 130 with "Wizard cancelled — no changes written." to
+    stderr.
+  - **No-wifi-sources dead-end at step 4.** When Kismet's probe
+    succeeded but reported no Wi-Fi datasource (real-world: no
+    adapter, adapter not in monitor mode, kismet-group
+    membership missing), the web wizard previously dead-ended:
+    Next button re-rendered the same error, only escape was
+    Previous or the global Cancel link. The page now renders a
+    diagnostic article naming the three common causes, points
+    at lynceus-bootstrap-kismet --reset-config as the helper,
+    and replaces the Next button with a Cancel-wizard submit
+    button so the operator has a clear path forward.
+
+  Defense in depth on the latent failure modes (not page-level
+  operator-visible): synchronous probes (probe_kismet,
+  probe_kismet_sources, probe_ntfy) now dispatch via
+  asyncio.to_thread so a slow probe no longer blocks concurrent
+  tab requests on the wizard's event loop; sys.stderr is
+  reconfigured to UTF-8 alongside sys.stdout so a Windows
+  cp1252 console can't crash on a non-ASCII logger.exception
+  during the apply-failed path.
+
+  See `PRESHIP_DIAGNOSTIC.md` for the per-finding SHAs.
+
 ### Added
 
 - **Browser-based `lynceus-setup --web` wizard.** A second frontend

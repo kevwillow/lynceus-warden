@@ -110,6 +110,8 @@ the generator's first try-block line (with a TOCTOU-acceptable
 narrow window) rather than synchronously in the handler, so the
 flag's lifecycle matches the generator's body.
 
+**Fix:** Landed in commit `be82312`.
+
 ### Finding 1.2: Hand-edit overwrite warning only on Re-run page, not on first Apply
 
 **Severity:** serious
@@ -142,6 +144,8 @@ the Apply article in `review.html`, gated on `reconfigure==True`
 — a first-time user who pre-edited the file by hand hits the same
 risk. Match the wording of the Re-run warning for consistency.
 
+**Fix:** Landed in commit `af95d61`.
+
 ### Finding 1.3: `/done` 409 mid-apply returns plain text, not a rendered HTML page
 
 **Severity:** minor
@@ -165,6 +169,8 @@ in tab B; click Done in tab B → unstyled "apply still in progress
 styled page with a link to `/apply-progress` and a "wait for
 completion" hint. Same shape as the other state-aware redirects
 already in `apply_progress_get` / `apply_complete_get`.
+
+**Fix:** Landed in commit `e662ea0`.
 
 ### Finding 1.4: Done button has no disable-on-click; double-click strands the prior shutdown_task without a strong ref
 
@@ -197,6 +203,8 @@ shutdown_tasks created, first one orphaned to weak-ref-only.
 **Fix shape:** add the same `onsubmit` disable handler to the
 Done form. One template attribute, matches the existing pattern
 on the Apply and Re-run forms.
+
+**Fix:** Landed in commit `0afcdfb`.
 
 ### Finding 1.5: Grace timer race I worried about — does NOT exist; recording for the record
 
@@ -489,6 +497,8 @@ shape for `probe_ntfy` (5s) and `probe_kismet_sources` (5s).
 so the event loop stays responsive during the network call. Same
 pattern the apply-pipeline already uses for `apply_config`.
 
+**Fix:** Landed in commit `8fe7812`.
+
 ### Finding 3.7: `count_watchlist_by_pattern_type` `.exists()` check could raise on a path with embedded null bytes
 
 **Severity:** note
@@ -526,6 +536,8 @@ the browser tab" which is clean.
 **Fix shape:** wrap the body of `run_wizard` in `try / except
 (EOFError, KeyboardInterrupt): print("\\nWizard cancelled — no
 changes written.", file=sys.stderr); return 130`. ~3 LOC.
+
+**Fix:** Landed in commit `64a5652`.
 
 ### Finding 4.2: `--reconfigure` discards existing config silently; operator re-enters every field
 
@@ -649,6 +661,8 @@ close it.
 **Fix shape:** add `sys.stderr.reconfigure(encoding="utf-8",
 errors="replace")` next to the existing stdout call in `main()`.
 
+**Fix:** Landed in commit `9e46d85`.
+
 ### Finding 5.4: `is_writable_system_path` on Windows is permissive (`os.access(W_OK)` returns True for read-only files)
 
 **Severity:** note (pre-existing, Windows not a production target)
@@ -767,6 +781,8 @@ instruction.
 probe-failure page at step 3) and a clearer next-action message
 ("fix your Kismet sources config, restart Kismet, re-run this
 wizard") on the no-wifi-sources branch.
+
+**Fix:** Landed in commit `ffa142f`.
 
 ### Finding 7.2: Web wizard step 4 free-form text input lets operator complete with no real hardware
 
