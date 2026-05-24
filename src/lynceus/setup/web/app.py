@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -182,8 +182,24 @@ def create_wizard_app(
             },
         )
 
-    @app.get("/cancel", response_class=HTMLResponse)
-    async def cancel(request: Request) -> HTMLResponse:
+    @app.get("/cancel")
+    async def cancel(request: Request):
+        # Finding 1.6: refuse Cancel while an apply is mid-pipeline.
+        # session_store.clear() would orphan the running
+        # _run_apply_task (it still holds a Python reference to the
+        # OLD session and keeps writing files / chowning / running
+        # the bundled-import subprocess) while letting the operator
+        # re-walk the wizard with a fresh session whose apply_state
+        # is "idle" — bypassing the /apply 409 guard and spawning a
+        # second concurrent apply against the same target paths.
+        # Redirect to /apply-progress so the operator sees the live
+        # state they were trying to cancel out of.
+        session = app.state.session_store.get_or_create(setup_token)
+        if session.apply_state == "running":
+            return RedirectResponse(
+                f"/apply-progress?token={setup_token}",
+                status_code=303,
+            )
         # Clear in-flight session state on cancel. The session store is
         # in-memory, but clearing makes the operator's "start over"
         # path predictable even if they re-open the wizard URL.
