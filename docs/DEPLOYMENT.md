@@ -170,6 +170,8 @@ read-only — Lynceus never writes back to Kismet.
 lynceus-setup
 ```
 
+Pass `--web` instead if you'd prefer the browser-based wizard added in v0.7.0 — same questions, validated through the same `Config` constructor, loopback-bound on port 8766 with a single-use token. Useful on headless / SSH-tunneled Pi installs where copy-pasting values into a remote terminal feels fiddly. Every other flag (`--user`, `--system`, `--reconfigure`, `--skip-probes`, `--output`) works identically.
+
 The wizard:
 
 1. Probes Kismet at `http://localhost:2501` and auto-locates the
@@ -185,8 +187,8 @@ The wizard:
 5. Auto-imports the bundled threat-data watchlist (~22.5k Argus
    rows) — no manual import needed for the default coverage.
 
-**Expected:** the wizard ends with a "Configuration complete" line
-and writes `lynceus.yaml` to the canonical config dir
+**Expected:** the wizard ends with a `Setup complete — exiting.`
+line and writes `lynceus.yaml` to the canonical config dir
 (`~/.config/lynceus/lynceus.yaml` for user install,
 `/etc/lynceus/lynceus.yaml` for system install). The DB at the
 canonical data path now exists and is populated with the bundled
