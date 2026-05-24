@@ -408,14 +408,28 @@ async def _shutdown_after_delay(server, delay: float) -> None:
         server.should_exit = True
 
 
-async def done_post(request: Request) -> HTMLResponse:
+async def done_post(request: Request) -> Response:
     """Operator clicked Done on the completion page.
 
-    Cancels any pending grace-window timer (Done is the explicit
-    signal that supersedes it), schedules a brief-delay shutdown
-    via ``server.should_exit = True``, and returns a "Setup complete
-    — server shutting down" page so the operator's browser sees a
-    confirmation before the socket closes.
+    Refuses with 409 if an apply is still mid-pipeline (Finding 3.1):
+    /done schedules ``server.should_exit = True`` and uvicorn tears
+    the loop down — but the worker thread running apply_config
+    continues against a closing executor with brittle results
+    (partial file writes mitigated only by _atomic_write, abandoned
+    bundled-import subprocess). The completion page redirects
+    "running" sessions back to /apply-progress, so a careful operator
+    won't hit this — but an operator with a stale /apply-complete
+    tab from a prior failed run can race the buttons.
+
+    On non-running states: cancels any pending grace-window timer
+    (Done is the explicit signal that supersedes it), schedules a
+    brief-delay shutdown via ``server.should_exit = True``, and
+    returns a "Setup complete — server shutting down" page so the
+    operator's browser sees a confirmation before the socket closes.
+
+    The shutdown task is stored on ``session.shutdown_task`` to
+    prevent the asyncio loop from weakly GC'ing it before it fires
+    (Finding 3.4).
 
     No-op on the shutdown if ``app.state.server`` isn't exposed
     (test-only path where uvicorn was mocked). The page still
@@ -424,6 +438,14 @@ async def done_post(request: Request) -> HTMLResponse:
     """
     state = request.app.state
     session = _session(request)
+
+    # Finding 3.1: refuse Done mid-apply.
+    if session.apply_state == "running":
+        return Response(
+            "apply still in progress; wait for the completion page "
+            "or for the post-apply grace timer to expire",
+            status_code=409,
+        )
 
     # Cancel the grace timer. CancelledError on the awaiting
     # _grace_shutdown is the documented "Done won the race" path.
@@ -436,8 +458,11 @@ async def done_post(request: Request) -> HTMLResponse:
         # Schedule the shutdown; don't await it here or we'd block
         # the response. The brief delay gives the HTML below time to
         # land in the operator's browser before uvicorn tears the
-        # socket down.
-        asyncio.create_task(_shutdown_after_delay(server, DONE_SHUTDOWN_DELAY_SECONDS))
+        # socket down. Hold a strong ref on the session so the loop
+        # doesn't GC the task before it fires (Finding 3.4).
+        session.shutdown_task = asyncio.create_task(
+            _shutdown_after_delay(server, DONE_SHUTDOWN_DELAY_SECONDS)
+        )
 
     return _render(
         request,

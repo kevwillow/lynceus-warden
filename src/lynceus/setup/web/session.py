@@ -53,6 +53,11 @@ class WizardSession:
     apply_queue: asyncio.Queue | None = None
     apply_task: asyncio.Task | None = None
     apply_grace_task: asyncio.Task | None = None
+    # Stored ref to /done's fire-and-forget shutdown task. Python's
+    # event loop only weakly references tasks; without this strong
+    # ref the task can be GC'd between create and fire, silently
+    # dropping the shutdown signal. See Finding 3.4.
+    shutdown_task: asyncio.Task | None = None
 
 
 class SessionStore:
