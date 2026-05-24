@@ -45,6 +45,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   detail and the eight commits that landed in this batch (cited by
   SHA in each finding's body).
 
+- **Web wizard pre-smoke hardening (Phase 2 batch 2).** Five minor-
+  severity findings from the same diagnostic addressed as a follow-
+  on hardening pass. Not operator-visible at the page level —
+  defenses against degenerate failure modes that would otherwise
+  strand the apply state machine or kill the SSE stream silently:
+  apply_post creates the background task before flipping state
+  (rollback on task-create failure); _run_apply_task's finally
+  flips state to "failed" on cancellation rather than leaving it
+  stranded at "running"; an asyncio.Lock guards the apply_state
+  check-then-set so future await insertions cannot open a TOCTOU
+  window; the Apply and Re-run forms disable their submit buttons
+  on click (defense in depth behind the server-side 409); and the
+  SSE generator path is hardened (sentinel via put_nowait so
+  cancellation cannot skip it, sink construction inside the try,
+  guarded synthetic-step message build, json.dumps wrapped to
+  emit event: error + event: end rather than dying mid-byte).
+  See `PHASE_2_DIAGNOSTIC.md` for the per-finding SHAs.
+
 ### Added
 
 - **Browser-based `lynceus-setup --web` wizard.** A second frontend

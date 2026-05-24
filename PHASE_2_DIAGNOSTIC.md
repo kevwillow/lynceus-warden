@@ -57,6 +57,8 @@ There is no `asyncio.Lock` anchoring the invariant.
 create in an `asyncio.Lock` held on the session, so the invariant is
 enforced regardless of future awaits.
 
+**Fix:** Landed in commit `f288728`.
+
 ### Finding 1.2: Worker-thread to event-loop bridge is consistent; partial-report rebuild reads worker-thread state
 
 **Severity:** note
@@ -119,6 +121,9 @@ be skipped, leaving any waiting SSE consumer blocked forever. The
 window is tiny but real.
 **Fix shape:** replace with `queue.put_nowait(None)` (the queue is
 unbounded so it can't QueueFull) — eliminates the await point.
+
+**Fix:** Landed in commit `74a0be3` (bundled with Findings 2.2 and
+2.5 in Touch 5).
 
 ### Finding 1.6: Cancel-during-apply orphans the apply and lets the operator spawn a second concurrent apply
 
@@ -195,6 +200,9 @@ the sentinel is still posted, but `session.apply_report` stays
 synthetic construction tolerates broken `__str__` (use `repr(exc)`
 or `try/except` around the f-string).
 
+**Fix:** Landed in commit `74a0be3` (bundled with Findings 1.5 and
+2.5 in Touch 5).
+
 ### Finding 2.3: EventSource reconnect during apply loses already-streamed events; reconnect after completion hangs forever
 
 **Severity:** serious
@@ -258,6 +266,9 @@ guards the queue-drain side but does not save the consumer that
 already failed.
 **Fix shape:** wrap the `yield` in a try/except that logs and emits
 an `event: error` instead of letting the generator die mid-stream.
+
+**Fix:** Landed in commit `74a0be3` (bundled with Findings 1.5 and
+2.2 in Touch 5).
 
 ---
 
@@ -425,6 +436,8 @@ button at [apply_complete.html:78-81](src/lynceus/setup/web/templates/apply_comp
 to the Re-run form (and the initial Apply form) as defense in depth
 behind the server-side 409 guard.
 
+**Fix:** Landed in commit `7f93e6f`.
+
 ---
 
 ## Section 5: Invalid-state paths
@@ -548,6 +561,8 @@ on the next `/apply` POST would then refuse the re-run.
 **Fix shape:** flip the order — create the task first; only after
 successful creation, set state to running.
 
+**Fix:** Landed in commit `5f088e7`.
+
 ### Finding 7.2: `except Exception` doesn't catch `CancelledError` (Python 3.8+); CancelledError mid-`to_thread` leaves state stuck at "running"
 
 **Severity:** minor
@@ -565,6 +580,8 @@ and connects to an empty queue → hangs forever.
 **Fix shape:** ensure cancellation flips state to a terminal value
 in the finally (e.g., `if session.apply_state == "running": session
 .apply_state = "failed"`).
+
+**Fix:** Landed in commit `13514cd`.
 
 ### Finding 7.3: No XSS in synthesized failed-step rendering
 
