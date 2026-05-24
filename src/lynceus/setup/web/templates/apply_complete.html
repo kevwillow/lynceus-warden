@@ -75,6 +75,13 @@
         underlying issue is permissions or a missing system group,
         fix it first.
       </p>
+      <p class="wizard-error">
+        <strong>Hand-edits will be overwritten:</strong> if you have
+        hand-edited <code>lynceus.yaml</code> or <code>rules.yaml</code>
+        since the last apply, those edits will be clobbered by
+        re-running — the wizard rewrites both files from the form
+        answers it just captured.
+      </p>
       <form method="post" action="{{ url_with_token('/apply') }}" style="display: inline;">
         <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
         <button type="submit" class="secondary">Re-run apply</button>
