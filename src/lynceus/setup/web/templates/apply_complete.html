@@ -82,7 +82,8 @@
         re-running — the wizard rewrites both files from the form
         answers it just captured.
       </p>
-      <form method="post" action="{{ url_with_token('/apply') }}" style="display: inline;">
+      <form method="post" action="{{ url_with_token('/apply') }}" style="display: inline;"
+            onsubmit="this.querySelector('button[type=submit]').disabled = true;">
         <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
         <button type="submit" class="secondary">Re-run apply</button>
       </form>
