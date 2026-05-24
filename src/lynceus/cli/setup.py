@@ -681,6 +681,26 @@ def run_wizard(
     input_fn=None,
     getpass_fn=None,
 ) -> int:
+    # Finding 4.1 (PRESHIP): wrap the wizard body so EOFError
+    # (Ctrl-D / stdin closed) and KeyboardInterrupt (Ctrl-C) at
+    # any input/getpass prompt surface as a clean cancellation
+    # message + exit 130 rather than Python's default unhandled-
+    # exception traceback to stderr. Body lives in _run_wizard_body
+    # so the wrapper stays small and the existing return paths
+    # don't need 500 lines of re-indentation under a try block.
+    try:
+        return _run_wizard_body(args, input_fn=input_fn, getpass_fn=getpass_fn)
+    except (EOFError, KeyboardInterrupt):
+        print("\nWizard cancelled — no changes written.", file=sys.stderr)
+        return 130
+
+
+def _run_wizard_body(
+    args: argparse.Namespace,
+    *,
+    input_fn=None,
+    getpass_fn=None,
+) -> int:
     in_fn = input_fn or input
     gp_fn = getpass_fn or getpass.getpass
 
