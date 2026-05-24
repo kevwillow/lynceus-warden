@@ -6,7 +6,12 @@ weekend?"
 
 ## Current version
 
-**0.4.0-rc6** — feature-complete for the v0.4 cycle (Argus integration, Tier-1 enrichment, read-only `/settings`, `/allowlist` management, `/alerts` filter+pagination, per-alert triage notes, auto-refresh timer, `lynceus-export-config`), with hardware shakedown still in progress.
+**0.7.0** — adds a browser-based `lynceus-setup --web` wizard
+alongside the CLI flow. This snapshot is otherwise frozen at the
+v0.4 cycle's shape; the [README](../README.md) feature list and
+the [CHANGELOG](../CHANGELOG.md) are the authoritative
+inventories of what's shipped end-to-end. A full rewrite of this
+status doc is on the docs backlog.
 
 ## What's shipped
 
@@ -38,6 +43,17 @@ weekend?"
 - CSRF middleware on POST routes.
 - Localhost-bound by default; non-loopback bind requires an explicit
   `ui_allow_remote: true` flag (intentional friction — v0.2 has no auth).
+
+**Setup (`lynceus-setup`)**
+
+- Interactive CLI wizard that probes Kismet and ntfy, writes
+  `lynceus.yaml`, and auto-imports the bundled threat data.
+- `lynceus-setup --web` (added in v0.7.0): same wizard, served as
+  a loopback-bound multi-page form on port 8766 with a single-use
+  setup token. Friendlier for headless / SSH-tunneled hosts and
+  operators new to YAML. Validates input through the same
+  `Config` constructor the daemon loads from disk, so the wizard
+  can't produce a configuration the daemon will refuse.
 
 **CLI (`lynceus-seed-watchlist`)**
 
@@ -77,7 +93,7 @@ The headlines:
 
 ## Test coverage at a glance
 
-**2103 tests** across the suite as of v0.4.0-rc6, up from 888 at v0.3.0-rc1 and 437 at v0.2. Coverage spans the daemon, the UI, the rules engine, the notifier, the database layer, the watchlist + Argus import path, the setup wizard, install.sh, and packaging.
+**2812 tests** across the suite as of v0.7.0, up from 2526 at v0.6.1, 2103 at v0.4.0-rc6, 888 at v0.3.0-rc1, and 437 at v0.2. Coverage spans the daemon, the UI (read-only dashboard + web setup wizard), the rules engine, the notifier, the database layer, the watchlist + Argus import path, the setup core + CLI + web frontends, install.sh, and packaging.
 
 The `slow` mark is a wheel-build round-trip. Skip with
 `pytest -v -m "not slow"` for fast iteration; run the full suite before
@@ -114,14 +130,14 @@ Things lynceus explicitly does not do today:
 ## Hardware tested vs untested
 
 - **Tested.** Full pipeline runs on Windows and Linux dev environments
-  using the `FakeKismetClient` against a JSON fixture. The 1973-test
+  using the `FakeKismetClient` against a JSON fixture. The 2812-test
   suite covers the daemon, the UI, the rules engine, the notifier, the
-  database layer, the Argus import path, the setup wizard, install.sh,
-  and packaging.
-- **Untested at v0.4-rc5.** End-to-end run on a real Raspberry Pi
+  database layer, the Argus import path, the setup core + CLI + web
+  frontends, install.sh, and packaging.
+- **Untested at v0.7.0.** End-to-end run on a real Raspberry Pi
   against a real Kismet capture from a real adapter (the shakedown is
-  still in progress on Kali). Tag promotion from rc5 to 0.4.0 is gated
-  on completing that smoke run.
+  still in progress on Kali). The v0.7.0 push is gated on completing
+  that smoke run.
 
 ## Should you deploy this today?
 
