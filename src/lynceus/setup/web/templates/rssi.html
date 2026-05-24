@@ -23,6 +23,14 @@
         step="1"
         required
       >
+      <small>
+        Values are negative; closer to <code>0</code> is stricter
+        (drops more). The browser's number arrows step toward
+        <code>0</code> on &uarr; (stricter) and away from
+        <code>0</code> on &darr; (more permissive) &mdash; the
+        opposite of what the &quot;up = larger threshold&quot;
+        intuition expects.
+      </small>
     </label>
     <div class="wizard-footer">
       <a href="{{ url_with_token('/step/9') }}" role="button" class="secondary">&larr; Previous</a>
