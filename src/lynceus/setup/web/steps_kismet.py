@@ -316,6 +316,14 @@ async def kismet_sources_get(request: Request) -> HTMLResponse:
 async def kismet_sources_post(request: Request) -> HTMLResponse:
     session = _session(request)
     form = await request.form()
+    # Finding 7.1 (PRESHIP): the "probed and no wifi_choices"
+    # dead-end branch renders a Cancel-wizard submit button (the
+    # operator can't supply a source on that page — Kismet itself
+    # has none configured). Honor the action=cancel intent here so
+    # the button reaches /cancel rather than re-rendering the same
+    # error page.
+    if form.get("action") == "cancel":
+        return _redirect(request, "/cancel")
     wifi_source = (form.get("wifi_source") or "").strip()
     wifi_iface = (form.get("wifi_interface") or "").strip()
     bt_enable = form.get("bt_enable") == "on"

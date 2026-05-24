@@ -17,13 +17,32 @@
         {% endfor %}
       </fieldset>
     {% elif probed and not wifi_choices %}
-      <p class="wizard-error">
-        Kismet is reachable but has no Wi-Fi datasource configured.
-        Add one to your Kismet config (typically
-        <code>/etc/kismet/kismet_site.conf</code>), e.g.
-        <code>source=wlan1:name=external_wifi</code>, restart Kismet,
-        then re-run this wizard.
-      </p>
+      <article class="wizard-error">
+        <strong>Kismet is reachable but reports no Wi-Fi datasource.</strong>
+        <p>Common causes:</p>
+        <ul>
+          <li>No Wi-Fi adapter installed on the Kismet host.</li>
+          <li>Adapter not in monitor mode (Kismet refused to start the source).</li>
+          <li>Kismet user lacks the right group membership (typically the
+            <code>kismet</code> group).</li>
+        </ul>
+        <p>
+          Fix the underlying Kismet config (typically
+          <code>/etc/kismet/kismet_site.conf</code>), e.g.
+          <code>source=wlan1:name=external_wifi</code>, then restart Kismet
+          and re-run this wizard. <code>sudo lynceus-bootstrap-kismet
+          --reset-config</code> can rewrite Kismet's config in place if
+          you'd rather start from a known-good baseline.
+        </p>
+        <p>
+          <small>
+            The wizard can't continue from this page until Kismet has at
+            least one Wi-Fi source — pick a path: Previous to retry the
+            probe after fixing Kismet, or Cancel to exit the wizard and
+            come back after.
+          </small>
+        </p>
+      </article>
     {% else %}
       <p>
         Falling back to OS interface enumeration (Kismet probe failed
@@ -76,7 +95,11 @@
 
     <div class="wizard-footer">
       <a href="{{ url_with_token('/step/3') }}" role="button" class="secondary">&larr; Previous</a>
-      <button type="submit">Next &rarr;</button>
+      {% if probed and not wifi_choices %}
+        <button type="submit" name="action" value="cancel" class="contrast">Cancel wizard</button>
+      {% else %}
+        <button type="submit">Next &rarr;</button>
+      {% endif %}
     </div>
   </form>
 {% endblock %}
