@@ -324,6 +324,12 @@ async def _run_apply_task(
     session so /done can cancel it.
     """
     sink = SSEProgressSink(queue, loop)
+    # Capture the new terminal state separately from session.apply_state
+    # so the finally block can arm the grace timer BEFORE flipping state
+    # (Finding 4.1). The default "running" means CancelledError mid-
+    # to_thread leaves state at "running" — same behavior as pre-fix
+    # (Finding 7.2 covers cancellation in batch 2).
+    new_state: str = "running"
     try:
         report = await asyncio.to_thread(
             apply_config,
@@ -336,7 +342,7 @@ async def _run_apply_task(
             progress=sink,
         )
         session.apply_report = report
-        session.apply_state = "completed" if report.overall_status == "ok" else "failed"
+        new_state = "completed" if report.overall_status == "ok" else "failed"
     except Exception as exc:
         logger.exception("apply_config raised in wizard background task")
         tb = traceback.format_exc()
@@ -351,7 +357,7 @@ async def _run_apply_task(
         await queue.put(serialize_step(synthetic))
         partial_steps = (*sink.records, synthetic)
         session.apply_report = ApplyReport(steps=partial_steps)
-        session.apply_state = "failed"
+        new_state = "failed"
     finally:
         # Sentinel: SSE generator breaks on None and closes the stream.
         await queue.put(None)
@@ -359,7 +365,14 @@ async def _run_apply_task(
         # POSTs first, it cancels this task. The scheduling lives in
         # a module-local helper so Touch 3 can import + override it
         # in tests without weaving fixtures through every apply path.
+        # Arm BEFORE the terminal state flip so a re-apply POST's
+        # cancel-prior-grace block sees the task and can cancel it
+        # cleanly — otherwise the new POST runs while the prior
+        # task is mid-finally with apply_grace_task still None, and
+        # the grace timer ends up armed against the NEW apply run
+        # (Finding 4.1).
         _schedule_apply_grace_shutdown(app_state, session)
+        session.apply_state = new_state  # type: ignore[assignment]
 
 
 def _schedule_apply_grace_shutdown(app_state, session: WizardSession) -> None:
