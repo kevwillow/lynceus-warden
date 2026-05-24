@@ -4,10 +4,30 @@
 {% block content %}
   <h1>Step 7: ntfy broker URL</h1>
   <p>
-    ntfy is a free push notification service (<code>{{ default_broker }}</code>).
+    ntfy is a free push notification service
+    (<code>{{ default_broker }}</code>).
     Lynceus publishes alerts to a topic you choose; you subscribe
-    from the ntfy mobile app or a browser. Leave the field empty to
-    skip ntfy entirely &mdash; you can wire it up later with
+    to that topic from your phone (ntfy mobile app) or a desktop
+    browser.
+  </p>
+  <p>
+    Two prompts follow:
+  </p>
+  <ol>
+    <li>
+      <strong>ntfy broker URL</strong> (this step) &mdash; the
+      default (<code>{{ default_broker }}</code>) is the public
+      service. Set this to your own URL if you self-host.
+    </li>
+    <li>
+      <strong>ntfy topic</strong> (next step) &mdash; a name you
+      pick. Anyone who knows the topic can read AND publish to it,
+      so treat it like a password.
+    </li>
+  </ol>
+  <p>
+    To skip ntfy entirely (no push notifications), leave the URL
+    field empty. You can wire it up later with
     <code>lynceus-setup --reconfigure</code>.
   </p>
   {% if error %}<p class="wizard-error"><strong>error:</strong> {{ error }}</p>{% endif %}
