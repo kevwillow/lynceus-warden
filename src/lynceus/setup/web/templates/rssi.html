@@ -25,10 +25,11 @@
       step="1"
       oninput="document.getElementById('min_rssi_readout').textContent = this.value + ' dBm';"
     >
-    <div style="display: flex; justify-content: space-between;">
-      <small>&larr; More permissive (more alerts, weaker signals included)</small>
-      <small>Stricter (fewer alerts, only strong signals) &rarr;</small>
+    <div style="display: flex; justify-content: space-between; gap: 1em;">
+      <small>&larr; More permissive &mdash; catches more (including weak / distant devices), more alerts, more false positives</small>
+      <small>Stricter &mdash; catches fewer (only strong / nearby devices), fewer alerts, higher confidence &rarr;</small>
     </div>
+    <p><small>Tip: <code>-80 dBm</code> is the default and works for most home setups.</small></p>
     <div class="wizard-footer">
       <a href="{{ url_with_token('/step/9') }}" role="button" class="secondary">&larr; Previous</a>
       <button type="submit">Next &rarr;</button>
