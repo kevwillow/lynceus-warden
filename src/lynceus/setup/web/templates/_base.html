@@ -18,6 +18,14 @@
       .wizard-step-indicator ol li { display: inline; margin-right: 0.6em; }
       .wizard-step-indicator ol li.current { font-weight: bold; color: var(--color); }
       .wizard-footer { margin-top: 2em; display: flex; justify-content: space-between; gap: 1em; }
+      /* Pico styles <a role="button"> and <button> with the same base
+         rules but they end up visibly different sizes in wizard-footer:
+         Previous (anchor) and Next/Apply/Review (real button) carry
+         different text widths, so without an explicit min-width the
+         button row looks uneven. Pin both to the same min-width and
+         padding so they render as a matched pair regardless of label. */
+      .wizard-footer a[role="button"],
+      .wizard-footer button { min-width: 9em; padding-left: 1.5em; padding-right: 1.5em; text-align: center; }
       .wizard-error { color: var(--del-color); margin-bottom: 0.5em; }
     </style>
   </head>
