@@ -12,12 +12,16 @@
     Configuration target: <code>{{ target_path }}</code> ({{ scope }} scope).
   </p>
   <p>
-    <strong>Note for Phase 2a:</strong>
-    You can walk the entire wizard and preview your validated configuration,
-    but the final &ldquo;apply&rdquo; step (writing the file to disk,
-    importing the bundled watchlist, etc.) is not yet wired up &mdash; the
-    Review page emits the validated config as JSON only. The apply pipeline
-    lands in Phase 2b.
+    Clicking <strong>Begin</strong> walks you through the form one section
+    at a time. The Review page shows your validated configuration before
+    anything is written. Clicking <strong>Apply</strong> on Review runs the
+    full write pipeline &mdash; writes <code>lynceus.yaml</code>, scaffolds
+    <code>severity_overrides.yaml</code>, imports the bundled watchlist,
+    writes <code>rules.yaml</code> when alerting is enabled, and (under
+    <code>--system</code> scope) chowns the created files to the daemon's
+    system user. Progress streams live to the completion page; if a step
+    fails, the completion page offers a Re-run button (the pipeline is
+    idempotent, so re-running after fixing the underlying issue is safe).
   </p>
   <p>
     <a href="{{ url_with_token('/step/1') }}" role="button">Begin</a>
