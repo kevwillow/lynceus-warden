@@ -27,10 +27,21 @@
     </fieldset>
     <fieldset>
       <legend>Per-rule-type enables</legend>
+      <label>
+        <input
+          type="checkbox"
+          id="select-all-rule-types"
+          onchange="document.querySelectorAll('.rule-type-checkbox').forEach(function(cb){cb.checked = document.getElementById('select-all-rule-types').checked;});"
+        >
+        <strong>Select all rule types</strong>
+        &mdash; toggles every checkbox below at once
+      </label>
+      <hr>
       {% for row in rule_rows %}
         <label>
           <input
             type="checkbox"
+            class="rule-type-checkbox"
             name="enable_{{ row.rule_type }}"
             {% if row.rule_type in enabled_rule_types %}checked{% endif %}
           >
