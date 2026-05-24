@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Web wizard pre-smoke hardening (Phase 2 batch 1).** Eight findings
+  from the pre-smoke diagnostic (`PHASE_2_DIAGNOSTIC.md`) addressed
+  before the wizard goes to operator smoke. Operator-visible:
+  - The review page's Apply button article previously claimed
+    "Phase 2a note: the Apply button below confirms what WOULD be
+    applied; it does not write the config to disk yet." That copy is
+    now corrected — clicking Apply runs the full write+chown
+    pipeline, progress streams live to the next page, and the
+    completion page offers a Re-run on failure.
+  - Cancel-during-apply protection. The Cancel link (rendered on
+    every wizard page's footer) previously cleared the session
+    store mid-apply, orphaning the in-flight task and letting the
+    operator re-walk the wizard with a fresh idle session that
+    spawned a SECOND concurrent apply against the same target
+    paths. /cancel now redirects to /apply-progress and refuses to
+    clear when an apply is running.
+  - Done-during-apply protection. POST /done previously scheduled
+    server shutdown regardless of apply state — uvicorn would tear
+    the loop down while the worker thread was mid-pipeline,
+    leaving partial state on disk. /done now refuses with 409 when
+    an apply is in flight.
+  - SSE reconnect cleanup. EventSource reconnect after the apply
+    completed previously hung indefinitely on an empty drained
+    queue. /apply-stream now returns 410 on post-drain reconnect
+    and 404 when no apply has ever started. Concurrent /apply-stream
+    connections to the same session (multi-tab) now return 409 on
+    the second consumer instead of competing for queue.get()
+    items and corrupting each other's transcript.
+  - Re-run hand-edit warning. The completion page's Re-run section
+    now warns that hand-edits to lynceus.yaml or rules.yaml since
+    the last apply will be clobbered (pre-existing _atomic_write
+    behavior, now documented at the point of action).
+
+  See `PHASE_2_DIAGNOSTIC.md` for the full finding-by-finding
+  detail and the eight commits that landed in this batch (cited by
+  SHA in each finding's body).
+
 ### Added
 
 - **Browser-based `lynceus-setup --web` wizard.** A second frontend

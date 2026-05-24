@@ -105,6 +105,8 @@ concurrent SSE connections (409 if `session.apply_queue` is already
 being drained by an active generator — track an in-flight counter
 on the session).
 
+**Fix:** Landed in commit `f55bdad`.
+
 ### Finding 1.5: Sentinel-push at end of `_run_apply_task` is cancellation-vulnerable
 
 **Severity:** minor
@@ -147,6 +149,9 @@ something stable across requests so a `clear()` doesn't strand a
 running task; AND/OR (c) keep a process-wide "an apply is in flight"
 guard separate from session state so a freshly-minted session can't
 race past it.
+
+**Fix:** Landed in commit `c7176bb`. Minimum-viable fix (a) only;
+(b) and (c) deferred per locked decision before batch 1 work began.
 
 ---
 
@@ -226,6 +231,9 @@ queue is empty AND a previous generator already closed) and 410/204
 the reconnect so the client `onerror` path fires and the user can
 click through to `/apply-complete`.
 
+**Fix:** Landed in commit `cca5a6c`. Option (b) per locked decision;
+SSE `id:` + replay (option a) deferred to a future phase.
+
 ### Finding 2.4: SSE response headers set correctly
 
 **Severity:** note
@@ -291,6 +299,9 @@ for the completion page". Optionally, also surface a more
 informative "wait" page that polls `/apply-complete` once the state
 transitions.
 
+**Fix:** Landed in commit `094f9c6` (bundled with Finding 3.4 in
+Touch 2).
+
 ### Finding 3.2: Grace timer is only armed AFTER apply completes; runtime-during-apply concern is moot
 
 **Severity:** note
@@ -327,6 +338,10 @@ fires before GC.
 `_BACKGROUND_TASKS: set[asyncio.Task] = set()`, `task = ...;
 _BACKGROUND_TASKS.add(task); task.add_done_callback(_BACKGROUND_TASKS.discard)`)
 — the standard asyncio workaround.
+
+**Fix:** Landed in commit `094f9c6` (bundled with Finding 3.1 in
+Touch 2). Task ref held on `session.shutdown_task` rather than a
+module-level set — same correctness guarantee with simpler scoping.
 
 ### Finding 3.5: `_shutdown_after_delay` 500ms hardcoded; may be too short on slow render paths
 
@@ -385,6 +400,8 @@ timer BEFORE setting `apply_state = "completed"|"failed"`, or
 acquire a session-level lock around the "arm grace + flip state"
 pair so the new `/apply` POST can't interleave.
 
+**Fix:** Landed in commit `c5d2286`.
+
 ### Finding 4.2: Re-apply correctly replaces the queue; stale-queue contamination test passes
 
 **Severity:** note
@@ -432,6 +449,9 @@ the connection hang with no data.
 failed}` AND the queue has been drained (track "consumed" with a
 flag). Cleaner: route the SSE endpoint via `apply_state` — only
 serve when state == running; otherwise 409/410.
+
+**Fix:** Landed in commit `cca5a6c` (bundled with Finding 2.3 in
+Touch 4).
 
 ### Finding 5.2: `POST /done` when state is `idle` shuts down the server with no apply ever performed
 
@@ -617,6 +637,8 @@ ship to smoke.
 clicking Apply writes the config + side effects per the apply
 pipeline; operator can re-run if it fails.
 
+**Fix:** Landed in commit `db0213b`.
+
 ### Finding 8.2: Token in URL retained in browser history; acceptable for one-shot wizard
 
 **Severity:** note
@@ -707,6 +729,10 @@ edits between runs.
 behavior, not Phase 2 regression. Flag for documentation and
 consider a "config has unexpected content" warning step before
 overwrite in a future phase.
+
+**Fix:** Landed in commit `ef73949` (warning copy on the Re-run
+section of the completion page; diff/confirm UX deferred to a
+future phase per the fix-shape recommendation).
 
 ### Finding 9.3: Wizard runs without the daemon's logging config
 
