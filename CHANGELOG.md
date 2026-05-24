@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-05-24
+
+### Fixed
+
+- **Smoke-driven Linux fixes.** Post-release smoke of v0.7.0 on real
+  Pi hardware surfaced a handful of paper cuts that this patch
+  addresses: the bundled Argus watchlist import needed a longer
+  timeout on Pi-class hosts (now 600s, was 120s — the bundled CSV
+  grew to ~22.5k records and per-row sqlite commits dominate wall
+  time on SD storage); the `chown_db_files` step's skipped reason in
+  user-scope installs now reads "Not applicable for user-scope
+  install (DB files are already owned by the operator)" instead of
+  the alarming-looking "scope=user" literal; the web wizard's
+  completion page now surfaces scope-adapted next steps (`lynceus-
+  quickstart` for `--user`, `sudo systemctl enable --now lynceus.
+  service lynceus-ui.service` for `--system`) so operators who
+  reached the wizard via `--web` discover how to actually start the
+  daemon; the Kismet sources page (step 4) now renders each source's
+  `capture_interface` and Kismet-issued UUID alongside the interface
+  name so operators on multi-adapter hosts can unambiguously match a
+  wizard row against Kismet's web-UI Datasources page; step 12
+  (rules engine) gained a "Select all rule types" checkbox that
+  toggles every per-type checkbox at once via a one-line inline
+  handler; the RSSI threshold page (step 10) carries a new inline
+  hint explaining the negative-dBm sign convention so the browser's
+  number-arrow direction (up = closer to 0 = stricter) does not
+  read as "reversed"; the Cancel button on the kismet-sources
+  dead-end branch was normalized from Pico's accent-color
+  `contrast` variant to the standard `secondary` variant for
+  consistency with every other Cancel button in the wizard; and
+  `install.sh`'s closing "Next steps" block now mentions `lynceus-
+  setup --web` as a browser-based alternative to the CLI wizard.
+
 ## [0.7.0] - 2026-05-24
 
 ### Added
