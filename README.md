@@ -118,6 +118,8 @@ facing failure modes that surface most often.
 
 `lynceus-setup` is the primary configuration tool. Re-run it with `--reconfigure` to rewrite an existing config; without that flag it refuses to clobber what's already there.
 
+For operators who prefer a browser-driven setup — typically a headless Raspberry Pi reached via SSH port-forward, a desktop install where copying values from a wiki into a terminal feels awkward, or anyone new to YAML config — pass `--web` instead. `lynceus-setup --web` prints a loopback URL with a single-use setup token, hosts a multi-page wizard that asks the same questions as the CLI flow, validates input through the same `Config` constructor the daemon loads, streams live per-step progress while the apply runs, and exits cleanly when you click Done. Loopback-bound by default on port 8766 (overridable via `--port`); pass `--bind 0.0.0.0` to opt into remote access. Every other CLI flag (`--user`, `--system`, `--reconfigure`, `--skip-probes`, `--output`) works identically with `--web`. The CLI flow is unchanged when `--web` is absent.
+
 Configuration files live at XDG-aware paths:
 
 - **`--user` install:** `~/.config/lynceus/lynceus.yaml` (or `$XDG_CONFIG_HOME/lynceus/lynceus.yaml`).
