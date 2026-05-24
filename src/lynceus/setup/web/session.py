@@ -58,6 +58,12 @@ class WizardSession:
     # ref the task can be GC'd between create and fire, silently
     # dropping the shutdown signal. See Finding 3.4.
     shutdown_task: asyncio.Task | None = None
+    # Set by the SSE generator's cleanup once it has drained the
+    # queue to the sentinel. Lets /apply-stream distinguish "post-
+    # apply reconnect against an empty drained queue" (410) from
+    # "terminal state but queue still has events for the operator's
+    # first/only consumer to tail" (200). See Findings 2.3, 5.1.
+    apply_stream_consumed: bool = False
 
 
 class SessionStore:

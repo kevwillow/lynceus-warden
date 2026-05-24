@@ -509,6 +509,9 @@ async def apply_post(request: Request) -> Response:
     session.apply_queue = queue
     session.apply_state = "running"
     session.apply_report = None
+    # Reset the consumed flag so /apply-stream serves the new run's
+    # events rather than 410-ing on the prior run's drained state.
+    session.apply_stream_consumed = False
     # Cancel any prior grace timer from a previous apply.
     if session.apply_grace_task is not None and not session.apply_grace_task.done():
         session.apply_grace_task.cancel()
@@ -597,26 +600,59 @@ async def apply_stream_get(request: Request) -> Response:
     Yields one ``data: <json>`` event per ``ApplyStep`` record;
     ends with ``event: end`` so the client can navigate without
     relying on connection-error handling.
+
+    State-aware so an EventSource reconnect after the apply finished
+    doesn't hang forever on the empty drained queue (Findings 2.3, 5.1):
+
+      * idle              → 404 (no apply ever started on this session)
+      * running           → stream the queue as today
+      * terminal + drained → 410 (a prior generator already consumed
+                              the queue to its sentinel; nothing more
+                              will be enqueued)
+      * terminal + queue  → stream the tail (operator's first connection
+        not yet drained     after a fast apply; they still see the
+                            transcript and the closing event: end)
     """
     session = _session(request)
     queue = session.apply_queue
-    if queue is None:
-        # No apply running. Return JSON 409 rather than a stream so
-        # the client's EventSource sees a clear close.
+    if session.apply_state == "idle" or queue is None:
+        # No apply ever started on this session. JSON close so the
+        # client's EventSource sees a definitive failure.
         return JSONResponse(
             {"error": "no apply in progress"},
-            status_code=409,
+            status_code=404,
+        )
+    if (
+        session.apply_state in ("completed", "failed")
+        and session.apply_stream_consumed
+    ):
+        # The apply finished AND a prior generator already drained
+        # the queue to its sentinel. A new EventSource reconnect
+        # here would block forever on queue.get() because nothing
+        # else will be enqueued. 410 Gone tells the client the
+        # stream is permanently unavailable; the operator can
+        # navigate to /apply-complete to see the transcript.
+        return JSONResponse(
+            {"error": "apply stream already drained"},
+            status_code=410,
         )
 
     async def event_stream():
-        while True:
-            item = await queue.get()
-            if item is None:
-                # Sentinel — emit a closing event so JS can navigate
-                # cleanly rather than relying on onerror.
-                yield "event: end\ndata: {}\n\n"
-                break
-            yield f"data: {json.dumps(item)}\n\n"
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    # Sentinel — emit a closing event so JS can navigate
+                    # cleanly rather than relying on onerror.
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                yield f"data: {json.dumps(item)}\n\n"
+        finally:
+            # Mark drained so a subsequent reconnect 410s rather
+            # than hanging on the now-empty queue. Cleanup runs on
+            # both the normal sentinel exit and the GeneratorExit
+            # path (client disconnect mid-stream).
+            session.apply_stream_consumed = True
 
     return StreamingResponse(
         event_stream(),
