@@ -6,6 +6,13 @@
     <title>{% block title %}lynceus-setup{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/pico.min.css') }}">
     <style>
+      /* Bundled Pico is the classless build, so `.container` is not
+         defined; `body>main` provides loose centering with the
+         framework's default ~1200px max-width which is too wide for a
+         single-column form. Pin an explicit narrower max-width on
+         `.container` to keep line lengths readable at desktop widths.
+         Falls back to 100% width below ~720px (mobile). */
+      .container { max-width: 720px; margin-left: auto; margin-right: auto; }
       .wizard-step-indicator { font-size: 0.85em; color: var(--muted-color); margin-bottom: 0.5em; }
       .wizard-step-indicator ol { list-style: decimal inside; padding: 0; margin: 0.2em 0; }
       .wizard-step-indicator ol li { display: inline; margin-right: 0.6em; }
