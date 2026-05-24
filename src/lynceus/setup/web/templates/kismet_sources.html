@@ -28,7 +28,17 @@
       <p>
         Falling back to OS interface enumeration (Kismet probe failed
         or was skipped). Verify the value you pick matches the
-        <code>name=</code> in your Kismet source line.
+        <code>name=</code> in your Kismet source line, e.g.
+        <code>source=wlan1:name=external_wifi</code> &rarr; pick
+        <code>external_wifi</code>.
+      </p>
+      <p class="wizard-error">
+        <small>
+          If the value you pick doesn't match the <code>name=</code>
+          on the Kismet side, the poller will silently drop every
+          observation &mdash; no alerts, no error, just nothing in
+          the database. Double-check the name now.
+        </small>
       </p>
       {% if interfaces %}
         <label>
