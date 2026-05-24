@@ -956,10 +956,19 @@ def apply_config(
             )
         )
     else:
+        # Operator-readable skip reason. The terse "scope=user"
+        # string read as alarming in the v0.7.0 Linux smoke (the ⏭
+        # icon next to a cryptic literal looked like a partial
+        # failure). User-scope installs intentionally skip the chown
+        # — the daemon runs as the operator, not the lynceus system
+        # user, so file ownership is already correct without it.
         reason = (
-            "scope=user"
+            "Not applicable for user-scope install "
+            "(DB files are already owned by the operator)"
             if scope != "system"
-            else "bundled import did not complete successfully"
+            else "Bundled Argus import did not complete; "
+            "leaving DB files unchowned so the operator can re-run "
+            "after fixing the underlying import failure"
         )
         _emit(
             ApplyStep(
