@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Web wizard UX polish from operator smoke.** Browser smoke on
+  Windows surfaced four classes of paper cuts on the otherwise-
+  functional wizard. Polish-only — no route logic, validation, or
+  apply-pipeline changes:
+  - **Step 12 (rules engine) clarity.** The "row counts read 0 on
+    first install" explanation was buried inside the per-rule-type
+    `<small>` caption, where the operator read the table of zeros
+    as "no data to import" and bounced. Moved to a top-of-page
+    callout that names the bundled watchlist size (~22,000 entries)
+    and explicitly says the import runs when you click Apply.
+  - **Internal-phase language sweep.** Step 12 still referenced
+    "Phase 2b" — internal release-planning nomenclature that
+    leaked into operator-facing copy (same class as the Phase 2a
+    landing leak fixed earlier in this Unreleased section).
+    Rewritten in operator terms; sweep test pins no template
+    contains "Phase 1/2/3".
+  - **Visual centering.** The wizard's `<main>` carried
+    `class="container"` but the bundled Pico is the classless
+    build (which provides no `.container` rule), so the class was
+    a no-op and the layout relied on Pico's default `body>main`
+    rules — wide and uncentered-feeling on the 1024–1280px range
+    of the smoke session. Pinned an explicit narrow max-width
+    (720px) on `.container` in `_base.html`'s inline `<style>`
+    block for single-column form readability.
+  - **CLI / web parity enrichment on six pages.** The web wizard
+    was missing substantive context the CLI flow's `_print_context`
+    blocks carry: Step 1 (Kismet URL) now surfaces the
+    `lynceus-bootstrap-kismet` helper and the two-things framing;
+    Step 2 (API key) carries the full five-step Kismet-UI
+    walkthrough plus the persistence-scope reassurance; Step 4
+    (Kismet sources) carries the concrete
+    `source=wlan1:name=external_wifi → pick external_wifi` example
+    and the silent-drop warning on the fallback branch; Step 7
+    (ntfy URL) carries the two-prompts overview, the shared-secret
+    framing surfaced before the opt-in decision, and the self-host
+    distinction; Step 8 (ntfy topic) carries the phone-subscribe
+    walkthrough (install app → tap + → enter topic exactly); Step
+    11 (severity overrides) carries the import-time vs runtime
+    two-layer model so an operator editing the file post-install
+    knows whether their edit needs re-import or just daemon
+    restart.
+
 ### Fixed
 
 - **Web wizard pre-smoke hardening (Phase 2 batch 1).** Eight findings
