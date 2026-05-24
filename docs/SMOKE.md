@@ -1,8 +1,10 @@
 # First-run smoke checklist
 
-Run this **after** installing per [deploy/README.md](../deploy/README.md). Each step has an action, a verify command, an expected outcome, and a troubleshooting bullet. If any step fails, **stop and debug** — later steps assume earlier ones passed.
+Run this **after** installing per the [README install section](../README.md#installation). Each step has an action, a verify command, an expected outcome, and a troubleshooting bullet. If any step fails, **stop and debug** — later steps assume earlier ones passed.
 
 The checklist assumes the standard install paths: config at `/etc/lynceus/lynceus.yaml`, database at `/var/lib/lynceus/lynceus.db`, services running as the `lynceus` system user, both the `lynceus` poller daemon and the `lynceus-ui` web UI installed as systemd units.
+
+Configuration can come from either wizard — the interactive CLI `lynceus-setup --system` or the browser-based `lynceus-setup --system --web` added in v0.7.0. Both flows write the same `lynceus.yaml`; the steady-state checks below are wizard-frontend-agnostic.
 
 For local development without a Pi or a real Kismet — building, testing, exercising the UI — see [docs/WINDOWS_DEV.md](WINDOWS_DEV.md). For deferred features so you don't burn time wondering why something isn't there, see [BACKLOG.md](../BACKLOG.md).
 
