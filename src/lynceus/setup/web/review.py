@@ -522,9 +522,6 @@ async def apply_post(request: Request) -> Response:
     state = request.app.state
     session = _session(request)
 
-    if session.apply_state == "running":
-        return Response("apply already in progress", status_code=409)
-
     try:
         config, severity_path, enabled_rule_types = _resolve_apply_args(
             session, scope=state.scope
@@ -536,48 +533,60 @@ async def apply_post(request: Request) -> Response:
         # inline, so the redirect is idempotent.
         return _redirect(request, "/review")
 
-    # Fresh queue per apply. Re-runs land here and overwrite the
-    # prior queue; the old SSE generator will have already drained
-    # to its sentinel and closed.
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-    # Cancel any prior grace timer from a previous apply.
-    if session.apply_grace_task is not None and not session.apply_grace_task.done():
-        session.apply_grace_task.cancel()
-        session.apply_grace_task = None
-    # Finding 7.1: create the task BEFORE flipping state to "running"
-    # so a create_task failure (closed loop, system resource limits)
-    # cannot strand the session at "running" with no task to advance
-    # it through the state machine — which would also wedge the 409
-    # guard on a subsequent /apply attempt. asyncio.create_task only
-    # schedules; the task body runs after this handler returns and
-    # yields control, so the state-flip below still lands before the
-    # task can observe it.
-    try:
-        task = asyncio.create_task(
-            _run_apply_task(
-                app_state=state,
-                session=session,
-                config=config,
-                severity_path=severity_path,
-                enabled_rule_types=enabled_rule_types,
-                queue=queue,
-                loop=loop,
+    # Finding 1.1: hold the session-scoped lock across the
+    # check-then-set so the invariant "at most one apply task per
+    # session" survives any future await inserted between the check
+    # and the state flip. Today no awaits sit between them so the
+    # pair is event-loop-atomic without the lock; adding the lock
+    # makes the invariant explicit rather than implicit-and-fragile.
+    async with session.apply_lock:
+        if session.apply_state == "running":
+            return Response("apply already in progress", status_code=409)
+
+        # Fresh queue per apply. Re-runs land here and overwrite the
+        # prior queue; the old SSE generator will have already drained
+        # to its sentinel and closed.
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        # Cancel any prior grace timer from a previous apply.
+        if session.apply_grace_task is not None and not session.apply_grace_task.done():
+            session.apply_grace_task.cancel()
+            session.apply_grace_task = None
+        # Finding 7.1: create the task BEFORE flipping state to
+        # "running" so a create_task failure (closed loop, system
+        # resource limits) cannot strand the session at "running"
+        # with no task to advance it through the state machine —
+        # which would also wedge the 409 guard on a subsequent
+        # /apply attempt. asyncio.create_task only schedules; the
+        # task body runs after this handler returns and yields
+        # control, so the state-flip below still lands before the
+        # task can observe it.
+        try:
+            task = asyncio.create_task(
+                _run_apply_task(
+                    app_state=state,
+                    session=session,
+                    config=config,
+                    severity_path=severity_path,
+                    enabled_rule_types=enabled_rule_types,
+                    queue=queue,
+                    loop=loop,
+                )
             )
-        )
-    except RuntimeError:
-        logger.exception("could not schedule apply task")
-        return Response(
-            "apply could not be scheduled (event loop unavailable)",
-            status_code=503,
-        )
-    session.apply_queue = queue
-    session.apply_state = "running"
-    session.apply_report = None
-    # Reset the consumed flag so /apply-stream serves the new run's
-    # events rather than 410-ing on the prior run's drained state.
-    session.apply_stream_consumed = False
-    session.apply_task = task
+        except RuntimeError:
+            logger.exception("could not schedule apply task")
+            return Response(
+                "apply could not be scheduled (event loop unavailable)",
+                status_code=503,
+            )
+        session.apply_queue = queue
+        session.apply_state = "running"
+        session.apply_report = None
+        # Reset the consumed flag so /apply-stream serves the new
+        # run's events rather than 410-ing on the prior run's drained
+        # state.
+        session.apply_stream_consumed = False
+        session.apply_task = task
     return _redirect(request, "/apply-progress")
 
 

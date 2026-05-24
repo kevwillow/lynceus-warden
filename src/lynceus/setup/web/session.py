@@ -70,6 +70,15 @@ class WizardSession:
     # two operators' /apply-progress pages each call queue.get() and
     # split the step records between them. See Finding 1.4.
     apply_stream_active: bool = False
+    # Guards the apply_state check-then-set inside apply_post.
+    # Today no await sits between the check and the set so the two
+    # operations are event-loop-atomic on single-process uvicorn —
+    # the 409 guard works without this lock. The lock is future-
+    # proofing: any await inserted in that block in a future change
+    # (audit logging, async probes, etc.) would silently open a
+    # TOCTOU window where two concurrent POSTs both see idle and
+    # both spawn an apply task. See Finding 1.1.
+    apply_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class SessionStore:
