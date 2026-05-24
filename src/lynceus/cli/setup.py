@@ -1262,7 +1262,13 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     # Windows consoles default to cp1252/cp437, which can't encode the
     # box-drawing chars _print_section uses (UnicodeEncodeError on print).
+    # Reconfigure stderr too — Finding 5.3 (PRESHIP): logger.exception
+    # and logger.warning emit apply-failure tracebacks to stderr; if
+    # those contain non-ASCII (a file path with unicode, a Pydantic
+    # error with smart-quotes), the Windows cp1252 stderr crashes or
+    # silently drops the log without this reconfigure.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     args = _build_parser().parse_args(argv)
     # Refuse sudo-without-system. The wizard derives scope from --system
     # alone (not euid), so `sudo lynceus-setup --reconfigure` would
