@@ -459,6 +459,58 @@ def enumerate_bluetooth_adapters() -> list[str] | None:
     return adapters
 
 
+# --- Unified capture-adapter enumeration ------------------------------------
+
+
+def _read_sysfs_mac(path: Path) -> str | None:
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return None
+    return text or None
+
+
+def enumerate_capture_adapters() -> list[dict]:
+    """Return a unified list of OS capture adapters (Wi-Fi + Bluetooth).
+
+    Each entry is a dict with keys:
+        - ``name``: interface name (e.g. ``"wlan0"`` or ``"hci0"``)
+        - ``kind``: ``"wifi"`` or ``"bluetooth"``
+        - ``mac``: MAC address string, or ``None`` when sysfs doesn't expose
+          one (read from ``/sys/class/net/<name>/address`` for Wi-Fi or
+          ``/sys/class/bluetooth/<name>/address`` for Bluetooth)
+
+    Wi-Fi adapters come first (alphabetical), then Bluetooth controllers.
+    Returns ``[]`` on platforms where neither subsystem is present (Windows,
+    macOS) — the web wizard then falls back to a free-text interface name
+    input so a remote operator can still proceed.
+
+    Step 4 of the web wizard uses this as the source-of-truth for "what
+    adapters can the operator choose from", replacing the prior Kismet-probe-
+    driven source list. The Kismet probe result is still rendered as a read-
+    only sanity-check panel so the operator can spot mismatches between what
+    Kismet has configured and what the OS actually sees.
+    """
+    adapters: list[dict] = []
+    for name in enumerate_wireless_interfaces() or []:
+        adapters.append(
+            {
+                "name": name,
+                "kind": "wifi",
+                "mac": _read_sysfs_mac(Path("/sys/class/net") / name / "address"),
+            }
+        )
+    for name in enumerate_bluetooth_adapters() or []:
+        adapters.append(
+            {
+                "name": name,
+                "kind": "bluetooth",
+                "mac": _read_sysfs_mac(Path("/sys/class/bluetooth") / name / "address"),
+            }
+        )
+    return adapters
+
+
 # --- Probes -----------------------------------------------------------------
 
 
