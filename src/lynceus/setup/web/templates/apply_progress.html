@@ -1,0 +1,72 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; applying configuration{% endblock %}
+{% block content %}
+  <h1>Applying configuration</h1>
+  <p>
+    Writing <code>{{ target_path }}</code> ({{ scope }} scope) and
+    running the side-effect chain (severity overrides scaffold, data
+    + log dirs, bundled watchlist import, rules.yaml if enabled).
+    Live progress streams below; this page will redirect to the
+    completion summary when the apply finishes.
+  </p>
+  <article id="wizard-progress-status">
+    <p id="wizard-progress-connecting">
+      <em>Connecting to progress stream&hellip;</em>
+    </p>
+    <ol id="wizard-progress-steps" style="list-style: none; padding-left: 0;">
+    </ol>
+    <p id="wizard-progress-error" class="wizard-error" hidden>
+      Lost the progress stream. The apply may still be running;
+      reload this page or jump to the
+      <a href="{{ url_with_token('/apply-complete') }}">completion
+      summary</a> if it has finished.
+    </p>
+  </article>
+  <script>
+    (function () {
+      var streamUrl = {{ url_with_token('/apply-stream') | tojson }};
+      var completeUrl = {{ url_with_token('/apply-complete') | tojson }};
+      var stepsList = document.getElementById("wizard-progress-steps");
+      var connecting = document.getElementById("wizard-progress-connecting");
+      var errorMsg = document.getElementById("wizard-progress-error");
+      var es = new EventSource(streamUrl);
+      var sawAnyEvent = false;
+      var endedCleanly = false;
+
+      es.onmessage = function (evt) {
+        sawAnyEvent = true;
+        if (connecting) { connecting.hidden = true; }
+        try {
+          var step = JSON.parse(evt.data);
+        } catch (parseErr) {
+          return;
+        }
+        var icon = step.status === "ok" ? "✅"
+                 : step.status === "skipped" ? "⏭"
+                 : "❌";
+        var li = document.createElement("li");
+        var nameCode = document.createElement("code");
+        nameCode.textContent = step.name;
+        li.appendChild(document.createTextNode(icon + " "));
+        li.appendChild(nameCode);
+        li.appendChild(document.createTextNode(" — " + (step.message || "")));
+        stepsList.appendChild(li);
+      };
+
+      es.addEventListener("end", function () {
+        endedCleanly = true;
+        es.close();
+        window.location.href = completeUrl;
+      });
+
+      es.onerror = function () {
+        if (endedCleanly) { return; }
+        // Either the server closed without sending end (unexpected) or
+        // the network died. Either way, surface the error and let the
+        // operator navigate manually.
+        if (errorMsg) { errorMsg.hidden = false; }
+      };
+    })();
+  </script>
+{% endblock %}
+{% block footer %}{# No Cancel link during apply — the apply is irreversible once running. #}{% endblock %}

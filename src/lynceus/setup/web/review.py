@@ -1,42 +1,66 @@
-"""Review page + noop apply placeholder (F6 Phase 2a, Touch 7).
+"""Review page + real apply pipeline + SSE progress (F6 Phase 2a/2b).
 
-The review page is the wizard's final ceremony BEFORE the apply.
-In Phase 2a this is the wizard's literal terminus — the operator
-sees the validated ``Config`` rendered with secrets redacted, and
-the Apply button hits a placeholder route that just confirms what
-WOULD be applied. The real ``apply_config`` invocation + SSE
-progress streaming + post-apply completion page all land in
-Phase 2b.
+The review page is the wizard's final ceremony before the apply.
+Phase 2a captured the operator's intent as a validated ``Config``
+and showed a noop apply placeholder; Phase 2b replaces that
+placeholder with the real ``apply_config`` invocation, streamed
+back to the operator's browser via SSE while it runs.
 
-Two output surfaces:
-* ``GET /review`` — human-readable HTML, redacted, with
+Surfaces:
+* ``GET /review`` — human-readable HTML, secrets redacted, with
   "Edit step X" links per section so the operator can jump back
-  to fix anything.
+  to fix anything. The Apply button is disabled when the Config
+  fails validation.
 * ``GET /apply-preview.json`` — the validated ``Config`` as JSON,
-  same redactions, for operators / scripts that want to diff the
-  wizard's output against an existing lynceus.yaml.
-* ``POST /apply`` — placeholder. Returns the apply_placeholder.html
-  template confirming Phase 2a has no apply pipeline.
+  same redactions, kept post-Phase-2b for operators / scripts
+  that want to diff the wizard's output against an existing
+  lynceus.yaml.
+* ``POST /apply`` — kicks off the real apply pipeline.
+  ``apply_config`` runs in a worker thread via
+  ``asyncio.to_thread``; each step is streamed to the operator's
+  browser via an ``SSEProgressSink`` that bridges to an
+  ``asyncio.Queue``. Returns 303 to ``/apply-progress`` so the
+  browser loads the progress page; 409 if a prior apply is still
+  running; 303 to ``/review`` if the Config can't be built.
+* ``GET /apply-progress`` — renders ``apply_progress.html`` which
+  opens an ``EventSource("/apply-stream")`` and updates the DOM
+  per record. On stream-end, navigates to ``/apply-complete``.
+  State-aware: bounces idle sessions back to ``/review`` and
+  terminal sessions forward to ``/apply-complete``.
+* ``GET /apply-stream`` — SSE endpoint. Drains
+  ``session.apply_queue`` and yields ``data: <json>`` events,
+  with a final ``event: end`` before close.
 
-The Config built here uses the same constructor the daemon loads
-its config through — there is no parallel validation surface.
+The Config built here uses the daemon's own ``Config(...)``
+constructor — there is no parallel validation surface.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import traceback
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
+from lynceus import paths
 from lynceus.cli.setup import _redact_kismet_api_key
 from lynceus.config import CaptureConfig, Config
 from lynceus.redact import redact_ntfy_topic
+from lynceus.setup.core import apply_config
+from lynceus.setup.models import ApplyReport, ApplyStep
+from lynceus.setup.web.session import WizardSession
+from lynceus.setup.web.sse_sink import SSEProgressSink, serialize_step
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+logger = logging.getLogger(__name__)
 
 # Map of Config field path (Pydantic loc tuple joined with ".") to
 # the wizard step ordinal that owns it. Drives the "Edit step X"
@@ -58,9 +82,14 @@ FIELD_STEP_INDEX: dict[str, int] = {
 }
 
 
-def _session(request: Request):
+def _session(request: Request) -> WizardSession:
     state = request.app.state
     return state.session_store.get_or_create(state.setup_token)
+
+
+def _redirect(request: Request, path: str) -> RedirectResponse:
+    token = request.app.state.setup_token
+    return RedirectResponse(f"{path}?token={token}", status_code=303)
 
 
 def _render(request: Request, name: str, **context) -> HTMLResponse:
@@ -71,7 +100,7 @@ def _render(request: Request, name: str, **context) -> HTMLResponse:
         "version": __version__,
         "step_titles": STEP_TITLES,
         "total_steps": TOTAL_STEPS,
-        "step_index": 0,  # Review page sits outside the numbered flow.
+        "step_index": 0,  # Review/apply pages sit outside the numbered flow.
     }
     base.update(context)
     return request.app.state.templates.TemplateResponse(
@@ -106,6 +135,43 @@ def _build_config_from_session(answers: dict[str, Any]) -> Config:
     )
 
 
+def _resolve_apply_args(
+    session: WizardSession,
+    scope: str,
+) -> tuple[Config, Path, set[str] | None]:
+    """Build the apply_config arg tuple from session.answers.
+
+    Returns ``(config_with_rules_path, severity_path, enabled_rule_types)``.
+    The Config is mutated to carry ``rules_path`` when alerting is on
+    + at least one rule type is selected; that single-render path
+    mirrors ``apply_config``'s built-in rules-step contract (see the
+    "Single-render path" branch in core.py).
+    """
+    answers = session.answers
+    config = _build_config_from_session(answers)
+    severity_str = answers.get("severity_overrides_path")
+    if severity_str:
+        severity_path = Path(severity_str)
+    else:
+        # Match the CLI default: target_path.parent / "severity_overrides.yaml".
+        # We don't have target_path here, so reconstruct from paths module.
+        severity_path = paths.default_config_dir(scope) / "severity_overrides.yaml"
+    enabled_list = answers.get("enabled_rule_types") or []
+    enable_alerting = bool(answers.get("enable_alerting", False))
+    if enable_alerting and enabled_list:
+        enabled_rule_types: set[str] | None = set(enabled_list)
+        # Set Config.rules_path so apply_config's single-render path
+        # writes the comment block inline. apply_config's write_rules
+        # step gates on Config.rules_path AND enabled_rule_types non-
+        # empty.
+        config = config.model_copy(
+            update={"rules_path": str(paths.default_config_dir(scope) / "rules.yaml")}
+        )
+    else:
+        enabled_rule_types = None
+    return config, severity_path, enabled_rule_types
+
+
 def _format_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
     """Turn a Pydantic ValidationError into review-page rows."""
     rows = []
@@ -125,10 +191,6 @@ def _redact_config_dict(data: dict[str, Any]) -> dict[str, Any]:
     Mutates ``data`` and returns it. Redacts the two shared-secret
     fields the wizard collects: ``kismet_api_key`` (head/tail
     preview) and ``ntfy_topic`` (head + bullets + tail).
-    ``ntfy_url`` itself is not redacted — the URL is not a secret;
-    the topic embedded in the path (when this wizard surfaces it
-    via ``ntfy_url`` alone) would be, but the wizard collects URL
-    and topic as separate fields.
     """
     if data.get("kismet_api_key"):
         data["kismet_api_key"] = _redact_kismet_api_key(data["kismet_api_key"])
@@ -164,7 +226,7 @@ def _summarize(answers: dict[str, Any], config: Config | None) -> dict[str, Any]
     }
 
 
-# ---- routes ----------------------------------------------------------------
+# ---- review + preview ------------------------------------------------------
 
 
 async def review_get(request: Request) -> HTMLResponse:
@@ -187,31 +249,11 @@ async def review_get(request: Request) -> HTMLResponse:
     )
 
 
-async def apply_post(request: Request) -> HTMLResponse:
-    """Phase 2a noop apply. Confirms what WOULD be applied; the
-    actual ``apply_config`` invocation lands in Phase 2b."""
-    state = request.app.state
-    session = _session(request)
-    # Re-validate so the placeholder page doesn't claim a config is
-    # apply-ready when it would fail Config construction.
-    errors: list[dict[str, Any]] = []
-    try:
-        _build_config_from_session(session.answers)
-    except ValidationError as exc:
-        errors = _format_validation_errors(exc)
-    return _render(
-        request,
-        "apply_placeholder.html",
-        errors=errors,
-        scope=state.scope,
-        target_path=str(state.target_path),
-    )
-
-
 async def apply_preview_json(request: Request) -> JSONResponse:
-    """Validated Config as JSON, secrets redacted. The Phase 2b
-    apply route will consume the SAME session.answers — this preview
-    is the contract."""
+    """Validated Config as JSON, secrets redacted. Kept post-Phase-2b
+    for scripts that want to diff the wizard's output against an
+    existing lynceus.yaml; the real apply at ``POST /apply`` is the
+    primary path."""
     state = request.app.state
     session = _session(request)
     try:
@@ -227,7 +269,6 @@ async def apply_preview_json(request: Request) -> JSONResponse:
         "valid": True,
         "config": data,
         "extras": {
-            # Phase 2b apply args that aren't on the Config model.
             "severity_overrides_path": session.answers.get("severity_overrides_path"),
             "enable_alerting": bool(session.answers.get("enable_alerting", False)),
             "enabled_rule_types": session.answers.get("enabled_rule_types") or [],
@@ -239,12 +280,235 @@ async def apply_preview_json(request: Request) -> JSONResponse:
     })
 
 
+# ---- apply pipeline -------------------------------------------------------
+
+
+async def _run_apply_task(
+    *,
+    app_state,
+    session: WizardSession,
+    config: Config,
+    severity_path: Path,
+    enabled_rule_types: set[str] | None,
+    queue: asyncio.Queue,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Background task that runs ``apply_config`` in a worker thread.
+
+    On completion: stores the ``ApplyReport`` on ``session.apply_report``
+    and transitions ``session.apply_state`` to ``completed`` / ``failed``
+    based on the report's overall_status.
+
+    On exception (``SetupError`` mid-chain): synthesizes a failed
+    ``ApplyStep`` capturing the exception, pushes it to the SSE
+    queue so the live stream sees the failure, builds a partial
+    ``ApplyReport`` from whatever the sink had captured pre-exception
+    plus the synthetic step, and transitions to ``failed``.
+
+    Always pushes ``None`` (the sentinel) to the queue at the end so
+    the SSE generator can terminate the stream cleanly.
+
+    Touch 3 grace window: schedules a 10-minute timer to auto-exit
+    the server if Done never fires. The timer is stashed on the
+    session so /done can cancel it.
+    """
+    sink = SSEProgressSink(queue, loop)
+    try:
+        report = await asyncio.to_thread(
+            apply_config,
+            config,
+            scope=app_state.scope,
+            target_path=app_state.target_path,
+            severity_overrides_path=severity_path,
+            enabled_rule_types=enabled_rule_types,
+            run_bundled_import=True,
+            progress=sink,
+        )
+        session.apply_report = report
+        session.apply_state = "completed" if report.overall_status == "ok" else "failed"
+    except Exception as exc:
+        logger.exception("apply_config raised in wizard background task")
+        tb = traceback.format_exc()
+        synthetic = ApplyStep(
+            name="apply_config",
+            status="failed",
+            message=f"{type(exc).__name__}: {exc}",
+            detail={"traceback": tb},
+        )
+        # Push to the queue so the live stream surfaces the failure
+        # before the operator hits the completion page.
+        await queue.put(serialize_step(synthetic))
+        partial_steps = (*sink.records, synthetic)
+        session.apply_report = ApplyReport(steps=partial_steps)
+        session.apply_state = "failed"
+    finally:
+        # Sentinel: SSE generator breaks on None and closes the stream.
+        await queue.put(None)
+        # Schedule the walked-away grace timer (Touch 3). If Done
+        # POSTs first, it cancels this task. The scheduling lives in
+        # a module-local helper so Touch 3 can import + override it
+        # in tests without weaving fixtures through every apply path.
+        _schedule_apply_grace_shutdown(app_state, session)
+
+
+def _schedule_apply_grace_shutdown(app_state, session: WizardSession) -> None:
+    """Schedule a delayed-shutdown task after apply completes.
+
+    Stash it on ``session.apply_grace_task`` so the /done handler
+    can cancel it when the operator clicks Done. Touch 3 implements
+    the timing constant and the uvicorn signal; this Touch-1 stub
+    is a placeholder that becomes live once the server-shutdown
+    path lands.
+    """
+    # Implemented in Touch 3 (teardown). Defined here so the apply
+    # path doesn't grow another awkward conditional once the timer
+    # exists. For now this is a no-op; tests for the grace timer
+    # land alongside the /done handler.
+    return None
+
+
+async def apply_post(request: Request) -> Response:
+    """Kick off the real apply pipeline.
+
+    State machine:
+      * idle → running (start apply, redirect to /apply-progress)
+      * running → 409 (already in flight; defense in depth — the
+        review-page Apply button is also disabled on click)
+      * completed | failed → running (re-run, start fresh apply)
+
+    Returns 303 → /review on ValidationError so the operator can
+    fix the offending field. Returns 409 on double-Apply.
+    """
+    state = request.app.state
+    session = _session(request)
+
+    if session.apply_state == "running":
+        return Response("apply already in progress", status_code=409)
+
+    try:
+        config, severity_path, enabled_rule_types = _resolve_apply_args(
+            session, scope=state.scope
+        )
+    except ValidationError:
+        # Validation re-renders the review page; we don't surface
+        # the errors via a flash message — /review reads
+        # session.answers + rebuilds Config + shows the errors
+        # inline, so the redirect is idempotent.
+        return _redirect(request, "/review")
+
+    # Fresh queue per apply. Re-runs land here and overwrite the
+    # prior queue; the old SSE generator will have already drained
+    # to its sentinel and closed.
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    session.apply_queue = queue
+    session.apply_state = "running"
+    session.apply_report = None
+    # Cancel any prior grace timer from a previous apply.
+    if session.apply_grace_task is not None and not session.apply_grace_task.done():
+        session.apply_grace_task.cancel()
+        session.apply_grace_task = None
+    session.apply_task = asyncio.create_task(
+        _run_apply_task(
+            app_state=state,
+            session=session,
+            config=config,
+            severity_path=severity_path,
+            enabled_rule_types=enabled_rule_types,
+            queue=queue,
+            loop=loop,
+        )
+    )
+    return _redirect(request, "/apply-progress")
+
+
+async def apply_progress_get(request: Request) -> Response:
+    """Render the progress page that opens the SSE connection.
+
+    State-aware so the operator can refresh, deep-link, or
+    bookmark without breaking:
+      * idle → /review (no apply ever started)
+      * running → render progress page
+      * completed | failed → /apply-complete (already done)
+    """
+    session = _session(request)
+    if session.apply_state == "idle":
+        return _redirect(request, "/review")
+    if session.apply_state in ("completed", "failed"):
+        return _redirect(request, "/apply-complete")
+    # Render with target/scope so the page can show what's being
+    # written without re-loading session.answers in JS.
+    state = request.app.state
+    return _render(
+        request,
+        "apply_progress.html",
+        scope=state.scope,
+        target_path=str(state.target_path),
+    )
+
+
+async def apply_stream_get(request: Request) -> Response:
+    """SSE endpoint. Drains session.apply_queue.
+
+    Yields one ``data: <json>`` event per ``ApplyStep`` record;
+    ends with ``event: end`` so the client can navigate without
+    relying on connection-error handling.
+    """
+    session = _session(request)
+    queue = session.apply_queue
+    if queue is None:
+        # No apply running. Return JSON 409 rather than a stream so
+        # the client's EventSource sees a clear close.
+        return JSONResponse(
+            {"error": "no apply in progress"},
+            status_code=409,
+        )
+
+    async def event_stream():
+        while True:
+            item = await queue.get()
+            if item is None:
+                # Sentinel — emit a closing event so JS can navigate
+                # cleanly rather than relying on onerror.
+                yield "event: end\ndata: {}\n\n"
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Defensive: some reverse proxies (nginx) buffer
+            # text/event-stream by default and break SSE. The
+            # wizard runs on loopback in practice, but the header
+            # is cheap insurance for an operator who tunnels via
+            # an unusual setup.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ---- registration ---------------------------------------------------------
 
 
 def register_review_routes(app: "FastAPI") -> None:
     app.add_api_route("/review", review_get, methods=["GET"], response_class=HTMLResponse)
-    app.add_api_route("/apply", apply_post, methods=["POST"], response_class=HTMLResponse)
+    app.add_api_route("/apply", apply_post, methods=["POST"])
     app.add_api_route(
-        "/apply-preview.json", apply_preview_json, methods=["GET"], response_class=JSONResponse
+        "/apply-preview.json",
+        apply_preview_json,
+        methods=["GET"],
+        response_class=JSONResponse,
+    )
+    app.add_api_route(
+        "/apply-progress",
+        apply_progress_get,
+        methods=["GET"],
+    )
+    app.add_api_route(
+        "/apply-stream",
+        apply_stream_get,
+        methods=["GET"],
     )
