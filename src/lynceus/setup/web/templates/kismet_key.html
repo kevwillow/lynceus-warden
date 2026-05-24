@@ -26,12 +26,28 @@
     {% else %}
       <p>
         No existing Kismet key found on disk. Create one in the
-        Kismet web UI (Settings &rarr; Login Configuration &rarr; API
-        Keys; name: <code>lynceus</code>, role: <code>readonly</code>)
-        and paste it below.
+        Kismet web UI:
       </p>
+      <ol>
+        <li>Open the Kismet web UI in your browser (the URL from Step 1).</li>
+        <li>Log in. On first launch Kismet prompts you to set a password.</li>
+        <li>Open the menu (top-right) &rarr; <strong>Settings</strong>
+            &rarr; <strong>Login Configuration</strong>.</li>
+        <li>Under <strong>API Keys</strong>, create a new key
+            (Name: <code>lynceus</code>, Role: <code>readonly</code>).</li>
+        <li>Copy the generated key and paste it below.</li>
+      </ol>
       <input type="hidden" name="key_source" value="paste">
     {% endif %}
+    <p>
+      <small>
+        The key is stored only in your generated
+        <code>lynceus.yaml</code> at the path shown on the Welcome page
+        &mdash; the wizard does not write it anywhere else. If you
+        don't have a key ready, you can Cancel now, set one up in
+        Kismet, and re-run <code>lynceus-setup --web</code>.
+      </small>
+    </p>
     <label>
       Paste API key (hidden)
       <input
