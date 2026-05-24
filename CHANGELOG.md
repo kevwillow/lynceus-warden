@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-05-24
+
+### Fixed
+
+- **Smoke-driven wizard UX fixes round 2.** Second pass of v0.7.1 on
+  real Pi hardware surfaced four more paper cuts that this patch
+  addresses. The Kismet sources page (step 4) is reworked: instead of
+  building the source list from Kismet's probe response (which left
+  operators with a dead-end "highlighted box that doesn't do anything"
+  on first-run boxes where Kismet has nothing configured), the page
+  now enumerates OS-side capture adapters directly (Wi-Fi from
+  `/sys/class/net/*/wireless`, Bluetooth from `/sys/class/bluetooth/`)
+  and renders each as a checkbox row with kind, MAC, and (when
+  matched) the corresponding Kismet source name. The Kismet probe
+  result is shown above as a read-only sanity-check panel so
+  operators can spot mismatches between what Kismet knows and what the
+  OS exposes. Multiple sources can now be picked in a single submit
+  rather than juggling separate Wi-Fi/Bluetooth widgets. On hosts
+  where OS enumeration finds nothing (Windows dev, container without
+  device passthrough), a manual-text fallback lets a remote operator
+  still type the Kismet source name. The RSSI threshold page (step
+  10) replaces the negative-dBm number input with a range slider
+  whose extremes are labelled "more permissive" and "stricter" — so
+  the operator drags toward intent without ever resolving the
+  sign-convention confusion that v0.7.1's inline copy didn't land.
+  Previous/Next button sizing across every step template is
+  normalized via an explicit `min-width` + padding rule in
+  `_base.html` so the button row reads as a matched pair regardless
+  of label width (was previously uneven because `<a role="button">`
+  and `<button>` rendered at each label's natural text width). Page
+  centering is tightened with three new rules: an explicit
+  `main.container` max-width pin with viewport-side gutter, a section
+  divider under each step's H1, and a card-style background on the
+  step's `<form>` so the input block visually separates from the
+  prose intro instead of reading as one continuous wall of text.
+
 ## [0.7.1] - 2026-05-24
 
 ### Fixed
