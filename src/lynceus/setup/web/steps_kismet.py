@@ -281,13 +281,32 @@ def _split_sources(sources_list):
 
 
 def _source_label(source: dict) -> str:
+    # Surface enough probe-response fields that the operator can
+    # unambiguously match a wizard-rendered source row against
+    # Kismet's web-UI Datasources page. v0.7.0 Linux smoke surfaced
+    # that the bare "external_wifi (interface: wlan1)" label left
+    # operators guessing on hosts with multiple Wi-Fi sources:
+    # capture_interface (e.g. wlan1mon, what tcpdump shows) and
+    # the Kismet-issued UUID disambiguate the match exactly.
+    #
+    # Format mirrors cli/setup.py's `_format_source_label` for the
+    # interface + capture pair, with the Kismet UUID appended (the
+    # web UI has more horizontal room than the numbered CLI prompt
+    # so the longer label fits cleanly).
     name = source.get("name") or ""
     iface = source.get("interface") or ""
-    parts = []
+    capture = source.get("capture_interface") or ""
+    uuid = source.get("uuid") or ""
+    parts: list[str] = []
     if iface:
         parts.append(f"interface: {iface}")
-    extra = f"  ({', '.join(parts)})" if parts else ""
-    return f"{name}{extra}"
+    if capture:
+        parts.append(f"capture: {capture}")
+    if uuid:
+        parts.append(f"uuid: {uuid}")
+    if parts:
+        return f"{name}  ({', '.join(parts)})"
+    return name
 
 
 async def kismet_sources_get(request: Request) -> HTMLResponse:
