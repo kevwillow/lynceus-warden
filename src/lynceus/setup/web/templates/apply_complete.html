@@ -62,6 +62,58 @@
     </ol>
   </article>
 
+  {% if overall_ok %}
+    <article>
+      <header><strong>Next steps</strong></header>
+      <p>Lynceus is configured but not running yet. Start it with:</p>
+      {% if scope == "system" %}
+        <p>
+          <strong>Production (systemd, persistent):</strong><br>
+          <code>sudo systemctl enable --now lynceus.service lynceus-ui.service</code>
+        </p>
+        <p>
+          <small>
+            Enables and starts both the poller and the web UI as
+            system services. They will auto-restart on failure and
+            persist across reboots. To watch initial poll output:
+            <code>sudo journalctl -u lynceus.service -f</code>.
+          </small>
+        </p>
+        <p>
+          <strong>Optional &mdash; weekly Argus watchlist refresh:</strong><br>
+          <code>sudo systemctl enable --now lynceus-refresh.timer</code>
+        </p>
+        <p>
+          <small>
+            Off by default: this is the only Lynceus surface that
+            opts the host into a recurring outbound network call.
+          </small>
+        </p>
+      {% else %}
+        <p>
+          <strong>Dev / demo (foreground):</strong><br>
+          <code>lynceus-quickstart</code>
+        </p>
+        <p>
+          <small>
+            Launches the daemon and web UI in the foreground and
+            opens a browser tab. Ctrl-C shuts both down cleanly.
+          </small>
+        </p>
+      {% endif %}
+      <p>
+        Once running, the dashboard lives at
+        <code>http://127.0.0.1:8765</code>.
+      </p>
+      <p>
+        <small>
+          Full runbook + troubleshooting: <code>docs/DEPLOYMENT.md</code>.
+          Post-install verification: <code>docs/SMOKE.md</code>.
+        </small>
+      </p>
+    </article>
+  {% endif %}
+
   <article>
     <header><strong>{% if overall_ok %}Finish{% else %}Next steps{% endif %}</strong></header>
     {% if not overall_ok %}
