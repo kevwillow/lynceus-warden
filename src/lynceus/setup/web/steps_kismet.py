@@ -330,6 +330,16 @@ def _build_adapter_rows(sources_list: list[dict] | None) -> list[dict]:
                 # name (operator is responsible for aligning Kismet's
                 # source= line — the silent-drop warning calls this out).
                 "value": kismet_name or adapter["name"],
+                # Additive bus/USB-descriptor fields (each ``None`` when
+                # sysfs didn't expose it — non-USB internals, Windows
+                # dev hosts) so step 4's label can disambiguate two
+                # USB dongles of the same kind without the operator
+                # squinting at MAC prefixes.
+                "bus": adapter.get("bus"),
+                "driver": adapter.get("driver"),
+                "vendor": adapter.get("vendor"),
+                "product": adapter.get("product"),
+                "usb_id": adapter.get("usb_id"),
             }
         )
     return rows

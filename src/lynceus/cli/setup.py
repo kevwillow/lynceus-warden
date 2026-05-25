@@ -470,6 +470,80 @@ def _read_sysfs_mac(path: Path) -> str | None:
     return text or None
 
 
+def _read_sysfs_optional(path: Path) -> str | None:
+    """Read a sysfs file's contents, stripped, or return ``None`` for the
+    "field absent" cases this enumeration treats as non-fatal:
+
+      - ``FileNotFoundError`` — non-USB adapter (internal PCI/SDIO Wi-Fi,
+        motherboard BT) won't have USB string descriptors like
+        ``device/manufacturer``; treat as "no info" rather than crashing
+        the wizard.
+      - ``PermissionError`` — the wizard process may not be privileged
+        enough to read every sysfs node on some configurations; better
+        to render a sparser label than to crash.
+      - ``IsADirectoryError`` — symlinks to ``device/driver`` resolve to
+        a directory when caller reaches for the directory by accident;
+        treat as "no info" so the caller can stay one-shaped.
+
+    Any *other* OSError (an unexpected filesystem fault) propagates so it
+    surfaces in dev rather than getting silently swallowed."""
+    try:
+        text = path.read_text().strip()
+    except (FileNotFoundError, PermissionError, IsADirectoryError):
+        return None
+    return text or None
+
+
+def _read_sysfs_symlink_basename(path: Path) -> str | None:
+    """Resolve a sysfs symlink and return its basename, or ``None`` when
+    the symlink is absent.
+
+    Used for ``device/driver`` (basename → kernel module like
+    ``rt2800usb`` / ``btusb``) and ``device/subsystem`` (basename →
+    bus like ``usb`` / ``pci`` / ``sdio``). Returns ``None`` on the
+    same non-fatal cases ``_read_sysfs_optional`` handles, so an
+    adapter whose driver symlink isn't there just renders a sparser
+    label rather than crashing the wizard."""
+    try:
+        target = path.resolve(strict=True)
+    except (FileNotFoundError, PermissionError, OSError):
+        # OSError here covers the loop / too-many-links cases that
+        # resolve() raises as a generic OSError; lumping them in keeps
+        # the helper one-shaped — the caller just sees "no driver".
+        return None
+    return target.name or None
+
+
+def _enrich_adapter_from_sysfs(device_dir: Path) -> dict:
+    """Read the USB / bus / driver fields a Linux ``device/`` sysfs
+    directory exposes for capture adapters. Returns a dict with the
+    five additive keys (``bus``, ``driver``, ``vendor``, ``product``,
+    ``usb_id``) each ``None`` when its source file isn't present.
+
+    The Wi-Fi path is ``/sys/class/net/<name>/device/`` and the BT path
+    is ``/sys/class/bluetooth/<name>/device/`` — both expose the same
+    field names per the USB / driver model, so a single helper covers
+    both. Non-USB adapters (internal PCI / SDIO Wi-Fi, on-board BT) have
+    the bus + driver symlinks but no ``manufacturer`` / ``product`` /
+    ``idVendor`` / ``idProduct`` files; those render as None.
+
+    ``usb_id`` is composed as ``"VID:PID"`` only when both VID and PID
+    were readable; otherwise ``None`` (a bare half-id like ``"148f:"``
+    isn't useful to operators)."""
+    vendor = _read_sysfs_optional(device_dir / "manufacturer")
+    product = _read_sysfs_optional(device_dir / "product")
+    id_vendor = _read_sysfs_optional(device_dir / "idVendor")
+    id_product = _read_sysfs_optional(device_dir / "idProduct")
+    usb_id = f"{id_vendor}:{id_product}" if id_vendor and id_product else None
+    return {
+        "bus": _read_sysfs_symlink_basename(device_dir / "subsystem"),
+        "driver": _read_sysfs_symlink_basename(device_dir / "driver"),
+        "vendor": vendor,
+        "product": product,
+        "usb_id": usb_id,
+    }
+
+
 def enumerate_capture_adapters() -> list[dict]:
     """Return a unified list of OS capture adapters (Wi-Fi + Bluetooth).
 
@@ -479,6 +553,19 @@ def enumerate_capture_adapters() -> list[dict]:
         - ``mac``: MAC address string, or ``None`` when sysfs doesn't expose
           one (read from ``/sys/class/net/<name>/address`` for Wi-Fi or
           ``/sys/class/bluetooth/<name>/address`` for Bluetooth)
+        - ``bus``: bus subsystem name (``"usb"`` / ``"pci"`` / ``"sdio"``)
+          read from the ``device/subsystem`` symlink basename, or
+          ``None`` when the symlink isn't there
+        - ``driver``: kernel driver module name (``"rt2800usb"`` /
+          ``"btusb"`` / ``"iwlwifi"``) read from ``device/driver``
+          symlink basename, or ``None``
+        - ``vendor``: human-readable USB Manufacturer string descriptor
+          (``"Ralink"`` / ``"Netgear"``), USB-only, or ``None`` for
+          non-USB adapters
+        - ``product``: human-readable USB Product string descriptor
+          (``"Alfa AWUS036ACS"``), USB-only, or ``None``
+        - ``usb_id``: ``"VID:PID"`` (``"148f:7610"``) when both halves
+          are readable, USB-only, or ``None``
 
     Wi-Fi adapters come first (alphabetical), then Bluetooth controllers.
     Returns ``[]`` on platforms where neither subsystem is present (Windows,
@@ -489,25 +576,27 @@ def enumerate_capture_adapters() -> list[dict]:
     adapters can the operator choose from", replacing the prior Kismet-probe-
     driven source list. The Kismet probe result is still rendered as a read-
     only sanity-check panel so the operator can spot mismatches between what
-    Kismet has configured and what the OS actually sees.
+    Kismet has configured and what the OS actually sees. The bus/driver/
+    vendor/product/usb_id fields are surfaced in step 4's row labels so an
+    operator with two USB dongles of the same kind can tell which is which.
     """
     adapters: list[dict] = []
     for name in enumerate_wireless_interfaces() or []:
-        adapters.append(
-            {
-                "name": name,
-                "kind": "wifi",
-                "mac": _read_sysfs_mac(Path("/sys/class/net") / name / "address"),
-            }
-        )
+        adapter = {
+            "name": name,
+            "kind": "wifi",
+            "mac": _read_sysfs_mac(Path("/sys/class/net") / name / "address"),
+        }
+        adapter.update(_enrich_adapter_from_sysfs(Path("/sys/class/net") / name / "device"))
+        adapters.append(adapter)
     for name in enumerate_bluetooth_adapters() or []:
-        adapters.append(
-            {
-                "name": name,
-                "kind": "bluetooth",
-                "mac": _read_sysfs_mac(Path("/sys/class/bluetooth") / name / "address"),
-            }
-        )
+        adapter = {
+            "name": name,
+            "kind": "bluetooth",
+            "mac": _read_sysfs_mac(Path("/sys/class/bluetooth") / name / "address"),
+        }
+        adapter.update(_enrich_adapter_from_sysfs(Path("/sys/class/bluetooth") / name / "device"))
+        adapters.append(adapter)
     return adapters
 
 

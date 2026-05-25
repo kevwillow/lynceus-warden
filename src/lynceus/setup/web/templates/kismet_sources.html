@@ -40,7 +40,17 @@
             <strong><code>{{ row.name }}</code></strong>
             <small>
               [{{ "Wi-Fi" if row.kind == "wifi" else "Bluetooth" }}]
-              {% if row.mac %}MAC <code>{{ row.mac }}</code>{% endif %}
+              {# Operator disambiguator: when sysfs exposed the USB
+                 Product string descriptor, lead with it (with bus +
+                 driver in parens) so two same-kind USB dongles read
+                 as distinct rows. Non-USB internals (no product) fall
+                 back to the bare [Wi-Fi] / [Bluetooth] tag. #}
+              {% if row.product %}
+                &mdash; {{ row.product }}{% if row.bus %} ({{ row.bus|upper }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
+              {% elif row.vendor %}
+                &mdash; {{ row.vendor }}{% if row.bus %} ({{ row.bus|upper }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
+              {% endif %}
+              {% if row.mac %}&middot; MAC <code>{{ row.mac }}</code>{% endif %}
               {% if row.kismet_name %}
                 &mdash; Kismet calls this <code>{{ row.kismet_name }}</code>
               {% else %}
