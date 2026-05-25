@@ -32,6 +32,20 @@ from .rules import (
 
 STATE_KEY_LAST_POLL = "last_poll_ts"
 
+# Per-tick counters surfaced on the home page, in /healthz, and as the
+# INFO heartbeat in journalctl. Each key is overwritten in place on
+# every poll tick (last-tick semantics, not cumulative) so the
+# poller_state table stays bounded. The three drop reasons mirror the
+# silent-drop sites the diagnostic identified: source_allowlist /
+# min_rssi gates inside poll_once and the parser-None bucket counted
+# inside KismetClient.get_devices_since via the unparseable_counter
+# kwarg.
+STATE_KEY_LAST_TICK_COMPLETED_AT = "last_tick_completed_at"
+STATE_KEY_LAST_TICK_ADMITTED = "last_tick_admitted"
+STATE_KEY_LAST_TICK_DROPPED_SOURCE_ALLOWLIST = "last_tick_dropped_source_allowlist"
+STATE_KEY_LAST_TICK_DROPPED_MIN_RSSI = "last_tick_dropped_min_rssi"
+STATE_KEY_LAST_TICK_DROPPED_UNPARSEABLE = "last_tick_dropped_unparseable"
+
 # Cadence for the per-rule_type snooze suppression summary log. The
 # Poller flushes accumulated counts to a single INFO line at this
 # interval (default ~1h) so operators grepping journalctl see what
@@ -173,13 +187,23 @@ def poll_once(
     last_poll_str = db.get_state(STATE_KEY_LAST_POLL)
     last_poll_ts = int(last_poll_str) if last_poll_str else 0
     db.ensure_location(config.location_id, config.location_label)
+    # unparseable_counter is the only out-of-band signal the client
+    # surfaces: parse_kismet_device returns None inside the client
+    # (unknown device type, malformed mac, missing required field),
+    # so the poller never sees the dropped raw record. Pass a mutable
+    # single-element list so the count survives the call boundary.
+    unparseable_counter: list[int] = [0]
     observations = client.get_devices_since(
         last_poll_ts,
         capture_probe_ssids=config.capture.probe_ssids,
         capture_ble_name=config.capture.ble_friendly_names,
         evidence_capture_enabled=config.evidence_capture_enabled,
+        unparseable_counter=unparseable_counter,
     )
     processed = 0
+    admitted = 0
+    dropped_source_allowlist = 0
+    dropped_min_rssi = 0
     for obs in observations:
         try:
             if source_allowlist is not None:
@@ -188,6 +212,7 @@ def poll_once(
                         "obs %s has no source attribution, dropping under source_allowlist",
                         obs.mac,
                     )
+                    dropped_source_allowlist += 1
                     continue
                 if not any(s in source_allowlist for s in obs.seen_by_sources):
                     logger.debug(
@@ -195,6 +220,7 @@ def poll_once(
                         obs.mac,
                         obs.seen_by_sources,
                     )
+                    dropped_source_allowlist += 1
                     continue
             if config.min_rssi is not None and obs.rssi is not None and obs.rssi < config.min_rssi:
                 logger.debug(
@@ -203,6 +229,7 @@ def poll_once(
                     obs.rssi,
                     config.min_rssi,
                 )
+                dropped_min_rssi += 1
                 continue
 
             effective_location_id = config.location_id
@@ -244,6 +271,7 @@ def poll_once(
                 location_id=effective_location_id,
             )
             processed += 1
+            admitted += 1
             matched_allowlist_entry = allowlist.is_allowed(obs, now_ts=now_ts)
             if matched_allowlist_entry is not None:
                 logger.debug("allowlisted, suppressing alerts: %s", obs.mac)
@@ -449,6 +477,34 @@ def poll_once(
         except Exception as e:
             logger.warning("Failed to persist observation %s: %s", obs.mac, e)
             continue
+    dropped_unparseable = unparseable_counter[0]
+    dropped_total = (
+        dropped_source_allowlist + dropped_min_rssi + dropped_unparseable
+    )
+    # Heartbeat: emitted every tick regardless of values so a silent
+    # daemon (Kismet down, all observations dropped at a single
+    # threshold) is visible in journalctl. The three drop reasons map
+    # one-to-one with the silent-drop sites — operators grepping for
+    # "poll tick:" get the breakdown without needing DEBUG level.
+    logger.info(
+        "poll tick: %d admitted, %d dropped "
+        "(source_allowlist=%d, min_rssi=%d, unparseable=%d)",
+        admitted,
+        dropped_total,
+        dropped_source_allowlist,
+        dropped_min_rssi,
+        dropped_unparseable,
+    )
+    db.set_state(STATE_KEY_LAST_TICK_ADMITTED, str(admitted))
+    db.set_state(
+        STATE_KEY_LAST_TICK_DROPPED_SOURCE_ALLOWLIST,
+        str(dropped_source_allowlist),
+    )
+    db.set_state(STATE_KEY_LAST_TICK_DROPPED_MIN_RSSI, str(dropped_min_rssi))
+    db.set_state(
+        STATE_KEY_LAST_TICK_DROPPED_UNPARSEABLE, str(dropped_unparseable)
+    )
+    db.set_state(STATE_KEY_LAST_TICK_COMPLETED_AT, str(now_ts))
     db.set_state(STATE_KEY_LAST_POLL, str(now_ts))
     # Per-poll housekeeping for the rule_type_snoozes table: physically
     # delete rows whose expires_at has passed. Cheap (table is tiny;

@@ -558,6 +558,7 @@ class KismetClient:
         capture_probe_ssids: bool = False,
         capture_ble_name: bool = False,
         evidence_capture_enabled: bool = False,
+        unparseable_counter: list[int] | None = None,
     ) -> list[DeviceObservation]:
         url = f"{self.base_url}/devices/last-time/{since_ts}/devices.json"
         kwargs: dict[str, Any] = {"timeout": self.timeout}
@@ -576,8 +577,11 @@ class KismetClient:
                 capture_ble_name=capture_ble_name,
                 evidence_capture_enabled=evidence_capture_enabled,
             )
-            if obs is not None:
-                results.append(obs)
+            if obs is None:
+                if unparseable_counter is not None:
+                    unparseable_counter[0] += 1
+                continue
+            results.append(obs)
         return results
 
     def health_check(self) -> dict:
@@ -672,6 +676,7 @@ class FakeKismetClient(KismetClient):
         capture_probe_ssids: bool = False,
         capture_ble_name: bool = False,
         evidence_capture_enabled: bool = False,
+        unparseable_counter: list[int] | None = None,
     ) -> list[DeviceObservation]:
         results: list[DeviceObservation] = []
         for raw in self._fixture:
@@ -682,8 +687,11 @@ class FakeKismetClient(KismetClient):
                     capture_ble_name=capture_ble_name,
                     evidence_capture_enabled=evidence_capture_enabled,
                 )
-                if obs is not None:
-                    results.append(obs)
+                if obs is None:
+                    if unparseable_counter is not None:
+                        unparseable_counter[0] += 1
+                    continue
+                results.append(obs)
         return results
 
     def health_check(self) -> dict:
