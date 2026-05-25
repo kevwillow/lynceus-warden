@@ -476,28 +476,37 @@ def parse_kismet_device(
         for entry in raw_seenby:
             if not isinstance(entry, dict):
                 continue
-            # Real Kismet emits two identifiers per seenby entry:
-            # kismet.common.seenby.name (the user-facing source name,
-            # defaulting to the interface name when no name= is set
-            # on the kismet_site.conf source= line) and
-            # kismet.common.seenby.uuid (the per-source UUID Kismet
-            # generates at startup). The poller's source_allowlist
-            # gate equality-matches against the names in the
-            # operator's lynceus.yaml `kismet_sources:` list, which
-            # are the human-readable names — so prefer the name
-            # field. UUID fallback keeps records admittable if a
-            # future Kismet revision drops the name field on some
-            # source variant; the operator can then put UUIDs in
-            # their allowlist to recover.
-            name_v = entry.get("kismet.common.seenby.name")
+            # Real Kismet emits each seenby entry with the source name
+            # NESTED inside kismet.common.seenby.source — which is a dict
+            # of kismet.datasource.* keys mirroring the datasource record
+            # (name, uuid, interface, …) — alongside top-level
+            # kismet.common.seenby.uuid / first_time / last_time /
+            # num_packets. The interface name the poller's
+            # source_allowlist gate equality-matches against lives at
+            # entry["kismet.common.seenby.source"]["kismet.datasource.name"],
+            # NOT at a top-level kismet.common.seenby.name (which does
+            # not exist in real Kismet output).
+            #
+            # Defensive fallback for legacy Kismet builds that may have
+            # stored the source as a bare string: if `source` is a string
+            # we use it directly as the label. UUID fallback (top-level
+            # kismet.common.seenby.uuid) keeps records admittable when
+            # the nested dict is missing or empty; operators can then
+            # put UUIDs in their allowlist to recover.
+            source_v = entry.get("kismet.common.seenby.source")
             uuid_v = entry.get("kismet.common.seenby.uuid")
             label: str | None = None
-            if isinstance(name_v, str) and name_v:
-                label = name_v
-            elif isinstance(uuid_v, str) and uuid_v:
+            if isinstance(source_v, dict):
+                ds_name = source_v.get("kismet.datasource.name")
+                if isinstance(ds_name, str) and ds_name:
+                    label = ds_name
+            elif isinstance(source_v, str) and source_v:
+                label = source_v
+            if label is None and isinstance(uuid_v, str) and uuid_v:
                 label = uuid_v
                 logger.debug(
-                    "seenby name missing, falling back to uuid: mac=%r uuid=%r",
+                    "seenby source name missing, falling back to uuid: "
+                    "mac=%r uuid=%r",
                     raw_mac, uuid_v,
                 )
             if label is None or label in seen:
