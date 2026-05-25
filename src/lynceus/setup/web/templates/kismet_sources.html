@@ -49,15 +49,21 @@
                  VID:PID pair if we have it, then to the driver
                  module name, so the row still has SOMETHING to
                  disambiguate against. Final fallback is the bare
-                 [Wi-Fi] / [Bluetooth] tag. #}
+                 [Wi-Fi] / [Bluetooth] tag.
+
+                 row.bus_label collapses the bus-vs-removable surface:
+                 built-in modules on internal USB hubs report bus=usb
+                 + removable=fixed and render as "Internal" so
+                 operators can tell them from external dongles
+                 (which render with the bus name like "USB"). #}
               {% if row.product %}
-                &mdash; {{ row.product }}{% if row.bus %} ({{ row.bus|upper }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
+                &mdash; {{ row.product }}{% if row.bus_label %} ({{ row.bus_label }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
               {% elif row.vendor %}
-                &mdash; {{ row.vendor }}{% if row.bus %} ({{ row.bus|upper }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
+                &mdash; {{ row.vendor }}{% if row.bus_label %} ({{ row.bus_label }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
               {% elif row.usb_id %}
-                &mdash; {{ row.usb_id }}{% if row.bus %} ({{ row.bus|upper }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
+                &mdash; {{ row.usb_id }}{% if row.bus_label %} ({{ row.bus_label }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
               {% elif row.driver %}
-                &mdash; ({{ row.bus|upper if row.bus else "" }}{% if row.bus %} {% endif %}{{ row.driver }})
+                &mdash; ({{ row.bus_label if row.bus_label else "" }}{% if row.bus_label %} {% endif %}{{ row.driver }})
               {% endif %}
               {% if row.mac %}&middot; MAC <code>{{ row.mac }}</code>{% endif %}
               {% if row.kismet_name %}

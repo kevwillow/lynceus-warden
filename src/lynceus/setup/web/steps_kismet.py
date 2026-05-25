@@ -319,6 +319,15 @@ def _build_adapter_rows(sources_list: list[dict] | None) -> list[dict]:
     rows: list[dict] = []
     for adapter in enumerate_capture_adapters():
         kismet_name = _kismet_name_for_adapter(adapter, sources_list)
+        bus = adapter.get("bus")
+        removable = adapter.get("removable")
+        # bus_label collapses the kernel's bus-vs-removable distinction
+        # into the operator-facing "Internal" vs "USB" / "PCI" / "SDIO"
+        # surface. Built-in modules wired to internal USB hubs report
+        # bus=usb + removable=fixed; operators see them as "internal"
+        # rather than "USB". Falls back to the bus name (uppercased)
+        # for any other removable value or when removable is missing.
+        bus_label = "Internal" if removable == "fixed" else (bus.upper() if bus else None)
         rows.append(
             {
                 "name": adapter["name"],
@@ -335,7 +344,8 @@ def _build_adapter_rows(sources_list: list[dict] | None) -> list[dict]:
                 # dev hosts) so step 4's label can disambiguate two
                 # USB dongles of the same kind without the operator
                 # squinting at MAC prefixes.
-                "bus": adapter.get("bus"),
+                "bus": bus,
+                "bus_label": bus_label,
                 "driver": adapter.get("driver"),
                 "vendor": adapter.get("vendor"),
                 "product": adapter.get("product"),

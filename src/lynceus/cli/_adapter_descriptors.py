@@ -78,11 +78,47 @@ def _read_sysfs_symlink_basename(path: Path) -> str | None:
     return target.name or None
 
 
+def _read_sysfs_removable(device_dir: Path) -> str | None:
+    """Read the USB ``removable`` flag for the device backing an adapter.
+
+    The kernel exposes ``removable`` on USB devices (per
+    ``drivers/usb/core/sysfs.c``) with values:
+
+      * ``"fixed"`` — built-in module connected via an internal USB hub
+        (the operator-visible "internal" case: motherboard Bluetooth,
+        on-board USB Wi-Fi soldered to an internal hub).
+      * ``"removable"`` — hot-pluggable USB device (the operator-visible
+        "external dongle" case).
+      * ``"unknown"`` — the port's removable status couldn't be
+        determined by the kernel; treated as the fallback case by the
+        label formatter.
+
+    ``device_dir`` is the symlinked ``device/`` directory under the
+    interface (``/sys/class/net/<iface>/device/`` for Wi-Fi or
+    ``/sys/class/bluetooth/<hci>/device/`` for Bluetooth). For USB
+    adapters this resolves to the USB *interface* (e.g.
+    ``/sys/bus/usb/devices/1-1.2:1.0/``), while ``removable`` is on
+    the parent USB *device* (``/sys/bus/usb/devices/1-1.2/``). The
+    helper tries the interface-level path first (some kernels expose
+    it directly) and falls back to one level up after resolving the
+    symlink. Non-USB adapters (PCI / SDIO) don't expose this attribute
+    anywhere and return ``None``."""
+    direct = _read_sysfs_optional(device_dir / "removable")
+    if direct is not None:
+        return direct
+    try:
+        parent = (device_dir / "..").resolve(strict=False)
+    except OSError:
+        return None
+    return _read_sysfs_optional(parent / "removable")
+
+
 def _enrich_adapter_from_sysfs(device_dir: Path) -> dict:
     """Read the USB / bus / driver fields a Linux ``device/`` sysfs
     directory exposes for capture adapters. Returns a dict with the
-    five additive keys (``bus``, ``driver``, ``vendor``, ``product``,
-    ``usb_id``) each ``None`` when its source file isn't present.
+    six additive keys (``bus``, ``driver``, ``vendor``, ``product``,
+    ``usb_id``, ``removable``) each ``None`` when its source file
+    isn't present.
 
     The Wi-Fi path is ``/sys/class/net/<name>/device/`` and the BT path
     is ``/sys/class/bluetooth/<name>/device/`` — both expose the same
@@ -93,7 +129,13 @@ def _enrich_adapter_from_sysfs(device_dir: Path) -> dict:
 
     ``usb_id`` is composed as ``"VID:PID"`` only when both VID and PID
     were readable; otherwise ``None`` (a bare half-id like ``"148f:"``
-    isn't useful to operators)."""
+    isn't useful to operators).
+
+    ``removable`` distinguishes built-in modules connected to internal
+    USB hubs (value ``"fixed"``, rendered as "Internal" by the
+    formatter) from external dongles (``"removable"``, rendered as the
+    bus name like "USB"). When the attribute is missing the formatter
+    falls back to the bus-name behavior."""
     vendor = _read_sysfs_optional(device_dir / "manufacturer")
     product = _read_sysfs_optional(device_dir / "product")
     id_vendor = _read_sysfs_optional(device_dir / "idVendor")
@@ -105,6 +147,7 @@ def _enrich_adapter_from_sysfs(device_dir: Path) -> dict:
         "vendor": vendor,
         "product": product,
         "usb_id": usb_id,
+        "removable": _read_sysfs_removable(device_dir),
     }
 
 
@@ -115,11 +158,22 @@ def format_adapter_descriptor(adapter: dict) -> str:
     web wizard and the bootstrap CLI show identical text for the same
     adapter. Examples:
 
-      * ``"Alfa AWUS036ACS (USB rt2800usb)"`` — full USB descriptor set
+      * ``"Alfa AWUS036ACS (USB rt2800usb)"`` — external USB dongle
+      * ``"(Internal btusb)"`` — built-in BT module on an internal USB
+        hub (``removable == "fixed"``), distinguishable from an
+        external Bluetooth dongle which would render with ``USB``
       * ``"Ralink (USB rt2800usb)"`` — vendor only, no product string
       * ``"148f:7610 (USB rt2800usb)"`` — VID:PID only, no strings
       * ``"(SDIO brcmfmac)"`` — internal SoC adapter, driver-only
       * ``""`` — nothing readable, caller falls back to bare iface name
+
+    The bus-name slot in the suffix is replaced with ``Internal`` when
+    the adapter's ``removable`` is ``"fixed"`` — built-in modules
+    connected via an internal USB hub read as "internal" to operators
+    even though the kernel reports them as ``bus=usb``. Any other
+    ``removable`` value (``"removable"``, ``"unknown"``, ``None``)
+    leaves the bus name unchanged so external dongles still render
+    with the original ``USB`` / ``PCI`` / ``SDIO`` prefix.
 
     The parenthesized suffix is appended when bus is set (regardless of
     whether driver is also set); the lone-driver branch emits
@@ -132,9 +186,12 @@ def format_adapter_descriptor(adapter: dict) -> str:
     product = adapter.get("product")
     vendor = adapter.get("vendor")
     usb_id = adapter.get("usb_id")
+    removable = adapter.get("removable")
 
-    if bus:
-        suffix = f" ({bus.upper()} {driver})" if driver else f" ({bus.upper()})"
+    bus_label = "Internal" if removable == "fixed" else (bus.upper() if bus else None)
+
+    if bus_label:
+        suffix = f" ({bus_label} {driver})" if driver else f" ({bus_label})"
     else:
         suffix = ""
 
@@ -145,5 +202,5 @@ def format_adapter_descriptor(adapter: dict) -> str:
     if usb_id:
         return f"{usb_id}{suffix}"
     if driver:
-        return f"({bus.upper()} {driver})" if bus else f"({driver})"
+        return f"({bus_label} {driver})" if bus_label else f"({driver})"
     return ""
