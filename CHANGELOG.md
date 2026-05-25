@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Richer per-device info on the dashboard.** The `/devices` list and
+  the home page's "recently seen devices" block previously showed only
+  a Device label (resolved to the OUI vendor when no friendly name
+  was known) plus type / timestamps / sighting count, so a Sony
+  WH-1000XM4 headset was indistinguishable from any other row whose
+  vendor happened to be Cambridge Silicon Radio. The list now surfaces
+  the Kismet-extracted BLE advertised name as its own column, so
+  operators read "Sony WH-1000XM4" directly off the row instead of
+  resolving it through the label fallback chain. The Device label
+  itself now prefers the BLE name over the vendor fallback, fixing the
+  same mis-identification on the home page. The OUI vendor is
+  promoted from a label-fallback into its own visible column on both
+  pages, so vendor and BLE name can be scanned independently. The
+  deeper `/devices` page also gains a Probes column listing the
+  SSIDs the device has been observed probing for — a forensic detail
+  useful for triaging unknown sightings (e.g. spotting a device that
+  probes for "DEA-WiFi"); the home page keeps its scannable shape
+  and does not show this column. All four columns degrade to an
+  em-dash when the underlying Kismet data is absent, so devices
+  observed before Kismet's BLE name / probe extraction was enabled
+  render cleanly.
+
+### Fixed
+
+- **Filter form on `/devices` no longer 400s on the default
+  submission.** Clicking the "filter" button on the devices page
+  without changing the form selections previously dropped the
+  operator on a raw JSON `{"detail": "invalid device_type"}` page,
+  because the form's "any" `<option value="">` posted an empty
+  string that slipped past the allowlist guard. The route now
+  normalizes empty-string filter params to "no filter" at entry, so
+  the default form submission renders the unfiltered list as
+  intended. Hand-edited URLs with actually invalid values (e.g.
+  `?device_type=cellular`) still 400, but the operator now lands on
+  a same-themed HTML error page that names the bad value and offers
+  a back link, instead of a JSON blob with no recovery path. The
+  HTML error page is global — any HTTPException raised by the read-
+  only web UI now renders with the standard chrome and a back link
+  for any browser client.
+
 ## [0.7.2] - 2026-05-24
 
 ### Fixed
