@@ -367,6 +367,7 @@ async def kismet_sources_get(request: Request) -> HTMLResponse:
 
 
 async def kismet_sources_post(request: Request) -> HTMLResponse:
+    state = request.app.state
     session = _session(request)
     form = await request.form()
     # Cancel button (rendered on the no-adapters dead-end) short-circuits
@@ -384,6 +385,19 @@ async def kismet_sources_post(request: Request) -> HTMLResponse:
 
     sources_list = session.answers.get("kismet_probe_sources")
     if not selected:
+        # v0.7.6: re-run preserve. The operator may have an existing
+        # lynceus.yaml at state.target_path with a populated
+        # kismet_sources: list (typical --reconfigure flow). Loading the
+        # template doesn't pre-check those boxes today (see UI scope
+        # note on the touchup arc), so the operator clicks Next on an
+        # empty form intending "keep what I had." Honor that here: read
+        # the on-disk config, and if it has a non-empty kismet_sources
+        # list, populate session.answers with it and advance. Otherwise
+        # fall through to the standard error.
+        existing = _existing_kismet_sources(state.target_path)
+        if existing:
+            session.answers["kismet_sources"] = existing
+            return _redirect(request, "/step/5")
         adapter_rows = _build_adapter_rows(sources_list)
         kismet_panel_labels = (
             [_source_label(s) for s in sources_list if s.get("name")]
@@ -403,6 +417,32 @@ async def kismet_sources_post(request: Request) -> HTMLResponse:
 
     session.answers["kismet_sources"] = selected
     return _redirect(request, "/step/5")
+
+
+def _existing_kismet_sources(target_path) -> list[str] | None:
+    """Return the kismet_sources list from an existing lynceus.yaml at
+    ``target_path``, or None if the file is missing, unreadable, or
+    has no usable list. Used by the step 4 POST handler to honor a
+    re-run operator's "preserve existing selection" gesture (an empty
+    form submission on a wizard run that started from a populated
+    config).
+
+    Defensive — a malformed YAML or a Config validation failure on
+    the existing file must not crash the wizard; the operator can
+    still recover by ticking checkboxes manually."""
+    from pathlib import Path
+    from lynceus.config import load_config
+    try:
+        p = Path(target_path)
+        if not p.exists():
+            return None
+        cfg = load_config(str(p))
+    except Exception:
+        return None
+    existing = cfg.kismet_sources or []
+    if not existing:
+        return None
+    return list(existing)
 
 
 # ---- registration ----------------------------------------------------------
