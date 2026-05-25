@@ -243,6 +243,25 @@ def load_config(path: str) -> Config:
         raise FileNotFoundError(path)
     with open(p, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    if "db_path" not in data:
+        # Backward compat for legacy lynceus.yaml files that predate
+        # the wizard's explicit db_path: render. Without this, the
+        # daemon falls through to the Config default "lynceus.db" —
+        # a CWD-relative path — and opens a different SQLite file
+        # than the wizard imported the watchlist into. Detect scope
+        # from the config file's location so a system-scope yaml
+        # (/etc/lynceus/lynceus.yaml) resolves to /var/lib/lynceus/
+        # lynceus.db rather than the operator's XDG path; everything
+        # else falls back to user-scope.
+        from lynceus import paths
+        try:
+            system_config = paths.default_config_path("system").resolve()
+            scope: Literal["user", "system"] = (
+                "system" if p.resolve() == system_config else "user"
+            )
+        except NotImplementedError:
+            scope = "user"
+        data["db_path"] = str(paths.default_db_path(scope))
     cfg = Config(**data)
     if cfg.kismet_fixture_path and cfg.kismet_url != DEFAULT_KISMET_URL:
         logger.warning(

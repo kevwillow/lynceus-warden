@@ -918,6 +918,25 @@ def apply_config(
         + "# not raise alerts. Edits take effect on daemon restart.\n"
         + f"allowlist_path: {_yaml_str(str(allowlist_path))}\n"
     )
+    # Persist the canonical XDG/FHS database path so the daemon opens
+    # the same SQLite file the wizard just imported the watchlist into.
+    # Pre-Tier-3 the wizard never wrote db_path: into lynceus.yaml; the
+    # daemon fell through to Config's "lynceus.db" default — a
+    # CWD-relative path — and opened a different file than apply_config
+    # imported into (paths.default_db_path(scope)). On real hardware the
+    # watchlist appeared empty to the live process despite the import
+    # succeeding. Writing db_path: explicitly closes the gap on every
+    # fresh install; load_config back-fills legacy yamls without the
+    # field for backward compat.
+    scope_db_path = paths.default_db_path(scope)
+    content = (
+        content
+        + "\n# --- Database ---\n"
+        + "# Path to the SQLite database the daemon polls into and the\n"
+        + "# UI reads from. Defaults to the XDG/FHS data path for the\n"
+        + "# install scope; edit only if you have a reason to relocate.\n"
+        + f"db_path: {_yaml_str(str(scope_db_path))}\n"
+    )
     write_config(target_path, content)
     if scope == "system":
         _apply_system_perms_to_file(target_path)
