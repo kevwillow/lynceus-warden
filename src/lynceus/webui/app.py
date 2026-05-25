@@ -1056,7 +1056,7 @@ def _check_db(db: Database) -> dict:
     return {"status": "ok", "detail": None}
 
 
-def _check_poller(db: Database, *, now_ts: int) -> dict:
+def _check_poller(db: Database, config: Config, *, now_ts: int) -> dict:
     """Two daemon-liveness signals, both index-backed single-row lookups:
 
     - ``last_poll_at`` — from ``poller_state.last_poll_ts`` (written by the
@@ -1066,13 +1066,47 @@ def _check_poller(db: Database, *, now_ts: int) -> dict:
       returning device data".
 
     Monitoring tools apply their own thresholds (the prompt's stability
-    commitment is to the keys, not to interpretation)."""
+    commitment is to the keys, not to interpretation).
+
+    ``poll_tick`` extends the section with the five last-tick counters
+    written by ``poll_once`` (admitted + three drop reasons + completed
+    timestamp). ``is_stale`` is True when the most-recent tick completed
+    more than 2x the configured poll_interval_seconds ago — a daemon
+    that should have polled but didn't. Never-polled state reports
+    is_stale=False (the home-page card carries the "waiting for first
+    poll" signal; flagging stale on fresh installs would just produce
+    a startup-window false positive). Overall status is NOT flipped —
+    matches the _check_watchlist ``stale`` convention; monitoring tools
+    that want to page on stale poll-ticks read the boolean directly."""
     last_poll_at = db.latest_poll_ts()
     row = db._conn.execute("SELECT MAX(ts) FROM sightings").fetchone()
     last_observation_at = row[0] if row and row[0] is not None else None
 
     def _delta(value: int | None) -> int | None:
         return (now_ts - int(value)) if value is not None else None
+
+    tick = _read_last_tick_stats(db)
+    if tick is not None:
+        stale_threshold = max(1, config.poll_interval_seconds) * 2
+        seconds_since_tick = now_ts - tick["completed_at"]
+        is_stale = seconds_since_tick > stale_threshold
+        poll_tick = {
+            "completed_at": tick["completed_at"],
+            "admitted": tick["admitted"],
+            "dropped_source_allowlist": tick["dropped_source_allowlist"],
+            "dropped_min_rssi": tick["dropped_min_rssi"],
+            "dropped_unparseable": tick["dropped_unparseable"],
+            "is_stale": is_stale,
+        }
+    else:
+        poll_tick = {
+            "completed_at": None,
+            "admitted": 0,
+            "dropped_source_allowlist": 0,
+            "dropped_min_rssi": 0,
+            "dropped_unparseable": 0,
+            "is_stale": False,
+        }
 
     return {
         "status": "ok",
@@ -1084,6 +1118,7 @@ def _check_poller(db: Database, *, now_ts: int) -> dict:
             else None
         ),
         "seconds_since_observation": _delta(last_observation_at),
+        "poll_tick": poll_tick,
     }
 
 
@@ -1239,10 +1274,23 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.get("/healthz", response_class=HTMLResponse)
     async def healthz(request: Request):
         health = db.healthcheck()
+        now_ts = int(time.time())
+        tick = _read_last_tick_stats(db)
+        if tick is not None:
+            stale_threshold = max(1, config.poll_interval_seconds) * 2
+            is_stale = (now_ts - tick["completed_at"]) > stale_threshold
+        else:
+            is_stale = False
         return app.state.templates.TemplateResponse(
             request=request,
             name="healthz.html",
-            context={"health": health, "version": __version__},
+            context={
+                "health": health,
+                "version": __version__,
+                "last_tick": tick,
+                "tick_is_stale": is_stale,
+                "now_ts": now_ts,
+            },
         )
 
     @app.get("/healthz.json")
@@ -1275,7 +1323,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         now_ts = int(time.time())
         checks = {
             "db": db_check,
-            "poller": _check_poller(db, now_ts=now_ts),
+            "poller": _check_poller(db, config, now_ts=now_ts),
             "watchlist": _check_watchlist(db, config, now_ts=now_ts),
             "ruleset": _check_ruleset(config),
             "alerts": _check_alerts(db, now_ts=now_ts),

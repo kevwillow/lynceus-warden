@@ -9,4 +9,28 @@
     <tr><th>alerts (total)</th><td>{{ health.alert_count }}</td></tr>
     <tr><th>alerts (unacknowledged)</th><td>{{ health.unacked_alert_count }}</td></tr>
   </table>
+
+  <h3>last poll tick</h3>
+  {% if last_tick %}
+    <table>
+      <tr>
+        <th>completed</th>
+        <td>
+          <time datetime="{{ last_tick.completed_at | unix_to_iso }}"
+                title="{{ last_tick.completed_at | unix_to_utc_human }}">
+            {{ last_tick.completed_at | relative_time(now_ts=now_ts) }}
+          </time>
+          {% if tick_is_stale %}
+            &middot; <span class="badge-high">stale</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr><th>admitted</th><td>{{ last_tick.admitted }}</td></tr>
+      <tr><th>dropped (allowlist mismatch)</th><td>{{ last_tick.dropped_source_allowlist }}</td></tr>
+      <tr><th>dropped (below signal threshold)</th><td>{{ last_tick.dropped_min_rssi }}</td></tr>
+      <tr><th>dropped (unrecognized device type)</th><td>{{ last_tick.dropped_unparseable }}</td></tr>
+    </table>
+  {% else %}
+    <p><em>Waiting for first poll&hellip;</em></p>
+  {% endif %}
 {% endblock %}
