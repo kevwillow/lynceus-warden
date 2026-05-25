@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Last seen signal strength and SSID on the devices list.** The
+  `/devices` table previously showed first-seen / last-seen
+  timestamps and a sighting count, but to learn whether a sighted
+  device was strong-signal-right-now (probably nearby) versus
+  weak-and-drifting (probably ambient), or to read the SSID it most
+  recently associated with, operators had to click into each
+  device's detail page. The list now surfaces "Last RSSI" and
+  "Last SSID" columns drawn from the most recent sighting per
+  device, so a sweep of the page is enough to triage what's worth
+  drilling into. The home page's "recently seen devices" block adds
+  the "Last RSSI" column too (SSID stays on the deeper list — SSID
+  strings can be long and would clutter the at-a-glance view).
+  Devices with no sightings, and probe-only Wi-Fi devices with no
+  associated network, render an em-dash in those cells.
+
+### Fixed
+
+- **Wizard now wires the severity-overrides file path into
+  `lynceus.yaml`.** The wizard's apply step scaffolds
+  `severity_overrides.yaml` to disk so operators have a starting
+  point for runtime severity tweaks, but pre-fix it did not write
+  the resulting path back into the main config — `lynceus.yaml`
+  was emitted without a `severity_overrides_path:` field. On next
+  daemon start the override file was silently unused (the runtime
+  layer logged "severity_overrides_path not set in lynceus.yaml") so
+  edits to `device_category_severity` or `suppress_categories` had
+  no effect until the operator hand-edited the config to wire the
+  path in. The wizard now persists the scaffolded path into
+  `lynceus.yaml`; edits to the runtime sections take effect on
+  daemon restart with no further config surgery. Existing
+  `lynceus.yaml` files without the field continue to load
+  unchanged — the daemon falls back to the same "layer disabled"
+  startup log as before.
+
 ## [0.7.3] - 2026-05-25
 
 ### Added
