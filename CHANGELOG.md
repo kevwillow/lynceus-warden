@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Daemon now logs the type strings of any Kismet device records it
+  can't categorize.** The parser silently drops device records whose
+  `kismet.device.base.type` isn't in its known-type table — the per-
+  tick unparseable counter reflects the drop, but operators couldn't
+  see WHICH type strings were causing the drops without re-
+  instrumenting. The daemon now emits a debug-level log line at each
+  drop naming the unrecognized type and the device's MAC. Operators
+  with unexplained drop counts can capture the frequency table on
+  their host with
+  `journalctl -u lynceus -p debug | grep 'unrecognized type' | sort | uniq -c`;
+  recognized types will extend in the next release based on what
+  surfaces. Debug level (not info) so production journals stay clean
+  unless the operator opts in.
+
 - **Last seen signal strength and SSID on the devices list.** The
   `/devices` table previously showed first-seen / last-seen
   timestamps and a sighting count, but to learn whether a sighted
@@ -24,6 +38,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   associated network, render an em-dash in those cells.
 
 ### Fixed
+
+- **Wizard's Previous and Next buttons now render at matched sizes.**
+  The footer button pair on every wizard step picked up extra vertical
+  margin on the Next button (the real `<button>`) that the Previous
+  link (an `<a role="button">`) never inherited, leaving the pair
+  visibly off-baseline on smoke. The fix pins the residual margin and
+  display-type properties on both elements inside the existing
+  `.wizard-footer` rule so they resolve to the same rendered box
+  model regardless of element type or browser default.
+
+- **Wizard's adapter selection page now shows a disambiguating
+  identifier even for adapters without USB string descriptors.**
+  Internal SoC Wi-Fi (e.g. Raspberry Pi's brcmfmac) and USB devices
+  that omit the optional vendor / product descriptors previously
+  rendered with only their interface name and MAC, making two such
+  adapters indistinguishable to the operator. The row label now falls
+  back through the VID:PID pair to the bare driver module name when
+  the higher-priority fields are absent, so every row carries
+  *something* the operator can use to tell adapters apart.
+
+- **Dashboard's filter forms on alerts, watchful, and watchlist now
+  use consistent search labels.** Three of the four search-bearing
+  dashboard pages read as a stray lowercase "q" next to the filter
+  input, where allowlist already read "search"; the inconsistency
+  looked like a UI bug. The watchful and watchlist pages now match
+  allowlist's "search" label, and the alerts page (which has two
+  search inputs — device fields vs rule name / message) reads as
+  "device search" and "rule search" so the two filters are
+  distinguishable at a glance. Form `name="q"` is unchanged, so
+  bookmarked filter URLs continue to work.
 
 - **Recovery hint for source-name mismatches now points operators on
   non-apt distros at `--skip-install`.** When `verify_kismet_sources`
