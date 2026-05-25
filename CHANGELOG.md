@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Per-tick observability on the dashboard, in journalctl, and on
+  `/healthz`.** A working poll loop that drops every observation at a
+  configuration gate previously looked identical to a dead daemon —
+  operators had to enable DEBUG logging or open a SQLite shell to
+  tell them apart. Each poll cycle now writes admitted-and-dropped
+  counts to the database (one row per counter in `poller_state`,
+  overwritten in place so the table stays bounded), emits a single
+  INFO heartbeat line of the form `poll tick: N admitted, M dropped
+  (source_allowlist=…, min_rssi=…, unparseable=…)`, and surfaces the
+  same data in three places: the "last poll" card on the home page
+  shows admitted/dropped counts with a relative-time stamp, the HTML
+  `/healthz` page renders a "last poll tick" block, and
+  `/healthz.json` extends the `poller` check with a `poll_tick`
+  object plus an `is_stale` boolean (true when the most-recent tick
+  is more than 2× the configured poll interval old). The three
+  drop-reason labels are operator-readable: "allowlist mismatch"
+  flags observations from a Kismet datasource not in
+  `kismet_sources`; "below signal threshold" flags observations
+  weaker than the configured `min_rssi`; "unrecognized device type"
+  flags Kismet records whose device type isn't in the Lynceus type
+  map (e.g. RTL433 traffic from a 433 MHz datasource running in
+  parallel). See `docs/CONFIGURATION.md` § Poll-tick observability
+  for the full operator reference.
+
 - **Richer per-device info on the dashboard.** The `/devices` list and
   the home page's "recently seen devices" block previously showed only
   a Device label (resolved to the OUI vendor when no friendly name
