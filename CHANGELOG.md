@@ -6,6 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Devices now appear in the dashboard when Kismet captures them.**
+  Previously lynceus extracted a UUID-shaped identifier from Kismet's
+  per-source `seenby` field rather than the user-facing source name;
+  the resulting mismatch against `kismet_sources` in lynceus.yaml
+  caused 100% of observations to drop silently at the source allowlist
+  filter. The v0.7.5 INFO aggregation log made this visible by naming
+  the UUID-shaped values Kismet was actually emitting; this release
+  closes the underlying parser bug. The parser now prefers
+  `kismet.common.seenby.name` (the value operators put in their
+  lynceus.yaml) and falls back to the UUID only if the name is
+  missing.
+
+- **Wizard's Previous and Next buttons now render at matched widths.**
+  Previously the Next submit button picked up an uncontested
+  `width: 100%` from the underlying form-control styles, visibly
+  stretching it within the flex footer while Previous sat at its
+  content width. The wizard-footer rule now declares `width: auto`
+  alongside the existing min-width + padding pins so the two buttons
+  render as a matched pair on every step.
+
+- **Wizard apply now creates an empty allowlist file at a default
+  location and persists the path into lynceus.yaml**, so the
+  dashboard's allowlist page no longer reads "No allowlist_path
+  configured" on a fresh install. The scaffold writes to
+  `~/.config/lynceus/allowlist.yaml` under `--user` and
+  `/etc/lynceus/allowlist.yaml` under `--system`, with a single
+  comment header explaining how to add entries. Pre-existing
+  allowlist files are kept untouched on re-runs.
+
+- **Wizard step 4 now preserves existing capture-source selections
+  on re-runs.** When an operator re-runs the wizard against a host
+  with an existing `lynceus.yaml`, the step 4 form does not pre-check
+  previously-configured adapters today; a re-running operator clicking
+  Next on an empty form previously hit "Pick at least one capture
+  source" and had to manually re-check the same adapters they already
+  had configured. The POST handler now reads the existing config and
+  treats an empty submission as "keep the existing list." First-run
+  installs (no on-disk config, or an existing config with an empty
+  kismet_sources list) still error so the operator can't accidentally
+  advance with no capture sources.
+
 ## [0.7.5] - 2026-05-25
 
 ### Added
