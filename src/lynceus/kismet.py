@@ -24,8 +24,19 @@ _TYPE_MAP: dict[str, Literal["wifi", "ble", "bt_classic", "remote_id"]] = {
     "Wi-Fi Client": "wifi",
     "Wi-Fi Bridged": "wifi",
     "Wi-Fi Device": "wifi",
+    # Wireless Distribution System AP — Kismet's type string for a
+    # Wi-Fi bridge/repeater. Live in the Parrot-OS probe's device-type
+    # frequency table; absent from this map until v0.7.6 Tier 3 they
+    # dropped as unparseable.
+    "Wi-Fi WDS AP": "wifi",
     "BTLE": "ble",
     "Bluetooth": "bt_classic",
+    # Kismet's literal device-type string for Bluetooth Classic
+    # devices ("Basic Rate / Enhanced Data Rate"). Distinct from the
+    # generic "Bluetooth" string above — both appear in real captures
+    # depending on Kismet version and bluetooth datasource. Live in
+    # the Parrot-OS probe's device-type frequency table.
+    "BR/EDR": "bt_classic",
     # Remote-ID Kismet device-type strings — UNVERIFIED guesses
     # against a live Kismet capture as of 2026-05-17. The Lynceus
     # codebase had no prior consumer of Remote-ID records, and
