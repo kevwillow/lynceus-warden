@@ -431,6 +431,10 @@ def parse_kismet_device(
 
     device_type = _TYPE_MAP.get(kismet_type)
     if device_type is None:
+        logger.debug(
+            "dropping kismet device, unrecognized type: type=%r mac=%r",
+            kismet_type, raw_mac,
+        )
         return None
 
     try:
