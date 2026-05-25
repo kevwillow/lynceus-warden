@@ -49,6 +49,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   kismet_sources list) still error so the operator can't accidentally
   advance with no capture sources.
 
+- **Built-in Bluetooth and Wi-Fi adapters now render as "Internal"
+  rather than "USB" on bootstrap-kismet prompts and the wizard's
+  step 4 row labels.** v0.7.5 surfaced bus + driver from sysfs, but
+  motherboard BT modules and on-board Wi-Fi modules connected via
+  internal USB hubs report `bus=usb` to the kernel and read
+  identically to genuinely-external dongles ("USB btusb" on both
+  hci0 and hci1 with no other disambiguator). The kernel also
+  exposes a `removable` flag on the parent USB device (`fixed` for
+  built-in, `removable` for hot-pluggable); surfacing it lets the
+  label render "Internal btusb" for the on-board module so the
+  contrast with an external dongle is visible at a glance. PCI/SDIO
+  adapters and kernels that don't expose `removable` fall back to
+  the v0.7.5 bus-name behavior unchanged.
+
+- **Wizard step 2 now includes inline guidance for generating a
+  Kismet API key when one was already auto-located on disk.** v0.7.5
+  showed the walkthrough only when no key was on disk; an operator
+  who selected "Use a different key (paste below)" on the located
+  branch had no in-page signpost to the Kismet UI steps. A default-
+  closed `<details>` disclosure now ships on both branches so the
+  walkthrough (Settings → Login Configuration → API Keys, name
+  `lynceus`, role `readonly`) is reachable regardless of which
+  radio the operator picked.
+
+- **Dashboard settings page now distinguishes "no import has run"
+  from "import ran and dropped all rows by filters" when the
+  watchlist shows zero entries.** Previously the watchlist-data
+  card said "To add data, run lynceus-import-argus..." whenever
+  `total=0` — including the case where the wizard's bundled import
+  had just run and the import filters dropped every row. Operators
+  read the message and concluded "nothing happened" when in fact
+  the import ran and admitted zero. The card now branches on the
+  presence of an `import_runs` row: a recent import with zero
+  admitted rows renders a red-tinted notice citing the dropped
+  count from the CSV's `# meta:` line, the filter names operators
+  see in journalctl drop logs, and a `journalctl -u lynceus`
+  pointer for per-record drop reasons.
+
+- **Dashboard allowlist page now shows inline editing instructions
+  with the file path and a copy-pasteable YAML format example when
+  the allowlist is empty.** Tier 1's scaffolded default allowlist
+  made the "configured + empty" state the default fresh-install
+  shape; previously the page just said "No allowlist entries."
+  with no signal about how to populate the file outside the
+  in-page Add form. The new empty-state article surfaces the
+  exact `allowlist_path` the route loaded from, a two-entry YAML
+  example, the supported `pattern_type` vocabulary, and a daemon-
+  restart reminder.
+
+- **Wizard apply-complete page now reminds operators to run
+  `sudo lynceus-bootstrap-kismet --skip-install` if they haven't
+  already**, since lynceus can't observe any devices until Kismet
+  is configured for capture (interfaces in monitor mode, `source=`
+  lines in `kismet_site.conf`, group membership). v0.7.5's
+  bootstrap-kismet closing pointer signposted setup at the end of
+  its run, but setup didn't signpost back — an operator running
+  setup first had no in-page reminder to run bootstrap-kismet,
+  and could stand up a clean daemon that quietly saw nothing. The
+  reminder is always shown on success (reassurance shape) so
+  operators who already ran bootstrap-kismet just see it
+  confirmed; those who haven't get the signal they needed.
+
 ## [0.7.5] - 2026-05-25
 
 ### Added
