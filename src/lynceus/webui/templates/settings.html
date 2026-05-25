@@ -112,10 +112,41 @@
       <dd>{{ watchlist_stats.bundled }}</dd>
     </dl>
     <p><a href="/watchlist">view watchlist entries &rarr;</a></p>
-    <p><small>
-      To add data, run <code>lynceus-import-argus --input &lt;path&gt;</code> or
-      <code>lynceus-seed-watchlist --yaml &lt;path&gt;</code>.
-    </small></p>
+    {# Three-way signposting when total=0:
+       - has_import + record_count>0 → import ran but all rows dropped
+         by filters; tell the operator where to find drop reasons.
+       - has_import + record_count empty → import ran but no canonical
+         count from the CSV's meta line; same drop-reason hint.
+       - no has_import → fresh install, point at the importer / seeder.
+       Non-zero totals fall through to neither branch (no message
+       needed — the card already says how many rows are present). #}
+    {% if watchlist_stats.total == 0 %}
+      {% if watchlist_freshness.has_import %}
+        <p class="wizard-error"><small>
+          Last import ran {{ watchlist_freshness.age_days }}
+          {% if watchlist_freshness.age_days == 1 %}day{% else %}days{% endif %} ago:
+          0 records admitted{% if watchlist_freshness.record_count and watchlist_freshness.record_count > 0 %}
+            out of {{ watchlist_freshness.record_count }} in the source
+          {% endif %}.
+          The import filters (unknown_type, peer_collision, in_import_dup,
+          confidence threshold, geographic filter) dropped every row.
+          Check <code>journalctl -u lynceus</code> for per-record drop
+          reasons, or rerun
+          <code>sudo lynceus-import-argus --input &lt;path&gt;</code>
+          against a fresh dataset.
+        </small></p>
+      {% else %}
+        <p><small>
+          To add data, run <code>lynceus-import-argus --input &lt;path&gt;</code> or
+          <code>lynceus-seed-watchlist --yaml &lt;path&gt;</code>.
+        </small></p>
+      {% endif %}
+    {% else %}
+      <p><small>
+        To add data, run <code>lynceus-import-argus --input &lt;path&gt;</code> or
+        <code>lynceus-seed-watchlist --yaml &lt;path&gt;</code>.
+      </small></p>
+    {% endif %}
   </article>
 
   <article class="settings-card">
