@@ -112,6 +112,25 @@
           Post-install verification: <code>docs/SMOKE.md</code>.
         </small>
       </p>
+      {# Always-shown bootstrap-kismet reminder, even for operators
+         who already ran it — reassurance is the right shape (vs.
+         condition-detection which adds bug surface for no real win).
+         Operators who reach setup before bootstrap-kismet have
+         configured Kismet's auth + interface lists but NOT put any
+         interface into monitor mode; without bootstrap-kismet they
+         can stand up the daemon and the dashboard and see nothing
+         flow through. #}
+      <p class="wizard-error">
+        <strong>If you haven't configured Kismet for capture yet:</strong>
+        run <code>sudo lynceus-bootstrap-kismet --skip-install</code> now.
+        It puts your Wi-Fi adapter into monitor mode, adds the
+        <code>source=</code> lines to <code>/etc/kismet/kismet_site.conf</code>,
+        and adds your user to the kismet group. This is required for
+        lynceus to see any devices — even after this wizard completes
+        successfully. The <code>--skip-install</code> flag tells it
+        Kismet is already installed (which it is, or you wouldn't be
+        on this page).
+      </p>
     </article>
   {% endif %}
 
