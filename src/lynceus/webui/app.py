@@ -582,11 +582,15 @@ def _enrich_alerts_with_devices(db, alerts: list[dict]) -> None:
 def _device_label(device: dict | None) -> str:
     """Best-available human label for a device.
 
-    Priority: friendly_name (BLE/BT advertised name, v0.3+) → oui_vendor
-    (Kismet manuf, v0.2) → "—". Forward-compatible: a v0.2 dict without
-    the friendly_name key falls through to oui_vendor naturally."""
+    Priority: ble_name (Kismet-extracted advertised BLE name, e.g. "Sony
+    WH-1000XM4") → friendly_name (alerts-join enrichment) → oui_vendor
+    (Kismet manuf) → "—". Forward-compatible: a dict missing any of the
+    earlier keys falls through naturally."""
     if not device:
         return "—"
+    ble = device.get("ble_name")
+    if ble and ble.strip():
+        return ble.strip()
     name = device.get("friendly_name")
     if name and name.strip():
         return name.strip()

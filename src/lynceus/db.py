@@ -1809,7 +1809,7 @@ class Database:
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = (
             "SELECT mac, device_type, first_seen, last_seen, sighting_count, "
-            "oui_vendor, is_randomized, notes "
+            "oui_vendor, is_randomized, notes, probe_ssids, ble_name "
             f"FROM devices {where} ORDER BY last_seen DESC, mac LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])
