@@ -252,16 +252,22 @@ def load_config(path: str) -> Config:
         # from the config file's location so a system-scope yaml
         # (/etc/lynceus/lynceus.yaml) resolves to /var/lib/lynceus/
         # lynceus.db rather than the operator's XDG path; everything
-        # else falls back to user-scope.
+        # else falls back to user-scope. Both probes (the system
+        # config-path lookup and the resolved db-path lookup) are
+        # wrapped together because NotImplementedError can fire from
+        # either on macOS / Windows (no system scope) and the back-
+        # fill must always degrade to the user-scope db_path rather
+        # than propagating.
         from lynceus import paths
         try:
             system_config = paths.default_config_path("system").resolve()
             scope: Literal["user", "system"] = (
                 "system" if p.resolve() == system_config else "user"
             )
+            resolved_db = paths.default_db_path(scope)
         except NotImplementedError:
-            scope = "user"
-        data["db_path"] = str(paths.default_db_path(scope))
+            resolved_db = paths.default_db_path("user")
+        data["db_path"] = str(resolved_db)
     cfg = Config(**data)
     if cfg.kismet_fixture_path and cfg.kismet_url != DEFAULT_KISMET_URL:
         logger.warning(
