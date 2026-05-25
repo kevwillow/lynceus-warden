@@ -28,6 +28,13 @@ from ..config import DEFAULT_KISMET_URL, CaptureConfig, Config
 from ..kismet import KismetClient
 from ..redact import redact_ntfy_topic, redact_topic_in_url
 from ..setup.models import ApplyStep
+from ._adapter_descriptors import (  # noqa: F401  (re-exported for test monkeypatching)
+    _enrich_adapter_from_sysfs,
+    _read_sysfs_mac,
+    _read_sysfs_optional,
+    _read_sysfs_symlink_basename,
+    format_adapter_descriptor,
+)
 
 # Re-exports from setup.core so existing test imports survive the Touch 2
 # move. The 200 setup-wizard tests reach for ``wiz._atomic_write``,
@@ -460,88 +467,15 @@ def enumerate_bluetooth_adapters() -> list[str] | None:
 
 
 # --- Unified capture-adapter enumeration ------------------------------------
-
-
-def _read_sysfs_mac(path: Path) -> str | None:
-    try:
-        text = path.read_text().strip()
-    except OSError:
-        return None
-    return text or None
-
-
-def _read_sysfs_optional(path: Path) -> str | None:
-    """Read a sysfs file's contents, stripped, or return ``None`` for the
-    "field absent" cases this enumeration treats as non-fatal:
-
-      - ``FileNotFoundError`` — non-USB adapter (internal PCI/SDIO Wi-Fi,
-        motherboard BT) won't have USB string descriptors like
-        ``device/manufacturer``; treat as "no info" rather than crashing
-        the wizard.
-      - ``PermissionError`` — the wizard process may not be privileged
-        enough to read every sysfs node on some configurations; better
-        to render a sparser label than to crash.
-      - ``IsADirectoryError`` — symlinks to ``device/driver`` resolve to
-        a directory when caller reaches for the directory by accident;
-        treat as "no info" so the caller can stay one-shaped.
-
-    Any *other* OSError (an unexpected filesystem fault) propagates so it
-    surfaces in dev rather than getting silently swallowed."""
-    try:
-        text = path.read_text().strip()
-    except (FileNotFoundError, PermissionError, IsADirectoryError):
-        return None
-    return text or None
-
-
-def _read_sysfs_symlink_basename(path: Path) -> str | None:
-    """Resolve a sysfs symlink and return its basename, or ``None`` when
-    the symlink is absent.
-
-    Used for ``device/driver`` (basename → kernel module like
-    ``rt2800usb`` / ``btusb``) and ``device/subsystem`` (basename →
-    bus like ``usb`` / ``pci`` / ``sdio``). Returns ``None`` on the
-    same non-fatal cases ``_read_sysfs_optional`` handles, so an
-    adapter whose driver symlink isn't there just renders a sparser
-    label rather than crashing the wizard."""
-    try:
-        target = path.resolve(strict=True)
-    except (FileNotFoundError, PermissionError, OSError):
-        # OSError here covers the loop / too-many-links cases that
-        # resolve() raises as a generic OSError; lumping them in keeps
-        # the helper one-shaped — the caller just sees "no driver".
-        return None
-    return target.name or None
-
-
-def _enrich_adapter_from_sysfs(device_dir: Path) -> dict:
-    """Read the USB / bus / driver fields a Linux ``device/`` sysfs
-    directory exposes for capture adapters. Returns a dict with the
-    five additive keys (``bus``, ``driver``, ``vendor``, ``product``,
-    ``usb_id``) each ``None`` when its source file isn't present.
-
-    The Wi-Fi path is ``/sys/class/net/<name>/device/`` and the BT path
-    is ``/sys/class/bluetooth/<name>/device/`` — both expose the same
-    field names per the USB / driver model, so a single helper covers
-    both. Non-USB adapters (internal PCI / SDIO Wi-Fi, on-board BT) have
-    the bus + driver symlinks but no ``manufacturer`` / ``product`` /
-    ``idVendor`` / ``idProduct`` files; those render as None.
-
-    ``usb_id`` is composed as ``"VID:PID"`` only when both VID and PID
-    were readable; otherwise ``None`` (a bare half-id like ``"148f:"``
-    isn't useful to operators)."""
-    vendor = _read_sysfs_optional(device_dir / "manufacturer")
-    product = _read_sysfs_optional(device_dir / "product")
-    id_vendor = _read_sysfs_optional(device_dir / "idVendor")
-    id_product = _read_sysfs_optional(device_dir / "idProduct")
-    usb_id = f"{id_vendor}:{id_product}" if id_vendor and id_product else None
-    return {
-        "bus": _read_sysfs_symlink_basename(device_dir / "subsystem"),
-        "driver": _read_sysfs_symlink_basename(device_dir / "driver"),
-        "vendor": vendor,
-        "product": product,
-        "usb_id": usb_id,
-    }
+#
+# The sysfs reader helpers (_read_sysfs_mac, _read_sysfs_optional,
+# _read_sysfs_symlink_basename, _enrich_adapter_from_sysfs) live in
+# ``_adapter_descriptors`` so the bootstrap-kismet CLI can render the
+# same rich labels in its adapter-selection prompts without duplicating
+# the sysfs probe logic. They're re-exported at module load above; the
+# enumerate function below resolves them via this module's globals so
+# the existing wizard-test monkeypatches on ``wiz._enrich_adapter_from_sysfs``
+# still steer the enumeration's behavior.
 
 
 def enumerate_capture_adapters() -> list[dict]:
