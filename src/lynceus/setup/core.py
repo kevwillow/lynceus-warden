@@ -29,8 +29,11 @@ import sys
 from pathlib import Path
 from typing import Literal
 
+import requests
+
 from lynceus import paths
 from lynceus.config import Config
+from lynceus.kismet import KismetClient
 from lynceus.setup.models import ApplyReport, ApplyStep, ProgressSink
 
 logger = logging.getLogger(__name__)
@@ -91,6 +94,28 @@ def _frontend_render_config_yaml(answers: dict) -> str:
     """
     from lynceus.cli import setup as _frontend
     return _frontend.render_config_yaml(answers)
+
+
+def _make_verify_kismet_client(config: Config) -> KismetClient:
+    """Construct the ``KismetClient`` used by the source-name cross-check.
+
+    Indirection point for tests — monkeypatching this is the clean way
+    to inject a fake source-listing response without touching the
+    production HTTP-client constructor. Production callers (CLI + web
+    wizards) never override it; they get a real client wired against
+    the validated ``Config.kismet_url`` / ``Config.kismet_api_key``.
+    """
+    return KismetClient(config.kismet_url, config.kismet_api_key)
+
+
+# Recovery copy reused by every non-OK outcome of the cross-check.
+# Plain English, no jargon ("source_allowlist gate" stays in code).
+# Single source of truth so the skipped / warning messages stay in
+# lockstep as the operator copy iterates.
+_VERIFY_KISMET_SOURCES_RECOVERY = (
+    "Run lynceus-bootstrap-kismet if you haven't yet, or check "
+    "kismet_site.conf source names."
+)
 
 
 def _frontend_import_bundled_watchlist(
@@ -1018,5 +1043,108 @@ def apply_config(
                 message=reason,
             )
         )
+
+    # 8. verify_kismet_sources — apply-time cross-check between the
+    # kismet_sources the operator chose in wizard step 4 and the
+    # source names Kismet actually exposes via its REST API. Catches
+    # the silent-drop class of bug B2 made loud at runtime: if the
+    # configured name doesn't match a Kismet source name, the poller's
+    # allowlist gate drops every observation from that adapter and the
+    # dashboard looks broken with no obvious cause.
+    #
+    # Non-blocking by design. Three terminal states:
+    #   * ok       — every configured name appears in Kismet's list.
+    #   * warning  — some configured names are NOT in Kismet's list.
+    #                Report names the specific mismatches + recovery
+    #                copy. Does NOT flip overall_status.
+    #   * skipped  — nothing to verify (kismet_sources is None) OR
+    #                Kismet was unreachable at apply time. The
+    #                operator can re-run the wizard to retry; the
+    #                runtime drop counter still catches the case at
+    #                poll time.
+    configured = list(config.kismet_sources or [])
+    if not configured:
+        _emit(
+            ApplyStep(
+                name="verify_kismet_sources",
+                status="skipped",
+                message="No Kismet sources configured; cross-check not applicable.",
+            )
+        )
+    else:
+        try:
+            client = _make_verify_kismet_client(config)
+            # only_running=False matches against EVERY source Kismet
+            # has configured, not just currently-running ones. A
+            # source in transient error state still has its name set
+            # in kismet_site.conf — restricting the comparison to
+            # running sources would false-positive during a flap.
+            # Name match is the cross-check's job; run-state is the
+            # operator's separate problem (Kismet's own UI surfaces
+            # it, and B2's runtime drop counter catches the case
+            # downstream).
+            exposed_raw = client.list_sources(only_running=False)
+        except Exception as exc:
+            # Broad catch is intentional: any failure to reach Kismet
+            # or parse its response degrades to skipped, never to
+            # failed. The cross-check is verification, not state
+            # mutation — a failure here must not prevent the apply
+            # pipeline from completing.
+            logger.warning(
+                "verify_kismet_sources: could not query Kismet sources: %s", exc
+            )
+            _emit(
+                ApplyStep(
+                    name="verify_kismet_sources",
+                    status="skipped",
+                    message=(
+                        "Could not reach Kismet to verify source names — "
+                        "observations may silently drop if your "
+                        "kismet_sources entries don't match Kismet's "
+                        "configured sources. "
+                        + _VERIFY_KISMET_SOURCES_RECOVERY
+                    ),
+                    detail={"configured": configured, "error": str(exc)},
+                )
+            )
+        else:
+            exposed_names = sorted(
+                {
+                    s.get("name", "")
+                    for s in exposed_raw
+                    if isinstance(s, dict) and s.get("name")
+                }
+            )
+            mismatched = sorted(name for name in configured if name not in exposed_names)
+            if not mismatched:
+                _emit(
+                    ApplyStep(
+                        name="verify_kismet_sources",
+                        status="ok",
+                        message="Kismet source names verified.",
+                        detail={
+                            "configured": configured,
+                            "exposed": exposed_names,
+                        },
+                    )
+                )
+            else:
+                _emit(
+                    ApplyStep(
+                        name="verify_kismet_sources",
+                        status="warning",
+                        message=(
+                            f"Kismet doesn't currently expose these source "
+                            f"name(s): {', '.join(mismatched)}. Observations "
+                            f"from them will silently drop. "
+                            + _VERIFY_KISMET_SOURCES_RECOVERY
+                        ),
+                        detail={
+                            "mismatched": mismatched,
+                            "configured": configured,
+                            "exposed": exposed_names,
+                        },
+                    )
+                )
 
     return ApplyReport(steps=tuple(recorded))

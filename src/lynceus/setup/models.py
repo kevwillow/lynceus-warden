@@ -18,8 +18,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
-ApplyStepStatus = Literal["ok", "skipped", "failed"]
+ApplyStepStatus = Literal["ok", "skipped", "failed", "warning"]
 ApplyOverallStatus = Literal["ok", "failed"]
+# "warning" is a non-blocking outcome: the step ran, found a real
+# problem worth telling the operator about, but does not flip
+# overall_status (the apply pipeline still completes). The Arc B
+# Kismet source-name cross-check uses it for "you wrote a source name
+# Kismet doesn't expose — observations from that source will silently
+# drop". Adding new "warning" emitters is fine; just make sure the
+# operator-facing message names the specific surface and the recovery
+# path.
 
 
 # Every step name ``apply_config`` may emit, in the canonical order
@@ -36,6 +44,7 @@ STEP_NAMES: tuple[str, ...] = (
     "import_bundled_watchlist",
     "chown_db_files",
     "write_rules",
+    "verify_kismet_sources",
 )
 
 
