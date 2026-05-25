@@ -995,6 +995,54 @@ def _resolve_allowlist_match(
 # helpers that back the /settings and / pages today.
 
 
+def _read_last_tick_stats(db: Database) -> dict | None:
+    """Return the most-recent poll tick's per-bucket counters, or ``None``
+    when the daemon has not completed a tick yet (fresh install, or the
+    daemon never started).
+
+    Five poller_state keys are written every tick by ``poll_once``:
+    ``last_tick_completed_at`` (epoch int), ``last_tick_admitted``, and
+    three ``last_tick_dropped_*`` counters. We use the presence of
+    ``last_tick_completed_at`` as the never-polled sentinel — the
+    counters could legitimately all be zero (empty Kismet response on a
+    quiet stretch), so the timestamp is the load-bearing signal.
+
+    Internal keys (``dropped_source_allowlist`` / ``min_rssi`` /
+    ``unparseable``) stay machine-readable; the home page card and
+    /healthz HTML translate them to operator copy at the rendering
+    layer."""
+    completed_raw = db.get_state("last_tick_completed_at")
+    if completed_raw is None:
+        return None
+    try:
+        completed_at = int(completed_raw)
+    except (TypeError, ValueError):
+        return None
+
+    def _read_int(key: str) -> int:
+        raw = db.get_state(key)
+        if raw is None:
+            return 0
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
+    dropped_source_allowlist = _read_int("last_tick_dropped_source_allowlist")
+    dropped_min_rssi = _read_int("last_tick_dropped_min_rssi")
+    dropped_unparseable = _read_int("last_tick_dropped_unparseable")
+    return {
+        "completed_at": completed_at,
+        "admitted": _read_int("last_tick_admitted"),
+        "dropped_source_allowlist": dropped_source_allowlist,
+        "dropped_min_rssi": dropped_min_rssi,
+        "dropped_unparseable": dropped_unparseable,
+        "dropped_total": (
+            dropped_source_allowlist + dropped_min_rssi + dropped_unparseable
+        ),
+    }
+
+
 def _check_db(db: Database) -> dict:
     """Return ``{"status": "ok", "detail": None}`` on a healthy connection,
     or ``{"status": "error", "detail": "<exception>"}`` when the connection
@@ -1266,6 +1314,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "recent_devices": db.list_devices(limit=10),
                 "device_seen": db.device_seen_counts(now_ts=now_int),
                 "last_poll": db.latest_poll_ts(),
+                "last_tick": _read_last_tick_stats(db),
+                "now_ts": now_int,
                 "kismet_status": kismet_status,
             },
         )

@@ -16,13 +16,38 @@
 
   <article>
     <header><strong>last poll</strong></header>
-    <p class="last-poll">
-      {% if last_poll %}
+    {% if last_tick %}
+      <p class="last-poll">
+        Last polled
+        <time datetime="{{ last_tick.completed_at | unix_to_iso }}"
+              title="{{ last_tick.completed_at | unix_to_utc_human }}">
+          {{ last_tick.completed_at | relative_time(now_ts=now_ts) }}
+        </time>
+        &middot; <strong>admitted:</strong> {{ last_tick.admitted }}
+        &middot; <strong>dropped:</strong> {{ last_tick.dropped_total }}
+        {% if last_tick.dropped_total > 0 %}
+          (
+          {%- set parts = [] -%}
+          {%- if last_tick.dropped_source_allowlist > 0 -%}
+            {%- set _ = parts.append("allowlist mismatch: " ~ last_tick.dropped_source_allowlist) -%}
+          {%- endif -%}
+          {%- if last_tick.dropped_min_rssi > 0 -%}
+            {%- set _ = parts.append("below signal threshold: " ~ last_tick.dropped_min_rssi) -%}
+          {%- endif -%}
+          {%- if last_tick.dropped_unparseable > 0 -%}
+            {%- set _ = parts.append("unrecognized device type: " ~ last_tick.dropped_unparseable) -%}
+          {%- endif -%}
+          {{ parts | join("; ") }}
+          )
+        {% endif %}
+      </p>
+    {% elif last_poll %}
+      <p class="last-poll">
         Last polled: <time datetime="{{ last_poll | unix_to_iso }}">{{ last_poll | unix_to_iso }}</time>
-      {% else %}
-        Never polled yet.
-      {% endif %}
-    </p>
+      </p>
+    {% else %}
+      <p class="last-poll"><em>Waiting for first poll&hellip;</em></p>
+    {% endif %}
   </article>
 
   <article>
