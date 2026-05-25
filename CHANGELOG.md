@@ -25,6 +25,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Recovery hint for source-name mismatches now points operators on
+  non-apt distros at `--skip-install`.** When `verify_kismet_sources`
+  reports a mismatch or can't reach Kismet, the recovery copy used
+  to suggest only the bare `lynceus-bootstrap-kismet` invocation,
+  which dead-ends on Parrot/Fedora/Arch/RHEL because the apt-install
+  path only covers Debian/Ubuntu/Kali. The hint now names the
+  supported distro matrix inline and points operators on others at
+  `lynceus-bootstrap-kismet --skip-install` (the distro-agnostic
+  configure path) plus the new `docs/DEPLOYMENT.md` subsection that
+  walks through the manual Kismet install. No change to cross-check
+  logic or status determination — operator-readable copy only.
+
 - **Wizard now wires the severity-overrides file path into
   `lynceus.yaml`.** The wizard's apply step scaffolds
   `severity_overrides.yaml` to disk so operators have a starting

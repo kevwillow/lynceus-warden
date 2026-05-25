@@ -114,10 +114,22 @@ plus any `hci*` Bluetooth controllers, patches
 and adds your user to the `kismet` group. The final line summarizes
 what it did. Idempotent — safe to re-run if you add hardware later.
 
-**Action (non-Debian distros):**
+**Action (other distros — Parrot, Fedora, Arch, RHEL, etc.):**
 
-Install Kismet manually per [kismetwireless.net/packages](https://www.kismetwireless.net/packages/),
-then skip ahead to step 4.
+The apt-install path inside `lynceus-bootstrap-kismet` covers Debian,
+Ubuntu, and Kali only. On other distros, install Kismet manually per
+[kismetwireless.net/packages](https://www.kismetwireless.net/packages/)
+(every Linux distro is supported on the Kismet side — there's a
+package or build instructions for each), then run:
+
+```sh
+sudo lynceus-bootstrap-kismet --skip-install
+```
+
+The `--skip-install` flag short-circuits the apt step but still runs
+the distro-agnostic parts: monitor-mode adapter detection, the
+`kismet_site.conf` patch, and adding your user to the `kismet`
+group. Same idempotent re-run safety as the bare invocation.
 
 **Then, log out and back in** so the `kismet` group membership takes
 effect.
