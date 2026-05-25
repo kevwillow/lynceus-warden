@@ -170,7 +170,37 @@
       {% if filters_active %}
         <p><em>No entries match the current filters.</em> <a href="/allowlist">reset filters</a></p>
       {% elif not notice %}
-        <p><em>No allowlist entries.</em></p>
+        {# Empty-allowlist instructions: tell the operator exactly
+           where to add entries and what the YAML shape looks like.
+           Two paths can reach here: (a) the Tier 1 scaffold created
+           an empty file, (b) the operator emptied the file
+           themselves. Both shapes accept the same edit. The Add-
+           entry disclosure above can also be used to populate the
+           UI-side allowlist without touching the file at all. #}
+        <article>
+          <p><em>No allowlist entries yet.</em></p>
+          <p>
+            Allowlist entries suppress alerts for matching MACs,
+            SSIDs, or other identifiers. Add entries via the
+            <strong>Add allowlist entry</strong> form above (saved to
+            the UI-side allowlist) or by editing the operator-managed
+            primary file directly:
+          </p>
+          <p>Path: <code>{{ allowlist_path }}</code></p>
+          <p>Format (one entry per list item, copy-paste to start):</p>
+          <pre><code>entries:
+  - pattern: 'a4:83:e7:11:22:33'
+    pattern_type: mac
+    note: 'My laptop'
+  - pattern: 'HomeNet'
+    pattern_type: ssid
+    note: 'Home SSID'</code></pre>
+          <p><small>
+            Supported <code>pattern_type</code> values:
+            {% for t in supported_pattern_types %}<code>{{ t }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+            Restart the daemon after editing so the new entries load.
+          </small></p>
+        </article>
       {% endif %}
     {% endif %}
 

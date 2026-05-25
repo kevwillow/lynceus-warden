@@ -3289,6 +3289,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "active": "allowlist",
                 "notice": notice,
                 "configured": configured,
+                # allowlist_path is threaded through so the empty-state
+                # instructions can show the operator exactly which file
+                # they're editing. ``None`` when allowlist_path is unset
+                # (legacy installs pre-Tier 1 scaffold); the template's
+                # configured-branch guard prevents the value from
+                # rendering in that case.
+                "allowlist_path": allowlist_path,
                 "entries": page_rows,
                 "primary_count": primary_count,
                 "ui_count": ui_count,
