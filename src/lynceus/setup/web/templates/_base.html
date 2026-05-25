@@ -63,9 +63,17 @@
          pair sits at different baselines. display: inline-block
          normalizes the display type across the two so the parent flex
          row treats both elements identically (Pico's anchor-as-button
-         resolves to inline; <button> resolves to inline-block by UA). */
+         resolves to inline; <button> resolves to inline-block by UA).
+         width: auto overrides Pico's
+         `button[type=submit],input:not(...),select,textarea {width:100%}`
+         which has equal selector-specificity to .wizard-footer button —
+         without our own width declaration the cascade settles on Pico's
+         value, stretching Next/Apply/Continue across the flex footer
+         while the anchor-as-button (Previous/Cancel) sits at its
+         content width. Pinning width: auto here closes the third
+         smoke's worth of "buttons still aren't the same size" reports. */
       .wizard-footer a[role="button"],
-      .wizard-footer button { box-sizing: border-box; min-width: 9em; padding: 0.6em 1.5em; line-height: 1.25; text-align: center; margin-bottom: 0; display: inline-block; }
+      .wizard-footer button { box-sizing: border-box; min-width: 9em; width: auto; padding: 0.6em 1.5em; line-height: 1.25; text-align: center; margin-bottom: 0; display: inline-block; }
       .wizard-error { color: var(--del-color); margin-bottom: 0.5em; }
     </style>
   </head>
