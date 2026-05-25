@@ -112,8 +112,18 @@ def _make_verify_kismet_client(config: Config) -> KismetClient:
 # Plain English, no jargon ("source_allowlist gate" stays in code).
 # Single source of truth so the skipped / warning messages stay in
 # lockstep as the operator copy iterates.
+#
+# Names the apt-supported distro matrix (Debian / Ubuntu / Kali)
+# inline so operators on Parrot / Fedora / Arch / RHEL know up front
+# they need the --skip-install path, and cross-references DEPLOYMENT.md
+# for the manual-install steps. This matters because the bootstrap-
+# kismet wizard step on an unsupported distro previously surfaced no
+# operator-actionable path here -- B3 smoke confirmed --skip-install
+# works on Parrot, but the warning copy didn't mention it.
 _VERIFY_KISMET_SOURCES_RECOVERY = (
-    "Run lynceus-bootstrap-kismet if you haven't yet, or check "
+    "Run lynceus-bootstrap-kismet (or lynceus-bootstrap-kismet "
+    "--skip-install if you're on a distro outside Debian/Ubuntu/Kali "
+    "-- see docs/DEPLOYMENT.md) if you haven't yet, or check "
     "kismet_site.conf source names."
 )
 
