@@ -6,6 +6,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Daemon now logs which source names Kismet is reporting when
+  observations get dropped under the source allowlist.** When the
+  per-tick heartbeat shows admitted=0 with the drop count under
+  `source_allowlist`, operators previously had to flip the daemon to
+  debug level (or hand-query Kismet's REST API) to see WHICH source
+  names were mismatching the lynceus.yaml configuration. The daemon
+  now emits one INFO line per affected tick naming the actual source
+  names Kismet is reporting alongside what lynceus expects, so the
+  fix path ("edit kismet_site.conf source= line OR rerun
+  `sudo lynceus-setup --web`") is visible directly in journalctl.
+  Bounded to one line per tick regardless of how many records drop;
+  the per-record DEBUG line is preserved for forensic detail at
+  debug level.
+
+- **lynceus-bootstrap-kismet's adapter-selection prompts now name the
+  vendor / product / bus / driver.** Each Wi-Fi or Bluetooth row in
+  the interactive selection previously read as just the bare kernel
+  interface name (`Use Wi-Fi interface wlx00c0cab966f8 ...?`), which
+  left operators with two same-kind USB dongles unable to tell which
+  was which. Rows now render the same disambiguating descriptor the
+  web wizard's step 4 uses
+  (`Use Wi-Fi interface wlx00c0cab966f8 — Alfa AWUS036ACS (USB rt2800usb) ...?`),
+  shared via a single helper so the bootstrap CLI and the web wizard
+  stay aligned going forward.
+
+- **lynceus-bootstrap-kismet's closing pointer now leads with the web
+  wizard.** Step 6 of the "Next steps" block previously named
+  `sudo lynceus-setup` (the terminal-based wizard); on first-run
+  bootstraps it now leads with `sudo lynceus-setup --web` and
+  mentions the terminal-based fallback for headless / no-browser
+  setups. Operators following the bootstrap path land in the
+  recommended browser-based form by default.
+
+### Changed
+
+- **Wizard's apply-time Kismet source-name cross-check now shows
+  BOTH lists when they don't align.** The warning previously named
+  only the lynceus side ("Kismet doesn't currently expose these
+  source name(s): wlan0"), leaving operators unable to tell whether
+  to edit kismet_site.conf or re-run the wizard. The new message
+  surfaces what Kismet actually exposes AND what lynceus.yaml
+  expects side-by-side, names any matched source explicitly, and
+  points at both fix paths inline ("edit /etc/kismet/kismet_site.conf
+  source= line(s) ... OR re-run `sudo lynceus-setup --web` to select
+  adapters that match Kismet's current configuration"). The existing
+  `--skip-install` / DEPLOYMENT.md hint clause for non-apt distros is
+  preserved on the end of the message.
+
 ## [0.7.4] - 2026-05-25
 
 ### Added
