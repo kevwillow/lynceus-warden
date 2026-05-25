@@ -64,6 +64,10 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .. import __version__
+from ._adapter_descriptors import (
+    _enrich_adapter_from_sysfs,
+    format_adapter_descriptor,
+)
 
 # --- Constants -------------------------------------------------------------
 #
@@ -1063,6 +1067,32 @@ def _build_parser() -> argparse.ArgumentParser:
 # --- Orchestrator ----------------------------------------------------------
 
 
+def describe_interface(iface: str, kind: str) -> str:
+    """Render a plain-text descriptor for ``iface`` of ``kind`` from sysfs.
+
+    Returns an empty string when no descriptive fields are readable
+    (non-Linux host, sysfs hidden, kernel module loaded but device dir
+    not yet populated). The caller treats an empty descriptor as "no
+    disambiguator available" and falls back to the bare interface name
+    in the prompt.
+
+    ``kind`` is ``"wifi"`` or ``"bt"``: chooses /sys/class/net/ or
+    /sys/class/bluetooth/ — the same convention used by the wizard's
+    enumerate_capture_adapters helper. Sharing the descriptor logic
+    with the wizard (via ``_adapter_descriptors``) keeps the bootstrap
+    prompts and the web wizard rows showing identical text for the
+    same physical adapter.
+    """
+    if kind == "wifi":
+        device_dir = Path("/sys/class/net") / iface / "device"
+    elif kind == "bt":
+        device_dir = Path("/sys/class/bluetooth") / iface / "device"
+    else:
+        return ""
+    enrichment = _enrich_adapter_from_sysfs(device_dir)
+    return format_adapter_descriptor(enrichment)
+
+
 def _select_interfaces(
     args: argparse.Namespace,
     input_fn: Callable[[str], str],
@@ -1102,12 +1132,16 @@ def _select_interfaces(
 
     wifi_selected: list[str] = []
     for iface in wifi_candidates:
-        if yes_fn(f"Use Wi-Fi interface {iface} for Kismet capture?", True):
+        descriptor = describe_interface(iface, "wifi")
+        label = f"{iface} — {descriptor}" if descriptor else iface
+        if yes_fn(f"Use Wi-Fi interface {label} for Kismet capture?", True):
             wifi_selected.append(iface)
 
     bt_selected: list[str] = []
     for iface in bt_candidates:
-        if yes_fn(f"Use Bluetooth controller {iface} for Kismet capture?", True):
+        descriptor = describe_interface(iface, "bt")
+        label = f"{iface} — {descriptor}" if descriptor else iface
+        if yes_fn(f"Use Bluetooth controller {label} for Kismet capture?", True):
             bt_selected.append(iface)
 
     return wifi_selected, bt_selected
