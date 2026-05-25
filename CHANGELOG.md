@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Wizard verifies your selected capture sources match what Kismet
+  actually exposes.** Picking adapter names in wizard step 4 that don't
+  match Kismet's `source=<dev>:name=<name>` entries silently dropped
+  every observation from those adapters — the dashboard looked broken
+  for no visible reason and operators had no breadcrumb until they
+  enabled DEBUG logging. The wizard now cross-checks during apply
+  that your selected sources match what Kismet exposes; if they don't,
+  you'll see a warning naming the specific mismatched source(s) and
+  pointing at the recovery path (`lynceus-bootstrap-kismet` for a
+  green-field install, or a `kismet_site.conf` name edit if the names
+  drifted). The warning is non-blocking — setup still completes — and
+  if Kismet wasn't reachable at apply time the cross-check skips
+  rather than failing, so you can re-run the wizard once Kismet is
+  up. See `docs/DEPLOYMENT.md` § Common issues #6 for the full
+  operator reference.
+
 - **Per-tick observability on the dashboard, in journalctl, and on
   `/healthz`.** A working poll loop that drops every observation at a
   configuration gate previously looked identical to a dead daemon —
