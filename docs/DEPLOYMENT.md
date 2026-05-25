@@ -418,6 +418,42 @@ If the residual is more tangled, `sudo ./install.sh --uninstall
 clean restart. `--uninstall` preserves data; pass `--purge` only
 if you want to wipe state too.
 
+### 6. Wizard warns "Kismet doesn't currently expose these source name(s)"
+
+**Symptom:** at the end of `lynceus-setup` (CLI or `--web`), an
+apply-step warning fires naming one or more of the adapter names you
+selected — e.g. *Kismet doesn't currently expose these source
+name(s): wlan0. Observations from them will silently drop.* The
+wizard still completes; this is non-blocking.
+
+**Cause:** the name the wizard wrote into `kismet_sources` doesn't
+match a `source=<dev>:name=<name>` entry in Kismet's
+`kismet_site.conf`. The poller filters incoming observations against
+that name; a mismatch drops every observation from the affected
+adapter and the dashboard looks empty.
+
+**Fix:**
+
+- **Green-field install** (you haven't bootstrapped Kismet's
+  capture config yet): run `sudo lynceus-bootstrap-kismet` to write
+  `kismet_site.conf` with matching `name=` values, then re-run
+  `lynceus-setup --reconfigure`.
+- **Names drifted** (e.g. you hand-edited `kismet_site.conf` or
+  the wizard's auto-detected interface name doesn't agree with what
+  Kismet calls the source): open `/etc/kismet/kismet_site.conf` and
+  either rename the `name=` segment to match what the wizard wrote
+  into `lynceus.yaml`, or re-run `lynceus-setup --reconfigure` and
+  select the name that already appears in
+  `kismet_site.conf`.
+
+**Adjacent symptom — "Could not reach Kismet to verify source
+names":** Kismet wasn't responding to its REST API at apply time
+(daemon not started, firewall, wrong URL). The cross-check skips
+rather than warns and the wizard finishes regardless; re-run
+`lynceus-setup --reconfigure` once Kismet is up if you want the
+verification to actually run. This is a transient state, distinct
+from the name-mismatch case above.
+
 ## Going further
 
 After install, the operator-facing documentation surfaces are:
