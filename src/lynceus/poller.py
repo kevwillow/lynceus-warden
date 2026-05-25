@@ -204,6 +204,14 @@ def poll_once(
     admitted = 0
     dropped_source_allowlist = 0
     dropped_min_rssi = 0
+    # Per-tick aggregation of the source names that actually appeared on
+    # dropped records. Lets the end-of-tick INFO line tell operators the
+    # specific names Kismet is reporting so they can align kismet_site.conf
+    # with lynceus.yaml without digging through DEBUG logs. Records with no
+    # source attribution contribute nothing here (the empty-seenby branch
+    # bumps dropped_source_allowlist on its own — the count is enough to
+    # surface that case; there's no name to aggregate).
+    dropped_sources_seen: set[str] = set()
     for obs in observations:
         try:
             if source_allowlist is not None:
@@ -221,6 +229,7 @@ def poll_once(
                         obs.seen_by_sources,
                     )
                     dropped_source_allowlist += 1
+                    dropped_sources_seen.update(obs.seen_by_sources)
                     continue
             if config.min_rssi is not None and obs.rssi is not None and obs.rssi < config.min_rssi:
                 logger.debug(
@@ -481,6 +490,25 @@ def poll_once(
     dropped_total = (
         dropped_source_allowlist + dropped_min_rssi + dropped_unparseable
     )
+    # Self-documenting source_allowlist mismatch: when records dropped
+    # under the gate this tick AND we collected at least one actual
+    # source name from them, emit a single INFO line naming what
+    # Kismet is reporting vs. what lynceus expects. The per-record
+    # DEBUG line above (line ~218) still captures every drop for
+    # forensic grepping at debug level; this is the operator-facing
+    # signal that surfaces the mismatch at default log level. Bounded
+    # to one INFO line per tick regardless of record count.
+    if dropped_source_allowlist > 0 and dropped_sources_seen:
+        allowlist_repr = (
+            sorted(source_allowlist) if source_allowlist is not None else []
+        )
+        logger.info(
+            "source_allowlist mismatch on tick: %d records seen by sources=%s "
+            "not in allowlist=%s",
+            dropped_source_allowlist,
+            sorted(dropped_sources_seen),
+            allowlist_repr,
+        )
     # Heartbeat: emitted every tick regardless of values so a silent
     # daemon (Kismet down, all observations dropped at a single
     # threshold) is visible in journalctl. The three drop reasons map
