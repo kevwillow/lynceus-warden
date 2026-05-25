@@ -1152,6 +1152,42 @@ def create_app(config: Config, db: Database) -> FastAPI:
     cookie_secure = bool(config.ui_allow_remote)
     app.add_middleware(CSRFMiddleware, cookie_secure=cookie_secure)
 
+    @app.exception_handler(HTTPException)
+    async def _http_exception_handler(request: Request, exc: HTTPException):
+        """Render HTTPException as a browser-friendly HTML page.
+
+        Pre-fix UX: a hand-edited URL with an invalid filter value
+        landed the operator on a raw JSON {"detail": "..."} page with
+        no recovery path. Now they get a same-themed error page with
+        a back link. Programmatic callers that explicitly request JSON
+        (Accept header excluding text/html) still get the original
+        FastAPI JSON shape so we don't break HTML-API parity.
+
+        The /devices/{mac:path} route renders not_found.html via
+        TemplateResponse directly (no raise), so this handler does
+        NOT intercept it -- existing 404 UX is preserved."""
+        accept = (request.headers.get("accept") or "").lower()
+        wants_html = "text/html" in accept or accept in ("", "*/*")
+        if not wants_html:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=getattr(exc, "headers", None) or None,
+            )
+        back_href = _safe_redirect_target(request, "/")
+        return app.state.templates.TemplateResponse(
+            request=request,
+            name="error.html",
+            status_code=exc.status_code,
+            context={
+                "version": __version__,
+                "active": "",
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+                "back_href": back_href,
+            },
+        )
+
     @app.get("/healthz", response_class=HTMLResponse)
     async def healthz(request: Request):
         health = db.healthcheck()
