@@ -37,6 +37,7 @@
         <li>
           {% if step.status == "ok" %}✅
           {% elif step.status == "skipped" %}⏭
+          {% elif step.status == "warning" %}⚠️
           {% else %}❌
           {% endif %}
           <code>{{ step.name }}</code> &mdash; {{ step.message }}

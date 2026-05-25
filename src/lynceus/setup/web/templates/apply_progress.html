@@ -43,6 +43,7 @@
         }
         var icon = step.status === "ok" ? "✅"
                  : step.status === "skipped" ? "⏭"
+                 : step.status === "warning" ? "⚠️"
                  : "❌";
         var li = document.createElement("li");
         var nameCode = document.createElement("code");

@@ -1177,6 +1177,33 @@ and enter the topic exactly as written.
         )
     # status == "skipped" (BUNDLED_ABSENT_MESSAGE): silent, same as legacy.
 
+    # Arc B Kismet source-name cross-check (verify_kismet_sources step).
+    # apply_config emits this step at the end of the chain with one of:
+    #   * ok       — every configured source name appears in Kismet.
+    #   * warning  — some configured names don't match anything Kismet
+    #                exposes; observations will silently drop.
+    #   * skipped  — kismet_sources unset OR Kismet unreachable.
+    # The CLI sink records every step silently; we surface only the
+    # non-ok outcomes here (an ok cross-check is implicit success).
+    verify_step = next(
+        (s for s in report.steps if s.name == "verify_kismet_sources"),
+        None,
+    )
+    if verify_step is not None and verify_step.status == "warning":
+        print()
+        print(f"WARNING: {verify_step.message}")
+    elif verify_step is not None and verify_step.status == "skipped":
+        # Only surface a skip if Kismet was reachable but we chose
+        # not to check (kismet_sources empty) — that's an unusual
+        # config the operator should see. Suppress the "could not
+        # reach Kismet" skip from the apply summary; it's already
+        # in the structured report for forensics but adding it here
+        # under --user with a typical localhost Kismet that wasn't
+        # running at apply time would just be noise.
+        if "not applicable" in verify_step.message.lower():
+            print()
+            print(f"Note: {verify_step.message}")
+
     # Enable-alerting flow (opt-in). Runs after the bundled-watchlist
     # import so the per-type prompts can show real row counts, and
     # after DB ownership has been settled so a fresh rules.yaml written
