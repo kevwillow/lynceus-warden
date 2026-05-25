@@ -72,6 +72,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Three wizard chrome and step-4 residuals from v0.7.2 smoke.** The
+  top-nav strip ("lynceus-setup vX.Y.Z") rendered as floating letters
+  above the form because Pico's classless build leaves a bare `<nav>`
+  with no card chrome of its own; the wizard's `<nav>` now carries a
+  visible header band (card-style background + bottom border) so the
+  page reads as a deliberate app header instead of an unstyled DOM.
+  The Previous/Next button pair still rendered at slightly different
+  heights even after v0.7.2's horizontal-axis normalization, because
+  Pico's `<a role="button">` inherits anchor line-height and `<button>`
+  uses the UA-default form-control line-height; the sizing rule now
+  also pins vertical padding, line-height, and box-sizing so both
+  element types resolve to the same rendered box model — including
+  step 3's two-button "Cancel / Continue anyway" footer, which
+  semantically can't be the anchor-then-button pair other steps use.
+  Step 4's adapter rows previously labelled each adapter with only
+  kind + MAC, so an operator with two USB Wi-Fi dongles plugged in
+  could only tell which row was which by squinting at MAC prefixes;
+  rows now surface the USB Product string + bus + driver in the
+  label (e.g. `wlan1 [Wi-Fi] — Alfa AWUS036ACS (USB rt2800usb) ·
+  MAC ...`) when sysfs exposes them, and degrade gracefully to the
+  prior shape on internal (non-USB) adapters or hosts where the
+  wizard process can't read `device/*` descriptors.
+
 - **Filter form on `/devices` no longer 400s on the default
   submission.** Clicking the "filter" button on the devices page
   without changing the form selections previously dropped the
