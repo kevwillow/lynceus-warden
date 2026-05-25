@@ -46,11 +46,19 @@
       /* Pico styles <a role="button"> and <button> with the same base
          rules but they end up visibly different sizes in wizard-footer:
          Previous (anchor) and Next/Apply/Review (real button) carry
-         different text widths, so without an explicit min-width the
-         button row looks uneven. Pin both to the same min-width and
-         padding so they render as a matched pair regardless of label. */
+         different text widths AND different default vertical paddings
+         (Pico's <a role="button"> inherits anchor line-height; <button>
+         uses the UA-default form-control line-height), so without an
+         explicit pin on BOTH axes the row looks uneven. Pin min-width,
+         horizontal AND vertical padding, line-height, and box-sizing
+         so both element types resolve to the same rendered box model
+         regardless of label or browser default. Step 3 renders two
+         <button> elements (Cancel + Continue, both real form submits
+         with different action= values) instead of the anchor-then-
+         button pair every other step uses; the rule covers that case
+         because .wizard-footer button matches both buttons identically. */
       .wizard-footer a[role="button"],
-      .wizard-footer button { min-width: 9em; padding-left: 1.5em; padding-right: 1.5em; text-align: center; }
+      .wizard-footer button { box-sizing: border-box; min-width: 9em; padding: 0.6em 1.5em; line-height: 1.25; text-align: center; }
       .wizard-error { color: var(--del-color); margin-bottom: 0.5em; }
     </style>
   </head>
