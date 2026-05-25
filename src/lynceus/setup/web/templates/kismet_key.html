@@ -23,6 +23,23 @@
           Use a different key (paste below)
         </label>
       </fieldset>
+      {# Disclosure shown even when a key was auto-located, so an
+         operator who chose "paste a different one" can see how to
+         generate a fresh key without leaving the page. Default-
+         closed so it doesn't add noise when the auto-located key is
+         the one they'll use. #}
+      <details>
+        <summary>How do I get a Kismet API key?</summary>
+        <ol>
+          <li>Open the Kismet web UI in your browser (the URL from Step 1).</li>
+          <li>Log in. On first launch Kismet prompts you to set a password.</li>
+          <li>Open the menu (top-right) &rarr; <strong>Settings</strong>
+              &rarr; <strong>Login Configuration</strong>.</li>
+          <li>Under <strong>API Keys</strong>, create a new key
+              (Name: <code>lynceus</code>, Role: <code>readonly</code>).</li>
+          <li>Copy the generated key and paste it below.</li>
+        </ol>
+      </details>
     {% else %}
       <p>
         No existing Kismet key found on disk. Create one in the
