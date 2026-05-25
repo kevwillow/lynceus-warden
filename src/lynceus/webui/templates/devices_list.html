@@ -48,6 +48,8 @@
             <th>Randomized</th>
             <th>First seen</th>
             <th>Last seen</th>
+            <th>Last RSSI</th>
+            <th>Last SSID</th>
             <th>Sightings</th>
           </tr>
         </thead>
@@ -63,6 +65,8 @@
               <td>{% if d.is_randomized %}&check;{% endif %}</td>
               <td>{{ d.first_seen }}</td>
               <td>{{ d.last_seen }}</td>
+              <td>{% if d.last_rssi is not none %}{{ d.last_rssi }}{% else %}&mdash;{% endif %}</td>
+              <td>{{ d.last_ssid or "—" }}</td>
               <td>{{ d.sighting_count }}</td>
             </tr>
           {% endfor %}

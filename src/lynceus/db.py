@@ -1807,9 +1807,20 @@ class Database:
             clauses.append("is_randomized = ?")
             params.append(1 if randomized else 0)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        # last_rssi / last_ssid via correlated subqueries: the
+        # idx_sightings_mac_ts index makes each lookup an indexed seek
+        # to the most recent sighting per device. id DESC breaks ties
+        # when two sightings share a timestamp so callers always see
+        # the same row. LEFT-join semantics (NULL when no sighting
+        # exists) fall out naturally — devices with zero sightings
+        # surface NULL and the template renders an em-dash.
         sql = (
             "SELECT mac, device_type, first_seen, last_seen, sighting_count, "
-            "oui_vendor, is_randomized, notes, probe_ssids, ble_name "
+            "oui_vendor, is_randomized, notes, probe_ssids, ble_name, "
+            "(SELECT rssi FROM sightings WHERE sightings.mac = devices.mac "
+            "ORDER BY ts DESC, id DESC LIMIT 1) AS last_rssi, "
+            "(SELECT ssid FROM sightings WHERE sightings.mac = devices.mac "
+            "ORDER BY ts DESC, id DESC LIMIT 1) AS last_ssid "
             f"FROM devices {where} ORDER BY last_seen DESC, mac LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])

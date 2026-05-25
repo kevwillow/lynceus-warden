@@ -164,7 +164,7 @@
       <div class="table-scroll">
         <table>
           <thead>
-            <tr><th>Device</th><th>MAC</th><th>Type</th><th>Vendor</th><th>BLE name</th><th>Last seen</th><th>Sightings</th></tr>
+            <tr><th>Device</th><th>MAC</th><th>Type</th><th>Vendor</th><th>BLE name</th><th>Last seen</th><th>Last RSSI</th><th>Sightings</th></tr>
           </thead>
           <tbody>
             {% for d in recent_devices %}
@@ -175,6 +175,7 @@
                 <td>{{ d.oui_vendor or "—" }}</td>
                 <td>{{ d.ble_name or "—" }}</td>
                 <td><time datetime="{{ d.last_seen | unix_to_iso }}">{{ d.last_seen | unix_to_iso }}</time></td>
+                <td>{% if d.last_rssi is not none %}{{ d.last_rssi }}{% else %}&mdash;{% endif %}</td>
                 <td>{{ d.sighting_count }}</td>
               </tr>
             {% endfor %}
