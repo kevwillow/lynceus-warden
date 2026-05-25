@@ -139,7 +139,7 @@
       <div class="table-scroll">
         <table>
           <thead>
-            <tr><th>Device</th><th>MAC</th><th>Type</th><th>Last seen</th><th>Sightings</th></tr>
+            <tr><th>Device</th><th>MAC</th><th>Type</th><th>Vendor</th><th>BLE name</th><th>Last seen</th><th>Sightings</th></tr>
           </thead>
           <tbody>
             {% for d in recent_devices %}
@@ -147,6 +147,8 @@
                 <td>{{ d | device_label }}</td>
                 <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
                 <td>{{ d.device_type }}</td>
+                <td>{{ d.oui_vendor or "—" }}</td>
+                <td>{{ d.ble_name or "—" }}</td>
                 <td><time datetime="{{ d.last_seen | unix_to_iso }}">{{ d.last_seen | unix_to_iso }}</time></td>
                 <td>{{ d.sighting_count }}</td>
               </tr>

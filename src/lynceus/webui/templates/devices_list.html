@@ -42,6 +42,9 @@
             <th>Device</th>
             <th>MAC</th>
             <th>Type</th>
+            <th>Vendor</th>
+            <th>BLE name</th>
+            <th>Probes</th>
             <th>Randomized</th>
             <th>First seen</th>
             <th>Last seen</th>
@@ -54,6 +57,9 @@
               <td>{{ d | device_label }}</td>
               <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
               <td>{{ d.device_type }}</td>
+              <td>{{ d.oui_vendor or "—" }}</td>
+              <td>{{ d.ble_name or "—" }}</td>
+              <td>{{ d.probe_ssids | probe_ssids_list | join(", ") }}</td>
               <td>{% if d.is_randomized %}&check;{% endif %}</td>
               <td>{{ d.first_seen }}</td>
               <td>{{ d.last_seen }}</td>

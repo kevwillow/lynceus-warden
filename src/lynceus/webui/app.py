@@ -579,6 +579,24 @@ def _enrich_alerts_with_devices(db, alerts: list[dict]) -> None:
             alert["device"] = None
 
 
+def _probe_ssids_list(raw: str | None) -> list[str]:
+    """Decode the devices.probe_ssids JSON-string column into a list.
+
+    Storage (merge_device_probe_ssids) writes ``None`` for empty and a
+    json.dumps'd list otherwise. The filter is safe-by-default: any
+    malformed payload or unexpected shape renders as an empty list,
+    which the template treats as "no probes seen"."""
+    if not raw:
+        return []
+    try:
+        decoded = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return [s for s in decoded if isinstance(s, str)]
+
+
 def _device_label(device: dict | None) -> str:
     """Best-available human label for a device.
 
@@ -1122,6 +1140,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     app.state.templates.env.filters["unix_to_iso"] = unix_to_iso
     app.state.templates.env.filters["unix_to_utc_human"] = unix_to_utc_human
     app.state.templates.env.filters["device_label"] = _device_label
+    app.state.templates.env.filters["probe_ssids_list"] = _probe_ssids_list
     app.state.templates.env.filters["relative_time"] = relative_time
 
     app.mount(
