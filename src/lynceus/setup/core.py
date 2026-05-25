@@ -847,6 +847,21 @@ def apply_config(
             + "# enable-alerting flow. Unset → no rules load → no alerts fire.\n"
             + f"rules_path: {_yaml_str(config.rules_path)}\n"
         )
+    # The wizard scaffolds severity_overrides.yaml unconditionally
+    # (step 2 below). Pre-touchup, the path was never wired into
+    # lynceus.yaml, so on next daemon start the override file was
+    # silently unused — operators had to hand-edit the config. Persist
+    # the scaffolded path here so edits to the runtime sections
+    # (device_category_severity, suppress_categories) take effect on
+    # restart without further config surgery.
+    content = (
+        content
+        + "\n# --- Severity overrides ---\n"
+        + "# Path to severity_overrides.yaml. Edits to the runtime\n"
+        + "# sections (device_category_severity, suppress_categories)\n"
+        + "# take effect on daemon restart; no re-import needed.\n"
+        + f"severity_overrides_path: {_yaml_str(str(severity_overrides_path))}\n"
+    )
     write_config(target_path, content)
     if scope == "system":
         _apply_system_perms_to_file(target_path)
