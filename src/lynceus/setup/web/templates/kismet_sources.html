@@ -43,12 +43,21 @@
               {# Operator disambiguator: when sysfs exposed the USB
                  Product string descriptor, lead with it (with bus +
                  driver in parens) so two same-kind USB dongles read
-                 as distinct rows. Non-USB internals (no product) fall
-                 back to the bare [Wi-Fi] / [Bluetooth] tag. #}
+                 as distinct rows. When both vendor and product are
+                 absent (e.g. internal SoC adapters or USB devices
+                 that omit the string descriptors), fall back to the
+                 VID:PID pair if we have it, then to the driver
+                 module name, so the row still has SOMETHING to
+                 disambiguate against. Final fallback is the bare
+                 [Wi-Fi] / [Bluetooth] tag. #}
               {% if row.product %}
                 &mdash; {{ row.product }}{% if row.bus %} ({{ row.bus|upper }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
               {% elif row.vendor %}
                 &mdash; {{ row.vendor }}{% if row.bus %} ({{ row.bus|upper }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
+              {% elif row.usb_id %}
+                &mdash; {{ row.usb_id }}{% if row.bus %} ({{ row.bus|upper }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
+              {% elif row.driver %}
+                &mdash; ({{ row.bus|upper if row.bus else "" }}{% if row.bus %} {% endif %}{{ row.driver }})
               {% endif %}
               {% if row.mac %}&middot; MAC <code>{{ row.mac }}</code>{% endif %}
               {% if row.kismet_name %}
