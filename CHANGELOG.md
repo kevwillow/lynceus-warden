@@ -15,10 +15,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   caused 100% of observations to drop silently at the source allowlist
   filter. The v0.7.5 INFO aggregation log made this visible by naming
   the UUID-shaped values Kismet was actually emitting; this release
-  closes the underlying parser bug. The parser now prefers
-  `kismet.common.seenby.name` (the value operators put in their
-  lynceus.yaml) and falls back to the UUID only if the name is
-  missing.
+  closes the underlying parser bug. The parser now correctly extracts
+  source names from the nested `kismet.common.seenby.source` field
+  in Kismet device records (the dict carrying
+  `kismet.datasource.name`), with a UUID fallback when the nested
+  shape resolves to nothing. Verified against a live Parrot-OS Kismet
+  probe — a prior fix in this release cycle targeted a flat field
+  name that doesn't exist in real Kismet output and devices were
+  still dropping silently against the source allowlist despite the
+  cross-check passing.
 
 - **Wizard's Previous and Next buttons now render at matched widths.**
   Previously the Next submit button picked up an uncontested
@@ -110,6 +115,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reminder is always shown on success (reassurance shape) so
   operators who already ran bootstrap-kismet just see it
   confirmed; those who haven't get the signal they needed.
+
+- **`db_path` is now consistently resolved from `lynceus.yaml`
+  across the daemon and the quickstart launcher.** Previously the
+  wizard imported the bundled watchlist into the canonical XDG/FHS
+  data path (`~/.local/share/lynceus/lynceus.db` under user scope,
+  `/var/lib/lynceus/lynceus.db` under system) but never wrote
+  `db_path:` into the rendered config. The daemon, loading the
+  same yaml later, fell through to a CWD-relative
+  `"lynceus.db"` default and opened a different SQLite file —
+  leaving the freshly-imported watchlist invisible to the live
+  process. Wizard apply now persists `db_path:` explicitly, and
+  the config loader back-fills the canonical path for legacy
+  yamls that omit the field.
+
+- **Bluetooth Classic devices reported by Kismet as `BR/EDR` and
+  Wi-Fi bridge devices reported as `Wi-Fi WDS AP` are now
+  recognized.** Both type strings live in real Kismet captures
+  but were absent from the parser's type map and silently dropped
+  as unparseable; the Parrot-OS smoke surfaced ~6 unparseable
+  drops per tick on a captureful host that were almost entirely
+  these two types.
 
 ## [0.7.5] - 2026-05-25
 
