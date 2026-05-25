@@ -156,14 +156,15 @@ def _build_config_from_session(answers: dict[str, Any]) -> Config:
 def _resolve_apply_args(
     session: WizardSession,
     scope: str,
-) -> tuple[Config, Path, set[str] | None]:
+) -> tuple[Config, Path, Path, set[str] | None]:
     """Build the apply_config arg tuple from session.answers.
 
-    Returns ``(config_with_rules_path, severity_path, enabled_rule_types)``.
-    The Config is mutated to carry ``rules_path`` when alerting is on
-    + at least one rule type is selected; that single-render path
-    mirrors ``apply_config``'s built-in rules-step contract (see the
-    "Single-render path" branch in core.py).
+    Returns ``(config_with_rules_path, severity_path, allowlist_path,
+    enabled_rule_types)``. The Config is mutated to carry
+    ``rules_path`` when alerting is on + at least one rule type is
+    selected; that single-render path mirrors ``apply_config``'s
+    built-in rules-step contract (see the "Single-render path" branch
+    in core.py).
     """
     answers = session.answers
     config = _build_config_from_session(answers)
@@ -174,6 +175,10 @@ def _resolve_apply_args(
         # Match the CLI default: target_path.parent / "severity_overrides.yaml".
         # We don't have target_path here, so reconstruct from paths module.
         severity_path = paths.default_config_dir(scope) / "severity_overrides.yaml"
+    # Allowlist path uses the per-scope default in the same config dir;
+    # no operator prompt today (v0.7.6 scaffolds an empty file so the
+    # dashboard's /allowlist page surfaces cleanly out of the box).
+    allowlist_path = paths.default_allowlist_path(scope)
     enabled_list = answers.get("enabled_rule_types") or []
     enable_alerting = bool(answers.get("enable_alerting", False))
     if enable_alerting and enabled_list:
@@ -187,7 +192,7 @@ def _resolve_apply_args(
         )
     else:
         enabled_rule_types = None
-    return config, severity_path, enabled_rule_types
+    return config, severity_path, allowlist_path, enabled_rule_types
 
 
 def _format_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -308,6 +313,7 @@ async def _run_apply_task(
     session: WizardSession,
     config: Config,
     severity_path: Path,
+    allowlist_path: Path,
     enabled_rule_types: set[str] | None,
     queue: asyncio.Queue,
     loop: asyncio.AbstractEventLoop,
@@ -351,6 +357,7 @@ async def _run_apply_task(
             scope=app_state.scope,
             target_path=app_state.target_path,
             severity_overrides_path=severity_path,
+            allowlist_path=allowlist_path,
             enabled_rule_types=enabled_rule_types,
             run_bundled_import=True,
             progress=sink,
@@ -557,7 +564,7 @@ async def apply_post(request: Request) -> Response:
     session = _session(request)
 
     try:
-        config, severity_path, enabled_rule_types = _resolve_apply_args(
+        config, severity_path, allowlist_path, enabled_rule_types = _resolve_apply_args(
             session, scope=state.scope
         )
     except ValidationError:
@@ -602,6 +609,7 @@ async def apply_post(request: Request) -> Response:
                     session=session,
                     config=config,
                     severity_path=severity_path,
+                    allowlist_path=allowlist_path,
                     enabled_rule_types=enabled_rule_types,
                     queue=queue,
                     loop=loop,

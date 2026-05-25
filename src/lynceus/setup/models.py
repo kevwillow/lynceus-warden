@@ -39,6 +39,7 @@ ApplyOverallStatus = Literal["ok", "failed"]
 STEP_NAMES: tuple[str, ...] = (
     "write_config",
     "scaffold_severity_overrides",
+    "scaffold_allowlist",
     "create_data_dir",
     "create_log_dir",
     "import_bundled_watchlist",

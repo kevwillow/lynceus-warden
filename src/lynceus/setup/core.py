@@ -494,6 +494,39 @@ def scaffold_severity_overrides(path: Path) -> bool:
     return True
 
 
+ALLOWLIST_TEMPLATE = """\
+# Lynceus allowlist — local-known devices that should not raise alerts
+# even when they appear on the Argus watchlist or match a delegation
+# rule. Edits take effect on daemon restart (no re-import needed).
+#
+# Each entry is a {pattern, pattern_type, optional reason} triple.
+# pattern_type values: mac, ble_local_name, ble_manufacturer_id,
+# drone_id_prefix. See docs/CONFIGURATION.md for the full schema.
+#
+# Example (uncomment + edit):
+# - pattern: aa:bb:cc:dd:ee:ff
+#   pattern_type: mac
+#   reason: my own phone
+# - pattern: "Tile-*"
+#   pattern_type: ble_local_name
+#   reason: household Tile trackers
+"""
+
+
+def scaffold_allowlist(path: Path) -> bool:
+    """Create the default allowlist file if it doesn't already exist.
+
+    Returns True when newly created, False when an existing file was
+    kept untouched. Mirrors the scaffold_severity_overrides shape so
+    a future move-both-into-a-helper refactor is uniform.
+    """
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(path, ALLOWLIST_TEMPLATE)
+    return True
+
+
 # --- Argus import -----------------------------------------------------------
 
 
@@ -786,6 +819,7 @@ def apply_config(
     scope: Literal["user", "system"],
     target_path: Path,
     severity_overrides_path: Path,
+    allowlist_path: Path,
     enabled_rule_types: set[str] | None,
     run_bundled_import: bool = True,
     progress: ProgressSink | None = None,
@@ -872,6 +906,18 @@ def apply_config(
         + "# take effect on daemon restart; no re-import needed.\n"
         + f"severity_overrides_path: {_yaml_str(str(severity_overrides_path))}\n"
     )
+    # Persist the allowlist path so the dashboard's /allowlist page
+    # surfaces an empty-but-existing allowlist (operator can append
+    # local-known devices without first hand-editing lynceus.yaml).
+    # Pre-v0.7.6 this field was None on every fresh install and the
+    # dashboard read "No allowlist_path configured" indefinitely.
+    content = (
+        content
+        + "\n# --- Allowlist ---\n"
+        + "# Path to allowlist.yaml — local-known devices that should\n"
+        + "# not raise alerts. Edits take effect on daemon restart.\n"
+        + f"allowlist_path: {_yaml_str(str(allowlist_path))}\n"
+    )
     write_config(target_path, content)
     if scope == "system":
         _apply_system_perms_to_file(target_path)
@@ -903,6 +949,30 @@ def apply_config(
             detail={
                 "path": str(severity_overrides_path),
                 "scaffolded": created,
+            },
+        )
+    )
+
+    # 2b. scaffold_allowlist — template (or keep existing) + perms.
+    # Same shape as scaffold_severity_overrides: create an empty
+    # commented YAML at the allowlist_path if the operator doesn't
+    # already have one, so the dashboard's /allowlist page reads a
+    # real (empty) allowlist instead of "No allowlist_path configured."
+    allowlist_created = scaffold_allowlist(allowlist_path)
+    if scope == "system":
+        _apply_system_perms_to_file(allowlist_path)
+    _emit(
+        ApplyStep(
+            name="scaffold_allowlist",
+            status="ok",
+            message=(
+                f"Scaffolded {allowlist_path}"
+                if allowlist_created
+                else f"Kept existing {allowlist_path}"
+            ),
+            detail={
+                "path": str(allowlist_path),
+                "scaffolded": allowlist_created,
             },
         )
     )

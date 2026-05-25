@@ -157,6 +157,17 @@ def default_overrides_path(scope: Scope) -> Path:
     return default_config_dir(scope) / "severity_overrides.yaml"
 
 
+def default_allowlist_path(scope: Scope) -> Path:
+    """Canonical allowlist path: ``<config_dir>/allowlist.yaml``.
+
+    Scaffolded as an empty-but-commented YAML file during
+    ``lynceus-setup`` apply so the dashboard's /allowlist page
+    reports an existing-but-empty allowlist instead of the
+    misleading "No allowlist_path configured" empty state.
+    """
+    return default_config_dir(scope) / "allowlist.yaml"
+
+
 def resolve_existing_config() -> Path | None:
     """Return the first existing canonical config file, preferring user scope.
 

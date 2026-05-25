@@ -1115,6 +1115,11 @@ and enter the topic exactly as written.
             "Please enter a full path or press Enter for the default."
         )
     sev_path = Path(sev_path_str)
+    # Allowlist path uses the per-scope default in the same config dir;
+    # apply_config scaffolds an empty commented file so the dashboard's
+    # /allowlist page surfaces cleanly without forcing an operator
+    # prompt at install time.
+    allowlist_path = paths.default_allowlist_path(scope)
 
     # Drive the deterministic file-write + bundled-import + chown chain
     # through ``apply_config``. The CLI sink records each ApplyStep
@@ -1144,6 +1149,7 @@ and enter the topic exactly as written.
             scope=scope,
             target_path=target,
             severity_overrides_path=sev_path,
+            allowlist_path=allowlist_path,
             enabled_rule_types=None,
             run_bundled_import=True,
             progress=cli_sink,
