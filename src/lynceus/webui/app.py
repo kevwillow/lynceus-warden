@@ -2492,6 +2492,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
         page: int = Query(default=1),
         page_size: int = Query(default=50),
     ):
+        # The filter form's "any" <option value=""> emits an empty
+        # string, which would slip past the `is not None` guards and
+        # 400. Normalize empty-string -> None at route entry so the
+        # default form submission renders the unfiltered list. Bogus
+        # values (e.g. device_type=cellular) still 400 -- the diagnostic
+        # arc kept that posture intentional, matching the existing
+        # ValueError raised by db.list_devices on unknown literals.
+        if device_type == "":
+            device_type = None
+        if randomized == "":
+            randomized = None
         if device_type is not None and device_type not in (
             "wifi", "ble", "bt_classic", "remote_id"
         ):
