@@ -228,6 +228,22 @@ Mutation endpoints (POST, redirect on success):
 
 All POST routes require the CSRF token: a cookie set on the first GET, plus the matching token in a hidden form field. The token has an 8-hour TTL and rotates with the cookie. The included templates wire this up automatically; if you build your own forms, see [src/lynceus/webui/csrf.py](../src/lynceus/webui/csrf.py) for the protocol.
 
+## Poll-tick observability
+
+Every poll cycle the daemon writes five counters to the database — admitted observations plus three drop reasons — and emits one INFO heartbeat line to journalctl. The aim is to make a working-but-silent daemon distinguishable from a stuck one without needing DEBUG logging or a SQLite shell.
+
+Where to read them:
+
+- **Dashboard** — the "last poll" card on `/` shows when the most recent tick completed, how many observations were admitted, and a per-reason breakdown of anything dropped. The relative-time stamp ("just now", "5m ago") makes a stalled daemon obvious at a glance.
+- **journalctl** — every tick logs one INFO line of the form `poll tick: 5 admitted, 1 dropped (source_allowlist=0, min_rssi=0, unparseable=1)`. Grep `journalctl -u lynceus.service` for `poll tick:` to confirm the heartbeat is firing.
+- **/healthz + /healthz.json** — both surfaces include the same counters in a `poll_tick` block, plus an `is_stale` boolean that flips true when the last tick is more than 2× `poll_interval_seconds` old. Monitoring scripts read the JSON; operators glance at the HTML.
+
+The three drop reasons map to the three silent-drop sites in the poll loop, each with operator-readable copy on the dashboard:
+
+- **allowlist mismatch** (`dropped_source_allowlist`) — the observation came from a Kismet datasource that isn't in your `kismet_sources` list. Common when you've added a new adapter to Kismet but haven't updated `lynceus.yaml` to include it.
+- **below signal threshold** (`dropped_min_rssi`) — the observation's RSSI is weaker than your configured `min_rssi`. If you've cranked the threshold to filter distant noise, expect a steady non-zero count here.
+- **unrecognized device type** (`dropped_unparseable`) — Kismet returned a record whose `kismet.device.base.type` isn't in the Lynceus type map (e.g. RTL433 traffic from a 433 MHz datasource you're running in parallel). Harmless when intentional.
+
 ## Reload semantics
 
 The config is read **once at startup**. Changes to `lynceus.yaml`, `rules.yaml`, or `allowlist.yaml` require a service restart:
