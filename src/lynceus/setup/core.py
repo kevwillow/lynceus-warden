@@ -1154,14 +1154,42 @@ def apply_config(
                     )
                 )
             else:
+                # Two-list warning copy: show BOTH what Kismet is
+                # exposing AND what lynceus.yaml expects so the
+                # operator knows which side to edit without running
+                # diagnostic commands. v0.7.4 surfaced only the
+                # lynceus side, which left operators guessing whether
+                # to edit kismet_site.conf or re-run the wizard. The
+                # _VERIFY_KISMET_SOURCES_RECOVERY clause is preserved
+                # so the apt-matrix / --skip-install / DEPLOYMENT.md
+                # hints stay visible to operators on non-apt distros.
+                matched = sorted(set(configured) & set(exposed_names))
+                if matched:
+                    matched_clause = (
+                        f" The {', '.join(repr(n) for n in matched)} "
+                        f"source(s) match; observations from the "
+                        f"unmatched name(s) ({', '.join(mismatched)}) "
+                        f"will silently drop."
+                    )
+                else:
+                    matched_clause = (
+                        " No source names match — the poller will "
+                        "silently drop every observation."
+                    )
                 _emit(
                     ApplyStep(
                         name="verify_kismet_sources",
                         status="warning",
                         message=(
-                            f"Kismet doesn't currently expose these source "
-                            f"name(s): {', '.join(mismatched)}. Observations "
-                            f"from them will silently drop. "
+                            f"Kismet exposes sources: "
+                            f"{list(exposed_names)}. Lynceus expects: "
+                            f"{configured}.{matched_clause} To fix, "
+                            f"edit /etc/kismet/kismet_site.conf "
+                            f"source= line(s) to match what you "
+                            f"selected in the wizard, OR re-run "
+                            f"`sudo lynceus-setup --web` to select "
+                            f"adapters that match Kismet's current "
+                            f"configuration. "
                             + _VERIFY_KISMET_SOURCES_RECOVERY
                         ),
                         detail={
