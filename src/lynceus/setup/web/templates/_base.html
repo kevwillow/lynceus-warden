@@ -56,9 +56,16 @@
          <button> elements (Cancel + Continue, both real form submits
          with different action= values) instead of the anchor-then-
          button pair every other step uses; the rule covers that case
-         because .wizard-footer button matches both buttons identically. */
+         because .wizard-footer button matches both buttons identically.
+         margin-bottom: 0 overrides Pico's [type=submit] {margin-bottom:
+         var(--pico-spacing)} which gives the real <button> extra
+         vertical margin the <a role="button"> never picks up, so the
+         pair sits at different baselines. display: inline-block
+         normalizes the display type across the two so the parent flex
+         row treats both elements identically (Pico's anchor-as-button
+         resolves to inline; <button> resolves to inline-block by UA). */
       .wizard-footer a[role="button"],
-      .wizard-footer button { box-sizing: border-box; min-width: 9em; padding: 0.6em 1.5em; line-height: 1.25; text-align: center; }
+      .wizard-footer button { box-sizing: border-box; min-width: 9em; padding: 0.6em 1.5em; line-height: 1.25; text-align: center; margin-bottom: 0; display: inline-block; }
       .wizard-error { color: var(--del-color); margin-bottom: 0.5em; }
     </style>
   </head>
