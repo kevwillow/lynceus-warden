@@ -114,14 +114,24 @@ DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD = 70
 # value. The Argus engineer publishes a counter that increments with
 # each Argus-side migration; v1.4.1 ships at 26 (mig-0026), but the
 # pre-Phase-1 regen anchor exports were still tagged "25". Lynceus
-# accepts both during the transition window; an operator may narrow
+# accepts those during the transition window; an operator may narrow
 # or widen the list via severity_overrides.yaml's
 # argus_schema_version_accept_list key, or disable the check entirely
 # by setting it to null / []. Unknown values WARN-don't-abort —
 # defensive posture preserves backward compat with older exports
 # (which carry `schema_version` keys outside this list, or no
 # `schema_version` key at all).
-DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST: tuple[str, ...] = ("25", "26", "27")
+#
+# v0.7.7 Touch 7: extended to 30 to silence the WARN on the bundled
+# CSV refresh shipped in v0.7.6 Tier 4 (the snapshot at
+# src/lynceus/data/default_watchlist.csv now declares
+# schema_version=30, which triggered WARN-on-every-import until
+# extended). Floor stays at 25 for backward compat with stored
+# operator exports; ceiling at 30 keeps forward-incompat surface
+# intact (future Argus schema versions still WARN until landed).
+DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST: tuple[str, ...] = (
+    "25", "26", "27", "28", "29", "30",
+)
 
 # GitHub-fetch defaults for `--from-github`. Argus publishes its
 # canonical CSV at exports/argus_export.csv on the kevwillow/argus-db
