@@ -217,7 +217,7 @@
                 <td>{{ d.oui_vendor or "—" }}</td>
                 <td>{{ d.ble_name or "—" }}</td>
                 <td><time datetime="{{ d.last_seen | unix_to_iso }}">{{ d.last_seen | unix_to_iso }}</time></td>
-                <td>{% if d.last_rssi is not none %}{{ d.last_rssi }}{% else %}&mdash;{% endif %}</td>
+                <td>{% if d.last_rssi is none or d.last_rssi == 0 %}&mdash;{% else %}{{ d.last_rssi }}{% endif %}</td>
                 <td>{{ d.sighting_count }}</td>
               </tr>
             {% endfor %}
