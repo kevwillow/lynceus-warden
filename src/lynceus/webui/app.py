@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import math
+import sqlite3
 import time
 from math import ceil
 from pathlib import Path
@@ -776,6 +777,59 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
     }
 
 
+def _watchlist_freshness_summary(
+    db: Database, warn_days: int, *, now_ts: int
+) -> dict:
+    """Compact watchlist-freshness payload for the home page card.
+
+    Returns a stable-shape dict regardless of state so the template
+    doesn't have to guard on presence:
+
+    - ``has_import``: True iff at least one row exists in ``import_runs``.
+    - ``record_count``: int from the Argus ``# meta:`` line, or None.
+    - ``exported_at``: int UTC seconds the snapshot was exported, or
+      None when the source CSV had no parseable ``exported_at``.
+    - ``is_stale``: True when the age (against exported_at when set,
+      else imported_at) exceeds ``warn_days``; never True when
+      ``has_import`` is False.
+
+    Gracefully handles the legacy pre-migration-012 install case:
+    operators upgrading from before the ``import_runs`` table landed
+    will not have the table on first daemon start (only after
+    migrations rerun). A bare ``OperationalError`` here would 500 the
+    home page; degrade to the "no watchlist loaded" state instead so
+    the rest of the page still renders.
+    """
+    empty = {
+        "has_import": False,
+        "record_count": None,
+        "exported_at": None,
+        "is_stale": False,
+    }
+    try:
+        latest = db.get_latest_import_run()
+    except sqlite3.OperationalError:
+        return empty
+    if latest is None:
+        return empty
+    reference_ts = latest["exported_at"] or latest["imported_at"]
+    age_days = max(0, (now_ts - int(reference_ts)) // 86400)
+    return {
+        "has_import": True,
+        "record_count": (
+            int(latest["record_count"])
+            if latest["record_count"] is not None
+            else None
+        ),
+        "exported_at": (
+            int(latest["exported_at"])
+            if latest["exported_at"] is not None
+            else None
+        ),
+        "is_stale": age_days > warn_days,
+    }
+
+
 def _build_settings_context(config: Config, db: Database, kismet_status: dict) -> dict:
     """Compute the read-only /settings page payload.
 
@@ -1363,6 +1417,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "device_seen": db.device_seen_counts(now_ts=now_int),
                 "last_poll": db.latest_poll_ts(),
                 "last_tick": _read_last_tick_stats(db),
+                "watchlist_freshness": _watchlist_freshness_summary(
+                    db,
+                    app.state.config.watchlist_staleness_warn_days,
+                    now_ts=now_int,
+                ),
                 "now_ts": now_int,
                 "kismet_status": kismet_status,
             },

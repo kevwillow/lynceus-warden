@@ -48,6 +48,48 @@
     {% else %}
       <p class="last-poll"><em>Waiting for first poll&hellip;</em></p>
     {% endif %}
+    {% if not watchlist_freshness.has_import %}
+      <p class="watchlist-freshness">
+        <strong>Watchlist:</strong> not loaded
+        (<a href="/settings#watchlist-freshness">configure</a>)
+      </p>
+    {% elif watchlist_freshness.is_stale %}
+      <p class="watchlist-freshness">
+        <strong>Watchlist:</strong>
+        {% if watchlist_freshness.record_count is not none %}
+          {{ "{:,}".format(watchlist_freshness.record_count) }} records
+        {% else %}
+          <em>(record count unrecorded)</em>
+        {% endif %}
+        {% if watchlist_freshness.exported_at %}
+          &middot; snapshot
+          <time datetime="{{ watchlist_freshness.exported_at | unix_to_iso }}"
+                title="{{ watchlist_freshness.exported_at | unix_to_utc_human }}">
+            {{ watchlist_freshness.exported_at | unix_to_iso }}
+          </time>
+        {% endif %}
+        &middot;
+        <span class="badge-status-error">stale</span>
+        (<a href="/settings#watchlist-freshness">details</a>)
+      </p>
+    {% else %}
+      <p class="watchlist-freshness">
+        <strong>Watchlist:</strong>
+        {% if watchlist_freshness.record_count is not none %}
+          {{ "{:,}".format(watchlist_freshness.record_count) }} records
+        {% else %}
+          <em>(record count unrecorded)</em>
+        {% endif %}
+        {% if watchlist_freshness.exported_at %}
+          &middot; snapshot
+          <time datetime="{{ watchlist_freshness.exported_at | unix_to_iso }}"
+                title="{{ watchlist_freshness.exported_at | unix_to_utc_human }}">
+            {{ watchlist_freshness.exported_at | unix_to_iso }}
+          </time>
+        {% endif %}
+        (<a href="/settings#watchlist-freshness">details</a>)
+      </p>
+    {% endif %}
   </article>
 
   <article>
