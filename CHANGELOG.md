@@ -6,6 +6,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`lynceus-bootstrap-kismet` no longer offers Kismet's own
+  monitor-mode VIFs as operator-selectable Wi-Fi interfaces.**
+  Previously, on hosts where an earlier Kismet runtime had left a
+  `kismon*` VIF behind in `/sys/class/net` (the v0.7.6 smoke probe v2
+  on Parrot caught this), bootstrap-kismet listed it alongside its
+  parent adapter as a capture candidate. Operators who selected it
+  got duplicate `source=` lines targeting the same physical adapter;
+  both fought for the phy lockfile and neither captured. The filter
+  requires two signals — the `kismon*` name pattern AND a phy shared
+  with another candidate — so an operator-renamed adapter that
+  happens to start with `kismon` won't be false-positive filtered.
+
+- **`lynceus-bootstrap-kismet` now warns on stale root-owned Kismet
+  capture-helper lockfiles** (e.g.
+  `/tmp/.kismet_cap_linux_wifi_interface_lock`) and names the
+  cleanup command (`sudo rm <path>`). Previously these caused silent
+  capture failure — the capture helper running as the kismet user
+  can't unlink a root-owned file in `/tmp`'s sticky-bit dir, so
+  every retry attempts every 5 seconds for hours with nothing
+  visible to the operator. Read-only by design; bootstrap names the
+  remove command rather than auto-removing (a stale-looking lockfile
+  may belong to a legitimate session).
+
+- **`lynceus-bootstrap-kismet` now warns on lingering `kismon*`
+  VIFs in sysfs** from prior Kismet runtimes that didn't tear down
+  cleanly, naming `sudo iw dev <name> del` as the cleanup command.
+
+- **Wizard step 4 now pre-fills `source=` selections from
+  `/etc/kismet/kismet_site.conf`** when present. Previously a re-run
+  of the wizard required the operator to re-select adapters from
+  scratch even when `bootstrap-kismet` had already configured them
+  — and any drift between the two configs caused source_allowlist
+  mismatches at runtime (the analogous bug bit on Wi-Fi during the
+  v0.7.6 saga; this closes the gap on Bluetooth and any second
+  re-run). Identifiers in `kismet_site.conf` that don't match
+  current OS detection render in a separate "Previously configured
+  (currently disconnected)" fieldset, pre-checked so the existing
+  config is preserved on apply.
+
+- **Wizard steps 12 (severity rules) and 13 (argus loading)
+  merged into a unified "Argus configuration" step.** Operators
+  conceptually treat Argus setup as a single decision; splitting
+  it across two pages added friction without unlocking any new
+  configuration. `/step/13` stays mounted as a 303 redirect to
+  `/step/12` so bookmarks and browser-back from prior sessions
+  don't dead-end. The apply pipeline is unchanged.
+
+- **Wizard apply-complete page now has cleaner vertical spacing**
+  between the apply transcript, watchlist summary, bootstrap
+  reminder, and next-steps articles. Per-article margin-top
+  additions; no structural rework.
+
+- **Dashboard `/watchlist` page table now scrolls horizontally on
+  narrow viewports** rather than squashing all the columns into
+  illegible widths. The `.table-scroll` wrapper was already in
+  place with `overflow-x: auto`, but without `white-space: nowrap`
+  on the cells the table never exceeded the wrapper's width
+  (cells wrapped text) so the scroll never engaged. The nowrap
+  rule applies to every page using `.table-scroll` (devices,
+  alerts, allowlist, watchlist, watchful, the index dashboard
+  cards) — they all share the same surface and the squash
+  symptom would fire anywhere a row's content wraps.
+
+- **`lynceus-import-argus` schema-version accept list extended to
+  cover 28-30.** The refreshed bundled CSV from v0.7.6 Tier 4
+  declares `schema_version=30`, which was outside the prior
+  accept-list `["25", "26", "27"]` and tripped a WARN on every
+  bundled import. The floor stays at 25 for backward compat;
+  the ceiling at 30 keeps the forward-incompat surface intact
+  (v31+ still WARN-don't-abort until landed). Operator override
+  via `argus_schema_version_accept_list` in
+  `severity_overrides.yaml` is unchanged.
+
 ## [0.7.6] - 2026-05-25
 
 ### Added
