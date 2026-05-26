@@ -678,6 +678,22 @@ class Poller:
         self._source_allowlist: frozenset[str] | None = (
             frozenset(config.kismet_sources) if config.kismet_sources else None
         )
+        # Alias map: configured-name → frozenset of stamped names Kismet
+        # may credit observations to. Populated lazily from
+        # KismetClient.list_sources() on the first tick that needs it, and
+        # cleared on any tick that drops records under the source_allowlist
+        # gate (so a Kismet reconfiguration mid-run is picked up without
+        # restarting lynceus). Stays None while no allowlist is configured —
+        # the resolution path short-circuits before any API call.
+        #
+        # The v0.7.7 smoke probe surfaced the bug this exists to fix:
+        # Kismet's linux_wifi capture path auto-creates a monitor VIF
+        # (`kismon0`) on the parent adapter and stamps observations with
+        # the VIF's name, while the operator configures the parent name
+        # (`wlx00c0cab966f8`) in lynceus.yaml. The two appear in
+        # /datasource/all_sources.json as two rows sharing one UUID;
+        # grouping by UUID gives the alias set.
+        self._source_alias_map: dict[str, frozenset[str]] | None = None
         if config.rules_path:
             self.ruleset = load_ruleset(config.rules_path)
             active = sum(1 for r in self.ruleset.rules if r.enabled)
@@ -742,6 +758,87 @@ class Poller:
         # restarts don't produce a phantom summary on the first tick.
         self._rule_type_suppression_counter: dict[str, int] = {}
         self._last_suppression_log_ts: int = int(time.time())
+
+    def _build_source_alias_map(self) -> dict[str, frozenset[str]]:
+        """Query Kismet's source list and group names by UUID.
+
+        Returns a dict mapping each name Kismet might stamp on an
+        observation to the frozenset of all names sharing the same source
+        UUID. A failure to fetch (auth, network, transient 5xx) is logged
+        at WARNING and the caller gets an empty dict — the allowlist gate
+        then falls back to literal matching, which is the pre-fix
+        behavior. Operators see the WARNING and know to investigate
+        without the poller crashing.
+        """
+        try:
+            sources = self.client.list_sources()
+        except Exception as e:
+            logger.warning(
+                "could not fetch Kismet source list for alias resolution "
+                "(%s); falling back to literal source_allowlist matching",
+                e,
+            )
+            return {}
+        by_uuid: dict[str, set[str]] = {}
+        for src in sources:
+            uuid = src.get("uuid") or ""
+            if not uuid:
+                continue
+            names = by_uuid.setdefault(uuid, set())
+            name = src.get("name") or ""
+            interface = src.get("interface") or ""
+            if name:
+                names.add(name)
+            if interface:
+                names.add(interface)
+        aliases: dict[str, frozenset[str]] = {}
+        for names in by_uuid.values():
+            frozen = frozenset(names)
+            for n in names:
+                aliases[n] = frozen
+        logger.debug(
+            "source alias map built: %s",
+            {k: sorted(v) for k, v in aliases.items()},
+        )
+        return aliases
+
+    def _resolve_source_allowlist(self) -> frozenset[str] | None:
+        """Expand the configured allowlist through the alias map.
+
+        Operator config of `kismet_sources: [wlx00c0cab966f8, hci1]` plus
+        an alias map `{wlx00c0cab966f8: {wlx00c0cab966f8, kismon0}, ...}`
+        yields `{wlx00c0cab966f8, kismon0, hci1}`. Names not present in
+        the map fall back to themselves, so a typo or an adapter Kismet
+        isn't reporting still gates correctly (configured name always
+        matches itself — operators can't lose admit-ability via mapping
+        logic). Returns ``None`` when no allowlist is configured, which
+        bypasses the gate entirely just as before.
+        """
+        if self._source_allowlist is None:
+            return None
+        if self._source_alias_map is None:
+            self._source_alias_map = self._build_source_alias_map()
+        expanded: set[str] = set()
+        for name in self._source_allowlist:
+            expanded.update(
+                self._source_alias_map.get(name, frozenset({name}))
+            )
+        return frozenset(expanded)
+
+    def _maybe_clear_source_alias_map_on_drops(self) -> None:
+        """Clear the alias map when the last tick dropped records.
+
+        Reads the per-tick drop counter poll_once just wrote. If > 0,
+        the next tick will rebuild the map from Kismet — handles
+        operators reconfiguring Kismet mid-run without forcing a refresh
+        on every healthy tick. Steady-state misconfig keeps rebuilding
+        each tick, accepted because the cost is one HTTP call and the
+        alternative (silent drops continuing forever after a Kismet
+        restart) is worse.
+        """
+        raw = self.db.get_state(STATE_KEY_LAST_TICK_DROPPED_SOURCE_ALLOWLIST)
+        if raw and int(raw) > 0:
+            self._source_alias_map = None
 
     def _maybe_flush_suppression_summary(self, *, now_ts: int) -> None:
         """Emit the periodic per-rule_type suppression breakdown line.
@@ -913,11 +1010,12 @@ class Poller:
                         ruleset=self.ruleset,
                         allowlist=self.allowlist,
                         notifier=self.notifier,
-                        source_allowlist=self._source_allowlist,
+                        source_allowlist=self._resolve_source_allowlist(),
                         source_locations=self.config.kismet_source_locations,
                         severity_overrides=self.severity_overrides,
                         rule_type_suppression_counter=self._rule_type_suppression_counter,
                     )
+                    self._maybe_clear_source_alias_map_on_drops()
                     self._maybe_flush_suppression_summary(now_ts=now_ts)
                 except Exception:
                     logger.error("poll_once raised; continuing", exc_info=True)
@@ -937,11 +1035,12 @@ class Poller:
                 ruleset=self.ruleset,
                 allowlist=self.allowlist,
                 notifier=self.notifier,
-                source_allowlist=self._source_allowlist,
+                source_allowlist=self._resolve_source_allowlist(),
                 source_locations=self.config.kismet_source_locations,
                 severity_overrides=self.severity_overrides,
                 rule_type_suppression_counter=self._rule_type_suppression_counter,
             )
+            self._maybe_clear_source_alias_map_on_drops()
             self._maybe_flush_suppression_summary(now_ts=now_ts)
             return processed
         finally:
