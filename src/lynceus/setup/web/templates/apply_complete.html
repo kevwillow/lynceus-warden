@@ -1,6 +1,18 @@
 {% extends "_base.html" %}
 {% block title %}lynceus-setup &mdash; setup {% if overall_ok %}complete{% else %}failed{% endif %}{% endblock %}
 {% block content %}
+  {# v0.7.7 Touch 6: vertical rhythm on the completion page. The apply
+     transcript, watchlist summary, bootstrap-kismet reminder, and
+     next-steps articles previously stacked with the default Pico
+     margin only; smoke-tester reports called it "cramped." Per-article
+     top margin gives each block visual breathing room without
+     restructuring the template. #}
+  <style>
+    main.container > article { margin-top: 1.5em; }
+    main.container > article + article { margin-top: 1.75em; }
+    main.container > article > header { margin-bottom: 0.6em; }
+    main.container > article > p { margin-bottom: 0.6em; }
+  </style>
   {% if overall_ok %}
     <h1>Setup complete</h1>
     <p>
