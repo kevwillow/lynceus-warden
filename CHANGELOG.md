@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Wi-Fi captures now admit correctly when Kismet stamps them with a
+  monitor-mode VIF name** (e.g. `kismon0`) rather than the parent
+  adapter name (e.g. `wlx00c0cab966f8`). Kismet's `linux_wifi` capture
+  path always creates an auto-VIF for monitor mode and credits captured
+  frames to the VIF's name; the v0.7.7 smoke probe on Parrot traced
+  219/220 Wi-Fi observations dropping silently at the
+  `source_allowlist` gate because the operator-configured
+  `kismet_sources: [wlx00c0cab966f8, hci1]` value didn't match the
+  stamped `kismon0` source name. The poller now resolves the allowlist
+  through Kismet's `/datasource/all_sources.json` mapping, grouping
+  rows by UUID so the parent name and the auto-VIF name admit
+  interchangeably. BLE (`hci0`/`hci1`) was unaffected because
+  `linux_bluetooth` stamps observations with the literal configured
+  name (no VIF indirection). Failure to fetch the source list logs a
+  WARNING and the gate falls back to literal matching — operator can
+  see why captures might be dropping without the poller crashing.
+
+- **`/devices` Type column no longer truncates** on narrower viewports.
+  An inline `white-space: nowrap` now lives on the column's `<th>` and
+  `<td>` directly, belt-and-suspenders against any future override of
+  the `.table-scroll` global rule that landed in v0.7.7 for
+  `/watchlist`.
+
+### Changed
+
+- **`/devices` page-size dropdown now offers 250 and 500** in addition
+  to the existing 10/25/50/100/200 options, for operators investigating
+  large device sets in one view. The route's hard cap moved from 200 to
+  500; above-cap values still 400 cleanly.
+
 ## [0.7.7] - 2026-05-26
 
 ### Fixed
