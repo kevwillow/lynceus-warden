@@ -82,17 +82,42 @@
   </article>
 
   <article>
+    <header><strong>Argus watchlist</strong>
+      &middot; <a href="{{ url_with_token('/step/13') }}">edit</a></header>
+    <dl>
+      <dt>load mode</dt>
+      <dd>
+        {% if summary.argus_mode == "skip" %}
+          <strong>Skip</strong> &mdash; no watchlist load
+          (existing data preserved)
+        {% elif summary.argus_mode == "bundled" %}
+          <strong>Bundled</strong> &mdash; import the snapshot shipped
+          with this Lynceus release
+        {% elif summary.argus_mode == "github" %}
+          <strong>GitHub</strong> &mdash; fetch from
+          <code>{{ summary.argus_github_repo }}</code>{% if summary.argus_github_ref %}
+            @<code>{{ summary.argus_github_ref }}</code>
+          {% else %} @<em>(latest release)</em>{% endif %}
+        {% elif summary.argus_mode == "file" %}
+          <strong>File</strong> &mdash;
+          <code>{{ summary.argus_file_path }}</code>
+        {% endif %}
+      </dd>
+    </dl>
+  </article>
+
+  <article>
     <header><strong>Apply</strong></header>
     <p>
       Clicking Apply runs the configuration to disk: writes
       <code>lynceus.yaml</code>, scaffolds
-      <code>severity_overrides.yaml</code>, imports the bundled
-      watchlist, writes <code>rules.yaml</code> when alerting is
-      enabled, and (under <code>--system</code> scope) chowns the
-      created files to the daemon's system user. Progress streams
-      live to the next page; on failure the completion page offers
-      a Re-run button — the chain is idempotent (atomic writes,
-      idempotent chowns, per-record-dedup'd bundled import), so
+      <code>severity_overrides.yaml</code>, loads the Argus watchlist
+      per the choice above (or skips it), writes <code>rules.yaml</code>
+      when alerting is enabled, and (under <code>--system</code> scope)
+      chowns the created files to the daemon's system user. Progress
+      streams live to the next page; on failure the completion page
+      offers a Re-run button — the chain is idempotent (atomic writes,
+      idempotent chowns, per-record-dedup'd watchlist import), so
       re-running after fixing an environmental issue is safe.
       <a href="{{ url_with_token('/apply-preview.json') }}">The JSON
       preview</a> remains available for operators who want to diff
@@ -111,7 +136,7 @@
           onsubmit="this.querySelector('button[type=submit]').disabled = true;">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
       <div class="wizard-footer">
-        <a href="{{ url_with_token('/step/12') }}" role="button" class="secondary">&larr; Previous</a>
+        <a href="{{ url_with_token('/step/13') }}" role="button" class="secondary">&larr; Previous</a>
         <button type="submit"{% if errors %} disabled aria-disabled="true"{% endif %}>Apply &rarr;</button>
       </div>
     </form>

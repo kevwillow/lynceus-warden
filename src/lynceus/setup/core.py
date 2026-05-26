@@ -34,7 +34,7 @@ import requests
 from lynceus import paths
 from lynceus.config import Config
 from lynceus.kismet import KismetClient
-from lynceus.setup.models import ApplyReport, ApplyStep, ProgressSink
+from lynceus.setup.models import ApplyReport, ApplyStep, ArgusChoice, ProgressSink
 
 logger = logging.getLogger(__name__)
 
@@ -789,6 +789,241 @@ def append_rules_path_to_config(target: Path, rules_path: Path) -> None:
         fh.write(f"rules_path: {_yaml_str(str(rules_path))}\n")
 
 
+# --- Argus operator-choice helpers ------------------------------------------
+#
+# The web wizard's argus step (Tier-4 opt-in flow) lets the operator
+# choose how to load the Argus watchlist: skip entirely, import the
+# bundled snapshot, fetch from GitHub, or import a local file. The
+# helpers below subprocess into ``lynceus-import-argus`` so the apply
+# pipeline reuses the same import code path the standalone CLI uses
+# (no duplicate fetch / parse logic in the wizard).
+#
+# Return shape is ``(success, message)`` — identical to
+# ``import_bundled_watchlist`` — so the dispatcher in
+# ``_emit_argus_choice_step`` can render any successful import with one
+# branch.
+
+
+def _run_import_argus_subprocess(
+    argv_tail: list[str],
+    *,
+    db_path: Path,
+    override_file: Path | None,
+) -> tuple[bool, str]:
+    """Subprocess wrapper around ``lynceus-import-argus``.
+
+    ``argv_tail`` provides the input-source flags (``--input <path>``
+    or ``--from-github`` plus its options) so the same wrapper serves
+    the file and github paths. Returns ``(success, message)``.
+    """
+    cmd = ["lynceus-import-argus", *argv_tail, "--db", str(db_path)]
+    if override_file:
+        cmd += ["--override-file", str(override_file)]
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+    except FileNotFoundError:
+        return False, "import failed: lynceus-import-argus not found on PATH"
+    try:
+        stdout, stderr = proc.communicate(timeout=BUNDLED_IMPORT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        return False, (
+            f"import failed: lynceus-import-argus exceeded "
+            f"{BUNDLED_IMPORT_TIMEOUT_SECONDS}s timeout (process killed)"
+        )
+    rc = proc.returncode
+    if rc != 0:
+        detail = (stderr or stdout or f"exit code {rc}").strip().splitlines()
+        reason = detail[-1] if detail else f"exit code {rc}"
+        return False, f"import failed: {reason}"
+    summary = next(
+        (line for line in stdout.splitlines() if line.lstrip().startswith("imported")),
+        "imported successfully",
+    )
+    return True, summary
+
+
+def _validate_file_csv_path(raw_path: str) -> tuple[bool, str]:
+    """Fail-fast validation for the operator-supplied file import path.
+
+    Returns ``(ok, message)``. The named path is included in every
+    failure message so the operator can copy-paste from the apply
+    summary into a shell without re-typing.
+    """
+    if not raw_path:
+        return False, "Argus file import path was empty."
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        return False, f"Argus file import path is not absolute: {raw_path}"
+    if not candidate.exists():
+        return False, f"Argus file import path does not exist: {raw_path}"
+    if not candidate.is_file():
+        return False, f"Argus file import path is not a regular file: {raw_path}"
+    try:
+        with candidate.open("rb") as fh:
+            header = fh.read(8)
+    except OSError as exc:
+        return False, f"Argus file import path is not readable: {raw_path} ({exc})"
+    # The Argus CSV always starts with the ``# meta:`` comment line per
+    # parse_argus_csv's prefix check. A bytewise head sniff is cheaper
+    # than a full parse and surfaces a wrong-file-type early.
+    if not header.startswith(b"# meta:"):
+        return False, (
+            f"Argus file import path does not look like an Argus CSV "
+            f"(expected leading '# meta:' line): {raw_path}"
+        )
+    return True, str(candidate)
+
+
+def _emit_argus_choice_step(
+    *,
+    choice: ArgusChoice,
+    db_path: Path,
+    severity_overrides_path: Path,
+    emit,
+) -> bool:
+    """Dispatch on ``ArgusChoice.mode`` and emit a single import step.
+
+    Returns ``True`` when the import actually landed data in the DB
+    (drives the system-mode chown_db_files gate). False for every other
+    terminal state (skip, warning, failure).
+    """
+    name = "import_bundled_watchlist"
+    if choice.mode == "skip":
+        emit(
+            ApplyStep(
+                name=name,
+                status="skipped",
+                message=(
+                    "Watchlist load skipped per operator choice. "
+                    "Existing watchlist data, if any, is unchanged."
+                ),
+                detail={"argus_choice": "skip"},
+            )
+        )
+        return False
+    if choice.mode == "bundled":
+        ok, msg = _frontend_import_bundled_watchlist(
+            db_path=str(db_path),
+            override_file=str(severity_overrides_path),
+        )
+        if msg == BUNDLED_ABSENT_MESSAGE:
+            emit(
+                ApplyStep(
+                    name=name,
+                    status="failed",
+                    message=(
+                        "Bundled Argus snapshot is not shipped with this "
+                        "Lynceus install. Reinstall the package, or pick "
+                        "a different load mode (GitHub / File)."
+                    ),
+                    detail={"argus_choice": "bundled", "reason": msg},
+                )
+            )
+            return False
+        emit(
+            ApplyStep(
+                name=name,
+                status="ok" if ok else "failed",
+                message=msg,
+                detail={"argus_choice": "bundled", "db_path": str(db_path)},
+            )
+        )
+        return ok
+    if choice.mode == "github":
+        repo = choice.github_repo or "kevwillow/argus-db"
+        argv_tail = ["--from-github", "--repo", repo]
+        if choice.github_ref:
+            argv_tail += ["--ref", choice.github_ref]
+        ok, msg = _run_import_argus_subprocess(
+            argv_tail,
+            db_path=db_path,
+            override_file=severity_overrides_path,
+        )
+        if ok:
+            emit(
+                ApplyStep(
+                    name=name,
+                    status="ok",
+                    message=f"{msg} (fetched from {repo}@{choice.github_ref or 'latest'})",
+                    detail={
+                        "argus_choice": "github",
+                        "github_repo": repo,
+                        "github_ref": choice.github_ref,
+                        "db_path": str(db_path),
+                    },
+                )
+            )
+            return True
+        # GitHub failure degrades to warning (not failed) — the operator
+        # can retry, switch to bundled / file / skip, or continue.
+        emit(
+            ApplyStep(
+                name=name,
+                status="warning",
+                message=(
+                    f"GitHub Argus fetch failed: {msg}. "
+                    f"Retry, switch to Bundled or File, or re-run the "
+                    f"wizard and pick Skip to continue without a "
+                    f"watchlist refresh."
+                ),
+                detail={
+                    "argus_choice": "github",
+                    "github_repo": repo,
+                    "github_ref": choice.github_ref,
+                },
+            )
+        )
+        return False
+    if choice.mode == "file":
+        valid, validated = _validate_file_csv_path(choice.file_path or "")
+        if not valid:
+            emit(
+                ApplyStep(
+                    name=name,
+                    status="failed",
+                    message=validated,
+                    detail={"argus_choice": "file", "file_path": choice.file_path},
+                )
+            )
+            return False
+        ok, msg = _run_import_argus_subprocess(
+            ["--input", validated],
+            db_path=db_path,
+            override_file=severity_overrides_path,
+        )
+        emit(
+            ApplyStep(
+                name=name,
+                status="ok" if ok else "failed",
+                message=msg,
+                detail={
+                    "argus_choice": "file",
+                    "file_path": validated,
+                    "db_path": str(db_path),
+                },
+            )
+        )
+        return ok
+    # Type system should make this unreachable; defensive emit so an
+    # unknown future mode doesn't crash the apply pipeline.
+    emit(
+        ApplyStep(
+            name=name,
+            status="failed",
+            message=f"Unknown argus_choice.mode: {choice.mode!r}",
+            detail={"argus_choice": choice.mode},
+        )
+    )
+    return False
+
+
 # --- apply_config -----------------------------------------------------------
 
 
@@ -822,6 +1057,7 @@ def apply_config(
     allowlist_path: Path,
     enabled_rule_types: set[str] | None,
     run_bundled_import: bool = True,
+    argus_choice: ArgusChoice | None = None,
     progress: ProgressSink | None = None,
 ) -> ApplyReport:
     """Run the deterministic side-effect chain for a validated ``Config``.
@@ -1027,10 +1263,37 @@ def apply_config(
         )
     )
 
-    # 5. import_bundled_watchlist — subprocess (silent skip when absent).
+    # 5. import_bundled_watchlist — argus_choice dispatch (operator-driven).
+    #
+    # When ``argus_choice`` is provided the wizard frontend has captured
+    # the operator's explicit preference for how (or whether) to load
+    # the Argus watchlist:
+    #
+    #   * skip    → step status ``skipped``; the existing watchlist is
+    #               left untouched (no clear, no import).
+    #   * bundled → calls the same subprocess as the legacy auto-import
+    #               against the wheel-shipped CSV.
+    #   * github  → calls ``lynceus-import-argus --from-github``. Network
+    #               or parse failures degrade to ``warning`` (not
+    #               ``failed``) so the apply still completes and the
+    #               operator can retry / switch modes.
+    #   * file    → calls the same subprocess as bundled against an
+    #               operator-named CSV; bad path is a hard failure.
+    #
+    # When ``argus_choice`` is None the legacy ``run_bundled_import``
+    # bool gates the auto-bundled-import path. The CLI wizard frontend
+    # still relies on this default so its existing test surface keeps
+    # passing.
     db_path = paths.default_db_path(scope)
     bundled_ok = False
-    if run_bundled_import:
+    if argus_choice is not None:
+        bundled_ok = _emit_argus_choice_step(
+            choice=argus_choice,
+            db_path=db_path,
+            severity_overrides_path=severity_overrides_path,
+            emit=_emit,
+        )
+    elif run_bundled_import:
         bundled_ok, bundled_msg = _frontend_import_bundled_watchlist(
             db_path=str(db_path),
             override_file=str(severity_overrides_path),

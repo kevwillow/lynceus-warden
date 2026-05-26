@@ -49,6 +49,7 @@ STEP_TITLES: tuple[str, ...] = (
     "RSSI threshold",
     "Severity overrides",
     "Rules engine",
+    "Argus watchlist",
 )
 TOTAL_STEPS: int = len(STEP_TITLES)
 
@@ -221,12 +222,14 @@ def create_wizard_app(
     # has a literal route, so /step/<unknown> 404s via FastAPI's
     # default unmatched-route handler.
     from lynceus.setup.web.review import register_review_routes
+    from lynceus.setup.web.steps_argus import register_argus_step
     from lynceus.setup.web.steps_capture import register_capture_steps
     from lynceus.setup.web.steps_kismet import register_kismet_steps
     from lynceus.setup.web.steps_severity_rules import register_severity_rules_steps
     register_kismet_steps(app)
     register_capture_steps(app)
     register_severity_rules_steps(app)
+    register_argus_step(app)
     register_review_routes(app)
 
     return app

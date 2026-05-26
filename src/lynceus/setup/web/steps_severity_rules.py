@@ -163,7 +163,7 @@ async def rules_post(request: Request) -> HTMLResponse:
                 enabled.append(rt)
     session.answers["enable_alerting"] = enable_alerting
     session.answers["enabled_rule_types"] = sorted(enabled)
-    return _redirect(request, "/review")
+    return _redirect(request, "/step/13")
 
 
 # ---- registration ----------------------------------------------------------

@@ -53,7 +53,7 @@ from lynceus.cli.setup import _redact_kismet_api_key
 from lynceus.config import CaptureConfig, Config
 from lynceus.redact import redact_ntfy_topic
 from lynceus.setup.core import apply_config
-from lynceus.setup.models import ApplyReport, ApplyStep
+from lynceus.setup.models import ApplyReport, ApplyStep, ArgusChoice
 from lynceus.setup.web.session import WizardSession
 from lynceus.setup.web.sse_sink import SSEProgressSink, serialize_step
 
@@ -156,15 +156,20 @@ def _build_config_from_session(answers: dict[str, Any]) -> Config:
 def _resolve_apply_args(
     session: WizardSession,
     scope: str,
-) -> tuple[Config, Path, Path, set[str] | None]:
+) -> tuple[Config, Path, Path, set[str] | None, ArgusChoice]:
     """Build the apply_config arg tuple from session.answers.
 
     Returns ``(config_with_rules_path, severity_path, allowlist_path,
-    enabled_rule_types)``. The Config is mutated to carry
+    enabled_rule_types, argus_choice)``. The Config is mutated to carry
     ``rules_path`` when alerting is on + at least one rule type is
     selected; that single-render path mirrors ``apply_config``'s
     built-in rules-step contract (see the "Single-render path" branch
     in core.py).
+
+    ``argus_choice`` is built from ``session.answers["argus_choice"]``
+    (captured by the Argus loading step). Operators who never visit the
+    Argus step land on the operator-safe default (``skip``) so the
+    apply pipeline doesn't auto-import behind their back.
     """
     answers = session.answers
     config = _build_config_from_session(answers)
@@ -192,7 +197,29 @@ def _resolve_apply_args(
         )
     else:
         enabled_rule_types = None
-    return config, severity_path, allowlist_path, enabled_rule_types
+    argus_choice = _argus_choice_from_session(answers)
+    return config, severity_path, allowlist_path, enabled_rule_types, argus_choice
+
+
+def _argus_choice_from_session(answers: dict[str, Any]) -> ArgusChoice:
+    """Translate the wizard's session answers into an ``ArgusChoice``.
+
+    Missing / malformed answers fall through to ``mode="skip"`` so the
+    operator-safe default applies even for operators who skipped the
+    Argus step entirely (e.g. by deep-linking to /review).
+    """
+    raw = answers.get("argus_choice") or {}
+    if not isinstance(raw, dict):
+        return ArgusChoice(mode="skip")
+    mode = raw.get("mode")
+    if mode not in ("skip", "bundled", "github", "file"):
+        return ArgusChoice(mode="skip")
+    return ArgusChoice(
+        mode=mode,
+        file_path=raw.get("file_path") or None,
+        github_repo=raw.get("github_repo") or "kevwillow/argus-db",
+        github_ref=raw.get("github_ref") or None,
+    )
 
 
 def _format_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -226,6 +253,10 @@ def _redact_config_dict(data: dict[str, Any]) -> dict[str, Any]:
 
 def _summarize(answers: dict[str, Any], config: Config | None) -> dict[str, Any]:
     """Build the section-by-section summary the HTML template renders."""
+    argus_raw = answers.get("argus_choice") or {}
+    argus_mode = argus_raw.get("mode") if isinstance(argus_raw, dict) else None
+    if argus_mode not in ("skip", "bundled", "github", "file"):
+        argus_mode = "skip"
     return {
         "kismet_url": answers.get("kismet_url", "") or "(not set)",
         "kismet_api_key_preview": (
@@ -246,6 +277,16 @@ def _summarize(answers: dict[str, Any], config: Config | None) -> dict[str, Any]
         ),
         "enable_alerting": bool(answers.get("enable_alerting", False)),
         "enabled_rule_types": answers.get("enabled_rule_types") or [],
+        "argus_mode": argus_mode,
+        "argus_file_path": (
+            argus_raw.get("file_path") if isinstance(argus_raw, dict) else None
+        ) or "",
+        "argus_github_repo": (
+            argus_raw.get("github_repo") if isinstance(argus_raw, dict) else None
+        ) or "kevwillow/argus-db",
+        "argus_github_ref": (
+            argus_raw.get("github_ref") if isinstance(argus_raw, dict) else None
+        ) or "",
     }
 
 
@@ -289,6 +330,7 @@ async def apply_preview_json(request: Request) -> JSONResponse:
         )
     data = config.model_dump(mode="json")
     _redact_config_dict(data)
+    argus_choice = _argus_choice_from_session(session.answers)
     return JSONResponse({
         "valid": True,
         "config": data,
@@ -296,6 +338,12 @@ async def apply_preview_json(request: Request) -> JSONResponse:
             "severity_overrides_path": session.answers.get("severity_overrides_path"),
             "enable_alerting": bool(session.answers.get("enable_alerting", False)),
             "enabled_rule_types": session.answers.get("enabled_rule_types") or [],
+            "argus_choice": {
+                "mode": argus_choice.mode,
+                "file_path": argus_choice.file_path,
+                "github_repo": argus_choice.github_repo,
+                "github_ref": argus_choice.github_ref,
+            },
             "scope": state.scope,
             "target_path": str(state.target_path),
             "reconfigure": bool(state.reconfigure),
@@ -317,6 +365,7 @@ async def _run_apply_task(
     enabled_rule_types: set[str] | None,
     queue: asyncio.Queue,
     loop: asyncio.AbstractEventLoop,
+    argus_choice: ArgusChoice | None = None,
 ) -> None:
     """Background task that runs ``apply_config`` in a worker thread.
 
@@ -349,6 +398,10 @@ async def _run_apply_task(
     # construction-failure path; the except / finally branches that
     # read sink.records guard against it.
     sink: SSEProgressSink | None = None
+    # Operator-safe default for callers that don't supply a choice
+    # (today's only such caller is one existing cancellation-path test;
+    # the production /apply route always passes the operator's choice).
+    effective_argus_choice = argus_choice or ArgusChoice(mode="skip")
     try:
         sink = SSEProgressSink(queue, loop)
         report = await asyncio.to_thread(
@@ -359,7 +412,7 @@ async def _run_apply_task(
             severity_overrides_path=severity_path,
             allowlist_path=allowlist_path,
             enabled_rule_types=enabled_rule_types,
-            run_bundled_import=True,
+            argus_choice=effective_argus_choice,
             progress=sink,
         )
         session.apply_report = report
@@ -564,9 +617,13 @@ async def apply_post(request: Request) -> Response:
     session = _session(request)
 
     try:
-        config, severity_path, allowlist_path, enabled_rule_types = _resolve_apply_args(
-            session, scope=state.scope
-        )
+        (
+            config,
+            severity_path,
+            allowlist_path,
+            enabled_rule_types,
+            argus_choice,
+        ) = _resolve_apply_args(session, scope=state.scope)
     except ValidationError:
         # Validation re-renders the review page; we don't surface
         # the errors via a flash message — /review reads
@@ -611,6 +668,7 @@ async def apply_post(request: Request) -> Response:
                     severity_path=severity_path,
                     allowlist_path=allowlist_path,
                     enabled_rule_types=enabled_rule_types,
+                    argus_choice=argus_choice,
                     queue=queue,
                     loop=loop,
                 )

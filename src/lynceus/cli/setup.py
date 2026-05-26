@@ -27,7 +27,7 @@ from .. import __version__, paths
 from ..config import DEFAULT_KISMET_URL, CaptureConfig, Config
 from ..kismet import KismetClient
 from ..redact import redact_ntfy_topic, redact_topic_in_url
-from ..setup.models import ApplyStep
+from ..setup.models import ApplyStep, ArgusChoice  # noqa: F401  (test re-export)
 from ._adapter_descriptors import (  # noqa: F401  (re-exported for test monkeypatching)
     _enrich_adapter_from_sysfs,
     _read_sysfs_mac,

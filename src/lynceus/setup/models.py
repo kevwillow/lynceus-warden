@@ -20,6 +20,37 @@ from typing import Literal, Protocol, runtime_checkable
 
 ApplyStepStatus = Literal["ok", "skipped", "failed", "warning"]
 ApplyOverallStatus = Literal["ok", "failed"]
+ArgusLoadMode = Literal["skip", "bundled", "github", "file"]
+
+
+@dataclass(frozen=True)
+class ArgusChoice:
+    """Operator-driven choice for how to load the Argus watchlist.
+
+    The web wizard's argus step captures this and passes it to
+    ``apply_config``. Replaces the legacy auto-bundled-import default
+    so Lynceus stays a working product when the operator picks Skip
+    (rules-based detection continues; existing watchlist data is
+    preserved).
+
+    ``mode``:
+      * ``"skip"`` — apply emits a skipped import step; the watchlist
+        is left exactly as it was (no clear, no import).
+      * ``"bundled"`` — import the snapshot shipped in the wheel.
+      * ``"github"`` — fetch the latest snapshot from a GitHub repo
+        (default: ``kevwillow/argus-db``). Network required.
+      * ``"file"`` — import a local CSV the operator points at.
+
+    ``file_path`` is required when ``mode == "file"`` and ignored
+    otherwise. ``github_repo`` / ``github_ref`` are used when
+    ``mode == "github"``; ``github_ref`` of ``None`` lets the
+    importer resolve to the latest release with a ``main`` fallback.
+    """
+
+    mode: ArgusLoadMode
+    file_path: str | None = None
+    github_repo: str = "kevwillow/argus-db"
+    github_ref: str | None = None
 # "warning" is a non-blocking outcome: the step ran, found a real
 # problem worth telling the operator about, but does not flip
 # overall_status (the apply pipeline still completes). The Arc B
