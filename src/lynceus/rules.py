@@ -20,6 +20,74 @@ logger = logging.getLogger(__name__)
 
 _OUI_RE = re.compile(r"^[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}$")
 
+
+# Reserved / non-routable OUI prefixes that the argus_oui rule must
+# never match against. The watchlist DB can legitimately carry rows
+# with these patterns (the bundled Argus snapshot uses 00:00:00 as a
+# placeholder for CCTV-vendor rows where no real OUI is known --
+# ~40 rows in default_watchlist.csv), but real-world MACs that begin
+# with one of these prefixes are categorically not the device the
+# operator wants to be alerted on:
+#
+#   00:00:00 -- IEEE-reserved placeholder. Kismet emits all-zeros
+#               source MACs for malformed-source probe frames and
+#               other broadcast artifacts.
+#   ff:ff:ff -- broadcast destination address; never a real device.
+#   01:00:5e -- IPv4 multicast destination (RFC 1112).
+#   33:33    -- IPv6 multicast destination (RFC 2464).
+#
+# The locally-administered bit (second nibble of the first octet ∈
+# {2, 6, a, e}) marks vendor-assigned-locally addresses: docker
+# bridges (02:42:*), virtual NIC randomization, MAC privacy
+# rotation, and other categorically-not-a-real-vendor cases. A
+# legitimate vendor watchlist hit can never live on a locally-
+# administered MAC by IEEE design, so the OUI lookup is guaranteed
+# to be a false match.
+#
+# Filter applied at the rules.evaluate layer (before the DB
+# lookup) so the SQL never runs for known-bogus prefixes and the
+# filter logic is greppable from the rule definition itself.
+# Pairs with importer-side filter in cli/import_argus.py.
+# v0.7.9 Touch 6.
+_RESERVED_OUI_PREFIXES_EXACT: frozenset[str] = frozenset({
+    "00:00:00",
+    "ff:ff:ff",
+    "01:00:5e",
+})
+_RESERVED_MAC_PREFIXES_TWO_OCTET: frozenset[str] = frozenset({
+    "33:33",
+})
+_LOCALLY_ADMINISTERED_SECOND_NIBBLE: frozenset[str] = frozenset({
+    "2", "6", "a", "e",
+})
+
+
+def _is_reserved_oui_mac(mac: str) -> tuple[bool, str | None]:
+    """Return (True, reason) for MACs whose OUI is reserved/bogus.
+
+    The rules.evaluate watchlist_oui branch calls this before the DB
+    lookup so reserved prefixes never produce a hit -- regardless of
+    what rows happen to live in the watchlist table.
+
+    ``mac`` is expected lowercased and colon-canonicalized (the form
+    DeviceObservation.mac carries after normalize_mac at parse time).
+    Falsy / malformed input returns (False, None) so callers can
+    fall through to the existing length-guarded code path.
+    """
+    if not mac or len(mac) < 8:
+        return False, None
+    prefix3 = mac[:8]  # 'aa:bb:cc'
+    if prefix3 in _RESERVED_OUI_PREFIXES_EXACT:
+        return True, prefix3
+    prefix2 = mac[:5]  # 'aa:bb'
+    if prefix2 in _RESERVED_MAC_PREFIXES_TWO_OCTET:
+        return True, prefix2
+    # Locally-administered bit: 2nd hex digit of first octet.
+    # Examples: 02:*, 06:*, 0a:*, 0e:*, 12:*, 16:*, ..., fe:*.
+    if mac[1] in _LOCALLY_ADMINISTERED_SECOND_NIBBLE:
+        return True, f"locally-administered (first octet {mac[:2]})"
+    return False, None
+
 RuleType = Literal[
     "watchlist_mac",
     "watchlist_oui",
@@ -810,6 +878,24 @@ def evaluate(
                         "delegation rule %r (watchlist_oui, empty patterns) "
                         "evaluated without db; skipping.",
                         rule.name,
+                    )
+                    continue
+                # Reserved/bogus OUI guard (v0.7.9 Touch 6). Skip
+                # the DB lookup for prefixes that can never represent
+                # the device the operator wants to be alerted on
+                # (00:00:00 placeholder, ff:ff:ff broadcast, multicast,
+                # locally-administered). The bundled Argus snapshot
+                # carries ~40 watchlist rows with pattern=00:00:00 for
+                # CCTV vendors where no real OUI was known; without
+                # this filter, every Kismet observation with an
+                # all-zeros source MAC fired a false alert against
+                # those rows.
+                reserved, reason = _is_reserved_oui_mac(obs.mac)
+                if reserved:
+                    logger.debug(
+                        "rule %r (watchlist_oui delegation): skipping "
+                        "reserved/bogus OUI for mac=%s reason=%s",
+                        rule.name, obs.mac, reason,
                     )
                     continue
                 match = db.resolve_matched_oui_for_eval(obs.mac)
