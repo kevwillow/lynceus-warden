@@ -1,8 +1,22 @@
 {% extends "_base.html" %}
-{% block title %}lynceus-setup &mdash; rules engine{% endblock %}
+{% block title %}lynceus-setup &mdash; argus configuration{% endblock %}
 {% block step_indicator %}{% include "_progress.html" %}{% endblock %}
 {% block content %}
-  <h1>Step 12: Argus-backed alerting</h1>
+  <h1>Step 12: Argus configuration</h1>
+  <p>
+    Argus is an optional, community-maintained database of known
+    surveillance device signatures (drones, ALPR cameras, gunshot
+    detectors, etc.). Lynceus works without it &mdash; you'll still
+    detect devices based on your rules and capture configuration.
+    Loading Argus enables richer category-aware alerts.
+  </p>
+  <p>
+    Configure your rules-engine opt-ins below and choose how to load
+    the Argus watchlist. Both sections submit together; Apply on the
+    review page will respect the rules choices once the watchlist is
+    imported.
+  </p>
+  {% if error %}<p class="wizard-error"><strong>error:</strong> {{ error }}</p>{% endif %}
   <article>
     <strong>First-install note:</strong> the row counts below will all
     read <code>0</code>. That's expected &mdash; the bundled Argus
@@ -11,51 +25,151 @@
     You can pre-enable any rule types you want here; the apply step
     will respect them and the counts will populate afterward.
   </article>
-  <p>
-    Lynceus can fire alerts on devices matching the imported
-    watchlist. Each rule type is independent and disabled by default
-    &mdash; opt in only to the categories you care about.
-  </p>
   <form method="post" action="{{ url_with_token('/step/12') }}">
     <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
-    <fieldset>
-      <label>
-        <input type="checkbox" name="enable_alerting" {% if enable_alerting %}checked{% endif %}>
-        <strong>Enable Argus-backed alerting</strong>
-        (top-level gate &mdash; leave off to skip the rules engine entirely)
-      </label>
-    </fieldset>
-    <fieldset>
-      <legend>Per-rule-type enables</legend>
-      <label>
-        <input
-          type="checkbox"
-          id="select-all-rule-types"
-          onchange="document.querySelectorAll('.rule-type-checkbox').forEach(function(cb){cb.checked = document.getElementById('select-all-rule-types').checked;});"
-        >
-        <strong>Select all rule types</strong>
-        &mdash; toggles every checkbox below at once
-      </label>
-      <hr>
-      {% for row in rule_rows %}
+
+    <section>
+      <h2>Argus-backed alerting</h2>
+      <p>
+        Lynceus can fire alerts on devices matching the imported
+        watchlist. Each rule type is independent and disabled by
+        default &mdash; opt in only to the categories you care about.
+      </p>
+      <fieldset>
+        <label>
+          <input type="checkbox" name="enable_alerting" {% if enable_alerting %}checked{% endif %}>
+          <strong>Enable Argus-backed alerting</strong>
+          (top-level gate &mdash; leave off to skip the rules engine entirely)
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>Per-rule-type enables</legend>
         <label>
           <input
             type="checkbox"
-            class="rule-type-checkbox"
-            name="enable_{{ row.rule_type }}"
-            {% if row.rule_type in enabled_rule_types %}checked{% endif %}
+            id="select-all-rule-types"
+            onchange="document.querySelectorAll('.rule-type-checkbox').forEach(function(cb){cb.checked = document.getElementById('select-all-rule-types').checked;});"
           >
-          <code>{{ row.rule_type }}</code>
-          &mdash; {{ row.label }}
-          ({{ "{:,}".format(row.count) }} row{% if row.count != 1 %}s{% endif %})
-          <br>
-          <small>{{ row.description }}</small>
+          <strong>Select all rule types</strong>
+          &mdash; toggles every checkbox below at once
         </label>
-      {% endfor %}
-    </fieldset>
+        <hr>
+        {% for row in rule_rows %}
+          <label>
+            <input
+              type="checkbox"
+              class="rule-type-checkbox"
+              name="enable_{{ row.rule_type }}"
+              {% if row.rule_type in enabled_rule_types %}checked{% endif %}
+            >
+            <code>{{ row.rule_type }}</code>
+            &mdash; {{ row.label }}
+            ({{ "{:,}".format(row.count) }} row{% if row.count != 1 %}s{% endif %})
+            <br>
+            <small>{{ row.description }}</small>
+          </label>
+        {% endfor %}
+      </fieldset>
+    </section>
+
+    <section>
+      <h2>Argus watchlist loading (optional)</h2>
+      <p>
+        Choose how to load Argus below, or skip if you'd rather
+        configure your own watchlist later. <strong>Skip leaves any
+        existing watchlist data unchanged.</strong>
+      </p>
+      <fieldset>
+        <legend>How would you like to load the Argus watchlist?</legend>
+
+        <label>
+          <input
+            type="radio"
+            name="argus_mode"
+            value="skip"
+            {% if argus.mode == "skip" %}checked{% endif %}
+          >
+          <strong>Skip</strong> &mdash; Lynceus runs without an Argus
+          watchlist (rules-based detection continues; allowlists and
+          capture rules still fire). Skip leaves any existing watchlist
+          data unchanged. You can configure later with
+          <code>lynceus-import-argus</code>.
+        </label>
+
+        <label>
+          <input
+            type="radio"
+            name="argus_mode"
+            value="bundled"
+            {% if argus.mode == "bundled" %}checked{% endif %}
+          >
+          <strong>Use bundled snapshot</strong> &mdash; import the
+          snapshot shipped with this Lynceus release. Fast and offline.
+        </label>
+
+        <label>
+          <input
+            type="radio"
+            name="argus_mode"
+            value="github"
+            {% if argus.mode == "github" %}checked{% endif %}
+          >
+          <strong>Fetch from GitHub</strong> &mdash; pull the latest
+          snapshot from <code>{{ default_github_repo }}</code>. Requires
+          internet access; takes a few seconds on a typical link.
+        </label>
+        <details>
+          <summary><small>Advanced &mdash; override repo / ref</small></summary>
+          <label>
+            GitHub repo (default <code>{{ default_github_repo }}</code>)
+            <input
+              type="text"
+              name="argus_github_repo"
+              value="{{ argus.github_repo or '' }}"
+              placeholder="{{ default_github_repo }}"
+              autocomplete="off"
+            >
+          </label>
+          <label>
+            GitHub ref (leave blank for latest tagged release; falls
+            through to <code>main</code> if no releases are published)
+            <input
+              type="text"
+              name="argus_github_ref"
+              value="{{ argus.github_ref or '' }}"
+              placeholder="(latest release)"
+              autocomplete="off"
+            >
+          </label>
+        </details>
+
+        <label>
+          <input
+            type="radio"
+            name="argus_mode"
+            value="file"
+            {% if argus.mode == "file" %}checked{% endif %}
+          >
+          <strong>Import from file</strong> &mdash; load a custom Argus
+          CSV from a local path. The path must be absolute, readable, and
+          start with the Argus <code># meta:</code> header line.
+        </label>
+        <label>
+          File path (only used when File mode is selected)
+          <input
+            type="text"
+            name="argus_file_path"
+            value="{{ argus.file_path or '' }}"
+            placeholder="/absolute/path/to/argus_export.csv"
+            autocomplete="off"
+          >
+        </label>
+      </fieldset>
+    </section>
+
     <div class="wizard-footer">
       <a href="{{ url_with_token('/step/11') }}" role="button" class="secondary">&larr; Previous</a>
-      <button type="submit">Next &rarr;</button>
+      <button type="submit">Review &rarr;</button>
     </div>
   </form>
 {% endblock %}

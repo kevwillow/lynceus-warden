@@ -1,22 +1,26 @@
-"""Severity overrides + rules engine route handlers (F6 Phase 2a, Touch 6).
+"""Severity overrides + unified Argus configuration step (v0.7.7 Touch 5).
 
 Implements steps 11-12 of the wizard:
 
     11. Severity overrides    (path input, validated via _looks_like_path)
-    12. Rules engine          (alerting gate + per-rule-type enables)
+    12. Argus configuration   (alerting gate + per-rule-type enables +
+                                argus load-mode choice — unified at v0.7.7
+                                from the prior split "Rules engine" /
+                                "Argus watchlist" pair)
 
-The CLI flow runs these in two phases: step 11 input is captured
-synchronously in ``cli/setup.py:run_wizard`` (line ~1007), then the
-apply pipeline scaffolds the YAML; step 12 (alerting gate +
-per-rule-type) is the ``run_enable_alerting_flow`` arc that runs
-POST-import so per-type row counts are real.
+v0.7.7 Touch 5: steps 12 (rules engine) and 13 (argus loading) merged
+into a single step. Operators conceptually treat Argus setup as one
+decision; the split added friction without giving anything extra.
+The apply pipeline still receives the same ArgusChoice + rules config
+shape it always did — this is purely a UI consolidation.
 
-Phase 2a captures the operator's choices into the session without
-writing anything. Phase 2b's apply route will consume:
+Phase 2b's apply route consumes:
   * ``severity_overrides_path`` (path the apply will scaffold to)
   * ``enable_alerting`` (top-level gate bool)
   * ``enabled_rule_types`` (list of rule_type strings the operator
     opted into; filtered against post-import counts at apply time)
+  * ``argus_choice`` (dict with mode + file_path + github_repo +
+    github_ref — packaged by review.py into an ArgusChoice dataclass)
 
 Pattern-type counts are surfaced in the form labels when the daemon
 DB already exists (operator running ``--reconfigure`` over a live
@@ -34,11 +38,14 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from lynceus import paths
+from lynceus.cli.import_argus import DEFAULT_GITHUB_REPO
 from lynceus.setup.core import DELEGATION_RULES, count_watchlist_by_pattern_type
 from lynceus.setup.prompts import _looks_like_path
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+_VALID_ARGUS_MODES = ("skip", "bundled", "github", "file")
 
 
 def _session(request: Request):
@@ -132,6 +139,24 @@ def _rule_type_choices(scope: str) -> list[dict]:
     return rows
 
 
+def _current_argus_answer(session) -> dict:
+    """Return the previously-captured argus choice as a form-friendly dict.
+
+    Defaults to ``skip`` for fresh sessions so the form pre-selects
+    the operator-safe default.
+    """
+    raw = session.answers.get("argus_choice") or {}
+    mode = raw.get("mode") if isinstance(raw, dict) else None
+    if mode not in _VALID_ARGUS_MODES:
+        mode = "skip"
+    return {
+        "mode": mode,
+        "file_path": raw.get("file_path", "") if isinstance(raw, dict) else "",
+        "github_repo": raw.get("github_repo", "") if isinstance(raw, dict) else "",
+        "github_ref": raw.get("github_ref", "") if isinstance(raw, dict) else "",
+    }
+
+
 async def rules_get(request: Request) -> HTMLResponse:
     state = request.app.state
     session = _session(request)
@@ -143,6 +168,9 @@ async def rules_get(request: Request) -> HTMLResponse:
         rule_rows=rows,
         enable_alerting=bool(session.answers.get("enable_alerting", False)),
         enabled_rule_types=set(session.answers.get("enabled_rule_types", [])),
+        argus=_current_argus_answer(session),
+        default_github_repo=DEFAULT_GITHUB_REPO,
+        error=None,
     )
 
 
@@ -161,9 +189,65 @@ async def rules_post(request: Request) -> HTMLResponse:
         for rt in valid_rule_types:
             if form.get(f"enable_{rt}") == "on":
                 enabled.append(rt)
+
+    # Argus choice (v0.7.7 Touch 5 — merged from former step 13).
+    mode = (form.get("argus_mode") or "skip").strip()
+    file_path = (form.get("argus_file_path") or "").strip()
+    github_repo = (form.get("argus_github_repo") or "").strip()
+    github_ref = (form.get("argus_github_ref") or "").strip()
+
+    rows = _rule_type_choices(state.scope)
+    if mode not in _VALID_ARGUS_MODES:
+        return _render(
+            request,
+            "rules.html",
+            step_index=12,
+            rule_rows=rows,
+            enable_alerting=enable_alerting,
+            enabled_rule_types=set(enabled),
+            argus={
+                "mode": "skip",
+                "file_path": file_path,
+                "github_repo": github_repo,
+                "github_ref": github_ref,
+            },
+            default_github_repo=DEFAULT_GITHUB_REPO,
+            error=f"Unknown argus load mode: {mode!r}.",
+        )
+    if mode == "file" and not file_path:
+        # Block advance with both sections' state preserved so the
+        # operator's rules-engine choices don't vanish on the validation
+        # bounce.
+        return _render(
+            request,
+            "rules.html",
+            step_index=12,
+            rule_rows=rows,
+            enable_alerting=enable_alerting,
+            enabled_rule_types=set(enabled),
+            argus={
+                "mode": mode,
+                "file_path": file_path,
+                "github_repo": github_repo,
+                "github_ref": github_ref,
+            },
+            default_github_repo=DEFAULT_GITHUB_REPO,
+            error=(
+                "File mode selected but no file path was provided. "
+                "Enter an absolute path to an Argus CSV, or pick a "
+                "different mode."
+            ),
+        )
+
     session.answers["enable_alerting"] = enable_alerting
     session.answers["enabled_rule_types"] = sorted(enabled)
-    return _redirect(request, "/step/13")
+    session.answers["argus_choice"] = {
+        "mode": mode,
+        "file_path": file_path or None,
+        "github_repo": github_repo or DEFAULT_GITHUB_REPO,
+        "github_ref": github_ref or None,
+    }
+    return _redirect(request, "/review")
 
 
 # ---- registration ----------------------------------------------------------

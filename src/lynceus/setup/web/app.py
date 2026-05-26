@@ -48,8 +48,11 @@ STEP_TITLES: tuple[str, ...] = (
     "ntfy probe",
     "RSSI threshold",
     "Severity overrides",
-    "Rules engine",
-    "Argus watchlist",
+    # v0.7.7 Touch 5: merged the prior "Rules engine" (step 12) and
+    # "Argus watchlist" (step 13) into a single configuration step.
+    # Operators conceptually treat Argus setup as one decision; the
+    # split added friction without giving them anything extra.
+    "Argus configuration",
 )
 TOTAL_STEPS: int = len(STEP_TITLES)
 
