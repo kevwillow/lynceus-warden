@@ -6,6 +6,97 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`install.sh` refuses `--user` under `sudo`** rather than silently
+  installing to `/root/.local/share/lynceus/`. Under sudo, `$HOME`
+  resolves to `/root` on most distros, so the install would land in
+  the wrong directory (not the operator's home and not where any
+  subsequent non-sudo `lynceus-*` invocation would look). The new
+  refusal mirrors the existing `lynceus-setup` refusal at
+  `src/lynceus/cli/setup.py:1412` and prints both correct recovery
+  invocations side-by-side: `sudo ./install.sh` for system-wide, or
+  `./install.sh --user` (no sudo) for user scope. Auto-resolved scope
+  (no explicit `--user` flag) is unaffected: `EUID=0` still routes to
+  `--system`. The refusal is bypassed during `--dry-run` so an
+  operator can still preview the user-scope plan from a root shell.
+
+- **`lynceus-bootstrap-kismet` closing pointer specifies `--system`**
+  for the system-scope path. Previously the closing block recommended
+  `sudo lynceus-setup --web`; operators following the install.sh
+  `--system` → bootstrap-kismet → setup flow would then hit the
+  wizard's refusal-to-run-as-root-without-`--system` at the next
+  step. Step 6 now reads `sudo lynceus-setup --system --web` (and
+  `sudo lynceus-setup --system` for the terminal alternative), with
+  a one-paragraph explanation of why `--system` is mandatory so an
+  operator who removes the flag knows the constraint.
+
+- **Home page Acknowledge button now stays on the home page.**
+  Clicking Acknowledge on the recent-unacknowledged-alerts card on
+  `/` previously redirected to `/alerts`; the operator lost the rest
+  of their home-page context. The redirect-target helper now
+  whitelists `/` alongside the existing `/alerts*` whitelist, so
+  Referer-driven redirects land back on the surface the operator
+  was actually using. Off-app and unknown referers still fall back
+  to the route's stated default (no open-redirect surface).
+
+- **`/alerts` Acknowledge and Watch buttons render at matched
+  dimensions.** The Watch button previously had no CSS rule and fell
+  through to Pico's default submit-button shape (full-width, tall),
+  while Acknowledge sat next to it as a compact inline button -- the
+  row looked visually unbalanced. Both classes now share a single
+  CSS block (`width: auto`, matching padding and line-height) so they
+  cannot silently drift apart. The snooze dropdown picks up the same
+  compact font so it lines up with its sibling button.
+
+- **`/watchful` Actions column aligns its mixed children.** Each
+  cell on `/watchful` mixes `<form>` buttons (reset, dismiss) with
+  `<details>` disclosures (promote, investigate, confirmed safe).
+  Without an explicit container the form buttons rendered at one
+  baseline while the disclosure summaries sat at another, and
+  narrow viewports clipped past the cell edge instead of wrapping.
+  `display: flex` + `align-items: center` + `flex-wrap: wrap` on
+  `.watchful-actions` pins every action to the row centerline and
+  flows them onto a second line when the column is narrow.
+
+- **`argus_oui` rule filters reserved and locally-administered OUIs
+  at match time.** Real-world devices transmitting all-zeros source
+  MACs (Kismet's representation of malformed-source probe frames,
+  spoofed devices, broadcast artifacts), broadcast frames, and
+  multicast frames no longer fire `argus_oui` alerts against the
+  placeholder watchlist entries the bundled Argus snapshot uses
+  for CCTV vendors with unknown real OUIs. Filtered categories:
+  `00:00:00`, `ff:ff:ff`, IPv4 multicast (`01:00:5e` prefix), IPv6
+  multicast (`33:33` prefix), and locally-administered bit set
+  (second nibble of first octet ∈ {2, 6, a, e} -- catches docker
+  bridges, MAC privacy rotation, virtual NICs). Filter sits in
+  `rules.py` before the DB lookup so the SQL never runs for
+  known-bogus prefixes. The in-memory `rule.patterns` path is
+  intentionally unaffected -- operators who hand-author a
+  `rules.yaml` with `patterns: ["00:00:00"]` are doing it
+  deliberately.
+
+- **`lynceus-import-argus` skips Argus rows with `identifier=00:00:00
+  identifier_type=oui` at import time.** Belt and suspenders: the
+  rules-engine filter (above) defends regardless of data, and the
+  importer filter keeps the watchlist clean of placeholder entries
+  that can never produce a meaningful match. The bundled snapshot
+  ships ~40 rows of this shape (all CCTV vendors where no real OUI
+  was known upstream); they drop cleanly on next import. New
+  `dropped_placeholder_oui` counter surfaces in the run summary
+  alongside the existing drop buckets; an INFO log line per row
+  names the `argus_record_id` so operators can audit without
+  diffing the table.
+
+- **Device RSSI=0 renders as em-dash** on the home page recent-seen
+  card, `/devices` table, and `/devices/<mac>` detail view. Kismet
+  returns 0 for devices it has not directly heard from (learned via
+  another device's beacon list or BLE scan response rather than
+  measured), so a literal "0" misleadingly suggested a noise-floor
+  signal. Both `rssi=0` and `rssi=null` now collapse to the same
+  em-dash placeholder. Display-only change; storage and queries are
+  unchanged.
+
 ## [0.7.8] - 2026-05-26
 
 ### Fixed
