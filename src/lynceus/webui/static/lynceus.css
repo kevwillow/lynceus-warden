@@ -111,8 +111,25 @@
 .sparkline-bar   { background: var(--lyn-sparkline-bar); flex: 1 1 0; min-width: 2px; min-height: 1px; }
 .stat-grid       { display: grid; grid-template-columns: 60px repeat(3, 1fr); gap: 0.5em 1em; align-items: center; }
 .stat-grid .stat-row-label { font-weight: 600; }
-.ack-button-inline { padding: 2px 8px; font-size: 0.85em; }
+/* Inline action buttons on /alerts and the home page recent-alerts
+   card. Both buttons share the same compact size so they line up at
+   the row level instead of one (the Watch button, previously
+   unstyled) rendering at Pico's full submit-button height while the
+   other rendered tiny. Width auto sizes to content; height is driven
+   by line-height + padding so they stay equal regardless of label
+   length. v0.7.9 Touch 4. */
+.ack-button-inline,
+.watch-button-inline {
+    width: auto;
+    padding: 2px 8px;
+    font-size: 0.85em;
+    line-height: 1.4;
+    box-sizing: border-box;
+    vertical-align: middle;
+}
+.watch-snooze-select { font-size: 0.85em; vertical-align: middle; }
 form.inline-form   { display: inline; }
+form.watch-form    { display: inline; margin-left: 0.4em; }
 
 /* Severity-tinted rows in alert tables */
 tr.row-sev-low  { background: var(--lyn-row-sev-low); }
