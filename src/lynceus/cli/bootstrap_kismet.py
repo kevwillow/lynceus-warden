@@ -1094,11 +1094,14 @@ def print_closing_pointer(
     _print("  5. Generate an API key:")
     _print("       Settings -> API Keys -> Create")
     _print("       Name: lynceus  |  Role: readonly")
-    _print("  6. Run: sudo lynceus-setup --web")
+    _print("  6. Run: sudo lynceus-setup --system --web")
     _print("     (web wizard; opens a browser-based configuration form.")
-    _print("      Use plain `sudo lynceus-setup` for the terminal-based")
-    _print("      wizard. Either auto-locates the API key from disk; you")
-    _print("      typically won't need to copy-paste it.)")
+    _print("      Use plain `sudo lynceus-setup --system` for the terminal-")
+    _print("      based wizard. Either auto-locates the API key from disk;")
+    _print("      you typically won't need to copy-paste it. --system")
+    _print("      lands the config at /etc/lynceus/lynceus.yaml where the")
+    _print("      daemon reads it; without it the wizard refuses to run as")
+    _print("      root rather than silently writing to /root/.config.)")
     # Re-run discoverability tip. The operator who just used --reset-config
     # obviously knows about it; everyone else gets a one-liner so a
     # future adapter removal doesn't strand a stale source= line they
