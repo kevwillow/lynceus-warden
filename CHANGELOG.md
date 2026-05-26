@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-05-25
+
 ### Added
 
 - **Dashboard home page now surfaces watchlist record count and
