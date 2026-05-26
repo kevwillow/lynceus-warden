@@ -131,6 +131,25 @@
 form.inline-form   { display: inline; }
 form.watch-form    { display: inline; margin-left: 0.4em; }
 
+/* /watchful Actions column: each row mixes several siblings -- two
+   <form>s (reset, dismiss) plus three <details> disclosures
+   (promote, investigate, confirmed safe). Without a flex container
+   they stacked at inconsistent vertical positions because <details>
+   carries a different baseline than <button>, and the <form>s
+   default to block-level layout. Flex with wrap + center alignment
+   pins every action to the row's vertical centerline and lets them
+   flow onto a second line on narrow viewports instead of clipping.
+   v0.7.9 Touch 5. */
+.watchful-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4em;
+}
+.watchful-actions > form,
+.watchful-actions > details { margin: 0; }
+.watchful-actions .outline { padding: 2px 8px; font-size: 0.85em; line-height: 1.4; }
+
 /* Severity-tinted rows in alert tables */
 tr.row-sev-low  { background: var(--lyn-row-sev-low); }
 tr.row-sev-med  { background: var(--lyn-row-sev-med); }
