@@ -353,6 +353,15 @@ class ImportReport:
     # wins; later occurrences land here so the existing-md path does
     # not see a moving target and report rewrites as updates.
     dropped_in_import_dup: int = 0
+    # v0.7.9 Touch 7. Argus emits OUI rows with identifier=00:00:00 as
+    # a placeholder for vendor records where no real OUI is known
+    # (notably the bundled snapshot's CCTV-vendor block). These rows
+    # can never produce a meaningful match -- the rules.py reserved-
+    # OUI guard already suppresses the match-time false positive, but
+    # admitting the rows clutters the watchlist DB and inflates the
+    # per-type counts the wizard reads. Skip them at import time and
+    # let the operator see the drop in the run summary.
+    dropped_placeholder_oui: int = 0
     normalization_failed: int = 0
     ssid_exact_wildcard_warn: int = 0
     errors: int = 0
@@ -373,6 +382,7 @@ class ImportReport:
             f"{prefix}Dropped (low_confidence): {self.dropped_low_confidence}",
             f"{prefix}Dropped (peer_collision): {self.dropped_peer_collision}",
             f"{prefix}Dropped (in_import_dup): {self.dropped_in_import_dup}",
+            f"{prefix}Dropped (placeholder_oui): {self.dropped_placeholder_oui}",
             f"{prefix}Dropped (normalization_failed): {self.normalization_failed}",
             f"{prefix}Warned (ssid_exact wildcard, imported anyway): "
             f"{self.ssid_exact_wildcard_warn}",
@@ -389,6 +399,7 @@ class ImportReport:
             + self.dropped_low_confidence
             + self.dropped_peer_collision
             + self.dropped_in_import_dup
+            + self.dropped_placeholder_oui
             + self.normalization_failed
         )
         lines.append(
@@ -402,6 +413,7 @@ class ImportReport:
             f"{self.dropped_low_confidence} low_confidence, "
             f"{self.dropped_peer_collision} peer_collision, "
             f"{self.dropped_in_import_dup} in_import_dup, "
+            f"{self.dropped_placeholder_oui} placeholder_oui, "
             f"{self.normalization_failed} normalization_failed)"
         )
         return "\n".join(lines)
@@ -795,6 +807,30 @@ def _classify_row(
                     exc,
                 )
                 return None
+
+        # Placeholder-OUI skip (v0.7.9 Touch 7). Argus emits
+        # identifier=00:00:00 + identifier_type=oui for vendor rows
+        # where no real OUI is known upstream (~40 rows in the bundled
+        # default_watchlist.csv, all CCTV vendors). Admitting them
+        # adds nothing the rules engine can match against -- any
+        # Kismet observation with a 00:00:00 source MAC is filtered
+        # by rules.py's reserved-OUI guard regardless of the
+        # watchlist contents. Skip at import to keep the table clean
+        # and surface the count in the run summary. INFO-level log
+        # per row so operators can audit. Belt and suspenders with
+        # rules.py:_is_reserved_oui_mac (which defends regardless of
+        # importer behavior, including operator-injected rows).
+        if pattern_type == "oui" and pattern == "00:00:00":
+            report.dropped_placeholder_oui += 1
+            logger.info(
+                "argus import: skipping placeholder OUI row "
+                "(pattern=00:00:00 identifier_type=oui) "
+                "argus_record_id=%s -- upstream uses 00:00:00 when no "
+                "real OUI is known; row would never produce a "
+                "meaningful match",
+                argus_id,
+            )
+            return None
         description = _empty_to_none(row["description"])
         new_metadata = _build_metadata_fields(row, confidence)
 
