@@ -545,6 +545,14 @@ def detect_wifi_monitor_capable() -> list[str]:
     an empty list rather than raising -- the operator on a minimal
     install can still proceed with --interface explicitly, or skip
     Wi-Fi entirely.
+
+    Kismet's own runtime-created monitor VIFs (``kismon0``, ``kismon1``,
+    ...) are filtered out via ``filter_kismet_monitor_vifs`` before
+    returning: a VIF backed by the same phy as a candidate parent
+    adapter is Kismet's auto-created shadow and must never be
+    operator-selectable (see Touch 1 of the v0.7.7 smoke aftermath
+    arc — picking one results in double-registration of the same
+    physical adapter and capture failure).
     """
     if shutil.which("iw") is None:
         return []
@@ -557,7 +565,7 @@ def detect_wifi_monitor_capable() -> list[str]:
     if dev_result.returncode != 0:
         return []
     pairs = parse_iw_dev(dev_result.stdout)
-    capable: list[str] = []
+    capable_pairs: list[tuple[str, str]] = []
     for phy, iface in pairs:
         try:
             info = subprocess.run(
@@ -569,8 +577,44 @@ def detect_wifi_monitor_capable() -> list[str]:
         except OSError:
             continue
         if info.returncode == 0 and parse_iw_phy_info_supports_monitor(info.stdout):
-            capable.append(iface)
-    return capable
+            capable_pairs.append((phy, iface))
+    return filter_kismet_monitor_vifs(capable_pairs)
+
+
+def filter_kismet_monitor_vifs(pairs: list[tuple[str, str]]) -> list[str]:
+    """Drop ``kismon*`` interfaces whose phy is shared with another
+    candidate (those are Kismet's auto-created monitor-mode VIFs;
+    selecting them as capture sources double-registers the physical
+    adapter and breaks capture).
+
+    Two-signal match: name pattern ``kismon*`` AND phy shared with
+    another candidate. Name-only filtering would false-positive an
+    operator who renamed their adapter "kismon-test" but doesn't
+    actually have it backing another candidate. A kismon* with no
+    shared phy (orphaned, parent unplugged) is preserved so the
+    operator can decide.
+
+    Filtered interfaces are logged at DEBUG so future debugging can
+    confirm what was dropped. Returns the surviving interface names
+    in their input order.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    phy_counts: dict[str, int] = {}
+    for phy, _iface in pairs:
+        phy_counts[phy] = phy_counts.get(phy, 0) + 1
+    survivors: list[str] = []
+    for phy, iface in pairs:
+        if iface.startswith("kismon") and phy_counts.get(phy, 0) > 1:
+            logger.debug(
+                "filter_kismet_monitor_vifs: dropping %s on %s "
+                "(Kismet runtime VIF; shared phy)",
+                iface,
+                phy,
+            )
+            continue
+        survivors.append(iface)
+    return survivors
 
 
 def detect_bluetooth_interfaces(
