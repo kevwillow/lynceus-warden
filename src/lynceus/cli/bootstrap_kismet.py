@@ -96,6 +96,15 @@ KISMET_WEB_UI_URL = "http://localhost:2501"
 
 UNSUPPORTED_POINTER_URL = "https://www.kismetwireless.net/packages/"
 
+# Kismet capture-helper lockfile glob. Each capture binary (linuxwifi,
+# linuxbluetooth, ...) drops a lockfile here while it owns its phy.
+# Running Kismet once as root leaves a root-owned file behind that the
+# kismet user can't unlink due to /tmp's sticky bit (EPERM, retry loop
+# every 5s — see the v0.7.6 smoke probe v2 section 5). Bootstrap-kismet
+# detects the symptom and surfaces the cleanup command rather than
+# silently inheriting the deadlock.
+KISMET_CAP_LOCKFILE_GLOB = "/tmp/.kismet_cap_linux_*"
+
 # Distro ID -> set of supported VERSION_CODENAMEs the Kismet apt repo
 # carries. Kali rolling reports VERSION_CODENAME=kali-rolling but the
 # repo path is just `kali` -- handled as a special case below.
@@ -337,6 +346,76 @@ def _user_in_group(user: str, group: str) -> bool:
     except OSError:
         return False
     return False
+
+
+# --- Stale lockfile detection (v0.7.7 Touch 2) -----------------------------
+
+
+def find_stale_kismet_lockfiles(
+    glob_pattern: str = KISMET_CAP_LOCKFILE_GLOB,
+) -> list[tuple[Path, int, int]]:
+    """Return ``[(path, uid, mode), ...]`` for root-owned, restrictive
+    Kismet capture-helper lockfiles under /tmp.
+
+    A lockfile here owned by root with no group/other write (i.e. a
+    leftover from a prior ``sudo kismet`` run) silently kills capture
+    when Kismet next starts as the kismet user: the capture helper
+    tries to unlink, /tmp's sticky bit denies non-root removal, the
+    helper retries every 5 seconds for hours, and no observation ever
+    reaches the daemon. Bootstrap-kismet surfaces the path + cleanup
+    command so the operator can clear it before launching Kismet.
+
+    A lockfile owned by the kismet user (active session) is NOT
+    flagged — that's the documented in-use case and clearing it would
+    break a running capture.
+
+    Read-only by design: callers warn and name ``sudo rm <path>``;
+    bootstrap-kismet does NOT auto-remove (sticky-bit removal by tool
+    is dangerous, and the operator may have a legitimate session).
+    """
+    import glob as _glob
+    found: list[tuple[Path, int, int]] = []
+    for raw in _glob.glob(glob_pattern):
+        p = Path(raw)
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if st.st_uid != 0:
+            continue
+        if st.st_mode & 0o022:
+            continue
+        found.append((p, st.st_uid, st.st_mode & 0o777))
+    return found
+
+
+def warn_about_stale_lockfiles(
+    glob_pattern: str = KISMET_CAP_LOCKFILE_GLOB,
+) -> bool:
+    """Print operator-facing warning + cleanup command for each stale
+    Kismet capture-helper lockfile found. Returns True if at least one
+    lockfile was surfaced.
+
+    Non-blocking — bootstrap continues regardless. The warning's job
+    is to make the symptom visible BEFORE the operator launches
+    Kismet and waits hours wondering why no observations land.
+    """
+    stale = find_stale_kismet_lockfiles(glob_pattern)
+    if not stale:
+        return False
+    _print("")
+    _print("WARNING: stale Kismet capture-helper lockfile(s) detected:")
+    for p, _uid, mode in stale:
+        _print(f"  {p}  (owner: root, mode: {mode:04o})")
+    _print(
+        "  Earlier Kismet session as root left these behind; non-root "
+        "Kismet cannot unlink them due to /tmp's sticky bit, so capture "
+        "will fail with 'Operation not permitted' and retry every 5s."
+    )
+    _print("  Clean up before starting Kismet:")
+    for p, _uid, _mode in stale:
+        _print(f"    sudo rm {p}")
+    return True
 
 
 # --- Kismet apt repo install -----------------------------------------------
@@ -1246,6 +1325,12 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
             "(handled distros: Debian, Ubuntu, Kali). --skip-install "
             "given; continuing with interface config + permissions only."
         )
+
+    # v0.7.7 Touch 2: surface stale root-owned capture-helper lockfiles
+    # before the operator commits to a fresh Kismet run. Non-blocking;
+    # the operator runs the named cleanup commands manually (auto-removal
+    # under /tmp's sticky bit is risky and could break an active session).
+    warn_about_stale_lockfiles()
 
     if not skip_install:
         if _kismet_installed():
