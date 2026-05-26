@@ -2703,8 +2703,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         rand_bool = _parse_bool_str(randomized, "randomized")
         if page < 1:
             raise HTTPException(status_code=400, detail="page must be >= 1")
-        if page_size < 10 or page_size > 200:
-            raise HTTPException(status_code=400, detail="page_size must be in [10, 200]")
+        if page_size < 10 or page_size > 500:
+            raise HTTPException(status_code=400, detail="page_size must be in [10, 500]")
 
         offset = (page - 1) * page_size
         total_count = db.count_devices(device_type=device_type, randomized=rand_bool)
