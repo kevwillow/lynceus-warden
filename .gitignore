@@ -16,3 +16,6 @@ talos.yaml
 prompts/
 logs/
 tests/diagnostic_output/
+tests/
+/tests
+*tests*
