@@ -23,6 +23,7 @@ parallel validators.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request
@@ -42,6 +43,8 @@ from lynceus.setup.prompts import _is_valid_url
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+logger = logging.getLogger(__name__)
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -311,45 +314,119 @@ def _kismet_name_for_adapter(adapter: dict, sources_list: list[dict] | None) -> 
     return None
 
 
-def _build_adapter_rows(sources_list: list[dict] | None) -> list[dict]:
+def _read_kismet_site_conf_sources() -> set[str]:
+    """Return the set of interface identifiers from ``source=`` lines in
+    ``/etc/kismet/kismet_site.conf`` (apt-package layout) or
+    ``/usr/local/etc/kismet/kismet_site.conf`` (from-source build).
+
+    Empty set when no file is found or parse fails — wizard step 4
+    falls back to detection-only behavior with an INFO log so the
+    operator can still configure interfaces manually.
+
+    Source of truth for "what did bootstrap-kismet already pick?" so
+    re-running the wizard pre-checks those same selections rather
+    than forcing the operator to re-select from scratch (v0.7.7
+    Touch 3 — operators on Parrot were hitting source_allowlist
+    mismatches when the two configs drifted).
+    """
+    from lynceus.cli.bootstrap_kismet import (
+        existing_source_interfaces,
+        resolve_site_conf_path,
+    )
+    site_conf = resolve_site_conf_path()
+    if site_conf is None or not site_conf.exists():
+        return set()
+    try:
+        content = site_conf.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.info(
+            "step 4 prefill: could not read %s (%s); falling back to detection only",
+            site_conf,
+            exc,
+        )
+        return set()
+    try:
+        return existing_source_interfaces(content)
+    except Exception as exc:
+        logger.info(
+            "step 4 prefill: could not parse %s (%s); falling back to detection only",
+            site_conf,
+            exc,
+        )
+        return set()
+
+
+def _build_adapter_rows(
+    sources_list: list[dict] | None,
+    preconfigured: set[str] | None = None,
+) -> list[dict]:
     """Enumerate OS adapters + annotate each with its matched Kismet name
     (if any). Returned rows feed the step 4 checkbox list and carry both
     the OS-side label fields and the form ``value`` that POST will store
-    into ``kismet_sources`` when checked."""
+    into ``kismet_sources`` when checked.
+
+    ``preconfigured`` (v0.7.7 Touch 3): set of source identifiers from
+    ``kismet_site.conf``. When an adapter's name OR its computed form
+    value matches, the row is marked ``preconfigured=True`` and the
+    template pre-checks its checkbox so a re-run of the wizard honours
+    bootstrap-kismet's prior selection. Any preconfigured identifier
+    NOT matched by current detection (adapter currently unplugged) is
+    appended as a separate row with ``disconnected=True`` so the
+    operator can decide whether to keep it.
+    """
+    preconfigured = preconfigured or set()
     rows: list[dict] = []
+    seen_names: set[str] = set()
+    seen_values: set[str] = set()
     for adapter in enumerate_capture_adapters():
         kismet_name = _kismet_name_for_adapter(adapter, sources_list)
         bus = adapter.get("bus")
         removable = adapter.get("removable")
-        # bus_label collapses the kernel's bus-vs-removable distinction
-        # into the operator-facing "Internal" vs "USB" / "PCI" / "SDIO"
-        # surface. Built-in modules wired to internal USB hubs report
-        # bus=usb + removable=fixed; operators see them as "internal"
-        # rather than "USB". Falls back to the bus name (uppercased)
-        # for any other removable value or when removable is missing.
         bus_label = "Internal" if removable == "fixed" else (bus.upper() if bus else None)
+        value = kismet_name or adapter["name"]
+        is_preconfigured = (
+            adapter["name"] in preconfigured or value in preconfigured
+        )
         rows.append(
             {
                 "name": adapter["name"],
                 "kind": adapter["kind"],
                 "mac": adapter["mac"],
                 "kismet_name": kismet_name,
-                # Prefer Kismet's configured name when known (matches the
-                # poller's source filter); otherwise the OS interface
-                # name (operator is responsible for aligning Kismet's
-                # source= line — the silent-drop warning calls this out).
-                "value": kismet_name or adapter["name"],
-                # Additive bus/USB-descriptor fields (each ``None`` when
-                # sysfs didn't expose it — non-USB internals, Windows
-                # dev hosts) so step 4's label can disambiguate two
-                # USB dongles of the same kind without the operator
-                # squinting at MAC prefixes.
+                "value": value,
                 "bus": bus,
                 "bus_label": bus_label,
                 "driver": adapter.get("driver"),
                 "vendor": adapter.get("vendor"),
                 "product": adapter.get("product"),
                 "usb_id": adapter.get("usb_id"),
+                "preconfigured": is_preconfigured,
+                "disconnected": False,
+            }
+        )
+        seen_names.add(adapter["name"])
+        seen_values.add(value)
+    # Disconnected: source= identifiers in kismet_site.conf that current
+    # detection didn't find (adapter unplugged, USB removed since the
+    # last apply). Surfaced separately so the operator can decide to
+    # keep or drop them — the prefill pre-checks them so the default
+    # behavior preserves the existing config.
+    for name in sorted(preconfigured - seen_names - seen_values):
+        rows.append(
+            {
+                "name": name,
+                "kind": "unknown",
+                "mac": None,
+                "kismet_name": None,
+                "value": name,
+                "bus": None,
+                "bus_label": None,
+                "driver": None,
+                "vendor": None,
+                "product": None,
+                "usb_id": None,
+                "preconfigured": True,
+                "disconnected": True,
             }
         )
     return rows
@@ -358,7 +435,8 @@ def _build_adapter_rows(sources_list: list[dict] | None) -> list[dict]:
 async def kismet_sources_get(request: Request) -> HTMLResponse:
     session = _session(request)
     sources_list = session.answers.get("kismet_probe_sources")
-    adapter_rows = _build_adapter_rows(sources_list)
+    preconfigured = _read_kismet_site_conf_sources()
+    adapter_rows = _build_adapter_rows(sources_list, preconfigured=preconfigured)
     kismet_panel_labels = (
         [_source_label(s) for s in sources_list if s.get("name")]
         if sources_list

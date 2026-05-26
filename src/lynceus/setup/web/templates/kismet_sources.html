@@ -31,12 +31,19 @@
     <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
 
     {% if adapter_rows %}
+      {# v0.7.7 Touch 3: split rows into connected vs disconnected
+         (carried over from /etc/kismet/kismet_site.conf but absent
+         from current detection). Both render as kismet_sources
+         checkboxes; the disconnected block is in its own fieldset
+         so the operator sees the provenance at a glance. #}
+      {% set connected_rows = adapter_rows | rejectattr("disconnected") | list %}
+      {% set disconnected_rows = adapter_rows | selectattr("disconnected") | list %}
       <fieldset>
         <legend>Local capture adapters</legend>
-        {% set has_unmatched = adapter_rows | selectattr("kismet_name", "none") | list %}
-        {% for row in adapter_rows %}
+        {% set has_unmatched = connected_rows | selectattr("kismet_name", "none") | list %}
+        {% for row in connected_rows %}
           <label>
-            <input type="checkbox" name="kismet_sources" value="{{ row.value }}">
+            <input type="checkbox" name="kismet_sources" value="{{ row.value }}"{% if row.preconfigured %} checked{% endif %}>
             <strong><code>{{ row.name }}</code></strong>
             <small>
               [{{ "Wi-Fi" if row.kind == "wifi" else "Bluetooth" }}]
@@ -89,6 +96,27 @@
             empty database).
           </small>
         </p>
+      {% endif %}
+
+      {% if disconnected_rows %}
+        <fieldset>
+          <legend>Previously configured (currently disconnected)</legend>
+          <small>
+            These <code>source=</code> identifiers are in
+            <code>/etc/kismet/kismet_site.conf</code> but no matching
+            adapter was found in current detection. Either the adapter
+            is unplugged, or the line is stale. Pre-checked so the
+            existing config is preserved on apply &mdash; uncheck to
+            drop the identifier from <code>lynceus.yaml</code>.
+          </small>
+          {% for row in disconnected_rows %}
+            <label title="From kismet_site.conf; not currently detected">
+              <input type="checkbox" name="kismet_sources" value="{{ row.value }}" checked>
+              <strong><code>{{ row.name }}</code></strong>
+              <small>&mdash; previously configured, currently disconnected</small>
+            </label>
+          {% endfor %}
+        </fieldset>
       {% endif %}
     {% else %}
       <article class="wizard-error">
