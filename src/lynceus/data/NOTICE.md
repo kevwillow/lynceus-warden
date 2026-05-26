@@ -8,14 +8,16 @@ equipment.
 
 ## Snapshot
 
-- **Source:** Argus CP11-format CSV export (`schema_version=21`)
-- **Exported at:** 2026-05-17T15:53:27Z
-- **Records:** 22533
-- **Identifier types (admitted, 22316 of 22533 rows):**
-  17795 mac_range, 3976 ble_manufacturer_id (incl. ble_company_id alias),
-  427 drone_id_prefix, 86 oui, 18 ble_uuid (incl. ble_service / ble_service_uuid
-  aliases), 10 SSID (5 ssid_exact alias to ssid + 5 ssid_pattern), 4 mac.
-- **Dropped at import:** 217 rows across 28 residual identifier types
+- **Source:** Argus CSV export (`schema_version=30`)
+- **Exported at:** 2026-05-25T02:33:05Z
+- **Records:** 41428
+- **Identifier types (admitted, 23571 of 41428 rows):**
+  17804 mac_range, 4684 ble_manufacturer_id (incl. ble_company_id alias),
+  462 oui, 427 drone_id_prefix, 139 ble_uuid (incl. ble_service /
+  ble_service_uuid aliases), 30 SSID (24 ssid_pattern + 6 ssid_exact alias
+  to ssid), 21 ble_local_name, 4 mac.
+- **Dropped at import:** ~17857 rows across residual identifier types
+  Argus has added since the last bundle refresh
   (see `docs/ARGUS_RESIDUALS.md` for the per-type breakdown).
 
 This snapshot is provided as a development starting point so that a fresh
