@@ -49,6 +49,7 @@ CONSOLE_SCRIPTS=(
 
 ACTION=install
 SCOPE=""
+SCOPE_EXPLICIT=0
 DRY_RUN=0
 PURGE=0
 
@@ -131,12 +132,14 @@ while [[ $# -gt 0 ]]; do
                 err "Cannot combine --$SCOPE and --user."; exit 2
             fi
             SCOPE=user
+            SCOPE_EXPLICIT=1
             ;;
         --system)
             if [[ -n "$SCOPE" && "$SCOPE" != "system" ]]; then
                 err "Cannot combine --$SCOPE and --system."; exit 2
             fi
             SCOPE=system
+            SCOPE_EXPLICIT=1
             ;;
         --uninstall)
             ACTION=uninstall
@@ -176,6 +179,31 @@ if [[ -z "$SCOPE" ]]; then
     else
         SCOPE=user
     fi
+fi
+
+# Refuse `sudo ./install.sh --user`. With EUID=0, $HOME resolves to
+# /root (sudo doesn't reset HOME by default on most distros), so the
+# install lands in /root/.local/share/lynceus/ — not the operator's
+# home, and not where any subsequent non-sudo `lynceus-*` invocation
+# would look. Silent re-routing is worse than refusal: the operator's
+# last touch surface (install) must NOT silently switch scopes.
+# Mirror the lynceus-setup refusal at src/lynceus/cli/setup.py:1412.
+# Auto-resolved user (no explicit --user flag) under EUID=0 already
+# took the --system branch above, so this only fires on explicit
+# `sudo ./install.sh --user`. Bypassed during --dry-run so an operator
+# can still preview the user-scope plan from a root shell.
+if [[ "$ACTION" == "install" && "$SCOPE" == "user" && "$SCOPE_EXPLICIT" -eq 1 \
+      && "$DRY_RUN" -eq 0 && "$(id -u)" -eq 0 ]]; then
+    err "Refusing to install --user under sudo."
+    err ""
+    err "Running as root with --user scope would install to"
+    err "  /root/.local/share/lynceus/"
+    err "which is not your home directory and not where lynceus expects"
+    err "to find data. Did you mean one of:"
+    err ""
+    err "  sudo ./install.sh             # system-wide (recommended)"
+    err "  ./install.sh --user           # user scope, no sudo"
+    exit 2
 fi
 
 # --- pre-flight ------------------------------------------------------------
