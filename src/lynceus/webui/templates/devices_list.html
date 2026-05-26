@@ -41,7 +41,7 @@
           <tr>
             <th>Device</th>
             <th>MAC</th>
-            <th>Type</th>
+            <th style="white-space: nowrap;">Type</th>
             <th>Vendor</th>
             <th>BLE name</th>
             <th>Probes</th>
@@ -58,7 +58,7 @@
             <tr>
               <td>{{ d | device_label }}</td>
               <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
-              <td>{{ d.device_type }}</td>
+              <td style="white-space: nowrap;">{{ d.device_type }}</td>
               <td>{{ d.oui_vendor or "—" }}</td>
               <td>{{ d.ble_name or "—" }}</td>
               <td>{{ d.probe_ssids | probe_ssids_list | join(", ") }}</td>
