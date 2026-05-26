@@ -418,6 +418,64 @@ def warn_about_stale_lockfiles(
     return True
 
 
+# --- Lingering monitor VIF detection (v0.7.7 Touch 8) ----------------------
+
+
+def find_lingering_kismon_vifs(
+    sys_class_net: Path = Path("/sys/class/net"),
+) -> list[str]:
+    """Return interface names matching ``kismon*`` under ``/sys/class/net``.
+
+    Kismet's monitor-mode VIFs are runtime-created and torn down on
+    clean shutdown. A lingering kismon* entry means a prior Kismet
+    runtime crashed or was killed mid-session without cleanup;
+    bootstrap-kismet surfaces the cleanup command (``sudo iw dev
+    <name> del``) so a fresh capture won't fight the old VIF for the
+    same phy.
+
+    Read-only — bootstrap-kismet does NOT auto-remove. The candidate
+    Wi-Fi filter (``filter_kismet_monitor_vifs``) already prevents
+    the operator from accidentally selecting one as a capture source;
+    the warning is separate, naming the lingering interfaces so the
+    operator can clean them up before the next Kismet run.
+    """
+    if not sys_class_net.is_dir():
+        return []
+    try:
+        names = sorted(
+            e.name for e in sys_class_net.iterdir() if e.name.startswith("kismon")
+        )
+    except OSError:
+        return []
+    return names
+
+
+def warn_about_lingering_kismon_vifs(
+    sys_class_net: Path = Path("/sys/class/net"),
+) -> bool:
+    """Print operator-facing warning + cleanup commands for each
+    lingering kismon* VIF in sysfs. Returns True if any were found.
+
+    Non-blocking.
+    """
+    vifs = find_lingering_kismon_vifs(sys_class_net)
+    if not vifs:
+        return False
+    _print("")
+    _print("WARNING: lingering Kismet monitor VIF(s) in sysfs:")
+    for name in vifs:
+        _print(f"  {name}")
+    _print(
+        "  A previous Kismet runtime created these monitor-mode VIFs "
+        "and didn't tear them down on shutdown. Bootstrap-kismet will "
+        "continue, but they may interfere with new captures on the "
+        "same phy. Remove them before starting Kismet:"
+    )
+    for name in vifs:
+        _print(f"    sudo iw dev {name} del")
+    return True
+
+
 # --- Kismet apt repo install -----------------------------------------------
 
 
@@ -1331,6 +1389,11 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
     # the operator runs the named cleanup commands manually (auto-removal
     # under /tmp's sticky bit is risky and could break an active session).
     warn_about_stale_lockfiles()
+
+    # v0.7.7 Touch 8: surface lingering kismon* monitor-mode VIFs that
+    # a prior Kismet runtime left in sysfs. Non-blocking; operator runs
+    # `sudo iw dev <name> del` to clean up before the next capture.
+    warn_about_lingering_kismon_vifs()
 
     if not skip_install:
         if _kismet_installed():
