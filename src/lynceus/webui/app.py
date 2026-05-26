@@ -633,6 +633,12 @@ def _safe_redirect_target(request: Request, default: str) -> str:
     if parsed.scheme and parsed.scheme not in ("http", "https"):
         return default
     path = parsed.path or ""
+    # Home page is a valid acknowledge surface: the recent-unacknowledged
+    # alerts card on / posts to the same /alerts/<id>/ack endpoint, and
+    # an operator who clicks Acknowledge from / should land back on /
+    # rather than being teleported to /alerts (v0.7.9 Touch 3).
+    if path == "" or path == "/":
+        return "/"
     if path == "/alerts":
         return "/alerts"
     if path.startswith("/alerts/"):
