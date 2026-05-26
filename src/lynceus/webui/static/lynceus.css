@@ -190,10 +190,20 @@ details > summary { cursor: pointer; }
    gradient fades to var(--pico-background-color) (which Pico swaps per
    theme) so the fade looks correct in both light and dark mode. The
    edge shadow flips light↔dark via --lyn-scroll-edge-shadow so the
-   "scrollable" cue survives the theme flip. */
+   "scrollable" cue survives the theme flip.
+
+   v0.7.7 Touch 4: white-space: nowrap on the table cells forces the
+   table to its natural content width rather than squashing text
+   inside cells; combined with overflow-x: auto on the wrapper, that
+   gives an actual horizontal scrollbar on narrow viewports rather
+   than cells collapsing to illegible widths. Without nowrap the
+   table never exceeds 100% (cells wrap text), so the wrapper's
+   overflow-x never engages and the columns just squash — which is
+   what the v0.7.6 smoke probe v2 observed on the /watchlist page. */
 .table-scroll {
     width: 100%;
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
     background:
         linear-gradient(to right, var(--pico-background-color, white) 30%, transparent) 0 0,
         linear-gradient(to right, transparent, var(--pico-background-color, white) 70%) 100% 0,
@@ -203,3 +213,5 @@ details > summary { cursor: pointer; }
     background-size: 40px 100%, 40px 100%, 14px 100%, 14px 100%;
     background-attachment: local, local, scroll, scroll;
 }
+.table-scroll table th,
+.table-scroll table td { white-space: nowrap; }
