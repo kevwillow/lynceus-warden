@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Dashboard home page now surfaces watchlist record count and
+  snapshot date** with graceful handling for a new
+  "no watchlist loaded" state. Previously the freshness signal
+  lived only on `/settings`. A single line below the last-poll
+  heartbeat reads `Watchlist: 41,428 records · snapshot
+  2026-05-25` for a fresh import, the same content with a
+  `stale` badge when the import predates
+  `watchlist_staleness_warn_days`, and
+  `Watchlist: not loaded (configure)` with a deep link to
+  `/settings#watchlist-freshness` when no import has been
+  recorded. Legacy pre-migration-012 installs that don't have
+  the `import_runs` table yet fall through to the not-loaded
+  state instead of 500-ing the home page.
+
+### Changed
+
+- **Argus watchlist loading is now opt-in via the web wizard.**
+  The wizard's argus step (`lynceus-setup --web` → step 13)
+  presents four choices: **Skip** (default), **Use bundled
+  snapshot**, **Fetch from GitHub**, and **Import from file**.
+  Previously the bundled snapshot was auto-imported on first
+  apply; reflects that Lynceus is a standalone product enhanced
+  by — but not dependent on — the Argus database. Existing
+  watchlist data is preserved when operators re-run the wizard
+  and choose Skip ("Skip" means "don't run the importer," not
+  "clear the watchlist"). GitHub-mode network failures degrade
+  to an `ApplyStep` warning so the apply still completes and the
+  operator can retry, switch modes, or proceed without a
+  refresh. The interactive CLI wizard (`lynceus-setup` without
+  `--web`) still auto-imports the bundled snapshot; that path
+  is the legacy default and unchanged in this release.
+
+- **Bundled Argus snapshot refreshed from
+  `kevwillow/argus-db@69a9355` (41,428 records, exported
+  2026-05-25).** Previous bundle was ~22,533 records exported
+  2026-05-17. The new bundle's schema_version is 30
+  (importer's accept-list is `["25", "26", "27"]`; the warn-don't-
+  abort layer logs the unknown value on import and admits the
+  rows anyway).
+
 ### Fixed
 
 - **Devices now appear in the dashboard when Kismet captures them.**
