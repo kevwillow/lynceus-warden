@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-05-26
+
 ### Fixed
 
 - **`install.sh` refuses `--user` under `sudo`** rather than silently
