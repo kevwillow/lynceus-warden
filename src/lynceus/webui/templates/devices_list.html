@@ -53,6 +53,20 @@
     {% endif %}
   </form>
 
+  {# Quick-filter presets: plain GET links (not tabs) that set the
+     filter params for the common views. Each highlights when the
+     current params match it; presets can co-highlight (e.g. Wi-Fi +
+     Probing) since they are filter shortcuts, not mutually exclusive
+     tabs. #}
+  <nav class="preset-filters" aria-label="quick filters">
+    <small class="dim">quick filters:</small>
+    <a href="/devices"{% if not device_type and probing is none and randomized is none %} class="active"{% endif %}>All</a>
+    <a href="/devices?device_type=wifi"{% if device_type == 'wifi' %} class="active"{% endif %}>Wi-Fi</a>
+    <a href="/devices?device_type=bluetooth"{% if device_type == 'bluetooth' %} class="active"{% endif %}>Bluetooth</a>
+    <a href="/devices?device_type=remote_id"{% if device_type == 'remote_id' %} class="active"{% endif %}>Drones</a>
+    <a href="/devices?probing=yes"{% if probing is sameas true %} class="active"{% endif %}>Probing</a>
+  </nav>
+
   <p><small>{{ total_count }} device(s) total &middot; page {{ page }} of {{ total_pages }}</small></p>
 
   {% if devices %}

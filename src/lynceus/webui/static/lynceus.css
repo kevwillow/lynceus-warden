@@ -91,6 +91,15 @@
 .topnav a.active { font-weight: 600; }
 .dim         { opacity: 0.55; }
 
+/* Quick-filter preset chips above the /devices table. Not tabs -- each
+   is a plain GET link setting filter params. Mirrors the topnav link +
+   theme-toggle border idiom: outlined chips, the active one filled and
+   bold. v0.8.0. */
+.preset-filters       { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; margin: 0.5em 0 1em; }
+.preset-filters a     { padding: 0.1em 0.7em; font-size: 0.85em; text-decoration: none; border: 1px solid var(--lyn-topnav-border); border-radius: 4px; line-height: 1.5; }
+.preset-filters a:hover { border-color: currentColor; }
+.preset-filters a.active { font-weight: 600; background: var(--lyn-badge-neutral-bg); color: var(--lyn-badge-neutral-fg); border-color: var(--lyn-badge-neutral-fg); }
+
 /* Theme toggle in the topnav. margin-left:auto pushes it to the right
    end of the flex row so it doesn't collide with the link cluster. */
 .theme-toggle {
