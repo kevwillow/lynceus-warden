@@ -694,6 +694,11 @@ class Poller:
         # /datasource/all_sources.json as two rows sharing one UUID;
         # grouping by UUID gives the alias set.
         self._source_alias_map: dict[str, frozenset[str]] | None = None
+        # Startup robustness (BT capture-source arc): after the health
+        # check, surface any allowlisted source Kismet isn't currently
+        # capturing from, so an unplugged dongle / hciN index reorder /
+        # wizard mis-pick is LOUD at boot instead of a silent per-tick drop.
+        self._warn_absent_allowlisted_sources()
         if config.rules_path:
             self.ruleset = load_ruleset(config.rules_path)
             active = sum(1 for r in self.ruleset.rules if r.enabled)
@@ -801,6 +806,62 @@ class Poller:
             {k: sorted(v) for k, v in aliases.items()},
         )
         return aliases
+
+    def _warn_absent_allowlisted_sources(self) -> None:
+        """Warn (don't block) when a configured ``kismet_sources`` entry
+        isn't among Kismet's live sources at startup.
+
+        Premise-independent robustness for the source_allowlist gate: an
+        allowlisted name Kismet isn't currently capturing from admits zero
+        observations, which otherwise surfaces only as silent
+        ``dropped_source_allowlist`` ticks. This catches an unplugged USB
+        adapter at boot, an hciN index reorder, and any wizard mis-pick.
+        One aggregated WARNING line (the v0.7.5 INFO-aggregation style)
+        names the missing source(s) and lists the live sources for
+        contrast.
+
+        No-op when no allowlist is configured (the gate is bypassed
+        anyway). A presence match is conservative — name OR interface OR
+        capture_interface — so a config that legitimately targets a VIF's
+        capture_interface (e.g. ``kismon0``) doesn't false-warn. A fetch
+        failure (auth, network, 5xx) is logged at WARNING and swallowed so
+        startup never dies on it. Deliberately does NOT populate
+        ``self._source_alias_map``: that stays lazily built on the first
+        tick, so a transient failure here can't cache an empty map and
+        defeat the alias expansion."""
+        if self._source_allowlist is None:
+            return
+        try:
+            sources = self.client.list_sources()
+        except Exception as e:
+            logger.warning(
+                "could not enumerate Kismet live sources at startup for the "
+                "allowlist presence check (%s); skipping — per-tick drop "
+                "logging still covers source mismatches",
+                e,
+            )
+            return
+        live: set[str] = set()
+        for src in sources:
+            for key in ("name", "interface", "capture_interface"):
+                val = (src.get(key) or "").strip()
+                if val:
+                    live.add(val)
+        missing = sorted(s for s in self._source_allowlist if s not in live)
+        if not missing:
+            return
+        live_names = sorted(
+            name
+            for src in sources
+            if (name := (src.get("name") or "").strip())
+        )
+        logger.warning(
+            "allowlisted source(s) %s not present in Kismet's live sources "
+            "%s; their observations will be dropped — check the adapter is "
+            "connected and the names match setup",
+            missing,
+            live_names,
+        )
 
     def _resolve_source_allowlist(self) -> frozenset[str] | None:
         """Expand the configured allowlist through the alias map.
