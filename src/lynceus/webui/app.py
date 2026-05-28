@@ -111,6 +111,22 @@ def _parse_bool_str(value: str | None, name: str) -> bool | None:
     raise HTTPException(status_code=400, detail=f"invalid {name}: expected 'true' or 'false'")
 
 
+def _parse_probing_str(value: str | None) -> bool | None:
+    """Parse the /devices probing tri-state: yes/no/None(any).
+
+    Distinct token vocabulary from _parse_bool_str (true/false) because
+    the probing presets use ?probing=yes -- keeping it separate avoids
+    overloading the randomized control's wording.
+    """
+    if value is None:
+        return None
+    if value == "yes":
+        return True
+    if value == "no":
+        return False
+    raise HTTPException(status_code=400, detail="invalid probing: expected 'yes' or 'no'")
+
+
 def _total_pages(total_count: int, page_size: int) -> int:
     if total_count <= 0:
         return 1
@@ -2688,6 +2704,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         request: Request,
         device_type: str | None = Query(default=None),
         randomized: str | None = Query(default=None),
+        probing: str | None = Query(default=None),
         page: int = Query(default=1),
         page_size: int = Query(default=50),
     ):
@@ -2698,28 +2715,37 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # values (e.g. device_type=cellular) still 400 -- the diagnostic
         # arc kept that posture intentional, matching the existing
         # ValueError raised by db.list_devices on unknown literals.
+        # "bluetooth" is a query-only alias the db layer expands to the
+        # two BT subtypes; it is accepted here but never stored.
         if device_type == "":
             device_type = None
         if randomized == "":
             randomized = None
+        if probing == "":
+            probing = None
         if device_type is not None and device_type not in (
-            "wifi", "ble", "bt_classic", "remote_id"
+            "wifi", "ble", "bt_classic", "remote_id", "bluetooth"
         ):
             raise HTTPException(status_code=400, detail="invalid device_type")
         rand_bool = _parse_bool_str(randomized, "randomized")
+        probing_bool = _parse_probing_str(probing)
         if page < 1:
             raise HTTPException(status_code=400, detail="page must be >= 1")
         if page_size < 10 or page_size > 500:
             raise HTTPException(status_code=400, detail="page_size must be in [10, 500]")
 
         offset = (page - 1) * page_size
-        total_count = db.count_devices(device_type=device_type, randomized=rand_bool)
+        total_count = db.count_devices(
+            device_type=device_type, randomized=rand_bool, probing=probing_bool
+        )
         devices = db.list_devices(
             limit=page_size,
             offset=offset,
             device_type=device_type,
             randomized=rand_bool,
+            probing=probing_bool,
         )
+        filters_active = bool(device_type) or rand_bool is not None or probing_bool is not None
         return app.state.templates.TemplateResponse(
             request=request,
             name="devices_list.html",
@@ -2733,6 +2759,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "total_pages": _total_pages(total_count, page_size),
                 "device_type": device_type,
                 "randomized": rand_bool,
+                "probing": probing_bool,
+                "filters_active": filters_active,
             },
         )
 

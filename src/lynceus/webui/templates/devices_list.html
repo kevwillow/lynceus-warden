@@ -9,9 +9,11 @@
       <label>type
         <select name="device_type">
           <option value="" {% if not device_type %}selected{% endif %}>any</option>
-          <option value="wifi" {% if device_type == 'wifi' %}selected{% endif %}>wifi</option>
-          <option value="ble" {% if device_type == 'ble' %}selected{% endif %}>ble</option>
-          <option value="bt_classic" {% if device_type == 'bt_classic' %}selected{% endif %}>bt_classic</option>
+          <option value="wifi" {% if device_type == 'wifi' %}selected{% endif %}>Wi-Fi</option>
+          <option value="bluetooth" {% if device_type == 'bluetooth' %}selected{% endif %}>Bluetooth (any)</option>
+          <option value="ble" {% if device_type == 'ble' %}selected{% endif %}>BLE</option>
+          <option value="bt_classic" {% if device_type == 'bt_classic' %}selected{% endif %}>Classic Bluetooth</option>
+          <option value="remote_id" {% if device_type == 'remote_id' %}selected{% endif %}>Drone (Remote ID)</option>
         </select>
       </label>
       <label>randomized
@@ -19,6 +21,13 @@
           <option value="" {% if randomized is none %}selected{% endif %}>any</option>
           <option value="false" {% if randomized is sameas false %}selected{% endif %}>no</option>
           <option value="true" {% if randomized is sameas true %}selected{% endif %}>yes</option>
+        </select>
+      </label>
+      <label>probing
+        <select name="probing">
+          <option value="" {% if probing is none %}selected{% endif %}>any</option>
+          <option value="no" {% if probing is sameas false %}selected{% endif %}>no</option>
+          <option value="yes" {% if probing is sameas true %}selected{% endif %}>yes</option>
         </select>
       </label>
       <label>page size
@@ -30,6 +39,18 @@
       </label>
       <button type="submit">filter</button>
     </fieldset>
+    {% if filters_active %}
+      {%- set _parts = [] -%}
+      {% if device_type %}{% set _ = _parts.append('type=' ~ device_type) %}{% endif %}
+      {% if randomized is sameas true %}{% set _ = _parts.append('randomized=yes') %}{% endif %}
+      {% if randomized is sameas false %}{% set _ = _parts.append('randomized=no') %}{% endif %}
+      {% if probing is sameas true %}{% set _ = _parts.append('probing=yes') %}{% endif %}
+      {% if probing is sameas false %}{% set _ = _parts.append('probing=no') %}{% endif %}
+      <p class="filters-summary">
+        <small>Filtered by: {{ _parts | join(', ') }}</small>
+        &mdash; <a class="reset-filters" href="/devices">reset filters</a>
+      </p>
+    {% endif %}
   </form>
 
   <p><small>{{ total_count }} device(s) total &middot; page {{ page }} of {{ total_pages }}</small></p>
@@ -82,6 +103,8 @@
     {% if device_type %}{% set _ = qs.append('device_type=' ~ device_type) %}{% endif %}
     {% if randomized is sameas true %}{% set _ = qs.append('randomized=true') %}{% endif %}
     {% if randomized is sameas false %}{% set _ = qs.append('randomized=false') %}{% endif %}
+    {% if probing is sameas true %}{% set _ = qs.append('probing=yes') %}{% endif %}
+    {% if probing is sameas false %}{% set _ = qs.append('probing=no') %}{% endif %}
     {% set _ = qs.append('page_size=' ~ page_size) %}
     {% set base_qs = qs | join('&') %}
     <ul>
