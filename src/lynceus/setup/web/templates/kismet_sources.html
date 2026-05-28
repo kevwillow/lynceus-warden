@@ -42,39 +42,37 @@
         <legend>Local capture adapters</legend>
         {% set has_unmatched = connected_rows | selectattr("kismet_name", "none") | list %}
         {% for row in connected_rows %}
+          {% set human = row.product or row.vendor %}
           <label>
             <input type="checkbox" name="kismet_sources" value="{{ row.value }}"{% if row.preconfigured %} checked{% endif %}>
-            <strong><code>{{ row.name }}</code></strong>
+            {# Lead with the human-readable identity (vendor/model + USB ID)
+               printed on the adapter so the operator picks by the dongle in
+               their hand, not by a cryptic hciN/wlxN kernel name — the
+               mis-pick this row redesign closes. The OS interface name is
+               still shown below, explicitly labelled "interface", so it's
+               never hidden. Fall back to the bare interface name only when
+               sysfs exposed no USB descriptors at all (internal SoC, PCI).
+
+               row.bus_label collapses the bus-vs-removable surface: built-in
+               modules on internal USB hubs report bus=usb + removable=fixed
+               and read as "Internal"; external dongles read with the bus
+               name ("USB"). Rendered as a plain labelled annotation rather
+               than the old bare "(USB btusb)" / "(Internal btusb)" that told
+               the operator nothing on its own. #}
+            {% if human or row.usb_id %}
+              <strong>{% if human %}{{ human }}{% if row.usb_id %} <code>{{ row.usb_id }}</code>{% endif %}{% else %}<code>{{ row.usb_id }}</code>{% endif %}</strong>
+            {% else %}
+              <strong><code>{{ row.name }}</code></strong>
+            {% endif %}
             <small>
               [{{ "Wi-Fi" if row.kind == "wifi" else "Bluetooth" }}]
-              {# Operator disambiguator: when sysfs exposed the USB
-                 Product string descriptor, lead with it (with bus +
-                 driver in parens) so two same-kind USB dongles read
-                 as distinct rows. When both vendor and product are
-                 absent (e.g. internal SoC adapters or USB devices
-                 that omit the string descriptors), fall back to the
-                 VID:PID pair if we have it, then to the driver
-                 module name, so the row still has SOMETHING to
-                 disambiguate against. Final fallback is the bare
-                 [Wi-Fi] / [Bluetooth] tag.
-
-                 row.bus_label collapses the bus-vs-removable surface:
-                 built-in modules on internal USB hubs report bus=usb
-                 + removable=fixed and render as "Internal" so
-                 operators can tell them from external dongles
-                 (which render with the bus name like "USB"). #}
-              {% if row.product %}
-                &mdash; {{ row.product }}{% if row.bus_label %} ({{ row.bus_label }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
-              {% elif row.vendor %}
-                &mdash; {{ row.vendor }}{% if row.bus_label %} ({{ row.bus_label }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
-              {% elif row.usb_id %}
-                &mdash; {{ row.usb_id }}{% if row.bus_label %} ({{ row.bus_label }}{% if row.driver %} {{ row.driver }}{% endif %}){% endif %}
-              {% elif row.driver %}
-                &mdash; ({{ row.bus_label if row.bus_label else "" }}{% if row.bus_label %} {% endif %}{{ row.driver }})
-              {% endif %}
+              {% if row.bus_label %}&middot; {{ row.bus_label }}{% endif %}
+              {% if row.driver %}&middot; {{ row.driver }} driver{% endif %}
+              {% if human or row.usb_id %}&middot; interface <code>{{ row.name }}</code>{% endif %}
               {% if row.mac %}&middot; MAC <code>{{ row.mac }}</code>{% endif %}
               {% if row.kismet_name %}
                 &mdash; Kismet calls this <code>{{ row.kismet_name }}</code>
+                &mdash; the capture source your pipeline actually receives data from
               {% else %}
                 &mdash; not yet configured in Kismet
               {% endif %}
