@@ -11,7 +11,6 @@ import logging
 import math
 import sqlite3
 import time
-from math import ceil
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -125,12 +124,6 @@ def _parse_probing_str(value: str | None) -> bool | None:
     if value == "no":
         return False
     raise HTTPException(status_code=400, detail="invalid probing: expected 'yes' or 'no'")
-
-
-def _total_pages(total_count: int, page_size: int) -> int:
-    if total_count <= 0:
-        return 1
-    return max(1, ceil(total_count / page_size))
 
 
 # Authoritative set of rule_type literals for the /alerts filter
@@ -272,6 +265,14 @@ _ALLOWLIST_PER_PAGE_DEFAULT: int = 50
 # (default 50 keeps the first paint cheap on a fresh visit).
 _WATCHLIST_PER_PAGE_ALLOWED: tuple[int, ...] = (25, 50, 100, 200)
 _WATCHLIST_PER_PAGE_DEFAULT: int = 50
+
+# /devices pagination. Wider per_page set than the other list pages --
+# the v0.7.8 cap bump deliberately exposed 250 / 500 (and 10) in the
+# /devices dropdown for sorting a large wardrive capture. Matching the
+# allowed set to the dropdown's existing values keeps every selectable
+# option valid; B-5 only changes out-of-range handling (clamp, not 400).
+_DEVICES_PER_PAGE_ALLOWED: tuple[int, ...] = (10, 25, 50, 100, 200, 250, 500)
+_DEVICES_PER_PAGE_DEFAULT: int = 50
 
 # Pattern_type filter options for /watchlist. Migration 013 expanded
 # the v0.3 set to admit ble_manufacturer_id / drone_id_prefix, and
@@ -2705,8 +2706,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         device_type: str | None = Query(default=None),
         randomized: str | None = Query(default=None),
         probing: str | None = Query(default=None),
-        page: int = Query(default=1),
-        page_size: int = Query(default=50),
+        page: str | None = Query(default=None),
+        page_size: str | None = Query(default=None),
     ):
         # The filter form's "any" <option value=""> emits an empty
         # string, which would slip past the `is not None` guards and
@@ -2729,18 +2730,24 @@ def create_app(config: Config, db: Database) -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid device_type")
         rand_bool = _parse_bool_str(randomized, "randomized")
         probing_bool = _parse_probing_str(probing)
-        if page < 1:
-            raise HTTPException(status_code=400, detail="page must be >= 1")
-        if page_size < 10 or page_size > 500:
-            raise HTTPException(status_code=400, detail="page_size must be in [10, 500]")
-
-        offset = (page - 1) * page_size
+        # Pagination uses the shared two-phase helper (parse -> clamp)
+        # like every other list page: an out-of-range page or page_size
+        # clamps silently instead of 400 (B-5). Invalid per_page falls
+        # back to the default; the page is clamped to [1, total_pages]
+        # once the total is known.
+        requested_page, per_page = parse_pagination(
+            page,
+            page_size,
+            allowed_per_page=_DEVICES_PER_PAGE_ALLOWED,
+            default_per_page=_DEVICES_PER_PAGE_DEFAULT,
+        )
         total_count = db.count_devices(
             device_type=device_type, randomized=rand_bool, probing=probing_bool
         )
+        pagination = build_pagination(requested_page, per_page, total_count)
         devices = db.list_devices(
-            limit=page_size,
-            offset=offset,
+            limit=pagination.per_page,
+            offset=pagination.offset,
             device_type=device_type,
             randomized=rand_bool,
             probing=probing_bool,
@@ -2759,9 +2766,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "active": "devices",
                 "devices": devices,
                 "total_count": total_count,
-                "page": page,
-                "page_size": page_size,
-                "total_pages": _total_pages(total_count, page_size),
+                "page": pagination.page,
+                "page_size": pagination.per_page,
+                "total_pages": pagination.total_pages,
                 "device_type": device_type,
                 "randomized": rand_bool,
                 "probing": probing_bool,
