@@ -1193,15 +1193,21 @@ def _count_kismet_sources(config: Config) -> int:
 
 
 def _log_config_provenance(config_path: str) -> None:
-    """Emit the startup config-provenance line (v0.7.5 aggregation style):
-    one INFO naming the config file the daemon loaded and its scope, so a
-    scope mismatch ("I edited /etc but the daemon read ~/.config") is
-    visible at a glance in ``journalctl`` instead of inferred from a
-    downstream stale-key failure. Observability only — never blocks
-    startup."""
+    """Emit the startup config-provenance lines (v0.7.5 aggregation style).
+
+    One INFO names the config file the daemon loaded and its scope, so a
+    scope mismatch ("I edited /etc but the daemon read ~/.config") is visible
+    at a glance in ``journalctl`` instead of inferred from a downstream
+    stale-key failure. When a config ALSO exists in the OTHER canonical scope,
+    one additional WARNING names both files, says which is in use, and flags
+    which is newer — turning a silent shadow into a loud startup line.
+    Observability only — never blocks startup."""
     scope = paths.classify_config_scope(config_path)
     scope_label = f"{scope} scope" if scope else "custom path"
     logger.info("config: using %s (%s)", config_path, scope_label)
+    shadow = paths.describe_shadowing(config_path)
+    if shadow:
+        logger.warning(shadow)
 
 
 def main(argv: list[str] | None = None) -> int:

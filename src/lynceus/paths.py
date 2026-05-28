@@ -222,3 +222,71 @@ def classify_config_scope(path: Path | str) -> Scope | None:
         if resolved_candidate == resolved_target:
             return scope  # type: ignore[return-value]
     return None
+
+
+def find_shadowing_config(active_path: Path | str) -> Path | None:
+    """Return the canonical config in the scope OTHER than ``active_path``'s
+    when both exist — i.e. the file ``active_path`` is silently shadowing.
+
+    Returns ``None`` when ``active_path`` is a custom location (matches no
+    canonical scope), when the other scope's file does not exist, or when the
+    other scope is unsupported on this platform. A pure existence probe: does
+    not read or load either file.
+    """
+    scope = classify_config_scope(active_path)
+    if scope is None:
+        return None
+    other: Scope = "system" if scope == "user" else "user"
+    try:
+        other_path = default_config_path(other)
+    except NotImplementedError:
+        return None
+    return other_path if other_path.exists() else None
+
+
+def describe_shadowing(active_path: Path | str) -> str | None:
+    """Build the one-line cross-scope shadowing warning, or ``None`` when
+    there is nothing to warn about.
+
+    When ``active_path`` is a canonical user/system config AND the OTHER
+    canonical scope also holds a config, that other file is being silently
+    ignored — the exact footgun behind a stale-key death ("I edited /etc but
+    the daemon read ~/.config"). The message names BOTH files, says which is
+    in use, and — when both mtimes are readable — flags which copy is newer,
+    since an ignored-but-newer copy almost always means a recent edit landed
+    in the scope that isn't being used. Shared by the daemon and quickstart so
+    both surfaces read identically. Pure: probes existence + mtime, never
+    reads contents, never raises.
+    """
+    other = find_shadowing_config(active_path)
+    if other is None:
+        return None
+    active = Path(active_path)
+    active_label = _scope_label(classify_config_scope(active_path))
+    other_label = _scope_label(classify_config_scope(other))
+    newer_clause = ""
+    try:
+        active_mtime: float | None = active.stat().st_mtime
+        other_mtime: float | None = other.stat().st_mtime
+    except OSError:
+        active_mtime = other_mtime = None
+    if active_mtime is not None and other_mtime is not None:
+        if other_mtime > active_mtime:
+            newer_clause = (
+                f" — the ignored {other_label} copy is NEWER, which usually means "
+                "a recent edit landed in the scope that isn't being used"
+            )
+        elif active_mtime > other_mtime:
+            newer_clause = f" — the in-use {active_label} copy is newer"
+    return (
+        f"config scope shadowing: using {active} ({active_label}); a config also "
+        f"exists at {other} ({other_label}) and is being IGNORED{newer_clause}. "
+        "If you meant to use the ignored one, point --config at it or "
+        "consolidate to a single scope."
+    )
+
+
+def _scope_label(scope: Scope | None) -> str:
+    """Human label for a classify_config_scope() result: ``"user scope"`` /
+    ``"system scope"`` / ``"custom path"``."""
+    return f"{scope} scope" if scope else "custom path"

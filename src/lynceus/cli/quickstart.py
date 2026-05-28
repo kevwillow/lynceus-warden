@@ -479,6 +479,12 @@ def main(argv: list[str] | None = None) -> int:
     scope = paths.classify_config_scope(config_path)
     scope_label = f"{scope} scope" if scope else "custom path"
     print(f"Using config: {config_path} ({scope_label})")
+    # If a config also exists in the other canonical scope, the one we
+    # resolved is shadowing it — the exact "I configured /etc but quickstart
+    # read ~/.config" trap. Surface it loudly before launching.
+    shadow = paths.describe_shadowing(config_path)
+    if shadow:
+        print(f"warning: {shadow}", file=sys.stderr)
     print_banner(effective_port)
 
     daemon: subprocess.Popen | None = None
