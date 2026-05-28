@@ -190,3 +190,35 @@ def resolve_existing_config() -> Path | None:
     if system_path.exists():
         return system_path
     return None
+
+
+def classify_config_scope(path: Path | str) -> Scope | None:
+    """Return the canonical scope (``"user"`` / ``"system"``) whose config
+    path equals ``path``, or ``None`` when ``path`` is a custom location
+    matching neither.
+
+    Used for the startup scope label (so an operator sees at a glance which
+    scope's config the daemon loaded) and for cross-scope shadow detection.
+    Both sides are resolved before comparison so a symlinked or ``..``-laden
+    ``--config`` argument that points at the canonical file is still
+    recognised rather than mislabelled "custom". A scope whose default path
+    is unsupported on this platform (``system`` on macOS / Windows) simply
+    doesn't match.
+    """
+    target = Path(path)
+    try:
+        resolved_target = target.resolve()
+    except OSError:
+        resolved_target = target
+    for scope in _VALID_SCOPES:
+        try:
+            candidate = default_config_path(scope)
+        except NotImplementedError:
+            continue
+        try:
+            resolved_candidate = candidate.resolve()
+        except OSError:
+            resolved_candidate = candidate
+        if resolved_candidate == resolved_target:
+            return scope  # type: ignore[return-value]
+    return None

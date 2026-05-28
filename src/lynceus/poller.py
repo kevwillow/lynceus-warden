@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__
+from . import __version__, paths
 from .allowlist import (
     Allowlist,
     _load_allowlist_with_counts,
@@ -669,8 +669,14 @@ def log_watchlist_staleness(
 
 
 class Poller:
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, config_path: str | None = None) -> None:
         self.config = config
+        # The resolved YAML path the daemon was launched with (``--config``),
+        # plumbed through so the startup health-check failure can name the
+        # exact file a rejected key came from. ``None`` for in-process callers
+        # (tests, embedded use) that build a Poller from a Config object with
+        # no backing file.
+        self.config_path = config_path
         self.db = Database(config.db_path)
         self.client = build_kismet_client(config)
         if config.kismet_health_check_on_startup:
@@ -1186,6 +1192,18 @@ def _count_kismet_sources(config: Config) -> int:
     return len(config.kismet_sources) if config.kismet_sources else 0
 
 
+def _log_config_provenance(config_path: str) -> None:
+    """Emit the startup config-provenance line (v0.7.5 aggregation style):
+    one INFO naming the config file the daemon loaded and its scope, so a
+    scope mismatch ("I edited /etc but the daemon read ~/.config") is
+    visible at a glance in ``journalctl`` instead of inferred from a
+    downstream stale-key failure. Observability only — never blocks
+    startup."""
+    scope = paths.classify_config_scope(config_path)
+    scope_label = f"{scope} scope" if scope else "custom path"
+    logger.info("config: using %s (%s)", config_path, scope_label)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lynceus")
     parser.add_argument("--config", required=True)
@@ -1196,7 +1214,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         logging.basicConfig(level=config.log_level)
-        poller = Poller(config)
+        _log_config_provenance(args.config)
+        poller = Poller(config, config_path=args.config)
         emit_startup_banner(
             active_rules=_count_active_rules(poller),
             source_count=_count_kismet_sources(config),

@@ -472,6 +472,13 @@ def main(argv: list[str] | None = None) -> int:
         tmp_config = _write_port_override_config(config_path, args.port_ui)
         ui_config_path = tmp_config
 
+    # Name the resolved config + scope before launching, so a scope mismatch
+    # (quickstart resolves user-scope-first; the operator may have edited the
+    # system file) is visible up front rather than only inferred from a
+    # downstream daemon failure.
+    scope = paths.classify_config_scope(config_path)
+    scope_label = f"{scope} scope" if scope else "custom path"
+    print(f"Using config: {config_path} ({scope_label})")
     print_banner(effective_port)
 
     daemon: subprocess.Popen | None = None
