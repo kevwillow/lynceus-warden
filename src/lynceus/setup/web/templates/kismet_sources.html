@@ -44,7 +44,11 @@
         {% for row in connected_rows %}
           {% set human = row.product or row.vendor %}
           <label>
-            <input type="checkbox" name="kismet_sources" value="{{ row.value }}"{% if row.preconfigured %} checked{% endif %}>
+            {# selection_active (set on the Touch 3 mismatch re-render) checks
+               boxes from the operator's actual submission so a box they
+               deliberately unchecked stays unchecked; otherwise the prefill
+               from kismet_site.conf drives the default. #}
+            <input type="checkbox" name="kismet_sources" value="{{ row.value }}"{% if selection_active|default(false) %}{% if row.value in kismet_sources %} checked{% endif %}{% elif row.preconfigured %} checked{% endif %}>
             {# Lead with the human-readable identity (vendor/model + USB ID)
                printed on the adapter so the operator picks by the dongle in
                their hand, not by a cryptic hciN/wlxN kernel name — the
@@ -96,6 +100,34 @@
         </p>
       {% endif %}
 
+      {# Touch 3: loud, selection-specific warning surfaced when the operator
+         submits a source Kismet isn't capturing from. Reuses the silent-drop
+         surface above but names the actual picks and offers an explicit
+         "Continue anyway" (the form below carries confirm_sources when this
+         shows, so a second submit proceeds — this warns, it does not block). #}
+      {% if unmatched_sources|default([]) %}
+        <p class="wizard-error" role="alert">
+          <strong>
+            Kismet isn't capturing from
+            {% if unmatched_sources|length == 1 %}this source{% else %}these sources{% endif %}:
+          </strong>
+          {% for s in unmatched_sources %}<code>{{ s }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+          <small>
+            {% if unmatched_sources|length == 1 %}It isn't{% else %}They aren't{% endif %}
+            among the sources Kismet reported (its live datasources and
+            <code>kismet_site.conf</code>). The poller filters by Kismet
+            source name, so every observation from
+            {% if unmatched_sources|length == 1 %}it{% else %}them{% endif %}
+            would be <strong>silently dropped</strong> &mdash; no alerts, no
+            error, empty database. Double-check you ticked the right adapter
+            (match the &ldquo;Kismet calls this&rdquo; name on its row), or
+            run <code>sudo lynceus-bootstrap-kismet</code> to configure it.
+            If this is intentional (an adapter you'll plug in later, or a
+            manual source), click <em>Continue anyway</em> to proceed.
+          </small>
+        </p>
+      {% endif %}
+
       {% if disconnected_rows %}
         <fieldset>
           <legend>Previously configured (currently disconnected)</legend>
@@ -109,7 +141,7 @@
           </small>
           {% for row in disconnected_rows %}
             <label title="From kismet_site.conf; not currently detected">
-              <input type="checkbox" name="kismet_sources" value="{{ row.value }}" checked>
+              <input type="checkbox" name="kismet_sources" value="{{ row.value }}"{% if selection_active|default(false) %}{% if row.value in kismet_sources %} checked{% endif %}{% else %} checked{% endif %}>
               <strong><code>{{ row.name }}</code></strong>
               <small>&mdash; previously configured, currently disconnected</small>
             </label>
@@ -143,9 +175,13 @@
       </article>
     {% endif %}
 
+    {# Carried only on the Touch 3 mismatch re-render: a second submit then
+       proceeds past the warning (warn, don't block). #}
+    {% if unmatched_sources|default([]) %}<input type="hidden" name="confirm_sources" value="1">{% endif %}
+
     <div class="wizard-footer">
       <a href="{{ url_with_token('/step/3') }}" role="button" class="secondary">&larr; Previous</a>
-      <button type="submit">Next &rarr;</button>
+      <button type="submit">{% if unmatched_sources|default([]) %}Continue anyway &rarr;{% else %}Next &rarr;{% endif %}</button>
     </div>
   </form>
 {% endblock %}

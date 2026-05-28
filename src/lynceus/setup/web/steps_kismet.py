@@ -356,6 +356,28 @@ def _read_kismet_site_conf_sources() -> set[str]:
         return set()
 
 
+def _known_kismet_source_identifiers(sources_list: list[dict] | None) -> set[str]:
+    """Identifiers Kismet would actually credit observations to: the
+    ``name`` / ``interface`` / ``capture_interface`` of every live
+    datasource the step-3 probe returned, plus the ``source=`` identifiers
+    already in ``kismet_site.conf``. Touch 3 compares the operator's
+    checkbox selection against this set so a source Kismet isn't capturing
+    from surfaces a warning BEFORE apply rather than as silent drops.
+
+    Returns an empty set when neither source of truth is available (probe
+    failed/skipped AND no kismet_site.conf) — the caller then skips the
+    check rather than false-warning on a host where we simply don't know
+    what Kismet is capturing."""
+    known: set[str] = set()
+    for src in sources_list or []:
+        for key in ("name", "interface", "capture_interface"):
+            val = (src.get(key) or "").strip()
+            if val:
+                known.add(val)
+    known |= _read_kismet_site_conf_sources()
+    return known
+
+
 def _build_adapter_rows(
     sources_list: list[dict] | None,
     preconfigured: set[str] | None = None,
@@ -463,7 +485,10 @@ async def kismet_sources_post(request: Request) -> HTMLResponse:
     if form.get("action") == "cancel":
         return _redirect(request, "/cancel")
 
-    selected = [s.strip() for s in form.getlist("kismet_sources") if s and s.strip()]
+    checkbox_selected = [
+        s.strip() for s in form.getlist("kismet_sources") if s and s.strip()
+    ]
+    selected = list(checkbox_selected)
     # Free-text fallback for hosts where OS enumeration found nothing
     # (Windows dev, remote operators driving the wizard against a Pi
     # whose sysfs the browser can't reach, etc.).
@@ -502,6 +527,43 @@ async def kismet_sources_post(request: Request) -> HTMLResponse:
             kismet_sources=session.answers.get("kismet_sources", []),
             error="Pick at least one capture source (or enter an interface name).",
         )
+
+    # Touch 3: warn (don't block) when a CHECKBOX selection names a source
+    # Kismet isn't capturing from — the silent-drop footgun the Parrot
+    # operator hit. manual_source is operator-asserted free text and stays
+    # exempt; advanced/not-yet-plugged-in cases stay valid via the
+    # "Continue anyway" acknowledgement (confirm_sources, set on the
+    # warning re-render below). Skipped entirely when we have no reference
+    # set (probe failed/skipped AND no kismet_site.conf) so we never
+    # false-warn on a host where Kismet's sources are simply unknown.
+    if not form.get("confirm_sources"):
+        known = _known_kismet_source_identifiers(sources_list)
+        unmatched = [s for s in checkbox_selected if s not in known]
+        if known and unmatched:
+            preconfigured = _read_kismet_site_conf_sources()
+            adapter_rows = _build_adapter_rows(
+                sources_list, preconfigured=preconfigured
+            )
+            kismet_panel_labels = (
+                [_source_label(s) for s in sources_list if s.get("name")]
+                if sources_list
+                else []
+            )
+            return _render(
+                request,
+                "kismet_sources.html",
+                step_index=4,
+                probed=(sources_list is not None),
+                adapter_rows=adapter_rows,
+                kismet_panel_labels=kismet_panel_labels,
+                # Re-check the operator's actual submission, NOT preconfigured,
+                # so a box they deliberately unchecked (e.g. the real hci0)
+                # stays unchecked on the warning re-render.
+                kismet_sources=checkbox_selected,
+                selection_active=True,
+                unmatched_sources=sorted(unmatched),
+                error=None,
+            )
 
     session.answers["kismet_sources"] = selected
     return _redirect(request, "/step/5")
