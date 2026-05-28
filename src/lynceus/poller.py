@@ -1013,18 +1013,23 @@ class Poller:
         not be ready when the lynceus unit starts — a single 5xx, DNS hiccup,
         or transient connection refused was enough on rc1 to crash the
         daemon. The retry loop tolerates ``len(HEALTH_CHECK_RETRY_BACKOFF)``
-        attempts; only after all of them fail do we surface the same
-        ``RuntimeError`` callers have always seen, so behaviour at the
-        ``main()`` boundary is unchanged.
+        attempts; only after all of them fail do we raise (fail-fast — running
+        blind against an unreachable/unauthorized Kismet is wrong). The
+        failure *message* is actionable: it distinguishes an auth rejection
+        (a stale/wrong-scope key) from an unreachable Kismet and names the
+        config file the key came from. When and how often it fails is
+        unchanged — only the wording is.
         """
         backoff = HEALTH_CHECK_RETRY_BACKOFF
         total = len(backoff)
         last_err: str = "unknown error"
+        last_status: int | None = None
         for attempt in range(1, total + 1):
             health = self.client.health_check()
             if health.get("reachable"):
                 return
             last_err = health.get("error") or "unknown error"
+            last_status = health.get("status_code")
             if attempt < total:
                 wait = backoff[attempt - 1]
                 logger.info(
@@ -1035,9 +1040,29 @@ class Poller:
                 )
                 time.sleep(wait)
         logger.error("Kismet health check failed at startup: %s", last_err)
-        raise RuntimeError(
-            f"Kismet unreachable at startup: {last_err}. "
-            "Set kismet_health_check_on_startup=false to skip this check."
+        raise RuntimeError(self._build_health_check_failure_message(last_status, last_err))
+
+    def _build_health_check_failure_message(self, status_code: int | None, error: str) -> str:
+        """Compose the actionable startup health-check failure message.
+
+        An auth rejection (Kismet answered 401/403) is a key problem retrying
+        can't fix — name the config file the rejected key came from (when
+        known) and point at lynceus-setup. Anything else (no HTTP response —
+        connection refused / timeout) is treated as Kismet being unreachable
+        and names the URL. Both keep the ``kismet_health_check_on_startup=false``
+        escape hatch.
+        """
+        hatch = "Set kismet_health_check_on_startup=false to skip this check."
+        if status_code in (401, 403):
+            origin = f" from {self.config_path}" if self.config_path else ""
+            return (
+                f"Kismet rejected the API key{origin} (HTTP {status_code}): {error}. "
+                "The key may be stale, revoked, or from the wrong config scope — "
+                f"re-run lynceus-setup or check kismet_api_key. {hatch}"
+            )
+        return (
+            f"Kismet unreachable at {self.config.kismet_url}: {error}. "
+            f"Is Kismet running and reachable? {hatch}"
         )
 
     def _on_signal(self, signum: int, frame: object) -> None:

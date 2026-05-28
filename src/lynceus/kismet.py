@@ -636,15 +636,31 @@ class KismetClient:
             response.raise_for_status()
             data = response.json()
         except requests.RequestException as e:
-            return {"reachable": False, "version": None, "error": str(e)}
+            # status_code is the HTTP status when Kismet actually answered
+            # (e.g. 401/403 — an auth rejection retrying can't fix) and None
+            # when no response was received (connection refused / timeout —
+            # Kismet down or unreachable). The startup health check keys its
+            # actionable failure message off this distinction.
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            return {"reachable": False, "version": None, "error": str(e), "status_code": status}
         except ValueError as e:
-            return {"reachable": False, "version": None, "error": f"invalid json: {e}"}
+            return {
+                "reachable": False,
+                "version": None,
+                "error": f"invalid json: {e}",
+                "status_code": None,
+            }
         version: str | None = None
         if isinstance(data, dict):
             v = data.get("kismet.system.version")
             if isinstance(v, str) and v:
                 version = v
-        return {"reachable": True, "version": version, "error": None}
+        return {
+            "reachable": True,
+            "version": version,
+            "error": None,
+            "status_code": response.status_code,
+        }
 
     def list_sources(self, *, only_running: bool = True) -> list[dict[str, Any]]:
         """Query Kismet's configured datasources.
@@ -737,4 +753,4 @@ class FakeKismetClient(KismetClient):
         return results
 
     def health_check(self) -> dict:
-        return {"reachable": True, "version": "fake-fixture", "error": None}
+        return {"reachable": True, "version": "fake-fixture", "error": None, "status_code": 200}
