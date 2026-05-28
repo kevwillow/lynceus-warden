@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Setup wizard warns when a selected capture source isn't one Kismet is
+  capturing from.** Step 4 previously validated only "at least one
+  selected", so an operator could tick a source Kismet doesn't actually
+  capture (e.g. `hci1` when Kismet binds `hci0`) and apply it — after which
+  every observation from that source is silently dropped by the poller's
+  `source_allowlist` gate (no alerts, no error, empty database). The wizard
+  now compares the checkbox selection against the sources Kismet reported
+  (its live datasources plus `kismet_site.conf`) and, on a mismatch,
+  re-renders the step with a loud warning naming the offending source,
+  reusing the existing silent-drop warning surface. It does not block: a
+  `Continue anyway` submit proceeds, the operator's deliberate
+  unchecks are preserved, and a free-text `manual_source` entry (the
+  remote/advanced case) stays exempt.
+
+- **The daemon warns at startup when an allowlisted source is absent from
+  Kismet's live sources.** After the existing Kismet health check, the
+  poller enumerates Kismet's live datasources and logs a WARNING for any
+  `kismet_sources` entry not present among them, naming the missing source
+  and listing the live ones — so an unplugged USB adapter, an `hciN` index
+  reorder, or a wizard mis-pick is visible in `journalctl` at boot instead
+  of only as silent per-tick drops. The presence check matches on source
+  name, interface, or capture interface (so a VIF-targeted config doesn't
+  false-warn), never blocks startup, and is skipped when no allowlist is
+  configured or Kismet's source list can't be fetched.
+
+### Fixed
+
+- **Capture-adapter rows in the setup wizard now show vendor / model / USB
+  ID.** USB string descriptors (`manufacturer`, `product`, `idVendor`,
+  `idProduct`) were read off the USB *interface* sysfs node
+  (`/sys/class/bluetooth/<hci>/device/` resolves to `…:1.0/`), but they live
+  one level up on the USB *device* node — so they read as empty and
+  Bluetooth adapters rendered as bare `(USB btusb)` / `(Internal btusb)`
+  with nothing to choose by. That is what led an operator on a
+  two-Bluetooth-adapter rig to uncheck the correct dongle and check the
+  wrong internal controller, silently dropping the entire BLE pipeline. The
+  descriptor reads now walk up to the device node (the same resolution the
+  `removable` flag already relied on), and each row leads with the vendor +
+  model + USB ID printed on the adapter while labelling the cryptic `hciN` /
+  `wlxN` kernel name explicitly as the *interface*. The `Kismet calls this …`
+  anchor is clarified as the capture source the pipeline actually receives
+  data from.
+
 ## [0.7.9] - 2026-05-26
 
 ### Fixed
