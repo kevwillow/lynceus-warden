@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import ctypes
 import logging
 import os
 import signal
@@ -124,13 +125,49 @@ def print_banner(port: int, file=None) -> None:
 # --- Subprocess management ----------------------------------------------------
 
 
+# Linux parent-death-signal wiring. Resolved once in the parent process so
+# the post-fork preexec_fn (which runs in a fragile async-signal context)
+# does no importing or symbol lookup. ``_prctl`` is None off Linux.
+_PR_SET_PDEATHSIG = 1
+try:
+    _prctl = ctypes.CDLL(None, use_errno=True).prctl if sys.platform.startswith("linux") else None
+except Exception:  # pragma: no cover - defensive: missing/odd libc
+    _prctl = None
+
+
+def _set_pdeathsig() -> None:
+    """Linux child preexec: ask the kernel to SIGTERM this child when
+    quickstart (its parent) dies — including abnormal exits (terminal closed,
+    ``kill -9``) where neither the Ctrl+C handler nor supervise() runs.
+
+    Without it each child runs in its own session (``start_new_session``) and
+    would be orphaned on an abnormal parent death, leaving uvicorn holding
+    port 8765 → "address already in use" on the next launch. Best-effort:
+    no-ops where prctl is unavailable, and never aborts the child's exec."""
+    if _prctl is None:
+        return
+    try:
+        _prctl(_PR_SET_PDEATHSIG, int(signal.SIGTERM), 0, 0, 0)
+        # Close the fork→prctl race: if quickstart already exited in that
+        # window, the signal won't arrive — self-terminate instead of
+        # lingering as the very orphan this guards against.
+        if os.getppid() == 1:
+            os._exit(1)
+    except Exception:
+        pass
+
+
 def _popen_kwargs() -> dict:
-    """Cross-platform kwargs to isolate subprocesses into their own
-    process group (POSIX) or process group (Windows), so a Ctrl+C in
-    the parent terminal does not also race the children."""
+    """Cross-platform kwargs to isolate subprocesses into their own session
+    (POSIX) or process group (Windows), so a Ctrl+C in the parent terminal
+    does not also race the children. On Linux, additionally register a
+    parent-death signal so an abnormal quickstart exit can't orphan them."""
     if os.name == "nt":
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    return {"start_new_session": True}
+    kwargs: dict = {"start_new_session": True}
+    if sys.platform.startswith("linux"):
+        kwargs["preexec_fn"] = _set_pdeathsig
+    return kwargs
 
 
 def _resolve_entry_point(name: str) -> list[str]:
@@ -302,6 +339,28 @@ def _make_sigint_handler(procs):
 # --- Supervision loop ---------------------------------------------------------
 
 
+def _extract_daemon_error(tail_lines: list[str]) -> str | None:
+    """Pull the daemon's actionable error out of its captured output so it can
+    be surfaced prominently instead of buried in the tail dump.
+
+    Prefers the ``RuntimeError`` message the poller raises (the actionable
+    health-check guidance — stale-key vs Kismet-down, naming the config file);
+    falls back to a Kismet health-check line. Returns None when nothing
+    recognisable is present, in which case the caller just shows the raw tail.
+    """
+    for line in reversed(tail_lines):
+        stripped = line.strip()
+        if stripped.startswith("RuntimeError:"):
+            return stripped[len("RuntimeError:") :].strip()
+    for line in reversed(tail_lines):
+        stripped = line.strip()
+        if "Kismet" not in stripped:
+            continue
+        if "rejected the API key" in stripped or "unreachable" in stripped:
+            return stripped
+    return None
+
+
 def supervise(
     daemon,
     ui,
@@ -323,6 +382,9 @@ def supervise(
                     print("--- last daemon output ---", file=sys.stderr)
                     sys.stderr.writelines(tail)
                     print("--------------------------", file=sys.stderr)
+                    actionable = _extract_daemon_error(tail)
+                    if actionable:
+                        print(f"\n>>> daemon error: {actionable}", file=sys.stderr)
             shutdown([ui])
             return 1
         u_rc = ui.poll()
@@ -500,8 +562,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"error: daemon failed to start (exit code {daemon.returncode}).",
                 file=sys.stderr,
             )
-            for line in daemon_tee.tail():
+            tail = daemon_tee.tail()
+            for line in tail:
                 sys.stderr.write(line)
+            actionable = _extract_daemon_error(tail)
+            if actionable:
+                print(f"\n>>> daemon error: {actionable}", file=sys.stderr)
             return 1
 
         ui = start_ui(ui_config_path)
