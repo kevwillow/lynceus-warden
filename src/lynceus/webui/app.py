@@ -2746,6 +2746,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
             probing=probing_bool,
         )
         filters_active = bool(device_type) or rand_bool is not None or probing_bool is not None
+        # The probing filter only ever has data when probe-SSID capture
+        # is enabled (off by default). The webui can read the flag, so
+        # surface an honest note near the control rather than letting the
+        # operator wonder why ?probing=yes is always empty.
+        probe_capture_enabled = bool(app.state.config.capture.probe_ssids)
         return app.state.templates.TemplateResponse(
             request=request,
             name="devices_list.html",
@@ -2760,6 +2765,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "device_type": device_type,
                 "randomized": rand_bool,
                 "probing": probing_bool,
+                "probe_capture_enabled": probe_capture_enabled,
                 "filters_active": filters_active,
             },
         )

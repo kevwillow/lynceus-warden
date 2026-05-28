@@ -29,6 +29,9 @@
           <option value="no" {% if probing is sameas false %}selected{% endif %}>no</option>
           <option value="yes" {% if probing is sameas true %}selected{% endif %}>yes</option>
         </select>
+        {% if not probe_capture_enabled %}
+          <small class="dim probing-capture-note">probe-SSID capture is disabled, so this view is empty; enabling it has a privacy tradeoff.</small>
+        {% endif %}
       </label>
       <label>page size
         <select name="page_size">
