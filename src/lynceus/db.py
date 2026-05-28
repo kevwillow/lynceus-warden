@@ -1786,6 +1786,55 @@ class Database:
         ).fetchall()
         return frozenset(r["mac"] for r in rows)
 
+    def _device_filter_sql(
+        self,
+        device_type: str | None,
+        randomized: bool | None,
+        probing: bool | None,
+    ) -> tuple[str, list]:
+        """Build the shared WHERE clause + params for list/count_devices.
+
+        Both callers route through here so the page query and its
+        COUNT(*) stay consistent -- a filter added here applies
+        identically to both, and pagination can't drift.
+
+        ``device_type='bluetooth'`` is a query-only alias expanding to
+        the two stored BT subtypes; it is never a stored value (the
+        schema CHECK doesn't admit it). ``probing`` filters on whether a
+        device carries any stored probe SSID. The stored "no probes"
+        value is NULL (merge_device_probe_ssids writes NULL, not '[]'),
+        but the predicate also tolerates '' / '[]' so a hand-edited or
+        legacy row can't land in the wrong bucket.
+        """
+        clauses: list[str] = []
+        params: list = []
+        if device_type is not None:
+            if device_type == "bluetooth":
+                clauses.append("device_type IN ('ble', 'bt_classic')")
+            elif device_type in self._DEVICE_TYPES:
+                clauses.append("device_type = ?")
+                params.append(device_type)
+            else:
+                raise ValueError(
+                    f"device_type must be one of {self._DEVICE_TYPES} or 'bluetooth'"
+                )
+        if randomized is not None:
+            clauses.append("is_randomized = ?")
+            params.append(1 if randomized else 0)
+        if probing is not None:
+            if probing:
+                clauses.append(
+                    "(probe_ssids IS NOT NULL AND probe_ssids != '' "
+                    "AND probe_ssids != '[]')"
+                )
+            else:
+                clauses.append(
+                    "(probe_ssids IS NULL OR probe_ssids = '' "
+                    "OR probe_ssids = '[]')"
+                )
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        return where, params
+
     def list_devices(
         self,
         *,
@@ -1793,20 +1842,10 @@ class Database:
         offset: int = 0,
         device_type: str | None = None,
         randomized: bool | None = None,
+        probing: bool | None = None,
     ) -> list[dict]:
         self._validate_pagination(limit, offset)
-        if device_type is not None and device_type not in self._DEVICE_TYPES:
-            raise ValueError(f"device_type must be one of {self._DEVICE_TYPES}")
-
-        clauses: list[str] = []
-        params: list = []
-        if device_type is not None:
-            clauses.append("device_type = ?")
-            params.append(device_type)
-        if randomized is not None:
-            clauses.append("is_randomized = ?")
-            params.append(1 if randomized else 0)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        where, params = self._device_filter_sql(device_type, randomized, probing)
         # last_rssi / last_ssid via correlated subqueries: the
         # idx_sightings_mac_ts index makes each lookup an indexed seek
         # to the most recent sighting per device. id DESC breaks ties
@@ -1832,18 +1871,9 @@ class Database:
         *,
         device_type: str | None = None,
         randomized: bool | None = None,
+        probing: bool | None = None,
     ) -> int:
-        if device_type is not None and device_type not in self._DEVICE_TYPES:
-            raise ValueError(f"device_type must be one of {self._DEVICE_TYPES}")
-        clauses: list[str] = []
-        params: list = []
-        if device_type is not None:
-            clauses.append("device_type = ?")
-            params.append(device_type)
-        if randomized is not None:
-            clauses.append("is_randomized = ?")
-            params.append(1 if randomized else 0)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        where, params = self._device_filter_sql(device_type, randomized, probing)
         sql = f"SELECT COUNT(*) FROM devices {where}"
         return int(self._conn.execute(sql, params).fetchone()[0])
 
