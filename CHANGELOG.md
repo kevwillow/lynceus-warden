@@ -33,6 +33,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   false-warn), never blocks startup, and is skipped when no allowlist is
   configured or Kismet's source list can't be fetched.
 
+- **The daemon logs which config file and scope it loaded at startup.** One
+  INFO line — `config: using <path> (<scope>)` — names the resolved
+  `lynceus.yaml` and whether it came from the user scope (`~/.config`), the
+  system scope (`/etc`), or a custom `--config` path; `lynceus-quickstart`
+  prints the same provenance for the file it resolved before launching. A
+  scope mismatch is now visible at a glance in `journalctl` instead of
+  inferred from a downstream failure. Resolution semantics (user-scope-first)
+  are unchanged.
+
+- **Startup warns when a config in the other scope is being shadowed.** When
+  the loaded config is a canonical user/system file and a config *also*
+  exists in the other canonical scope, that second file is silently ignored
+  — the trap behind a stale-key death ("I configured `/etc` but quickstart
+  read `~/.config`"). The daemon (and quickstart) now emit one WARNING naming
+  both files, stating which is in use, and flagging which copy is newer, since
+  an ignored-but-newer copy usually means the edit landed in the unused scope.
+  Non-blocking.
+
 ### Fixed
 
 - **Capture-adapter rows in the setup wizard now show vendor / model / USB
@@ -50,6 +68,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `wlxN` kernel name explicitly as the *interface*. The `Kismet calls this …`
   anchor is clarified as the capture source the pipeline actually receives
   data from.
+
+- **The startup Kismet health-check failure message is now actionable.** It
+  previously raised one generic `Kismet unreachable at startup: <error>` for
+  every failure mode, so a stale or wrong-scope API key read identically to
+  Kismet being down — a 401 that took two forensic diagnostics to trace. The
+  daemon now distinguishes an auth rejection (Kismet answered `401`/`403`:
+  names the config file the rejected key came from and points at
+  `lynceus-setup` / `kismet_api_key`, noting the key may be stale, revoked, or
+  from the wrong scope) from an unreachable Kismet (no HTTP response: names
+  the URL and asks whether Kismet is running). The fail-fast exit and the
+  `kismet_health_check_on_startup=false` escape hatch are unchanged — only the
+  wording. `KismetClient.health_check()` now reports the HTTP `status_code` to
+  support the distinction.
+
+- **`lynceus-quickstart` no longer leaks port 8765 on an abnormal exit, and
+  surfaces the daemon's error prominently.** Children run in their own session
+  so a terminal Ctrl+C doesn't race them, but an *abnormal* quickstart exit
+  (terminal closed → `SIGHUP`, `kill -9`) runs neither the Ctrl+C handler nor
+  the supervisor, orphaning the UI and leaving `uvicorn` bound to 8765
+  (`address already in use` on the next launch). On Linux each child now
+  registers `PR_SET_PDEATHSIG` so the kernel reaps it whenever quickstart
+  dies, however it dies. On daemon death, quickstart also extracts the
+  daemon's actionable error (the health-check guidance above) and re-prints it
+  as a `>>> daemon error: …` callout instead of burying it in the output tail.
 
 ## [0.7.9] - 2026-05-26
 
