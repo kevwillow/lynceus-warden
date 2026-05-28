@@ -78,6 +78,38 @@ def _read_sysfs_symlink_basename(path: Path) -> str | None:
     return target.name or None
 
 
+def _read_sysfs_optional_walkup(device_dir: Path, field: str) -> str | None:
+    """Read a sysfs attribute that lives on the USB *device* node, trying
+    the interface-level ``device_dir`` first and walking one level up.
+
+    ``device_dir`` is the symlinked ``device/`` directory under the
+    interface (``/sys/class/net/<iface>/device/`` for Wi-Fi or
+    ``/sys/class/bluetooth/<hci>/device/`` for Bluetooth). For USB
+    adapters it resolves to the USB *interface* (e.g.
+    ``/sys/bus/usb/devices/1-1.2:1.0/``), while the USB string
+    descriptors (``manufacturer`` / ``product`` / ``idVendor`` /
+    ``idProduct``) and the ``removable`` flag live on the parent USB
+    *device* (``/sys/bus/usb/devices/1-1.2/``).
+
+    Resolving ``device_dir / ".."`` follows the ``device`` symlink to
+    its real, nested location first (``/sys/devices/.../1-1.2/1-1.2:1.0``)
+    so ``..`` lands on the device node (``.../1-1.2``) rather than the
+    flat ``/sys/bus/usb/devices`` listing — the same walk-up that makes
+    the bus/driver symlinks resolve. The interface-level path is tried
+    first because some kernels expose attributes there directly, and the
+    wizard's synthetic-tree tests write them at that level. Non-USB
+    adapters (PCI / SDIO) expose none of these and return ``None`` from
+    both probes."""
+    direct = _read_sysfs_optional(device_dir / field)
+    if direct is not None:
+        return direct
+    try:
+        parent = (device_dir / "..").resolve(strict=False)
+    except OSError:
+        return None
+    return _read_sysfs_optional(parent / field)
+
+
 def _read_sysfs_removable(device_dir: Path) -> str | None:
     """Read the USB ``removable`` flag for the device backing an adapter.
 
@@ -93,24 +125,11 @@ def _read_sysfs_removable(device_dir: Path) -> str | None:
         determined by the kernel; treated as the fallback case by the
         label formatter.
 
-    ``device_dir`` is the symlinked ``device/`` directory under the
-    interface (``/sys/class/net/<iface>/device/`` for Wi-Fi or
-    ``/sys/class/bluetooth/<hci>/device/`` for Bluetooth). For USB
-    adapters this resolves to the USB *interface* (e.g.
-    ``/sys/bus/usb/devices/1-1.2:1.0/``), while ``removable`` is on
-    the parent USB *device* (``/sys/bus/usb/devices/1-1.2/``). The
-    helper tries the interface-level path first (some kernels expose
-    it directly) and falls back to one level up after resolving the
-    symlink. Non-USB adapters (PCI / SDIO) don't expose this attribute
+    Lives on the parent USB *device* node, so it goes through the shared
+    ``_read_sysfs_optional_walkup`` (interface-level first, parent
+    fallback). Non-USB adapters (PCI / SDIO) don't expose this attribute
     anywhere and return ``None``."""
-    direct = _read_sysfs_optional(device_dir / "removable")
-    if direct is not None:
-        return direct
-    try:
-        parent = (device_dir / "..").resolve(strict=False)
-    except OSError:
-        return None
-    return _read_sysfs_optional(parent / "removable")
+    return _read_sysfs_optional_walkup(device_dir, "removable")
 
 
 def _enrich_adapter_from_sysfs(device_dir: Path) -> dict:
@@ -127,6 +146,13 @@ def _enrich_adapter_from_sysfs(device_dir: Path) -> dict:
     the bus + driver symlinks but no ``manufacturer`` / ``product`` /
     ``idVendor`` / ``idProduct`` files; those render as None.
 
+    ``bus`` / ``driver`` are read off the interface-level ``subsystem`` /
+    ``driver`` symlinks (which live on the interface node). The four USB
+    string descriptors live on the parent USB *device* node, so they go
+    through ``_read_sysfs_optional_walkup`` — without the walk-up they
+    read as None on the common layout where ``device/`` resolves to the
+    USB interface (``…:1.0``), which is the BT-rows-show-no-vendor bug.
+
     ``usb_id`` is composed as ``"VID:PID"`` only when both VID and PID
     were readable; otherwise ``None`` (a bare half-id like ``"148f:"``
     isn't useful to operators).
@@ -136,10 +162,10 @@ def _enrich_adapter_from_sysfs(device_dir: Path) -> dict:
     formatter) from external dongles (``"removable"``, rendered as the
     bus name like "USB"). When the attribute is missing the formatter
     falls back to the bus-name behavior."""
-    vendor = _read_sysfs_optional(device_dir / "manufacturer")
-    product = _read_sysfs_optional(device_dir / "product")
-    id_vendor = _read_sysfs_optional(device_dir / "idVendor")
-    id_product = _read_sysfs_optional(device_dir / "idProduct")
+    vendor = _read_sysfs_optional_walkup(device_dir, "manufacturer")
+    product = _read_sysfs_optional_walkup(device_dir, "product")
+    id_vendor = _read_sysfs_optional_walkup(device_dir, "idVendor")
+    id_product = _read_sysfs_optional_walkup(device_dir, "idProduct")
     usb_id = f"{id_vendor}:{id_product}" if id_vendor and id_product else None
     return {
         "bus": _read_sysfs_symlink_basename(device_dir / "subsystem"),
