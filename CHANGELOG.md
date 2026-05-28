@@ -51,6 +51,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an ignored-but-newer copy usually means the edit landed in the unused scope.
   Non-blocking.
 
+- **The /devices dashboard gains type and probing filters for sorting a
+  large capture.** The type dropdown now exposes *Bluetooth (any)* — a
+  query-only alias expanding to BLE + Classic Bluetooth — alongside BLE,
+  Classic Bluetooth, and *Drone (Remote ID)*, the latter two previously
+  reachable only by a hand-crafted URL. A new probing tri-state
+  (any/yes/no) isolates devices that emitted a probe request, i.e. carry
+  a non-empty stored probe SSID. Because probe-SSID capture is off by
+  default, the filter bar shows an honest note beside the probing
+  control when it is disabled — the view will be empty, and enabling it
+  carries a privacy tradeoff. The dashboard enables nothing and stays
+  read-only; no schema or capture-config change. (`bluetooth` is never a
+  stored `device_type`, only a query alias.)
+
+- **Quick-filter preset chips above the /devices table.** A row of plain
+  GET links — All / Wi-Fi / Bluetooth / Drones / Probing — sets the
+  relevant filter params for a "tab feel" while staying on the app's
+  filter-bar convention (not a tab widget). The preset matching the
+  current params is highlighted.
+
 ### Fixed
 
 - **Capture-adapter rows in the setup wizard now show vendor / model / USB
@@ -92,6 +111,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dies, however it dies. On daemon death, quickstart also extracts the
   daemon's actionable error (the health-check guidance above) and re-prints it
   as a `>>> daemon error: …` callout instead of burying it in the output tail.
+
+- **Device timestamps on /devices and the device-detail page now render
+  as human-readable UTC.** `first_seen` / `last_seen` and the
+  device-detail sightings `ts` column showed raw epoch integers while
+  /alerts already rendered ISO-8601; they now use the same `unix_to_iso`
+  filter and `<time>` element, so an operator reads a real date instead
+  of a 10-digit number.
+
+- **/devices pagination clamps out-of-range values instead of 400ing.**
+  The page did bespoke validation that returned 400 for a page below 1
+  or a page_size outside [10, 500]; every other list page clamps
+  silently via the shared pagination helper. A stale `?page=999`
+  bookmark or a hand-edited page_size now lands on the last valid page /
+  falls back to the default, matching the rest of the UI.
 
 ## [0.7.9] - 2026-05-26
 
