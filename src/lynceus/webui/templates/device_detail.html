@@ -10,8 +10,8 @@
       <strong>type:</strong> {{ device.device_type }}<br>
       <strong>vendor:</strong> {{ device.oui_vendor or "unknown" }}<br>
       <strong>randomized:</strong> {% if device.is_randomized %}yes{% else %}no{% endif %}<br>
-      <strong>first seen:</strong> {{ device.first_seen }}<br>
-      <strong>last seen:</strong> {{ device.last_seen }}<br>
+      <strong>first seen:</strong> <time datetime="{{ device.first_seen | unix_to_iso }}">{{ device.first_seen | unix_to_iso }}</time><br>
+      <strong>last seen:</strong> <time datetime="{{ device.last_seen | unix_to_iso }}">{{ device.last_seen | unix_to_iso }}</time><br>
       <strong>sightings (total):</strong> {{ device.sighting_count }}<br>
       {% if device.notes %}<strong>notes:</strong> {{ device.notes }}<br>{% endif %}
     </p>
@@ -27,7 +27,7 @@
         <tbody>
           {% for s in sightings %}
             <tr>
-              <td>{{ s.ts }}</td>
+              <td><time datetime="{{ s.ts | unix_to_iso }}">{{ s.ts | unix_to_iso }}</time></td>
               <td>{% if s.rssi is none or s.rssi == 0 %}&mdash;{% else %}{{ s.rssi }}{% endif %}</td>
               <td>{{ s.ssid or "" }}</td>
               <td>{{ s.location_id }}</td>

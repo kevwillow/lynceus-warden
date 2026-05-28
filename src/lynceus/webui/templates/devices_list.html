@@ -101,8 +101,8 @@
               <td>{{ d.ble_name or "—" }}</td>
               <td>{{ d.probe_ssids | probe_ssids_list | join(", ") }}</td>
               <td>{% if d.is_randomized %}&check;{% endif %}</td>
-              <td>{{ d.first_seen }}</td>
-              <td>{{ d.last_seen }}</td>
+              <td><time datetime="{{ d.first_seen | unix_to_iso }}">{{ d.first_seen | unix_to_iso }}</time></td>
+              <td><time datetime="{{ d.last_seen | unix_to_iso }}">{{ d.last_seen | unix_to_iso }}</time></td>
               <td>{% if d.last_rssi is none or d.last_rssi == 0 %}&mdash;{% else %}{{ d.last_rssi }}{% endif %}</td>
               <td>{{ d.last_ssid or "—" }}</td>
               <td>{{ d.sighting_count }}</td>
