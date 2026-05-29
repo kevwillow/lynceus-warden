@@ -116,6 +116,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`lynceus-quickstart` no longer crashes when a root-owned config exists in
+  the other scope.** The cross-scope shadow check probed the other scope's
+  config with `Path.exists()`, which *propagates* `PermissionError` (rather
+  than returning `False` like `os.path.exists`) when the parent directory
+  isn't traversable by the current user — so a regular interactive account
+  running `lynceus-quickstart` with a root-owned `/etc/lynceus` present died
+  with `PermissionError [Errno 13]` before launch. The check now treats an
+  unreadable other-scope file (`EACCES`) as present-but-unreadable: the shadow
+  warning still fires, with hedged wording instead of an mtime comparison, and
+  any other probe error is treated as absent rather than crashing. `ENOENT`
+  still means absent; resolution precedence and config reads are unchanged.
+  The fix lives in the shared `paths` helper, so both daemon startup and
+  quickstart are covered.
+
+- **Install / setup copy no longer points at the removed `--skip-install`
+  default.** After `lynceus-bootstrap-kismet` flipped to assume-installed by
+  default (apt install is now opt-in behind `--install`), `install.sh`'s
+  "Next steps", the README, `docs/DEPLOYMENT.md`, and the setup wizard's
+  kismet-sources recovery hint still described the bare command as
+  apt-installing Kismet and recommended `--skip-install` (now a deprecated
+  no-op) for non-apt distros. All four surfaces now show the flipped
+  convention: the bare invocation configures capture sources + `kismet` group
+  on any distro, and `--install` adds the apt repo + package on
+  Debian/Ubuntu/Kali. Copy only — no install behaviour changed.
+
+- **`lynceus-bootstrap-kismet` exits cleanly on Ctrl-C.** `main()` caught
+  `BootstrapError` but not `KeyboardInterrupt`, so interrupting mid-run (e.g.
+  during the apt step) dumped Python's default unhandled-exception traceback.
+  It now prints a one-line `cancelled.` and exits 130, matching
+  `lynceus-setup`'s convention. (The `--web` wizard already shut down cleanly
+  via uvicorn's own signal handler.)
+
 - **Capture-adapter rows in the setup wizard now show vendor / model / USB
   ID.** USB string descriptors (`manufacturer`, `product`, `idVendor`,
   `idProduct`) were read off the USB *interface* sysfs node
