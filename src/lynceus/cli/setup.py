@@ -810,8 +810,9 @@ If Kismet isn't installed or running yet, you can still complete
 this wizard — the probe will fail soft and you can re-run
 `lynceus-setup --reconfigure` after Kismet is up. Two ways to
 get Kismet ready on Debian/Ubuntu/Kali:
-  - Install + configure: sudo lynceus-bootstrap-kismet
-  - Or install Kismet manually per your distro's instructions.
+  - Install + configure: sudo lynceus-bootstrap-kismet --install
+  - Or install Kismet manually per your distro's instructions,
+    then configure it with: sudo lynceus-bootstrap-kismet
 """
     )
     try:
