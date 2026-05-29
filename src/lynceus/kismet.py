@@ -29,6 +29,13 @@ _TYPE_MAP: dict[str, Literal["wifi", "ble", "bt_classic", "remote_id"]] = {
     # frequency table; absent from this map until v0.7.6 Tier 3 they
     # dropped as unparseable.
     "Wi-Fi WDS AP": "wifi",
+    # Wireless Distribution System member (distinct from the WDS AP
+    # above) and ad-hoc/IBSS stations. Both are IEEE802.11 phy and
+    # appear in every sampled session of the operator's live 11k-device
+    # capture (~10-20 devices/session); absent from this map until now
+    # they dropped silently at ingest.
+    "Wi-Fi WDS": "wifi",
+    "Wi-Fi Ad-Hoc": "wifi",
     "BTLE": "ble",
     "Bluetooth": "bt_classic",
     # Kismet's literal device-type string for Bluetooth Classic
