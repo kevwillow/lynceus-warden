@@ -134,14 +134,14 @@
          flow through. #}
       <p class="wizard-error">
         <strong>If you haven't configured Kismet for capture yet:</strong>
-        run <code>sudo lynceus-bootstrap-kismet --skip-install</code> now.
+        run <code>sudo lynceus-bootstrap-kismet</code> now.
         It puts your Wi-Fi adapter into monitor mode, adds the
         <code>source=</code> lines to <code>/etc/kismet/kismet_site.conf</code>,
         and adds your user to the kismet group. This is required for
         lynceus to see any devices — even after this wizard completes
-        successfully. The <code>--skip-install</code> flag tells it
-        Kismet is already installed (which it is, or you wouldn't be
-        on this page).
+        successfully. It assumes Kismet is already installed (which it is,
+        or you wouldn't be on this page); add <code>--install</code> only
+        if you still need to install Kismet via apt.
       </p>
     </article>
   {% endif %}

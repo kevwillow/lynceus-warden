@@ -14,13 +14,20 @@ update, and installs the kismet package.
 Operator flow:
 
   1. git clone + ./install.sh                (Lynceus, offline)
-  2. sudo lynceus-bootstrap-kismet           (Kismet, network)
-  3. open http://localhost:2501              (set password)
-  4. Settings -> API Keys -> Create          (operator does this)
-  5. sudo lynceus-setup                      (configure Lynceus)
+  2. install Kismet (distro pkg manager, or `--install` on apt distros)
+  3. sudo lynceus-bootstrap-kismet           (configure sources + group)
+  4. open http://localhost:2501              (set password)
+  5. Settings -> API Keys -> Create          (operator does this)
+  6. sudo lynceus-setup                      (configure Lynceus)
 
-This script does steps 2 only. Step 4 requires a running Kismet web UI
-and cannot be automated -- the operator does the web ceremony.
+This script does step 3 (and step 2's apt install when `--install` is
+given). Step 5 requires a running Kismet web UI and cannot be automated
+-- the operator does the web ceremony.
+
+Default behaviour assumes Kismet is already installed and only configures
+it (interface auto-detection, kismet_site.conf patching, group
+membership). Pass ``--install`` to also add the Kismet apt repo and
+install the package on Debian/Ubuntu/Kali.
 
 Non-destructive + idempotent. Re-runnable from any state:
 
@@ -29,18 +36,19 @@ Non-destructive + idempotent. Re-runnable from any state:
   * pre-existing kismet_site.conf?      append-only, never overwrite
   * operator already in kismet group?   skip usermod
 
-Apt-install path is bounded to Debian/Ubuntu/Kali (which includes
-Raspberry Pi OS Bookworm: it reports ID=debian so it falls into
-the Debian branch automatically). On any other distro the default
-path prints a "manual install required" pointer and exits 0.
+The apt-install path (``--install``) is bounded to Debian/Ubuntu/Kali
+(which includes Raspberry Pi OS Bookworm: it reports ID=debian so it
+falls into the Debian branch automatically). On any other distro,
+``--install`` prints a "manual install required" pointer and exits 0.
 
-``--skip-install`` (or its alias ``--no-network``) takes the apt
-matrix out of the picture entirely: interface auto-detection,
-kismet_site.conf patching (in /etc/kismet/ or /usr/local/etc/kismet/,
-auto-detected), and group membership all run on any Linux host that
-has Kismet present (or that the operator is about to install Kismet
-on). This is the path Parrot OS, Mint, Devuan, etc. operators use
-after installing Kismet via their own distro's tooling.
+The default (no ``--install``) runs on any Linux host: interface
+auto-detection, kismet_site.conf patching (in /etc/kismet/ or
+/usr/local/etc/kismet/, auto-detected), and group membership. This is
+the path Parrot OS, Mint, Devuan, etc. operators use after installing
+Kismet via their own distro's tooling. ``--skip-install`` is accepted as
+a no-op for compatibility (it was the explicit opt-out before the
+default flipped); ``--no-network`` refuses apt/network work and overrides
+``--install``.
 
 Exit codes:
   0 -- success, OR unsupported distro (operator action: install manually)
@@ -85,7 +93,7 @@ KISMET_GROUP = "kismet"
 # probed in order. /etc/kismet/ is the apt-package convention;
 # /usr/local/etc/kismet/ is what Kismet's own build-from-source
 # emits with the default --prefix=/usr/local. We auto-detect rather
-# than hardcoding so --skip-install operators on from-source builds
+# than hardcoding so default-path operators on from-source builds
 # don't have to hand-edit afterward.
 KISMET_SITE_CONF_DIRS: tuple[Path, ...] = (
     Path("/etc/kismet"),
@@ -489,8 +497,8 @@ def _download_kismet_gpg_key(url: str = KISMET_GPG_KEY_URL) -> bytes:
     except urllib.error.URLError as exc:
         raise BootstrapError(
             f"failed to download Kismet GPG key from {url}: {exc}.\n"
-            f"  Action: check network connectivity and re-run, or use "
-            f"--no-network if Kismet is already installed."
+            f"  Action: check network connectivity and re-run, or re-run "
+            f"without --install if Kismet is already installed."
         ) from exc
 
 
@@ -1045,15 +1053,16 @@ def print_closing_pointer(
         notes.append(
             "Kismet was not installed by this script and is not on PATH. "
             f"Install it per https://www.kismetwireless.net/packages/ "
-            f"(or your distro's package manager), then re-run "
-            f"lynceus-bootstrap-kismet --skip-install."
+            f"(or your distro's package manager, or re-run with --install "
+            f"on Debian/Ubuntu/Kali), then re-run lynceus-bootstrap-kismet "
+            f"to configure it."
         )
     if site_conf_skipped:
         candidates = ", ".join(str(d) for d in KISMET_SITE_CONF_DIRS)
         notes.append(
             f"No kismet_site.conf was written: none of the candidate "
             f"directories exist ({candidates}). Install Kismet first, "
-            f"then re-run with --skip-install to apply interface config."
+            f"then re-run lynceus-bootstrap-kismet to apply interface config."
         )
     elif site_conf_path is not None and site_conf_path.parent != KISMET_SITE_CONF_DIRS[0]:
         notes.append(
@@ -1136,27 +1145,27 @@ def _wrap_note(text: str, width: int = 66) -> list[str]:
 
 
 def print_unsupported_pointer(distro_id: str | None) -> None:
-    """Unsupported-distro message printed when no ``--skip-install`` was
-    given. Clean exit 0 -- the operator isn't broken, they just need to
-    install Kismet manually.
+    """Unsupported-distro message printed when ``--install`` was given on a
+    distro outside the apt matrix. Clean exit 0 -- the operator isn't
+    broken, they just need to install Kismet manually.
 
-    With ``--skip-install`` the apt path is bypassed entirely and the
-    main flow proceeds; this pointer is only shown on the default path.
+    The default path (no ``--install``) never reaches this pointer: it
+    assumes Kismet is present and proceeds straight to configuration.
     """
     label = distro_id or "unknown"
     _print("")
     _print(_CLOSING_RULE)
     _print(f"Distro '{label}' is not in the Kismet-apt matrix.")
     _print("")
-    _print("The apt-install path of lynceus-bootstrap-kismet handles")
+    _print("The --install path of lynceus-bootstrap-kismet handles")
     _print("Debian, Ubuntu, and Kali only. On other distros, install")
     _print("Kismet manually following the official packaging instructions:")
     _print("")
     _print(f"  {UNSUPPORTED_POINTER_URL}")
     _print("")
-    _print("Then re-run lynceus-bootstrap-kismet --skip-install to get")
-    _print("the interface configuration + group-membership steps (now")
-    _print("supported on any Linux), or skip straight to: sudo lynceus-setup")
+    _print("Then re-run lynceus-bootstrap-kismet (without --install) to get")
+    _print("the interface configuration + group-membership steps (supported")
+    _print("on any Linux), or skip straight to: sudo lynceus-setup")
     _print(_CLOSING_RULE)
 
 
@@ -1167,23 +1176,35 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="lynceus-bootstrap-kismet",
         description=(
-            "Install + configure Kismet on Debian/Ubuntu/Kali, then point "
-            "the operator at the web-UI ceremony (set password, create "
-            "API key) that lynceus-setup picks up afterward. Idempotent: "
-            "safe to re-run. Requires root (apt, setcap, /etc/kismet "
-            "ownership). install.sh remains offline; this script is the "
-            "one Lynceus CLI that uses the network beyond "
-            "lynceus-import-argus."
+            "Configure Kismet for Lynceus capture (kismet_site.conf source "
+            "lines + kismet group membership), then point the operator at "
+            "the web-UI ceremony (set password, create API key) that "
+            "lynceus-setup picks up afterward. By default it assumes Kismet "
+            "is already installed; pass --install to also install it via apt "
+            "on Debian/Ubuntu/Kali. Idempotent: safe to re-run. Requires "
+            "root (apt, setcap, /etc/kismet ownership). install.sh remains "
+            "offline; this script is the one Lynceus CLI that uses the "
+            "network beyond lynceus-import-argus, and only when --install "
+            "is given."
+        ),
+    )
+    p.add_argument(
+        "--install",
+        action="store_true",
+        help=(
+            "Install Kismet via its apt repo (Debian/Ubuntu/Kali) before "
+            "configuring. Without this flag, bootstrap assumes Kismet is "
+            "already present and only configures sources + group membership."
         ),
     )
     p.add_argument(
         "--skip-install",
         action="store_true",
         help=(
-            "Skip the apt repo + package install; Kismet is already "
-            "present. Useful on hosts where Kismet was installed by a "
-            "different mechanism (manual build, custom package) but the "
-            "kismet_site.conf + group setup still needs running."
+            "Deprecated no-op: skipping the apt install is now the default, "
+            "so this flag has no effect. Accepted for backward compatibility "
+            "(scripts that passed it still work). Use --install to opt into "
+            "the apt install."
         ),
     )
     p.add_argument(
@@ -1209,8 +1230,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-network",
         action="store_true",
         help=(
-            "Refuse any apt / network operation. Implies --skip-install. "
-            "Useful for offline operators who installed Kismet manually."
+            "Refuse any apt / network operation; overrides --install if both "
+            "are given. Useful for offline operators who installed Kismet "
+            "manually. (The default already performs no network operations, "
+            "so this only matters alongside --install.)"
         ),
     )
     p.add_argument(
@@ -1355,36 +1378,53 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
         )
         return 2
 
-    # Install path -- gated by --skip-install and --no-network.
-    if args.no_network and not args.skip_install:
-        _print("--no-network implies --skip-install; will not run apt operations.")
-    skip_install = args.skip_install or args.no_network
+    # Install path -- OPT-IN as of v0.7.10. The default assumes Kismet is
+    # already installed and only configures sources + group membership;
+    # pass --install to add the apt repo and install the package. The old
+    # default was the reverse (install unless --skip-install), so most
+    # operators on a host that already has Kismet were prompted into an apt
+    # path they didn't want. --skip-install is now the default behaviour
+    # and is accepted as a no-op for backward compatibility. --no-network
+    # refuses any apt/network work and so wins over an explicit --install.
+    if args.no_network and args.install:
+        _print(
+            "--no-network refuses apt/network operations; not installing "
+            "Kismet despite --install."
+        )
+    do_install = args.install and not args.no_network
+    skip_install = not do_install
 
-    # Distro gate: in v1 this fired before --skip-install was checked,
-    # which meant the flag's advertised "I'll install Kismet myself,
-    # just do the rest" contract didn't actually work on any distro
-    # outside the apt matrix. Now the gate guards ONLY the apt-install
-    # path; interface config + group membership are distro-agnostic and
-    # run anywhere Linux + Kismet are present.
+    # Distro gate guards ONLY the apt-install path; interface config + group
+    # membership are distro-agnostic and run anywhere Linux + Kismet are
+    # present. With the install flip this only matters when the operator
+    # asked to install (--install) on a distro outside the apt matrix.
     distro_id, codename = detect_distro()
     distro_supported = distro_id is not None
 
-    if not distro_supported and not skip_install:
-        # Default-path behaviour preserved: unsupported distro without
-        # --skip-install gets the "install manually" pointer + exit 0.
+    if not distro_supported and do_install:
+        # Operator asked to install via apt on an unsupported distro: point
+        # them at the manual-install instructions + exit 0.
         print_unsupported_pointer(distro_id)
         return 0
 
-    if distro_supported:
+    if distro_supported and do_install:
         _print(
             f"Detected distro: {distro_id} (codename: {codename}). "
-            f"Proceeding with Kismet bootstrap."
+            f"Installing Kismet via apt."
+        )
+    elif distro_supported:
+        _print(
+            f"Detected distro: {distro_id} (codename: {codename}). "
+            f"Assuming Kismet is already installed (pass --install to "
+            f"install it via apt); configuring sources + permissions."
         )
     else:
         _print(
             "Unsupported distro for the Kismet apt-install path "
-            "(handled distros: Debian, Ubuntu, Kali). --skip-install "
-            "given; continuing with interface config + permissions only."
+            "(handled distros: Debian, Ubuntu, Kali). Continuing with "
+            "interface config + permissions only (Kismet assumed already "
+            "installed; --install would install via apt on a supported "
+            "distro)."
         )
 
     # v0.7.7 Touch 2: surface stale root-owned capture-helper lockfiles
@@ -1429,8 +1469,8 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
     # /etc/kismet/; from-source builds default to /usr/local/etc/kismet/.
     site_conf_path = resolve_site_conf_path()
 
-    # Interface selection -- always run (configures even on
-    # --skip-install / --no-network).
+    # Interface selection -- always run. Configuration is the default
+    # path; only the apt install is gated behind --install.
     wifi_selected, bt_selected = _select_interfaces(args, input_fn)
 
     site_conf_skipped = False
@@ -1443,12 +1483,12 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
     elif site_conf_path is None:
         # Kismet config dir isn't laid down yet. Don't guess a path --
         # warn clearly with both candidates so the operator can install
-        # Kismet then re-run with --skip-install.
+        # Kismet then re-run.
         candidates = ", ".join(str(d) for d in KISMET_SITE_CONF_DIRS)
         _print(
             f"\nWARNING: no Kismet config directory found. Looked for: "
             f"{candidates}. Skipping kismet_site.conf patch -- install "
-            f"Kismet first, then re-run with --skip-install to apply "
+            f"Kismet first, then re-run lynceus-bootstrap-kismet to apply "
             f"interface config."
         )
         site_conf_skipped = True
@@ -1511,7 +1551,7 @@ def run(args: argparse.Namespace, *, input_fn: Callable[[str], str] = input) -> 
                     f"is not installed yet, or the build did not create "
                     f"the group. Install Kismet first (see "
                     f"https://www.kismetwireless.net/packages/), then "
-                    f"re-run with --skip-install."
+                    f"re-run lynceus-bootstrap-kismet."
                 )
             return 1
         if _user_in_group(operator, KISMET_GROUP):
