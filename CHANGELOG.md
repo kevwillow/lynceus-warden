@@ -132,6 +132,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   anchor is clarified as the capture source the pipeline actually receives
   data from.
 
+- **`lynceus-bootstrap-kismet` adapter-selection prompts now show vendor /
+  model / USB ID too.** The CLI's interface prompts (`Use Bluetooth
+  controller hci0 — …`) share `format_adapter_descriptor` with the wizard,
+  but that formatter still led with the bare `(USB btusb)` /
+  `(Internal btusb)` parenthetical and surfaced only one of
+  product / vendor / USB ID — so the same Bluetooth mis-pick the wizard rows
+  just closed was still live on the surface that actually writes
+  `source=hciN` into `kismet_site.conf`. The descriptor now leads with the
+  vendor + model + `VID:PID` printed on the adapter and demotes the bus /
+  `removable` surface and driver to plain `·`-separated annotations
+  (`· USB`, `· Internal`, `· btusb driver`), matching the wizard row. The
+  `Internal` distinction for built-in modules (`removable=fixed`) is kept as
+  an annotation rather than the misleading bare lead; adapters with no
+  readable USB descriptors still fall back to the bare interface name. What
+  bootstrap writes is unchanged — only the operator-facing labels improve.
+
 - **The startup Kismet health-check failure message is now actionable.** It
   previously raised one generic `Kismet unreachable at startup: <error>` for
   every failure mode, so a stale or wrong-scope API key read identically to
