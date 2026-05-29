@@ -1380,6 +1380,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--no-browser",
+        action="store_true",
+        help=(
+            "With --web, do not auto-open a browser at the wizard URL "
+            "(the URL+token is still printed). Ignored without --web."
+        ),
+    )
+    p.add_argument(
         "--version",
         action="version",
         version=f"lynceus-setup {__version__}",
@@ -1451,6 +1459,7 @@ def _run_web_wizard(args: argparse.Namespace) -> int:
         target_path=target_path,
         reconfigure=args.reconfigure,
         skip_probes=args.skip_probes,
+        no_browser=args.no_browser,
     )
 
 

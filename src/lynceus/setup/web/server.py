@@ -16,9 +16,19 @@ from __future__ import annotations
 
 import logging
 import secrets
+import threading
+import time
+import webbrowser
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# How long the auto-open thread waits for uvicorn to report ``started``
+# before giving up. The wizard binds in-process and is ready well under a
+# second; the generous ceiling just covers a slow/loaded host. On timeout
+# we open nothing — the URL+token print is the standing fallback.
+BROWSER_OPEN_TIMEOUT_SECONDS = 10.0
+BROWSER_OPEN_POLL_SECONDS = 0.1
 
 # Defaults exposed for the CLI argparse layer in ``lynceus.cli.setup``.
 # Bind defaults to loopback because the wizard is a single-operator,
@@ -35,6 +45,50 @@ def generate_setup_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _browser_url(host: str, port: int, token: str) -> str:
+    """Build the tokenized URL to hand the browser.
+
+    An all-interfaces bind (``0.0.0.0`` / ``::``) is not itself browsable;
+    the local machine reaches the wizard over loopback regardless, so we
+    point the auto-open at ``127.0.0.1`` in that case. The prominent
+    URL+token print still shows the literal bind host for remote operators.
+    """
+    browse_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    return f"http://{browse_host}:{port}/?token={token}"
+
+
+def _open_browser_when_ready(
+    server,
+    url: str,
+    *,
+    timeout: float = BROWSER_OPEN_TIMEOUT_SECONDS,
+    poll: float = BROWSER_OPEN_POLL_SECONDS,
+) -> None:
+    """Wait for uvicorn to report ``started``, then open ``url`` in a browser.
+
+    Mirrors ``lynceus-quickstart``'s launch mechanism: ``webbrowser.open``
+    once the server is actually serving, with the printed URL as the
+    fallback. Degrades cleanly where no browser can open — under sudo,
+    headless, or no ``DISPLAY`` ``webbrowser.open`` returns False (or
+    raises), and the URL+token already on stdout is the operator's path
+    in. Intended to run on a daemon thread so it never blocks shutdown.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if getattr(server, "started", False):
+            try:
+                opened = webbrowser.open(url)
+            except Exception as exc:  # pragma: no cover - platform-dependent
+                logger.debug("auto-open browser raised: %s", exc)
+                opened = False
+            if not opened:
+                print(f"(no browser opened automatically; visit {url} manually)")
+            return
+        time.sleep(poll)
+    # Server never reported ready in the window — the printed URL stands.
+    logger.debug("wizard server not ready within %.0fs; skipping auto-open", timeout)
+
+
 def run_wizard_server(
     *,
     host: str,
@@ -43,6 +97,7 @@ def run_wizard_server(
     target_path: Path,
     reconfigure: bool = False,
     skip_probes: bool = False,
+    no_browser: bool = False,
 ) -> int:
     """Generate a token, build the wizard app, run uvicorn.
 
@@ -87,6 +142,18 @@ def run_wizard_server(
     # .should_exit = True`` after a brief delay so the "shutting down"
     # response flushes before the socket closes.
     app.state.server = server
+
+    # Auto-open the operator's browser once the server is serving, mirroring
+    # lynceus-quickstart. A daemon thread waits for uvicorn's ``started``
+    # flag (server.run() blocks the main thread) and opens the tokenized
+    # URL; it degrades to the printed URL+token under sudo/headless/no
+    # browser. --no-browser opts out (headless hosts, the smoke harness).
+    if not no_browser:
+        threading.Thread(
+            target=_open_browser_when_ready,
+            args=(server, _browser_url(host, port, setup_token)),
+            daemon=True,
+        ).start()
 
     server.run()
     return 0
