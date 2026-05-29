@@ -11,66 +11,22 @@
     Loading Argus enables richer category-aware alerts.
   </p>
   <p>
-    Configure your rules-engine opt-ins below and choose how to load
-    the Argus watchlist. Both sections submit together; Apply on the
+    Choose how to load the Argus watchlist below, then configure your
+    rules-engine opt-ins. Both sections submit together; Apply on the
     review page will respect the rules choices once the watchlist is
     imported.
   </p>
   {% if error %}<p class="wizard-error"><strong>error:</strong> {{ error }}</p>{% endif %}
   <article>
-    <strong>First-install note:</strong> the row counts below will all
-    read <code>0</code>. That's expected &mdash; the bundled Argus
-    watchlist (about 22,000 entries across all categories) is imported
-    when you click Apply on the Review page at the end of the wizard.
-    You can pre-enable any rule types you want here; the apply step
+    <strong>First-install note:</strong> the row counts in the rule-type
+    list below will all read <code>0</code>. That's expected &mdash; the
+    bundled Argus watchlist (about 22,000 entries across all categories)
+    is imported when you click Apply on the Review page at the end of the
+    wizard. You can pre-enable any rule types you want here; the apply step
     will respect them and the counts will populate afterward.
   </article>
   <form method="post" action="{{ url_with_token('/step/12') }}">
     <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
-
-    <section>
-      <h2>Argus-backed alerting</h2>
-      <p>
-        Lynceus can fire alerts on devices matching the imported
-        watchlist. Each rule type is independent and disabled by
-        default &mdash; opt in only to the categories you care about.
-      </p>
-      <fieldset>
-        <label>
-          <input type="checkbox" name="enable_alerting" {% if enable_alerting %}checked{% endif %}>
-          <strong>Enable Argus-backed alerting</strong>
-          (top-level gate &mdash; leave off to skip the rules engine entirely)
-        </label>
-      </fieldset>
-      <fieldset>
-        <legend>Per-rule-type enables</legend>
-        <label>
-          <input
-            type="checkbox"
-            id="select-all-rule-types"
-            onchange="document.querySelectorAll('.rule-type-checkbox').forEach(function(cb){cb.checked = document.getElementById('select-all-rule-types').checked;});"
-          >
-          <strong>Select all rule types</strong>
-          &mdash; toggles every checkbox below at once
-        </label>
-        <hr>
-        {% for row in rule_rows %}
-          <label>
-            <input
-              type="checkbox"
-              class="rule-type-checkbox"
-              name="enable_{{ row.rule_type }}"
-              {% if row.rule_type in enabled_rule_types %}checked{% endif %}
-            >
-            <code>{{ row.rule_type }}</code>
-            &mdash; {{ row.label }}
-            ({{ "{:,}".format(row.count) }} row{% if row.count != 1 %}s{% endif %})
-            <br>
-            <small>{{ row.description }}</small>
-          </label>
-        {% endfor %}
-      </fieldset>
-    </section>
 
     <section>
       <h2>Argus watchlist loading (optional)</h2>
@@ -164,6 +120,50 @@
             autocomplete="off"
           >
         </label>
+      </fieldset>
+    </section>
+
+    <section>
+      <h2>Argus-backed alerting</h2>
+      <p>
+        Lynceus can fire alerts on devices matching the imported
+        watchlist. Each rule type is independent and disabled by
+        default &mdash; opt in only to the categories you care about.
+      </p>
+      <fieldset>
+        <label>
+          <input type="checkbox" name="enable_alerting" {% if enable_alerting %}checked{% endif %}>
+          <strong>Enable Argus-backed alerting</strong>
+          (top-level gate &mdash; leave off to skip the rules engine entirely)
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>Per-rule-type enables</legend>
+        <label>
+          <input
+            type="checkbox"
+            id="select-all-rule-types"
+            onchange="document.querySelectorAll('.rule-type-checkbox').forEach(function(cb){cb.checked = document.getElementById('select-all-rule-types').checked;});"
+          >
+          <strong>Select all rule types</strong>
+          &mdash; toggles every checkbox below at once
+        </label>
+        <hr>
+        {% for row in rule_rows %}
+          <label>
+            <input
+              type="checkbox"
+              class="rule-type-checkbox"
+              name="enable_{{ row.rule_type }}"
+              {% if row.rule_type in enabled_rule_types %}checked{% endif %}
+            >
+            <code>{{ row.rule_type }}</code>
+            &mdash; {{ row.label }}
+            ({{ "{:,}".format(row.count) }} row{% if row.count != 1 %}s{% endif %})
+            <br>
+            <small>{{ row.description }}</small>
+          </label>
+        {% endfor %}
       </fieldset>
     </section>
 
