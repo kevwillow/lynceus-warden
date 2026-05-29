@@ -180,33 +180,40 @@ def _enrich_adapter_from_sysfs(device_dir: Path) -> dict:
 def format_adapter_descriptor(adapter: dict) -> str:
     """Render a plain-text descriptor for an enriched adapter dict.
 
-    Mirrors the fallback ladder in ``kismet_sources.html`` rows so the
+    Mirrors the row-rendering convention in ``kismet_sources.html`` so the
     web wizard and the bootstrap CLI show identical text for the same
-    adapter. Examples:
+    adapter. The label *leads* with the human-readable identity printed on
+    the dongle — vendor/model plus the ``VID:PID`` USB ID — and demotes the
+    bus / removable surface and driver to plain ``·``-separated annotations,
+    matching the wizard's step-4 rows. Examples:
 
-      * ``"Alfa AWUS036ACS (USB rt2800usb)"`` — external USB dongle
-      * ``"(Internal btusb)"`` — built-in BT module on an internal USB
-        hub (``removable == "fixed"``), distinguishable from an
-        external Bluetooth dongle which would render with ``USB``
-      * ``"Ralink (USB rt2800usb)"`` — vendor only, no product string
-      * ``"148f:7610 (USB rt2800usb)"`` — VID:PID only, no strings
-      * ``"(SDIO brcmfmac)"`` — internal SoC adapter, driver-only
+      * ``"Alfa AWUS036ACS 148f:7610 · USB · rt2800usb driver"`` — external
+        USB dongle (model + USB ID lead, bus + driver annotate)
+      * ``"Internal · btusb driver"`` — built-in BT module on an internal
+        USB hub (``removable == "fixed"``) with no readable string
+        descriptors; the caller's bare interface name is the lead and the
+        annotations stand alone, distinguishable from an external Bluetooth
+        dongle which would annotate with ``USB``
+      * ``"Realtek 0bda:8812 · USB · rtl88xxau driver"`` — vendor only, no
+        product string
+      * ``"148f:7610 · USB · rt2800usb driver"`` — VID:PID only, no strings
+      * ``"SDIO · brcmfmac driver"`` — internal SoC adapter, driver-only
       * ``""`` — nothing readable, caller falls back to bare iface name
 
-    The bus-name slot in the suffix is replaced with ``Internal`` when
-    the adapter's ``removable`` is ``"fixed"`` — built-in modules
-    connected via an internal USB hub read as "internal" to operators
-    even though the kernel reports them as ``bus=usb``. Any other
-    ``removable`` value (``"removable"``, ``"unknown"``, ``None``)
-    leaves the bus name unchanged so external dongles still render
-    with the original ``USB`` / ``PCI`` / ``SDIO`` prefix.
+    The bus annotation reads ``Internal`` when the adapter's ``removable``
+    is ``"fixed"`` — built-in modules connected via an internal USB hub
+    read as "internal" to operators even though the kernel reports them as
+    ``bus=usb``. Any other ``removable`` value (``"removable"``,
+    ``"unknown"``, ``None``) leaves the bus name unchanged so external
+    dongles still annotate with ``USB`` / ``PCI`` / ``SDIO``.
 
-    The parenthesized suffix is appended when bus is set (regardless of
-    whether driver is also set); the lone-driver branch emits
-    ``"(driver)"`` without parens-only padding. ``adapter`` is the dict
-    shape that ``_enrich_adapter_from_sysfs`` returns — additional keys
-    on the dict are ignored, so callers can pass full ``enumerate_
-    capture_adapters`` rows directly."""
+    When no identity is readable (internal SoC / PCI adapters that expose
+    no USB string descriptors), the lead is empty and the annotations form
+    the whole descriptor — the bootstrap prompt's bare interface name is
+    the lead in that case, matching the wizard's fall-back-to-name row.
+    ``adapter`` is the dict shape that ``_enrich_adapter_from_sysfs``
+    returns — additional keys on the dict are ignored, so callers can pass
+    full ``enumerate_capture_adapters`` rows directly."""
     bus = adapter.get("bus")
     driver = adapter.get("driver")
     product = adapter.get("product")
@@ -216,17 +223,22 @@ def format_adapter_descriptor(adapter: dict) -> str:
 
     bus_label = "Internal" if removable == "fixed" else (bus.upper() if bus else None)
 
-    if bus_label:
-        suffix = f" ({bus_label} {driver})" if driver else f" ({bus_label})"
+    human = product or vendor
+    if human and usb_id:
+        lead = f"{human} {usb_id}"
+    elif human:
+        lead = human
+    elif usb_id:
+        lead = usb_id
     else:
-        suffix = ""
+        lead = ""
 
-    if product:
-        return f"{product}{suffix}"
-    if vendor:
-        return f"{vendor}{suffix}"
-    if usb_id:
-        return f"{usb_id}{suffix}"
+    annotations = []
+    if bus_label:
+        annotations.append(bus_label)
     if driver:
-        return f"({bus_label} {driver})" if bus_label else f"({driver})"
-    return ""
+        annotations.append(f"{driver} driver")
+
+    if lead:
+        return lead + "".join(f" · {a}" for a in annotations)
+    return " · ".join(annotations)
