@@ -1578,6 +1578,12 @@ def main(argv: list[str] | None = None) -> int:
     except BootstrapError as exc:
         _err(f"lynceus-bootstrap-kismet: {exc}")
         return 1
+    except KeyboardInterrupt:
+        # Ctrl-C mid-run (e.g. during the apt step) should read as a clean
+        # cancellation, not Python's default unhandled-exception traceback.
+        # Exit 130 (128 + SIGINT) matches lynceus-setup's convention.
+        _err("\nlynceus-bootstrap-kismet: cancelled.")
+        return 130
 
 
 if __name__ == "__main__":  # pragma: no cover
