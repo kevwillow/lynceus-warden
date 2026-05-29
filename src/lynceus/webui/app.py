@@ -2104,6 +2104,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 },
                 status_code=404,
             )
+        if request.headers.get("hx-request"):
+            # Progressive enhancement: an htmx ack swaps this empty body as
+            # outerHTML into the row target, removing only that one row — no
+            # full reload, so no scroll reset and no live-poll reorder. Must
+            # be 200, not 204: htmx skips the swap on a 204 No Content.
+            return HTMLResponse("", status_code=200)
         target = _safe_redirect_target(request, default="/alerts")
         return RedirectResponse(target, status_code=303)
 
