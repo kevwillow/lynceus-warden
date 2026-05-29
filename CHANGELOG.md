@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Acknowledging an alert on the home page now removes just that row in
+  place instead of reloading the whole page.** The recent-unacknowledged
+  card's Acknowledge control gained an htmx `outerHTML` swap: clicking it
+  drops only the acked row from the table, with no full-document reload.
+  This fixes two long-standing annoyances of the old POST → 303 → GET /
+  flow — the page jumping back to the top, and a live-poll insert arriving
+  between render and reload making the acked row look like it was
+  "replaced" by a different alert rather than removed. The change is
+  progressive enhancement: the plain form POST and CSRF token are kept
+  intact, so a browser with JavaScript disabled still gets the original
+  full-reload behavior, and CSRF is enforced identically on both paths.
+  Trade-off (deliberate): the visible list shrinks 10 → 9 per ack; the
+  11th unacknowledged alert does not backfill into the table until the
+  next full page load.
+
 ## [0.8.0] - 2026-05-29
 
 ### Added
