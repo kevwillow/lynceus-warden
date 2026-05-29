@@ -206,7 +206,11 @@ def is_locally_administered(mac: str) -> bool:
 
 
 _DOT11_DEVICE_FIELD = "dot11.device"
-_PROBED_SSID_MAP_FIELD = "dot11.device.last_probed_ssid_csum_map"
+# Kismet serializes the probed-SSID collection as a LIST of records under
+# dot11.device.probed_ssid_map (confirmed against a live capture: the
+# earlier dot11.device.last_probed_ssid_csum_map key does not exist in
+# Kismet's output, so this read silently returned nothing on real hardware).
+_PROBED_SSID_MAP_FIELD = "dot11.device.probed_ssid_map"
 _PROBED_SSID_RECORD_FIELD = "dot11.probedssid.ssid"
 _BLE_NAME_FIELD = "kismet.device.base.name"
 
@@ -220,12 +224,12 @@ def _extract_probe_ssids(raw: dict) -> tuple[str, ...]:
     dot11 = raw.get(_DOT11_DEVICE_FIELD)
     if not isinstance(dot11, dict):
         return ()
-    csum_map = dot11.get(_PROBED_SSID_MAP_FIELD)
-    if not isinstance(csum_map, dict):
+    probed_records = dot11.get(_PROBED_SSID_MAP_FIELD)
+    if not isinstance(probed_records, list):
         return ()
     collected: list[str] = []
     seen: set[str] = set()
-    for record in csum_map.values():
+    for record in probed_records:
         if not isinstance(record, dict):
             continue
         ssid = record.get(_PROBED_SSID_RECORD_FIELD)
