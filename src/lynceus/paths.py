@@ -224,14 +224,43 @@ def classify_config_scope(path: Path | str) -> Scope | None:
     return None
 
 
+def _probe_presence(path: Path) -> Literal["present", "unreadable", "absent"]:
+    """Tri-state existence probe, hardened against a pathlib footgun.
+
+    ``Path.exists()`` PROPAGATES ``PermissionError`` (it does not return
+    ``False`` like ``os.path.exists``) when the parent directory isn't
+    traversable by the current user — e.g. a regular interactive account
+    probing a root-owned ``/etc/lynceus``. ``os.path.exists`` would paper over
+    that by swallowing the error and reporting "absent", which would wrongly
+    HIDE the root-owned shadow. So distinguish the cases explicitly:
+
+    * ``ENOENT`` → ``"absent"`` (the file genuinely isn't there);
+    * ``EACCES`` → ``"unreadable"`` (the file IS there but we can't stat it —
+      a real shadow the caller must still surface, with hedged wording);
+    * any other ``OSError`` → ``"absent"`` (unknown; never let a probe error
+      abort daemon startup or quickstart).
+    """
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return "absent"
+    except PermissionError:
+        return "unreadable"
+    except OSError:
+        return "absent"
+    return "present"
+
+
 def find_shadowing_config(active_path: Path | str) -> Path | None:
     """Return the canonical config in the scope OTHER than ``active_path``'s
     when both exist — i.e. the file ``active_path`` is silently shadowing.
 
     Returns ``None`` when ``active_path`` is a custom location (matches no
     canonical scope), when the other scope's file does not exist, or when the
-    other scope is unsupported on this platform. A pure existence probe: does
-    not read or load either file.
+    other scope is unsupported on this platform. An existence probe only: does
+    not read or load either file. A present-but-unreadable other-scope file
+    (root-owned, no directory traverse) still counts as a shadow and is
+    returned, since it is exactly the footgun this check exists to flag.
     """
     scope = classify_config_scope(active_path)
     if scope is None:
@@ -241,7 +270,7 @@ def find_shadowing_config(active_path: Path | str) -> Path | None:
         other_path = default_config_path(other)
     except NotImplementedError:
         return None
-    return other_path if other_path.exists() else None
+    return other_path if _probe_presence(other_path) != "absent" else None
 
 
 def describe_shadowing(active_path: Path | str) -> str | None:
@@ -264,6 +293,18 @@ def describe_shadowing(active_path: Path | str) -> str | None:
     active = Path(active_path)
     active_label = _scope_label(classify_config_scope(active_path))
     other_label = _scope_label(classify_config_scope(other))
+    if _probe_presence(other) == "unreadable":
+        # The other-scope file is there but we can't stat it (its directory is
+        # not traversable by this account — typically a regular user looking at
+        # a root-owned /etc/lynceus). It is still shadowing; we just can't
+        # compare mtimes, so hedge the wording rather than crash or stay silent.
+        return (
+            f"config scope shadowing: using {active} ({active_label}); a config "
+            f"also exists at {other} ({other_label}) but is unreadable from this "
+            "account (its directory is likely root-owned) and is being IGNORED. "
+            "If you meant to use it, run as the owning user (or with sudo) or "
+            "point --config at it."
+        )
     newer_clause = ""
     try:
         active_mtime: float | None = active.stat().st_mtime
