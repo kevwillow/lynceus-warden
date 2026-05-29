@@ -113,18 +113,18 @@ def _make_verify_kismet_client(config: Config) -> KismetClient:
 # Single source of truth so the skipped / warning messages stay in
 # lockstep as the operator copy iterates.
 #
-# Names the apt-supported distro matrix (Debian / Ubuntu / Kali)
-# inline so operators on Parrot / Fedora / Arch / RHEL know up front
-# they need the --skip-install path, and cross-references DEPLOYMENT.md
-# for the manual-install steps. This matters because the bootstrap-
-# kismet wizard step on an unsupported distro previously surfaced no
-# operator-actionable path here -- B3 smoke confirmed --skip-install
-# works on Parrot, but the warning copy didn't mention it.
+# Names the apt-supported distro matrix (Debian / Ubuntu / Kali) and
+# the --install opt-in inline so operators recognise that the bare
+# invocation -- which no longer touches apt after the default flip --
+# is the universal path that configures sources on any distro, while
+# --install is the Debian/Ubuntu/Kali opt-in that also apt-installs
+# Kismet. Cross-references DEPLOYMENT.md for the manual-install steps
+# non-apt distros need.
 _VERIFY_KISMET_SOURCES_RECOVERY = (
-    "Run lynceus-bootstrap-kismet (or lynceus-bootstrap-kismet "
-    "--skip-install if you're on a distro outside Debian/Ubuntu/Kali "
-    "-- see docs/DEPLOYMENT.md) if you haven't yet, or check "
-    "kismet_site.conf source names."
+    "Run lynceus-bootstrap-kismet (it configures capture sources "
+    "without touching apt; on Debian/Ubuntu/Kali add --install to also "
+    "install Kismet -- see docs/DEPLOYMENT.md) if you haven't yet, or "
+    "check kismet_site.conf source names."
 )
 
 
@@ -1513,7 +1513,7 @@ def apply_config(
                 # lynceus side, which left operators guessing whether
                 # to edit kismet_site.conf or re-run the wizard. The
                 # _VERIFY_KISMET_SOURCES_RECOVERY clause is preserved
-                # so the apt-matrix / --skip-install / DEPLOYMENT.md
+                # so the apt-matrix / --install / DEPLOYMENT.md
                 # hints stay visible to operators on non-apt distros.
                 matched = sorted(set(configured) & set(exposed_names))
                 if matched:
