@@ -126,6 +126,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bookmark or a hand-edited page_size now lands on the last valid page /
   falls back to the default, matching the rest of the UI.
 
+- **Probe-SSID extraction now reads the field Kismet actually emits.** The
+  parser read probed SSIDs from `dot11.device.last_probed_ssid_csum_map`
+  and iterated it as a dict — but that key does not exist in Kismet's
+  output, so on real hardware the read silently returned nothing (0 of
+  8,156 Wi-Fi devices in the operator's live 11k-device capture ever got
+  probe SSIDs, leaving the /devices probing filter dead on the rig).
+  Kismet serializes the collection as a *list* of records under
+  `dot11.device.probed_ssid_map`, each carrying the leaf
+  `dot11.probedssid.ssid`; the extractor now reads that field and iterates
+  the list. A missing field still yields nothing and empty/wildcard
+  broadcast-probe SSIDs are still skipped. The capture gate
+  (`capture.probe_ssids` + Wi-Fi only) and the SSID redaction / persistence
+  path are unchanged — this only makes the already-gated extraction work.
+
+- **Wi-Fi WDS and Wi-Fi Ad-Hoc device types are no longer dropped at
+  ingest.** Both IEEE802.11 strings appear in every sampled session of the
+  operator's live capture (~10-20 devices/session) but were absent from the
+  parser's type map, so the records dropped silently. Both now map to
+  `wifi`. `Wi-Fi WDS` is distinct from the already-mapped `Wi-Fi WDS AP`;
+  no other taxonomy change.
+
 ## [0.7.9] - 2026-05-26
 
 ### Fixed
