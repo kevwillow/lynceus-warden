@@ -19,3 +19,5 @@ tests/diagnostic_output/
 tests/
 /tests
 *tests*
+.claude/launch.json
+scripts/smoke_wizard.py
