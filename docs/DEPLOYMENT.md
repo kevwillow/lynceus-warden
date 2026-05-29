@@ -101,10 +101,15 @@ flag set (`--dry-run`, `--uninstall`, `--purge`).
 
 ## 3. Bootstrap Kismet
 
-**Action (Debian/Ubuntu/Kali):**
+By default `lynceus-bootstrap-kismet` assumes Kismet is already
+installed and only configures it. Pass `--install` to ALSO add the
+official Kismet apt repo and install the `kismet` package first — that
+apt path covers Debian, Ubuntu, and Kali only.
+
+**Action (Debian/Ubuntu/Kali — let Lynceus install Kismet too):**
 
 ```sh
-sudo lynceus-bootstrap-kismet
+sudo lynceus-bootstrap-kismet --install
 ```
 
 **Expected:** the helper adds the official Kismet apt repo, installs
@@ -114,22 +119,23 @@ plus any `hci*` Bluetooth controllers, patches
 and adds your user to the `kismet` group. The final line summarizes
 what it did. Idempotent — safe to re-run if you add hardware later.
 
-**Action (other distros — Parrot, Fedora, Arch, RHEL, etc.):**
+**Action (other distros — Parrot, Fedora, Arch, RHEL, etc. — or any
+host where Kismet is already installed):**
 
-The apt-install path inside `lynceus-bootstrap-kismet` covers Debian,
-Ubuntu, and Kali only. On other distros, install Kismet manually per
+The apt-install path (`--install`) covers Debian, Ubuntu, and Kali
+only. On other distros, install Kismet manually per
 [kismetwireless.net/packages](https://www.kismetwireless.net/packages/)
 (every Linux distro is supported on the Kismet side — there's a
 package or build instructions for each), then run:
 
 ```sh
-sudo lynceus-bootstrap-kismet --skip-install
+sudo lynceus-bootstrap-kismet
 ```
 
-The `--skip-install` flag short-circuits the apt step but still runs
-the distro-agnostic parts: monitor-mode adapter detection, the
+The bare invocation skips the apt step and runs only the
+distro-agnostic parts: monitor-mode adapter detection, the
 `kismet_site.conf` patch, and adding your user to the `kismet`
-group. Same idempotent re-run safety as the bare invocation.
+group. Same idempotent re-run safety as the `--install` path.
 
 **Then, log out and back in** so the `kismet` group membership takes
 effect.
