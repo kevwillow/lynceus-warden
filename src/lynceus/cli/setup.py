@@ -1300,6 +1300,16 @@ and enter the topic exactly as written.
         "To start Lynceus: `lynceus-quickstart` for dev/demo, "
         "or enable the systemd service for production."
     )
+    if scope == "system":
+        # quickstart resolves the user scope (~/.config/lynceus) first, so a
+        # plain `lynceus-quickstart` would not pick up this system-scope
+        # config. Point the operator at the matching flag so dev/demo runs
+        # don't silently launch against the wrong (or a missing) config.
+        print(
+            "  Note: lynceus-quickstart reads the user-scope config "
+            "(~/.config/lynceus) by default. To launch against this "
+            "system-scope config, run `lynceus-quickstart --system`."
+        )
     print(f"UI will be available at http://127.0.0.1:{DEFAULT_UI_PORT}")
     # Explicit end-of-wizard marker. Without this the shell prompt
     # returns mixed with the last hint line and operators perceive

@@ -461,10 +461,25 @@ def _build_parser() -> argparse.ArgumentParser:
     resolved_default = paths.resolve_existing_config()
     config_default = str(resolved_default) if resolved_default is not None else None
     config_default_help = config_default if config_default else "(none found)"
-    parser.add_argument(
+    # --config and --system are mutually exclusive: --config names an
+    # explicit path; --system forces the system (/etc) scope. Both at once
+    # is contradictory, so let argparse reject the combination.
+    scope_group = parser.add_mutually_exclusive_group()
+    scope_group.add_argument(
         "--config",
         default=config_default,
         help=f"Path to lynceus.yaml (default: {config_default_help}).",
+    )
+    scope_group.add_argument(
+        "--system",
+        action="store_true",
+        help=(
+            "Resolve and launch against the system-scope config (under "
+            "/etc/lynceus) instead of the default user-scope-first "
+            "resolution. Does NOT change resolution precedence — it points "
+            "quickstart explicitly at the system scope so it matches a "
+            "`sudo lynceus-setup --system` install."
+        ),
     )
     parser.add_argument(
         "--version",
@@ -498,7 +513,22 @@ def _no_config_error() -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.config is None:
+    if args.system:
+        # Explicit system-scope: point quickstart at /etc regardless of the
+        # user-scope-first default. This is an explicit override, not a
+        # change to resolve_existing_config()'s precedence. The existence
+        # check below catches a missing /etc config with the standard
+        # "Run lynceus-setup first" guidance.
+        try:
+            resolved = paths.default_config_path("system")
+        except NotImplementedError:
+            print(
+                "error: --system config scope is not supported on this platform.",
+                file=sys.stderr,
+            )
+            return 2
+        config_path = str(resolved)
+    elif args.config is None:
         # _build_parser already attempted resolution at parse time; re-resolve
         # here so tests that monkeypatch paths.resolve_existing_config after
         # parser construction still work and so the error message lists the
