@@ -4,6 +4,16 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}lynceus-setup{% endblock %}</title>
+    {# Inline theme bootstrap: runs synchronously before the stylesheet
+       loads so an operator who picked "light" or "dark" never sees a flash
+       of the OS-default theme. Reads the same localStorage key the toggle
+       at the bottom of <body> writes ("lynceus-theme"). When the stored
+       value is "auto" or absent, leave data-theme unset so Pico v2's own
+       prefers-color-scheme rule decides. Mirrors the dashboard's mechanism
+       (lynceus.webui base.html) but stays scoped to the wizard. #}
+    <script>
+      (function(){try{var t=localStorage.getItem("lynceus-theme");if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}}catch(_){}})();
+    </script>
     <link rel="stylesheet" href="{{ url_for('static', path='/pico.min.css') }}">
     <style>
       /* Bundled Pico is the classless build, so `.container` is not
@@ -42,6 +52,12 @@
          baseline-aligned flex row so the brand and the version sit on
          the same line with the same baseline. */
       .wizard-topnav { display: flex; align-items: baseline; gap: 0.6em; background: var(--pico-card-background-color, #f4f6f8); border-bottom: 1px solid var(--pico-muted-border-color, #cfd8dc); padding: 0.6em 0.9em; margin-bottom: 1em; border-radius: var(--pico-border-radius, 0.25rem) var(--pico-border-radius, 0.25rem) 0 0; }
+      /* Theme toggle: pushed to the far right of the nav, compact and
+         unobtrusive (Pico's default <button> is full-width/large). Auto
+         width + small font so it reads as a chrome control, not a primary
+         action. The data-theme-toggle hook + .theme-toggle class match the
+         dashboard's so the inline script below can find and label it. */
+      .wizard-topnav .theme-toggle { margin-left: auto; align-self: center; width: auto; margin-bottom: 0; padding: 0.25em 0.7em; font-size: 0.8em; line-height: 1.3; --pico-font-weight: 400; }
       .wizard-footer { margin-top: 2em; display: flex; justify-content: space-between; gap: 1em; }
       /* Pico styles <a role="button"> and <button> with the same base
          rules but they end up visibly different sizes in wizard-footer:
@@ -82,6 +98,7 @@
       <nav class="wizard-topnav">
         <strong>lynceus-setup</strong>
         <small>v{{ version }} &mdash; first-run configuration wizard</small>
+        <button type="button" class="theme-toggle secondary outline" data-theme-toggle aria-label="cycle theme: auto, light, dark" aria-pressed="false">theme: auto</button>
       </nav>
       {% block step_indicator %}{% endblock %}
       {% block content %}{% endblock %}
@@ -91,5 +108,48 @@
         {% endblock %}
       </footer>
     </main>
+    {# Theme toggle writer. Cycles auto -> light -> dark -> auto and
+       persists the choice to localStorage under the same key the <head>
+       FOUC bootstrap reads ("lynceus-theme"). "auto" clears data-theme so
+       Pico v2's prefers-color-scheme decides; the two forced modes set
+       data-theme on <html>, which Pico honors. Inline + at end of <body>
+       so the toggle button is already parsed when we wire it. Scoped to
+       the wizard — the dashboard ships its own copy in lynceus.js. #}
+    <script>
+      (function () {
+        "use strict";
+        var THEME_KEY = "lynceus-theme";
+        var THEME_CYCLE = ["auto", "light", "dark"];
+        function readStored() {
+          try {
+            var v = localStorage.getItem(THEME_KEY);
+            return THEME_CYCLE.indexOf(v) >= 0 ? v : "auto";
+          } catch (_) { return "auto"; }
+        }
+        function writeStored(t) {
+          try { localStorage.setItem(THEME_KEY, t); } catch (_) { /* swallow */ }
+        }
+        function applyTheme(theme) {
+          var html = document.documentElement;
+          if (theme === "auto") { html.removeAttribute("data-theme"); }
+          else { html.setAttribute("data-theme", theme); }
+          var btn = document.querySelector("[data-theme-toggle]");
+          if (btn) {
+            btn.textContent = "theme: " + theme;
+            btn.setAttribute("aria-pressed", theme === "auto" ? "false" : "true");
+          }
+        }
+        applyTheme(readStored());
+        var btn = document.querySelector("[data-theme-toggle]");
+        if (btn) {
+          btn.addEventListener("click", function (e) {
+            e.preventDefault();
+            var next = THEME_CYCLE[(THEME_CYCLE.indexOf(readStored()) + 1) % THEME_CYCLE.length];
+            writeStored(next);
+            applyTheme(next);
+          });
+        }
+      })();
+    </script>
   </body>
 </html>
