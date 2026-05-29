@@ -70,6 +70,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   filter-bar convention (not a tab widget). The preset matching the
   current params is highlighted.
 
+- **The `--web` setup wizard auto-opens a browser at its tokenized URL.**
+  Once the wizard server is serving, `lynceus-setup --web` opens the
+  operator's browser at `http://127.0.0.1:8766/?token=…` (mirroring
+  `lynceus-quickstart`'s launch), so the operator lands on the form
+  instead of copy-pasting the URL. It degrades cleanly where no browser
+  can open — under sudo, headless, or no `DISPLAY` — falling back to the
+  prominent URL+token print that is still shown. A new `--no-browser`
+  flag opts out (headless hosts, the smoke harness).
+
+- **Dark mode for the `--web` setup wizard.** The wizard follows the
+  browser's `prefers-color-scheme` by default (Pico v2) and adds a small
+  topnav toggle that cycles auto → light → dark and persists the choice
+  to `localStorage`, with an inline `<head>` bootstrap so a forced choice
+  never flashes the OS default. Scoped to the wizard templates only; the
+  read-only dashboard is untouched.
+
+- **`lynceus-quickstart --system`.** Resolves and launches against the
+  system-scope config (`/etc/lynceus`) instead of the user-scope-first
+  default — an explicit override for operators who ran
+  `sudo lynceus-setup --system`. It does not change resolution
+  precedence; it points quickstart at the system scope. Mutually
+  exclusive with `--config`. Correspondingly, `lynceus-setup --system`
+  now prints a next-steps note that quickstart reads the user scope by
+  default, so the matching launch is `lynceus-quickstart --system`.
+
+### Changed
+
+- **`lynceus-bootstrap-kismet` no longer installs Kismet by default.**
+  The common case is a host that already has Kismet, so installing via
+  apt is now opt-in behind a new `--install` flag; the default assumes
+  Kismet is present and only configures it (`kismet_site.conf` source
+  lines + `kismet` group membership). `--skip-install` is accepted as a
+  no-op for backward compatibility, and `--no-network` now overrides an
+  explicit `--install`. The web wizard's instructional copy was updated
+  to match (its "Install + configure" pointer now shows `--install`; the
+  apply-complete reminder drops the redundant `--skip-install`).
+
+- **The setup wizard's Argus step (step 12) shows watchlist-loading
+  first.** The "how to load Argus" choice now renders above the
+  per-rule-type alerting opt-ins, so the operator decides whether/how to
+  load the watchlist before staging per-type enables (which read `0` on a
+  first install until Apply imports the bundled snapshot). Visual order
+  only — all form fields and POST handling are unchanged.
+
 ### Fixed
 
 - **Capture-adapter rows in the setup wizard now show vendor / model / USB
