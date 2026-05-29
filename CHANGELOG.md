@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-29
+
 ### Added
 
 - **Setup wizard warns when a selected capture source isn't one Kismet is
@@ -103,9 +105,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Kismet is present and only configures it (`kismet_site.conf` source
   lines + `kismet` group membership). `--skip-install` is accepted as a
   no-op for backward compatibility, and `--no-network` now overrides an
-  explicit `--install`. The web wizard's instructional copy was updated
-  to match (its "Install + configure" pointer now shows `--install`; the
-  apply-complete reminder drops the redundant `--skip-install`).
+  explicit `--install`. Both wizard surfaces (web + terminal) had their
+  instructional copy updated to match (the web wizard's "Install +
+  configure" pointer now shows `--install`; the apply-complete reminder
+  drops the redundant `--skip-install`).
 
 - **The setup wizard's Argus step (step 12) shows watchlist-loading
   first.** The "how to load Argus" choice now renders above the
