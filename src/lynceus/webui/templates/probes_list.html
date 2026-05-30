@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}probes &mdash; lynceus{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+  <h2>probes</h2>
+
+  {# This is the most PII-sensitive surface in the app: it concentrates the
+     network history of strangers passing the sensor. SSIDs are collapsed by
+     default in BOTH groupings -- the operator opts into exposure with the
+     per-row reveal. Nothing here reveals an SSID string until expanded. #}
+  <p class="dim"><small>Aggregated probe-SSID view &mdash; the networks devices
+    have tried to join. This is sensitive history, so network names are
+    <strong>collapsed by default</strong>; expand a row to reveal them.</small></p>
+
+  <form method="get" action="/probes">
+    <fieldset class="grid">
+      <label>group by
+        <select name="group">
+          <option value="device" {% if group == 'device' %}selected{% endif %}>device &rarr; networks</option>
+          <option value="ssid" {% if group == 'ssid' %}selected{% endif %}>network &rarr; devices</option>
+        </select>
+      </label>
+      <label>search
+        <input type="text" name="q" value="{{ q }}" maxlength="100"
+               placeholder="{% if group == 'ssid' %}network name{% else %}mac / name / vendor / network{% endif %}">
+      </label>
+      <label>page size
+        <select name="page_size">
+          {% for n in per_page_options %}
+            <option value="{{ n }}" {% if n == page_size %}selected{% endif %}>{{ n }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">filter</button>
+    </fieldset>
+    {% if filters_active %}
+      <p class="filters-summary">
+        <small>Filtered by: search={{ q }}</small>
+        &mdash; <a class="reset-filters" href="/probes?group={{ group }}">reset filters</a>
+      </p>
+    {% endif %}
+  </form>
+
+  {# Grouping toggle as plain GET links too (matching the /devices quick
+     filters idiom), preserving the current search across the switch. #}
+  <nav class="preset-filters" aria-label="grouping">
+    <small class="dim">group by:</small>
+    <a href="/probes?group=device{% if q %}&q={{ q | urlencode }}{% endif %}"{% if group == 'device' %} class="active"{% endif %}>device &rarr; networks</a>
+    <a href="/probes?group=ssid{% if q %}&q={{ q | urlencode }}{% endif %}"{% if group == 'ssid' %} class="active"{% endif %}>network &rarr; devices</a>
+  </nav>
+
+  {% if not probe_capture_enabled %}
+    <p><small class="dim">probe-SSID capture is disabled, so this view is empty; enabling it has a privacy tradeoff.</small></p>
+  {% endif %}
+
+  <p><small>{% if group == 'ssid' %}{{ total_count }} network(s){% else %}{{ total_count }} device(s){% endif %} total &middot; page {{ page }} of {{ total_pages }}</small></p>
+
+  {% if group == 'ssid' %}
+    {# network -> devices. The SSID name is itself sensitive, so it lives
+       inside the reveal alongside its device list; the summary exposes only
+       the (non-identifying) device count so nothing leaks on load. #}
+    {% if ssid_groups %}
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Devices</th>
+              <th>Network &amp; devices that probed it</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for g in ssid_groups %}
+              <tr>
+                <td>{{ g.device_count }}</td>
+                <td>
+                  <details>
+                    <summary>reveal network &amp; {{ g.device_count }} device(s)</summary>
+                    <p class="probe-ssid-name">network: <strong>{{ g.ssid }}</strong></p>
+                    <ul class="probe-reveal">
+                      {% for d in g.devices %}
+                        <li class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a> &mdash; {{ d | device_label }}</li>
+                      {% endfor %}
+                    </ul>
+                    {% if g.device_count > g.shown %}
+                      <p><small class="dim">+ {{ g.device_count - g.shown }} more device(s) not shown (capped at {{ per_ssid_cap }} per network)</small></p>
+                    {% endif %}
+                  </details>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p><em>No probe networks match the current filter.</em></p>
+    {% endif %}
+  {% else %}
+    {# device -> networks. SSID names stay collapsed; the summary shows only
+       the count of networks probed, not their names. #}
+    {% if device_rows %}
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Device</th>
+              <th>MAC</th>
+              <th style="white-space: nowrap;">Type</th>
+              <th>Vendor</th>
+              <th>Last seen</th>
+              <th>Networks probed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in device_rows %}
+              {% set ssids = d.probe_ssids | probe_ssids_list %}
+              <tr>
+                <td>{{ d | device_label }}</td>
+                <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
+                <td style="white-space: nowrap;">{{ d.device_type }}</td>
+                <td>{{ d.oui_vendor or "—" }}</td>
+                <td><time datetime="{{ d.last_seen | unix_to_iso }}">{{ d.last_seen | unix_to_iso }}</time></td>
+                <td>
+                  {% if ssids %}
+                    <details>
+                      <summary>reveal {{ ssids | length }} network(s)</summary>
+                      <ul class="probe-reveal">
+                        {% for s in ssids %}<li>{{ s }}</li>{% endfor %}
+                      </ul>
+                    </details>
+                  {% else %}
+                    <span class="dim">&mdash;</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p><em>No probing devices match the current filter.</em></p>
+    {% endif %}
+  {% endif %}
+
+  <nav>
+    {% set qs = [] %}
+    {% set _ = qs.append('group=' ~ group) %}
+    {% if q %}{% set _ = qs.append('q=' ~ (q | urlencode)) %}{% endif %}
+    {% set _ = qs.append('page_size=' ~ page_size) %}
+    {% set base_qs = qs | join('&') %}
+    <ul>
+      <li>
+        {% if page > 1 %}
+          <a href="/probes?{{ base_qs }}&page={{ page - 1 }}">&larr; prev</a>
+        {% else %}
+          <span class="dim">&larr; prev</span>
+        {% endif %}
+      </li>
+    </ul>
+    <ul>
+      <li><small>page {{ page }} of {{ total_pages }}</small></li>
+    </ul>
+    <ul>
+      <li>
+        {% if page < total_pages %}
+          <a href="/probes?{{ base_qs }}&page={{ page + 1 }}">next &rarr;</a>
+        {% else %}
+          <span class="dim">next &rarr;</span>
+        {% endif %}
+      </li>
+    </ul>
+  </nav>
+{% endblock %}

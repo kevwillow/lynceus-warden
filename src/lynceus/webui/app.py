@@ -274,6 +274,17 @@ _WATCHLIST_PER_PAGE_DEFAULT: int = 50
 _DEVICES_PER_PAGE_ALLOWED: tuple[int, ...] = (10, 25, 50, 100, 200, 250, 500)
 _DEVICES_PER_PAGE_DEFAULT: int = 50
 
+# /probes (aggregated probe-SSID view) shares the devices page-size
+# vocabulary -- both list the same underlying rows, just grouped. A
+# smaller default than /devices because each row can fan out a reveal.
+_PROBES_PER_PAGE_ALLOWED: tuple[int, ...] = (10, 25, 50, 100, 200, 250, 500)
+_PROBES_PER_PAGE_DEFAULT: int = 25
+# The two groupings the Probes tab offers; "device" (which networks each
+# device probed) is the default, "ssid" inverts to (which devices probed
+# each network). Anything else normalizes back to the default.
+_PROBES_GROUPINGS: tuple[str, ...] = ("device", "ssid")
+_PROBES_GROUP_DEFAULT: str = "device"
+
 # Pattern_type filter options for /watchlist. Migration 013 expanded
 # the v0.3 set to admit ble_manufacturer_id / drone_id_prefix, and
 # mig-020 added ble_local_name; the dropdown enumerates every type an
@@ -2806,6 +2817,99 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "q": q or "",
                 "probe_capture_enabled": probe_capture_enabled,
                 "filters_active": filters_active,
+            },
+        )
+
+    @app.get("/probes", response_class=HTMLResponse)
+    def probes_list(
+        request: Request,
+        group: str | None = Query(default=None),
+        q: str | None = Query(default=None),
+        page: str | None = Query(default=None),
+        page_size: str | None = Query(default=None),
+    ):
+        # Aggregated probe-SSID view -- the per-device "Probes" column's
+        # sibling, and the most PII-sensitive surface in the app. SSIDs
+        # are rendered COLLAPSED-BY-DEFAULT in the template (native
+        # <details>, no `open`); the operator opts into exposure. This
+        # route only reads/aggregates devices.probe_ssids -- no capture,
+        # no mutation.
+        #
+        # Two groupings, selected by ?group=: "device" (default -- which
+        # networks each device probed, SSIDs already on the row) and
+        # "ssid" (which devices probed each network, unnested with
+        # json_each in the db layer). An unknown/empty group normalizes to
+        # the default, matching the silent-clamp posture of the other list
+        # pages rather than 400-ing a stale bookmark.
+        if group not in _PROBES_GROUPINGS:
+            group = _PROBES_GROUP_DEFAULT
+        # Free-text search mirrors /devices + /watchful exactly: same
+        # param, 100-char cap, strip-to-None so an empty box renders the
+        # unfiltered view. In "device" grouping q matches device identity
+        # or any probe SSID; in "ssid" grouping it matches the SSID name.
+        if q is not None and len(q) > 100:
+            raise HTTPException(status_code=400, detail="q must be <= 100 chars")
+        q_clean = (q or "").strip() or None
+        requested_page, per_page = parse_pagination(
+            page,
+            page_size,
+            allowed_per_page=_PROBES_PER_PAGE_ALLOWED,
+            default_per_page=_PROBES_PER_PAGE_DEFAULT,
+        )
+
+        device_rows: list[dict] = []
+        ssid_groups: list[dict] = []
+        if group == "ssid":
+            total_count = db.count_probe_ssids(q=q_clean)
+            pagination = build_pagination(requested_page, per_page, total_count)
+            ssid_rows = db.list_probe_ssids(
+                limit=pagination.per_page, offset=pagination.offset, q=q_clean,
+            )
+            # One bounded follow-up query for just this page's SSIDs --
+            # not an N+1 and not a full-probe load. Each group's device
+            # list is capped (db.PROBE_SSID_DEVICES_CAP); the true count
+            # comes from the GROUP BY above so the template can show a
+            # "+N more" note when the reveal is truncated.
+            page_ssids = [r["ssid"] for r in ssid_rows]
+            devices_by_ssid = db.list_devices_for_probe_ssids(page_ssids)
+            ssid_groups = [
+                {
+                    "ssid": r["ssid"],
+                    "device_count": r["device_count"],
+                    "devices": devices_by_ssid.get(r["ssid"], []),
+                    "shown": len(devices_by_ssid.get(r["ssid"], [])),
+                }
+                for r in ssid_rows
+            ]
+        else:
+            total_count = db.count_probe_devices(q=q_clean)
+            pagination = build_pagination(requested_page, per_page, total_count)
+            device_rows = db.list_probe_devices(
+                limit=pagination.per_page, offset=pagination.offset, q=q_clean,
+            )
+
+        # Capture defaults off, so the tab is usually empty. Surface the
+        # same honest note the /devices probing filter shows rather than
+        # letting the operator wonder why the page is blank.
+        probe_capture_enabled = bool(app.state.config.capture.probe_ssids)
+        return app.state.templates.TemplateResponse(
+            request=request,
+            name="probes_list.html",
+            context={
+                "version": __version__,
+                "active": "probes",
+                "group": group,
+                "device_rows": device_rows,
+                "ssid_groups": ssid_groups,
+                "per_ssid_cap": db.PROBE_SSID_DEVICES_CAP,
+                "total_count": total_count,
+                "page": pagination.page,
+                "page_size": pagination.per_page,
+                "total_pages": pagination.total_pages,
+                "per_page_options": _PROBES_PER_PAGE_ALLOWED,
+                "q": q or "",
+                "filters_active": q_clean is not None,
+                "probe_capture_enabled": probe_capture_enabled,
             },
         )
 
