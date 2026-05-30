@@ -68,6 +68,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   light/dark theme toggle, and the theme-toggle button (already set off at
   the right edge) is unaffected. Purely cosmetic — no behavior change.
 
+### Fixed
+
+- **Pagination and filter links on /devices and /watchful now URL-encode
+  the search term and other text params.** The links built their query
+  string by raw concatenation, so a search containing `&`, `#`, `+`, or a
+  space — common now that the /devices search matches vendor / BLE name /
+  SSID — produced a broken URL: an unencoded `q=AT&T` truncated the query
+  string at the bare `&`, silently dropping the search term and every
+  param after it when paging. Each text-valued value is now run through
+  the `urlencode` filter (the `=`/`&` separators are left intact), so
+  `AT&T` rides the link as `q=AT%26T` and pagination, the filter summary,
+  and the preset chips all preserve the active search. /watchful shared
+  the same latent pattern and is fixed identically. Read-only filter
+  pages — this is purely a URL-construction correctness fix.
+
 ## [0.8.0] - 2026-05-29
 
 ### Added
