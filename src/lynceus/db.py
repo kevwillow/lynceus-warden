@@ -1151,6 +1151,24 @@ class Database:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_most_recent_alert_id_for_mac(self, mac: str) -> int | None:
+        """Return the id of the newest alert for ``mac``, or None.
+
+        Backs the device-detail "watch this device" action: watchful
+        tracking is created from an alert (``create_watchful_from_alert``),
+        so the device page resolves the most-recent alert for the MAC to
+        use as the watchful row's source. Exact-MAC match (alerts.mac is
+        stored normalized); ordering is ts DESC then id DESC so the
+        newest alert wins deterministically when two share a ts.
+        """
+        if not isinstance(mac, str) or not mac:
+            return None
+        row = self._conn.execute(
+            "SELECT id FROM alerts WHERE mac = ? ORDER BY ts DESC, id DESC LIMIT 1",
+            (mac,),
+        ).fetchone()
+        return int(row["id"]) if row else None
+
     # ---- import_runs (per-import freshness metadata) ----------------
 
     def record_import_run(
@@ -1905,6 +1923,71 @@ class Database:
             "FROM watchlist ORDER BY pattern_type, pattern"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def add_watchlist(
+        self,
+        *,
+        pattern: str,
+        pattern_type: str,
+        severity: str,
+        description: str | None = None,
+    ) -> tuple[int, bool]:
+        """Insert a watchlist row, idempotent on ``(pattern, pattern_type)``.
+
+        Returns ``(watchlist_id, inserted)``. ``inserted`` is ``False``
+        when a row for the same ``(pattern, pattern_type)`` already
+        existed: its id is returned and severity is left untouched -- a
+        re-add never silently downgrades an existing entry. The table
+        has no UNIQUE constraint on the pair (migration 001), so the
+        check-then-insert is the dedup; concurrent writes are not a
+        concern at operator click cadence.
+
+        This is the sanctioned write surface for the device-detail
+        "add to watchlist" operator action. It mirrors the CLI seed
+        path (``seed_watchlist._get_or_insert_watchlist_id``) but lives
+        on the Database API so the web layer never issues raw SQL.
+        """
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError("pattern must be a non-empty str")
+        if pattern_type not in self._WATCHLIST_PATTERN_TYPES:
+            raise ValueError(
+                f"pattern_type must be one of {self._WATCHLIST_PATTERN_TYPES}"
+            )
+        if severity not in self._ALERT_SEVERITIES:
+            raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
+        existing = self._conn.execute(
+            "SELECT id FROM watchlist WHERE pattern = ? AND pattern_type = ? LIMIT 1",
+            (pattern, pattern_type),
+        ).fetchone()
+        if existing is not None:
+            return int(existing["id"]), False
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO watchlist (pattern, pattern_type, severity, description) "
+                "VALUES (?, ?, ?, ?)",
+                (pattern, pattern_type, severity, description),
+            )
+        return int(cur.lastrowid), True
+
+    def get_watchlist_entry_by_pattern(
+        self, pattern: str, pattern_type: str
+    ) -> dict | None:
+        """Return the watchlist row for ``(pattern, pattern_type)``, or None.
+
+        Used by the device-detail panel to render current membership
+        ("on watchlist (severity X)") and to re-render after an add.
+        First match by id ascending; the table permits duplicates (no
+        UNIQUE constraint) but the add path is dedup-guarded.
+        """
+        if not isinstance(pattern, str) or not pattern:
+            return None
+        row = self._conn.execute(
+            "SELECT id, pattern, pattern_type, severity, description "
+            "FROM watchlist WHERE pattern = ? AND pattern_type = ? "
+            "ORDER BY id ASC LIMIT 1",
+            (pattern, pattern_type),
+        ).fetchone()
+        return dict(row) if row else None
 
     # --- watchlist_metadata (Argus side table) ----------------------------
 
