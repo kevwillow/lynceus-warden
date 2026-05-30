@@ -168,10 +168,10 @@
 
   <nav>
     {% set qs = [] %}
-    {% if status != 'active' %}{% set _ = qs.append('status=' ~ status) %}{% endif %}
-    {% if state != 'all' %}{% set _ = qs.append('state=' ~ state) %}{% endif %}
-    {% if window %}{% set _ = qs.append('window=' ~ window) %}{% endif %}
-    {% if q %}{% set _ = qs.append('q=' ~ q) %}{% endif %}
+    {% if status != 'active' %}{% set _ = qs.append('status=' ~ (status | urlencode)) %}{% endif %}
+    {% if state != 'all' %}{% set _ = qs.append('state=' ~ (state | urlencode)) %}{% endif %}
+    {% if window %}{% set _ = qs.append('window=' ~ (window | urlencode)) %}{% endif %}
+    {% if q %}{% set _ = qs.append('q=' ~ (q | urlencode)) %}{% endif %}
     {% set _ = qs.append('page_size=' ~ pagination.per_page) %}
     {% set base_qs = qs | join('&') %}
     <ul>

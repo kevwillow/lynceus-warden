@@ -121,12 +121,12 @@
 
   <nav>
     {% set qs = [] %}
-    {% if device_type %}{% set _ = qs.append('device_type=' ~ device_type) %}{% endif %}
+    {% if device_type %}{% set _ = qs.append('device_type=' ~ (device_type | urlencode)) %}{% endif %}
     {% if randomized is sameas true %}{% set _ = qs.append('randomized=true') %}{% endif %}
     {% if randomized is sameas false %}{% set _ = qs.append('randomized=false') %}{% endif %}
     {% if probing is sameas true %}{% set _ = qs.append('probing=yes') %}{% endif %}
     {% if probing is sameas false %}{% set _ = qs.append('probing=no') %}{% endif %}
-    {% if q %}{% set _ = qs.append('q=' ~ q) %}{% endif %}
+    {% if q %}{% set _ = qs.append('q=' ~ (q | urlencode)) %}{% endif %}
     {% set _ = qs.append('page_size=' ~ page_size) %}
     {% set base_qs = qs | join('&') %}
     <ul>
