@@ -207,10 +207,10 @@
     {% if pagination %}
       <nav>
         {% set qs = [] %}
-        {% if filters.q %}{% set _ = qs.append('q=' ~ filters.q) %}{% endif %}
-        {% if filters.source != 'all' %}{% set _ = qs.append('source=' ~ filters.source) %}{% endif %}
-        {% if filters.status != 'all' %}{% set _ = qs.append('status=' ~ filters.status) %}{% endif %}
-        {% if filters.type != 'all' %}{% set _ = qs.append('type=' ~ filters.type) %}{% endif %}
+        {% if filters.q %}{% set _ = qs.append('q=' ~ (filters.q | urlencode)) %}{% endif %}
+        {% if filters.source != 'all' %}{% set _ = qs.append('source=' ~ (filters.source | urlencode)) %}{% endif %}
+        {% if filters.status != 'all' %}{% set _ = qs.append('status=' ~ (filters.status | urlencode)) %}{% endif %}
+        {% if filters.type != 'all' %}{% set _ = qs.append('type=' ~ (filters.type | urlencode)) %}{% endif %}
         {% set _ = qs.append('page_size=' ~ pagination.per_page) %}
         {% set base_qs = qs | join('&') %}
         <ul>

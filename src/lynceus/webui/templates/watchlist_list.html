@@ -111,10 +111,10 @@
 
   <nav>
     {% set qs = [] %}
-    {% if q %}{% set _ = qs.append('q=' ~ q) %}{% endif %}
-    {% if pattern_type %}{% set _ = qs.append('pattern_type=' ~ pattern_type) %}{% endif %}
-    {% if severity %}{% set _ = qs.append('severity=' ~ severity) %}{% endif %}
-    {% if device_category %}{% set _ = qs.append('device_category=' ~ device_category) %}{% endif %}
+    {% if q %}{% set _ = qs.append('q=' ~ (q | urlencode)) %}{% endif %}
+    {% if pattern_type %}{% set _ = qs.append('pattern_type=' ~ (pattern_type | urlencode)) %}{% endif %}
+    {% if severity %}{% set _ = qs.append('severity=' ~ (severity | urlencode)) %}{% endif %}
+    {% if device_category %}{% set _ = qs.append('device_category=' ~ (device_category | urlencode)) %}{% endif %}
     {% set _ = qs.append('page_size=' ~ pagination.per_page) %}
     {% set base_qs = qs | join('&') %}
     <ul>

@@ -225,17 +225,17 @@
 
   <nav>
     {% set qs = [] %}
-    {% if severity %}{% set _ = qs.append('severity=' ~ severity) %}{% endif %}
+    {% if severity %}{% set _ = qs.append('severity=' ~ (severity | urlencode)) %}{% endif %}
     {% if acknowledged is sameas true %}{% set _ = qs.append('acknowledged=true') %}{% endif %}
     {% if acknowledged is sameas false %}{% set _ = qs.append('acknowledged=false') %}{% endif %}
-    {% if since %}{% set _ = qs.append('since=' ~ since) %}{% endif %}
-    {% if until %}{% set _ = qs.append('until=' ~ until) %}{% endif %}
-    {% if search %}{% set _ = qs.append('search=' ~ search) %}{% endif %}
-    {% if rule_type %}{% set _ = qs.append('rule_type=' ~ rule_type) %}{% endif %}
-    {% if q %}{% set _ = qs.append('q=' ~ q) %}{% endif %}
-    {% if window %}{% set _ = qs.append('window=' ~ window) %}{% endif %}
-    {% if has_note and has_note != 'all' %}{% set _ = qs.append('has_note=' ~ has_note) %}{% endif %}
-    {% if has_action and has_action != 'all' %}{% set _ = qs.append('has_action=' ~ has_action) %}{% endif %}
+    {% if since %}{% set _ = qs.append('since=' ~ (since | urlencode)) %}{% endif %}
+    {% if until %}{% set _ = qs.append('until=' ~ (until | urlencode)) %}{% endif %}
+    {% if search %}{% set _ = qs.append('search=' ~ (search | urlencode)) %}{% endif %}
+    {% if rule_type %}{% set _ = qs.append('rule_type=' ~ (rule_type | urlencode)) %}{% endif %}
+    {% if q %}{% set _ = qs.append('q=' ~ (q | urlencode)) %}{% endif %}
+    {% if window %}{% set _ = qs.append('window=' ~ (window | urlencode)) %}{% endif %}
+    {% if has_note and has_note != 'all' %}{% set _ = qs.append('has_note=' ~ (has_note | urlencode)) %}{% endif %}
+    {% if has_action and has_action != 'all' %}{% set _ = qs.append('has_action=' ~ (has_action | urlencode)) %}{% endif %}
     {% set _ = qs.append('page_size=' ~ pagination.per_page) %}
     {% set base_qs = qs | join('&') %}
     <ul>
