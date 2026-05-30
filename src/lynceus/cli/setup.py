@@ -454,9 +454,13 @@ def enumerate_bluetooth_adapters() -> list[str] | None:
         return None
     if sys.platform == "darwin":
         return None
-    sys_class_bt = Path("/sys/class/bluetooth")
-    if not sys_class_bt.is_dir():
+    # os.path.isdir takes a str and never instantiates a pathlib.Path, so the
+    # missing-dir branch stays safe even when os.name is patched to "posix" on a
+    # Windows host (3.11 refuses to build a PosixPath there). The Path below is
+    # only reached on real Linux where the directory exists and PosixPath works.
+    if not os.path.isdir("/sys/class/bluetooth"):
         return []
+    sys_class_bt = Path("/sys/class/bluetooth")
     try:
         adapters = sorted(
             entry.name for entry in sys_class_bt.iterdir() if entry.name.startswith("hci")
