@@ -83,6 +83,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the same latent pattern and is fixed identically. Read-only filter
   pages — this is purely a URL-construction correctness fix.
 
+- **The /alerts, /allowlist, and /watchlist pagination links now
+  URL-encode their text params too.** Those three list pages carried the
+  same raw-concatenation pattern in their pagination navs (`'q=' ~ q` …
+  `qs | join('&')`), so a search containing `&`, `#`, `+`, or a space
+  truncated or mis-parsed the query string the moment the operator paged,
+  silently dropping the active filter. Each text-valued value — `q`,
+  `search`, `severity`, `rule_type`, `window`, `since`, `until`,
+  `has_note`, `has_action` on /alerts; `q`, `source`, `status`, `type` on
+  /allowlist; `q`, `pattern_type`, `severity`, `device_category` on
+  /watchlist — is now run through the `urlencode` filter, leaving the
+  `=`/`&` separators intact. The alerts filter-summary line keeps showing
+  the raw term as display text (it is HTML-autoescaped, not a URL); only
+  the href construction changed. Read-only filter pages — a
+  URL-construction correctness fix, matching the /devices and /watchful
+  fix above.
+
 ## [0.8.0] - 2026-05-29
 
 ### Added
