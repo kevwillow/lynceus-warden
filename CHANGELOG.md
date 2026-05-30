@@ -8,6 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A new Probes tab aggregates probe SSIDs across all devices.** The
+  per-device "Probes" column now has an aggregated sibling at `/probes`
+  that rolls `devices.probe_ssids` up two ways: by **device** (which
+  networks each device probed — the default) and by **network** (which
+  devices probed for each SSID), switchable with a grouping toggle. It is
+  the most privacy-sensitive screen in the tool — it concentrates the
+  network history of strangers passing the sensor — so it is built
+  PII-first: in **both** groupings the SSID strings are **collapsed by
+  default** behind a native expand/reveal control, and nothing leaks on
+  load. In device grouping the row summary shows only the *count* of
+  networks probed; in network grouping it shows only the device count, with
+  the SSID name itself living inside the reveal alongside its device list.
+  Search, filtering, and pagination mirror the devices/watchful convention
+  exactly — a plain form-GET `q` (100-char cap, whitespace-is-unfiltered),
+  server-side filtering, and the URL-encoded query carried across pages
+  with the active grouping. Network grouping unnests the JSON arrays with
+  SQLite `json_each` and paginates on the grouped result, fetching each
+  page's device lists in a single bounded query (capped per network) so the
+  view never loads every probe per request or fans out into an N+1; a
+  malformed legacy probe row skips silently rather than erroring the page.
+  Capture defaults off, so the tab carries the same honest "probe-SSID
+  capture is disabled" note as the devices probing filter. It is entirely
+  read-only — no new capture, collection, or mutation; it only reads and
+  aggregates probe data that already exists.
+
 - **The devices page gained a search bar.** A free-text box now filters
   the /devices list by substring, mirroring the existing /watchful search:
   the same `q` query parameter, a plain form GET (no live-search), the
