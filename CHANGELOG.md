@@ -23,6 +23,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   11th unacknowledged alert does not backfill into the table until the
   next full page load.
 
+- **The dashboard top-nav tabs are now separated by a vertical divider.**
+  The tab links (home, alerts, watchful, …) previously sat in a flex row
+  with only whitespace between them, so it wasn't obvious where one tab
+  ended and the next began; a 1px vertical rule now delimits each pair.
+  It reuses the existing top-nav border token, so the divider tracks the
+  light/dark theme toggle, and the theme-toggle button (already set off at
+  the right edge) is unaffected. Purely cosmetic — no behavior change.
+
 ## [0.8.0] - 2026-05-29
 
 ### Added
