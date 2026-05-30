@@ -2175,12 +2175,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return alert
 
     def _write_ui_allowlist(
-        alert: dict,
+        mac: str,
         *,
         snooze_duration_key: str | None,
         now_ts: int,
     ) -> None:
-        """Construct + persist the UI-managed entry for ``alert``.
+        """Construct + persist the UI-managed allowlist entry for ``mac``.
 
         ``snooze_duration_key`` is ``None`` for the permanent
         /allowlist path, or one of ``_SNOOZE_DURATIONS`` keys for the
@@ -2190,6 +2190,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         allowlist_ui.yaml can tell which surface produced the entry.
         Caller is responsible for upstream validation of the key
         against ``_SNOOZE_DURATIONS``.
+
+        ``mac`` is the raw MAC; ``AllowlistEntry`` normalizes it to the
+        canonical stored form. Shared by the per-alert triage routes
+        (``allowlist_alert_post`` / ``snooze_alert_post``) and the
+        device-detail silence routes -- same suppression mechanism,
+        keyed by a MAC either way.
         """
         iso = unix_to_iso(now_ts)
         if snooze_duration_key is None:
@@ -2200,7 +2206,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             note = f"snoozed {snooze_duration_key} via webui at {iso}"
             expires_at = None if seconds is None else now_ts + seconds
         entry = AllowlistEntry(
-            pattern=alert["mac"],
+            pattern=mac,
             pattern_type="mac",
             note=note,
             added_at=now_ts,
@@ -2214,7 +2220,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
         result = _load_alert_for_triage(alert_id, request)
         if not isinstance(result, dict):
             return result
-        _write_ui_allowlist(result, snooze_duration_key=None, now_ts=int(time.time()))
+        _write_ui_allowlist(
+            result["mac"], snooze_duration_key=None, now_ts=int(time.time())
+        )
         return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
 
     @app.post("/alerts/{alert_id}/snooze")
@@ -2235,7 +2243,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         if not isinstance(result, dict):
             return result
         _write_ui_allowlist(
-            result,
+            result["mac"],
             snooze_duration_key=snooze_duration,
             now_ts=int(time.time()),
         )
@@ -2783,6 +2791,64 @@ def create_app(config: Config, db: Database) -> FastAPI:
             },
         )
 
+    # Watchful "watch this device" duration vocabulary. Mirrors the
+    # /alerts watch surface (alerts_list.html): forever/24h/7d/30d, no
+    # 1h bucket -- watchful is a recurrence tracker, not a quick-dismiss.
+    _DEVICE_WATCH_DURATIONS = ("24h", "7d", "30d", "forever")
+    _DEVICE_WATCH_DEFAULT = "30d"
+
+    def _device_actions_context(mac: str, now_ts: int) -> dict:
+        """Build the device-detail action-panel context for ``mac``.
+
+        Shared by the GET page render and every device action POST so
+        the htmx partial re-render reflects post-action state through
+        exactly the same query path. ``mac`` is the normalized MAC.
+        Reuses ``_resolve_allowlist_match`` (the per-alert triage
+        surface's own state resolver) so the "silence" section behaves
+        identically to the alert-detail allowlist section.
+        """
+        allowlist_match, allowlist_match_removable, allowlist_configured = (
+            _resolve_allowlist_match(app.state.config, mac, now_ts)
+        )
+        snooze_hours_remaining: int | None = None
+        if allowlist_match is not None and allowlist_match.expires_at is not None:
+            seconds_left = max(0, allowlist_match.expires_at - now_ts)
+            snooze_hours_remaining = max(1, (seconds_left + 3599) // 3600)
+        return {
+            "mac": mac,
+            "watchlist_match": db.get_watchlist_entry_by_pattern(mac, "mac"),
+            "active_watchful": db.get_active_watchful_recurrence_by_mac(mac),
+            "watch_source_alert_id": db.get_most_recent_alert_id_for_mac(mac),
+            "allowlist_match": allowlist_match,
+            "allowlist_match_removable": allowlist_match_removable,
+            "allowlist_configured": allowlist_configured,
+            "snooze_hours_remaining": snooze_hours_remaining,
+            "severities": db._ALERT_SEVERITIES,
+            "severity_default": "med",
+            "snooze_duration_options": list(_SNOOZE_DURATIONS.keys()),
+            "snooze_default_duration": _SNOOZE_DEFAULT_KEY,
+            "watch_duration_options": _DEVICE_WATCH_DURATIONS,
+            "watch_default_duration": _DEVICE_WATCH_DEFAULT,
+            "now_ts": now_ts,
+        }
+
+    def _device_actions_response(request: Request, mac: str):
+        """Return the panel partial (htmx) or a 303 back to the device page.
+
+        Mirrors the ack-flow pattern: an HX-Request gets the re-rendered
+        ``_device_actions.html`` swapped in place (200, not 204 -- htmx
+        skips the swap on 204); a no-JS form submit gets a 303 redirect
+        to /devices/<mac> (PRG), where the full-page re-render shows the
+        same updated state.
+        """
+        if request.headers.get("hx-request"):
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="_device_actions.html",
+                context=_device_actions_context(mac, int(time.time())),
+            )
+        return RedirectResponse(f"/devices/{mac}", status_code=303)
+
     @app.get("/devices/{mac:path}", response_class=HTMLResponse)
     def device_detail(request: Request, mac: str):
         try:
@@ -2810,16 +2876,172 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 },
                 status_code=404,
             )
+        context = {
+            "version": __version__,
+            "active": "devices",
+            "device": result["device"],
+            "sightings": result["sightings"],
+        }
+        context.update(_device_actions_context(normalized, int(time.time())))
         return app.state.templates.TemplateResponse(
             request=request,
             name="device_detail.html",
-            context={
-                "version": __version__,
-                "active": "devices",
-                "device": result["device"],
-                "sightings": result["sightings"],
-            },
+            context=context,
         )
+
+    @app.post("/devices/{mac:path}/watchlist")
+    def device_add_watchlist_post(
+        request: Request,
+        mac: str,
+        severity: str = Form(...),
+    ):
+        """Operator action: add this MAC to the watchlist with a severity.
+
+        The sanctioned web write surface for the watchlist (db.add_watchlist,
+        idempotent on the (pattern, mac) pair). Severity is constrained to
+        the real model values; a re-add never downgrades an existing row.
+        """
+        try:
+            normalized = kismet.normalize_mac(mac)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"malformed MAC: {mac!r}"
+            ) from exc
+        if severity not in db._ALERT_SEVERITIES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"severity must be one of {db._ALERT_SEVERITIES}",
+            )
+        iso = unix_to_iso(int(time.time()))
+        db.add_watchlist(
+            pattern=normalized,
+            pattern_type="mac",
+            severity=severity,
+            description=f"added via webui at {iso}",
+        )
+        return _device_actions_response(request, normalized)
+
+    @app.post("/devices/{mac:path}/watch")
+    def device_watch_post(
+        request: Request,
+        mac: str,
+        snooze_duration: str = Form(default=_DEVICE_WATCH_DEFAULT),
+    ):
+        """Operator action: track this device on the watchful surface.
+
+        Watchful tracking is alert-derived (create_watchful_from_alert),
+        so the device's most-recent alert becomes the source row. The
+        panel only renders the button when an alert exists; a stale post
+        with no alert is rejected (400). An existing active watchful entry
+        for the MAC is idempotent -- swallow the one-active-per-MAC
+        ValueError and re-render, which shows the existing entry.
+        """
+        try:
+            normalized = kismet.normalize_mac(mac)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"malformed MAC: {mac!r}"
+            ) from exc
+        if snooze_duration not in _SNOOZE_DURATIONS:
+            raise HTTPException(
+                status_code=400,
+                detail="snooze_duration must be one of: "
+                + ", ".join(_SNOOZE_DURATIONS),
+            )
+        source_alert_id = db.get_most_recent_alert_id_for_mac(normalized)
+        if source_alert_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="no alert for this MAC; watchful tracking starts from an alert",
+            )
+        seconds = _SNOOZE_DURATIONS[snooze_duration]
+        try:
+            db.create_watchful_from_alert(
+                source_alert_id,
+                snooze_duration_seconds=seconds,
+                now_ts=int(time.time()),
+            )
+        except ValueError:
+            pass
+        return _device_actions_response(request, normalized)
+
+    @app.post("/devices/{mac:path}/allowlist")
+    def device_allowlist_post(request: Request, mac: str):
+        """Operator action: silence future alerts for this MAC (permanent).
+
+        Reuses the per-alert allowlist suppression mechanism
+        (_write_ui_allowlist -> add_ui_entry), keyed by the MAC the
+        device page already holds.
+        """
+        try:
+            normalized = kismet.normalize_mac(mac)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"malformed MAC: {mac!r}"
+            ) from exc
+        if not app.state.config.allowlist_path:
+            raise HTTPException(
+                status_code=400,
+                detail="allowlist_path is not configured; nothing to write to",
+            )
+        _write_ui_allowlist(
+            normalized, snooze_duration_key=None, now_ts=int(time.time())
+        )
+        return _device_actions_response(request, normalized)
+
+    @app.post("/devices/{mac:path}/snooze")
+    def device_snooze_post(
+        request: Request,
+        mac: str,
+        snooze_duration: str = Form(default=_SNOOZE_DEFAULT_KEY),
+    ):
+        """Operator action: silence future alerts for this MAC for a window."""
+        try:
+            normalized = kismet.normalize_mac(mac)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"malformed MAC: {mac!r}"
+            ) from exc
+        if snooze_duration not in _SNOOZE_DURATIONS:
+            raise HTTPException(
+                status_code=400,
+                detail="snooze_duration must be one of: "
+                + ", ".join(_SNOOZE_DURATIONS),
+            )
+        if not app.state.config.allowlist_path:
+            raise HTTPException(
+                status_code=400,
+                detail="allowlist_path is not configured; nothing to write to",
+            )
+        _write_ui_allowlist(
+            normalized, snooze_duration_key=snooze_duration, now_ts=int(time.time())
+        )
+        return _device_actions_response(request, normalized)
+
+    @app.post("/devices/{mac:path}/allowlist/remove")
+    def device_allowlist_remove_post(request: Request, mac: str):
+        """Operator action: lift a UI-managed allowlist/snooze for this MAC.
+
+        Idempotent (mirrors remove_allowlist_alert_post). Constructs an
+        AllowlistEntry to get the canonical stored pattern per
+        remove_ui_entry's documented contract -- a raw MAC could miss a
+        normalized stored entry.
+        """
+        try:
+            normalized = kismet.normalize_mac(mac)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"malformed MAC: {mac!r}"
+            ) from exc
+        if not app.state.config.allowlist_path:
+            raise HTTPException(
+                status_code=400,
+                detail="allowlist_path is not configured; nothing to write to",
+            )
+        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
+        entry = AllowlistEntry(pattern=normalized, pattern_type="mac")
+        remove_ui_entry(ui_path, entry.pattern, "mac")
+        return _device_actions_response(request, normalized)
 
     @app.get("/rules", response_class=HTMLResponse)
     def rules_list(

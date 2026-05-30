@@ -1,0 +1,131 @@
+{# Device-detail operator action panel. Inputs (set by
+   _device_actions_context): mac, watchlist_match, active_watchful,
+   watch_source_alert_id, allowlist_match / allowlist_match_removable /
+   allowlist_configured, snooze_hours_remaining, severities,
+   severity_default, snooze_duration_options, snooze_default_duration,
+   watch_duration_options, watch_default_duration, now_ts.
+
+   Each action is a deliberate operator mutation on the otherwise
+   read-only dashboard: every form carries the _csrf field, an onsubmit
+   confirm (no accidental one-click mutation), and the ack-flow htmx
+   contract (hx-post -> #device-actions partial swap; method/action 303
+   fallback for no-JS). add-to-rules is deferred to its own arc:
+   rules.yaml is operator config and there is no incremental write
+   surface, so adding a rule from the dashboard would breach the
+   read-only boundary.
+#}
+<article id="device-actions" class="device-actions">
+  <header><strong>actions</strong></header>
+
+  {# --- Add to watchlist ---------------------------------------------- #}
+  <section class="device-action">
+    <h4>watchlist</h4>
+    {% if watchlist_match %}
+      <p class="status">On the watchlist as
+        <span class="badge-{{ watchlist_match.severity }}">{{ watchlist_match.severity }}</span>
+        (<a href="/watchlist/{{ watchlist_match.id }}">view entry</a>).</p>
+    {% else %}
+      <form method="post" action="/devices/{{ mac }}/watchlist"
+            hx-post="/devices/{{ mac }}/watchlist"
+            hx-target="#device-actions" hx-swap="outerHTML"
+            onsubmit="return confirm('Add {{ mac }} to the watchlist? It will raise alerts on every future sighting.');">
+        <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+        <label>severity
+          <select name="severity" class="device-action-select">
+            {% for s in severities %}
+              <option value="{{ s }}"{% if s == severity_default %} selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="device-action-btn">Add to watchlist</button>
+      </form>
+    {% endif %}
+  </section>
+
+  {# --- Watchful ------------------------------------------------------- #}
+  <section class="device-action">
+    <h4>watchful</h4>
+    {% if active_watchful %}
+      <p class="status">Tracked on the watchful surface
+        ({{ active_watchful.sighting_count }} sighting{{ '' if active_watchful.sighting_count == 1 else 's' }}
+        since <time datetime="{{ active_watchful.first_seen_at | unix_to_iso }}">{{ active_watchful.first_seen_at | unix_to_iso }}</time>) &mdash;
+        <a href="/watchful">view watchful</a>.</p>
+    {% elif watch_source_alert_id %}
+      <form method="post" action="/devices/{{ mac }}/watch"
+            hx-post="/devices/{{ mac }}/watch"
+            hx-target="#device-actions" hx-swap="outerHTML"
+            onsubmit="return confirm('Watch {{ mac }}? It will be tracked and raise a low-priority alert on repeated sightings.');">
+        <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+        <label>suppress repeats for
+          <select name="snooze_duration" class="device-action-select" title="how long to suppress repeat alerts; tracking continues regardless">
+            {% for d in watch_duration_options %}
+              <option value="{{ d }}"{% if d == watch_default_duration %} selected{% endif %}>{{ d }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="device-action-btn">Watch this device</button>
+      </form>
+    {% else %}
+      <p class="dim"><em>No alert recorded for this device yet &mdash; watchful tracking starts from an alert.</em></p>
+    {% endif %}
+  </section>
+
+  {# --- Silence (suppress future alerts via the allowlist) ------------- #}
+  {% if allowlist_configured %}
+    <section class="device-action">
+      <h4>silence</h4>
+      {% if allowlist_match is none %}
+        <p>Suppress future alerts for <code>{{ mac }}</code>:</p>
+        <form method="post" action="/devices/{{ mac }}/allowlist"
+              hx-post="/devices/{{ mac }}/allowlist"
+              hx-target="#device-actions" hx-swap="outerHTML"
+              onsubmit="return confirm('Permanently silence {{ mac }}? Future alerts for this device will be suppressed.');">
+          <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+          <button type="submit" class="device-action-btn">Silence permanently</button>
+        </form>
+        <form method="post" action="/devices/{{ mac }}/snooze"
+              hx-post="/devices/{{ mac }}/snooze"
+              hx-target="#device-actions" hx-swap="outerHTML"
+              onsubmit="return confirm('Silence alerts for {{ mac }}?');">
+          <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+          <label>for
+            <select name="snooze_duration" class="device-action-select" title="how long to suppress alerts for this MAC">
+              {% for d in snooze_duration_options %}
+                <option value="{{ d }}"{% if d == snooze_default_duration %} selected{% endif %}>{{ d }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit" class="device-action-btn">Silence temporarily</button>
+        </form>
+      {% elif allowlist_match.expires_at is none %}
+        <p class="status">Silenced{% if allowlist_match.added_at %} (since <time datetime="{{ allowlist_match.added_at | unix_to_iso }}">{{ allowlist_match.added_at | unix_to_utc_human }}</time>){% endif %}.</p>
+        {% if allowlist_match_removable %}
+          <form method="post" action="/devices/{{ mac }}/allowlist/remove"
+                hx-post="/devices/{{ mac }}/allowlist/remove"
+                hx-target="#device-actions" hx-swap="outerHTML"
+                onsubmit="return confirm('Stop silencing {{ mac }}?');">
+            <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+            <button type="submit" class="outline device-action-btn">Stop silencing</button>
+          </form>
+        {% else %}
+          <p class="dim"><em>Configured in <code>allowlist.yaml</code> (operator-managed); edit that file directly to remove.</em></p>
+        {% endif %}
+      {% else %}
+        <p class="status">Silenced until
+          <time datetime="{{ allowlist_match.expires_at | unix_to_iso }}">{{ allowlist_match.expires_at | unix_to_utc_human }}</time>
+          {% if snooze_hours_remaining is not none %} ({{ snooze_hours_remaining }} hour{{ '' if snooze_hours_remaining == 1 else 's' }} remaining){% endif %}.</p>
+        {% if allowlist_match_removable %}
+          <form method="post" action="/devices/{{ mac }}/allowlist/remove"
+                hx-post="/devices/{{ mac }}/allowlist/remove"
+                hx-target="#device-actions" hx-swap="outerHTML"
+                onsubmit="return confirm('Cancel the silence for {{ mac }}?');">
+            <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+            <button type="submit" class="outline device-action-btn">Cancel silence</button>
+          </form>
+        {% else %}
+          <p class="dim"><em>Configured in <code>allowlist.yaml</code> (operator-managed); edit that file directly to cancel.</em></p>
+        {% endif %}
+      {% endif %}
+    </section>
+  {% endif %}
+</article>

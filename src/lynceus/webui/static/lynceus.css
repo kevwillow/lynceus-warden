@@ -267,3 +267,30 @@ details > summary { cursor: pointer; }
 }
 .table-scroll table th,
 .table-scroll table td { white-space: nowrap; }
+
+/* Device-detail action panel: per-MAC operator actions (add to
+   watchlist / watchful / silence). A page section, not an inline-table
+   popover -- deliberately touch-sized for phone use (44px min control
+   height, the iOS/Android tap-target floor). The three sub-sections
+   stack with a hairline divider; within each, the form controls flow
+   inline and wrap onto a second line on narrow viewports. v0.9.0. */
+.device-actions .device-action { margin: 0.6em 0; }
+.device-actions .device-action + .device-action {
+    border-top: 1px solid var(--lyn-topnav-border);
+    padding-top: 0.6em;
+}
+.device-actions .device-action h4 { margin: 0 0 0.3em; font-size: 0.95em; }
+.device-actions form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5em;
+    margin: 0.3em 0;
+}
+.device-actions form label { margin: 0; }
+.device-action-btn {
+    width: auto;
+    min-height: 44px;
+    padding: 0.5em 1em;
+}
+.device-action-select { min-height: 44px; }
