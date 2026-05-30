@@ -555,6 +555,14 @@ class Database:
 
     PROBE_SSIDS_PER_DEVICE_CAP = 50
 
+    # Upper bound on the device list materialized per SSID on the
+    # SSID-grouped /probes view. The true per-SSID device count is
+    # always shown; this only bounds how many device identities a
+    # single reveal renders at once, so one very popular network can't
+    # balloon the page. The webui surfaces a "+N more" note when the
+    # true count exceeds this.
+    PROBE_SSID_DEVICES_CAP = 50
+
     def merge_device_probe_ssids(
         self,
         mac: str,
@@ -1916,6 +1924,186 @@ class Database:
         where, params = self._device_filter_sql(device_type, randomized, probing, q)
         sql = f"SELECT COUNT(*) FROM devices {where}"
         return int(self._conn.execute(sql, params).fetchone()[0])
+
+    # --- /probes aggregation (read-only) ---------------------------------
+    #
+    # The aggregated Probes tab reads devices.probe_ssids two ways. The
+    # "device" grouping is cheap: the SSIDs already live on the row, so
+    # list_probe_devices is just list_devices narrowed to rows that carry
+    # probes. The "ssid" grouping inverts that -- which devices probed each
+    # network -- which means unnesting the JSON array across every device
+    # with json_each. Pagination there runs on the *grouped* result, so a
+    # request only ever materializes the current page's SSIDs and their
+    # (capped) device lists, never every probe in the table.
+
+    def _probe_device_filter_sql(self, q: str | None) -> tuple[str, list]:
+        """WHERE clause + params shared by count/list_probe_devices.
+
+        Base predicate restricts to devices carrying at least one stored
+        probe SSID (mirrors the ``probing=True`` branch of
+        _device_filter_sql: NULL is the canonical "none", but '' / '[]'
+        are tolerated for hand-edited rows). ``q`` adds an OR over the
+        device identity columns *and* the probe_ssids JSON text, so a
+        substring search on a network name surfaces the devices that
+        probed for it without unnesting -- the SSIDs are right there in
+        the column.
+        """
+        clauses = [
+            "(probe_ssids IS NOT NULL AND probe_ssids != '' "
+            "AND probe_ssids != '[]')"
+        ]
+        params: list = []
+        if q:
+            like = f"%{q}%"
+            clauses.append(
+                "(mac LIKE ? OR ble_name LIKE ? OR oui_vendor LIKE ? "
+                "OR probe_ssids LIKE ?)"
+            )
+            params.extend([like, like, like, like])
+        return "WHERE " + " AND ".join(clauses), params
+
+    def count_probe_devices(self, *, q: str | None = None) -> int:
+        """Count devices carrying at least one stored probe SSID.
+
+        The pagination total for the device-grouped /probes view. ``q``
+        is the same free-text filter as ``list_probe_devices``.
+        """
+        where, params = self._probe_device_filter_sql(q)
+        return int(
+            self._conn.execute(
+                f"SELECT COUNT(*) FROM devices {where}", params
+            ).fetchone()[0]
+        )
+
+    def list_probe_devices(
+        self, *, limit: int = 200, offset: int = 0, q: str | None = None
+    ) -> list[dict]:
+        """Devices carrying probe SSIDs, newest-seen first (device grouping).
+
+        Each row carries the raw ``probe_ssids`` JSON the webui decodes
+        with the ``probe_ssids_list`` filter (safe-by-default on malformed
+        payloads), plus the identity columns the device label derives
+        from. Ordered ``last_seen DESC, mac`` to match the /devices list.
+        """
+        self._validate_pagination(limit, offset)
+        where, params = self._probe_device_filter_sql(q)
+        sql = (
+            "SELECT mac, device_type, first_seen, last_seen, oui_vendor, "
+            "ble_name, probe_ssids "
+            f"FROM devices {where} ORDER BY last_seen DESC, mac LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def _probe_ssid_filter_sql(self, q: str | None) -> tuple[str, list]:
+        """WHERE clause + params for the json_each SSID-grouped queries.
+
+        Restricts to device rows that carry probes AND whose payload is a
+        valid JSON array -- the json_valid/json_type guard makes a single
+        malformed or non-array row skip silently instead of throwing
+        "malformed JSON" and 500-ing the whole page, matching the
+        webui's defensive ``_probe_ssids_list`` decode. When ``q`` is set
+        it filters the unnested SSID values (substring LIKE on the
+        network name).
+        """
+        clauses = [
+            "d.probe_ssids IS NOT NULL AND d.probe_ssids != '' "
+            "AND d.probe_ssids != '[]'",
+            "json_valid(d.probe_ssids)",
+            "json_type(d.probe_ssids) = 'array'",
+        ]
+        params: list = []
+        if q:
+            clauses.append("j.value LIKE ?")
+            params.append(f"%{q}%")
+        return "WHERE " + " AND ".join(clauses), params
+
+    def count_probe_ssids(self, *, q: str | None = None) -> int:
+        """Count distinct probe SSIDs across all devices (SSID-grouped total).
+
+        Unnests ``devices.probe_ssids`` with json_each and counts the
+        distinct values, applying the same ``q`` SSID filter as
+        ``list_probe_ssids`` so the page count and the page stay
+        consistent.
+        """
+        where, params = self._probe_ssid_filter_sql(q)
+        sql = (
+            "SELECT COUNT(DISTINCT j.value) "
+            "FROM devices d, json_each(d.probe_ssids) j " + where
+        )
+        return int(self._conn.execute(sql, params).fetchone()[0])
+
+    def list_probe_ssids(
+        self, *, limit: int = 200, offset: int = 0, q: str | None = None
+    ) -> list[dict]:
+        """Distinct probe SSIDs with device counts (SSID-grouped page).
+
+        Unnests with json_each, groups by SSID value, and returns the
+        page ordered by ``device_count DESC, ssid``. LIMIT/OFFSET run on
+        the grouped result, so a request materializes only the page's
+        SSIDs -- not every probe. Pair with
+        ``list_devices_for_probe_ssids`` to fill in each group's devices.
+        Returns dicts of ``{ssid, device_count}``.
+        """
+        self._validate_pagination(limit, offset)
+        where, params = self._probe_ssid_filter_sql(q)
+        sql = (
+            "SELECT j.value AS ssid, COUNT(DISTINCT d.mac) AS device_count "
+            "FROM devices d, json_each(d.probe_ssids) j " + where
+            + " GROUP BY j.value ORDER BY device_count DESC, j.value "
+            "LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def list_devices_for_probe_ssids(
+        self, ssids, *, per_ssid_cap: int = PROBE_SSID_DEVICES_CAP
+    ) -> dict[str, list[dict]]:
+        """Devices that probed each of ``ssids`` (SSID-grouped reveal data).
+
+        One bounded query for the whole page's SSIDs (``j.value IN
+        (...)``), capped to ``per_ssid_cap`` devices per SSID via a
+        row-numbered window ordered newest-seen first -- so a single
+        popular network can't materialize an unbounded device list. The
+        same json_valid/json_type guard as the count/list queries keeps a
+        malformed row from throwing. Returns ``{ssid: [device dict, ...]}``;
+        an empty ``ssids`` returns ``{}`` without touching the DB.
+        """
+        ssids = list(ssids)
+        if not ssids:
+            return {}
+        if (
+            not isinstance(per_ssid_cap, int)
+            or isinstance(per_ssid_cap, bool)
+            or per_ssid_cap < 1
+        ):
+            raise ValueError("per_ssid_cap must be a positive int")
+        placeholders = ",".join("?" * len(ssids))
+        sql = (
+            "SELECT ssid, mac, device_type, oui_vendor, ble_name FROM ("
+            "SELECT j.value AS ssid, d.mac AS mac, d.device_type AS device_type, "
+            "d.oui_vendor AS oui_vendor, d.ble_name AS ble_name, "
+            "ROW_NUMBER() OVER (PARTITION BY j.value "
+            "ORDER BY d.last_seen DESC, d.mac) AS rn "
+            "FROM devices d, json_each(d.probe_ssids) j "
+            "WHERE d.probe_ssids IS NOT NULL AND d.probe_ssids != '' "
+            "AND d.probe_ssids != '[]' AND json_valid(d.probe_ssids) "
+            "AND json_type(d.probe_ssids) = 'array' "
+            f"AND j.value IN ({placeholders})"
+            ") WHERE rn <= ? ORDER BY ssid, rn"
+        )
+        params = ssids + [per_ssid_cap]
+        out: dict[str, list[dict]] = {}
+        for r in self._conn.execute(sql, params).fetchall():
+            out.setdefault(r["ssid"], []).append(
+                {
+                    "mac": r["mac"],
+                    "device_type": r["device_type"],
+                    "oui_vendor": r["oui_vendor"],
+                    "ble_name": r["ble_name"],
+                }
+            )
+        return out
 
     def get_device_with_sightings(self, mac: str, *, sighting_limit: int = 100) -> dict | None:
         if not isinstance(sighting_limit, int) or isinstance(sighting_limit, bool):
