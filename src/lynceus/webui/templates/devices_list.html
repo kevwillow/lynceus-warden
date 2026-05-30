@@ -33,6 +33,9 @@
           <small class="dim probing-capture-note">probe-SSID capture is disabled, so this view is empty; enabling it has a privacy tradeoff.</small>
         {% endif %}
       </label>
+      <label>search
+        <input type="text" name="q" value="{{ q }}" maxlength="100" placeholder="mac / name / vendor / ssid">
+      </label>
       <label>page size
         <select name="page_size">
           {% for n in [10, 25, 50, 100, 200, 250, 500] %}
@@ -49,6 +52,7 @@
       {% if randomized is sameas false %}{% set _ = _parts.append('randomized=no') %}{% endif %}
       {% if probing is sameas true %}{% set _ = _parts.append('probing=yes') %}{% endif %}
       {% if probing is sameas false %}{% set _ = _parts.append('probing=no') %}{% endif %}
+      {% if q %}{% set _ = _parts.append('search=' ~ q) %}{% endif %}
       <p class="filters-summary">
         <small>Filtered by: {{ _parts | join(', ') }}</small>
         &mdash; <a class="reset-filters" href="/devices">reset filters</a>
@@ -122,6 +126,7 @@
     {% if randomized is sameas false %}{% set _ = qs.append('randomized=false') %}{% endif %}
     {% if probing is sameas true %}{% set _ = qs.append('probing=yes') %}{% endif %}
     {% if probing is sameas false %}{% set _ = qs.append('probing=no') %}{% endif %}
+    {% if q %}{% set _ = qs.append('q=' ~ q) %}{% endif %}
     {% set _ = qs.append('page_size=' ~ page_size) %}
     {% set base_qs = qs | join('&') %}
     <ul>

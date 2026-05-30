@@ -1809,6 +1809,7 @@ class Database:
         device_type: str | None,
         randomized: bool | None,
         probing: bool | None,
+        q: str | None = None,
     ) -> tuple[str, list]:
         """Build the shared WHERE clause + params for list/count_devices.
 
@@ -1823,6 +1824,17 @@ class Database:
         value is NULL (merge_device_probe_ssids writes NULL, not '[]'),
         but the predicate also tolerates '' / '[]' so a hand-edited or
         legacy row can't land in the wrong bucket.
+
+        ``q`` is a free-text search mirroring the /watchful ``q`` filter
+        (substring LIKE), widened to the identity columns the devices
+        table surfaces: ``mac``, ``ble_name``, ``oui_vendor``, and the
+        device's last SSID -- the same ``ORDER BY ts DESC, id DESC
+        LIMIT 1`` correlated subquery the list query renders in the
+        "Last SSID" column, so a hit always corresponds to a value the
+        operator can see in the row. SQLite ``LIKE`` is case-insensitive
+        for ASCII, so "sony" matches a "Sony" vendor/name. The four
+        OR'd terms AND-combine with the type/randomized/probing filters
+        above, so search composes with them rather than replacing them.
         """
         clauses: list[str] = []
         params: list = []
@@ -1850,6 +1862,14 @@ class Database:
                     "(probe_ssids IS NULL OR probe_ssids = '' "
                     "OR probe_ssids = '[]')"
                 )
+        if q:
+            like = f"%{q}%"
+            clauses.append(
+                "(mac LIKE ? OR ble_name LIKE ? OR oui_vendor LIKE ? "
+                "OR (SELECT ssid FROM sightings WHERE sightings.mac = devices.mac "
+                "ORDER BY ts DESC, id DESC LIMIT 1) LIKE ?)"
+            )
+            params.extend([like, like, like, like])
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         return where, params
 
@@ -1861,9 +1881,10 @@ class Database:
         device_type: str | None = None,
         randomized: bool | None = None,
         probing: bool | None = None,
+        q: str | None = None,
     ) -> list[dict]:
         self._validate_pagination(limit, offset)
-        where, params = self._device_filter_sql(device_type, randomized, probing)
+        where, params = self._device_filter_sql(device_type, randomized, probing, q)
         # last_rssi / last_ssid via correlated subqueries: the
         # idx_sightings_mac_ts index makes each lookup an indexed seek
         # to the most recent sighting per device. id DESC breaks ties
@@ -1890,8 +1911,9 @@ class Database:
         device_type: str | None = None,
         randomized: bool | None = None,
         probing: bool | None = None,
+        q: str | None = None,
     ) -> int:
-        where, params = self._device_filter_sql(device_type, randomized, probing)
+        where, params = self._device_filter_sql(device_type, randomized, probing, q)
         sql = f"SELECT COUNT(*) FROM devices {where}"
         return int(self._conn.execute(sql, params).fetchone()[0])
 

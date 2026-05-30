@@ -2720,6 +2720,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         device_type: str | None = Query(default=None),
         randomized: str | None = Query(default=None),
         probing: str | None = Query(default=None),
+        q: str | None = Query(default=None),
         page: str | None = Query(default=None),
         page_size: str | None = Query(default=None),
     ):
@@ -2744,6 +2745,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid device_type")
         rand_bool = _parse_bool_str(randomized, "randomized")
         probing_bool = _parse_probing_str(probing)
+        # Free-text search mirrors the /watchful q filter: same param
+        # name, same 100-char cap, same strip-to-None normalization so
+        # an empty / whitespace box renders the unfiltered list. The
+        # devices search widens the matched columns (mac/name/vendor/
+        # ssid) since the devices table surfaces more identity than the
+        # mac-only watchful_recurrence rows.
+        if q is not None and len(q) > 100:
+            raise HTTPException(status_code=400, detail="q must be <= 100 chars")
+        q_clean = (q or "").strip() or None
         # Pagination uses the shared two-phase helper (parse -> clamp)
         # like every other list page: an out-of-range page or page_size
         # clamps silently instead of 400 (B-5). Invalid per_page falls
@@ -2756,7 +2766,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
             default_per_page=_DEVICES_PER_PAGE_DEFAULT,
         )
         total_count = db.count_devices(
-            device_type=device_type, randomized=rand_bool, probing=probing_bool
+            device_type=device_type, randomized=rand_bool, probing=probing_bool,
+            q=q_clean,
         )
         pagination = build_pagination(requested_page, per_page, total_count)
         devices = db.list_devices(
@@ -2765,8 +2776,14 @@ def create_app(config: Config, db: Database) -> FastAPI:
             device_type=device_type,
             randomized=rand_bool,
             probing=probing_bool,
+            q=q_clean,
         )
-        filters_active = bool(device_type) or rand_bool is not None or probing_bool is not None
+        filters_active = (
+            bool(device_type)
+            or rand_bool is not None
+            or probing_bool is not None
+            or q_clean is not None
+        )
         # The probing filter only ever has data when probe-SSID capture
         # is enabled (off by default). The webui can read the flag, so
         # surface an honest note near the control rather than letting the
@@ -2786,6 +2803,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "device_type": device_type,
                 "randomized": rand_bool,
                 "probing": probing_bool,
+                "q": q or "",
                 "probe_capture_enabled": probe_capture_enabled,
                 "filters_active": filters_active,
             },
