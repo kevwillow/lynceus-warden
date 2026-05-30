@@ -15,11 +15,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   devices probed for each SSID), switchable with a grouping toggle. It is
   the most privacy-sensitive screen in the tool — it concentrates the
   network history of strangers passing the sensor — so it is built
-  PII-first: in **both** groupings the SSID strings are **collapsed by
-  default** behind a native expand/reveal control, and nothing leaks on
-  load. In device grouping the row summary shows only the *count* of
-  networks probed; in network grouping it shows only the device count, with
-  the SSID name itself living inside the reveal alongside its device list.
+  PII-first: the sensitive list in each grouping is **collapsed by
+  default** behind a native expand/reveal control, so identity-revealing
+  detail never leaks on load. In **device** grouping the per-device list of
+  probed networks — the device's own fingerprint — stays collapsed, the row
+  showing only the *count* of networks probed. In **network** grouping the
+  network name is a visible, scannable row header, but the list of *which
+  devices* probed for it — the sensitive concentration there — stays
+  collapsed behind the reveal.
   Search, filtering, and pagination mirror the devices/watchful convention
   exactly — a plain form-GET `q` (100-char cap, whitespace-is-unfiltered),
   server-side filtering, and the URL-encoded query carried across pages
