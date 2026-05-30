@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The device-detail page gained an operator action panel.** From a
+  device's per-MAC page the operator can now (1) add the MAC to the
+  watchlist with a severity, (2) watch the device on the watchful
+  surface, and (3) silence future alerts for it (permanently or for a
+  fixed window, with a matching un-silence control). These are
+  deliberate, sanctioned mutations on the otherwise read-only dashboard —
+  each reuses an existing flow rather than inventing a parallel one: the
+  watchlist add uses the real severity model (low / med / high), watchful
+  tracking is created from the device's most-recent alert (so it is only
+  offered when an alert exists), and silencing reuses the same allowlist
+  suppression the per-alert triage page already uses. Each action mirrors
+  the home-page ack pattern: an htmx in-place swap re-renders just the
+  panel, with a no-JavaScript form POST → 303 fallback, the `_csrf` token
+  enforced identically on both paths, and a confirm step so nothing fires
+  on a stray click. Controls are touch-sized for phone use, and the panel
+  is a section on the page rather than an inline-table popover.
+  Adding the MAC to **rules** was intentionally left out of this arc:
+  `rules.yaml` is operator configuration with no incremental write
+  surface, and editing it from the dashboard would breach the read-only
+  boundary — it is deferred to its own feature.
+
 ### Changed
 
 - **Acknowledging an alert on the home page now removes just that row in
