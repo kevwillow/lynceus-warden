@@ -88,6 +88,13 @@
 .truncate    { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
 .topnav      { display: flex; align-items: center; gap: 0.75em; padding: 0.5em 0; border-bottom: 1px solid var(--lyn-topnav-border); margin-bottom: 1em; }
 .topnav a    { text-decoration: none; }
+/* Vertical divider between adjacent tabs so each is clearly delimited.
+   `a + a` skips the first link (no leading rule) and the theme-toggle
+   <button> (already set off by margin-left:auto + its own border).
+   padding-left matches the flex gap so the rule sits centered between
+   labels, and it reuses the same --lyn-topnav-border token as the nav's
+   border-bottom so it tracks the light/dark toggle. */
+.topnav a + a { border-left: 1px solid var(--lyn-topnav-border); padding-left: 0.75em; }
 .topnav a.active { font-weight: 600; }
 .dim         { opacity: 0.55; }
 
