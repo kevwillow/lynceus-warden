@@ -56,9 +56,12 @@
   <p><small>{% if group == 'ssid' %}{{ total_count }} network(s){% else %}{{ total_count }} device(s){% endif %} total &middot; page {{ page }} of {{ total_pages }}</small></p>
 
   {% if group == 'ssid' %}
-    {# network -> devices. The SSID name is itself sensitive, so it lives
-       inside the reveal alongside its device list; the summary exposes only
-       the (non-identifying) device count so nothing leaks on load. #}
+    {# network -> devices. The network name is a visible row header so the
+       view is scannable on load; the sensitive concentration here is the
+       DEVICE LIST per network (which devices probed for it), so that stays
+       inside the closed <details> reveal -- the operator opts into seeing
+       the identities. (The device-grouped view below keeps its per-device
+       SSID list collapsed, since that list is the device's own fingerprint.) #}
     {% if ssid_groups %}
       <div class="table-scroll">
         <table>
@@ -73,9 +76,9 @@
               <tr>
                 <td>{{ g.device_count }}</td>
                 <td>
+                  <p class="probe-ssid-name">network: <strong>{{ g.ssid }}</strong></p>
                   <details>
-                    <summary>reveal network &amp; {{ g.device_count }} device(s)</summary>
-                    <p class="probe-ssid-name">network: <strong>{{ g.ssid }}</strong></p>
+                    <summary>reveal {{ g.device_count }} device(s)</summary>
                     <ul class="probe-reveal">
                       {% for d in g.devices %}
                         <li class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a> &mdash; {{ d | device_label }}</li>
