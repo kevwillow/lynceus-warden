@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The devices page gained a search bar.** A free-text box now filters
+  the /devices list by substring, mirroring the existing /watchful search:
+  the same `q` query parameter, a plain form GET (no live-search), the
+  same 100-character cap, and the same empty/whitespace-is-unfiltered
+  handling. Because the devices table surfaces more identity than the
+  MAC-only watchful rows, the search matches across four columns at once —
+  the MAC, the BLE name, the vendor (OUI), and the device's last SSID (the
+  value shown in the "Last SSID" column). Matching is case-insensitive, so
+  `sony` finds a "Sony" device. The search composes with the existing
+  type / randomized / probing filters, the quick-filter preset chips, and
+  pagination rather than replacing them: the active query is carried in the
+  URL across pages and shown in the filter summary. It is a read-only
+  filter — no new mutation surface is added.
+
 - **The device-detail page gained an operator action panel.** From a
   device's per-MAC page the operator can now (1) add the MAC to the
   watchlist with a severity, (2) watch the device on the watchful
