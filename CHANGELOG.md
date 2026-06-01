@@ -98,6 +98,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Every `lynceus-setup` prompt with a default now says that Enter keeps
+  it.** The wizard's free-text prompts already applied their default on a
+  bare Enter — the shared `prompt_default` helper has always returned the
+  default for empty input — but the prompt line only showed the value in
+  `[brackets]` with no cue that Enter accepts it. The ntfy URL and topic
+  prompts (which take no default) carried explicit `(Enter to skip …)` /
+  `(Enter to accept …)` cues, so the bracketed prompts read inconsistently:
+  the Kismet API URL, RSSI threshold, and severity-overrides path showed a
+  default but never told the operator Enter would keep it. The helper now
+  renders `… [default] (Enter to keep default):` for every defaulted prompt,
+  so the whole wizard signals its Enter behaviour the same way. Behaviour is
+  unchanged (empty Enter still resolves to the default); only the label gains
+  the cue. No default values, prompt order, or wizard flow changed.
+
 - **The web UI now fills the browser width instead of sitting in a narrow
   centered column.** `base.html` marks the page `<main>` as
   `.container-fluid` — Pico's vocabulary for a full-bleed container — but the
