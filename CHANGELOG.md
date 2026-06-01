@@ -98,6 +98,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The web UI now fills the browser width instead of sitting in a narrow
+  centered column.** `base.html` marks the page `<main>` as
+  `.container-fluid` — Pico's vocabulary for a full-bleed container — but the
+  vendored stylesheet is Pico's *classless* edition, which never defines that
+  class. Its `body>main` rule instead capped the content at a responsive
+  `max-width` (1200px, 1450px on very wide screens) and centered it, so on a
+  wide monitor the topnav, tables, and every page sat in a narrow column with
+  empty gutters while the nav bar's full-width border made the wasted space
+  obvious. A single override in `lynceus.css` (`body > main.container-fluid`)
+  restores the template's intent: it drops the cap and keeps symmetric
+  horizontal padding (reusing Pico's own spacing token) so content reaches the
+  viewport edges without touching them. Layout-only — no change to table data,
+  columns, queries, or pagination. Narrow/phone viewports are unaffected
+  (they were already below Pico's first max-width breakpoint).
+
 - **Silenced devices now show a "silenced" badge in the /devices list.**
   Silencing a device from its detail page — permanently, or temporarily for
   a chosen window — persisted correctly (the detail page already showed

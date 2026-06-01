@@ -71,6 +71,24 @@
   --lyn-scroll-edge-shadow: rgba(255, 255, 255, 0.10);
 }
 
+/* Full-width layout. base.html marks <main> as .container-fluid to render
+   edge-to-edge, but the vendored Pico build is the *classless* edition,
+   which doesn't define that class -- its `body>main` rule instead caps the
+   width at a responsive max-width (1200px, 1450px at >=1536px) and centers
+   it, zeroing the horizontal padding at those widths. The result on wide
+   screens: the topnav, tables and all content sit in a narrow centered
+   column with empty gutters, so the page never fills the browser window.
+   Honour the template's intent -- drop the cap and keep symmetric
+   horizontal padding (the same token Pico uses) so content doesn't touch
+   the viewport edges. Narrow/phone viewports are unchanged: they're below
+   the first (576px) max-width breakpoint, where width:100% + this padding
+   already applied. */
+body > main.container-fluid {
+    max-width: none;
+    padding-right: var(--pico-block-spacing-horizontal);
+    padding-left: var(--pico-block-spacing-horizontal);
+}
+
 .badge-low   { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .badge-med   { background: var(--lyn-badge-warning-bg);  color: var(--lyn-badge-warning-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .badge-high  { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
