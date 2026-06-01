@@ -98,6 +98,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Three `--system` deployment bugs surfaced by a real Raspberry Pi
+  (Debian Trixie, Python 3.13) bring-up.** All three stem from code that
+  assumed the invoking/interactive user is also the runtime user — false
+  for a `--system` + systemd install, where the daemon runs as the
+  dedicated `lynceus` service user (and Kismet as root). (1) **Config probe
+  no longer crashes on a permission-denied `/etc/lynceus`.**
+  `resolve_existing_config()` probed both scopes with bare `Path.exists()`,
+  which re-raises `PermissionError` (unlike `os.path.exists`); a
+  non-`lynceus`-group account running `lynceus-quickstart` couldn't `stat()`
+  inside the `0750 root:lynceus` config dir and the wizard aborted. An
+  inaccessible path at a scope is now treated as absent. (2) **`--system`
+  installs non-editable.** `install.sh` ran `pip install -e` for both
+  scopes, leaving `/opt/lynceus/.venv` with an `__editable__*.pth` pointing
+  into the operator's `$HOME`, which the `lynceus` service user can't
+  traverse — so the systemd daemon crashed at import on every start. The
+  `--system` branch now installs the package into the venv
+  (`$HOME`-independent); `--user` stays editable for dev convenience. (3)
+  **The setup wizard validates the auto-located Kismet API key.**
+  `lynceus-setup --system` offered `$SUDO_USER`'s `~/.kismet/` key first and
+  unvalidated; against a root-run (systemd) Kismet that key returned 401.
+  Under `--system` the wizard now probes `/root/.kismet/` first, validates
+  each candidate against the live Kismet, and offers only a key that
+  authenticates — falling back to a clearly-flagged unverified offer only
+  when Kismet isn't reachable yet.
+
 - **Pagination and filter links on /devices and /watchful now URL-encode
   the search term and other text params.** The links built their query
   string by raw concatenation, so a search containing `&`, `#`, `+`, or a
