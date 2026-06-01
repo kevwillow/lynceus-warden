@@ -35,7 +35,12 @@ def prompt_default(
     in_fn = input_fn or input
     while True:
         if default is not None:
-            value = in_fn(f"{question} [{default}]: ").strip()
+            # Show the default AND the cue that Enter accepts it, so the
+            # bracket reads as "press Enter to keep this" rather than just
+            # "here's a value". Matches the "(Enter to ...)" cue the
+            # default=None prompts (ntfy URL/topic) already carry, so every
+            # wizard prompt signals its Enter behaviour the same way.
+            value = in_fn(f"{question} [{default}] (Enter to keep default): ").strip()
             if value == "":
                 return default
             return value
