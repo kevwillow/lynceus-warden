@@ -98,6 +98,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Silenced devices now show a "silenced" badge in the /devices list.**
+  Silencing a device from its detail page — permanently, or temporarily for
+  a chosen window — persisted correctly (the detail page already showed
+  "Silenced" / "Silenced until …"), but the device *list* gave no feedback:
+  its query reads only the devices table and the template had no silenced
+  state, so the operator saw nothing change after silencing. The list now
+  resolves silence state for the page's MACs in one pass (both allowlist
+  files read once, reusing the same matcher the detail and alert surfaces
+  use, so list and detail agree on `mac` / `oui` / `mac_range` matches and
+  on expiry) and renders the established snoozed badge per row: an
+  indefinite "silenced" label for permanent silences, and "silenced (until
+  …)" with the remaining time for temporary ones. An expired temporary
+  snooze shows no badge, matching the suppression it no longer performs.
+  A render-only fix — snooze durations, suppression, and semantics are
+  unchanged.
+
 - **ntfy alerts no longer overwrite each other — each detection is now its
   own message.** Confirmed at the ntfy history level: the topic's in-app
   message list showed a single entry being overwritten on every alert rather
