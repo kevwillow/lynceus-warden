@@ -11,6 +11,14 @@
       <ul>
         <li>Path: <code>{{ located.path }}</code></li>
         <li>Preview: <code>{{ located.preview }}</code>{% if located.name %} (name: <code>{{ located.name }}</code>){% endif %}</li>
+        <li>Status:
+          {% if located.validated %}
+            verified against Kismet &mdash; it authenticates.
+          {% else %}
+            could not verify (Kismet not reachable yet); accept only if you
+            know this is the right key.
+          {% endif %}
+        </li>
       </ul>
       <fieldset>
         <legend>Use this key?</legend>

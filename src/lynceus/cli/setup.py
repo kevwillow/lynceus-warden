@@ -300,9 +300,15 @@ def _kismet_api_key_candidate_paths(scope: str) -> list[Path]:
 
     Most-specific first. ``user`` scope checks the current operator's
     ``~/.kismet/session.db``. ``system`` scope (typically reached via
-    ``sudo lynceus-setup --system``) prefers the invoking operator's
-    ``~/.kismet/`` over root's, because Kismet is most often launched as
-    the operator's own user rather than as root.
+    ``sudo lynceus-setup --system``) probes ``/root/.kismet/`` FIRST: a
+    production Kismet runs as root under systemd, so its session DB lives in
+    root's home. ``$SUDO_USER``'s ``~/.kismet/`` is a fallback for the less
+    common "operator launches Kismet as themselves" setup. Offering the
+    invoking operator's key first was the bug behind the Pi 401 — the wizard
+    handed out ``$SUDO_USER``'s key against a root-run Kismet, which rejected
+    it. ``_locate_kismet_api_key`` additionally validates each candidate
+    against the live Kismet when reachable, so order is only a tie-break /
+    offline fallback.
 
     Returns an empty list on Windows — Kismet is Linux/macOS-first and
     no canonical Windows install layout exists for the wizard to
@@ -319,6 +325,8 @@ def _kismet_api_key_candidate_paths(scope: str) -> list[Path]:
             candidates.append(p)
 
     if scope == "system":
+        # Root first — the systemd-root Kismet default.
+        _add(Path("/root") / ".kismet" / "session.db")
         sudo_user = os.environ.get("SUDO_USER")
         if sudo_user:
             try:
@@ -328,7 +336,6 @@ def _kismet_api_key_candidate_paths(scope: str) -> list[Path]:
                 _add(home / ".kismet" / "session.db")
             except (KeyError, ImportError):
                 pass
-        _add(Path("/root") / ".kismet" / "session.db")
         _add(Path.home() / ".kismet" / "session.db")
     else:
         _add(Path.home() / ".kismet" / "session.db")
@@ -397,6 +404,82 @@ def _read_kismet_api_key(path: Path) -> tuple[str, str] | None:
         if role in by_role:
             return by_role[role]
     return first
+
+
+def _validate_kismet_api_key(
+    url: str, token: str, timeout: float = PROBE_TIMEOUT_SECONDS
+) -> tuple[bool, int | None]:
+    """Probe ``token`` against Kismet's ``/system/status.json``.
+
+    Returns ``(authenticated, status_code)``:
+
+    * ``authenticated`` is ``True`` only on HTTP 200 — Kismet is up AND the
+      key was accepted.
+    * ``status_code`` is the HTTP status when Kismet actually answered (e.g.
+      ``401``/``403`` for a rejected key) and ``None`` when Kismet did not
+      respond at all (connection refused / timeout — Kismet down).
+
+    ``_locate_kismet_api_key`` keys its decision off that distinction: a
+    non-200 *with* a status code means "this key is wrong for this Kismet"
+    (don't offer it), whereas ``None`` means "Kismet is unreachable, so I
+    can't judge the key" (offer it, flagged unverified). Never raises:
+    ``KismetClient.health_check`` maps every transport error to a result dict.
+    """
+    result = KismetClient(base_url=url, api_key=token, timeout=timeout).health_check()
+    return bool(result.get("reachable")), result.get("status_code")
+
+
+def _locate_kismet_api_key(
+    scope: str, kismet_url: str | None
+) -> tuple[str, str, Path, bool] | None:
+    """Pick the best Kismet API key on disk for ``scope``, validating it
+    against the live Kismet when one is reachable.
+
+    Returns ``(token, name, path, validated)`` or ``None`` when no key should
+    be auto-offered. ``validated`` is ``True`` only when the returned key
+    actually authenticated against ``kismet_url``.
+
+    Candidates come from ``_kismet_api_key_candidate_paths`` (root-first under
+    ``--system``). When ``kismet_url`` is given, each readable candidate is
+    probed in order:
+
+    * the first key that authenticates (HTTP 200) wins, returned validated;
+    * if Kismet answered but rejected every candidate, NO key is offered
+      (``None``) — auto-offering a key we just proved is wrong only misleads
+      the operator (the 401-against-a-root-run-Kismet case the Pi hit);
+    * if Kismet never answered (down / not started yet — a supported wizard
+      state, since the operator may configure before bringing Kismet up),
+      validation is inconclusive, so the first readable candidate is returned
+      ``validated=False`` for the caller to flag as unverified.
+
+    With no ``kismet_url`` (can't validate), likewise return the first
+    candidate unvalidated.
+    """
+    candidates: list[tuple[str, str, Path]] = []
+    for candidate in _kismet_api_key_candidate_paths(scope):
+        found = _read_kismet_api_key(candidate)
+        if found is not None:
+            token, name = found
+            candidates.append((token, name, candidate))
+    if not candidates:
+        return None
+
+    if kismet_url:
+        kismet_answered = False
+        for token, name, path in candidates:
+            authenticated, status = _validate_kismet_api_key(kismet_url, token)
+            if authenticated:
+                return token, name, path, True
+            if status is not None:
+                kismet_answered = True
+        if kismet_answered:
+            # Kismet is up but no key on disk authenticates — every candidate
+            # is provably wrong for this Kismet. Don't auto-offer one; let the
+            # operator paste the right key.
+            return None
+
+    token, name, path = candidates[0]
+    return token, name, path, False
 
 
 def _redact_kismet_api_key(key: str) -> str:
@@ -840,19 +923,16 @@ get Kismet ready on Debian/Ubuntu/Kali:
     print("─" * len("Kismet API Key"))
     print()
     print("Searching for an existing API key on disk...")
-    located: tuple[str, str, Path] | None = None
-    for candidate in _kismet_api_key_candidate_paths(scope):
-        found = _read_kismet_api_key(candidate)
-        if found is not None:
-            token, _name = found
-            located = (token, _name, candidate)
-            break
+    located = _locate_kismet_api_key(scope, answers["kismet_url"])
 
     use_located = False
     if located is not None:
-        token, name, path = located
+        token, name, path, validated = located
         preview = _redact_kismet_api_key(token)
-        print(f"Found a key in {path}.")
+        if validated:
+            print(f"Found a key in {path} (verified against Kismet — it authenticates).")
+        else:
+            print(f"Found a key in {path} (could NOT verify — Kismet not reachable yet).")
         if name:
             print(f"Preview: {preview}  (name: {name})")
         else:

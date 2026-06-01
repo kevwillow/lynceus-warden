@@ -16,8 +16,8 @@ dict; the final ``Config`` is built from that dict on the Touch 7
 review page.
 
 This module reuses the existing CLI helpers from ``cli/setup.py``
-unchanged (probe_kismet, _kismet_api_key_candidate_paths, etc.) — no
-parallel validators.
+unchanged (probe_kismet, _locate_kismet_api_key, etc.) — no parallel
+validators.
 """
 
 from __future__ import annotations
@@ -30,8 +30,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from lynceus.cli.setup import (
-    _kismet_api_key_candidate_paths,
-    _read_kismet_api_key,
+    _locate_kismet_api_key,
     _redact_kismet_api_key,
     enumerate_capture_adapters,
     enumerate_wireless_interfaces,
@@ -123,32 +122,37 @@ async def kismet_url_post(request: Request) -> HTMLResponse:
 # ---- Step 2: Kismet API key ------------------------------------------------
 
 
-def _try_autolocate(scope: str) -> tuple[str, str, str] | None:
-    """Return ``(token, name, path)`` if a Kismet key is on disk.
+def _try_autolocate(scope: str, kismet_url: str | None) -> tuple[str, str, str, bool] | None:
+    """Return ``(token, name, path, validated)`` if a Kismet key is on disk.
 
-    Mirrors the CLI's per-scope walk in ``run_wizard``. Returns None
-    when nothing usable was found, mapping to "fall through to paste"
-    in the template.
+    Thin wrapper over the CLI's ``_locate_kismet_api_key`` so the web wizard
+    uses the identical scope-aware, root-first, validate-against-live-Kismet
+    logic — no parallel resolver. ``validated`` is True only when the key
+    authenticated against ``kismet_url``. Returns None when nothing usable was
+    found (or every on-disk key was rejected by a reachable Kismet), mapping
+    to "fall through to paste" in the template. Blocking (network I/O) — async
+    handlers call it via ``asyncio.to_thread``.
     """
-    for candidate in _kismet_api_key_candidate_paths(scope):
-        found = _read_kismet_api_key(candidate)
-        if found is not None:
-            token, name = found
-            return token, name, str(candidate)
-    return None
+    located = _locate_kismet_api_key(scope, kismet_url)
+    if located is None:
+        return None
+    token, name, path, validated = located
+    return token, name, str(path), validated
 
 
 async def kismet_key_get(request: Request) -> HTMLResponse:
     state = request.app.state
     session = _session(request)
-    located = _try_autolocate(state.scope)
+    kismet_url = session.answers.get("kismet_url")
+    located = await asyncio.to_thread(_try_autolocate, state.scope, kismet_url)
     located_ctx = None
     if located is not None:
-        token, name, path = located
+        token, name, path, validated = located
         located_ctx = {
             "preview": _redact_kismet_api_key(token),
             "name": name,
             "path": path,
+            "validated": validated,
         }
     return _render(
         request,
@@ -168,7 +172,8 @@ async def kismet_key_post(request: Request) -> HTMLResponse:
     # Re-locate so the radio "use this key" lookup is fresh — the
     # operator may have rotated the key on disk between GET and POST,
     # and trusting a stale stash would write the wrong value.
-    located = _try_autolocate(state.scope)
+    kismet_url = session.answers.get("kismet_url")
+    located = await asyncio.to_thread(_try_autolocate, state.scope, kismet_url)
 
     if key_source == "located" and located is not None:
         session.answers["kismet_api_key"] = located[0]
@@ -178,11 +183,12 @@ async def kismet_key_post(request: Request) -> HTMLResponse:
     if not pasted:
         located_ctx = None
         if located is not None:
-            token, name, path = located
+            token, name, path, validated = located
             located_ctx = {
                 "preview": _redact_kismet_api_key(token),
                 "name": name,
                 "path": path,
+                "validated": validated,
             }
         return _render(
             request,
