@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Literal
 
@@ -122,6 +123,11 @@ class NtfyNotifier(Notifier):
             "Title": title,
             "Priority": str(priority),
             "Tags": SEVERITY_TO_TAGS[severity],
+            # ntfy treats messages sharing an X-Sequence-ID as updates that
+            # overwrite the prior one. Stamp a fresh id per alert so every
+            # detection is published as its own message (append-only history)
+            # rather than repeated alerts collapsing into one overwritten entry.
+            "X-Sequence-ID": uuid.uuid4().hex,
         }
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
