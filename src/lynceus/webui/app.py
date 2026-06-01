@@ -1067,6 +1067,41 @@ def _resolve_allowlist_match(
     return None, False, True
 
 
+def _resolve_silence_states(
+    config: Config,
+    macs: list[str],
+    now_ts: int,
+) -> dict[str, AllowlistEntry]:
+    """Map each MAC to its active allowlist/snooze entry, for the device list.
+
+    The device-list badge needs the same silence state the device-detail
+    page resolves via ``_resolve_allowlist_match``, but for a whole page
+    of rows at once. Calling that per device would re-read both YAML
+    files once per row; this hoists the two file reads out of the loop
+    and matches each MAC against the in-memory entries with the same
+    ``_match_mac_in_entries`` matcher, so the list badge agrees with the
+    detail page's silence section (mac / oui / mac_range patterns, expiry
+    respected). Primary entries are checked before UI entries, mirroring
+    ``_resolve_allowlist_match``'s precedence. MACs with no active match
+    are absent from the returned dict.
+    """
+    if not config.allowlist_path:
+        return {}
+    primary_path = Path(config.allowlist_path)
+    try:
+        primary_entries = allowlist_mod._load_primary(primary_path).entries
+    except FileNotFoundError:
+        primary_entries = []
+    ui_entries = allowlist_mod._load_ui_entries(derive_ui_path(primary_path))
+    all_entries = list(primary_entries) + list(ui_entries)
+    states: dict[str, AllowlistEntry] = {}
+    for mac in macs:
+        match = _match_mac_in_entries(all_entries, mac, now_ts)
+        if match is not None:
+            states[mac] = match
+    return states
+
+
 # --- /healthz.json per-check helpers ---------------------------------------
 #
 # Each helper returns a small dict with a stable shape. The shape is the
@@ -2789,6 +2824,14 @@ def create_app(config: Config, db: Database) -> FastAPI:
             probing=probing_bool,
             q=q_clean,
         )
+        # Silence state lives in the allowlist files, not the devices
+        # table, so list_devices can't surface it. Resolve it for the
+        # page's MACs in one pass (both files read once) so each row can
+        # render the same silenced/snoozed badge the detail page shows.
+        now_ts = int(time.time())
+        silence_by_mac = _resolve_silence_states(
+            app.state.config, [d["mac"] for d in devices], now_ts
+        )
         filters_active = (
             bool(device_type)
             or rand_bool is not None
@@ -2817,6 +2860,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "q": q or "",
                 "probe_capture_enabled": probe_capture_enabled,
                 "filters_active": filters_active,
+                "silence_by_mac": silence_by_mac,
+                "now_ts": now_ts,
             },
         )
 

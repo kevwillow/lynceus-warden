@@ -99,7 +99,21 @@
           {% for d in devices %}
             <tr>
               <td>{{ d | device_label }}</td>
-              <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
+              <td class="mac-cell">
+                <a href="/devices/{{ d.mac }}">{{ d.mac }}</a>
+                {% set silence = silence_by_mac.get(d.mac) %}
+                {% if silence %}
+                  {% if silence.expires_at is none %}
+                    <span class="badge-snoozed" title="silenced indefinitely">&#x1F4A4; silenced</span>
+                  {% else %}
+                    <span class="badge-snoozed"
+                          title="silenced until {{ silence.expires_at | unix_to_utc_human }}">
+                      &#x1F4A4; silenced (until
+                      <time datetime="{{ silence.expires_at | unix_to_iso }}">{{ silence.expires_at | relative_time(now_ts=now_ts) }}</time>)
+                    </span>
+                  {% endif %}
+                {% endif %}
+              </td>
               <td style="white-space: nowrap;">{{ d.device_type }}</td>
               <td>{{ d.oui_vendor or "—" }}</td>
               <td>{{ d.ble_name or "—" }}</td>
