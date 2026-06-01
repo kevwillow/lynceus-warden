@@ -168,11 +168,39 @@ def default_allowlist_path(scope: Scope) -> Path:
     return default_config_dir(scope) / "allowlist.yaml"
 
 
+def _safe_exists(p: Path) -> bool:
+    """Existence probe that treats an inaccessible path as absent.
+
+    ``Path.exists()`` re-raises ``PermissionError`` (and other ``OSError``s)
+    instead of returning ``False`` when ``p``'s parent directory can't be
+    traversed by the current user — e.g. a non-``lynceus``-group account
+    probing ``0750 root:lynceus`` ``/etc/lynceus/``. For "is there a config I
+    can actually load at this scope?" an unreadable path is, for our purposes,
+    absent: we couldn't open it even if it is there. Swallow the error and
+    report absence so a scope probe never aborts ``lynceus-quickstart`` /
+    daemon startup.
+
+    Contrast ``_probe_presence()`` below, which deliberately distinguishes
+    EACCES as ``"unreadable"`` because *its* caller (shadow detection) must
+    still surface a present-but-unreadable root-owned file. Here we want the
+    opposite: an unloadable path is not a usable config.
+    """
+    try:
+        return p.exists()
+    except OSError:
+        return False
+
+
 def resolve_existing_config() -> Path | None:
     """Return the first existing canonical config file, preferring user scope.
 
     Probes ``default_config_path("user")`` first, then
     ``default_config_path("system")``. Returns ``None`` when neither exists.
+
+    An inaccessible path at a scope (its parent directory not traversable by
+    the current user — the ``0750 root:lynceus`` ``/etc/lynceus`` case for a
+    non-``lynceus``-group account) is treated as absent rather than allowed to
+    propagate ``PermissionError``; see ``_safe_exists``.
 
     On macOS / Windows the system-scope helper raises
     ``NotImplementedError`` — that case is treated as "no system path to
@@ -181,13 +209,13 @@ def resolve_existing_config() -> Path | None:
     re-derive them rather than rely on this helper to surface them.
     """
     user_path = default_config_path("user")
-    if user_path.exists():
+    if _safe_exists(user_path):
         return user_path
     try:
         system_path = default_config_path("system")
     except NotImplementedError:
         return None
-    if system_path.exists():
+    if _safe_exists(system_path):
         return system_path
     return None
 
