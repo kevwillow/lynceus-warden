@@ -259,6 +259,14 @@ preflight() {
 
 create_or_update_venv() {
     local venv="$1"
+    # editable=1 installs `pip install -e` (an __editable__*.pth pointing
+    # back at $SCRIPT_DIR/src); editable=0 copies the package into the
+    # venv. --user installs editable for dev convenience. --system MUST
+    # NOT: $SCRIPT_DIR lives in the invoking operator's $HOME, which the
+    # `lynceus` service user can't traverse, so a systemd daemon running
+    # as User=lynceus crashes at import every start. A non-editable
+    # install makes /opt/lynceus self-contained and independent of $HOME.
+    local editable="${2:-0}"
     if [[ -d "$venv" && -x "$venv/bin/pip" ]]; then
         log "Reusing existing venv at $venv"
     else
@@ -268,7 +276,11 @@ create_or_update_venv() {
     run "$venv/bin/pip" install --upgrade pip
     # NEVER --break-system-packages here — installing into a venv is
     # exactly what PEP 668 expects, so the policy does not apply.
-    run "$venv/bin/pip" install --upgrade -e "$SCRIPT_DIR"
+    if [[ "$editable" -eq 1 ]]; then
+        run "$venv/bin/pip" install --upgrade -e "$SCRIPT_DIR"
+    else
+        run "$venv/bin/pip" install --upgrade "$SCRIPT_DIR"
+    fi
 }
 
 create_symlinks() {
@@ -399,7 +411,7 @@ install_user() {
 
     run mkdir -p "$USER_CONFIG_DIR" "$USER_DATA_DIR" "$USER_STATE_DIR"
 
-    create_or_update_venv "$USER_VENV"
+    create_or_update_venv "$USER_VENV" 1  # editable: dev convenience
     create_symlinks "$USER_VENV" "$USER_BIN_DIR"
     note_path_if_missing "$USER_BIN_DIR"
 
@@ -428,9 +440,10 @@ install_system() {
     fi
 
     run mkdir -p "$SYSTEM_PREFIX"
-    create_or_update_venv "$SYSTEM_VENV"
-    # Ownership is set after pip install so the editable-install
-    # metadata (egg-info etc.) ends up owned by the daemon user too.
+    create_or_update_venv "$SYSTEM_VENV" 0  # non-editable: $HOME-independent
+    # Ownership is set after pip install so the installed package tree in
+    # the venv (site-packages + dist-info) ends up owned by the daemon
+    # user too.
     run chown -R lynceus:lynceus "$SYSTEM_PREFIX"
 
     create_symlinks "$SYSTEM_VENV" "$SYSTEM_BIN_DIR"
