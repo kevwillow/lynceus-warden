@@ -98,6 +98,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **ntfy alerts no longer overwrite each other — each detection is now its
+  own message.** Confirmed at the ntfy history level: the topic's in-app
+  message list showed a single entry being overwritten on every alert rather
+  than a growing list, so only the most recent detection survived. ntfy
+  treats messages that share a sequence identifier (`X-Sequence-ID` /
+  `Sequence-ID` / `SID`) as updates that replace the prior one; the publish
+  path now stamps a **unique** `X-Sequence-ID` (a fresh UUID) on every send,
+  forcing the broker to keep each alert as its own append-only history entry.
+  Scoped strictly to how the publish identifies the message — alert content,
+  firing thresholds, and the `(rule_name, mac)` dedup window are unchanged.
+
 - **Three `--system` deployment bugs surfaced by a real Raspberry Pi
   (Debian Trixie, Python 3.13) bring-up.** All three stem from code that
   assumed the invoking/interactive user is also the runtime user — false
