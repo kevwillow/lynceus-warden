@@ -206,7 +206,7 @@
   <article>
     <header><strong>recently seen devices</strong></header>
     {% if recent_devices %}
-      <div class="table-scroll">
+      <div class="table-scroll table-scroll--tall">
         <table>
           <thead>
             <tr><th>Device</th><th>MAC</th><th>Type</th><th>Vendor</th><th>BLE name</th><th>Last seen</th><th>Last RSSI</th><th>Sightings</th></tr>
@@ -227,6 +227,10 @@
           </tbody>
         </table>
       </div>
+      <p>
+        <small>showing {{ recent_devices|length }} of {{ health.device_count }}</small>
+        &middot; <a href="/devices">view all devices &rarr;</a>
+      </p>
     {% else %}
       <p><em>No devices seen yet.</em></p>
     {% endif %}

@@ -1482,7 +1482,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "sev_30d": db.alert_severity_counts(since_ts=now_int - 30 * 86400),
                 "per_day": db.alerts_per_day(days=30, now_ts=now_int),
                 "recent_alerts": recent_alerts,
-                "recent_devices": db.list_devices(limit=10),
+                "recent_devices": db.list_devices(limit=25),
                 "device_seen": db.device_seen_counts(now_ts=now_int),
                 "last_poll": db.latest_poll_ts(),
                 "last_tick": _read_last_tick_stats(db),

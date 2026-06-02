@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The homepage "recently seen" table now shows up to 25 devices (was 10),
+  in a vertically scrollable card with a "view all devices" link.** In a
+  dense RF environment (hundreds of devices in range) the 10-row cap hid
+  most recent activity. The table now surfaces the 25 most-recently-seen
+  devices — ordered by `last_seen` descending, the same order the `/devices`
+  page uses, so the link lands on a consistently sorted list — inside a
+  height-capped scrollable region whose column header stays put while
+  scrolling, with a "showing N of M" count line beneath it. The cap is a
+  ceiling, not a floor: fewer devices render fewer rows.
+
 ### Fixed
 
 - **Corrected the `X-Sequence-ID` explanation from 0.9.0 (documentation and

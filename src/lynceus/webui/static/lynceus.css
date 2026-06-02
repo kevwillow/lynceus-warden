@@ -286,6 +286,21 @@ details > summary { cursor: pointer; }
 .table-scroll table th,
 .table-scroll table td { white-space: nowrap; }
 
+/* Vertical-scroll variant for the homepage "recently seen" firehose
+   (v0.9.1). Composes with .table-scroll (horizontal scroll + nowrap
+   survive); this only adds a height cap so ~25 rows scroll within the
+   card instead of shoving the sections below it off-screen. 60vh keeps
+   it phone-usable -- the card never eats more than ~60% of the viewport,
+   so the operator can still reach what's below on a narrow screen. The
+   <thead> sticks so the column meaning stays visible while scrolling. */
+.table-scroll--tall { max-height: 60vh; overflow-y: auto; }
+.table-scroll--tall thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--pico-background-color, white);
+}
+
 /* Device-detail action panel: per-MAC operator actions (add to
    watchlist / watchful / silence). A page section, not an inline-table
    popover -- deliberately touch-sized for phone use (44px min control
