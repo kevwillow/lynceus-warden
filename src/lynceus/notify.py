@@ -123,10 +123,14 @@ class NtfyNotifier(Notifier):
             "Title": title,
             "Priority": str(priority),
             "Tags": SEVERITY_TO_TAGS[severity],
-            # ntfy treats messages sharing an X-Sequence-ID as updates that
-            # overwrite the prior one. Stamp a fresh id per alert so every
-            # detection is published as its own message (append-only history)
-            # rather than repeated alerts collapsing into one overwritten entry.
+            # Unique id per alert so each detection lands as its own ntfy
+            # message. With no id set, alerts were observed collapsing to a
+            # single entry in the operator's ntfy view; a fresh id per send
+            # keeps them distinct. This is defensive, not a claim about ntfy
+            # internals: per ntfy's docs a shared sequence id only REPLACES
+            # scheduled/delayed messages before delivery — delivered messages
+            # are kept regardless — and which layer (server vs client app) was
+            # collapsing ours is not documented.
             "X-Sequence-ID": uuid.uuid4().hex,
         }
         if self.auth_token:

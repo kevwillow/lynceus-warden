@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Corrected the `X-Sequence-ID` explanation from 0.9.0 (documentation and
+  code comment only — no behavior change).** The 0.9.0 entry and the
+  `notify.py` comment stated that ntfy's server/broker treats messages
+  sharing an `X-Sequence-ID` as updates that overwrite the prior one. Per
+  ntfy's current docs, that REPLACE behavior applies only to
+  *scheduled/delayed* messages before delivery; once delivered, the server
+  keeps both messages. Lynceus publishes immediately, so the "broker
+  overwrites delivered alerts" rationale was inaccurate. The publish path
+  still stamps a **unique** `X-Sequence-ID` per alert — that is unchanged and
+  correct — but it is now documented as a *defensive* measure to keep each
+  detection a distinct message (the pre-0.9.0 path set no id and detections
+  were observed collapsing to a single entry in the operator's ntfy view),
+  not as reliance on a server-side overwrite. Which layer (the ntfy server
+  vs. the ntfy client app) was collapsing them is not documented upstream, so
+  no mechanism is asserted.
+
 ## [0.9.0] - 2026-06-01
 
 ### Added
