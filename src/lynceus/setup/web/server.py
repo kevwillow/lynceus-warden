@@ -57,9 +57,49 @@ def _browser_url(host: str, port: int, token: str) -> str:
     return f"http://{browse_host}:{port}/?token={token}"
 
 
+# Hosts from which the wizard is reachable over loopback only. A bind to
+# any of these means a remote operator can't hit it directly and needs an
+# SSH tunnel; any other bind host is reachable at that address.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _print_headless_access_guidance(url: str, host: str, port: int) -> None:
+    """Print prominent manual-access guidance when no browser could open.
+
+    Reached on a headless host, under ``sudo``, or with no ``DISPLAY`` —
+    cases where ``webbrowser.open`` returns False or raises. The tokenized
+    URL is already in scrollback from the up-front print, but on a remote
+    box the operator's real question is "how do I reach a localhost-bound
+    wizard from my laptop?" — so we spell out the SSH port-forward and name
+    the localhost-by-design bind explicitly. No binding behavior changes:
+    this is guidance text only. ``--bind`` is mentioned as the documented
+    opt-out, not invoked here.
+    """
+    bar = "─" * 60
+    print(bar)
+    print("Could not open a browser automatically (headless host, no DISPLAY,")
+    print("or running under sudo). Open the wizard manually from a browser:")
+    print(f"    {url}")
+    if host in _LOOPBACK_HOSTS:
+        print()
+        print("This host has no usable browser, and the wizard binds to localhost")
+        print("by design — it is not reachable from another machine directly. To")
+        print("reach it from your laptop, forward the port over SSH, then open the")
+        print("URL above in your local browser:")
+        print(f"    ssh -L {port}:127.0.0.1:{port} <user>@<this-host>")
+        print("(Advanced: re-run with --bind <addr> to change the bind interface.)")
+    else:
+        print()
+        print(f"The wizard is bound to {host}, so reach it from your browser at this")
+        print(f"host's address on port {port} (use the token shown in the URL above).")
+    print(bar)
+
+
 def _open_browser_when_ready(
     server,
     url: str,
+    host: str,
+    port: int,
     *,
     timeout: float = BROWSER_OPEN_TIMEOUT_SECONDS,
     poll: float = BROWSER_OPEN_POLL_SECONDS,
@@ -70,8 +110,9 @@ def _open_browser_when_ready(
     once the server is actually serving, with the printed URL as the
     fallback. Degrades cleanly where no browser can open — under sudo,
     headless, or no ``DISPLAY`` ``webbrowser.open`` returns False (or
-    raises), and the URL+token already on stdout is the operator's path
-    in. Intended to run on a daemon thread so it never blocks shutdown.
+    raises), in which case ``_print_headless_access_guidance`` prints the
+    URL plus how to reach a localhost-bound wizard over SSH. Intended to
+    run on a daemon thread so it never blocks shutdown.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -82,7 +123,7 @@ def _open_browser_when_ready(
                 logger.debug("auto-open browser raised: %s", exc)
                 opened = False
             if not opened:
-                print(f"(no browser opened automatically; visit {url} manually)")
+                _print_headless_access_guidance(url, host, port)
             return
         time.sleep(poll)
     # Server never reported ready in the window — the printed URL stands.
@@ -151,7 +192,7 @@ def run_wizard_server(
     if not no_browser:
         threading.Thread(
             target=_open_browser_when_ready,
-            args=(server, _browser_url(host, port, setup_token)),
+            args=(server, _browser_url(host, port, setup_token), host, port),
             daemon=True,
         ).start()
 
