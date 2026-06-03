@@ -31,6 +31,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **ntfy notifications, the alerts list, and alert detail now show both the
+  matched (watchlist/Argus) vendor and the Kismet OUI vendor when they
+  disagree, so a divergence reads as reconciliation instead of contradiction.**
+  A watchlist match can attribute a device to one vendor (e.g. "Flock Safety")
+  while Kismet's OUI lookup says another (e.g. "Liteon Technology"). Field
+  testing hit exactly this: the phone showed one vendor and the devices page
+  showed another, with no way to tell they described the same device. Three
+  surfaces now reconcile the two. The **notification** body appends the OUI
+  vendor in parentheses only when it differs from the matched vendor —
+  `vendor: Flock Safety (OUI: Liteon Technology)` — and shows the matched
+  vendor alone on agreement (compared case-insensitively, trimmed) or when
+  Kismet has no OUI vendor, so the common case stays compact. The **alert
+  detail** page already rendered both fields but labelled each just "vendor:"
+  — the actual source of the confusion; they now read "matched vendor:" and
+  "OUI vendor:". The **alerts list** appends `(OUI: …)` to the vendor subtitle
+  under the same divergence rule. This is display-only — no detection,
+  matching, vendor data, OUI lookup, or severity is touched; it surfaces
+  fields that already existed. The **devices list** is intentionally left
+  showing the OUI vendor alone: a device maps to zero, one, or many watchlist
+  matches, so there is no single matched vendor to show there without
+  misleading.
+
 - **The homepage "recently seen" table now shows up to 25 devices (was 10),
   in a vertically scrollable card with a "view all devices" link.** In a
   dense RF environment (hundreds of devices in range) the 10-row cap hid

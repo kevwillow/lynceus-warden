@@ -481,7 +481,7 @@ def poll_once(
                 if hit_match_id is not None:
                     try:
                         md = db.get_metadata_by_watchlist_id(hit_match_id)
-                        suffix = build_metadata_suffix(md)
+                        suffix = build_metadata_suffix(md, oui_vendor=obs.oui_vendor)
                     except Exception:
                         suffix = ""
                 try:

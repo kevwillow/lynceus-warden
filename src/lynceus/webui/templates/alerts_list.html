@@ -177,7 +177,7 @@
                     {% if a.message|length > 80 %}{{ a.message[:80] }}&hellip;{% else %}{{ a.message }}{% endif %}
                   </span>
                   {% if a.watchlist_metadata and a.watchlist_metadata.vendor %}
-                    <br><small class="alert-vendor-subtitle">{{ a.watchlist_metadata.vendor }}</small>
+                    <br><small class="alert-vendor-subtitle">{{ a.watchlist_metadata.vendor }}{% if a.device and a.device.oui_vendor and a.device.oui_vendor|trim|lower != a.watchlist_metadata.vendor|trim|lower %} (OUI: {{ a.device.oui_vendor }}){% endif %}</small>
                   {% endif %}
                 </td>
                 <td>{% if a.acknowledged %}&check;{% endif %}</td>

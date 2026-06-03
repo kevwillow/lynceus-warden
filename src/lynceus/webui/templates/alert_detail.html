@@ -10,7 +10,7 @@
       <strong>severity:</strong> <span class="badge-{{ alert.severity }}">{{ alert.severity }}</span>
       {% if alert.watchlist_metadata %}
         {% if alert.watchlist_metadata.vendor %}
-          &middot; <strong>vendor:</strong> {{ alert.watchlist_metadata.vendor }}
+          &middot; <strong>matched vendor:</strong> {{ alert.watchlist_metadata.vendor }}
         {% endif %}
         {% if alert.watchlist_metadata.confidence is not none %}
           &middot; <strong>confidence:</strong>
@@ -83,7 +83,7 @@
       <p>
         <strong>mac:</strong> <a href="/devices/{{ alert.device.mac }}" class="mac-cell">{{ alert.device.mac }}</a><br>
         <strong>type:</strong> {{ alert.device.device_type }}<br>
-        <strong>vendor:</strong> {{ alert.device.oui_vendor or "unknown" }}<br>
+        <strong>OUI vendor:</strong> {{ alert.device.oui_vendor or "unknown" }}<br>
         <strong>randomized:</strong> {% if alert.device.is_randomized %}yes{% else %}no{% endif %}<br>
         <strong>first seen:</strong> <time datetime="{{ alert.device.first_seen | unix_to_iso }}">{{ alert.device.first_seen | unix_to_iso }}</time><br>
         <strong>last seen:</strong> <time datetime="{{ alert.device.last_seen | unix_to_iso }}">{{ alert.device.last_seen | unix_to_iso }}</time><br>

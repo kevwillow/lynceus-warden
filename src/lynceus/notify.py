@@ -183,18 +183,30 @@ class NtfyNotifier(Notifier):
         return False, f"HTTP {response.status_code}"
 
 
-def build_metadata_suffix(metadata: dict | None) -> str:
+def build_metadata_suffix(metadata: dict | None, oui_vendor: str | None = None) -> str:
     """Return the ntfy body suffix for a watchlist_metadata row.
 
     Format: " | vendor: <vendor>" + " | confidence: <n>" when each is non-NULL,
     in that order. Empty string when metadata is None or both fields are NULL,
-    so the v0.2 body is preserved by string concatenation."""
+    so the v0.2 body is preserved by string concatenation.
+
+    A watchlist match attributes the device to ``vendor`` (the Argus/watchlist
+    label), while Kismet's OUI lookup may say something else. When the two
+    disagree, the OUI vendor is appended in parentheses so the divergence is
+    legible at a glance: " | vendor: Flock Safety (OUI: Liteon Technology)".
+    Agreement (compared case-insensitively, trimmed) or a missing ``oui_vendor``
+    shows the matched vendor alone -- there is nothing to reconcile. An
+    ``oui_vendor`` with no matched ``vendor`` is never surfaced: the
+    notification fires on a watchlist match, so the matched label is the anchor."""
     if not metadata:
         return ""
     parts: list[str] = []
     vendor = metadata.get("vendor")
     if vendor:
-        parts.append(f" | vendor: {vendor}")
+        if oui_vendor and oui_vendor.strip().casefold() != vendor.strip().casefold():
+            parts.append(f" | vendor: {vendor} (OUI: {oui_vendor})")
+        else:
+            parts.append(f" | vendor: {vendor}")
     confidence = metadata.get("confidence")
     if confidence is not None:
         parts.append(f" | confidence: {confidence}")
