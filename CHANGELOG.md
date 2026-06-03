@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The running daemon now sends an ntfy alert when it loses Kismet mid-run,
+  paired with a "recovered" alert when Kismet returns.** Field testing
+  surfaced a silent gap: when Kismet went down under a *running* daemon,
+  lynceus detected the failure (poll ticks raising) but never notified the
+  operator, who found it only by forensics. The poll loop now runs a small
+  de-duped state machine: after three consecutive failed ticks (matching the
+  startup check's retry tolerance; ~3 minutes at the default 60s interval) it
+  confirms Kismet is genuinely unreachable via the existing health check and
+  sends exactly **one** "Kismet unreachable" notification, then exactly **one**
+  paired "Kismet reachable again" notification on the next successful poll —
+  only if a "down" was sent, and never repeating either while the state holds.
+  The alert is **runtime-only**: it fires solely from the poll loop, never from
+  the startup health check, so a Kismet that is down at boot still fails fast
+  and crash-loops without spamming the operator. It is marked as
+  infrastructure (a distinct `Lynceus: Kismet …` title, high tone, priority
+  below the level reserved for opted-in watchlist hits) and bypasses the
+  device-alert pipeline, so it is never processed as or confused with a device
+  detection. The de-dup state is in-memory — the daemon stays up across a loss
+  episode, and a restart can't strand a stale "down" because the startup check
+  gates re-entry to the loop.
+
 ### Changed
 
 - **The homepage "recently seen" table now shows up to 25 devices (was 10),

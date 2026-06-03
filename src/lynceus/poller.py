@@ -61,6 +61,17 @@ SUPPRESSION_LOG_INTERVAL_SECONDS = 3600
 # Tests override to ``[0.0, 0.0, 0.0]`` to skip the sleeps.
 HEALTH_CHECK_RETRY_BACKOFF: list[float] = [2.0, 4.0, 8.0]
 
+# Runtime Kismet-loss alerting (0.9.1). The poll loop has no retry of its own
+# — each tick is a single attempt, poll_interval_seconds apart — so a RUNTIME
+# loss of Kismet is treated as "really gone" only after this many CONSECUTIVE
+# failed ticks, mirroring the startup check's len(HEALTH_CHECK_RETRY_BACKOFF)
+# tolerance. A single transient failed poll stays below it and never pages the
+# operator; at the default 60s interval the one-shot "down" alert needs roughly
+# three minutes of sustained loss. This governs the RUNTIME path ONLY — the
+# startup check above owns the fail-fast/crash-loop behavior and never reaches
+# this alert.
+RUNTIME_KISMET_LOSS_THRESHOLD = 3
+
 logger = logging.getLogger(__name__)
 
 
@@ -761,6 +772,15 @@ class Poller:
         )
         self.notifier: Notifier = build_notifier(config)
         self._stop_flag = False
+        # Runtime Kismet-loss alert state (0.9.1). In-memory by design: the
+        # alert is for a daemon that STAYS UP while Kismet disappears mid-run,
+        # so the state only needs to live as long as the loop. A restart can't
+        # strand a stale "down" — the startup health check gates re-entry to
+        # run_forever, so if Kismet is still gone the process crash-loops before
+        # the loop runs, and if it recovered the state starts fresh. The
+        # transition/de-dup logic lives in _note_kismet_poll_result.
+        self._consecutive_poll_failures = 0
+        self._kismet_down_alerted = False
         # Rule_type snooze suppression accumulator. Cumulative across
         # poll cycles; flushed to an INFO summary every
         # SUPPRESSION_LOG_INTERVAL_SECONDS. Initialized to "log on the
@@ -1074,6 +1094,63 @@ class Poller:
                 return
             time.sleep(1)
 
+    def _note_kismet_poll_result(self, poll_failed: bool) -> None:
+        """Drive the runtime Kismet-loss paired alert state machine for one tick.
+
+        Paired + de-duped: exactly one "Kismet unreachable" infra alert once
+        ``RUNTIME_KISMET_LOSS_THRESHOLD`` consecutive failed ticks confirm
+        Kismet is genuinely gone, and exactly one paired "reachable again"
+        alert on the next good tick — but only if a "down" was sent. Never
+        repeats while down.
+
+        Called ONLY from ``run_forever``, never from ``_startup_health_check``
+        or ``run_once``, so it cannot fire on the startup / crash-loop path
+        (the 189-spam regression this whole feature is gated against).
+
+        The ``health_check()`` confirmation on the down edge keeps this an
+        INFRASTRUCTURE signal: a poll tick can fail for reasons that are not
+        Kismet being unreachable (a DB write error, a malformed-device
+        ValidationError), and those must not masquerade as a Kismet-down page.
+        A successful poll is itself proof of reachability, so the recovery edge
+        needs no probe. It is fired straight through the notifier, bypassing
+        the device-alert pipeline (allowlist / rules / snooze / severity
+        overrides) entirely, and carries ``priority_override=4`` so it stays
+        out of the priority-5 reserved for opted-in watchlist hits.
+        """
+        if not poll_failed:
+            if self._kismet_down_alerted:
+                self.notifier.send(
+                    "high",
+                    "Lynceus: Kismet reachable again",
+                    "Kismet is reachable again — RF capture resumed.",
+                    priority_override=4,
+                )
+                logger.info("Kismet reachable again; sent recovery notification")
+                self._kismet_down_alerted = False
+            self._consecutive_poll_failures = 0
+            return
+        self._consecutive_poll_failures += 1
+        if self._kismet_down_alerted:
+            return
+        if self._consecutive_poll_failures < RUNTIME_KISMET_LOSS_THRESHOLD:
+            return
+        health = self.client.health_check()
+        if health.get("reachable"):
+            return
+        error = health.get("error") or "no response"
+        self.notifier.send(
+            "high",
+            "Lynceus: Kismet unreachable",
+            f"Kismet at {self.config.kismet_url} is unreachable — "
+            f"RF capture stopped. Last error: {error}",
+            priority_override=4,
+        )
+        logger.warning(
+            "Kismet unreachable for %d consecutive polls; sent down notification",
+            self._consecutive_poll_failures,
+        )
+        self._kismet_down_alerted = True
+
     def run_forever(self) -> None:
         try:
             signal.signal(signal.SIGTERM, self._on_signal)
@@ -1091,6 +1168,7 @@ class Poller:
                 # Exception) propagate so Ctrl+C / ``systemctl stop`` still
                 # work cleanly — the outer ``finally`` still runs and closes
                 # the DB before the signal is re-raised.
+                poll_failed = False
                 try:
                     self._maybe_reload_allowlist()
                     now_ts = int(time.time())
@@ -1111,6 +1189,17 @@ class Poller:
                     self._maybe_flush_suppression_summary(now_ts=now_ts)
                 except Exception:
                     logger.error("poll_once raised; continuing", exc_info=True)
+                    poll_failed = True
+                # Runtime Kismet-loss paired alert (0.9.1). Guarded separately
+                # so a misbehaving notifier can't kill the poll loop — the same
+                # loop-survival invariant the poll_once boundary above protects.
+                try:
+                    self._note_kismet_poll_result(poll_failed)
+                except Exception:
+                    logger.error(
+                        "Kismet-loss alert handling raised; continuing",
+                        exc_info=True,
+                    )
                 self._interruptible_sleep(self.config.poll_interval_seconds)
         finally:
             self.db.close()
