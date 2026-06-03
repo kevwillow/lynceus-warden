@@ -127,10 +127,13 @@ DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD = 70
 # src/lynceus/data/default_watchlist.csv now declares
 # schema_version=30, which triggered WARN-on-every-import until
 # extended). Floor stays at 25 for backward compat with stored
-# operator exports; ceiling at 30 keeps forward-incompat surface
+# operator exports; ceiling at 30 kept the forward-incompat surface
 # intact (future Argus schema versions still WARN until landed).
+#
+# Post-0.9.1: extended to 31 for the 2026-06-03 bundled snapshot
+# refresh (default_watchlist.csv now declares schema_version=31).
 DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST: tuple[str, ...] = (
-    "25", "26", "27", "28", "29", "30",
+    "25", "26", "27", "28", "29", "30", "31",
 )
 
 # GitHub-fetch defaults for `--from-github`. Argus publishes its
