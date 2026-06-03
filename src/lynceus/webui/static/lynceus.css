@@ -301,6 +301,39 @@ details > summary { cursor: pointer; }
     background: var(--pico-background-color, white);
 }
 
+/* Probes-tab per-row reveal isolation (v0.9.1). The reveal is a native
+   <details> living inside a .table-scroll cell, so it inherits that cell's
+   white-space: nowrap (set above to drive the table's horizontal scroll).
+   That nowrap, plus Pico rendering the <summary> marker as a float:right
+   chevron on a block-level (column-width) summary, caused three defects that
+   all trace to the summary/cell sharing the table COLUMN width:
+     (1) opening one row's reveal forced its un-wrapped content to widen the
+         SHARED column, so every other row's right-floated chevron slid to the
+         column's new right edge -- one row reflowing its siblings' arrows
+         (and, while the column was narrow, the floated chevron wrapped below
+         the summary text);
+     (2) long probed-network names in the reveal couldn't wrap and overflowed;
+     (3) the floated chevron sat off-center against the summary text.
+   Scoped strictly to the probe reveals -- matched via their .probe-reveal
+   list, which only this page renders -- so no other table's <details> is
+   touched. CSS-only: no markup change, and Pico's chevron icon/size/rotation
+   are reused (only the marker's float/flow is overridden). */
+details:has(> .probe-reveal) > summary::after {
+    float: none;             /* detach the chevron from the cell's right edge
+                                so a sibling widening the shared column can no
+                                longer drag it rightward (fixes 1)... */
+    display: inline-block;   /* ...placing it inline right after the summary
+                                text instead... */
+    vertical-align: middle;  /* ...and centering it against that text (fixes 3). */
+}
+.probe-reveal {
+    white-space: normal;       /* opt the revealed list out of the cell's
+                                  nowrap so long network names wrap (fixes 2)... */
+    overflow-wrap: anywhere;   /* ...breaking an unbroken long name rather than
+                                  letting it overflow (and keeps it from forcing
+                                  the column wide, which drove defect 1). */
+}
+
 /* Device-detail action panel: per-MAC operator actions (add to
    watchlist / watchful / silence). A page section, not an inline-table
    popover -- deliberately touch-sized for phone use (44px min control

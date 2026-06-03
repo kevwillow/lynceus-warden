@@ -102,6 +102,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   vs. the ntfy client app) was collapsing them is not documented upstream, so
   no mechanism is asserted.
 
+- **The Probes tab's per-row reveal no longer reflows other rows' disclosure
+  arrows when one row is expanded, no longer clips long network names, and
+  centers the arrow.** The reveal is a native `<details>` inside a
+  `.table-scroll` cell, whose `white-space: nowrap` (which drives the table's
+  horizontal scroll) is inherited into the revealed list. Two defects followed
+  from that, plus a third from the marker: Pico draws the `<summary>` marker as
+  a `float: right` chevron on a block-level summary, so the chevron sits at the
+  right edge of the summary box — which fills the table *column*. Because table
+  columns share one width across all rows, expanding one row forced its
+  un-wrapped content to widen the shared column, and every other (collapsed)
+  row's right-floated chevron then slid to the new right edge — and, while the
+  column was narrow, the floated chevron wrapped *below* the summary text. The
+  same `nowrap` also stopped long probed-network names from wrapping, so they
+  overflowed the cell, and the floated chevron sat off-center against the text.
+  Two CSS rules, scoped to the probe reveals alone (matched by their
+  `.probe-reveal` list, so no other table's `<details>` is touched), fix all
+  three: the reveal list opts out of the cell's `nowrap` so names wrap, and the
+  summary marker is laid out inline (not floated) so it anchors to the text —
+  isolated from the shared column width and centered against it. Display-only;
+  the collapse-by-default privacy behavior and the reveal toggle are unchanged.
+
 ## [0.9.0] - 2026-06-01
 
 ### Added
