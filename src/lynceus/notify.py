@@ -97,6 +97,32 @@ class NtfyNotifier(Notifier):
         message: str,
         priority_override: int | None = None,
     ) -> bool:
+        ok, _detail = self.send_with_detail(
+            severity, title, message, priority_override=priority_override
+        )
+        return ok
+
+    def send_with_detail(
+        self,
+        severity: Literal["low", "med", "high"],
+        title: str,
+        message: str,
+        priority_override: int | None = None,
+    ) -> tuple[bool, str | None]:
+        """Publish via the real ntfy POST path, returning ``(ok, detail)``.
+
+        ``detail`` is ``None`` on success, else a SAFE, topic-redacted
+        one-line reason: ``"HTTP <code>"`` for a non-2xx response, or
+        ``"<ExcType> (<redacted-url>)"`` for a transport error. The raw
+        topic never appears in ``detail`` (it is a shared secret).
+
+        ``send`` delegates here, so the daemon path is unchanged. The
+        setup wizard's test-publish (``cli.setup.probe_ntfy``) calls this
+        directly so its probe exercises the exact headers/format the
+        daemon sends — a 200 at setup validates the production request
+        shape — while still surfacing an operator-actionable failure
+        reason that ``send``'s bare ``bool`` return discards.
+        """
         url = f"{self.base_url}/{self.topic}"
         # ntfy topics are shared secrets; never let them reach log surfaces.
         # The exception's __str__() typically embeds the full URL+topic too,
@@ -146,15 +172,15 @@ class NtfyNotifier(Notifier):
             logger.warning("ntfy POST to %s failed: %s", safe_url, type(e).__name__)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("ntfy POST exception detail", exc_info=True)
-            return False
+            return False, f"{type(e).__name__} ({safe_url})"
         if 200 <= response.status_code <= 299:
-            return True
+            return True, None
         logger.warning(
             "ntfy POST to %s returned non-2xx status %s",
             safe_url,
             response.status_code,
         )
-        return False
+        return False, f"HTTP {response.status_code}"
 
 
 def build_metadata_suffix(metadata: dict | None) -> str:

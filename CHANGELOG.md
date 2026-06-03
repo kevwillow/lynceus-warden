@@ -18,6 +18,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scrolling, with a "showing N of M" count line beneath it. The cap is a
   ceiling, not a floor: fewer devices render fewer rows.
 
+- **`lynceus-setup` now guides the ntfy broker-URL field and verifies the
+  topic with a real test-publish, on both the web wizard and the CLI.** Field
+  testing surfaced a silent misconfiguration: the operator put the full
+  `ntfy.sh/<topic>` in the URL field *and* `<topic>` in the topic field, so
+  the daemon POSTed to `<url>/<topic>/<topic>` — a dead topic nothing was
+  subscribed to — with zero feedback at setup. Two non-destructive changes
+  close the gap. (1) The URL field's help text now states it is the **server
+  base only** (for the public service, just `https://ntfy.sh`) and warns
+  against appending the topic, naming the `<url>/<topic>/<topic>` failure
+  mode. (2) The setup test-publish now routes through `notify.py`'s real send
+  path, so it POSTs with the exact headers/format the daemon uses, and prints
+  the **resolved `<url>/<topic>` target** — topic-redacted, so a doubled topic
+  stays visible — before asking the operator to confirm receipt on their
+  phone. The messaging is deliberately honest: a 2xx confirms only that the
+  broker *accepted* the publish (ntfy creates topics on demand), NOT that the
+  phone is subscribed to that topic, so it is never worded as "configured
+  successfully". The operator's URL is never normalized or rewritten —
+  self-hosted brokers with custom hosts or reverse-proxy subpaths are left
+  exactly as entered. The test-publish remains skippable (`--skip-probes` /
+  the wizard's skip path) and never hard-blocks setup completion.
+
 ### Fixed
 
 - **Corrected the `X-Sequence-ID` explanation from 0.9.0 (documentation and

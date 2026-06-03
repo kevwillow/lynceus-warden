@@ -21,11 +21,10 @@ import secrets
 import sys
 from pathlib import Path
 
-import requests
-
 from .. import __version__, paths
 from ..config import DEFAULT_KISMET_URL, CaptureConfig, Config
 from ..kismet import KismetClient
+from ..notify import NtfyNotifier
 from ..redact import redact_ntfy_topic, redact_topic_in_url
 from ..setup.models import ApplyStep, ArgusChoice  # noqa: F401  (test re-export)
 from ._adapter_descriptors import (  # noqa: F401  (re-exported for test monkeypatching)
@@ -118,6 +117,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_NTFY_BROKER = "https://ntfy.sh"
 DEFAULT_RSSI_THRESHOLD = -70
 PROBE_TIMEOUT_SECONDS = 5.0
+
+# Title + body for the setup test-publish. The body is plain operator-facing
+# copy so a recipient who DID subscribe immediately understands what arrived
+# and why; "Lynceus setup test" leads so the existing substring contract holds.
+NTFY_SETUP_TEST_TITLE = "Lynceus setup test"
+NTFY_SETUP_TEST_BODY = (
+    "Lynceus setup test — if this arrived on your phone, your ntfy topic is "
+    "reachable. Sent by lynceus-setup."
+)
 
 SEVERITY_OVERRIDES_EXPLANATION = """\
 Severity overrides let you customize how Lynceus rates threats. By
@@ -659,24 +667,21 @@ def probe_kismet_sources(
 def probe_ntfy(
     url: str, topic: str, timeout: float = PROBE_TIMEOUT_SECONDS
 ) -> tuple[bool, str | None]:
-    """POST a one-line message to the ntfy topic. Return ``(ok, error)``.
+    """Send a setup test notification via notify.py's real send path.
 
-    The error string never carries the raw topic. ``requests`` exceptions'
-    ``__str__()`` typically embeds the full URL (with topic) — instead of
-    forwarding that to the wizard's terminal output we return only the
-    exception type name plus a topic-redacted URL. Full exception detail
-    is logged at DEBUG for operators who need it.
+    Routes through ``NtfyNotifier.send_with_detail`` so the probe POSTs with
+    the EXACT headers/format the daemon uses — a 2xx here validates the
+    production request shape, not a hand-rolled approximation. Returns
+    ``(ok, error)``; the error string is topic-redacted (the topic is a
+    shared secret and never appears raw, in output or logs).
+
+    HONESTY: a 2xx confirms only that the broker ACCEPTED the publish (ntfy
+    creates topics on demand) — it does NOT prove the operator's phone is
+    subscribed to that topic. Callers must tell the operator to confirm
+    receipt on their device; a bare 200 is reachability, not correctness.
     """
-    full_url = f"{url.rstrip('/')}/{topic}"
-    safe_url = redact_topic_in_url(full_url)
-    try:
-        response = requests.post(full_url, data=b"Lynceus setup test", timeout=timeout)
-    except requests.exceptions.RequestException as e:
-        logger.debug("ntfy probe exception detail", exc_info=True)
-        return False, f"{type(e).__name__} ({safe_url})"
-    if 200 <= response.status_code < 300:
-        return True, None
-    return False, f"HTTP {response.status_code}"
+    notifier = NtfyNotifier(base_url=url, topic=topic, timeout=timeout)
+    return notifier.send_with_detail("low", NTFY_SETUP_TEST_TITLE, NTFY_SETUP_TEST_BODY)
 
 
 # --- Enable-alerting flow ---------------------------------------------------
@@ -1102,8 +1107,12 @@ Lynceus publishes alerts to a 'topic' you choose; you subscribe to
 that topic from your phone (ntfy mobile app) or desktop browser.
 
 Two prompts follow:
-  1. ntfy broker URL — the default ({DEFAULT_NTFY_BROKER}) is the
-     public service. Set this to your own URL if you self-host.
+  1. ntfy broker URL — the SERVER BASE only. For the public service
+     use just {DEFAULT_NTFY_BROKER} (no topic, no extra path); set
+     your own base URL if you self-host. Do NOT append your topic
+     here — it goes in the next prompt, and Lynceus joins them as
+     <url>/<topic>. Putting the topic in BOTH fields POSTs to
+     <url>/<topic>/<topic>, a dead topic nothing is subscribed to.
   2. ntfy topic — a name you pick. Anyone who knows the topic can
      read AND publish to it, so treat it like a password.
 
@@ -1160,11 +1169,34 @@ and enter the topic exactly as written.
         except SetupError as exc:
             print(f"Setup failed: {exc}", file=sys.stderr)
             return 1
-        # (i) ntfy probe
+        # (i) ntfy probe — reuses notify.py's real send path. The resolved
+        # POST target is printed topic-redacted so the operator can eyeball
+        # a doubled topic (<url>/<topic>/<topic>) without the shared-secret
+        # topic hitting terminal scrollback. A 2xx is REACHABILITY, not
+        # topic correctness (ntfy creates topics on demand), so the success
+        # copy tells the operator to confirm receipt on their device rather
+        # than declaring the topic correctly configured.
         if not args.skip_probes:
+            resolved = redact_topic_in_url(
+                f"{answers['ntfy_url'].rstrip('/')}/{answers['ntfy_topic']}"
+            )
+            print(f"Sending a test notification to {resolved} ...")
             ok, error = probe_ntfy(answers["ntfy_url"], answers["ntfy_topic"])
             if ok:
-                print("✓ ntfy publish OK, check your subscriber for the test message")
+                print("✓ ntfy publish accepted (HTTP 2xx) — the broker is reachable.")
+                print(
+                    "  A 2xx only means the server accepted the message; it does NOT "
+                    "confirm"
+                )
+                print(
+                    "  your phone is subscribed to this topic. Open your ntfy app now "
+                    "and check"
+                )
+                print(
+                    "  the test arrived. If it didn't, the topic on your phone doesn't "
+                    "match —"
+                )
+                print("  re-run `lynceus-setup --reconfigure` to fix it.")
             else:
                 print(f"✗ ntfy publish failed: {error}")
                 if not prompt_yes_no("Continue anyway?", default=False, input_fn=in_fn):

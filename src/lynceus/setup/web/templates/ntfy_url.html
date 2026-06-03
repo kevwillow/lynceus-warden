@@ -16,8 +16,15 @@
   <ol>
     <li>
       <strong>ntfy broker URL</strong> (this step) &mdash; the
-      default (<code>{{ default_broker }}</code>) is the public
-      service. Set this to your own URL if you self-host.
+      <strong>server base only</strong>. For the public service use
+      just <code>{{ default_broker }}</code> (no topic, no extra
+      path); set your own base URL if you self-host.
+      <strong>Do not append your topic here</strong> &mdash; it goes
+      in the next step, and Lynceus joins them as
+      <code>&lt;url&gt;/&lt;topic&gt;</code>. Putting the topic in
+      <em>both</em> fields POSTs to
+      <code>&lt;url&gt;/&lt;topic&gt;/&lt;topic&gt;</code>, a dead
+      topic nothing is subscribed to.
     </li>
     <li>
       <strong>ntfy topic</strong> (next step) &mdash; a name you

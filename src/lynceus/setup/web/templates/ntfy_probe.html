@@ -15,9 +15,16 @@
     </form>
   {% elif probe_ok %}
     <p>
-      <strong>ntfy publish OK.</strong> Check your subscriber for the
-      test message. If you didn't get it, verify the topic name on
-      your phone matches what you typed in step 8.
+      <strong>Test publish accepted (HTTP 2xx).</strong> It was POSTed
+      to <code>{{ resolved_target }}</code>.
+    </p>
+    <p>
+      A 2xx only means the ntfy server <em>accepted</em> the message
+      &mdash; it does <strong>not</strong> confirm your phone is
+      subscribed to that topic (ntfy creates topics on demand). Open
+      your ntfy app now and check the test arrived. If it didn't, the
+      topic on your phone doesn't match the one above &mdash; go back
+      to step 8 and fix it.
     </p>
     <form method="post" action="{{ url_with_token('/step/9') }}">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
@@ -32,6 +39,11 @@
       <strong>ntfy probe failed:</strong>
       <code>{{ probe_error or 'unknown error' }}</code>
     </p>
+    {% if resolved_target %}
+    <p>
+      The test was sent to <code>{{ resolved_target }}</code>.
+    </p>
+    {% endif %}
     <p>
       Continuing anyway is fine &mdash; the config will still be
       written and you can iterate on the topic/URL later via

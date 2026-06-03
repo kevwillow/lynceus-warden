@@ -30,6 +30,7 @@ from lynceus.cli.setup import (
     DEFAULT_RSSI_THRESHOLD,
     probe_ntfy,
 )
+from lynceus.redact import redact_topic_in_url
 from lynceus.setup.prompts import _is_valid_url, _looks_like_ntfy_topic
 
 if TYPE_CHECKING:
@@ -197,6 +198,13 @@ async def ntfy_probe_get(request: Request) -> HTMLResponse:
     session = _session(request)
     if not session.answers.get("ntfy_url") or not session.answers.get("ntfy_topic"):
         return _redirect(request, "/step/7")
+    # The resolved POST target, topic-redacted so the operator can eyeball a
+    # doubled topic (<url>/<topic>/<topic>) without the shared-secret topic
+    # reaching a rendered surface. redact masks only the final path segment,
+    # so a topic mistakenly left in the URL field stays visible.
+    resolved_target = redact_topic_in_url(
+        f"{session.answers['ntfy_url'].rstrip('/')}/{session.answers['ntfy_topic']}"
+    )
     if state.skip_probes:
         return _render(
             request,
@@ -205,6 +213,7 @@ async def ntfy_probe_get(request: Request) -> HTMLResponse:
             skipped=True,
             probe_ok=None,
             probe_error=None,
+            resolved_target=resolved_target,
         )
     # Finding 3.6 (PRESHIP): probe_ntfy is synchronous (requests.post
     # with PROBE_TIMEOUT_SECONDS=5). Dispatch via asyncio.to_thread so
@@ -224,6 +233,7 @@ async def ntfy_probe_get(request: Request) -> HTMLResponse:
         skipped=False,
         probe_ok=ok,
         probe_error=error,
+        resolved_target=resolved_target,
     )
 
 
