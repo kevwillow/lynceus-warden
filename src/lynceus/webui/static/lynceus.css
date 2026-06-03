@@ -190,6 +190,30 @@ tr.row-sev-med  { background: var(--lyn-row-sev-med); }
 tr.row-sev-high { background: var(--lyn-row-sev-high); }
 tr.row-acked    { opacity: 0.55; }
 
+/* /watchful state pills + row tints. The watchful templates
+   (watchful_list.html, watchful_detail.html) reference these
+   badge-watchful-* / row-watchful-* classes but they were never defined
+   here (since 1b62949, 2026-05-18), so the state pills rendered as
+   unstyled inline text and the rows carried no tint. Mirror the existing
+   badge tiers exactly -- same 2px 6px / 4px / 0.85em shape, same
+   theme-aware --lyn-badge-* tokens -- so they match every other page's
+   pills in light and dark mode.
+     escalated -> negative/red: a recurrence alert has fired.
+     safe      -> positive/green: operator-confirmed not suspicious.
+     tracking / archived / flagged -> neutral: calm states plus the
+       investigation marker; distinguished by their label text + glyph,
+       not by colour, so the lone red 'escalated' keeps its salience.
+   Row tints reuse the alert-row precedent: escalated rows take the same
+   subtle red as row-sev-high; archived rows dim like row-acked; tracking
+   (the baseline majority row) is intentionally left untinted. */
+.badge-watchful-escalated { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-watchful-tracking  { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-watchful-archived  { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-watchful-flagged   { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-watchful-safe      { background: var(--lyn-badge-positive-bg); color: var(--lyn-badge-positive-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+tr.row-watchful-escalated { background: var(--lyn-row-sev-high); }
+tr.row-watchful-archived  { opacity: 0.55; }
+
 /* Stat tile row (mirrors stat-grid layout but only counts) */
 .tile-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1em; margin: 0.5em 0; }
 .tile { padding: 0.75em; text-align: center; border: 1px solid var(--pico-muted-border-color, #ccc); border-radius: 4px; }
