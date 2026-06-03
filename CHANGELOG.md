@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-06-03
+
 ### Added
 
 - **The running daemon now sends an ntfy alert when it loses Kismet mid-run,
@@ -85,6 +87,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the wizard's skip path) and never hard-blocks setup completion.
 
 ### Fixed
+
+- **`lynceus-setup --web` now prints manual-access guidance when it can't
+  auto-open a browser.** On a headless host, under `sudo`, or with no
+  `DISPLAY`, `webbrowser.open` fails and the wizard previously printed only a
+  terse one-liner. The open-failed path now prints prominent guidance: the
+  tokenized URL and, when the bind is loopback (the default), an
+  `ssh -L <port>:127.0.0.1:<port>` tunnel example with a note that the wizard
+  binds to localhost by design; a non-loopback bind names the bind host and
+  omits the tunnel. Detection and printed output only — no binding behaviour
+  changes.
 
 - **Corrected the `X-Sequence-ID` explanation from 0.9.0 (documentation and
   code comment only — no behavior change).** The 0.9.0 entry and the
