@@ -7,7 +7,7 @@ Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchli
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Status: v0.9.0](https://img.shields.io/badge/Status-v0.9.0-blue.svg)](#project-status)
+[![Status: v0.9.1](https://img.shields.io/badge/Status-v0.9.1-blue.svg)](#project-status)
 [![Counter-Surveillance](https://img.shields.io/badge/Counter--Surveillance-passive%20only-1f6feb.svg)](#privacy--threat-model)
 [![Watching the Watchers](https://img.shields.io/badge/Watching-the%20Watchers-black.svg)](#what-lynceus-does)
 
@@ -22,11 +22,11 @@ Personal-use RF security monitoring: passive WiFi/Bluetooth observation, watchli
 
 ## Project status
 
-**Personal-use RF security monitoring tool. v0.9.0.**
+**Personal-use RF security monitoring tool. v0.9.1.**
 
-This is not a hardened public product. It is a personal project, feature-complete for v0.9.0, with hardware-smoke validation pending. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
+This is not a hardened public product. It is a personal project, feature-complete for v0.9.1; the 0.9.1 fixes are hardware-verified on-device. Use it on hardware you control, in a jurisdiction where passive RF observation is legal, and read the source before trusting it with anything.
 
-The full default suite passes at v0.9.0, with a small set of POSIX-only `install.sh`, file-mode, and symlink tests skipping on non-POSIX hosts. A separate diagnostic suite (`pytest -m diagnostic`) is run pre-push for pre-flight observation and is excluded from the default suite.
+The full default suite passes at v0.9.1, with a small set of POSIX-only `install.sh`, file-mode, and symlink tests skipping on non-POSIX hosts. A separate diagnostic suite (`pytest -m diagnostic`) is run pre-push for pre-flight observation and is excluded from the default suite.
 
 ## What Lynceus does
 
