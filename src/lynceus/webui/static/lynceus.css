@@ -364,19 +364,27 @@ details > summary { cursor: pointer; }
     -webkit-user-select: none;
     user-select: none;
 }
+/* The grip's vertical bar doubles as a PERSISTENT column separator: visible
+   (faint) at rest so the resize affordance is discoverable, and darkening on
+   hover/drag to signal it is a handle. Tweak the rest weight via
+   --lyn-col-separator-rest (0 = old invisible-until-hover behaviour). */
+.table-scroll table[data-table-id] {
+    --lyn-col-separator-rest: 0.28;
+    --lyn-col-separator-active: 0.8;
+}
 .table-scroll table[data-table-id] th .col-resizer::after {
     content: "";
     position: absolute;
-    top: 20%;
-    bottom: 20%;
+    top: 15%;
+    bottom: 15%;
     right: 4px;
     width: 2px;
     background: var(--lyn-topnav-border, currentColor);
-    opacity: 0;
+    opacity: var(--lyn-col-separator-rest);
     transition: opacity 0.12s ease;
 }
 .table-scroll table[data-table-id] th .col-resizer:hover::after,
-.table-scroll table[data-table-id] th.lyn-resizing .col-resizer::after { opacity: 0.8; }
+.table-scroll table[data-table-id] th.lyn-resizing .col-resizer::after { opacity: var(--lyn-col-separator-active); }
 /* Header reorder: allow vertical page scroll to pass through while pointer
    moves are captured for the horizontal drag. */
 .table-scroll table[data-table-id] thead th { touch-action: pan-y; }

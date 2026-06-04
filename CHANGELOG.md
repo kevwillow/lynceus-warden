@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The devices table's column-resize affordance is now discoverable at
+  rest.** The drag-to-resize grip rendered at `opacity: 0` and only appeared
+  on hover, so the resize/reorder feature was effectively invisible — an
+  operator had no cue that a column boundary was draggable. The grip's
+  vertical bar now doubles as a faint, persistent column separator (visible
+  without hovering) that darkens when hovered or dragged, signalling it is a
+  handle. Both weights are exposed as tweakable custom properties
+  (`--lyn-col-separator-rest`, `--lyn-col-separator-active`) and all colours
+  still derive from the existing theme tokens, so the change is theme-aware by
+  construction. This is a CSS-level change to the shared grip styling used by
+  the `data_table` macro, so it takes effect wherever the macro opts in
+  (currently the devices table).
+
 ## [0.9.1] - 2026-06-03
 
 ### Added
