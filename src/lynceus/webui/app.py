@@ -34,7 +34,14 @@ from lynceus.allowlist import (
     remove_ui_entry,
 )
 from lynceus.config import Config
-from lynceus.db import Database, RuleStats, WatchfulRecurrence
+from lynceus.db import (
+    DEVICES_DEFAULT_DIR,
+    DEVICES_DEFAULT_SORT,
+    DEVICES_SORT_EXPRESSIONS,
+    Database,
+    RuleStats,
+    WatchfulRecurrence,
+)
 from lynceus.patterns import mac_in_mac_range
 from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
@@ -273,6 +280,16 @@ _WATCHLIST_PER_PAGE_DEFAULT: int = 50
 # option valid; B-5 only changes out-of-range handling (clamp, not 400).
 _DEVICES_PER_PAGE_ALLOWED: tuple[int, ...] = (10, 25, 50, 100, 200, 250, 500)
 _DEVICES_PER_PAGE_DEFAULT: int = 50
+
+# /devices server-side column sort. The allowed sort keys are derived
+# from the DB-layer whitelist (DEVICES_SORT_EXPRESSIONS) so the route's
+# silent fallback and the template's active-column affordance stay in
+# lockstep with the ORDER BY mapping -- a key added there flows here
+# with no second edit. ``dir`` is asc|desc. Both fall back silently on
+# bad input, matching the /rules ?sort= idiom: a stale bookmark renders
+# the default ordering rather than 400/500.
+_DEVICES_SORT_OPTIONS: tuple[str, ...] = tuple(DEVICES_SORT_EXPRESSIONS)
+_DEVICES_DIR_OPTIONS: tuple[str, ...] = ("asc", "desc")
 
 # /probes (aggregated probe-SSID view) shares the devices page-size
 # vocabulary -- both list the same underlying rows, just grouped. A
@@ -2769,6 +2786,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         q: str | None = Query(default=None),
         page: str | None = Query(default=None),
         page_size: str | None = Query(default=None),
+        sort: str | None = Query(default=None),
+        direction: str | None = Query(default=None, alias="dir"),
     ):
         # The filter form's "any" <option value=""> emits an empty
         # string, which would slip past the `is not None` guards and
@@ -2800,6 +2819,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
         if q is not None and len(q) > 100:
             raise HTTPException(status_code=400, detail="q must be <= 100 chars")
         q_clean = (q or "").strip() or None
+        # Server-side column sort (matches the /rules ?sort= idiom): an
+        # unknown sort key or direction silently falls back to the
+        # default ordering instead of 400, so a stale bookmark or a
+        # hand-typed param lands on a coherent page. The DB layer
+        # whitelists again (defense in depth), but normalizing here
+        # keeps the value passed to the template's active-column
+        # affordance honest.
+        if sort is None or sort == "" or sort not in _DEVICES_SORT_OPTIONS:
+            sort = DEVICES_DEFAULT_SORT
+        if direction not in _DEVICES_DIR_OPTIONS:
+            direction = DEVICES_DEFAULT_DIR
         # Pagination uses the shared two-phase helper (parse -> clamp)
         # like every other list page: an out-of-range page or page_size
         # clamps silently instead of 400 (B-5). Invalid per_page falls
@@ -2823,6 +2853,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
             randomized=rand_bool,
             probing=probing_bool,
             q=q_clean,
+            sort=sort,
+            direction=direction,
         )
         # Silence state lives in the allowlist files, not the devices
         # table, so list_devices can't surface it. Resolve it for the
@@ -2854,6 +2886,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "page": pagination.page,
                 "page_size": pagination.per_page,
                 "total_pages": pagination.total_pages,
+                "sort": sort,
+                "dir": direction,
                 "device_type": device_type,
                 "randomized": rand_bool,
                 "probing": probing_bool,

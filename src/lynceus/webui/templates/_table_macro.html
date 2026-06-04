@@ -1,0 +1,82 @@
+{# Reusable data-table foundation for the web UI's server-rendered,
+   server-paginated tables. Two macros, both pure presentation -- the
+   route owns the query (filters, sort, pagination); these own the
+   wrapper + header + footer chrome that every list page repeats.
+
+   data_table(columns, endpoint, filter_qs, sort, dir)
+     Renders the .table-scroll wrapper, a <thead> of sort-aware headers,
+     and the <tbody>; the caller supplies the row markup as the
+     {% call %} body, which lands inside <tbody>. ``columns`` is a list
+     of dicts: {'label': str, 'sort': key?, 'nowrap': bool?}. A column
+     carrying a 'sort' key renders a plain GET <a> that carries the
+     current filters (``filter_qs``) and toggles direction on the active
+     column; a column without 'sort' renders a plain, non-clickable
+     header. Sort links deliberately omit ?page -- a new ordering
+     invalidates the page position, so the route resets to page 1.
+     ``nowrap`` emits an inline ``white-space: nowrap`` on the <th>:
+     .table-scroll's global th/td nowrap already covers this, but the
+     flag preserves a column's belt-and-suspenders inline declaration
+     (e.g. the /devices Type header, hardened after a real truncation
+     bug) so a future CSS override can't silently re-introduce a squash.
+
+   pagination_footer(endpoint, base_qs, page, total_pages, total, per_page)
+     Renders the prev / page-indicator / next nav. Serves BOTH footer
+     idioms in the codebase from one signature: callers on the
+     "individual vars" idiom (devices/probes) pass only page +
+     total_pages and get the minimal "page X of Y"; callers on the
+     "pagination object" idiom (alerts/watchlist/watchful/allowlist)
+     also pass total + per_page to append " · N total · per_page=K".
+     ``base_qs`` is the current filter + sort state without ?page, so
+     paging preserves both. has_prev/has_next reduce to page > 1 and
+     page < total_pages, which hold for either idiom. #}
+
+{% macro data_table(columns, endpoint, filter_qs, sort, dir) %}
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          {% for col in columns %}
+            {% if col.sort %}
+              {% set is_active = (col.sort == sort) %}
+              {% set next_dir = (('asc' if dir == 'desc' else 'desc') if is_active else 'asc') %}
+              <th{% if col.nowrap %} style="white-space: nowrap;"{% endif %} aria-sort="{{ ('ascending' if dir == 'asc' else 'descending') if is_active else 'none' }}">
+                <a class="th-sort{% if is_active %} th-sort-active{% endif %}" href="{{ endpoint }}?{{ filter_qs }}&sort={{ col.sort }}&dir={{ next_dir }}">{{ col.label }}{% if is_active %} <span class="th-sort-ind" aria-hidden="true">{% if dir == 'asc' %}&#9650;{% else %}&#9660;{% endif %}</span>{% endif %}</a>
+              </th>
+            {% else %}
+              <th{% if col.nowrap %} style="white-space: nowrap;"{% endif %}>{{ col.label }}</th>
+            {% endif %}
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {{ caller() }}
+      </tbody>
+    </table>
+  </div>
+{% endmacro %}
+
+{% macro pagination_footer(endpoint, base_qs, page, total_pages, total=none, per_page=none) %}
+  <nav>
+    <ul>
+      <li>
+        {% if page > 1 %}
+          <a href="{{ endpoint }}?{{ base_qs }}&page={{ page - 1 }}">&larr; prev</a>
+        {% else %}
+          <span class="dim">&larr; prev</span>
+        {% endif %}
+      </li>
+    </ul>
+    <ul>
+      <li><small>page {{ page }} of {{ total_pages }}{% if total is not none and per_page is not none %} &middot; {{ total }} total &middot; per_page={{ per_page }}{% endif %}</small></li>
+    </ul>
+    <ul>
+      <li>
+        {% if page < total_pages %}
+          <a href="{{ endpoint }}?{{ base_qs }}&page={{ page + 1 }}">next &rarr;</a>
+        {% else %}
+          <span class="dim">next &rarr;</span>
+        {% endif %}
+      </li>
+    </ul>
+  </nav>
+{% endmacro %}

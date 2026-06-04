@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}devices &mdash; lynceus{% endblock %}
 {% block content %}
+  {% from "_table_macro.html" import data_table, pagination_footer %}
   {% include "_topnav.html" %}
   <h2>devices</h2>
 
@@ -76,26 +77,47 @@
 
   <p><small>{{ total_count }} device(s) total &middot; page {{ page }} of {{ total_pages }}</small></p>
 
+  {# Current filter state as urlencoded key=value parts, carried across
+     both the sort-header links and the pagination links. Per-value
+     urlencode + join('&') matches the prior pagination-nav encoding
+     exactly (spaces -> %20, not '+'). This list is the structural
+     filter hook: a new filter param only needs adding here to compose
+     with sort + pagination automatically. ?page is deliberately
+     excluded (a new sort or filter resets to page 1); sort + dir are
+     appended only for the footer's carry set, since each header link
+     sets its own sort. #}
+  {% set filter_qs_parts = [] %}
+  {% if device_type %}{% set _ = filter_qs_parts.append('device_type=' ~ (device_type | urlencode)) %}{% endif %}
+  {% if randomized is sameas true %}{% set _ = filter_qs_parts.append('randomized=true') %}{% endif %}
+  {% if randomized is sameas false %}{% set _ = filter_qs_parts.append('randomized=false') %}{% endif %}
+  {% if probing is sameas true %}{% set _ = filter_qs_parts.append('probing=yes') %}{% endif %}
+  {% if probing is sameas false %}{% set _ = filter_qs_parts.append('probing=no') %}{% endif %}
+  {% if q %}{% set _ = filter_qs_parts.append('q=' ~ (q | urlencode)) %}{% endif %}
+  {% set _ = filter_qs_parts.append('page_size=' ~ page_size) %}
+  {% set filter_qs = filter_qs_parts | join('&') %}
+  {% set footer_qs = (filter_qs_parts + ['sort=' ~ sort, 'dir=' ~ dir]) | join('&') %}
+
+  {# Column set for the reusable table macro. A 'sort' key makes the
+     header a sort link; Device (computed label) and Probes (JSON list)
+     stay plain -- they do not map to a clean DB ORDER BY. Type keeps an
+     inline nowrap (belt-and-suspenders against the column squashing). #}
+  {% set device_columns = [
+       {'label': 'Device'},
+       {'label': 'MAC', 'sort': 'mac'},
+       {'label': 'Type', 'sort': 'device_type', 'nowrap': true},
+       {'label': 'Vendor', 'sort': 'oui_vendor'},
+       {'label': 'BLE name', 'sort': 'ble_name'},
+       {'label': 'Probes'},
+       {'label': 'Randomized', 'sort': 'is_randomized'},
+       {'label': 'First seen', 'sort': 'first_seen'},
+       {'label': 'Last seen', 'sort': 'last_seen'},
+       {'label': 'Last RSSI', 'sort': 'last_rssi'},
+       {'label': 'Last SSID', 'sort': 'last_ssid'},
+       {'label': 'Sightings', 'sort': 'sighting_count'},
+     ] %}
+
   {% if devices %}
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>Device</th>
-            <th>MAC</th>
-            <th style="white-space: nowrap;">Type</th>
-            <th>Vendor</th>
-            <th>BLE name</th>
-            <th>Probes</th>
-            <th>Randomized</th>
-            <th>First seen</th>
-            <th>Last seen</th>
-            <th>Last RSSI</th>
-            <th>Last SSID</th>
-            <th>Sightings</th>
-          </tr>
-        </thead>
-        <tbody>
+    {% call data_table(device_columns, '/devices', filter_qs, sort, dir) %}
           {% for d in devices %}
             <tr>
               <td>{{ d | device_label }}</td>
@@ -126,43 +148,10 @@
               <td>{{ d.sighting_count }}</td>
             </tr>
           {% endfor %}
-        </tbody>
-      </table>
-    </div>
+    {% endcall %}
   {% else %}
     <p><em>No devices match the current filter.</em></p>
   {% endif %}
 
-  <nav>
-    {% set qs = [] %}
-    {% if device_type %}{% set _ = qs.append('device_type=' ~ (device_type | urlencode)) %}{% endif %}
-    {% if randomized is sameas true %}{% set _ = qs.append('randomized=true') %}{% endif %}
-    {% if randomized is sameas false %}{% set _ = qs.append('randomized=false') %}{% endif %}
-    {% if probing is sameas true %}{% set _ = qs.append('probing=yes') %}{% endif %}
-    {% if probing is sameas false %}{% set _ = qs.append('probing=no') %}{% endif %}
-    {% if q %}{% set _ = qs.append('q=' ~ (q | urlencode)) %}{% endif %}
-    {% set _ = qs.append('page_size=' ~ page_size) %}
-    {% set base_qs = qs | join('&') %}
-    <ul>
-      <li>
-        {% if page > 1 %}
-          <a href="/devices?{{ base_qs }}&page={{ page - 1 }}">&larr; prev</a>
-        {% else %}
-          <span class="dim">&larr; prev</span>
-        {% endif %}
-      </li>
-    </ul>
-    <ul>
-      <li><small>page {{ page }} of {{ total_pages }}</small></li>
-    </ul>
-    <ul>
-      <li>
-        {% if page < total_pages %}
-          <a href="/devices?{{ base_qs }}&page={{ page + 1 }}">next &rarr;</a>
-        {% else %}
-          <span class="dim">next &rarr;</span>
-        {% endif %}
-      </li>
-    </ul>
-  </nav>
+  {{ pagination_footer('/devices', footer_qs, page, total_pages) }}
 {% endblock %}

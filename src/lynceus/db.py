@@ -325,6 +325,34 @@ def _find_migrations_dir() -> Path:
     )
 
 
+# Server-side sort vocabulary for ``Database.list_devices`` (the
+# /devices table). Maps each operator-facing sort key to a *fixed*
+# ORDER BY fragment -- never the raw query-param string -- so an
+# arbitrary ?sort= value can only ever select a whitelisted expression,
+# never inject SQL. Real ``devices`` columns map to themselves;
+# ``last_rssi`` / ``last_ssid`` reference the correlated-subquery
+# aliases the SELECT already exposes (SQLite resolves ORDER BY against
+# output-column aliases). ``mac`` (the PK) is appended as a stable
+# secondary key by the query builder, so equal primary values keep a
+# deterministic order across page boundaries.
+DEVICES_SORT_EXPRESSIONS: dict[str, str] = {
+    "mac": "mac",
+    "device_type": "device_type",
+    "oui_vendor": "oui_vendor",
+    "ble_name": "ble_name",
+    "is_randomized": "is_randomized",
+    "first_seen": "first_seen",
+    "last_seen": "last_seen",
+    "sighting_count": "sighting_count",
+    "last_rssi": "last_rssi",
+    "last_ssid": "last_ssid",
+}
+# Default ordering reproduces the pre-sort behavior exactly: a /devices
+# URL with no ?sort=/&dir= renders ``ORDER BY last_seen DESC, mac``.
+DEVICES_DEFAULT_SORT = "last_seen"
+DEVICES_DEFAULT_DIR = "desc"
+
+
 class Database:
     def __init__(self, path: str) -> None:
         # sqlite3.connect with a nested non-existent path fails with the
@@ -1890,6 +1918,8 @@ class Database:
         randomized: bool | None = None,
         probing: bool | None = None,
         q: str | None = None,
+        sort: str = DEVICES_DEFAULT_SORT,
+        direction: str = DEVICES_DEFAULT_DIR,
     ) -> list[dict]:
         self._validate_pagination(limit, offset)
         where, params = self._device_filter_sql(device_type, randomized, probing, q)
@@ -1900,6 +1930,20 @@ class Database:
         # the same row. LEFT-join semantics (NULL when no sighting
         # exists) fall out naturally — devices with zero sightings
         # surface NULL and the template renders an em-dash.
+        #
+        # Server-side column sort: ``sort``/``direction`` select a
+        # whitelisted ORDER BY fragment from DEVICES_SORT_EXPRESSIONS
+        # (never the raw param), silently falling back to the default
+        # key so a stale/garbage ?sort= can neither 500 nor inject. The
+        # PK ``mac`` is the stable secondary key, dropped when it is
+        # already the primary to avoid a redundant ``mac, mac``. The
+        # default (last_seen / desc) reproduces the prior hardcoded
+        # ``ORDER BY last_seen DESC, mac`` exactly.
+        order_expr = DEVICES_SORT_EXPRESSIONS.get(
+            sort, DEVICES_SORT_EXPRESSIONS[DEVICES_DEFAULT_SORT]
+        )
+        order_dir = "ASC" if direction == "asc" else "DESC"
+        tiebreak = "" if order_expr == "mac" else ", mac"
         sql = (
             "SELECT mac, device_type, first_seen, last_seen, sighting_count, "
             "oui_vendor, is_randomized, notes, probe_ssids, ble_name, "
@@ -1907,7 +1951,8 @@ class Database:
             "ORDER BY ts DESC, id DESC LIMIT 1) AS last_rssi, "
             "(SELECT ssid FROM sightings WHERE sightings.mac = devices.mac "
             "ORDER BY ts DESC, id DESC LIMIT 1) AS last_ssid "
-            f"FROM devices {where} ORDER BY last_seen DESC, mac LIMIT ? OFFSET ?"
+            f"FROM devices {where} ORDER BY {order_expr} {order_dir}{tiebreak} "
+            "LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])
         rows = self._conn.execute(sql, params).fetchall()
