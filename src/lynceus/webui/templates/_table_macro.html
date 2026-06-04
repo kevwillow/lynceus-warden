@@ -41,6 +41,14 @@
      untouched. Resize/reorder are pure client-side presentation; the sort
      <a> links stay server-side (Touch 1) and coexist with the drag via a
      movement threshold in lynceus.js. #}
+  {% if table_id %}
+  {# Reset control sits ABOVE the table. It is a sibling of (not inside)
+     .table-scroll, so a top placement does not scroll away with the table's
+     horizontal overflow; bindReset in lynceus.js wires it by selector,
+     independent of where it renders. The pre-paint applier <script> stays
+     BELOW the table -- it must run after the table has parsed. #}
+  <p class="table-controls"><button type="button" class="table-reset" data-table-reset="{{ table_id }}">reset columns</button></p>
+  {% endif %}
   <div class="table-scroll">
     <table{% if table_id %} data-table-id="{{ table_id }}"{% endif %}>
       {% if table_id %}
@@ -71,7 +79,6 @@
      paints, so a reload never flashes default->persisted (mirrors the theme
      bootstrap in base.html). #}
   <script>window.__lynTableApply && window.__lynTableApply("{{ table_id }}");</script>
-  <p class="table-controls"><button type="button" class="table-reset" data-table-reset="{{ table_id }}">reset columns</button></p>
   {% endif %}
 {% endmacro %}
 

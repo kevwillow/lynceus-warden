@@ -392,7 +392,7 @@ details > summary { cursor: pointer; }
 .table-scroll table[data-table-id] th.lyn-drop-before { box-shadow: inset 2px 0 0 0 var(--pico-primary, currentColor); }
 .table-scroll table[data-table-id] th.lyn-drop-after  { box-shadow: inset -2px 0 0 0 var(--pico-primary, currentColor); }
 /* Quiet "reset columns" control rendered under an opted-in table. */
-.table-controls { margin: 0.3em 0 0; }
+.table-controls { margin: 0 0 0.3em; }
 .table-reset {
     width: auto;
     margin: 0;

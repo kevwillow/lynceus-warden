@@ -30,6 +30,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The "reset columns" control now sits above each resizable table instead
+  of below it.** The control was emitted after the table, so on a long list an
+  operator had to scroll to the bottom to find the way back to the default
+  layout. It now renders immediately above the `.table-scroll` wrapper. The
+  control is a sibling of (not inside) that wrapper, so a top placement does
+  not scroll away with the table's horizontal overflow; the pre-paint applier
+  `<script>` stays below the table, where it must run after the table parses.
+
 - **Resizing a column to its minimum no longer lets the resize grip overlay
   the column label.** Opted-in tables flip to `table-layout: fixed`, where the
   `<col>` inline width is authoritative and a CSS `min-width` on the cell is
