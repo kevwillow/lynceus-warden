@@ -30,6 +30,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The /alerts action column no longer overflows to its full content width on
+  horizontal scroll.** This is a pre-existing issue, not a regression from the
+  column resize/reorder arc — `/alerts` is a bare table (no `data-table-id`),
+  so the global `.table-scroll th,td { white-space: nowrap }` rule that drives
+  the horizontal scroll forced the action cell's two inline forms (note input +
+  Acknowledge, plus the snooze select + Watch) onto one unbroken line, and the
+  ellipsis clamp scoped to `data-table-id` tables never applied to cap it. The
+  cell's controls are now wrapped in an inner `<div>` capped at `max-width:
+  22rem` with `white-space: normal`, so they wrap within a bounded width rather
+  than spilling. The override is scoped to that wrapper class only — the global
+  nowrap rule and every other table are untouched — and the buttons keep their
+  `width: auto` sizing from `29ce7be`, so wrapping does not revert the Watch
+  button to Pico's full-width default.
+
 - **The "reset columns" control now sits above each resizable table instead
   of below it.** The control was emitted after the table, so on a long list an
   operator had to scroll to the bottom to find the way back to the default

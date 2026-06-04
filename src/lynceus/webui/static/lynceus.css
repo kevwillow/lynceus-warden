@@ -164,6 +164,17 @@ body > main.container-fluid {
 .watch-snooze-select { font-size: 0.85em; vertical-align: middle; }
 form.inline-form   { display: inline; }
 form.watch-form    { display: inline; margin-left: 0.4em; }
+/* /alerts action column. The cell holds the ack form + watch form inline; the
+   global table-scroll nowrap rule (th,td below) forces them onto one line and,
+   because /alerts is a bare table (no data-table-id), nothing clamps the cell
+   — so it spills to its full ~23rem content width on horizontal scroll. Cap an
+   INNER wrapper (not the <td>: under table-layout:auto a max-width on a cell is
+   not reliably honoured) and opt that wrapper out of nowrap so the controls
+   wrap within a bounded width. Scoped to this class only — the global nowrap
+   and every other table are untouched. The buttons keep their width:auto
+   sizing from 29ce7be, so wrapping does not revert the Watch button to Pico's
+   full-width default. v0.9.2 issue C. */
+.alert-action-controls { max-width: 22rem; white-space: normal; }
 
 /* /watchful Actions column: each row mixes several siblings -- two
    <form>s (reset, dismiss) plus three <details> disclosures
