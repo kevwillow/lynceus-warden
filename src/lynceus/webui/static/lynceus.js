@@ -197,3 +197,244 @@
     bindToggle();
   }
 })();
+
+// Client-side data-table column resize + reorder with per-table
+// persistence (v0.9.2). Opt-in: only tables carrying [data-table-id] (set by
+// the data_table macro's table_id) are enhanced. State persists to
+// localStorage["lynceus-table:<id>"] as {order:[colKey...], widths:{colKey:px}}.
+//
+// The inline head helper window.__lynTableApply applies persisted state
+// pre-paint (called by the macro right after each table) and is reused here
+// to perform the DOM moves after an interactive reorder. This script adds
+// the interactive layer:
+//   - first-load width freeze: measure the current content-fit widths into
+//     the colgroup and switch to table-layout:fixed so columns are
+//     resizable (measured == rendered, so the flip is visually a no-op).
+//   - drag-to-resize via the per-th grip.
+//   - drag-to-reorder, coexisting with the Touch-1 server-side sort <a>: a
+//     header press only becomes a reorder once the pointer moves past a
+//     small threshold; under the threshold the click falls through and the
+//     sort link navigates. After a real drag the trailing click is
+//     swallowed so the drag never also sorts.
+//   - the "reset columns" control (clears the table's key, reloads).
+(function () {
+  "use strict";
+
+  var PREFIX = "lynceus-table:";
+  var MIN_W = 32;      // px floor for a resized column
+  var DRAG_SLOP = 5;   // px a header press must move before it is a reorder
+
+  function readState(id) {
+    try {
+      var raw = localStorage.getItem(PREFIX + id);
+      if (!raw) return {};
+      var st = JSON.parse(raw);
+      return (st && typeof st === "object") ? st : {};
+    } catch (_) { return {}; }
+  }
+  function writeState(id, st) {
+    try { localStorage.setItem(PREFIX + id, JSON.stringify(st)); } catch (_) { /* swallow */ }
+  }
+  function clearState(id) {
+    try { localStorage.removeItem(PREFIX + id); } catch (_) { /* swallow */ }
+  }
+
+  function headKeys(table) {
+    var keys = [];
+    var row = table.tHead && table.tHead.rows[0];
+    if (row) {
+      for (var i = 0; i < row.cells.length; i++) {
+        var k = row.cells[i].getAttribute("data-col-key");
+        if (k) keys.push(k);
+      }
+    }
+    return keys;
+  }
+  function colFor(table, key) {
+    return table.querySelector('colgroup col[data-col-key="' + key + '"]');
+  }
+
+  // First visit (no widths persisted yet): freeze the content-fit widths
+  // into the colgroup and switch to fixed layout. Persisting them means the
+  // next load applies them pre-paint with no jump (the accepted tradeoff:
+  // widths are frozen at first-load measurement until "reset columns").
+  function freezeWidths(table, id, st) {
+    var row = table.tHead && table.tHead.rows[0];
+    if (!row) return;
+    var widths = {};
+    for (var i = 0; i < row.cells.length; i++) {
+      var th = row.cells[i];
+      var key = th.getAttribute("data-col-key");
+      if (!key) continue;
+      var w = Math.round(th.getBoundingClientRect().width);
+      var col = colFor(table, key);
+      if (col && w > 0) { col.style.width = w + "px"; widths[key] = w; }
+    }
+    table.style.tableLayout = "fixed";
+    st.widths = widths;
+    writeState(id, st);
+  }
+
+  function bindResize(table, id) {
+    var grips = table.querySelectorAll("th .col-resizer");
+    for (var i = 0; i < grips.length; i++) {
+      (function (grip) {
+        var th = grip.parentNode;
+        var key = th.getAttribute("data-col-key");
+        var startX = 0, startW = 0, col = null;
+        function move(e) {
+          var w = Math.max(MIN_W, Math.round(startW + (e.clientX - startX)));
+          if (col) col.style.width = w + "px";
+        }
+        function end(e) {
+          grip.removeEventListener("pointermove", move);
+          grip.removeEventListener("pointerup", end);
+          grip.removeEventListener("pointercancel", end);
+          th.classList.remove("lyn-resizing");
+          try { grip.releasePointerCapture(e.pointerId); } catch (_) {}
+          if (col) {
+            var st = readState(id);
+            st.widths = st.widths || {};
+            st.widths[key] = parseInt(col.style.width, 10) || st.widths[key];
+            writeState(id, st);
+          }
+        }
+        grip.addEventListener("pointerdown", function (e) {
+          if (e.button !== undefined && e.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();          // never let the grip start a reorder
+          col = colFor(table, key);
+          startX = e.clientX;
+          startW = th.getBoundingClientRect().width;
+          th.classList.add("lyn-resizing");
+          try { grip.setPointerCapture(e.pointerId); } catch (_) {}
+          grip.addEventListener("pointermove", move);
+          grip.addEventListener("pointerup", end);
+          grip.addEventListener("pointercancel", end);
+        });
+      })(grips[i]);
+    }
+  }
+
+  function bindReorder(table, id) {
+    var row = table.tHead && table.tHead.rows[0];
+    if (!row) return;
+    var ths = row.cells;
+    var dragKey = null, startX = 0, startY = 0, dragging = false;
+    var dragTh = null, dropTarget = null, dropBefore = false;
+
+    function clearMarks() {
+      for (var i = 0; i < ths.length; i++) {
+        ths[i].classList.remove("lyn-drop-before", "lyn-drop-after");
+      }
+    }
+    function onMove(e) {
+      if (!dragKey) return;
+      if (!dragging) {
+        if (Math.abs(e.clientX - startX) < DRAG_SLOP && Math.abs(e.clientY - startY) < DRAG_SLOP) return;
+        dragging = true;
+        dragTh.classList.add("lyn-dragging");
+      }
+      e.preventDefault();
+      var el = document.elementFromPoint(e.clientX, e.clientY);
+      var over = (el && el.closest) ? el.closest("th[data-col-key]") : null;
+      clearMarks();
+      dropTarget = null;
+      if (over && over !== dragTh && over.parentNode === row) {
+        var r = over.getBoundingClientRect();
+        dropBefore = e.clientX < r.left + r.width / 2;
+        over.classList.add(dropBefore ? "lyn-drop-before" : "lyn-drop-after");
+        dropTarget = over;
+      }
+    }
+    function teardown() {
+      document.removeEventListener("pointermove", onMove, true);
+      document.removeEventListener("pointerup", onUp, true);
+      document.removeEventListener("pointercancel", onCancel, true);
+    }
+    function onUp() {
+      teardown();
+      var didDrag = dragging;
+      if (dragTh) dragTh.classList.remove("lyn-dragging");
+      clearMarks();
+      if (dragging && dropTarget) {
+        var keys = headKeys(table);
+        keys.splice(keys.indexOf(dragKey), 1);
+        var ti = keys.indexOf(dropTarget.getAttribute("data-col-key"));
+        keys.splice(dropBefore ? ti : ti + 1, 0, dragKey);
+        var st = readState(id);
+        st.order = keys;
+        writeState(id, st);
+        if (window.__lynTableApply) window.__lynTableApply(id);
+      }
+      dragKey = null; dragging = false; dragTh = null; dropTarget = null;
+      // Swallow the click that trails a real drag so the sort link beneath
+      // the pointer does not also fire.
+      if (didDrag) {
+        var swallow = function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          table.removeEventListener("click", swallow, true);
+        };
+        table.addEventListener("click", swallow, true);
+        setTimeout(function () { table.removeEventListener("click", swallow, true); }, 0);
+      }
+    }
+    function onCancel() {
+      teardown();
+      if (dragTh) dragTh.classList.remove("lyn-dragging");
+      clearMarks();
+      dragKey = null; dragging = false; dragTh = null; dropTarget = null;
+    }
+    for (var i = 0; i < ths.length; i++) {
+      ths[i].addEventListener("pointerdown", function (e) {
+        if (e.button !== undefined && e.button !== 0) return;     // primary button only
+        if (e.target.closest(".col-resizer")) return;             // that is a resize, not a reorder
+        var th = e.currentTarget;
+        var key = th.getAttribute("data-col-key");
+        if (!key) return;
+        dragKey = key; dragTh = th; startX = e.clientX; startY = e.clientY;
+        dragging = false; dropTarget = null;
+        document.addEventListener("pointermove", onMove, true);
+        document.addEventListener("pointerup", onUp, true);
+        document.addEventListener("pointercancel", onCancel, true);
+      });
+    }
+  }
+
+  function bindReset(id) {
+    var btns = document.querySelectorAll('[data-table-reset="' + id + '"]');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].addEventListener("click", function (e) {
+        e.preventDefault();
+        clearState(id);
+        location.reload();
+      });
+    }
+  }
+
+  function init() {
+    var tables = document.querySelectorAll("table[data-table-id]");
+    for (var i = 0; i < tables.length; i++) {
+      var table = tables[i];
+      var id = table.getAttribute("data-table-id");
+      var st = readState(id);
+      // __lynTableApply already applied persisted state pre-paint. If no
+      // usable widths are stored yet (first visit, or a corrupt/empty
+      // widths value), freeze the current content-fit widths now; otherwise
+      // just ensure fixed layout is in effect.
+      var haveWidths = st.widths && typeof st.widths === "object" && Object.keys(st.widths).length;
+      if (!haveWidths) freezeWidths(table, id, st);
+      else table.style.tableLayout = "fixed";
+      bindResize(table, id);
+      bindReorder(table, id);
+      bindReset(id);
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();

@@ -13,6 +13,82 @@
     <script>
       (function(){try{var t=localStorage.getItem("lynceus-theme");if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}}catch(_){}})();
     </script>
+    {# Per-table column state pre-paint applier. Defined here (non-deferred,
+       so it exists before the body parses) and invoked by a small inline
+       <script> the data_table macro emits immediately after each opted-in
+       table -- that invocation runs synchronously during parse, before the
+       table paints, so persisted column order + widths apply with no
+       default->persisted jump (the table analogue of the theme bootstrap
+       above). lynceus.js reuses the same function to re-apply state after an
+       interactive reorder. Reads localStorage["lynceus-table:<id>"] =
+       {order:[colKey...], widths:{colKey:px}}; stale/invalid JSON is ignored
+       and the server-rendered default order/widths stand. #}
+    <script>
+      window.__lynTableApply = function (id) {
+        try {
+          var table = document.querySelector('table[data-table-id="' + id + '"]');
+          if (!table) return;
+          var raw = localStorage.getItem("lynceus-table:" + id);
+          if (!raw) return;
+          var st = JSON.parse(raw);
+          if (!st || typeof st !== "object") return;
+          var headRow = table.tHead && table.tHead.rows[0];
+          if (!headRow) return;
+
+          var curKeys = [];
+          for (var i = 0; i < headRow.cells.length; i++) {
+            curKeys.push(headRow.cells[i].getAttribute("data-col-key"));
+          }
+          var n = curKeys.length;
+
+          // Order: reorder colgroup <col>, the header row, and every body
+          // row by a single positional permutation derived from the header
+          // keys, so body <td>s (which carry no key) move in lockstep.
+          if (st.order && st.order.length) {
+            var seq = [], a, b;
+            for (a = 0; a < st.order.length; a++) {
+              if (curKeys.indexOf(st.order[a]) >= 0 && seq.indexOf(st.order[a]) < 0) seq.push(st.order[a]);
+            }
+            for (b = 0; b < curKeys.length; b++) {
+              if (seq.indexOf(curKeys[b]) < 0) seq.push(curKeys[b]);
+            }
+            var perm = [];
+            for (a = 0; a < seq.length; a++) {
+              var idx = curKeys.indexOf(seq[a]);
+              if (idx >= 0) perm.push(idx);
+            }
+            if (perm.length === n) {
+              var groups = [];
+              var cg = table.querySelector("colgroup");
+              if (cg) groups.push(cg);
+              groups.push(headRow);
+              var bodies = table.tBodies;
+              for (a = 0; a < bodies.length; a++) {
+                for (b = 0; b < bodies[a].rows.length; b++) groups.push(bodies[a].rows[b]);
+              }
+              for (a = 0; a < groups.length; a++) {
+                var parent = groups[a];
+                if (parent.children.length !== n) continue; // skip colspan rows (e.g. empty-state)
+                var kids = Array.prototype.slice.call(parent.children);
+                for (b = 0; b < perm.length; b++) parent.appendChild(kids[perm[b]]);
+              }
+            }
+          }
+
+          // Widths: matched by key (order-independent), then flip the table
+          // to fixed layout so the col widths become authoritative.
+          if (st.widths && typeof st.widths === "object") {
+            var cols = table.querySelectorAll("colgroup col[data-col-key]");
+            var any = false;
+            for (var c = 0; c < cols.length; c++) {
+              var w = st.widths[cols[c].getAttribute("data-col-key")];
+              if (typeof w === "number" && w > 0) { cols[c].style.width = w + "px"; any = true; }
+            }
+            if (any) table.style.tableLayout = "fixed";
+          }
+        } catch (_) { /* stale/invalid -> server default stands */ }
+      };
+    </script>
     <link rel="stylesheet" href="{{ url_for('static', path='/pico.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', path='/lynceus.css') }}">
     <script defer src="{{ url_for('static', path='/htmx.min.js') }}"></script>

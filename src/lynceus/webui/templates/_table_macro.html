@@ -3,7 +3,7 @@
    route owns the query (filters, sort, pagination); these own the
    wrapper + header + footer chrome that every list page repeats.
 
-   data_table(columns, endpoint, filter_qs, sort, dir)
+   data_table(columns, endpoint, filter_qs, sort, dir, table_id=none)
      Renders the .table-scroll wrapper, a <thead> of sort-aware headers,
      and the <tbody>; the caller supplies the row markup as the
      {% call %} body, which lands inside <tbody>. ``columns`` is a list
@@ -30,20 +30,33 @@
      paging preserves both. has_prev/has_next reduce to page > 1 and
      page < total_pages, which hold for either idiom. #}
 
-{% macro data_table(columns, endpoint, filter_qs, sort, dir) %}
+{% macro data_table(columns, endpoint, filter_qs, sort, dir, table_id=none) %}
+  {# ``table_id`` (optional) opts the table into the client-side column
+     resize + reorder + per-table persistence layer (v0.9.2). When set, each
+     column dict must also carry a stable 'key'; the macro emits a
+     data-table-id on the <table>, a <colgroup> of keyed <col>s, a
+     data-col-key + resize grip on each <th>, the inline pre-paint applier
+     call, and a reset control. Tables that omit table_id render exactly as
+     before -- the whole layer is opt-in, so unmigrated tables are
+     untouched. Resize/reorder are pure client-side presentation; the sort
+     <a> links stay server-side (Touch 1) and coexist with the drag via a
+     movement threshold in lynceus.js. #}
   <div class="table-scroll">
-    <table>
+    <table{% if table_id %} data-table-id="{{ table_id }}"{% endif %}>
+      {% if table_id %}
+      <colgroup>{% for col in columns %}<col data-col-key="{{ col.key }}">{% endfor %}</colgroup>
+      {% endif %}
       <thead>
         <tr>
           {% for col in columns %}
             {% if col.sort %}
               {% set is_active = (col.sort == sort) %}
               {% set next_dir = (('asc' if dir == 'desc' else 'desc') if is_active else 'asc') %}
-              <th{% if col.nowrap %} style="white-space: nowrap;"{% endif %} aria-sort="{{ ('ascending' if dir == 'asc' else 'descending') if is_active else 'none' }}">
-                <a class="th-sort{% if is_active %} th-sort-active{% endif %}" href="{{ endpoint }}?{{ filter_qs }}&sort={{ col.sort }}&dir={{ next_dir }}">{{ col.label }}{% if is_active %} <span class="th-sort-ind" aria-hidden="true">{% if dir == 'asc' %}&#9650;{% else %}&#9660;{% endif %}</span>{% endif %}</a>
+              <th{% if table_id %} data-col-key="{{ col.key }}"{% endif %}{% if col.nowrap %} style="white-space: nowrap;"{% endif %} aria-sort="{{ ('ascending' if dir == 'asc' else 'descending') if is_active else 'none' }}">
+                <a class="th-sort{% if is_active %} th-sort-active{% endif %}" href="{{ endpoint }}?{{ filter_qs }}&sort={{ col.sort }}&dir={{ next_dir }}">{{ col.label }}{% if is_active %} <span class="th-sort-ind" aria-hidden="true">{% if dir == 'asc' %}&#9650;{% else %}&#9660;{% endif %}</span>{% endif %}</a>{% if table_id %}<span class="col-resizer" aria-hidden="true"></span>{% endif %}
               </th>
             {% else %}
-              <th{% if col.nowrap %} style="white-space: nowrap;"{% endif %}>{{ col.label }}</th>
+              <th{% if table_id %} data-col-key="{{ col.key }}"{% endif %}{% if col.nowrap %} style="white-space: nowrap;"{% endif %}>{{ col.label }}{% if table_id %}<span class="col-resizer" aria-hidden="true"></span>{% endif %}</th>
             {% endif %}
           {% endfor %}
         </tr>
@@ -53,6 +66,13 @@
       </tbody>
     </table>
   </div>
+  {% if table_id %}
+  {# Pre-paint: apply persisted order/widths synchronously, before the table
+     paints, so a reload never flashes default->persisted (mirrors the theme
+     bootstrap in base.html). #}
+  <script>window.__lynTableApply && window.__lynTableApply("{{ table_id }}");</script>
+  <p class="table-controls"><button type="button" class="table-reset" data-table-reset="{{ table_id }}">reset columns</button></p>
+  {% endif %}
 {% endmacro %}
 
 {% macro pagination_footer(endpoint, base_qs, page, total_pages, total=none, per_page=none) %}

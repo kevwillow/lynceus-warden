@@ -101,23 +101,26 @@
      header a sort link; Device (computed label) and Probes (JSON list)
      stay plain -- they do not map to a clean DB ORDER BY. Type keeps an
      inline nowrap (belt-and-suspenders against the column squashing). #}
+  {# 'key' is the stable per-column id the persistence layer keys order +
+     widths on (sort key where one exists, else a descriptive slug for the
+     computed/JSON columns that carry no sort). #}
   {% set device_columns = [
-       {'label': 'Device'},
-       {'label': 'MAC', 'sort': 'mac'},
-       {'label': 'Type', 'sort': 'device_type', 'nowrap': true},
-       {'label': 'Vendor', 'sort': 'oui_vendor'},
-       {'label': 'BLE name', 'sort': 'ble_name'},
-       {'label': 'Probes'},
-       {'label': 'Randomized', 'sort': 'is_randomized'},
-       {'label': 'First seen', 'sort': 'first_seen'},
-       {'label': 'Last seen', 'sort': 'last_seen'},
-       {'label': 'Last RSSI', 'sort': 'last_rssi'},
-       {'label': 'Last SSID', 'sort': 'last_ssid'},
-       {'label': 'Sightings', 'sort': 'sighting_count'},
+       {'label': 'Device', 'key': 'device'},
+       {'label': 'MAC', 'sort': 'mac', 'key': 'mac'},
+       {'label': 'Type', 'sort': 'device_type', 'nowrap': true, 'key': 'device_type'},
+       {'label': 'Vendor', 'sort': 'oui_vendor', 'key': 'oui_vendor'},
+       {'label': 'BLE name', 'sort': 'ble_name', 'key': 'ble_name'},
+       {'label': 'Probes', 'key': 'probes'},
+       {'label': 'Randomized', 'sort': 'is_randomized', 'key': 'is_randomized'},
+       {'label': 'First seen', 'sort': 'first_seen', 'key': 'first_seen'},
+       {'label': 'Last seen', 'sort': 'last_seen', 'key': 'last_seen'},
+       {'label': 'Last RSSI', 'sort': 'last_rssi', 'key': 'last_rssi'},
+       {'label': 'Last SSID', 'sort': 'last_ssid', 'key': 'last_ssid'},
+       {'label': 'Sightings', 'sort': 'sighting_count', 'key': 'sighting_count'},
      ] %}
 
   {% if devices %}
-    {% call data_table(device_columns, '/devices', filter_qs, sort, dir) %}
+    {% call data_table(device_columns, '/devices', filter_qs, sort, dir, table_id='devices') %}
           {% for d in devices %}
             <tr>
               <td>{{ d | device_label }}</td>

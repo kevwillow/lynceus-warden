@@ -332,6 +332,72 @@ details > summary { cursor: pointer; }
     opacity: 0.75;
 }
 
+/* Client-side column resize + reorder affordances for tables that opt in
+   via the data_table macro's table_id (v0.9.2). Everything here is scoped
+   to table[data-table-id], so tables that have not adopted the layer are
+   untouched. lynceus.js flips the table to table-layout:fixed (after
+   seeding column widths) -- under fixed layout col widths are authoritative
+   AND the .table-scroll overflow-x horizontal scroll still engages (the
+   table grows to the sum of its column widths), so resize does not regress
+   the v0.7.6/0.7.7 nowrap+scroll behaviour. Theme-aware by construction:
+   all colors come from existing tokens / currentColor. */
+.table-scroll table[data-table-id] th { position: relative; }
+/* Under fixed layout a narrowed column clips to an ellipsis instead of
+   spilling into its neighbour; nowrap (set globally above) is what makes
+   text-overflow:ellipsis apply. */
+.table-scroll table[data-table-id] th,
+.table-scroll table[data-table-id] td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* Resize grip: pinned to the th's right edge, to the RIGHT of the sort
+   link so it never overlaps the link's tap target. touch-action:none lets a
+   drag here resize rather than pan the .table-scroll. */
+.table-scroll table[data-table-id] th .col-resizer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100%;
+    width: 12px;
+    cursor: col-resize;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+.table-scroll table[data-table-id] th .col-resizer::after {
+    content: "";
+    position: absolute;
+    top: 20%;
+    bottom: 20%;
+    right: 4px;
+    width: 2px;
+    background: var(--lyn-topnav-border, currentColor);
+    opacity: 0;
+    transition: opacity 0.12s ease;
+}
+.table-scroll table[data-table-id] th .col-resizer:hover::after,
+.table-scroll table[data-table-id] th.lyn-resizing .col-resizer::after { opacity: 0.8; }
+/* Header reorder: allow vertical page scroll to pass through while pointer
+   moves are captured for the horizontal drag. */
+.table-scroll table[data-table-id] thead th { touch-action: pan-y; }
+.table-scroll table[data-table-id] th.lyn-dragging { opacity: 0.5; }
+.table-scroll table[data-table-id] th.lyn-drop-before { box-shadow: inset 2px 0 0 0 var(--pico-primary, currentColor); }
+.table-scroll table[data-table-id] th.lyn-drop-after  { box-shadow: inset -2px 0 0 0 var(--pico-primary, currentColor); }
+/* Quiet "reset columns" control rendered under an opted-in table. */
+.table-controls { margin: 0.3em 0 0; }
+.table-reset {
+    width: auto;
+    margin: 0;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--pico-muted-color, inherit);
+    font-size: 0.8em;
+    text-decoration: underline;
+    cursor: pointer;
+}
+.table-reset:hover { color: var(--pico-color, inherit); }
+
 /* Vertical-scroll variant for the homepage "recently seen" firehose
    (v0.9.1). Composes with .table-scroll (horizontal scroll + nowrap
    survive); this only adds a height cap so ~25 rows scroll within the
