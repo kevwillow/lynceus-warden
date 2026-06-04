@@ -221,7 +221,7 @@
   "use strict";
 
   var PREFIX = "lynceus-table:";
-  var MIN_W = 32;      // px floor for a resized column
+  var MIN_W = 64;      // px floor for a resized column (clears the 12px grip + label)
   var DRAG_SLOP = 5;   // px a header press must move before it is a reorder
 
   function readState(id) {

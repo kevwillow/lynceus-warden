@@ -30,6 +30,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Resizing a column to its minimum no longer lets the resize grip overlay
+  the column label.** Opted-in tables flip to `table-layout: fixed`, where the
+  `<col>` inline width is authoritative and a CSS `min-width` on the cell is
+  inert — so the effective floor is the JS clamp in the resize handler, which
+  was `32px`: narrow enough that the 12px grip rode up over the header text.
+  The floor is raised to `64px` so a fully-collapsed column still clears the
+  grip plus the label padding. (A column whose width was already persisted
+  below `64px` keeps that width until "reset columns" is clicked — the floor
+  governs new drags, not a retroactive migration.)
+
 - **The devices table's column-resize affordance is now discoverable at
   rest.** The drag-to-resize grip rendered at `opacity: 0` and only appeared
   on hover, so the resize/reorder feature was effectively invisible — an
