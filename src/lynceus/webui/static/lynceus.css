@@ -369,8 +369,8 @@ details > summary { cursor: pointer; }
    hover/drag to signal it is a handle. Tweak the rest weight via
    --lyn-col-separator-rest (0 = old invisible-until-hover behaviour). */
 .table-scroll table[data-table-id] {
-    --lyn-col-separator-rest: 0.28;
-    --lyn-col-separator-active: 0.8;
+    --lyn-col-separator-rest: 0.5;
+    --lyn-col-separator-active: 0.95;
 }
 .table-scroll table[data-table-id] th .col-resizer::after {
     content: "";

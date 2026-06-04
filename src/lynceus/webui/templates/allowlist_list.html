@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}allowlist &mdash; lynceus{% endblock %}
 {% block content %}
+  {% from "_table_macro.html" import data_table %}
   {% include "_topnav.html" %}
   <h2>allowlist</h2>
 
@@ -98,21 +99,17 @@
         {% if filters.source != 'all' %}<input type="hidden" name="source" value="{{ filters.source }}">{% endif %}
         {% if filters.status != 'all' %}<input type="hidden" name="status" value="{{ filters.status }}">{% endif %}
         {% if filters.type != 'all' %}<input type="hidden" name="type" value="{{ filters.type }}">{% endif %}
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th><input type="checkbox" id="select-all-noop" disabled title="select rows individually"></th>
-                <th>type</th>
-                <th>pattern</th>
-                <th>source</th>
-                <th>status</th>
-                <th>note</th>
-                <th>expires</th>
-                <th>added</th>
-              </tr>
-            </thead>
-            <tbody>
+        {% set allowlist_columns = [
+             {'label': '<input type="checkbox" id="select-all-noop" disabled title="select rows individually">'|safe, 'key': 'select'},
+             {'label': 'type', 'key': 'pattern_type'},
+             {'label': 'pattern', 'key': 'pattern'},
+             {'label': 'source', 'key': 'source'},
+             {'label': 'status', 'key': 'status'},
+             {'label': 'note', 'key': 'note'},
+             {'label': 'expires', 'key': 'expires'},
+             {'label': 'added', 'key': 'added'},
+           ] %}
+        {% call data_table(allowlist_columns, '/allowlist', '', '', '', table_id='allowlist') %}
               {% for e in entries %}
                 <tr>
                   <td>
@@ -157,9 +154,7 @@
                   </td>
                 </tr>
               {% endfor %}
-            </tbody>
-          </table>
-        </div>
+        {% endcall %}
         {% if ui_count > 0 %}
           <p><button type="submit">Remove selected</button>
             <small>(UI entries only; primary entries are read-only)</small>

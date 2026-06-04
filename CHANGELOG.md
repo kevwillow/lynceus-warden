@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Client-side column resize / reorder / per-browser persistence now covers
+  the watchlist, watchful, and allowlist tables too, and the resize affordance
+  is clearer at rest.** The `data_table` macro's opt-in layer (first shipped on
+  the devices table) is extended to three more server-rendered list tables:
+  each now carries a keyed `<colgroup>`, per-column resize grips, a pre-paint
+  applier call, and a "reset columns" control, with column order and widths
+  persisted in `localStorage` per browser. The conversion is purely additive —
+  every table's existing columns, cells, sorting, filtering, pagination, and
+  row actions are unchanged; only the resize/reorder/persistence chrome is
+  added. The remaining list surfaces are intentionally left untouched this
+  round: **alerts** and **probes** are deferred (alerts for its checkbox +
+  inline ack/watch action columns wrapped in a bulk-ack form; probes for its
+  two distinct column schemas across the group-by toggle and its PII-sensitive
+  reveal rows), and **rules** is excluded outright — it renders as article
+  cards, not a table. Separately, the rest-state column separator that signals
+  a draggable boundary was faint enough to miss, so its opacity is raised from
+  `0.28` to `0.50` (and the hover/drag weight from `0.80` to `0.95` to keep a
+  visible darken-on-hover contrast); both remain tweakable via the
+  `--lyn-col-separator-rest` / `--lyn-col-separator-active` custom properties.
+
 ### Fixed
 
 - **The devices table's column-resize affordance is now discoverable at

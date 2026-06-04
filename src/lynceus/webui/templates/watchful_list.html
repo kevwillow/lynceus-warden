@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}watchful &mdash; lynceus{% endblock %}
 {% block content %}
+  {% from "_table_macro.html" import data_table %}
   {% include "_topnav.html" %}
   <h2>watchful</h2>
   <p><small>
@@ -59,23 +60,19 @@
   <p><small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small></p>
 
   {% if decorated %}
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>id</th>
-            <th>MAC</th>
-            <th>state</th>
-            <th>sightings</th>
-            <th>first seen</th>
-            <th>last seen</th>
-            <th>escalated</th>
-            <th>snooze until</th>
-            <th>source</th>
-            <th>actions</th>
-          </tr>
-        </thead>
-        <tbody>
+    {% set watchful_columns = [
+         {'label': 'id', 'key': 'id'},
+         {'label': 'MAC', 'key': 'mac'},
+         {'label': 'state', 'key': 'state'},
+         {'label': 'sightings', 'key': 'sightings'},
+         {'label': 'first seen', 'key': 'first_seen'},
+         {'label': 'last seen', 'key': 'last_seen'},
+         {'label': 'escalated', 'key': 'escalated'},
+         {'label': 'snooze until', 'key': 'snooze_until'},
+         {'label': 'source', 'key': 'source'},
+         {'label': 'actions', 'key': 'actions'},
+       ] %}
+    {% call data_table(watchful_columns, '/watchful', '', '', '', table_id='watchful') %}
           {% for row in decorated %}
             {% set e = row.entry %}
             {% set state_label = row.state_label %}
@@ -149,9 +146,7 @@
               </td>
             </tr>
           {% endfor %}
-        </tbody>
-      </table>
-    </div>
+    {% endcall %}
   {% else %}
     <p>
       <em>

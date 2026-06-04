@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}watchlist &mdash; lynceus{% endblock %}
 {% block content %}
+  {% from "_table_macro.html" import data_table %}
   {% include "_topnav.html" %}
   <h2>watchlist</h2>
 
@@ -60,21 +61,17 @@
   </p>
 
   {% if entries %}
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>pattern</th>
-            <th>type</th>
-            <th>severity</th>
-            <th>description</th>
-            <th>vendor</th>
-            <th>category</th>
-            <th>argus id</th>
-            <th>confidence</th>
-          </tr>
-        </thead>
-        <tbody>
+    {% set watchlist_columns = [
+         {'label': 'pattern', 'key': 'pattern'},
+         {'label': 'type', 'key': 'pattern_type'},
+         {'label': 'severity', 'key': 'severity'},
+         {'label': 'description', 'key': 'description'},
+         {'label': 'vendor', 'key': 'vendor'},
+         {'label': 'category', 'key': 'device_category'},
+         {'label': 'argus id', 'key': 'argus_id'},
+         {'label': 'confidence', 'key': 'confidence'},
+       ] %}
+    {% call data_table(watchlist_columns, '/watchlist', '', '', '', table_id='watchlist') %}
           {% for e in entries %}
             <tr>
               <td><a href="/watchlist/{{ e.id }}"><code>{{ e.pattern }}</code></a></td>
@@ -97,9 +94,7 @@
               </td>
             </tr>
           {% endfor %}
-        </tbody>
-      </table>
-    </div>
+    {% endcall %}
   {% else %}
     <p>
       <em>No watchlist entries match the current filters.</em>
