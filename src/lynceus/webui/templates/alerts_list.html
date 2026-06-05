@@ -167,59 +167,7 @@
           </thead>
           <tbody>
             {% for a in alerts %}
-              <tr class="row-sev-{{ a.severity }}{% if a.acknowledged %} row-acked{% endif %}">
-                <td><input type="checkbox" name="alert_ids" value="{{ a.id }}" form="bulk-ack-form"></td>
-                <td><time datetime="{{ a.ts | unix_to_iso }}">{{ a.ts | unix_to_iso }}</time></td>
-                <td><span class="badge-{{ a.severity }}">{{ a.severity }}</span></td>
-                <td>
-                  <a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a>
-                  {% if a.note %}
-                    <span class="alert-note-indicator" title="Triage note: {{ a.note[:50] }}{% if a.note|length > 50 %}&hellip;{% endif %}" aria-label="Has triage note">&#x1F4DD;</span>
-                  {% endif %}
-                </td>
-                <td>{{ a.device | device_label }}</td>
-                <td class="mac-cell">
-                  {% if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif %}
-                </td>
-                <td>
-                  <span class="truncate">
-                    {% if a.message|length > 80 %}{{ a.message[:80] }}&hellip;{% else %}{{ a.message }}{% endif %}
-                  </span>
-                  {% if a.watchlist_metadata and a.watchlist_metadata.vendor %}
-                    <br><small class="alert-vendor-subtitle">{{ a.watchlist_metadata.vendor }}{% if a.device and a.device.oui_vendor and a.device.oui_vendor|trim|lower != a.watchlist_metadata.vendor|trim|lower %} (OUI: {{ a.device.oui_vendor }}){% endif %}</small>
-                  {% endif %}
-                </td>
-                <td>{% if a.acknowledged %}&check;{% endif %}</td>
-                <td class="alert-action-cell">
-                  <div class="alert-action-controls">
-                  {% if a.acknowledged %}
-                    <form method="post" action="/alerts/{{ a.id }}/unack" class="inline-form">
-                      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
-                      <input type="text" name="note" maxlength="80" placeholder="note (optional)" class="ack-row-note">
-                      <button type="submit" class="ack-button-inline">unack</button>
-                    </form>
-                  {% else %}
-                    <form method="post" action="/alerts/{{ a.id }}/ack" class="inline-form">
-                      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
-                      <input type="text" name="note" maxlength="80" placeholder="note (optional)" class="ack-row-note">
-                      <button type="submit" class="ack-button-inline">Acknowledge</button>
-                    </form>
-                  {% endif %}
-                  {% if a.mac %}
-                    <form method="post" action="/alerts/{{ a.id }}/watch" class="inline-form watch-form">
-                      <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
-                      <select name="snooze_duration" class="watch-snooze-select" title="how long to suppress repeat alerts for this MAC; tracking continues regardless">
-                        <option value="24h">24h</option>
-                        <option value="7d">7d</option>
-                        <option value="30d" selected>30d</option>
-                        <option value="forever">forever</option>
-                      </select>
-                      <button type="submit" class="watch-button-inline" title="Track this MAC; raise a low-priority recurrence alert if it shows up four times">Watch</button>
-                    </form>
-                  {% endif %}
-                  </div>
-                </td>
-              </tr>
+              {% include "_alert_row.html" %}
             {% endfor %}
           </tbody>
         </table>
