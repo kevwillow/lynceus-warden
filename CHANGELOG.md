@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The /alerts list now has a "Category" column showing the matched device's
+  Argus device category.** When an alert matched an Argus watchlist row that
+  carries a `device_category` (e.g. `drone`, `camera`), that category is shown
+  in a new column beside the MAC; alerts with no Argus match — or a match
+  without a category — render a neutral em-dash. Display-only: the value is the
+  matched `watchlist_metadata.device_category` verbatim, never inferred for
+  non-Argus devices. The column is rendered from the shared `_alert_row.html`
+  partial, so htmx in-place row swaps (ack / unack / watch) retain it, and the
+  thin action-row budget is untouched (the action cell's contents are
+  unchanged).
+
 - **Columns can now be shown or hidden per table, persisted per browser.** Each
   resizable table (devices, watchlist, watchful, allowlist) gains a "columns"
   disclosure above it listing one checkbox per column; unchecking one hides that

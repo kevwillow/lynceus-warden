@@ -17,6 +17,7 @@
                 <td class="mac-cell">
                   {% if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif %}
                 </td>
+                <td>{% if a.watchlist_metadata and a.watchlist_metadata.device_category %}{{ a.watchlist_metadata.device_category }}{% else %}&mdash;{% endif %}</td>
                 <td>
                   <span class="truncate">
                     {% if a.message|length > 80 %}{{ a.message[:80] }}&hellip;{% else %}{{ a.message }}{% endif %}
