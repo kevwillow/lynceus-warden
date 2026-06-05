@@ -257,6 +257,30 @@
     return table.querySelector('colgroup col[data-col-key="' + key + '"]');
   }
 
+  // Pin the table's total width to the sum of its current <col> widths so it
+  // stays in the anchored (sum-driven) regime of fixed layout. Without this the
+  // table keeps Pico's width:100%; when the column widths sum to LESS than the
+  // container the engine redistributes the surplus across columns -- which is
+  // the root of the resize-anchor bug (the grabbed column's delta leaks into
+  // its neighbours, so the drag tracks non-deterministically and inverts) and
+  // why a hidden column re-grew the others instead of letting the table narrow.
+  // Reads the SPECIFIED <col> widths -- not the rendered th widths, which under
+  // width:100% already carry the surplus -- so a hidden column reads 0px and
+  // contributes 0, keeping the pinned total equal to the sum of the *visible*
+  // columns. Bails if any col lacks an explicit width (e.g. a column added since
+  // the persisted state was written) so a width-less column is never collapsed.
+  function pinTableWidth(table) {
+    var cols = table.querySelectorAll("colgroup col[data-col-key]");
+    if (!cols.length) return;
+    var total = 0;
+    for (var i = 0; i < cols.length; i++) {
+      var w = parseInt(cols[i].style.width, 10);
+      if (isNaN(w)) return;       // a col with no explicit width -> do not pin
+      total += w;
+    }
+    table.style.width = total + "px";
+  }
+
   // First visit (no widths persisted yet): freeze the content-fit widths
   // into the colgroup and switch to fixed layout. Persisting them means the
   // next load applies them pre-paint with no jump (the accepted tradeoff:
@@ -320,6 +344,11 @@
       if (at >= 0) st.hidden.splice(at, 1);
     }
     writeState(id, st);
+    // Re-pin: the visible-width sum just changed, so the table narrows when a
+    // column is hidden and widens when it is shown -- the alternative (leaving
+    // the old total) would redistribute the freed/needed space across the other
+    // columns instead of keeping their widths. See pinTableWidth.
+    pinTableWidth(table);
   }
 
   function bindResize(table, id) {
@@ -328,10 +357,16 @@
       (function (grip) {
         var th = grip.parentNode;
         var key = th.getAttribute("data-col-key");
-        var startX = 0, startW = 0, col = null;
+        var startX = 0, startW = 0, startTableW = 0, col = null;
         function move(e) {
           var w = Math.max(MIN_W, Math.round(startW + (e.clientX - startX)));
-          if (col) col.style.width = w + "px";
+          if (col) {
+            col.style.width = w + "px";
+            // Keep the pinned total in sync so ONLY the grabbed column changes
+            // width (1:1 with the pointer); without this the table stays at its
+            // old total and the delta redistributes into the neighbours.
+            table.style.width = Math.round(startTableW + (w - startW)) + "px";
+          }
         }
         function end(e) {
           grip.removeEventListener("pointermove", move);
@@ -353,6 +388,7 @@
           col = colFor(table, key);
           startX = e.clientX;
           startW = th.getBoundingClientRect().width;
+          startTableW = table.getBoundingClientRect().width;
           th.classList.add("lyn-resizing");
           try { grip.setPointerCapture(e.pointerId); } catch (_) {}
           grip.addEventListener("pointermove", move);
@@ -504,6 +540,11 @@
       if (!haveWidths) freezeWidths(table, id, st);
       else table.style.tableLayout = "fixed";
       applyHidden(table, st);
+      // Pin the total AFTER widths are seeded and hidden cols collapsed, on
+      // every load (first-visit freeze AND reload, where __lynTableApply seeded
+      // the col widths pre-paint but never pinned the table) -- otherwise the
+      // surplus-distribution bug returns after a reload.
+      pinTableWidth(table);
       bindResize(table, id);
       bindReorder(table, id);
       bindReset(id);

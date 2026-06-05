@@ -65,6 +65,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Resizing a column now tracks the pointer 1:1 instead of drifting and
+  sometimes inverting.** Opted-in tables flip to `table-layout: fixed` but kept
+  Pico's `width: 100%` with no explicit total, so whenever the column widths
+  summed to less than the container the engine redistributed the surplus across
+  the columns — the grabbed column's delta leaked into its neighbours, making a
+  resize drag track non-deterministically in both directions. This was a
+  pre-existing fixed-layout surplus-distribution issue, not a math error in the
+  resize handler. The table's total width is now pinned to the sum of its
+  `<col>` widths — on every load (first-visit freeze and reload alike) and kept
+  in sync during the drag — so it stays in the anchored, sum-driven regime:
+  only the grabbed column changes width, and the `.table-scroll` wrapper's
+  existing `overflow-x: auto` absorbs any resulting overflow. The same pin makes
+  hiding a column narrow the table (the visible-width sum drops) rather than
+  re-growing the remaining columns. Browser-only presentation; persisted widths
+  and the reorder/reset controls are unchanged.
+
 - **The /alerts action column no longer overflows to its full content width on
   horizontal scroll.** This is a pre-existing issue, not a regression from the
   column resize/reorder arc — `/alerts` is a bare table (no `data-table-id`),
