@@ -413,8 +413,50 @@ details > summary { cursor: pointer; }
 .table-scroll table[data-table-id] th.lyn-dragging { opacity: 0.5; }
 .table-scroll table[data-table-id] th.lyn-drop-before { box-shadow: inset 2px 0 0 0 var(--pico-primary, currentColor); }
 .table-scroll table[data-table-id] th.lyn-drop-after  { box-shadow: inset -2px 0 0 0 var(--pico-primary, currentColor); }
-/* Quiet "reset columns" control rendered under an opted-in table. */
-.table-controls { margin: 0 0 0.3em; }
+/* Controls cluster above an opted-in table: the columns show/hide menu and the
+   quiet "reset columns" control, laid out inline. position:relative anchors the
+   menu panel's absolute positioning so opening it overlays rather than shoving
+   the table down. */
+.table-controls {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.8em;
+    margin: 0 0 0.3em;
+}
+/* Columns menu: a quiet <details> disclosure (native marker, matching the rest
+   of the app's <details> usage) sized to the reset link. Its open panel floats
+   absolutely so the table below does not jump. Theme-aware via existing tokens. */
+.columns-menu { font-size: 0.8em; }
+.columns-menu > summary { cursor: pointer; color: var(--pico-muted-color, inherit); }
+.columns-menu > summary:hover { color: var(--pico-color, inherit); }
+.columns-menu-list {
+    position: absolute;
+    z-index: 2;
+    top: 100%;
+    left: 0;
+    margin-top: 0.25em;
+    padding: 0.5em 0.75em;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3em;
+    max-height: 60vh;
+    overflow-y: auto;
+    white-space: nowrap;
+    background: var(--pico-card-background-color, var(--pico-background-color, #fff));
+    border: 1px solid var(--pico-card-border-color, var(--lyn-topnav-border));
+    border-radius: 0.4rem;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+}
+.columns-menu-list label {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    margin: 0;
+    font-weight: normal;
+    cursor: pointer;
+}
+.columns-menu-list input.col-toggle { width: auto; margin: 0; }
 .table-reset {
     width: auto;
     margin: 0;

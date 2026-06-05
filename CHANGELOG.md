@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Columns can now be shown or hidden per table, persisted per browser.** Each
+  resizable table (devices, watchlist, watchful, allowlist) gains a "columns"
+  disclosure above it listing one checkbox per column; unchecking one hides that
+  column, re-checking restores it, and the choice is remembered in the same
+  per-table `localStorage` entry as column order and widths (so it survives
+  reloads and is wiped by the same "reset columns" control). Hiding collapses
+  only the column's `<col>` to zero width under the table's fixed layout — cells
+  are never removed — so the remaining columns keep their widths and order, the
+  table just narrows, and a guard prevents hiding the last visible column. No
+  new server state or endpoints: like resize and reorder, this is browser-only
+  presentation, and a no-JS browser simply shows every column.
+
 ### Changed
 
 - **Client-side column resize / reorder / per-browser persistence now covers

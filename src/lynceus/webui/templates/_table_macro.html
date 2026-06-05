@@ -42,12 +42,28 @@
      <a> links stay server-side (Touch 1) and coexist with the drag via a
      movement threshold in lynceus.js. #}
   {% if table_id %}
-  {# Reset control sits ABOVE the table. It is a sibling of (not inside)
+  {# Controls cluster ABOVE the table: a "columns" disclosure to show/hide
+     columns, plus the "reset columns" control. Both are siblings of (not inside)
      .table-scroll, so a top placement does not scroll away with the table's
-     horizontal overflow; bindReset in lynceus.js wires it by selector,
-     independent of where it renders. The pre-paint applier <script> stays
-     BELOW the table -- it must run after the table has parsed. #}
-  <p class="table-controls"><button type="button" class="table-reset" data-table-reset="{{ table_id }}">reset columns</button></p>
+     horizontal overflow; bindColumnsMenu / bindReset in lynceus.js wire them by
+     selector, independent of where they render. The pre-paint applier <script>
+     stays BELOW the table -- it must run after the table has parsed. #}
+  <div class="table-controls">
+    <details class="columns-menu" data-cols-for="{{ table_id }}">
+      <summary>columns</summary>
+      <div class="columns-menu-list" role="group" aria-label="show or hide columns">
+        {% for col in columns %}
+          {# Most labels are plain text; the allowlist's first-column label is raw
+             HTML (a select-all checkbox), so strip tags and fall back to the
+             column key ("select") for a sane menu label rather than nesting an
+             <input> inside this checkbox's <label>. #}
+          {% set _menu_label = (col.label | striptags | trim) or col.key %}
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="{{ col.key }}" checked> {{ _menu_label }}</label>
+        {% endfor %}
+      </div>
+    </details>
+    <button type="button" class="table-reset" data-table-reset="{{ table_id }}">reset columns</button>
+  </div>
   {% endif %}
   <div class="table-scroll">
     <table{% if table_id %} data-table-id="{{ table_id }}"{% endif %}>
