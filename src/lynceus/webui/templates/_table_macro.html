@@ -64,7 +64,11 @@
   <div class="table-controls">
     {% if hide %}
     <details class="columns-menu" data-cols-for="{{ table_id }}">
-      <summary>columns</summary>
+      {# Funnel affordance before the label cues that this menu filters columns.
+         Inline SVG, dependency-free (no icon font/lib) -- mirrors the
+         rssi-sparkline inline-SVG precedent. The native disclosure marker is
+         kept; the funnel sits between it and the "columns" text. #}
+      <summary><svg class="columns-funnel" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1 2h14l-5.5 6.5V14h-3V8.5L1 2z" fill="currentColor"/></svg>columns</summary>
       <div class="columns-menu-list" role="group" aria-label="show or hide columns">
         {% for col in columns %}
           {# Most labels are plain text; the allowlist's first-column label is raw

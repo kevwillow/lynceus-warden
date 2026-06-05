@@ -451,6 +451,10 @@ details > summary { cursor: pointer; }
 .columns-menu { font-size: 0.8em; }
 .columns-menu > summary { cursor: pointer; color: var(--pico-muted-color, inherit); }
 .columns-menu > summary:hover { color: var(--pico-color, inherit); }
+/* Funnel glyph before the "columns" label. fill:currentColor inherits the
+   summary's muted color, so it tracks the light/dark theme AND the hover darken
+   for free -- no hardcoded color, no icon font/lib (inline SVG in the macro). */
+.columns-funnel { width: 0.85em; height: 0.85em; margin-right: 0.3em; vertical-align: -0.12em; }
 .columns-menu-list {
     position: absolute;
     z-index: 2;

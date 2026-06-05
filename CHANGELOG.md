@@ -20,6 +20,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   new server state or endpoints: like resize and reorder, this is browser-only
   presentation, and a no-JS browser simply shows every column.
 
+- **The "columns" menu now carries a small funnel glyph as a discoverability
+  cue.** A dependency-free inline SVG (no icon font or library — mirroring the
+  RSSI sparkline) sits before the "columns" label on every table that offers the
+  show/hide menu, hinting that the disclosure filters which columns are visible.
+  It inherits the label's muted color via `currentColor`, so it tracks the
+  light/dark theme and the hover darken with no per-theme rule, and the native
+  disclosure marker is kept. Gated on the hide feature: the resize-only tables
+  (probes) and non-table surfaces never show it.
+
 ### Changed
 
 - **Client-side column resize / reorder / per-browser persistence now covers
