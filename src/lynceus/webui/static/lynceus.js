@@ -221,7 +221,10 @@
   "use strict";
 
   var PREFIX = "lynceus-table:";
-  var MIN_W = 64;      // px floor for a resized column (clears the 12px grip + label)
+  var MIN_W = 72;      // px floor for a resized column; clears the 12px grip + 2px
+                       // separator bar against the column label. Raised 64->72 after
+                       // the widest table (/devices, 12 cols) still showed a live
+                       // label/grip overlap at the old floor.
   var DRAG_SLOP = 5;   // px a header press must move before it is a reorder
 
   function readState(id) {

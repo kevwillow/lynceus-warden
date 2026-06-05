@@ -57,10 +57,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `<col>` inline width is authoritative and a CSS `min-width` on the cell is
   inert — so the effective floor is the JS clamp in the resize handler, which
   was `32px`: narrow enough that the 12px grip rode up over the header text.
-  The floor is raised to `64px` so a fully-collapsed column still clears the
-  grip plus the label padding. (A column whose width was already persisted
-  below `64px` keeps that width until "reset columns" is clicked — the floor
-  governs new drags, not a retroactive migration.)
+  The floor is raised to `72px` so a fully-collapsed column still clears the
+  grip plus the label padding; an interim `64px` floor cleared most tables, but
+  the widest one (devices, 12 columns) still showed a live label/grip overlap,
+  so the floor was nudged up until that cleared too. (A column whose width was
+  already persisted below `72px` keeps that width until "reset columns" is
+  clicked — the floor governs new drags, not a retroactive migration.)
 
 - **The devices table's column-resize affordance is now discoverable at
   rest.** The drag-to-resize grip rendered at `opacity: 0` and only appeared
