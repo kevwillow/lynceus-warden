@@ -31,16 +31,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   persisted in `localStorage` per browser. The conversion is purely additive —
   every table's existing columns, cells, sorting, filtering, pagination, and
   row actions are unchanged; only the resize/reorder/persistence chrome is
-  added. The remaining list surfaces are intentionally left untouched this
-  round: **alerts** and **probes** are deferred (alerts for its checkbox +
-  inline ack/watch action columns wrapped in a bulk-ack form; probes for its
-  two distinct column schemas across the group-by toggle and its PII-sensitive
-  reveal rows), and **rules** is excluded outright — it renders as article
-  cards, not a table. Separately, the rest-state column separator that signals
+  added. Of the remaining list surfaces, **probes** is now resizable too
+  (resize-only — see below); **alerts** stays deferred (its select-checkbox +
+  inline ack/watch action columns wrapped in a bulk-ack form fight the
+  fixed-layout/overflow clamp the resize layer requires), and **rules** is
+  excluded outright — it renders as article cards, not a table. Separately, the
+  rest-state column separator that signals
   a draggable boundary was faint enough to miss, so its opacity is raised from
   `0.28` to `0.50` (and the hover/drag weight from `0.80` to `0.95` to keep a
   visible darken-on-hover contrast); both remain tweakable via the
   `--lyn-col-separator-rest` / `--lyn-col-separator-active` custom properties.
+
+- **The /probes tab's columns are now resizable (resize-only).** Both group-by
+  views — network → devices and device → networks — opt into the `data_table`
+  macro's resize/reorder grips, per-column widths, and "reset columns" control,
+  each persisted per browser under its own key (the two views are distinct
+  column schemas, so they get separate `probes-ssid` / `probes-device` ids).
+  Unlike the other resizable tables, probes deliberately gets **no show/hide
+  columns menu**: the PII-sensitive reveal rows are untouched and stay collapsed
+  by default. This was unblocked by splitting the macro's single opt-in into
+  independent `resize` / `hide` feature flags (both default off, explicit
+  opt-in), so a table can take resize without the hide menu; the four existing
+  resizable tables are unchanged — they request both. Browser-only presentation,
+  as before: no new server state, and a no-JS browser renders every column.
 
 - **The /probes tab now defaults to 50 rows per page (was 25), matching the
   /devices default.** 25 was the lowest default of any list page, so the probes

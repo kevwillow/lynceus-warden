@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}probes &mdash; lynceus{% endblock %}
 {% block content %}
+  {% from "_table_macro.html" import data_table %}
   {% include "_topnav.html" %}
   <h2>probes</h2>
 
@@ -63,15 +64,15 @@
        the identities. (The device-grouped view below keeps its per-device
        SSID list collapsed, since that list is the device's own fingerprint.) #}
     {% if ssid_groups %}
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Devices</th>
-              <th>Network &amp; devices that probed it</th>
-            </tr>
-          </thead>
-          <tbody>
+      {# resize-only opt-in (v0.9.2): the macro's resize grips + reset, no hide
+         menu and no sort UI. This grouping is a distinct 2-column schema, so it
+         carries its own table_id ('probes-ssid') -- separate persisted widths
+         from the 6-column device grouping below. #}
+      {% set probes_ssid_columns = [
+           {'label': 'Devices', 'key': 'device_count'},
+           {'label': 'Network & devices that probed it', 'key': 'network'},
+         ] %}
+      {% call data_table(probes_ssid_columns, '/probes', '', '', '', table_id='probes-ssid', resize=true) %}
             {% for g in ssid_groups %}
               <tr>
                 <td>{{ g.device_count }}</td>
@@ -91,9 +92,7 @@
                 </td>
               </tr>
             {% endfor %}
-          </tbody>
-        </table>
-      </div>
+      {% endcall %}
     {% else %}
       <p><em>No probe networks match the current filter.</em></p>
     {% endif %}
@@ -101,19 +100,18 @@
     {# device -> networks. SSID names stay collapsed; the summary shows only
        the count of networks probed, not their names. #}
     {% if device_rows %}
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Device</th>
-              <th>MAC</th>
-              <th style="white-space: nowrap;">Type</th>
-              <th>Vendor</th>
-              <th>Last seen</th>
-              <th>Networks probed</th>
-            </tr>
-          </thead>
-          <tbody>
+      {# resize-only opt-in (v0.9.2): own table_id ('probes-device') for this
+         6-column schema, kept separate from the 2-column network grouping.
+         Type keeps its inline nowrap via the macro's per-column nowrap flag. #}
+      {% set probes_device_columns = [
+           {'label': 'Device', 'key': 'device'},
+           {'label': 'MAC', 'key': 'mac'},
+           {'label': 'Type', 'nowrap': true, 'key': 'type'},
+           {'label': 'Vendor', 'key': 'vendor'},
+           {'label': 'Last seen', 'key': 'last_seen'},
+           {'label': 'Networks probed', 'key': 'networks'},
+         ] %}
+      {% call data_table(probes_device_columns, '/probes', '', '', '', table_id='probes-device', resize=true) %}
             {% for d in device_rows %}
               {% set ssids = d.probe_ssids | probe_ssids_list %}
               <tr>
@@ -136,9 +134,7 @@
                 </td>
               </tr>
             {% endfor %}
-          </tbody>
-        </table>
-      </div>
+      {% endcall %}
     {% else %}
       <p><em>No probing devices match the current filter.</em></p>
     {% endif %}
