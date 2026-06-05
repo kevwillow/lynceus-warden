@@ -17,10 +17,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   inferred; an absent category renders a neutral em-dash (which also
   distinguishes "no Argus category" from a literal Argus category of
   `unknown`). The line is always appended after the existing
-  vendor/confidence suffix, so that suffix is unchanged. (The watchful
-  escalation and Kismet up/down notifications are intentionally left as-is —
-  the former is a recurrence reminder without the observation in scope, the
-  latter carries no device.)
+  vendor/confidence suffix, so that suffix is unchanged. (Kismet up/down
+  notifications are intentionally left as-is — they carry no device.)
+
+- **The watchful-recurrence escalation notification now carries the same
+  device type/category line.** The synthetic `watchful_recurrence` escalation
+  ntfy gains the trailing `| radio: <type> | category: <category>`, consistent
+  with the main alert. The escalation has no observation in scope, so it does a
+  cheap guarded lookup at the compose site — `radio` off the persisted
+  `devices` row (by the entry's MAC) and `category` off the matched
+  `watchlist_metadata.device_category` (by the entry's `matched_watchlist_id`,
+  which is absent for non-Argus watches) — reusing the same `build_type_suffix`
+  helper. Display-only and never inferred; a missing device/metadata row or a
+  lookup error renders the neutral em-dash without breaking escalation. The
+  stored alert row is unchanged — the suffix is appended to the ntfy body only.
 
 - **The /alerts list now has a "Category" column showing the matched device's
   Argus device category.** When an alert matched an Argus watchlist row that

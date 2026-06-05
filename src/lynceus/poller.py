@@ -134,11 +134,32 @@ def _emit_watchful_escalation(
             e,
         )
         return
+    # Display-only at-a-glance device type for the escalation ntfy, mirroring
+    # the main alert path (85eb163). Unlike that path there is no observation
+    # in scope here, so device_type is read off the persisted devices row and
+    # device_category off the matched watchlist metadata (the same md path the
+    # main alert uses). Both lookups are guarded: a missing device/metadata row
+    # -- or a DB error -- renders an em-dash placeholder rather than breaking
+    # escalation. matched_watchlist_id is None for non-Argus watchful entries,
+    # which is a legitimate absent category. No inference.
+    device_type = None
+    device_category = None
+    try:
+        device_row = db.get_device(entry.mac)
+        if device_row is not None:
+            device_type = device_row.get("device_type")
+        if entry.matched_watchlist_id is not None:
+            md = db.get_metadata_by_watchlist_id(entry.matched_watchlist_id)
+            device_category = md.get("device_category") if md else None
+    except Exception:
+        device_type = None
+        device_category = None
+    type_suffix = build_type_suffix(device_type, device_category)
     try:
         ok = notifier.send(
             severity="high",
             title="lynceus: watchful escalation",
-            message=message,
+            message=message + type_suffix,
             priority_override=4,
         )
         if not ok:
