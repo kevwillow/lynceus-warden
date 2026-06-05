@@ -264,17 +264,61 @@
   function freezeWidths(table, id, st) {
     var row = table.tHead && table.tHead.rows[0];
     if (!row) return;
+    var hidden = st.hidden || [];
     var widths = {};
     for (var i = 0; i < row.cells.length; i++) {
       var th = row.cells[i];
       var key = th.getAttribute("data-col-key");
       if (!key) continue;
+      // A hidden column's th measures ~0 (its <col> is collapsed to width:0), so
+      // never freeze that as its width -- that would lose the real width and make
+      // un-hide restore a 0-width column. Carry over any previously-stored real
+      // width instead.
+      if (hidden.indexOf(key) >= 0) {
+        if (st.widths && st.widths[key] > 0) widths[key] = st.widths[key];
+        continue;
+      }
       var w = Math.round(th.getBoundingClientRect().width);
       var col = colFor(table, key);
       if (col && w > 0) { col.style.width = w + "px"; widths[key] = w; }
     }
     table.style.tableLayout = "fixed";
     st.widths = widths;
+    writeState(id, st);
+  }
+
+  // Defensive re-apply of the hidden state after first paint (the base.html
+  // pre-paint applier normally does this; this keeps lynceus.js correct on its
+  // own if that applier was absent). Idempotent: zeroing an already-0 col is a
+  // no-op. See the hide-pass comment in base.html for the mechanism.
+  function applyHidden(table, st) {
+    if (!st.hidden || !st.hidden.length) return;
+    for (var i = 0; i < st.hidden.length; i++) {
+      var col = colFor(table, st.hidden[i]);
+      if (col) col.style.width = "0px";
+    }
+    table.style.tableLayout = "fixed";
+  }
+
+  // Hide/show ONE column by collapsing (or restoring) only its <col> width under
+  // table-layout:fixed -- never touching cells, so the col<->cell positional
+  // mapping stays exact. State: add/remove the key in st.hidden; the real width
+  // is kept in st.widths[key] so un-hide restores the right size.
+  function setColHidden(table, id, key, hide) {
+    var col = colFor(table, key);
+    if (!col) return;
+    table.style.tableLayout = "fixed";
+    var st = readState(id);
+    st.hidden = st.hidden || [];
+    var at = st.hidden.indexOf(key);
+    if (hide) {
+      col.style.width = "0px";
+      if (at < 0) st.hidden.push(key);
+    } else {
+      var w = st.widths && st.widths[key];
+      col.style.width = (typeof w === "number" && w > 0) ? (w + "px") : "";
+      if (at >= 0) st.hidden.splice(at, 1);
+    }
     writeState(id, st);
   }
 
@@ -416,6 +460,36 @@
     }
   }
 
+  // Columns show/hide menu: one checkbox per column (checked == visible). The
+  // macro emits the menu under [data-cols-for="<id>"]; toggling a box collapses
+  // or restores that column live via setColHidden (no reload). A guard refuses
+  // to hide the last visible column (an all-hidden table is a dead end). On load
+  // each checkbox is synced to the persisted hidden state.
+  function bindColumnsMenu(table, id) {
+    var boxes = document.querySelectorAll('[data-cols-for="' + id + '"] input.col-toggle');
+    if (!boxes.length) return;
+    function visibleCount() {
+      var st = readState(id);
+      return boxes.length - (st.hidden || []).length;
+    }
+    for (var i = 0; i < boxes.length; i++) {
+      (function (box) {
+        var key = box.getAttribute("data-col-toggle");
+        var st = readState(id);
+        box.checked = !(st.hidden && st.hidden.indexOf(key) >= 0);
+        box.addEventListener("change", function () {
+          if (!box.checked) {
+            // Hiding would remove a column; never let it remove the last one.
+            if (visibleCount() <= 1) { box.checked = true; return; }
+            setColHidden(table, id, key, true);
+          } else {
+            setColHidden(table, id, key, false);
+          }
+        });
+      })(boxes[i]);
+    }
+  }
+
   function init() {
     var tables = document.querySelectorAll("table[data-table-id]");
     for (var i = 0; i < tables.length; i++) {
@@ -429,9 +503,11 @@
       var haveWidths = st.widths && typeof st.widths === "object" && Object.keys(st.widths).length;
       if (!haveWidths) freezeWidths(table, id, st);
       else table.style.tableLayout = "fixed";
+      applyHidden(table, st);
       bindResize(table, id);
       bindReorder(table, id);
       bindReset(id);
+      bindColumnsMenu(table, id);
     }
   }
 
