@@ -1,0 +1,31 @@
+/* Cascade-layer load entry.
+ *
+ * Pico (classless v2.1.1) ships UNLAYERED: every one of its rules lives in the
+ * implicit outer layer, where ordinary specificity decides. Several Pico
+ * form-control defaults are attribute selectors at specificity (0,1,1) --
+ * notably
+ *   button[type=submit], input:not([type=checkbox],[type=radio]), select, textarea { width: 100% }
+ * -- which OUTRANK lynceus.css's (0,1,0) class overrides (e.g. .device-action-btn
+ * { width: auto }). Those overrides were therefore silently dead, and every
+ * attempt to make a control content-sized had to be re-scoped to a higher
+ * specificity per control (.alert-action-controls .ack-button-inline, etc.).
+ *
+ * This entry fixes it at the root. It declares the layer order
+ *   @layer pico, app;
+ * (a later-listed layer has HIGHER priority) and imports Pico into `pico` and
+ * lynceus.css into `app`. Cascade layers outrank specificity entirely, so every
+ * rule in `app` now beats every rule in `pico` regardless of selector weight --
+ * while a control that has NO app rule keeps its Pico styling untouched (the
+ * deliberately bare-Pico filter forms are unaffected).
+ *
+ * Why @import and not two <link>s: an unlayered linked sheet outranks any
+ * layered sheet, so Pico must be pulled INTO a layer, and `@import ... layer()`
+ * is the only way to assign a separate stylesheet file to a named layer. The
+ * block-less `@layer` statement is permitted before `@import` (the canonical
+ * pattern). Relative URLs resolve against THIS file's URL (the static dir), so
+ * the one StaticFiles mount still serves all three files; base.html loads only
+ * this entry. The cost is one extra request hop (this tiny file, then the two
+ * imports) -- negligible for a localhost/LAN read-only dashboard. */
+@layer pico, app;
+@import url("pico.min.css") layer(pico);
+@import url("lynceus.css") layer(app);

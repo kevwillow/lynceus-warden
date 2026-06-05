@@ -108,8 +108,10 @@
         } catch (_) { /* stale/invalid -> server default stands */ }
       };
     </script>
-    <link rel="stylesheet" href="{{ url_for('static', path='/pico.min.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', path='/lynceus.css') }}">
+    {# Single CSS entry: app.css declares the cascade layers (@layer pico, app)
+       and @imports Pico into `pico` and lynceus.css into `app`, so app rules
+       win over Pico regardless of specificity. See app.css for the full why. #}
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
     <script defer src="{{ url_for('static', path='/htmx.min.js') }}"></script>
     <script defer src="/static/lynceus.js"></script>
   </head>

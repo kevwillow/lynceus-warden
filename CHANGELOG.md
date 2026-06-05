@@ -87,6 +87,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Pico and the app's own styles now load in CSS cascade layers, so app rules
+  win over Pico without per-control specificity hacks.** Pico (classless v2.1.1)
+  ships unlayered, and several of its form-control defaults are attribute
+  selectors — notably `button[type=submit], input:not([type=checkbox],[type=radio]),
+  select, textarea { width: 100% }` at specificity (0,1,1) — which outranked the
+  app's (0,1,0) class overrides (e.g. `.device-action-btn { width: auto }`),
+  leaving those overrides silently dead unless re-scoped to a higher specificity
+  per control. A small `app.css` entry now declares `@layer pico, app;` and
+  `@import`s Pico into the `pico` layer and `lynceus.css` into the `app` layer;
+  because a later-declared layer outranks an earlier one regardless of selector
+  weight, every app rule now beats every Pico rule — while any control with no
+  app rule keeps its Pico styling untouched (the deliberately bare-Pico filter
+  forms and alert-detail controls are unaffected). `base.html` now loads only
+  `app.css`; the vendored Pico file is unchanged. Browser-verified: an app-ruled
+  control collapses from Pico's full width to its content width, while a
+  bare-Pico control stays full width.
+
 - **The first alert row's "Acknowledge" / "unack" button now acts on that row
   instead of silently triggering bulk-acknowledge.** The per-row ack/unack/watch
   forms were nested inside the "Acknowledge selected" bulk form that wrapped the
