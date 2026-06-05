@@ -292,10 +292,14 @@ _DEVICES_SORT_OPTIONS: tuple[str, ...] = tuple(DEVICES_SORT_EXPRESSIONS)
 _DEVICES_DIR_OPTIONS: tuple[str, ...] = ("asc", "desc")
 
 # /probes (aggregated probe-SSID view) shares the devices page-size
-# vocabulary -- both list the same underlying rows, just grouped. A
-# smaller default than /devices because each row can fan out a reveal.
+# vocabulary AND default (50) -- both list the same underlying rows, just
+# grouped. 25 was the lowest default of any list page, an outlier that paged
+# the probes tab out sooner than the rest; reveals stay collapsed by default,
+# so a larger page is not a privacy regression. Default only -- the dropdown
+# and ?page_size still offer the full allowed set, and the choice is not
+# persisted across visits.
 _PROBES_PER_PAGE_ALLOWED: tuple[int, ...] = (10, 25, 50, 100, 200, 250, 500)
-_PROBES_PER_PAGE_DEFAULT: int = 25
+_PROBES_PER_PAGE_DEFAULT: int = 50
 # The two groupings the Probes tab offers; "device" (which networks each
 # device probed) is the default, "ssid" inverts to (which devices probed
 # each network). Anything else normalizes back to the default.

@@ -28,6 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   visible darken-on-hover contrast); both remain tweakable via the
   `--lyn-col-separator-rest` / `--lyn-col-separator-active` custom properties.
 
+- **The /probes tab now defaults to 50 rows per page (was 25), matching the
+  /devices default.** 25 was the lowest default of any list page, so the probes
+  tab paged out sooner than the rest for no strong reason; the SSID reveals stay
+  collapsed by default, so a larger page is not a privacy regression. Only the
+  default changes — the page-size dropdown and the `?page_size` override already
+  offered the full set (10–500) and are unchanged, and the choice is not
+  persisted across visits.
+
 ### Fixed
 
 - **The /alerts action column no longer overflows to its full content width on
