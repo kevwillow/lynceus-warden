@@ -86,6 +86,25 @@
             }
             if (any) table.style.tableLayout = "fixed";
           }
+
+          // Hidden columns: collapse each to zero width. Runs AFTER widths so
+          // it overrides the restored width for a hidden col; the real width
+          // stays in st.widths[key] for un-hide. The table is table-layout:fixed
+          // (above), so a col width of 0 collapses that column -- and, because
+          // the cells are box-sizing:border-box with overflow:hidden, their
+          // content + the absolutely-positioned (overflow-clipped) resize grip
+          // squeeze to nothing while every OTHER column keeps its width and the
+          // table simply narrows. Only the <col> is zeroed -- never a cell -- so
+          // the per-row cell count is invariant and the positional col<->cell
+          // mapping that the reorder block above relies on stays exact,
+          // regardless of how the engine treats display:none on a <col>. Inside
+          // the same try/catch, so no-JS / parse failure shows all columns.
+          if (st.hidden && st.hidden.length) {
+            for (var hh = 0; hh < st.hidden.length; hh++) {
+              var hcol = table.querySelector('colgroup col[data-col-key="' + st.hidden[hh] + '"]');
+              if (hcol) { hcol.style.width = "0px"; table.style.tableLayout = "fixed"; }
+            }
+          }
         } catch (_) { /* stale/invalid -> server default stands */ }
       };
     </script>
