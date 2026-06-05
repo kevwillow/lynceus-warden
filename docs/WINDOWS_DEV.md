@@ -111,6 +111,28 @@ Why this is necessary: integration test fixtures freeze time within their tests,
 
 Commit the resulting fixture change separately from any other work, with a message like `chore: rebump dev fixture timestamps`. Future-you will appreciate the clean diff.
 
+## Committing
+
+Single-line commit messages work the same everywhere: `git commit -m "..."`.
+
+For multi-line commit messages, use a bash heredoc, not a PowerShell
+here-string. Even on this Windows box, automated commits run through a tool
+that executes `bash`, and bash does not understand PowerShell's `@'...'@`
+here-string syntax — it treats the leading `@'` literally and leaves a stray
+`@` in the commit subject and body. Use:
+
+```bash
+git commit -F - <<'EOF'
+type(scope): subject line
+
+Body paragraph here.
+EOF
+```
+
+This has bitten us several times: the leak is silent until you inspect the
+commit message bytes, and the fix is always an amend. Using the heredoc form
+from the start avoids it.
+
 ## When to stop iterating on Windows and move to the Pi
 
 When the feature involves any of: real WiFi or BLE captures, monitor-mode behavior, multi-adapter testing, multi-Pi deployment, ntfy delivery to your phone, or systemd unit lifecycle. Everything else can be developed and tested on Windows with the fixture path.
