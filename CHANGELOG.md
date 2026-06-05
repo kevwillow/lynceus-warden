@@ -65,6 +65,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Toggling a column's checkbox in the "columns" menu now repaints the box
+  immediately instead of lagging behind the column reflow.** The change handler
+  ran the heavy fixed-layout `<col>` reflow and the `localStorage` write
+  synchronously, which deferred the native `:checked` repaint until that work
+  finished, so the checkbox appeared to stick a beat behind the click. The hide
+  work is now deferred via `requestAnimationFrame` so the browser paints the
+  checkbox first; the last-visible-column guard stays synchronous, so trying to
+  hide the final column still snaps the box back at once. Hide behaviour is
+  otherwise identical — only the paint timing changed.
+
 - **Resizing a column now tracks the pointer 1:1 instead of drifting and
   sometimes inverting.** Opted-in tables flip to `table-layout: fixed` but kept
   Pico's `width: 100%` with no explicit total, so whenever the column widths

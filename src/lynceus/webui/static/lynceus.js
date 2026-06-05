@@ -516,10 +516,15 @@
         box.addEventListener("change", function () {
           if (!box.checked) {
             // Hiding would remove a column; never let it remove the last one.
+            // This guard stays synchronous so the box snaps back immediately.
             if (visibleCount() <= 1) { box.checked = true; return; }
-            setColHidden(table, id, key, true);
+            // Defer the heavy work -- the fixed-layout <col> reflow, the table
+            // width re-pin, and the localStorage write -- out of the change
+            // handler so the browser paints the checkbox's new :checked state
+            // first instead of janking it behind the synchronous reflow.
+            requestAnimationFrame(function () { setColHidden(table, id, key, true); });
           } else {
-            setColHidden(table, id, key, false);
+            requestAnimationFrame(function () { setColHidden(table, id, key, false); });
           }
         });
       })(boxes[i]);
