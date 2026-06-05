@@ -204,6 +204,30 @@ form.watch-form    { display: inline; margin-left: 0.4em; }
 .alert-action-controls .ack-button-inline,
 .alert-action-controls .watch-button-inline { width: auto; }
 .alert-action-controls .watch-snooze-select { width: auto; }
+/* Compact every control to the buttons' height and reclaim width budget. The
+   07a462d width overrides made the row one line but never touched HEIGHT or the
+   1rem margin-bottom Pico puts on inputs/selects/buttons -- and Pico forces an
+   explicit ~3rem height on inputs and a 1rem+1.5rem arrow gutter on selects --
+   so the note input (~53px) and select (~49px) stood at full Pico height while
+   the buttons were ~26px, making the row as tall as a standard input (~70px),
+   and the select's fat gutter ate the ~22rem budget. These were dead before the
+   cascade layer (Pico's input/select rules outrank these class selectors); now
+   that app rules win, defeat the forced input height, zero the margins, and trim
+   the select's vertical padding + arrow gutter so note + select match the
+   buttons. The gutter stays >= 1.75rem (0.75rem gap + the 1rem chevron) so the
+   arrow never clips. */
+.alert-action-controls .ack-row-note,
+.alert-action-controls .watch-snooze-select,
+.alert-action-controls .ack-button-inline,
+.alert-action-controls .watch-button-inline { margin-bottom: 0; }
+.alert-action-controls .ack-row-note { height: auto; }
+.alert-action-controls .watch-snooze-select {
+    height: auto;
+    padding-top: 2px;
+    padding-bottom: 2px;
+    padding-right: 1.9rem;
+    padding-inline-end: 1.9rem;
+}
 
 /* /watchful Actions column: each row mixes several siblings -- two
    <form>s (reset, dismiss) plus three <details> disclosures

@@ -129,6 +129,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rendered full-width (Pico's `button { width: 100% }`), is now content-sized
   like the rest, now that app rules win via the cascade layer.
 
+- **The /alerts per-row action controls now sit at the buttons' height on one
+  compact line, instead of standing as tall as a full input.** A previous fix
+  re-scoped the note/select/button widths so the row held one line, but it never
+  touched their HEIGHT: Pico forces an explicit ~3rem height on the note input
+  and a 1rem margin-bottom on every input/select/button, and gives the snooze
+  select a 1rem + 1.5rem dropdown-arrow gutter — so the note input (~53px) and
+  select (~49px) towered over the ~26px buttons, making the row ~70px tall, and
+  the fat gutter ate into the row's width budget. Those height/margin/gutter
+  declarations were dead before the cascade-layer change (Pico's element rules
+  outranked the app's class selectors); now that app rules win, the note input's
+  forced height is defeated, the margins are zeroed, and the select's vertical
+  padding and arrow gutter are trimmed (the gutter still clears the chevron), so
+  every control matches the buttons' height — the row drops from ~70px to ~29px
+  and keeps a comfortable single-line fit.
+
 - **The first alert row's "Acknowledge" / "unack" button now acts on that row
   instead of silently triggering bulk-acknowledge.** The per-row ack/unack/watch
   forms were nested inside the "Acknowledge selected" bulk form that wrapped the
