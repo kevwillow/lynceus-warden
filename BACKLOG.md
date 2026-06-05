@@ -218,6 +218,22 @@ First N hours after install, everything seen goes into a "candidate
 allowlist" you review and accept rather than firing alerts on.
 - **Trigger**: confirmed false-positive volume in early deployments.
 
+### /alerts column resize (override CSS)
+/alerts is the one list table without resizable columns. It was left as a
+bare table because its action column relies on it: the 2-row action-control
+flex (commit d7ebbef) and the width:auto inline ack/watch buttons (29ce7be)
+are documented to depend on nothing clamping the cell. Putting /alerts on the
+data_table macro applies table-layout:fixed + table[data-table-id] td
+{overflow:hidden}, which would clip the bulk-ack form's interactive controls.
+- **Trigger**: when resize on /alerts is wanted enough to justify dedicated
+  override CSS.
+- **Estimated**: investigation-first arc. Needs override CSS that exempts the
+  action column from the fixed-layout overflow clamp without regressing
+  d7ebbef or 29ce7be; resize-only opt-in (the per-feature macro flags from
+  4ab16a8 already allow resize without hide/sort). Rig render-check required.
+- **Notes**: the bulk-ack <form> wrapper + select-checkbox column + nested
+  per-row forms make this the most structurally involved table to convert.
+
 ## Followups for technical debt
 
 ### CSRF token rotation on session boundaries
@@ -262,6 +278,19 @@ v0.3 work touches kismet.py for other reasons (rolling both into one
 prompt is cheap).
 Estimated: 1 prompt, ~50 LOC + ~15 tests, including a regression test
 that proves integration test fixtures are NOT shifted (default off).
+
+### Brittle position-sensitive layout tests
+Several gitignored layout tests assert CSS rules via naive first-occurrence
+string matching (e.g. content.find(".table-scroll") / find(".watchful-
+actions")). These have tripped twice when a CSS *comment* contained the
+matched selector literal before the real rule, forcing comment rewordings
+that don't reflect a real code problem. Harden the matching to target the
+actual rule (e.g. match a selector-plus-brace pattern, or parse the rule
+block) rather than first textual occurrence.
+- **Trigger**: next time one of these tests trips on a comment, OR any arc
+  that already touches these test files.
+- **Notes**: tests are gitignored (OPSEC), so this is local-only test
+  maintenance, no repo commit for the tests themselves.
 
 ## Network capture features
 
