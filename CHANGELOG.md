@@ -37,12 +37,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the horizontal scroll forced the action cell's two inline forms (note input +
   Acknowledge, plus the snooze select + Watch) onto one unbroken line, and the
   ellipsis clamp scoped to `data-table-id` tables never applied to cap it. The
-  cell's controls are now wrapped in an inner `<div>` capped at `max-width:
-  22rem` with `white-space: normal`, so they wrap within a bounded width rather
-  than spilling. The override is scoped to that wrapper class only — the global
-  nowrap rule and every other table are untouched — and the buttons keep their
-  `width: auto` sizing from `29ce7be`, so wrapping does not revert the Watch
-  button to Pico's full-width default.
+  cell's controls are now laid out as a wrapping flex container in which each
+  inline form claims a full row (`flex: 1 0 100%`), so the acknowledge row and
+  the watch row stack deterministically in two rows instead of relying on a
+  marginal `max-width` to force the wrap; a `max-width: 22rem` is kept only as a
+  belt-and-suspenders upper bound (the widest row — the ack form — is ~14rem),
+  so the column can never regress to the original one-line overflow. The
+  override is scoped to that wrapper class only — the global nowrap rule and
+  every other table are untouched — and the buttons keep their `width: auto`
+  sizing from `29ce7be`, so stacking does not revert the Watch button to Pico's
+  full-width default; it mirrors the existing `.watchful-actions` flex pattern.
 
 - **The "reset columns" control now sits above each resizable table instead
   of below it.** The control was emitted after the table, so on a long list an

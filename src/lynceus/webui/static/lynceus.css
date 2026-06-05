@@ -164,17 +164,28 @@ body > main.container-fluid {
 .watch-snooze-select { font-size: 0.85em; vertical-align: middle; }
 form.inline-form   { display: inline; }
 form.watch-form    { display: inline; margin-left: 0.4em; }
-/* /alerts action column. The cell holds the ack form + watch form inline; the
+/* /alerts action column. The cell holds the ack/unack form + watch form; the
    global table-scroll nowrap rule (th,td below) forces them onto one line and,
    because /alerts is a bare table (no data-table-id), nothing clamps the cell
-   — so it spills to its full ~23rem content width on horizontal scroll. Cap an
-   INNER wrapper (not the <td>: under table-layout:auto a max-width on a cell is
-   not reliably honoured) and opt that wrapper out of nowrap so the controls
-   wrap within a bounded width. Scoped to this class only — the global nowrap
-   and every other table are untouched. The buttons keep their width:auto
-   sizing from 29ce7be, so wrapping does not revert the Watch button to Pico's
-   full-width default. v0.9.2 issue C. */
-.alert-action-controls { max-width: 22rem; white-space: normal; }
+   — so it spilled to its full ~23rem content width on horizontal scroll. Lay the
+   inner wrapper out as a wrapping flex container where each <form> claims a full
+   row (flex: 1 0 100%), so the ack row and the watch row stack deterministically
+   in two rows instead of relying on a marginal max-width to force the wrap. The
+   max-width is kept only as a belt-and-suspenders upper bound (the widest row —
+   the ack form — is ~14rem, comfortably under 22rem), so the column can never
+   regress to the original ~23rem one-line overflow. margin-left:0 neutralises
+   watch-form's inline 0.4em here so the two rows align flush-left; scoped to
+   this class, so the global form.watch-form rule and the home page are
+   untouched. The buttons keep their width:auto sizing from 29ce7be, so stacking
+   does not revert the Watch button to Pico's full-width default; this mirrors
+   the .watchful-actions flex pattern below. v0.9.2 issue C. */
+.alert-action-controls {
+    display: flex;
+    flex-wrap: wrap;
+    max-width: 22rem;
+    white-space: normal;
+}
+.alert-action-controls > form { flex: 1 0 100%; margin-left: 0; }
 
 /* /watchful Actions column: each row mixes several siblings -- two
    <form>s (reset, dismiss) plus three <details> disclosures
