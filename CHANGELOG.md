@@ -29,6 +29,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   disclosure marker is kept. Gated on the hide feature: the resize-only tables
   (probes) and non-table surfaces never show it.
 
+- **Acknowledging, un-acknowledging, or watching an alert on /alerts now updates
+  that one row in place instead of reloading the whole page.** With JavaScript
+  enabled the per-row ack / unack / watch buttons post via htmx and the server
+  re-renders just that alert's row in its new state (an acked row flips to show
+  ✓ and an "unack" button, and back again), swapped over the row so the scroll
+  position, the active filters, and the rest of the table are preserved — no
+  full reload. The row is RE-rendered, not removed (unlike the home page's
+  recent-alerts card, which posts to the same ack route to drop its row),
+  because /alerts is a mixed acknowledged + unacknowledged list where an acked
+  alert stays visible. A no-JavaScript browser is unaffected: the same forms
+  POST normally and get the usual 303 redirect back to the list. (This built on
+  un-nesting the per-row forms from the bulk-ack form — see Fixed.)
+
 ### Changed
 
 - **Client-side column resize / reorder / per-browser persistence now covers

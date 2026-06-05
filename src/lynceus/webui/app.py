@@ -2148,6 +2148,38 @@ def create_app(config: Config, db: Database) -> FastAPI:
             },
         )
 
+    def _alerts_row_swap(request: Request, alert_id: int):
+        """htmx in-place row swap for the /alerts LIST page.
+
+        When a /alerts list row form posts (it sends the X-Lyn-Alerts-Row
+        header via hx-headers), re-render just that one alert row in its new
+        state for an outerHTML swap over #alert-row-<id> -- no full reload, so
+        scroll position and the rest of the table are preserved. Returns None
+        when this is not a /alerts-list htmx request, so the caller falls back
+        to its normal response.
+
+        This is deliberately distinct from the home-page recent-alerts card,
+        which posts to the same ack route but wants the row REMOVED (the empty
+        200 body in ack_alert below); that card sends no X-Lyn-Alerts-Row
+        header, so it never reaches this branch. The row is RE-RENDERED rather
+        than removed because /alerts is a mixed acked+unacked list -- an acked
+        row stays visible (flipped to its unack state), it does not disappear.
+        The alert is loaded + enriched exactly as the list route does
+        (get_alert_with_match + _enrich_alerts_with_devices) so the swapped row
+        is identical to a freshly rendered list row.
+        """
+        if not request.headers.get("x-lyn-alerts-row"):
+            return None
+        alert = db.get_alert_with_match(alert_id)
+        if alert is None:
+            return None
+        _enrich_alerts_with_devices(db, [alert])
+        return app.state.templates.TemplateResponse(
+            request=request,
+            name="_alert_row.html",
+            context={"a": alert},
+        )
+
     @app.post("/alerts/{alert_id}/ack")
     def ack_alert(
         request: Request,
@@ -2171,8 +2203,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 },
                 status_code=404,
             )
+        row = _alerts_row_swap(request, alert_id)
+        if row is not None:
+            # /alerts list: re-render the now-acked row in place (mixed list).
+            return row
         if request.headers.get("hx-request"):
-            # Progressive enhancement: an htmx ack swaps this empty body as
+            # Home-page recent-alerts card: an htmx ack swaps this empty body as
             # outerHTML into the row target, removing only that one row — no
             # full reload, so no scroll reset and no live-poll reorder. Must
             # be 200, not 204: htmx skips the swap on a 204 No Content.
@@ -2203,6 +2239,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 },
                 status_code=404,
             )
+        row = _alerts_row_swap(request, alert_id)
+        if row is not None:
+            # /alerts list: re-render the now-unacked row in place. (No
+            # home-page idiom for unack -- the recent-alerts card only acks.)
+            return row
         target = _safe_redirect_target(request, default="/alerts")
         return RedirectResponse(target, status_code=303)
 
@@ -2472,6 +2513,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 },
                 status_code=404,
             )
+        row = _alerts_row_swap(request, alert_id)
+        if row is not None:
+            # /alerts list: re-render the row in place after watching so the
+            # action stays put without a full reload (the row's displayed
+            # columns are unchanged, but this avoids the scroll reset).
+            return row
         target = _safe_redirect_target(request, default="/alerts")
         return RedirectResponse(target, status_code=303)
 

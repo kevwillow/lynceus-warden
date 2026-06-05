@@ -3,7 +3,7 @@
    csrf_token is an env global, device_label / unix_to_iso are env filters).
    Kept as a standalone partial so the ack / unack / watch routes can
    re-render exactly one row in its new state for an htmx in-place swap. #}
-              <tr class="row-sev-{{ a.severity }}{% if a.acknowledged %} row-acked{% endif %}">
+              <tr id="alert-row-{{ a.id }}" class="row-sev-{{ a.severity }}{% if a.acknowledged %} row-acked{% endif %}">
                 <td><input type="checkbox" name="alert_ids" value="{{ a.id }}" form="bulk-ack-form"></td>
                 <td><time datetime="{{ a.ts | unix_to_iso }}">{{ a.ts | unix_to_iso }}</time></td>
                 <td><span class="badge-{{ a.severity }}">{{ a.severity }}</span></td>
@@ -28,21 +28,41 @@
                 <td>{% if a.acknowledged %}&check;{% endif %}</td>
                 <td class="alert-action-cell">
                   <div class="alert-action-controls">
+                  {# hx-* makes each action swap THIS row in place (no full reload):
+                     the route returns this same partial re-rendered in the new
+                     state, swapped over #alert-row-<id>. The X-Lyn-Alerts-Row
+                     header (via hx-headers) tells the shared ack route to
+                     re-render the row here rather than return the empty body the
+                     home-page recent-alerts card wants (it posts to the same
+                     route to REMOVE its row). action= + the hidden _csrf keep the
+                     no-JS POST -> 303 fallback working unchanged. #}
                   {% if a.acknowledged %}
-                    <form method="post" action="/alerts/{{ a.id }}/unack" class="inline-form">
+                    <form method="post" action="/alerts/{{ a.id }}/unack" class="inline-form"
+                          hx-post="/alerts/{{ a.id }}/unack"
+                          hx-target="#alert-row-{{ a.id }}"
+                          hx-swap="outerHTML"
+                          hx-headers='{"X-Lyn-Alerts-Row": "1"}'>
                       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
                       <input type="text" name="note" maxlength="80" placeholder="note (optional)" class="ack-row-note">
                       <button type="submit" class="ack-button-inline">unack</button>
                     </form>
                   {% else %}
-                    <form method="post" action="/alerts/{{ a.id }}/ack" class="inline-form">
+                    <form method="post" action="/alerts/{{ a.id }}/ack" class="inline-form"
+                          hx-post="/alerts/{{ a.id }}/ack"
+                          hx-target="#alert-row-{{ a.id }}"
+                          hx-swap="outerHTML"
+                          hx-headers='{"X-Lyn-Alerts-Row": "1"}'>
                       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
                       <input type="text" name="note" maxlength="80" placeholder="note (optional)" class="ack-row-note">
                       <button type="submit" class="ack-button-inline">Acknowledge</button>
                     </form>
                   {% endif %}
                   {% if a.mac %}
-                    <form method="post" action="/alerts/{{ a.id }}/watch" class="inline-form watch-form">
+                    <form method="post" action="/alerts/{{ a.id }}/watch" class="inline-form watch-form"
+                          hx-post="/alerts/{{ a.id }}/watch"
+                          hx-target="#alert-row-{{ a.id }}"
+                          hx-swap="outerHTML"
+                          hx-headers='{"X-Lyn-Alerts-Row": "1"}'>
                       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
                       <select name="snooze_duration" class="watch-snooze-select" title="how long to suppress repeat alerts for this MAC; tracking continues regardless">
                         <option value="24h">24h</option>
