@@ -224,6 +224,48 @@ form.watch-form    { display: inline; margin-left: 0.4em; }
 .watchful-actions > details { margin: 0; }
 .watchful-actions .outline { padding: 2px 8px; font-size: 0.85em; line-height: 1.4; }
 
+/* The three disclosure actions (promote / investigate / confirmed-safe) are
+   <details><summary> by design -- clicking the summary reveals a note input +
+   submit. Untouched, the summary rendered as raw "emoji text >" accordion text,
+   so the row read as two buttons (reset, dismiss) plus three bits of link-like
+   text. Style the summary to match the sibling action buttons so all read as one
+   coherent button row, WITHOUT changing the disclosure behavior (the markup is
+   unchanged; this is styling only).
+
+   Note: the vendored Pico is the *classless* build, which ships no .outline /
+   .secondary button-modifier classes -- those classes on reset/dismiss are
+   inert, so those buttons actually render as Pico's default compact FILLED
+   button. These summaries are matched to that real appearance via Pico's own
+   theme-aware primary tokens, so they track light/dark exactly like the
+   buttons. The padding/font/line-height mirror .watchful-actions .outline. */
+.watchful-actions details > summary {
+    display: inline-block;
+    padding: 2px 8px;
+    border: var(--pico-border-width, 1px) solid var(--pico-primary-border, var(--pico-primary));
+    border-radius: var(--pico-border-radius, 0.25rem);
+    background: var(--pico-primary-background, var(--pico-primary));
+    color: var(--pico-primary-inverse, #fff);
+    font-size: 0.85em;
+    line-height: 1.4;
+    text-align: center;
+}
+.watchful-actions details > summary:hover {
+    background: var(--pico-primary-hover-background, var(--pico-primary-hover));
+    border-color: var(--pico-primary-hover-border, var(--pico-primary-hover));
+}
+/* Suppress Pico's float:right accordion chevron on these: they read as buttons,
+   and the trailing ellipsis in each label ("promote&hellip;") already cues that
+   the action opens further input -- distinguishing them from the ellipsis-less
+   reset/dismiss. (Pico's summary keyboard focus-visible outline is untouched.) */
+.watchful-actions details > summary::after { display: none; }
+/* The opened disclosure's submit button rendered full-width: Pico's
+   button[type=submit] { width: 100% } (pico layer) was the only width rule. Now
+   that app rules win via the cascade layer, width:auto sizes it to content like
+   every other action in the row. */
+.watchful-actions .watchful-action-promote-submit,
+.watchful-actions .watchful-action-investigate-submit,
+.watchful-actions .watchful-action-safe-submit { width: auto; }
+
 /* Severity-tinted rows in alert tables */
 tr.row-sev-low  { background: var(--lyn-row-sev-low); }
 tr.row-sev-med  { background: var(--lyn-row-sev-med); }

@@ -114,6 +114,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from its text. (Independent of the cascade-layer change above — the app rule
   already won here, just with the wrong value.)
 
+- **The /watchful "promote", "investigate", and "confirmed-safe" actions now
+  read as buttons, matching the reset/dismiss actions in the same row.** They are
+  `<details><summary>` disclosures (clicking the summary reveals a note field +
+  submit), but the summary rendered as raw "emoji text ›" accordion text, so the
+  action row was a jumble of two buttons and three link-like labels. The
+  summaries are now styled to match the sibling action buttons — same size, fill,
+  radius, and height, via Pico's theme-aware tokens so they track light/dark —
+  while the disclosure behavior is unchanged (the markup is untouched; clicking
+  still reveals the note + submit). Pico's float-right accordion chevron is
+  suppressed on these: the trailing ellipsis in each label ("promote…") already
+  signals that the action opens further input, distinguishing them from the
+  ellipsis-less reset/dismiss. The opened disclosure's submit button, which had
+  rendered full-width (Pico's `button { width: 100% }`), is now content-sized
+  like the rest, now that app rules win via the cascade layer.
+
 - **The first alert row's "Acknowledge" / "unack" button now acts on that row
   instead of silently triggering bulk-acknowledge.** The per-row ack/unack/watch
   forms were nested inside the "Acknowledge selected" bulk form that wrapped the
