@@ -234,6 +234,22 @@ data_table macro applies table-layout:fixed + table[data-table-id] td
 - **Notes**: the bulk-ack <form> wrapper + select-checkbox column + nested
   per-row forms make this the most structurally involved table to convert.
 
+### Filter-aware /alerts ack/watch row swap
+/alerts ack/unack/watch currently always keep the row and re-render it in the
+new state (htmx, d886a18). This is correct on the default "all alerts" view,
+but on a filtered view (e.g. unacked-only) an acked row no longer matches the
+active filter and should be REMOVED, like the home page does — instead it
+persists until reload.
+- **Trigger**: when filtered /alerts views are used enough that stale-after-
+  action rows are a real annoyance.
+- **Estimated**: medium. The htmx route handler must know the active filter,
+  decide remove-vs-rerender per action (empty-body removal vs _alert_row.html
+  partial), and the row forms must convey enough filter context. Regression
+  tests on both no-JS (303) and htmx paths, across filtered + unfiltered.
+- **Notes**: do NOT bundle with the Pico-specificity styling arc — that table
+  is already fragile; adding filter-aware swap logic on top risks tangled
+  debugging. Sequence after styling is stable.
+
 ## Followups for technical debt
 
 ### CSRF token rotation on session boundaries
