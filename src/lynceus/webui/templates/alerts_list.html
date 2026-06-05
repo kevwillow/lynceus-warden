@@ -136,12 +136,21 @@
       </details>
     </form>
 
-    <form method="post" action="/alerts/bulk-ack">
+    {# Bulk-ack is a STANDALONE form that does NOT wrap the table. A form that
+       wrapped the rows made the per-row ack/unack/watch forms nested forms,
+       which HTML forbids: the parser dropped the first row's inner form (its
+       Acknowledge button then submitted bulk-ack instead of that row) and left
+       the rest fragile. Here the per-row selection checkboxes associate with
+       this form by id via the HTML form= attribute, so bulk select-and-ack
+       still works while every per-row form below is a real, un-nested form. #}
+    <form id="bulk-ack-form" method="post" action="/alerts/bulk-ack">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
       <p>
         <button type="submit">Acknowledge selected</button>
       </p>
-      <div class="table-scroll">
+    </form>
+
+    <div class="table-scroll">
         <table>
           <thead>
             <tr>
@@ -159,7 +168,7 @@
           <tbody>
             {% for a in alerts %}
               <tr class="row-sev-{{ a.severity }}{% if a.acknowledged %} row-acked{% endif %}">
-                <td><input type="checkbox" name="alert_ids" value="{{ a.id }}"></td>
+                <td><input type="checkbox" name="alert_ids" value="{{ a.id }}" form="bulk-ack-form"></td>
                 <td><time datetime="{{ a.ts | unix_to_iso }}">{{ a.ts | unix_to_iso }}</time></td>
                 <td><span class="badge-{{ a.severity }}">{{ a.severity }}</span></td>
                 <td>
@@ -215,7 +224,6 @@
           </tbody>
         </table>
       </div>
-    </form>
   {% else %}
     <p>
       <em>No alerts match the current filters.</em>

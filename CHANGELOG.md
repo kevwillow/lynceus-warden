@@ -74,6 +74,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The first alert row's "Acknowledge" / "unack" button now acts on that row
+  instead of silently triggering bulk-acknowledge.** The per-row ack/unack/watch
+  forms were nested inside the "Acknowledge selected" bulk form that wrapped the
+  whole table, which HTML forbids — the browser dropped the first row's inner
+  form, so its button submitted the bulk-ack form (acting on the checkbox
+  selection) rather than that single alert, and the remaining per-row forms were
+  left fragile DOM-nested children of the bulk form. The bulk-ack form is now a
+  standalone form that does not wrap the table; the per-row selection checkboxes
+  associate with it by id via the HTML `form=` attribute, so bulk
+  select-and-acknowledge still works, while every per-row action form is a real,
+  un-nested form that targets its own route. No server-side route or behaviour
+  change.
+
 - **Toggling a column's checkbox in the "columns" menu now repaints the box
   immediately instead of lagging behind the column reflow.** The change handler
   ran the heavy fixed-layout `<col>` reflow and the `localStorage` write
