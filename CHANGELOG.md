@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **ntfy alert notifications now carry the device type at a glance.** Every
+  rule-triggered alert notification gains a trailing
+  `| radio: <type> | category: <category>` on the message body: `radio` is the
+  Kismet radio-layer type off the observation (`wifi` / `ble` / `bt_classic` /
+  `remote_id`) and `category` is the matched Argus
+  `watchlist_metadata.device_category`. Both are display-only and never
+  inferred; an absent category renders a neutral em-dash (which also
+  distinguishes "no Argus category" from a literal Argus category of
+  `unknown`). The line is always appended after the existing
+  vendor/confidence suffix, so that suffix is unchanged. (The watchful
+  escalation and Kismet up/down notifications are intentionally left as-is —
+  the former is a recurrence reminder without the observation in scope, the
+  latter carries no device.)
+
 - **The /alerts list now has a "Category" column showing the matched device's
   Argus device category.** When an alert matched an Argus watchlist row that
   carries a `device_category` (e.g. `drone`, `camera`), that category is shown

@@ -21,7 +21,13 @@ from .config import Config, load_config
 from .db import Database, WatchfulRecurrence
 from .evidence import capture_evidence, maybe_prune_evidence
 from .kismet import FakeKismetClient, KismetClient
-from .notify import Notifier, NullNotifier, build_metadata_suffix, build_notifier
+from .notify import (
+    Notifier,
+    NullNotifier,
+    build_metadata_suffix,
+    build_notifier,
+    build_type_suffix,
+)
 from .rules import (
     Ruleset,
     RuntimeSeverityOverride,
@@ -478,17 +484,24 @@ def poll_once(
                     )
                 title = f"lynceus: {hit.severity.upper()} alert"
                 suffix = ""
+                device_category = None
                 if hit_match_id is not None:
                     try:
                         md = db.get_metadata_by_watchlist_id(hit_match_id)
                         suffix = build_metadata_suffix(md, oui_vendor=obs.oui_vendor)
+                        device_category = md.get("device_category") if md else None
                     except Exception:
                         suffix = ""
+                        device_category = None
+                # Display-only at-a-glance device type, always appended: radio
+                # category off the observation + Argus device_category off the
+                # match (em-dash placeholder when absent, no inference).
+                type_suffix = build_type_suffix(obs.device_type, device_category)
                 try:
                     ok = notifier.send(
                         severity=hit.severity,
                         title=title,
-                        message=hit.message + suffix,
+                        message=hit.message + suffix + type_suffix,
                     )
                     if not ok:
                         logger.warning("Notifier returned False for %s/%s", hit.rule_name, hit.mac)

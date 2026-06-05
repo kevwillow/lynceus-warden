@@ -213,6 +213,23 @@ def build_metadata_suffix(metadata: dict | None, oui_vendor: str | None = None) 
     return "".join(parts)
 
 
+def build_type_suffix(device_type: str | None, device_category: str | None) -> str:
+    """Return the ntfy body suffix carrying device type at a glance.
+
+    Format: " | radio: <device_type> | category: <device_category>". Unlike
+    build_metadata_suffix (which omits absent fields), this line is always
+    emitted so the operator gets a consistent at-a-glance type read on every
+    alert. Display-only: ``device_type`` is the Kismet radio-layer category
+    straight off the observation (wifi/ble/bt_classic/remote_id) and
+    ``device_category`` is the matched ``watchlist_metadata.device_category``
+    (Argus classification) — neither is inferred. An em-dash placeholder fills
+    an absent field; for ``device_category`` it deliberately distinguishes "no
+    Argus category" from a literal Argus category of "unknown"."""
+    radio = device_type if device_type else "—"
+    category = device_category if device_category else "—"
+    return f" | radio: {radio} | category: {category}"
+
+
 def build_notifier(config: Config) -> Notifier:
     if config.ntfy_url and config.ntfy_topic:
         return NtfyNotifier(
