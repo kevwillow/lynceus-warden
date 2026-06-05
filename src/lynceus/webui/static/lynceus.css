@@ -178,7 +178,7 @@ form.watch-form    { display: inline; margin-left: 0.4em; }
    this class, so the global form.watch-form rule and the home page are
    untouched. The buttons keep their width:auto sizing from 29ce7be, so stacking
    does not revert the Watch button to Pico's full-width default; this mirrors
-   the .watchful-actions flex pattern below. v0.9.2 issue C. */
+   the watchful-actions flex pattern below. v0.9.2 issue C. */
 .alert-action-controls {
     display: flex;
     flex-wrap: wrap;
