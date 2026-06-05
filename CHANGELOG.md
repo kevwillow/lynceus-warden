@@ -91,23 +91,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   re-growing the remaining columns. Browser-only presentation; persisted widths
   and the reorder/reset controls are unchanged.
 
-- **The /alerts action column no longer overflows to its full content width on
-  horizontal scroll.** This is a pre-existing issue, not a regression from the
-  column resize/reorder arc — `/alerts` is a bare table (no `data-table-id`),
-  so the global `.table-scroll th,td { white-space: nowrap }` rule that drives
-  the horizontal scroll forced the action cell's two inline forms (note input +
-  Acknowledge, plus the snooze select + Watch) onto one unbroken line, and the
-  ellipsis clamp scoped to `data-table-id` tables never applied to cap it. The
-  cell's controls are now laid out as a wrapping flex container in which each
-  inline form claims a full row (`flex: 1 0 100%`), so the acknowledge row and
-  the watch row stack deterministically in two rows instead of relying on a
-  marginal `max-width` to force the wrap; a `max-width: 22rem` is kept only as a
-  belt-and-suspenders upper bound (the widest row — the ack form — is ~14rem),
-  so the column can never regress to the original one-line overflow. The
-  override is scoped to that wrapper class only — the global nowrap rule and
-  every other table are untouched — and the buttons keep their `width: auto`
-  sizing from `29ce7be`, so stacking does not revert the Watch button to Pico's
-  full-width default; it mirrors the existing `.watchful-actions` flex pattern.
+- **The /alerts action column is now a single compact line instead of a
+  too-tall stack, and no longer overflows on horizontal scroll.** Pre-existing
+  issue, not a regression from the column resize/reorder arc — `/alerts` is a
+  bare table (no `data-table-id`), so the global `.table-scroll th,td {
+  white-space: nowrap }` rule forced the action cell's two inline forms (note
+  input + Acknowledge, snooze select + Watch) onto one unbroken line that spilled
+  to its full ~23rem content width. A first attempt stacked each form on its own
+  row (`flex: 1 0 100%`), which only made the cell taller — because a deeper
+  cause was hiding underneath: Pico's reset sizes form controls full-width via
+  `button[type=submit], input:not([type=checkbox],[type=radio]), select, textarea
+  { width: 100% }` at specificity `(0,1,1)`, which outranks the `(0,1,0)` class
+  rules meant to keep the note and buttons compact — so the note width and the
+  `29ce7be` button `width: auto` were silently dead and every control rendered
+  full-width and stacked. The action wrapper is now a single-line flex row, and
+  the compact-sizing rules are re-scoped under `.alert-action-controls` (lifting
+  them to `(0,2,0)` so they win over Pico), restoring the intended content-sized,
+  `width: auto`-matched buttons and a 10ch note — but only inside the /alerts
+  action cell, so the home page recent-alerts card (which shares the button
+  classes but not this wrapper) is untouched. The widest row now measures ~344px,
+  inside the `max-width: 22rem` upper bound that is kept as a belt-and-suspenders
+  cap (flex-wrap falls back to wrapping rather than re-spilling), so the column
+  can never regress to the original overflow.
 
 - **The "reset columns" control now sits above each resizable table instead
   of below it.** The control was emitted after the table, so on a long list an

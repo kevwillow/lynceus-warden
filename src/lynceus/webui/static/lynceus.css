@@ -168,24 +168,42 @@ form.watch-form    { display: inline; margin-left: 0.4em; }
    global table-scroll nowrap rule (th,td below) forces them onto one line and,
    because /alerts is a bare table (no data-table-id), nothing clamps the cell
    — so it spilled to its full ~23rem content width on horizontal scroll. Lay the
-   inner wrapper out as a wrapping flex container where each <form> claims a full
-   row (flex: 1 0 100%), so the ack row and the watch row stack deterministically
-   in two rows instead of relying on a marginal max-width to force the wrap. The
-   max-width is kept only as a belt-and-suspenders upper bound (the widest row —
-   the ack form — is ~14rem, comfortably under 22rem), so the column can never
-   regress to the original ~23rem one-line overflow. margin-left:0 neutralises
-   watch-form's inline 0.4em here so the two rows align flush-left; scoped to
-   this class, so the global form.watch-form rule and the home page are
-   untouched. The buttons keep their width:auto sizing from 29ce7be, so stacking
-   does not revert the Watch button to Pico's full-width default; this mirrors
-   the watchful-actions flex pattern below. v0.9.2 issue C. */
+   inner wrapper out as a single-line flex row: each <form> sizes to its content
+   (flex: 0 1 auto), so the ack form and the watch form sit side by side, with
+   the watch-form's inline 0.4em margin (form.watch-form above) supplying the gap
+   between them; align-items:center pins the note input, snooze select, and both
+   buttons to a common centreline. This replaces the earlier two-row stack
+   (flex: 1 0 100%, d7ebbef) that was taller than it needed to be.
+
+   The scoped width overrides below are load-bearing for the one line. Pico's
+   reset sizes form controls full-width --
+     button[type=submit], input:not([type=checkbox],[type=radio]), select, textarea { width: 100% }
+   -- at specificity (0,1,1), which OUTRANKS the (0,1,0) class rules that mean to
+   make them compact (.ack-row-note width, and the 29ce7be .ack-button-inline /
+   .watch-button-inline width:auto). So those declarations were silently dead:
+   the note + buttons rendered full-width and stacked, which is what made the
+   cell tall. Re-scoping them under .alert-action-controls lifts them to (0,2,0)
+   so they win over Pico, restoring the intended compact, content-sized,
+   width:auto-matched controls -- but ONLY inside this wrapper (/alerts), so the
+   home page recent-alerts card, which shares the button classes but not this
+   wrapper, is untouched. With the note at 10ch the widest row (unacked: note +
+   Acknowledge + snooze + Watch) measures ~344px, inside the max-width:22rem
+   (~352px at a 16px root) bound, so it holds one line; flex-wrap stays as a
+   belt-and-suspenders fallback so a future wider control wraps rather than
+   re-spilling the cell to its old ~23rem width. Mirrors the .watchful-actions
+   flex pattern below. v0.9.2 issue C. */
 .alert-action-controls {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     max-width: 22rem;
     white-space: normal;
 }
-.alert-action-controls > form { flex: 1 0 100%; margin-left: 0; }
+.alert-action-controls > form { flex: 0 1 auto; }
+.alert-action-controls .ack-row-note { width: 10ch; }
+.alert-action-controls .ack-button-inline,
+.alert-action-controls .watch-button-inline { width: auto; }
+.alert-action-controls .watch-snooze-select { width: auto; }
 
 /* /watchful Actions column: each row mixes several siblings -- two
    <form>s (reset, dismiss) plus three <details> disclosures
@@ -280,8 +298,11 @@ tr.row-watchful-archived  { opacity: 0.55; }
 .rssi-sparkline { color: currentColor; vertical-align: middle; }
 details > summary { cursor: pointer; }
 
-/* Inline ack note input */
-.ack-row-note { width: 18ch; font-size: 0.85em; padding: 1px 4px; }
+/* Inline ack note input. Width lives in the scoped .alert-action-controls
+   .ack-row-note rule above -- a bare .ack-row-note width loses to Pico's
+   (0,1,1) `input:not(...) { width:100% }`, whereas font-size + padding here win
+   over Pico's :where()-based (0,0,0) form defaults. */
+.ack-row-note { font-size: 0.85em; padding: 1px 4px; }
 
 /* Settings page: privacy and status badges. Privacy-on (probe SSIDs OFF)
    reuses the calm green tier; recording uses the amber/warning tier so
