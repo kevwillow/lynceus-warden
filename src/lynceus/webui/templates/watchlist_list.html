@@ -71,7 +71,7 @@
          {'label': 'argus id', 'key': 'argus_id'},
          {'label': 'confidence', 'key': 'confidence'},
        ] %}
-    {% call data_table(watchlist_columns, '/watchlist', '', '', '', table_id='watchlist') %}
+    {% call data_table(watchlist_columns, '/watchlist', '', '', '', table_id='watchlist', resize=true, hide=true) %}
           {% for e in entries %}
             <tr>
               <td><a href="/watchlist/{{ e.id }}"><code>{{ e.pattern }}</code></a></td>

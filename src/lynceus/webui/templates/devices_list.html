@@ -120,7 +120,7 @@
      ] %}
 
   {% if devices %}
-    {% call data_table(device_columns, '/devices', filter_qs, sort, dir, table_id='devices') %}
+    {% call data_table(device_columns, '/devices', filter_qs, sort, dir, table_id='devices', resize=true, hide=true) %}
           {% for d in devices %}
             <tr>
               <td>{{ d | device_label }}</td>

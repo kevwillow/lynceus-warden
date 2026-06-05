@@ -30,25 +30,39 @@
      paging preserves both. has_prev/has_next reduce to page > 1 and
      page < total_pages, which hold for either idiom. #}
 
-{% macro data_table(columns, endpoint, filter_qs, sort, dir, table_id=none) %}
-  {# ``table_id`` (optional) opts the table into the client-side column
-     resize + reorder + per-table persistence layer (v0.9.2). When set, each
-     column dict must also carry a stable 'key'; the macro emits a
-     data-table-id on the <table>, a <colgroup> of keyed <col>s, a
-     data-col-key + resize grip on each <th>, the inline pre-paint applier
-     call, and a reset control. Tables that omit table_id render exactly as
-     before -- the whole layer is opt-in, so unmigrated tables are
-     untouched. Resize/reorder are pure client-side presentation; the sort
-     <a> links stay server-side (Touch 1) and coexist with the drag via a
-     movement threshold in lynceus.js. #}
-  {% if table_id %}
-  {# Controls cluster ABOVE the table: a "columns" disclosure to show/hide
-     columns, plus the "reset columns" control. Both are siblings of (not inside)
-     .table-scroll, so a top placement does not scroll away with the table's
-     horizontal overflow; bindColumnsMenu / bindReset in lynceus.js wire them by
-     selector, independent of where they render. The pre-paint applier <script>
-     stays BELOW the table -- it must run after the table has parsed. #}
+{% macro data_table(columns, endpoint, filter_qs, sort, dir, table_id=none, resize=false, hide=false) %}
+  {# Per-feature opt-in (v0.9.2). ``table_id`` names the table (its
+     localStorage key + data-table-id value); ``resize`` and ``hide`` opt it
+     into, respectively, the client-side column resize/reorder grips and the
+     show/hide columns menu. Both default OFF, so a table is enhanced only by
+     explicit request -- a bare table_id with no flag now renders plain. Each
+     enhanced column dict must carry a stable 'key'.
+
+     Dependency graph: the keyed colgroup, the data-table-id attribute, the
+     per-th data-col-key, and the pre-paint applier call are INFRASTRUCTURE
+     shared by resize and hide, so they emit whenever (resize or hide); the
+     resize grips emit on ``resize`` alone; the columns menu emits on ``hide``
+     alone; the reset control emits whenever either persistent feature is on
+     (it clears widths, order, and hidden state together). Reorder rides on
+     the infrastructure (lynceus.js binds it to any keyed data-table-id
+     table), so it travels with resize. ``_enhanced`` is that shared gate.
+
+     Sorting is NOT a flag: each header's sort <a> is emitted from that
+     column's own 'sort' key (server-side, route-owned) independent of this
+     layer, and the 5th macro arg ``sort`` is the active sort key, not a
+     toggle. Sort links coexist with the reorder drag via a movement
+     threshold in lynceus.js. #}
+  {% set _enhanced = table_id and (resize or hide) %}
+  {% if _enhanced %}
+  {# Controls cluster ABOVE the table: the show/hide "columns" disclosure
+     (only when ``hide`` is on) plus the always-present "reset columns" control.
+     Both are siblings of (not inside) the scroll wrapper, so a top placement
+     does not scroll away with the table's horizontal overflow; bindColumnsMenu /
+     bindReset in lynceus.js wire them by selector, independent of where they
+     render. The pre-paint applier <script> stays BELOW the table -- it must run
+     after the table has parsed. #}
   <div class="table-controls">
+    {% if hide %}
     <details class="columns-menu" data-cols-for="{{ table_id }}">
       <summary>columns</summary>
       <div class="columns-menu-list" role="group" aria-label="show or hide columns">
@@ -62,12 +76,13 @@
         {% endfor %}
       </div>
     </details>
+    {% endif %}
     <button type="button" class="table-reset" data-table-reset="{{ table_id }}">reset columns</button>
   </div>
   {% endif %}
   <div class="table-scroll">
-    <table{% if table_id %} data-table-id="{{ table_id }}"{% endif %}>
-      {% if table_id %}
+    <table{% if _enhanced %} data-table-id="{{ table_id }}"{% endif %}>
+      {% if _enhanced %}
       <colgroup>{% for col in columns %}<col data-col-key="{{ col.key }}">{% endfor %}</colgroup>
       {% endif %}
       <thead>
@@ -76,11 +91,11 @@
             {% if col.sort %}
               {% set is_active = (col.sort == sort) %}
               {% set next_dir = (('asc' if dir == 'desc' else 'desc') if is_active else 'asc') %}
-              <th{% if table_id %} data-col-key="{{ col.key }}"{% endif %}{% if col.nowrap %} style="white-space: nowrap;"{% endif %} aria-sort="{{ ('ascending' if dir == 'asc' else 'descending') if is_active else 'none' }}">
-                <a class="th-sort{% if is_active %} th-sort-active{% endif %}" href="{{ endpoint }}?{{ filter_qs }}&sort={{ col.sort }}&dir={{ next_dir }}">{{ col.label }}{% if is_active %} <span class="th-sort-ind" aria-hidden="true">{% if dir == 'asc' %}&#9650;{% else %}&#9660;{% endif %}</span>{% endif %}</a>{% if table_id %}<span class="col-resizer" aria-hidden="true"></span>{% endif %}
+              <th{% if _enhanced %} data-col-key="{{ col.key }}"{% endif %}{% if col.nowrap %} style="white-space: nowrap;"{% endif %} aria-sort="{{ ('ascending' if dir == 'asc' else 'descending') if is_active else 'none' }}">
+                <a class="th-sort{% if is_active %} th-sort-active{% endif %}" href="{{ endpoint }}?{{ filter_qs }}&sort={{ col.sort }}&dir={{ next_dir }}">{{ col.label }}{% if is_active %} <span class="th-sort-ind" aria-hidden="true">{% if dir == 'asc' %}&#9650;{% else %}&#9660;{% endif %}</span>{% endif %}</a>{% if resize %}<span class="col-resizer" aria-hidden="true"></span>{% endif %}
               </th>
             {% else %}
-              <th{% if table_id %} data-col-key="{{ col.key }}"{% endif %}{% if col.nowrap %} style="white-space: nowrap;"{% endif %}>{{ col.label }}{% if table_id %}<span class="col-resizer" aria-hidden="true"></span>{% endif %}</th>
+              <th{% if _enhanced %} data-col-key="{{ col.key }}"{% endif %}{% if col.nowrap %} style="white-space: nowrap;"{% endif %}>{{ col.label }}{% if resize %}<span class="col-resizer" aria-hidden="true"></span>{% endif %}</th>
             {% endif %}
           {% endfor %}
         </tr>
@@ -90,7 +105,7 @@
       </tbody>
     </table>
   </div>
-  {% if table_id %}
+  {% if _enhanced %}
   {# Pre-paint: apply persisted order/widths synchronously, before the table
      paints, so a reload never flashes default->persisted (mirrors the theme
      bootstrap in base.html). #}

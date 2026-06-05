@@ -72,7 +72,7 @@
          {'label': 'source', 'key': 'source'},
          {'label': 'actions', 'key': 'actions'},
        ] %}
-    {% call data_table(watchful_columns, '/watchful', '', '', '', table_id='watchful') %}
+    {% call data_table(watchful_columns, '/watchful', '', '', '', table_id='watchful', resize=true, hide=true) %}
           {% for row in decorated %}
             {% set e = row.entry %}
             {% set state_label = row.state_label %}
