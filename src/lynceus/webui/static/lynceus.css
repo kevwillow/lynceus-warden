@@ -481,7 +481,11 @@ details > summary { cursor: pointer; }
     font-weight: normal;
     cursor: pointer;
 }
-.columns-menu-list input.col-toggle { width: auto; margin: 0; }
+/* Let Pico's 1.25em checkbox square stand: the box is appearance:none, so a
+   width:auto here collapsed it to a content-width (~0) sliver. Pico excludes
+   checkboxes from its width:100% reset, so no width override was ever needed.
+   margin:0 stays -- the label is a flex row with gap:0.4em for spacing. */
+.columns-menu-list input.col-toggle { margin: 0; }
 .table-reset {
     width: auto;
     margin: 0;

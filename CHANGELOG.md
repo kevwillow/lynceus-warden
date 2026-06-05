@@ -104,6 +104,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   control collapses from Pico's full width to its content width, while a
   bare-Pico control stays full width.
 
+- **The "columns" menu's show/hide checkboxes now render as proper boxes
+  instead of thin slivers.** The checkbox rule carried a `width: auto`, but Pico
+  draws checkboxes as `appearance: none` 1.25em squares and excludes them from
+  its `width: 100%` form reset — so the override was never needed and, on an
+  appearance-none box, `width: auto` collapsed it to its (zero) content width
+  plus borders, i.e. a ~4px sliver. Dropping the declaration lets Pico's square
+  stand; the surrounding label is a flex row whose `gap` still spaces the box
+  from its text. (Independent of the cascade-layer change above — the app rule
+  already won here, just with the wrong value.)
+
 - **The first alert row's "Acknowledge" / "unack" button now acts on that row
   instead of silently triggering bulk-acknowledge.** The per-row ack/unack/watch
   forms were nested inside the "Acknowledge selected" bulk form that wrapped the
