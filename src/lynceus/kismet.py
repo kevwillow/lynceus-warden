@@ -8,7 +8,7 @@ import re
 from typing import Any, Literal
 
 import requests
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -559,28 +559,41 @@ def parse_kismet_device(
         ble_manufacturer_id = _extract_ble_manufacturer_id(raw)
     drone_id_prefix = _extract_drone_id_prefix(raw)
 
-    return DeviceObservation(
-        mac=mac,
-        device_type=device_type,
-        first_seen=first_time,
-        last_seen=last_time,
-        rssi=rssi,
-        ssid=ssid,
-        oui_vendor=oui_vendor,
-        is_randomized=is_locally_administered(mac),
-        ble_service_uuids=ble_service_uuids,
-        seen_by_sources=seen_by_sources,
-        probe_ssids=probe_ssids,
-        ble_local_name=ble_name,
-        ble_manufacturer_id=ble_manufacturer_id,
-        drone_id_prefix=drone_id_prefix,
-        # Only carry the full Kismet record forward when evidence
-        # capture is enabled. Each record is tens of KB; for a poll
-        # batch of hundreds of devices, holding all of them in memory
-        # until poll_once returns is multi-MB of needless overhead
-        # when the evidence path will not consume them.
-        raw_record=raw if evidence_capture_enabled else None,
-    )
+    # A record that clears the guards above can still fail a pydantic
+    # validator or type coercion here (first_seen<=0, last<first,
+    # non-coercible rssi/oui_vendor). Containing that to None — same as the
+    # guarded drops — keeps one poison record from raising out of the eager
+    # get_devices_since fetch and aborting the whole poll tick, which froze
+    # last_poll and livelocked the daemon. The caller counts the None in
+    # unparseable_counter exactly like the missing-field/bad-mac drops.
+    try:
+        return DeviceObservation(
+            mac=mac,
+            device_type=device_type,
+            first_seen=first_time,
+            last_seen=last_time,
+            rssi=rssi,
+            ssid=ssid,
+            oui_vendor=oui_vendor,
+            is_randomized=is_locally_administered(mac),
+            ble_service_uuids=ble_service_uuids,
+            seen_by_sources=seen_by_sources,
+            probe_ssids=probe_ssids,
+            ble_local_name=ble_name,
+            ble_manufacturer_id=ble_manufacturer_id,
+            drone_id_prefix=drone_id_prefix,
+            # Only carry the full Kismet record forward when evidence
+            # capture is enabled. Each record is tens of KB; for a poll
+            # batch of hundreds of devices, holding all of them in memory
+            # until poll_once returns is multi-MB of needless overhead
+            # when the evidence path will not consume them.
+            raw_record=raw if evidence_capture_enabled else None,
+        )
+    except ValidationError as e:
+        logger.warning(
+            "dropping kismet device, failed validation: mac=%r: %s", raw_mac, e
+        )
+        return None
 
 
 class KismetClient:
