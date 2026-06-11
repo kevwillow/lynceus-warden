@@ -13,9 +13,9 @@ from pathlib import Path
 from . import __version__, paths
 from .allowlist import (
     Allowlist,
+    AllowlistParseError,
     _load_allowlist_with_counts,
     derive_ui_path,
-    load_allowlist,
 )
 from .config import Config, load_config
 from .db import Database, WatchfulRecurrence
@@ -786,8 +786,36 @@ class Poller:
             else None
         )
         self._allowlist_mtimes: dict[Path, float] = {}
+        # Set when the primary allowlist is corrupt at startup; the
+        # operator ntfy is deferred until build_notifier runs below,
+        # because the allowlist loads before the notifier exists.
+        self._allowlist_startup_degraded: str | None = None
         if self._allowlist_primary_path is not None:
-            self.allowlist = load_allowlist(str(self._allowlist_primary_path))
+            try:
+                merged, _primary_count, _ui_count = _load_allowlist_with_counts(
+                    str(self._allowlist_primary_path),
+                    raise_on_parse_error=True,
+                )
+            except AllowlistParseError as exc:
+                # Corrupt-but-present primary at startup. There is no
+                # last-good to retain (this IS the first load), so start
+                # with empty suppression to keep detection running — but
+                # make the degraded state un-missable: a CRITICAL log now
+                # plus an operator ntfy once the notifier exists (below).
+                # FileNotFoundError is deliberately NOT caught here: a
+                # missing primary is a config error that must crash the
+                # daemon rather than silently disable suppression.
+                self.allowlist = Allowlist()
+                self._allowlist_startup_degraded = str(exc)
+                logger.critical(
+                    "allowlist primary file %s failed to load at startup "
+                    "(%s); SUPPRESSION DISABLED — every allowlisted device "
+                    "can now alert until the file is fixed and reloaded",
+                    self._allowlist_primary_path,
+                    exc.__cause__,
+                )
+            else:
+                self.allowlist = merged
             self._allowlist_mtimes = self._current_allowlist_mtimes()
         else:
             self.allowlist = Allowlist()
@@ -805,6 +833,22 @@ class Poller:
             self.db, config.watchlist_staleness_warn_days, now_ts=int(time.time())
         )
         self.notifier: Notifier = build_notifier(config)
+        if self._allowlist_startup_degraded is not None:
+            # Deferred from the startup allowlist load above — the notifier
+            # did not yet exist there. NullNotifier (no ntfy configured) makes
+            # this a no-op, in which case the CRITICAL log above is the only
+            # signal — the accepted fallback. priority_override=4 mirrors the
+            # Kismet-loss operator alerts (below the 5 reserved for watchlist
+            # hits), so it does not pose as an opted-in device alert.
+            self.notifier.send(
+                "high",
+                "Lynceus: allowlist failed to load — suppression DISABLED",
+                f"The primary allowlist {self._allowlist_primary_path} could "
+                f"not be parsed at startup; Lynceus started with ZERO "
+                f"suppression. Every previously allowlisted device can raise "
+                f"alerts until the file is fixed and the daemon reloads it.",
+                priority_override=4,
+            )
         self._stop_flag = False
         # Runtime Kismet-loss alert state (0.9.1). In-memory by design: the
         # alert is for a daemon that STAYS UP while Kismet disappears mid-run,
@@ -1038,7 +1082,8 @@ class Poller:
             return
         try:
             merged, primary_count, ui_count = _load_allowlist_with_counts(
-                str(self._allowlist_primary_path)
+                str(self._allowlist_primary_path),
+                raise_on_parse_error=True,
             )
         except FileNotFoundError:
             # Operator deleted the primary file mid-run. Hold the
@@ -1049,6 +1094,22 @@ class Poller:
             logger.warning(
                 "allowlist primary file %s vanished; retaining last-known entries",
                 self._allowlist_primary_path,
+            )
+            self._allowlist_mtimes = current
+            return
+        except AllowlistParseError as exc:
+            # Operator saved a corrupt edit mid-run (a YAML slip or a bad
+            # field). Same fail-SAFE stance as the deleted-file path above:
+            # retain the last-known good allowlist instead of swapping in an
+            # empty one, which would drop every suppression at once and
+            # storm ntfy (A2). Update the mtime cache so we don't re-attempt
+            # the failing load every tick; fixing the file moves the mtime
+            # and trips a clean reload.
+            logger.warning(
+                "allowlist primary file %s could not be parsed (%s); "
+                "retaining last-known entries",
+                self._allowlist_primary_path,
+                exc.__cause__,
             )
             self._allowlist_mtimes = current
             return

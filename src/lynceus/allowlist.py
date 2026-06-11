@@ -39,6 +39,20 @@ from lynceus.patterns import (
 logger = logging.getLogger(__name__)
 
 
+class AllowlistParseError(Exception):
+    """The primary allowlist file exists but could not be parsed/validated.
+
+    Distinct from ``FileNotFoundError`` (missing file) and from a
+    valid-but-empty file (which parses cleanly to an empty ``Allowlist``
+    with no error). Raised only when ``_load_primary`` is asked to signal
+    parse failures (``raise_on_parse_error=True``) so a caller can fail
+    SAFE — retain its last-good allowlist — instead of swapping in an
+    empty one and dropping every suppression (the fail-open ntfy-storm
+    path A2 closes). The original YAML/validation cause is chained via
+    ``__cause__``.
+    """
+
+
 # Pattern types accepted by the allowlist. Mirrors the seven
 # delegation rule_types the watchlist supports so an operator can
 # express suppression in any shape the watchlist alerts on. The
@@ -207,15 +221,30 @@ def _load_ui_entries(ui_path: Path) -> list[AllowlistEntry]:
         return []
 
 
-def _load_primary(primary_path: Path) -> Allowlist:
+def _load_primary(
+    primary_path: Path, *, raise_on_parse_error: bool = False
+) -> Allowlist:
     """Read the operator-curated primary file.
 
-    Missing primary still raises ``FileNotFoundError`` — that case is
+    Missing primary always raises ``FileNotFoundError`` — that case is
     a configuration error (``allowlist_path`` pointing at nothing) and
-    must surface, not silently empty the allowlist. Malformed primary
-    logs ERROR and returns empty so a syntax slip in the operator file
-    doesn't crash the daemon; the ERROR line in journalctl is the
-    surfacing path.
+    must surface, not silently empty the allowlist.
+
+    A malformed-but-present primary (YAML syntax error or schema /
+    validation failure) is handled per ``raise_on_parse_error``:
+
+    - ``False`` (default): log ERROR and return an empty ``Allowlist``.
+      The lenient web-UI read views and the validate CLI rely on this —
+      a syntax slip must not 500 a page or crash the tool.
+    - ``True``: log ERROR and raise ``AllowlistParseError``. The poller
+      opts in so a parse failure fails SAFE (retain the last-good
+      allowlist on mid-run reload; degrade loudly at startup) rather
+      than fail-OPEN — an empty allowlist drops every suppression and
+      storms ntfy (A2).
+
+    A *valid-but-empty* file never reaches the except branch: it parses
+    cleanly to an empty ``Allowlist`` and returns normally under either
+    setting, so legitimate zero-entry allowlists keep working as empty.
     """
     if not primary_path.exists():
         raise FileNotFoundError(str(primary_path))
@@ -225,21 +254,32 @@ def _load_primary(primary_path: Path) -> Allowlist:
         return Allowlist(**data)
     except Exception as exc:
         logger.error(
-            "allowlist primary file %s could not be parsed (%s); treating as empty",
+            "allowlist primary file %s could not be parsed (%s)%s",
             primary_path,
             exc,
+            "" if raise_on_parse_error else "; treating as empty",
         )
+        if raise_on_parse_error:
+            raise AllowlistParseError(str(primary_path)) from exc
         return Allowlist()
 
 
-def _load_allowlist_with_counts(path: str) -> tuple[Allowlist, int, int]:
+def _load_allowlist_with_counts(
+    path: str, *, raise_on_parse_error: bool = False
+) -> tuple[Allowlist, int, int]:
     """Load the merged allowlist along with per-source entry counts.
 
     Returns ``(allowlist, primary_count, ui_count)``. The poller uses
     the counts for its reload INFO line; ``load_allowlist`` drops them.
+
+    ``raise_on_parse_error`` is forwarded to ``_load_primary``: when
+    True a malformed primary raises ``AllowlistParseError`` instead of
+    loading empty, so the poller can fail safe. The UI sibling stays
+    lenient regardless (a corrupt sibling only WARNINGs to empty) — it
+    is daemon-managed and not the load-bearing suppression surface.
     """
     primary_path = Path(path)
-    primary = _load_primary(primary_path)
+    primary = _load_primary(primary_path, raise_on_parse_error=raise_on_parse_error)
     ui_entries = _load_ui_entries(derive_ui_path(primary_path))
     if not ui_entries:
         return primary, len(primary.entries), 0
