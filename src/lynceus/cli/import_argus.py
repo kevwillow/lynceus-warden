@@ -434,6 +434,32 @@ class ImportReport:
         )
         return "\n".join(lines)
 
+    def wrote_any(self) -> bool:
+        """True when at least one row produced a watchlist write or no-op
+        confirmation (new insert, update, or unchanged re-import).
+
+        ``operator_preserved`` is DELIBERATELY excluded: a preserved
+        operator-seeded collision (G4) writes nothing — the operator row
+        is left untouched and no Argus metadata is attached — so counting
+        it as "written" would let a conflict mask a total write failure.
+        """
+        return (self.imported_new + self.updated + self.unchanged) > 0
+
+    def is_total_failure(self) -> bool:
+        """True when the import WHOLLY failed: at least one row errored and
+        not a single row wrote.
+
+        Keys on ``errors`` (per-row classification / DB-write failures)
+        ONLY. ``operator_preserved`` collisions are intentional declines,
+        not errors, and never trip this — a conflict-only import
+        (``operator_preserved`` > 0, ``errors`` == 0) is not a failure.
+        A total failure must exit non-zero and skip the ``import_runs``
+        freshness row so a wholly-failed import is not indistinguishable
+        from a clean one. See
+        tests/test_diag_g5_exit_freshness_on_total_failure.py.
+        """
+        return self.errors > 0 and not self.wrote_any()
+
 
 def _validate_header(header: list[str]) -> None:
     if header == EXPECTED_HEADER:
@@ -1147,12 +1173,31 @@ def import_csv(
                 f"row argus_record_id={c.argus_id!r}: {exc}"
             )
 
-    if not dry_run:
+    if not dry_run and report.is_total_failure():
+        # G5: every row failed (errors > 0, nothing written). Do NOT
+        # record an import_runs freshness row — the staleness signal must
+        # stay at the last GOOD import rather than falsely reporting this
+        # wholly-failed run as a recent refresh. main() returns non-zero
+        # for the same condition; the two together stop a totally-failed
+        # import from looking identical to a clean one. operator_preserved
+        # collisions (G4) are intentional declines, not errors, so a
+        # conflict-only import never reaches here. See
+        # tests/test_diag_g5_exit_freshness_on_total_failure.py.
+        logger.error(
+            "argus import: every row failed (%d error(s), 0 written) — "
+            "NOT recording an import_runs freshness row; the staleness "
+            "signal stays at the last good import. See the error log above.",
+            report.errors,
+        )
+    elif not dry_run:
         # Record this import_run for the freshness signal at /settings
         # and the poller's startup log. --dry-run wrote nothing to
         # watchlist/watchlist_metadata, so it must not write to
         # import_runs either — otherwise the staleness card would
-        # claim a recent refresh that never landed.
+        # claim a recent refresh that never landed. A PARTIAL import
+        # (some rows wrote, some errored) DOES record: data changed, so
+        # the freshness signal is legitimate; the non-zero exit from
+        # main() is what surfaces the errors to cron.
         #
         # exported_at falls through as None for malformed / missing
         # meta lines (parse_argus_meta is tolerant); record_count
@@ -1419,6 +1464,25 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(report.render())
+    # Non-zero exit whenever any row errored. report.errors counts ONLY
+    # real per-row failures — malformed rows that violate the validated
+    # CSV contract, or DB-write failures. Every routine/expected drop
+    # (unknown_type, geographic_filter, low_confidence, severity_drop,
+    # normalization_failed, peer_collision, in_import_dup, placeholder_oui)
+    # has its own dropped_* counter and never lands in errors, so an error
+    # in cron signals a real problem the operator must see — whether the
+    # import wholly failed (G5: 0 written) or partially landed. The
+    # wholly-failed case ALSO skipped the import_runs freshness write in
+    # import_csv. operator_preserved (G4) is an intentional decline, not
+    # an error, and never trips this. See
+    # tests/test_diag_g5_exit_freshness_on_total_failure.py.
+    if report.errors > 0:
+        logger.error(
+            "argus import completed with %d row error(s); the import did "
+            "not fully succeed (see error log above).",
+            report.errors,
+        )
+        return 1
     return 0
 
 
