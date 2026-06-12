@@ -336,6 +336,16 @@ class ImportReport:
     imported_new: int = 0
     updated: int = 0
     unchanged: int = 0
+    # Natural-key collisions where a watchlist row already exists with
+    # NO Argus metadata (operator-seeded: YAML seed or hand edit) and
+    # the incoming Argus row would otherwise overwrite it. Operator
+    # decision OVERRIDES Argus on conflict (G4): the operator's severity
+    # and description are preserved, no Argus metadata is attached (so
+    # the row keeps reading operator-seeded on later imports), and the
+    # decline is surfaced here instead of silently counted as
+    # imported_new. Re-reports every import until the operator resolves
+    # the disagreement. See tests/test_diag_g4_severity_overwrite.py.
+    operator_preserved: int = 0
     dropped_mac_range: int = 0
     dropped_severity_drop: int = 0
     dropped_geographic_filter: int = 0
@@ -378,6 +388,8 @@ class ImportReport:
             f"{prefix}Imported (new): {self.imported_new}",
             f"{prefix}Updated (existing): {self.updated}",
             f"{prefix}Unchanged (no field deltas): {self.unchanged}",
+            f"{prefix}Operator-seeded preserved (Argus declined): "
+            f"{self.operator_preserved}",
             f"{prefix}Dropped (mac_range): {self.dropped_mac_range}",
             f"{prefix}Dropped (severity_drop): {self.dropped_severity_drop}",
             f"{prefix}Dropped (geographic_filter): {self.dropped_geographic_filter}",
@@ -408,6 +420,7 @@ class ImportReport:
         lines.append(
             f"{prefix}imported {self.imported_new} records, "
             f"updated {self.updated}, "
+            f"operator-preserved {self.operator_preserved}, "
             f"dropped {total_dropped} "
             f"({self.dropped_mac_range} mac_range, "
             f"{self.dropped_geographic_filter} geographic_filter, "
@@ -616,6 +629,32 @@ def _watchlist_row_by_natural_key(db: Database, pattern: str, pattern_type: str)
         (pattern, pattern_type),
     ).fetchone()
     return dict(row) if row is not None else None
+
+
+def _warn_operator_preserved(candidate: _Candidate, operator_wl: dict) -> None:
+    """Surface an operator-seeded natural-key collision (G4).
+
+    The operator placed this watchlist row (YAML seed / hand edit) and
+    it carries no Argus metadata; an incoming Argus row collides on the
+    natural key. Operator decision OVERRIDES Argus, so the importer
+    keeps the operator's severity + description, attaches no metadata,
+    and emits this WARNING naming the kept vs declined severity. Fires
+    on every preserved collision (including when the severities happen
+    to agree) so the operator always sees that Argus was declined on
+    their row — killing the silent-overwrite the pre-fix path produced.
+    """
+    logger.warning(
+        "argus import: operator-seeded %s %s: kept operator severity %r, "
+        "declined Argus severity %r (argus_record_id=%s). The operator "
+        "row OVERRIDES Argus on conflict; its severity and description "
+        "are preserved and no Argus metadata is attached. This re-reports "
+        "every import until the operator resolves the disagreement.",
+        operator_wl["pattern_type"],
+        operator_wl["pattern"],
+        operator_wl["severity"],
+        candidate.severity,
+        candidate.argus_id,
+    )
 
 
 @dataclass
@@ -1012,6 +1051,31 @@ def import_csv(
                 else None
             )
 
+            # Operator-seeded collision (G4): Argus has no metadata for
+            # this argus_record_id, yet a watchlist row already exists at
+            # the natural key. That row was placed by the operator (YAML
+            # seed / hand edit), not a prior Argus import. Operator
+            # decision OVERRIDES Argus, so we preserve it COMPLETELY —
+            # no severity/description overwrite, no metadata attach.
+            #
+            # NOTE (leaky proxy, deliberate): existing_md-is-None is the
+            # operator-seeded signal but it is not airtight. An Argus row
+            # whose argus_record_id was re-keyed upstream (same natural
+            # key, NEW id) also reads existing_md-is-None while its
+            # watchlist row carries metadata under the OLD id; it would
+            # be preserved here as if operator-seeded and never re-adopt
+            # the Argus update. The precise signal is
+            # db.get_metadata_by_watchlist_id(wl_id) is None. Proceeding
+            # with the proxy per the G4 decision — the misfire degrades
+            # to a harmless WARN + declined-update rather than the silent
+            # severity clobber it replaces. This is the argument for the
+            # later operator-override flag (option D).
+            operator_wl = (
+                _watchlist_row_by_natural_key(db, c.pattern, c.pattern_type)
+                if existing_md is None
+                else None
+            )
+
             wl_changed = existing_wl is not None and (
                 existing_wl["severity"] != c.severity
                 or (existing_wl["description"] or None) != (c.description or None)
@@ -1021,7 +1085,10 @@ def import_csv(
             )
 
             if dry_run:
-                if existing_md is None:
+                if operator_wl is not None:
+                    report.operator_preserved += 1
+                    _warn_operator_preserved(c, operator_wl)
+                elif existing_md is None:
                     report.imported_new += 1
                 elif wl_changed or md_changed:
                     report.updated += 1
@@ -1029,39 +1096,35 @@ def import_csv(
                     report.unchanged += 1
                 continue
 
-            if existing_md is None:
-                # Argus side has no record for this argus_record_id:
-                # insert a new watchlist row, OR attach metadata to an
-                # existing YAML-seeded watchlist row that already
-                # matches the natural key.
-                wl_row = _watchlist_row_by_natural_key(db, c.pattern, c.pattern_type)
-                if wl_row is not None:
-                    watchlist_id = int(wl_row["id"])
-                    if wl_row["severity"] != c.severity or (wl_row["description"] or None) != (
-                        c.description or None
-                    ):
-                        with db._conn:
-                            db._conn.execute(
-                                "UPDATE watchlist SET severity = ?, description = ? WHERE id = ?",
-                                (c.severity, c.description, watchlist_id),
-                            )
-                else:
-                    with db._conn:
-                        cur = db._conn.execute(
-                            "INSERT INTO watchlist("
-                            "pattern, pattern_type, severity, description, "
-                            "mac_range_prefix, mac_range_prefix_length) "
-                            "VALUES (?, ?, ?, ?, ?, ?)",
-                            (
-                                c.pattern,
-                                c.pattern_type,
-                                c.severity,
-                                c.description,
-                                c.mac_range_prefix,
-                                c.mac_range_prefix_length,
-                            ),
-                        )
-                        watchlist_id = int(cur.lastrowid)
+            if operator_wl is not None:
+                # Preserve the operator row untouched. CRITICAL: do NOT
+                # call upsert_metadata here — attaching metadata keyed by
+                # c.argus_id would make existing_md non-None on the next
+                # import, flipping this row out of the operator-seeded
+                # branch and silently re-enabling the overwrite. Leave it
+                # metadata-free so it keeps reading operator-seeded.
+                report.operator_preserved += 1
+                _warn_operator_preserved(c, operator_wl)
+            elif existing_md is None:
+                # Argus side has no record for this argus_record_id and
+                # no operator row holds the natural key: insert a new
+                # watchlist row and attach its Argus metadata.
+                with db._conn:
+                    cur = db._conn.execute(
+                        "INSERT INTO watchlist("
+                        "pattern, pattern_type, severity, description, "
+                        "mac_range_prefix, mac_range_prefix_length) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            c.pattern,
+                            c.pattern_type,
+                            c.severity,
+                            c.description,
+                            c.mac_range_prefix,
+                            c.mac_range_prefix_length,
+                        ),
+                    )
+                    watchlist_id = int(cur.lastrowid)
                 db.upsert_metadata(watchlist_id, c.new_metadata)
                 report.imported_new += 1
             else:
