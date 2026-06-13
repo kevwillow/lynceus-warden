@@ -225,6 +225,13 @@ def poll_once(
     last_poll_str = db.get_state(STATE_KEY_LAST_POLL)
     last_poll_ts = int(last_poll_str) if last_poll_str else 0
     db.ensure_location(config.location_id, config.location_label)
+    # ensure_location is a write transaction (INSERT ... ON CONFLICT DO
+    # UPDATE) on every call. Track the location ids already ensured this
+    # tick so the per-observation call below fires only for a genuinely-new
+    # source_locations-remapped location -- not once per observation for the
+    # common single-location case, which would re-commit the same row N
+    # times a tick. Seeded with the default just ensured above.
+    ensured_locations: set[str] = {config.location_id}
     # unparseable_counter is the only out-of-band signal the client
     # surfaces: parse_kismet_device returns None inside the client
     # (unknown device type, malformed mac, missing required field),
@@ -291,7 +298,9 @@ def poll_once(
 
             existing_device = db.get_device(obs.mac)
             is_new = existing_device is None
-            db.ensure_location(effective_location_id, effective_location_label)
+            if effective_location_id not in ensured_locations:
+                db.ensure_location(effective_location_id, effective_location_label)
+                ensured_locations.add(effective_location_id)
             db.upsert_device(
                 mac=obs.mac,
                 device_type=obs.device_type,
