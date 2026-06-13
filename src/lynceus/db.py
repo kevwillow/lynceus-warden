@@ -771,6 +771,65 @@ class Database:
             ),
         )
 
+    def _lookup_drone_id_prefix_match(
+        self, captured: str
+    ) -> ResolvedWatchlistMatch | None:
+        """Longest drone_id_prefix watchlist row that LEADS ``captured``.
+
+        Argus MAC-357: watchlist.pattern for 'drone_id_prefix' stores
+        the Longest Common Prefix of a registered serial range, so a
+        captured Remote-ID serial matches when it *starts with* a
+        stored prefix — not on equality. A real wire serial is longer
+        than the stored prefix, so the equality lookup the sibling
+        matchers use (``_lookup_simple_watchlist_match``) would miss
+        every device; this is the load-bearing correction. When several
+        prefixes lead the same serial (a manufacturer-level '1581F' and
+        a model-level '1581F836'), the LONGEST wins: it is the
+        most-specific attribution and carries the correct
+        severity/identity — ``ORDER BY length DESC LIMIT 1`` selects it.
+
+        The prefix test is ``substr(captured, 1, length(pattern)) =
+        pattern`` rather than a LIKE: the binary ``=`` keeps the
+        case-sensitivity the equality matcher had (SQLite LIKE is
+        ASCII-case-insensitive, which would silently let a lowercase
+        serial match), and it carries no '%'/'_' wildcard
+        metacharacters to escape. The drone_id_prefix slice is ~427
+        rows, so the length-ordered scan is negligible. Kept separate
+        from ``_lookup_simple_watchlist_match`` so the equality
+        semantics of every other pattern_type are untouched.
+
+        Returns None for falsy ``captured``.
+        """
+        if not captured:
+            return None
+        row = self._conn.execute(
+            "SELECT w.id AS id, w.severity AS severity, "
+            "m.device_category AS device_category, "
+            "m.vendor AS manufacturer, "
+            "m.argus_record_id AS argus_record_id "
+            "FROM watchlist w "
+            "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
+            "WHERE w.pattern_type = 'drone_id_prefix' "
+            "AND substr(?, 1, length(w.pattern)) = w.pattern "
+            "ORDER BY length(w.pattern) DESC LIMIT 1",
+            (captured,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ResolvedWatchlistMatch(
+            watchlist_id=int(row["id"]),
+            severity=str(row["severity"]),
+            device_category=(
+                str(row["device_category"]) if row["device_category"] is not None else None
+            ),
+            manufacturer=(
+                str(row["manufacturer"]) if row["manufacturer"] is not None else None
+            ),
+            argus_record_id=(
+                str(row["argus_record_id"]) if row["argus_record_id"] is not None else None
+            ),
+        )
+
     def resolve_matched_watchlist_id(
         self,
         *,
@@ -849,9 +908,10 @@ class Database:
             if mac_range_matches:
                 return mac_range_matches[0].watchlist_id
         if drone_id_prefix:
-            match = self._lookup_simple_watchlist_match(
-                "drone_id_prefix", drone_id_prefix
-            )
+            # Leading-substring, longest-match — Argus MAC-357. Mirrors
+            # the eval-path resolver so the annotated row id agrees with
+            # the row that fired the rule.
+            match = self._lookup_drone_id_prefix_match(drone_id_prefix)
             if match is not None:
                 return match.watchlist_id
         if ble_local_name:
@@ -1145,27 +1205,24 @@ class Database:
     def resolve_matched_drone_id_prefix_for_eval(
         self, drone_id: str | None
     ) -> ResolvedWatchlistMatch | None:
-        """Watchlist row for an exact drone Remote-ID prefix match, or None.
+        """Watchlist row whose stored prefix LEADS ``drone_id``, or None.
 
-        ``drone_id`` is the ANSI/CTA-2063-A serial-number prefix in
-        the canonical persistent form (uppercase ASCII alphanumeric —
-        see patterns._normalize_drone_id_prefix). Callers passing an
-        observation field should normalize through
-        normalize_pattern('drone_id_prefix', value) first.
-
-        Matching is exact-equality on the prefix string. The Argus
-        rows are themselves prefixes (3-20 chars in the
-        2026-05-14 snapshot), so an operator who wants
-        startswith-style matching against a longer observed serial
-        number would need a separate range/prefix matcher — that is
-        future work, not in scope for this commit. Used by
+        ``drone_id`` is the captured ANSI/CTA-2063-A Remote-ID serial
+        in canonical form (uppercase ASCII alphanumeric, separators
+        already stripped — see kismet._coerce_drone_id_prefix). The
+        stored watchlist patterns are Longest-Common-Prefix fragments
+        of registered serial ranges, so matching is leading-substring,
+        not equality: a real wire serial is longer than the stored
+        prefix and equality would miss every device (Argus MAC-357).
+        The longest leading prefix wins for the most-specific
+        attribution — see _lookup_drone_id_prefix_match. Used by
         rules.evaluate's watchlist_drone_id_prefix branch when
-        rule.patterns is empty (delegation mode). Falsy
-        ``drone_id`` short-circuits to None.
+        rule.patterns is empty (delegation mode). Falsy ``drone_id``
+        short-circuits to None.
         """
         if not drone_id:
             return None
-        return self._lookup_simple_watchlist_match("drone_id_prefix", drone_id)
+        return self._lookup_drone_id_prefix_match(drone_id)
 
     def get_recent_alert_for_rule_and_mac(
         self,

@@ -173,9 +173,13 @@ def _entry_matches(entry: AllowlistEntry, obs: DeviceObservation) -> bool:
             and obs.ble_manufacturer_id == entry.pattern
         )
     if pt == "drone_id_prefix":
+        # Leading-substring, mirroring the watchlist matcher (Argus
+        # MAC-357). The stored entry is an LCP prefix; a captured wire
+        # serial is longer, so equality would never suppress. An
+        # operator suppressing one exact serial enters the full serial.
         return (
             obs.drone_id_prefix is not None
-            and obs.drone_id_prefix == entry.pattern
+            and obs.drone_id_prefix.startswith(entry.pattern)
         )
     if pt == "ble_local_name":
         return (

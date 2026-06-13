@@ -1198,7 +1198,12 @@ def evaluate(
                 continue
             if rule.patterns:
                 # In-memory match path. Severity sourced from the rule.
-                if obs.drone_id_prefix in rule.patterns:
+                # Argus MAC-357: stored patterns are LCP prefixes, so a
+                # captured wire serial matches when it LEADS with one of
+                # them — not on equality (a real serial is longer than
+                # the stored prefix). Severity is rule-level, so no
+                # longest-match tiebreak is needed here.
+                if any(obs.drone_id_prefix.startswith(p) for p in rule.patterns):
                     msg = (
                         f"Drone Remote-ID {obs.drone_id_prefix} on "
                         f"watchlist: {rule.description or rule.name} "

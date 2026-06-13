@@ -18,6 +18,14 @@ _MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _BLE_MANUF_ID_RE = re.compile(r"^[0-9a-f]{4}$")
 _DRONE_ID_RE = re.compile(r"^[A-Z0-9]{3,32}$")
+# Separators tolerated inside a captured Remote-ID serial and removed
+# before validation: surrounding/embedded whitespace, NUL padding from
+# fixed-width wire fields, and the punctuation (hyphen, colon, dot,
+# underscore) some RID decoders insert into the serial. Per Argus
+# MAC-357 the stored prefixes carry none of these, so the captured
+# value is coerced to the same separator-free shape rather than
+# dropped — see _coerce_drone_id_prefix.
+_DRONE_ID_SEP_RE = re.compile(r"[\s\x00:._-]+")
 
 _TYPE_MAP: dict[str, Literal["wifi", "ble", "bt_classic", "remote_id"]] = {
     "Wi-Fi AP": "wifi",
@@ -405,13 +413,18 @@ _DRONE_ID_PATHS: tuple[tuple[str, ...], ...] = (
 def _coerce_drone_id_prefix(value: object) -> str | None:
     """Normalize a Kismet Remote-ID serial-number to canonical form.
 
-    Accepts string; uppercases + strips. Returns the canonical
-    uppercase ASCII alphanumeric string (3-32 chars), or None for
-    any value that fails the shape check.
+    Strip-don't-reject (Argus MAC-357): removes whitespace, NUL
+    padding, and separator punctuation (hyphen/colon/dot/underscore)
+    that a decoder may have inserted, then uppercases. Only after that
+    cleanup is the result shape-checked — a value that is STILL not
+    clean ASCII alphanumeric (3-32 chars) is genuine garbage and
+    returns None. Previously any embedded separator was rejected
+    outright, which dropped every hyphenated serial before it could
+    reach the leading-substring match.
     """
     if not isinstance(value, str):
         return None
-    s = value.strip().upper()
+    s = _DRONE_ID_SEP_RE.sub("", value).upper()
     if not (3 <= len(s) <= 32):
         return None
     if not s.isascii() or not s.isalnum():
