@@ -308,6 +308,56 @@ block) rather than first textual occurrence.
 - **Notes**: tests are gitignored (OPSEC), so this is local-only test
   maintenance, no repo commit for the tests themselves.
 
+### README integrity: ble_uuid-dependent claims vs the current capture path
+The README advertises "BLE service UUID" matching and "AirTag-class tracker
+recognition", both of which ride the `ble_uuid` surface — which does not fire
+on the current Kismet classic-HCI capture path (see "BLE advertisement-payload
+capture" under Network capture features). The claims describe built, tested
+matchers that are inert in the field.
+- **Trigger**: resolve in whichever direction the BLE-bridge decision goes.
+- **Notes**: two ways to make the README accurate again — build the passive
+  bleak bridge so the claims fire, OR soften the claims to "implemented,
+  pending a capture path". Operator decision; deliberately left out of the
+  v0.9.2 push.
+
+### G4 operator-seeded collision: argus_record_id durability signal
+The v0.9.2 G4 fix preserves operator-seeded watchlist severities on an Argus
+collision using `existing_md is None` as the "operator-seeded" proxy. That
+proxy also catches an Argus row whose `argus_record_id` was re-keyed upstream
+(it too reads metadata-None) and would be preserved as if operator-seeded — a
+harmless WARN + declined update rather than the silent clobber it replaced, but
+still a misfire.
+- **Trigger**: the operator-override flag work, OR observed Argus record_id
+  churn that mislabels real Argus rows as operator-seeded.
+- **Notes**: the precise signal is `get_metadata_by_watchlist_id is None`;
+  deferred to the operator-override flag arc per the G4 commit.
+
+### A2 startup allowlist-failure ntfy: assert the deferred emit
+The v0.9.2 A2 fix raises an operator ntfy when the allowlist fails to load at
+startup, but the emit is deferred until `build_notifier` runs and is a no-op
+when ntfy is unconfigured (the CRITICAL log is then the sole signal). No test
+asserts the deferred ntfy actually fires when ntfy IS configured.
+- **Trigger**: next arc touching the allowlist loader or startup notifier
+  wiring.
+- **Notes**: tests are gitignored (OPSEC); local-only diagnostic to add.
+
+### A2 _load_ui_entries fail-open sibling
+The A2 fix hardened the load-bearing suppression loader; the UI sibling loader
+`_load_ui_entries` keeps its lenient corrupt → WARNING → empty behavior. It is
+daemon-managed and not the suppression surface, so this is a lower-severity
+asymmetry, explicitly left unfixed in v0.9.2.
+- **Trigger**: if the UI read views ever become suppression-relevant, or any
+  arc already in `_load_ui_entries`.
+
+### Stale diagnostic: test_diag_home_ack_flow content assertions
+`test_diag_home_ack_flow` asserts page content (hx attributes) that has since
+moved into the `_alert_row.html` partial, so it fails pre-existingly under
+`pytest -m diagnostic`. Not a regression — the assertions are stale against the
+current template split.
+- **Trigger**: next time the diagnostic suite is run pre-push, or any arc
+  touching the home-page ack flow / alert-row partial.
+- **Notes**: tests are gitignored (OPSEC); local-only test maintenance.
+
 ## Network capture features
 
 ### Per-band filtering (2.4/5/6 GHz)
@@ -329,3 +379,34 @@ alert" tier that fires on kismet-down, db-locked, etc.
 ### Per-channel filtering
 Same logic as per-band — wait until the simpler primitives prove
 insufficient.
+
+### BLE advertisement-payload capture (passive bleak bridge)
+The `ble_uuid`, `ble_manufacturer_id`, and drone Remote-ID matchers do not fire
+on the current capture path: Kismet's classic-HCI Bluetooth datasource surfaces
+no advertisement payload, so service UUIDs, 16-bit company ids, and Remote-ID
+serials never reach the matcher. Rig-confirmed 2026-06-17 that a BlueZ/bleak
+passive scan on the *same* adapter DOES surface company ids and service UUIDs —
+the data exists; Kismet's classic path just doesn't expose it.
+- **Trigger**: when BLE/drone detection is wanted enough to add a second
+  capture path. The matchers are already built and tested; only the capture
+  bridge and a real matching strategy are missing.
+- **Estimated**: investigation-first arc. A passive `bleak` bridge on the
+  existing hardware feeding observations into the poll path, plus a real
+  matching strategy — company-id alone is too coarse (one id covers a whole
+  vendor); it needs payload-format signatures and follow-detection.
+- **Notes**: passive-only, consistent with the project stance — observe and
+  match, never connect/pair/probe. Pairs with the README-integrity follow-up
+  (the README already claims BLE-UUID / AirTag-class recognition that rides this
+  surface) and the D2 drone field-path confirmation below.
+
+### D2 drone Remote-ID live field-path confirmation
+The `drone_id_prefix` leading-substring matcher (v0.9.2) is correct but inert:
+the live Kismet Remote-ID JSON field path (`kismet._DRONE_ID_PATHS`) is still an
+unverified guess — no drone has been captured, so which path carries the serial
+is unknown. `_DRONE_ID_PATHS` is unchanged until a live capture proves it.
+- **Trigger**: a live drone Remote-ID capture on the rig, or a confirmed Kismet
+  field-path reference.
+- **Notes**: blocks nothing else — the matcher, capture coercion, and allowlist
+  mirror are all in place and tested; this is the one runtime fact that can only
+  come from real hardware. Likely confirmed alongside the BLE advertisement-
+  payload bridge above.
