@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-06-17
+
 ### Added
 
 - **ntfy alert notifications now carry the device type at a glance.** Every
@@ -120,7 +122,113 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   offered the full set (10–500) and are unchanged, and the choice is not
   persisted across visits.
 
+### Performance
+
+- **Two hot-path indexes (migration 022) cut watchlist-eval and `/devices`-sort
+  latency on large tables.** `idx_watchlist_pattern_type_pattern` on
+  `watchlist(pattern_type, pattern)` turns the per-observation simple-equality
+  lookup from a full watchlist SCAN into an index SEARCH (miss latency
+  ~0.72ms → ~0.013ms on a 30k-row watchlist), so the common case — a device
+  not on the watchlist — can LIMIT-exit early instead of scanning the whole
+  table. `idx_devices_last_seen` on `devices(last_seen)` removes the TEMP
+  B-TREE sort behind the default `/devices` page's `ORDER BY last_seen DESC`
+  (first-page latency ~17.4ms → ~0.52ms on 30k devices). Both indexes are
+  non-UNIQUE (duplicate `(pattern_type, pattern)` rows are legitimate, and a
+  UNIQUE index would reject valid data), distinct from the partial
+  `idx_watchlist_mac_range_prefix`; the `/alerts` hot path was checked and
+  needs no new index (`idx_alerts_ts` already yields a reverse index scan).
+  Reversible via the paired `022_hot_path_indexes_down.sql`.
+
+- **The poller now ensures each distinct location once per tick instead of once
+  per admitted observation.** `poll_once` called `ensure_location` — a write
+  transaction (`INSERT … ON CONFLICT(id) DO UPDATE`) — once before the loop and
+  again for every admitted observation, so a typical single-location tick with
+  five observations issued six location-write commits for one distinct location
+  (and it scaled 1:1 with observations). The loop now tracks the location ids
+  already ensured this tick, seeded with the pre-loop default, and ensures a
+  location only the first time it is seen, dropping the common all-default-
+  location case to a single write. This is not pure dedup: a
+  `source_locations`-remapped observation genuinely targets a different
+  location, and every distinct remapped location is still ensured exactly once.
+
 ### Fixed
+
+- **A single unparseable Kismet device record no longer aborts the entire poll
+  tick.** A record that cleared the early None-returning guards in
+  `parse_kismet_device` but then failed a pydantic validator/coercion (e.g.
+  `first_seen <= 0`, `last_seen < first_seen`, a non-coercible rssi/oui_vendor)
+  raised `ValidationError` at the unguarded `DeviceObservation` construction.
+  Because the batch is materialized eagerly outside `poll_once`'s
+  per-observation try/except, that raise discarded every co-batched good record
+  and left `last_poll` un-advanced — so each subsequent tick re-queried the same
+  window and re-hit the same poison record, a livelock (the daemon stayed alive
+  via the per-tick catch but was frozen forever). The construction is now
+  wrapped to log a WARNING with the source MAC and return `None`, mirroring the
+  existing missing-field/bad-mac drops: the record is counted in the unparseable
+  tally and skipped, the batch's good records persist, and `last_poll` advances
+  normally.
+
+- **A corrupt primary allowlist now retains the last-good suppression instead of
+  failing open.** A parse/validation error in `_load_primary` was swallowed and
+  returned an empty `Allowlist`, and the mid-run reload guarded only
+  `FileNotFoundError` — so a corrupt allowlist dropped every suppression at once,
+  flowing previously-allowlisted devices into rule eval, firing alerts and
+  storming ntfy (the deleted-file case was already fail-safe; only the corrupt
+  case failed open, an asymmetry). `_load_primary` now raises
+  `AllowlistParseError` on a parse failure (a valid-but-empty file still parses
+  cleanly to an empty allowlist); the mid-run reload catches it and retains the
+  last-good allowlist with a WARNING, symmetric with the deleted-file path. At
+  startup there is no last-good, so it starts empty (detection keeps running) but
+  makes the degraded state un-missable — a CRITICAL log plus an operator ntfy
+  that suppression is disabled. A missing primary still raises (config error).
+  The lenient corrupt→empty path is preserved for the web-UI read views and the
+  validate CLI.
+
+- **An Argus import that collides with an operator-seeded watchlist row now
+  preserves the operator's severity and reports the conflict instead of silently
+  overwriting it.** When an incoming Argus row's natural key
+  (`pattern` + `pattern_type`) collided with a watchlist row carrying no Argus
+  metadata — a YAML seed or hand edit — the import used to overwrite the
+  operator's severity and description with the Argus values, attach Argus
+  metadata, and count the row as `imported_new`, with no signal. Operator
+  decision now overrides Argus on collision: the operator-seeded branch keeps the
+  existing severity and description (no UPDATE), attaches no Argus metadata (so
+  the row keeps reading operator-seeded on later imports rather than silently
+  re-enabling the overwrite), counts the row in a new `operator_preserved` bucket
+  surfaced in the report, and emits a per-row WARNING naming the kept vs declined
+  severities. The disagreement re-reports on every subsequent import until the
+  operator resolves it.
+
+- **A wholly-failed Argus import now exits non-zero and does not record a fresh
+  import run.** Per-row write failures were swallowed (`errors += 1; continue`)
+  and never re-raised, `record_import_run` was called unconditionally, and
+  `main()` returned 1 only when `import_csv` raised — so a totally-failed import
+  returned exit 0 and wrote a fresh `import_runs` row, making the `/settings`
+  staleness card and the poller startup log claim a recent refresh that imported
+  nothing. Keyed on real write failures only (never on the G4
+  `operator_preserved` intentional declines): a total failure (errors, nothing
+  written) now returns non-zero and skips `record_import_run`, so freshness stays
+  at the last good import; a partial failure also exits non-zero (every routine
+  drop has its own counter, so anything left in `errors` is a real problem worth
+  surfacing in cron) while still recording freshness, because data changed. Clean
+  and conflict-only imports are unchanged.
+
+- **`drone_id_prefix` watchlist entries now match a captured Remote-ID serial by
+  leading-substring, and captured serials are separator-stripped before
+  matching.** Argus stores the longest-common-prefix of a registered serial
+  range for `drone_id_prefix`, not a full serial, so the prior whole-string
+  equality match missed every real (longer) Remote-ID serial. Matching is now
+  leading-substring, longest-prefix-wins
+  (`substr(captured, 1, length(pattern)) = pattern`, which keeps binary
+  case-sensitivity and carries no wildcard metacharacters), applied consistently
+  across DB eval, the in-memory rules path, and the allowlist drone branch (so a
+  prefix-allowlisted drone stays suppressed). Capture-side,
+  `_coerce_drone_id_prefix` now strips whitespace, NUL padding, and separator
+  punctuation and uppercases before the shape check (strip-don't-reject) rather
+  than dropping any serial with an embedded separator. **Inert until a live drone
+  capture confirms the field path:** the live Kismet Remote-ID JSON path
+  (`_DRONE_ID_PATHS`) is still an unverified guess and is unchanged by this fix —
+  the matcher is correct but will not fire until a real drone is captured.
 
 - **Pico and the app's own styles now load in CSS cascade layers, so app rules
   win over Pico without per-control specificity hacks.** Pico (classless v2.1.1)
