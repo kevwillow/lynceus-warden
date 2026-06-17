@@ -21,3 +21,6 @@ tests/
 *tests*
 .claude/launch.json
 scripts/smoke_wizard.py
+
+# Internal CC working notes — local-only, never published to the public repo
+/CLAUDE.md
