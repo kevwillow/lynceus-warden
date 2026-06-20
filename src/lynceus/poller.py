@@ -185,6 +185,267 @@ def build_kismet_client(config: Config) -> KismetClient:
     )
 
 
+def process_observation(
+    obs,
+    db,
+    config,
+    now_ts,
+    *,
+    effective_location_id,
+    effective_location_label,
+    ensured_locations,
+    processed_counter,
+    admitted_counter,
+    ruleset,
+    allowlist,
+    notifier,
+    severity_overrides=None,
+    rule_type_suppression_counter=None,
+) -> None:
+    """Persist one observation and run its alert pipeline (extracted from poll_once; accumulators mutated in place)."""
+    existing_device = db.get_device(obs.mac)
+    is_new = existing_device is None
+    if effective_location_id not in ensured_locations:
+        db.ensure_location(effective_location_id, effective_location_label)
+        ensured_locations.add(effective_location_id)
+    db.upsert_device(
+        mac=obs.mac,
+        device_type=obs.device_type,
+        oui_vendor=obs.oui_vendor,
+        is_randomized=int(obs.is_randomized),
+        now_ts=now_ts,
+    )
+    if config.capture.probe_ssids and obs.probe_ssids:
+        stored, truncated = db.merge_device_probe_ssids(obs.mac, obs.probe_ssids)
+        if truncated:
+            logger.warning(
+                "probe_ssids cap reached for %s: stored=%d cap=%d",
+                obs.mac,
+                stored,
+                db.PROBE_SSIDS_PER_DEVICE_CAP,
+            )
+    if config.capture.ble_friendly_names and obs.ble_local_name:
+        db.update_device_ble_name(obs.mac, obs.ble_local_name)
+    db.insert_sighting(
+        mac=obs.mac,
+        ts=obs.last_seen,
+        rssi=obs.rssi,
+        ssid=obs.ssid,
+        location_id=effective_location_id,
+    )
+    processed_counter[0] += 1
+    admitted_counter[0] += 1
+    matched_allowlist_entry = allowlist.is_allowed(obs, now_ts=now_ts)
+    if matched_allowlist_entry is not None:
+        logger.debug("allowlisted, suppressing alerts: %s", obs.mac)
+        # Audit pass: re-evaluate rules ONLY to record any watchlist
+        # hits the allowlist just suppressed. Operators with write
+        # access to the allowlist can otherwise silently disable a
+        # watchlist rule by adding the matching device — this INFO
+        # line gives them a journalctl trail. Cost is bounded by
+        # the allowlist size (operator-curated, typically small).
+        suppressed_hits = evaluate(
+            ruleset,
+            obs,
+            is_new_device=is_new,
+            db=db,
+            severity_overrides=severity_overrides,
+        )
+        # Snooze entries carry an ``expires_at`` so the audit line
+        # makes it obvious in journalctl which suppressions are
+        # temporary vs permanent. Operators grepping for the
+        # existing "Allowlist suppressed watchlist hit:" prefix
+        # still get a match — the suffix appends after severity.
+        expires_suffix = ""
+        if matched_allowlist_entry.expires_at is not None:
+            expires_iso = _dt.datetime.fromtimestamp(
+                matched_allowlist_entry.expires_at, tz=_dt.UTC
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            expires_suffix = f" (expires {expires_iso})"
+        for sh in suppressed_hits:
+            if sh.rule_type == "new_non_randomized_device":
+                continue
+            logger.info(
+                "Allowlist suppressed watchlist hit: rule=%s mac=%s severity=%s%s",
+                sh.rule_name,
+                obs.mac,
+                sh.severity,
+                expires_suffix,
+            )
+        return
+    # Watchful tracking gate (migration 018). Per the locked
+    # gate-ordering decision -- allowlist -> watchful tracking
+    # -> rule eval -> per-rule_type snooze -> per-alert snooze
+    # -> emit -- watchful runs only for non-allowlisted
+    # observations (the allowlist branch above continues on
+    # match, so this code is unreachable for allowlisted
+    # MACs). Operator semantic: allowlist precedence wins,
+    # an allowlisted MAC under watchful snooze sees no
+    # sighting_count increment and no escalation.
+    #
+    # Fast-path skip: the get_active_watchful_recurrence_by_mac
+    # lookup is a single indexed point query and returns None
+    # immediately when the table is empty (typical steady
+    # state). Backward-compat: poll cycles with no tracking
+    # entries are byte-identical to pre-rc6 behavior.
+    watchful_entry = db.get_active_watchful_recurrence_by_mac(obs.mac)
+    if watchful_entry is not None:
+        outcome = db.record_watchful_sighting(watchful_entry.id, now_ts)
+        if outcome is not None:
+            # Threshold detection. escalate_watchful_recurrence
+            # is idempotent (no-op if escalated_at already
+            # set), which drives the design doc's "fire once
+            # per escalation" rule without a separate
+            # first-crossing guard here.
+            if (
+                outcome.counted
+                and outcome.entry.sighting_count
+                >= Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD
+            ):
+                escalated = db.escalate_watchful_recurrence(
+                    watchful_entry.id, now_ts
+                )
+                if escalated is not None:
+                    # First crossing. Subject only to the
+                    # per-rule_type snooze on watchful_recurrence
+                    # (per design doc: detection runs;
+                    # notification doesn't, while the snooze
+                    # is active).
+                    rt_snooze = db.is_rule_type_snoozed(
+                        "watchful_recurrence", now_ts
+                    )
+                    if rt_snooze is None:
+                        _emit_watchful_escalation(
+                            db, notifier, escalated, now_ts
+                        )
+                    else:
+                        logger.debug(
+                            "watchful escalation suppressed by "
+                            "rule_type snooze: mac=%s",
+                            obs.mac,
+                        )
+            # snooze_expires_at on the watchful entry gates
+            # the ORIGINAL alert pipeline for this MAC (per
+            # OQ-3). The escalation alert above is
+            # independent of this gate -- the operator's
+            # whole point is "tell me if it keeps showing
+            # up", which the escalation answers regardless
+            # of the snooze window.
+            snooze_expires_at = outcome.entry.snooze_expires_at
+            snooze_active = (
+                snooze_expires_at is None
+                or snooze_expires_at > now_ts
+            )
+            if snooze_active:
+                logger.debug(
+                    "watchful snooze suppressing original alerts: mac=%s",
+                    obs.mac,
+                )
+                return
+    hits = evaluate(
+        ruleset,
+        obs,
+        is_new_device=is_new,
+        db=db,
+        severity_overrides=severity_overrides,
+    )
+    matched_watchlist_id: int | None = None
+    if any(h.rule_type != "new_non_randomized_device" for h in hits):
+        matched_watchlist_id = db.resolve_matched_watchlist_id(
+            mac=obs.mac,
+            ssid=obs.ssid,
+            ble_service_uuids=obs.ble_service_uuids,
+            ble_manufacturer_id=obs.ble_manufacturer_id,
+            drone_id_prefix=obs.drone_id_prefix,
+            ble_local_name=obs.ble_local_name,
+        )
+    for hit in hits:
+        # Rule_type snooze gate. Sequenced BEFORE dedup because
+        # snooze is the wider / stronger statement: "no emits
+        # from this rule_type at all". Skipping dedup avoids
+        # writing a recent-alert lookup we'd discard anyway.
+        # The RuleHit is intentionally still produced upstream
+        # (rule.evaluate ran, /rules statistics see the rule
+        # firing in the sense it would have); only the alert
+        # row + evidence capture + notifier hop are gated. The
+        # in-process counter accumulates per rule_type so the
+        # Poller's periodic INFO summary can break suppression
+        # activity down — operators grepping journalctl see
+        # which rule_types the snooze is actually catching.
+        snooze = db.is_rule_type_snoozed(hit.rule_type, now_ts)
+        if snooze is not None:
+            logger.debug(
+                "rule_type snooze suppressed emit: rule=%s rule_type=%s mac=%s",
+                hit.rule_name,
+                hit.rule_type,
+                hit.mac,
+            )
+            if rule_type_suppression_counter is not None:
+                rule_type_suppression_counter[hit.rule_type] = (
+                    rule_type_suppression_counter.get(hit.rule_type, 0) + 1
+                )
+            continue
+        if config.alert_dedup_window_seconds > 0:
+            since = now_ts - config.alert_dedup_window_seconds
+            if (
+                db.get_recent_alert_for_rule_and_mac(hit.rule_name, hit.mac, since)
+                is not None
+            ):
+                logger.debug("dedup-skip %s/%s", hit.rule_name, hit.mac)
+                continue
+        hit_match_id = (
+            matched_watchlist_id if hit.rule_type != "new_non_randomized_device" else None
+        )
+        try:
+            new_alert_id = db.add_alert(
+                ts=now_ts,
+                rule_name=hit.rule_name,
+                mac=hit.mac,
+                message=hit.message,
+                severity=hit.severity,
+                matched_watchlist_id=hit_match_id,
+                rule_type=hit.rule_type,
+            )
+        except Exception as e:
+            logger.warning("Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e)
+            continue
+        if config.evidence_capture_enabled and obs.raw_record is not None:
+            capture_evidence(
+                db,
+                new_alert_id,
+                hit.mac,
+                obs.raw_record,
+                now_ts=now_ts,
+                capture=config.capture,
+                store_gps=config.evidence_store_gps,
+            )
+        title = f"lynceus: {hit.severity.upper()} alert"
+        suffix = ""
+        device_category = None
+        if hit_match_id is not None:
+            try:
+                md = db.get_metadata_by_watchlist_id(hit_match_id)
+                suffix = build_metadata_suffix(md, oui_vendor=obs.oui_vendor)
+                device_category = md.get("device_category") if md else None
+            except Exception:
+                suffix = ""
+                device_category = None
+        # Display-only at-a-glance device type, always appended: radio
+        # category off the observation + Argus device_category off the
+        # match (em-dash placeholder when absent, no inference).
+        type_suffix = build_type_suffix(obs.device_type, device_category)
+        try:
+            ok = notifier.send(
+                severity=hit.severity,
+                title=title,
+                message=hit.message + suffix + type_suffix,
+            )
+            if not ok:
+                logger.warning("Notifier returned False for %s/%s", hit.rule_name, hit.mac)
+        except Exception as e:
+            logger.warning("Notifier raised for %s/%s: %s", hit.rule_name, hit.mac, e)
+
+
 def poll_once(
     client: KismetClient,
     db: Database,
@@ -245,8 +506,8 @@ def poll_once(
         evidence_capture_enabled=config.evidence_capture_enabled,
         unparseable_counter=unparseable_counter,
     )
-    processed = 0
-    admitted = 0
+    processed = [0]
+    admitted = [0]
     dropped_source_allowlist = 0
     dropped_min_rssi = 0
     # Per-tick aggregation of the source names that actually appeared on
@@ -296,247 +557,22 @@ def poll_once(
                             effective_location_label = effective_location_id
                         break
 
-            existing_device = db.get_device(obs.mac)
-            is_new = existing_device is None
-            if effective_location_id not in ensured_locations:
-                db.ensure_location(effective_location_id, effective_location_label)
-                ensured_locations.add(effective_location_id)
-            db.upsert_device(
-                mac=obs.mac,
-                device_type=obs.device_type,
-                oui_vendor=obs.oui_vendor,
-                is_randomized=int(obs.is_randomized),
-                now_ts=now_ts,
-            )
-            if config.capture.probe_ssids and obs.probe_ssids:
-                stored, truncated = db.merge_device_probe_ssids(obs.mac, obs.probe_ssids)
-                if truncated:
-                    logger.warning(
-                        "probe_ssids cap reached for %s: stored=%d cap=%d",
-                        obs.mac,
-                        stored,
-                        db.PROBE_SSIDS_PER_DEVICE_CAP,
-                    )
-            if config.capture.ble_friendly_names and obs.ble_local_name:
-                db.update_device_ble_name(obs.mac, obs.ble_local_name)
-            db.insert_sighting(
-                mac=obs.mac,
-                ts=obs.last_seen,
-                rssi=obs.rssi,
-                ssid=obs.ssid,
-                location_id=effective_location_id,
-            )
-            processed += 1
-            admitted += 1
-            matched_allowlist_entry = allowlist.is_allowed(obs, now_ts=now_ts)
-            if matched_allowlist_entry is not None:
-                logger.debug("allowlisted, suppressing alerts: %s", obs.mac)
-                # Audit pass: re-evaluate rules ONLY to record any watchlist
-                # hits the allowlist just suppressed. Operators with write
-                # access to the allowlist can otherwise silently disable a
-                # watchlist rule by adding the matching device — this INFO
-                # line gives them a journalctl trail. Cost is bounded by
-                # the allowlist size (operator-curated, typically small).
-                suppressed_hits = evaluate(
-                    ruleset,
-                    obs,
-                    is_new_device=is_new,
-                    db=db,
-                    severity_overrides=severity_overrides,
-                )
-                # Snooze entries carry an ``expires_at`` so the audit line
-                # makes it obvious in journalctl which suppressions are
-                # temporary vs permanent. Operators grepping for the
-                # existing "Allowlist suppressed watchlist hit:" prefix
-                # still get a match — the suffix appends after severity.
-                expires_suffix = ""
-                if matched_allowlist_entry.expires_at is not None:
-                    expires_iso = _dt.datetime.fromtimestamp(
-                        matched_allowlist_entry.expires_at, tz=_dt.UTC
-                    ).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    expires_suffix = f" (expires {expires_iso})"
-                for sh in suppressed_hits:
-                    if sh.rule_type == "new_non_randomized_device":
-                        continue
-                    logger.info(
-                        "Allowlist suppressed watchlist hit: rule=%s mac=%s severity=%s%s",
-                        sh.rule_name,
-                        obs.mac,
-                        sh.severity,
-                        expires_suffix,
-                    )
-                continue
-            # Watchful tracking gate (migration 018). Per the locked
-            # gate-ordering decision -- allowlist -> watchful tracking
-            # -> rule eval -> per-rule_type snooze -> per-alert snooze
-            # -> emit -- watchful runs only for non-allowlisted
-            # observations (the allowlist branch above continues on
-            # match, so this code is unreachable for allowlisted
-            # MACs). Operator semantic: allowlist precedence wins,
-            # an allowlisted MAC under watchful snooze sees no
-            # sighting_count increment and no escalation.
-            #
-            # Fast-path skip: the get_active_watchful_recurrence_by_mac
-            # lookup is a single indexed point query and returns None
-            # immediately when the table is empty (typical steady
-            # state). Backward-compat: poll cycles with no tracking
-            # entries are byte-identical to pre-rc6 behavior.
-            watchful_entry = db.get_active_watchful_recurrence_by_mac(obs.mac)
-            if watchful_entry is not None:
-                outcome = db.record_watchful_sighting(watchful_entry.id, now_ts)
-                if outcome is not None:
-                    # Threshold detection. escalate_watchful_recurrence
-                    # is idempotent (no-op if escalated_at already
-                    # set), which drives the design doc's "fire once
-                    # per escalation" rule without a separate
-                    # first-crossing guard here.
-                    if (
-                        outcome.counted
-                        and outcome.entry.sighting_count
-                        >= Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD
-                    ):
-                        escalated = db.escalate_watchful_recurrence(
-                            watchful_entry.id, now_ts
-                        )
-                        if escalated is not None:
-                            # First crossing. Subject only to the
-                            # per-rule_type snooze on watchful_recurrence
-                            # (per design doc: detection runs;
-                            # notification doesn't, while the snooze
-                            # is active).
-                            rt_snooze = db.is_rule_type_snoozed(
-                                "watchful_recurrence", now_ts
-                            )
-                            if rt_snooze is None:
-                                _emit_watchful_escalation(
-                                    db, notifier, escalated, now_ts
-                                )
-                            else:
-                                logger.debug(
-                                    "watchful escalation suppressed by "
-                                    "rule_type snooze: mac=%s",
-                                    obs.mac,
-                                )
-                    # snooze_expires_at on the watchful entry gates
-                    # the ORIGINAL alert pipeline for this MAC (per
-                    # OQ-3). The escalation alert above is
-                    # independent of this gate -- the operator's
-                    # whole point is "tell me if it keeps showing
-                    # up", which the escalation answers regardless
-                    # of the snooze window.
-                    snooze_expires_at = outcome.entry.snooze_expires_at
-                    snooze_active = (
-                        snooze_expires_at is None
-                        or snooze_expires_at > now_ts
-                    )
-                    if snooze_active:
-                        logger.debug(
-                            "watchful snooze suppressing original alerts: mac=%s",
-                            obs.mac,
-                        )
-                        continue
-            hits = evaluate(
-                ruleset,
+            process_observation(
                 obs,
-                is_new_device=is_new,
-                db=db,
+                db,
+                config,
+                now_ts,
+                effective_location_id=effective_location_id,
+                effective_location_label=effective_location_label,
+                ensured_locations=ensured_locations,
+                processed_counter=processed,
+                admitted_counter=admitted,
+                ruleset=ruleset,
+                allowlist=allowlist,
+                notifier=notifier,
                 severity_overrides=severity_overrides,
+                rule_type_suppression_counter=rule_type_suppression_counter,
             )
-            matched_watchlist_id: int | None = None
-            if any(h.rule_type != "new_non_randomized_device" for h in hits):
-                matched_watchlist_id = db.resolve_matched_watchlist_id(
-                    mac=obs.mac,
-                    ssid=obs.ssid,
-                    ble_service_uuids=obs.ble_service_uuids,
-                    ble_manufacturer_id=obs.ble_manufacturer_id,
-                    drone_id_prefix=obs.drone_id_prefix,
-                    ble_local_name=obs.ble_local_name,
-                )
-            for hit in hits:
-                # Rule_type snooze gate. Sequenced BEFORE dedup because
-                # snooze is the wider / stronger statement: "no emits
-                # from this rule_type at all". Skipping dedup avoids
-                # writing a recent-alert lookup we'd discard anyway.
-                # The RuleHit is intentionally still produced upstream
-                # (rule.evaluate ran, /rules statistics see the rule
-                # firing in the sense it would have); only the alert
-                # row + evidence capture + notifier hop are gated. The
-                # in-process counter accumulates per rule_type so the
-                # Poller's periodic INFO summary can break suppression
-                # activity down — operators grepping journalctl see
-                # which rule_types the snooze is actually catching.
-                snooze = db.is_rule_type_snoozed(hit.rule_type, now_ts)
-                if snooze is not None:
-                    logger.debug(
-                        "rule_type snooze suppressed emit: rule=%s rule_type=%s mac=%s",
-                        hit.rule_name,
-                        hit.rule_type,
-                        hit.mac,
-                    )
-                    if rule_type_suppression_counter is not None:
-                        rule_type_suppression_counter[hit.rule_type] = (
-                            rule_type_suppression_counter.get(hit.rule_type, 0) + 1
-                        )
-                    continue
-                if config.alert_dedup_window_seconds > 0:
-                    since = now_ts - config.alert_dedup_window_seconds
-                    if (
-                        db.get_recent_alert_for_rule_and_mac(hit.rule_name, hit.mac, since)
-                        is not None
-                    ):
-                        logger.debug("dedup-skip %s/%s", hit.rule_name, hit.mac)
-                        continue
-                hit_match_id = (
-                    matched_watchlist_id if hit.rule_type != "new_non_randomized_device" else None
-                )
-                try:
-                    new_alert_id = db.add_alert(
-                        ts=now_ts,
-                        rule_name=hit.rule_name,
-                        mac=hit.mac,
-                        message=hit.message,
-                        severity=hit.severity,
-                        matched_watchlist_id=hit_match_id,
-                        rule_type=hit.rule_type,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e)
-                    continue
-                if config.evidence_capture_enabled and obs.raw_record is not None:
-                    capture_evidence(
-                        db,
-                        new_alert_id,
-                        hit.mac,
-                        obs.raw_record,
-                        now_ts=now_ts,
-                        capture=config.capture,
-                        store_gps=config.evidence_store_gps,
-                    )
-                title = f"lynceus: {hit.severity.upper()} alert"
-                suffix = ""
-                device_category = None
-                if hit_match_id is not None:
-                    try:
-                        md = db.get_metadata_by_watchlist_id(hit_match_id)
-                        suffix = build_metadata_suffix(md, oui_vendor=obs.oui_vendor)
-                        device_category = md.get("device_category") if md else None
-                    except Exception:
-                        suffix = ""
-                        device_category = None
-                # Display-only at-a-glance device type, always appended: radio
-                # category off the observation + Argus device_category off the
-                # match (em-dash placeholder when absent, no inference).
-                type_suffix = build_type_suffix(obs.device_type, device_category)
-                try:
-                    ok = notifier.send(
-                        severity=hit.severity,
-                        title=title,
-                        message=hit.message + suffix + type_suffix,
-                    )
-                    if not ok:
-                        logger.warning("Notifier returned False for %s/%s", hit.rule_name, hit.mac)
-                except Exception as e:
-                    logger.warning("Notifier raised for %s/%s: %s", hit.rule_name, hit.mac, e)
         except Exception as e:
             logger.warning("Failed to persist observation %s: %s", obs.mac, e)
             continue
@@ -571,13 +607,13 @@ def poll_once(
     logger.info(
         "poll tick: %d admitted, %d dropped "
         "(source_allowlist=%d, min_rssi=%d, unparseable=%d)",
-        admitted,
+        admitted[0],
         dropped_total,
         dropped_source_allowlist,
         dropped_min_rssi,
         dropped_unparseable,
     )
-    db.set_state(STATE_KEY_LAST_TICK_ADMITTED, str(admitted))
+    db.set_state(STATE_KEY_LAST_TICK_ADMITTED, str(admitted[0]))
     db.set_state(
         STATE_KEY_LAST_TICK_DROPPED_SOURCE_ALLOWLIST,
         str(dropped_source_allowlist),
@@ -629,7 +665,7 @@ def poll_once(
         maybe_prune_evidence(db, config.evidence_retention_days, now_ts=now_ts)
     except Exception as e:
         logger.warning("Evidence prune failed: %s", e)
-    return processed
+    return processed[0]
 
 
 def log_watchlist_staleness(
