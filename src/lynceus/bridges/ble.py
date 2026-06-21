@@ -23,7 +23,9 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..allowlist import Allowlist
@@ -108,7 +110,7 @@ class BleBridge:
         db: Database,
         config,
         ruleset,
-        allowlist,
+        allowlist_provider: Callable[[], Allowlist],
         notifier,
         severity_overrides,
         location_id: str,
@@ -119,7 +121,12 @@ class BleBridge:
         self.db = db
         self.config = config
         self.ruleset = ruleset
-        self.allowlist = allowlist
+        # Allowlist is read LIVE at each flush via this provider, so the Poller's
+        # hot-reloaded allowlist (reassigned atomically on edit) reaches the
+        # bridge without rebuilding it. The standalone runner passes a lambda
+        # returning a fixed Allowlist. ruleset/notifier/config/severity_overrides
+        # are build-once and stay fixed.
+        self._allowlist_provider = allowlist_provider
         self.notifier = notifier
         self.severity_overrides = severity_overrides
         self.location_id = location_id
@@ -134,6 +141,12 @@ class BleBridge:
         # process_observation. Accumulates across flushes; not surfaced in this
         # increment (no periodic summary yet).
         self._rule_type_suppression_counter: dict[str, int] = {}
+        # Thread-safe stop plumbing. stop() may be called from another thread
+        # (the Poller's shutdown path) before or after run() has built its event
+        # loop; _stop_requested bridges that gap and run() re-checks it on entry.
+        self._stop_requested = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._asyncio_stop: asyncio.Event | None = None
 
     # --- buffer + observation construction (the unit-tested seams) ---------
 
@@ -231,6 +244,7 @@ class BleBridge:
         # surface these counts in this increment.
         processed = [0]
         admitted = [0]
+        allowlist = self._allowlist_provider()  # LIVE read — picks up hot reloads
         count = 0
         for mac, entry in buffered:
             try:
@@ -246,7 +260,7 @@ class BleBridge:
                     processed_counter=processed,
                     admitted_counter=admitted,
                     ruleset=self.ruleset,
-                    allowlist=self.allowlist,
+                    allowlist=allowlist,
                     notifier=self.notifier,
                     severity_overrides=self.severity_overrides,
                     rule_type_suppression_counter=self._rule_type_suppression_counter,
@@ -306,44 +320,66 @@ class BleBridge:
                 else:
                     break  # stop signalled
 
-    async def run(  # pragma: no cover - rig-only path
-        self,
-        *,
-        duration: float | None = None,
-        stop_event: asyncio.Event | None = None,
-    ) -> None:
-        """Continuous passive scan; restarts on bleak/BlueZ failure, never crashes.
+    def stop(self) -> None:
+        """Request shutdown (thread-safe).
+
+        Signals the scan + flush loops to exit; run()'s finally then drains the
+        buffer and closes the bridge's own Database. Safe to call before run()
+        has built its loop — run() re-checks ``_stop_requested`` on entry.
+        """
+        self._stop_requested.set()
+        loop = self._loop
+        ev = self._asyncio_stop
+        if loop is not None and ev is not None:
+            try:
+                loop.call_soon_threadsafe(ev.set)
+            except RuntimeError:
+                pass  # loop already closed — run() has exited
+
+    async def run(self, *, duration: float | None = None) -> None:
+        """Continuous passive scan until stop(); restarts on bleak/BlueZ failure.
 
         ``duration`` bounds the run (standalone smoke test); omit for the
-        continuous production-style loop. A final flush drains the buffer at
-        shutdown.
+        continuous daemon loop driven by stop(). A final flush drains the buffer
+        and the bridge's OWN Database is closed at shutdown — the bridge owns its
+        connection lifecycle so the threaded poller case needs no extra cleanup.
         """
-        if _BLEAK_IMPORT_ERROR is not None:
-            raise RuntimeError(
-                f"bleak is not importable here ({_BLEAK_IMPORT_ERROR}); run on the rig."
-            )
-        self._ensure_startup_location()
-        stop = stop_event or asyncio.Event()
+        self._loop = asyncio.get_running_loop()
+        self._asyncio_stop = asyncio.Event()
+        stop = self._asyncio_stop
+        if self._stop_requested.is_set():
+            stop.set()  # stop() raced ahead of the loop — honor it immediately
         if duration is not None:
-            asyncio.get_running_loop().call_later(duration, stop.set)
+            self._loop.call_later(duration, stop.set)
         try:
-            while not stop.is_set():
-                try:
-                    await self._scan_until_stop(stop)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # bleak/BlueZ failure — log, back off, restart
-                    logger.warning(
-                        "BLE scan failed (%s); restarting in %.0fs",
-                        exc,
-                        _RESTART_BACKOFF_SECONDS,
-                    )
+            self._ensure_startup_location()
+            if _BLEAK_IMPORT_ERROR is not None:
+                # Flag enabled but bleak unavailable (e.g. dev box / missing
+                # dependency): log once and fall through to a clean shutdown
+                # rather than crashing the daemon — the scan simply never runs.
+                logger.warning(
+                    "BLE bridge enabled but bleak is unavailable (%s); scan disabled",
+                    _BLEAK_IMPORT_ERROR,
+                )
+            else:
+                while not stop.is_set():
                     try:
-                        await asyncio.wait_for(stop.wait(), timeout=_RESTART_BACKOFF_SECONDS)
-                    except TimeoutError:
-                        pass
+                        await self._scan_until_stop(stop)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # bleak/BlueZ failure — log, back off, restart
+                        logger.warning(
+                            "BLE scan failed (%s); restarting in %.0fs",
+                            exc,
+                            _RESTART_BACKOFF_SECONDS,
+                        )
+                        try:
+                            await asyncio.wait_for(stop.wait(), timeout=_RESTART_BACKOFF_SECONDS)
+                        except TimeoutError:
+                            pass
         finally:
             self._flush(int(time.time()))  # drain whatever is buffered at shutdown
+            self.db.close()  # bridge owns its connection lifecycle
 
 
 # --- standalone CLI runner (rig smoke test only) --------------------------
@@ -426,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
         db=db,
         config=config,
         ruleset=ruleset,
-        allowlist=allowlist,
+        allowlist_provider=lambda: allowlist,  # standalone: fixed allowlist
         notifier=notifier,
         severity_overrides=severity_overrides,
         location_id=config.location_id,

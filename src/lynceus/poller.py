@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import datetime as _dt
 import logging
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -77,6 +79,11 @@ HEALTH_CHECK_RETRY_BACKOFF: list[float] = [2.0, 4.0, 8.0]
 # startup check above owns the fail-fast/crash-loop behavior and never reaches
 # this alert.
 RUNTIME_KISMET_LOSS_THRESHOLD = 3
+
+# How long run_forever waits for the BLE bridge thread to drain its buffer and
+# close its own Database after stop() before logging that it overran. Generous
+# relative to a flush tick so a mid-flush shutdown completes cleanly.
+BLE_BRIDGE_JOIN_TIMEOUT_SECONDS = 10.0
 
 logger = logging.getLogger(__name__)
 
@@ -1297,6 +1304,17 @@ class Poller:
             signal.signal(signal.SIGINT, self._on_signal)
         except ValueError:
             pass
+        # Additive, flag-gated BLE bridge. OFF by default => bridge stays None
+        # and the poll loop below is byte-identical to before. A start failure
+        # must never take down Kismet polling, so it is caught and logged.
+        bridge = None
+        bridge_thread = None
+        if self.config.ble_bridge.enabled:
+            try:
+                bridge, bridge_thread = self._start_ble_bridge()
+            except Exception:
+                logger.error("BLE bridge failed to start; continuing without it", exc_info=True)
+                bridge, bridge_thread = None, None
         try:
             while not self._stop_flag:
                 # Per-iteration exception boundary. A single transient failure
@@ -1342,7 +1360,70 @@ class Poller:
                     )
                 self._interruptible_sleep(self.config.poll_interval_seconds)
         finally:
+            if bridge is not None:
+                self._stop_ble_bridge(bridge, bridge_thread)
             self.db.close()
+
+    def _start_ble_bridge(self):
+        """Construct + start the passive BLE bridge in a daemon thread.
+
+        The bridge gets the Poller's shared deps (ruleset, notifier, config,
+        severity_overrides) and a LIVE allowlist provider — ``lambda:
+        self.allowlist`` reads the attribute on each flush, so the hot-reloaded
+        allowlist (reassigned atomically in _maybe_reload_allowlist) reaches the
+        bridge. It opens its OWN Database on the same path (WAL second writer);
+        the poller's connection is never shared.
+        """
+        # Local import breaks the poller <-> bridges.ble import cycle
+        # (bridges.ble imports process_observation from this module).
+        from .bridges.ble import BleBridge
+
+        cfg = self.config.ble_bridge
+        flush_interval = (
+            cfg.flush_interval
+            if cfg.flush_interval is not None
+            else self.config.poll_interval_seconds
+        )
+        bridge = BleBridge(
+            db=Database(self.config.db_path),
+            config=self.config,
+            ruleset=self.ruleset,
+            allowlist_provider=lambda: self.allowlist,
+            notifier=self.notifier,
+            severity_overrides=self.severity_overrides,
+            location_id=self.config.location_id,
+            location_label=self.config.location_label,
+            adapter=cfg.adapter,
+            flush_interval=flush_interval,
+        )
+
+        def _thread_main() -> None:
+            try:
+                asyncio.run(bridge.run())
+            except Exception:
+                logger.error("BLE bridge thread crashed", exc_info=True)
+
+        thread = threading.Thread(target=_thread_main, name="ble-bridge", daemon=True)
+        thread.start()
+        logger.info(
+            "BLE bridge started (adapter=%s, flush_interval=%ss)", cfg.adapter, flush_interval
+        )
+        return bridge, thread
+
+    def _stop_ble_bridge(self, bridge, thread) -> None:
+        """Stop the bridge and join its thread; run()'s finally closes its DB."""
+        try:
+            bridge.stop()
+        except Exception:
+            logger.error("BLE bridge stop() raised", exc_info=True)
+        if thread is not None:
+            thread.join(timeout=BLE_BRIDGE_JOIN_TIMEOUT_SECONDS)
+            if thread.is_alive():
+                logger.warning(
+                    "BLE bridge thread did not stop within %ss",
+                    BLE_BRIDGE_JOIN_TIMEOUT_SECONDS,
+                )
+        logger.info("BLE bridge stopped")
 
     def run_once(self) -> int:
         try:

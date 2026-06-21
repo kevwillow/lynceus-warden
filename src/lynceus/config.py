@@ -52,6 +52,31 @@ class CaptureConfig(BaseModel):
     ble_friendly_names: bool = True
 
 
+class BleBridgeConfig(BaseModel):
+    """Passive BLE capture bridge (additive; OFF by default).
+
+    When enabled, the poller runs a passive BLE scan in a background thread with
+    its OWN Database connection (the WAL second-writer pattern), feeding
+    observations through the same pipeline as Kismet polls. Disabled by default:
+    enabling it is an explicit opt-in and changes no existing poll behavior.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    adapter: str = "hci1"
+    # The bridge's own tick interval, separate from the Kismet poll loop. None
+    # falls back to poll_interval_seconds when the bridge is wired up.
+    flush_interval: int | None = None
+
+    @field_validator("flush_interval")
+    @classmethod
+    def _validate_flush_interval(cls, v: int | None) -> int | None:
+        if v is not None and v < 1:
+            raise ValueError("flush_interval must be >= 1 second")
+        return v
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -88,6 +113,7 @@ class Config(BaseModel):
     kismet_timeout_seconds: float = 10.0
     kismet_health_check_on_startup: bool = True
     capture: CaptureConfig = CaptureConfig()
+    ble_bridge: BleBridgeConfig = BleBridgeConfig()
     evidence_capture_enabled: bool = True
     evidence_retention_days: int = 90
     # Watchlist staleness threshold for the startup log line + the
