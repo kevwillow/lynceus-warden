@@ -314,11 +314,21 @@ recognition", both of which ride the `ble_uuid` surface — which does not fire
 on the current Kismet classic-HCI capture path (see "BLE advertisement-payload
 capture" under Network capture features). The claims describe built, tested
 matchers that are inert in the field.
-- **Trigger**: resolve in whichever direction the BLE-bridge decision goes.
-- **Notes**: two ways to make the README accurate again — build the passive
-  bleak bridge so the claims fire, OR soften the claims to "implemented,
-  pending a capture path". Operator decision; deliberately left out of the
-  v0.9.2 push.
+**Still open after the bridge landed.** Building the capture path was the
+first of the two ways to make the README accurate, but it does not by itself
+make the claims true: the bridge is OFF by default (BLE-G1 curation), so in a
+default deployment the claims remain inert. "BLE service UUID matching" becomes
+accurate once the bridge is enabled and curated; **"AirTag-class tracker
+recognition" needs more than that** — distinguishing an AirTag from any other
+Apple device is exactly the Find My / Apple Continuity decoder arc, which has
+not started. Softening that claim should not wait on it.
+- **Trigger**: now actionable — the bridge decision resolved in the "build it"
+  direction. Re-check the claims once the bridge is enabled + curated, and
+  again after the Find My decoder lands.
+- **Notes**: deliberately NOT bundled into the docs commit that closed the
+  bridge arc — README wording is its own change with its own review. Options
+  unchanged: soften to "implemented, pending a capture path", or gate the
+  wording on the feature flag.
 
 ### G4 operator-seeded collision: argus_record_id durability signal
 The v0.9.2 G4 fix preserves operator-seeded watchlist severities on an Argus
@@ -381,23 +391,128 @@ Same logic as per-band — wait until the simpler primitives prove
 insufficient.
 
 ### BLE advertisement-payload capture (passive bleak bridge)
-The `ble_uuid`, `ble_manufacturer_id`, and drone Remote-ID matchers do not fire
-on the current capture path: Kismet's classic-HCI Bluetooth datasource surfaces
+The `ble_uuid`, `ble_manufacturer_id`, and drone Remote-ID matchers did not fire
+on the Kismet capture path: Kismet's classic-HCI Bluetooth datasource surfaces
 no advertisement payload, so service UUIDs, 16-bit company ids, and Remote-ID
-serials never reach the matcher. Rig-confirmed 2026-06-17 that a BlueZ/bleak
+serials never reached the matcher. Rig-confirmed 2026-06-17 that a BlueZ/bleak
 passive scan on the *same* adapter DOES surface company ids and service UUIDs —
 the data exists; Kismet's classic path just doesn't expose it.
-- **Trigger**: when BLE/drone detection is wanted enough to add a second
-  capture path. The matchers are already built and tested; only the capture
-  bridge and a real matching strategy are missing.
-- **Estimated**: investigation-first arc. A passive `bleak` bridge on the
-  existing hardware feeding observations into the poll path, plus a real
-  matching strategy — company-id alone is too coarse (one id covers a whole
-  vendor); it needs payload-format signatures and follow-detection.
+
+**Status: the capture bridge landed (unreleased)** — `lynceus.bridges.ble`
+plus daemon wiring, flag-gated on `ble_bridge.enabled` and OFF by default;
+hardware-validated end to end from inside the daemon. See the CHANGELOG
+`[Unreleased]` entry for the landing summary.
+
+**What is NOT done is the half this entry always said was the harder half:
+the matching strategy.** Company-id alone is too coarse — one id covers a
+whole vendor — so the bridge is built but must not be enabled against a raw
+company-id watchlist. The remaining work is split into the numbered
+enablement gates below (BLE-G1 … BLE-G5); BLE-G1 and BLE-G2 are blocking.
+The payload-format-signature work that makes company ids useful is tracked
+separately as the Find My / Apple Continuity decoder arc.
+- **Trigger**: gates BLE-G1 and BLE-G2 cleared, then flip `ble_bridge.enabled`.
 - **Notes**: passive-only, consistent with the project stance — observe and
-  match, never connect/pair/probe. Pairs with the README-integrity follow-up
-  (the README already claims BLE-UUID / AirTag-class recognition that rides this
-  surface) and the D2 drone field-path confirmation below.
+  match, never connect/pair/probe; the shipped scanner is passive-mode with no
+  connect path. Pairs with the README-integrity follow-up (the README already
+  claims BLE-UUID / AirTag-class recognition that rides this surface) and the
+  D2 drone field-path confirmation below — D2 is unaffected by this landing and
+  still needs a live drone capture.
+
+### BLE-G1: watchlist curation before enabling the bridge (BLOCKING)
+A watchlist matching raw `ble_manufacturer_id` values is an alert storm, not a
+detection: company id `004c` is *every* Apple device in range, `0075` every
+Samsung, and so on. Enabling the bridge against an uncurated company-id
+watchlist would alert on every passer-by's phone and earbuds. The curation
+decision — which company ids (or which id + payload-shape pairs) are a
+surveillance signal rather than consumer noise — is Argus-side data work, not
+lynceus-side code.
+- **Trigger**: blocking. Must be resolved before `ble_bridge.enabled` is ever
+  set in a real deployment.
+- **Notes**: in the shipped `config/rules.yaml` template the
+  `argus_ble_manufacturer_id` rule is still commented out, so the repo default
+  is safe. **Verify the deployed rig config separately** — if that rule is
+  uncommented there, enabling the bridge storms immediately with no further
+  warning. Largely dissolved by the Find My / Apple Continuity decoder arc
+  below, which turns `004c` into a device class instead of a vendor.
+
+### BLE-G2: kismet_sources source-gate vs bridge provenance (BLOCKING)
+Latent silent failure. The bridge stamps its observations with
+`seen_by_sources=(f"ble:{adapter}",)` — e.g. `ble:hci1`. The poller's step-1
+source gate admits an observation only when one of its `seen_by_sources` is a
+member of the `kismet_sources` allowlist. If an operator's `kismet_sources`
+lists the bare adapter name (`hci1`), the membership test against `ble:hci1`
+fails and **every** bridge observation is dropped — the bridge would run,
+scan, and buffer correctly while contributing nothing, with only DEBUG-level
+drop logging to show for it. The alias-map expansion does not rescue this:
+aliases come from Kismet's own `list_sources()`, which has no knowledge of the
+bridge's synthetic source name.
+- **Trigger**: blocking. Verify before enabling, not after.
+- **Estimated**: read-only verification first — inspect the deployed
+  `kismet_sources` and decide the contract. If a change is needed the options
+  are to document `ble:<adapter>` as the value operators must allowlist, or to
+  exempt bridge-stamped provenance from the gate; the latter is a real code
+  change with its own tests, so confirm the failure is actually present first.
+- **Notes**: an operator whose `kismet_sources` is unset has no gate at all
+  (`None` means no filter) and is unaffected.
+
+### BLE-G3: startup health check blocks the bridge when Kismet is down
+`Poller.__init__` runs `_startup_health_check()` when
+`kismet_health_check_on_startup` is set, and that raises before `run_forever`
+is ever reached — so with Kismet down the daemon never starts, and the BLE
+bridge never starts either. The bridge is adapter-independent and does not need
+Kismet to do useful work, so coupling its availability to Kismet's is arguably
+wrong once the bridge is a real capture path rather than an experiment.
+- **Trigger**: after the bridge is enabled, if a Kismet outage is observed to
+  take BLE capture down with it.
+- **Estimated**: small, but it is a policy decision before it is code — should
+  `ble_bridge.enabled` relax or bypass the Kismet startup health check, and
+  does a Kismet-less daemon still deserve the startup banner and health
+  semantics it currently gets? Decide the semantics, then implement + test.
+- **Notes**: do NOT make this change speculatively. Today the coupling is
+  harmless because the bridge is off by default.
+
+### BLE-G4: bleak 3.x `adapter=` / BlueZScannerArgs deprecation
+`bridges/ble.py::_make_scanner` passes `adapter=self.adapter` alongside
+`bluez=BlueZScannerArgs(or_patterns=...)`. bleak is folding adapter selection
+into the backend-args kwarg and will drop the standalone `adapter=` parameter,
+at which point the scanner construction breaks on upgrade.
+- **Trigger**: before any bleak major-version bump, or on the first deprecation
+  warning observed on the rig.
+- **Estimated**: a few lines — fold the adapter into the `bluez=` kwarg. The
+  module already carries an import-layout fallback for older/newer bleak module
+  paths, so the compatibility pattern to follow is in place.
+- **Notes**: the scan path is rig-only (`# pragma: no cover`), so this cannot
+  be caught by the dev-box suite — it will surface as a runtime failure on the
+  rig, not a test failure.
+
+### BLE-G5: rig provenance — /opt/lynceus is not a git clone
+The deployed tree at `/opt/lynceus` was installed from an unzipped `~/Downloads`
+tree rather than a git clone, and no clone containing the bridge commits
+(`07c561a`, `bb3d51c`, `ecfbf89`) exists on the rig. There is therefore no way
+to confirm from the rig which revision is actually running, and no clean path to
+deploy the bridge or roll it back.
+- **Trigger**: before deploying the bridge to the rig.
+- **Notes**: deployment hygiene, not a code defect — but it blocks trustworthy
+  enablement, since "is the running code the code we reviewed?" is currently
+  unanswerable. Land a real clone first.
+
+### Find My / Apple Continuity payload decoder (next arc)
+With the capture bridge in place, the advertisement payload is finally
+available to decode. A Find My / Apple Continuity decoder would classify Apple
+adverts by payload shape — AirTag-in-separated-mode vs AirPods vs a paired
+iPhone — turning `ble_manufacturer_id=004c` from a useless vendor-wide match
+into a device class. This is the payload-format-signature work the BLE capture
+entry above always identified as the real matching strategy.
+- **Trigger**: next arc; the capture foundation it needs is now in place.
+- **Estimated**: decoder + classification + tests, on captured payload samples
+  from the rig. No new capture path required.
+- **Notes**: largely dissolves BLE-G1 — a decoder that separates "AirTag in
+  separated mode" from "someone's AirPods" makes curation a classification
+  problem instead of a vendor-blocklist problem. It is also what the README's
+  "AirTag-class recognition" claim actually requires (see the README-integrity
+  follow-up). Follow-detection — distinguishing a tracker that persists across
+  locations from an incidental one — is the arc after this one, and still wants
+  the real-world capture corpus the stalking-heuristics entry describes.
 
 ### D2 drone Remote-ID live field-path confirmation
 The `drone_id_prefix` leading-substring matcher (v0.9.2) is correct but inert:

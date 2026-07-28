@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **A passive BLE bridge now captures the advertisement-payload fields Kismet's
+  classic-HCI datasource cannot decode — flag-gated and OFF by default.** The
+  `ble_uuid`, `ble_manufacturer_id`, and drone Remote-ID matchers have shipped
+  and been tested for several releases but never fired in the field, because
+  Kismet's classic Bluetooth datasource surfaces no advertisement payload: the
+  company ids and service UUIDs they match on never reached the matcher. The new
+  `lynceus.bridges.ble.BleBridge` opens a passive BlueZ/`bleak` scan on its own
+  adapter and feeds what it sees into the existing watchlist-matching and
+  alerting path, so those matchers finally have a capture path. It runs on a
+  tick model — a per-MAC dedup buffer accumulating company ids and service
+  UUIDs, flushed on its own interval (defaulting to `poll_interval_seconds`)
+  into one `DeviceObservation` per MAC — and holds its **own** `Database()`
+  handle on the same path, a deliberate WAL second writer rather than a shared
+  connection with the poll loop. When `ble_bridge.enabled` is set, `run_forever`
+  starts it in a daemon thread and stops/joins it in the same `finally` that
+  closes the poller's DB; a bridge that fails to start is logged and the daemon
+  continues without it, so the flag can never take the poll loop down with it.
+  Passive-only throughout, consistent with the project stance — it observes and
+  matches, and never connects, pairs, or probes. Hardware-validated end to end
+  from inside the daemon: real adverts captured, FK-safe alert rows written, and
+  a clean shutdown on signal.
+
+  **The feature is OFF by default and is not yet production-ready**, for a
+  reason that is about data rather than code: a watchlist matching raw
+  `ble_manufacturer_id` values would alert on every consumer device from the
+  same vendor (company id `004c` is *every* Apple device in range, not a
+  surveillance signal). Enabling the bridge is gated on curating that watchlist
+  first — see the BLE bridge enablement gates in `BACKLOG.md`.
+
+### Changed
+
+- **The per-observation pipeline is extracted from `poll_once` into a shared
+  `process_observation(...)`.** The device-upsert → sighting → rule-eval →
+  FK-safe-alert sequence lived inline in `poll_once`, which made it reachable
+  only from a Kismet poll tick. It is now a module-level function that
+  `poll_once` calls per admitted observation and the BLE bridge calls per
+  flushed observation, so the bridge reuses the *exact* persistence and alerting
+  path — including the ordering that guarantees the device row exists before an
+  alert references it — instead of reimplementing a parallel one that could
+  drift. Behavior-preserving refactor: poll behavior, counters, drop gates, and
+  logging are unchanged.
+
 ## [0.9.2] - 2026-06-17
 
 ### Added
