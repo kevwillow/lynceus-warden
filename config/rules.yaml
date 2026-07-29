@@ -144,6 +144,29 @@ rules:
   #   patterns: []
   #   description: "Argus drone Remote-ID prefix watchlist (ANSI/CTA-2063-A)"
 
+  # ---- Apple Continuity device class ----
+  #
+  # Alerts on Apple devices whose Continuity payload decodes to a Find My
+  # advert. Unlike the watchlist_* rules above this one is NOT delegated:
+  # the class is decoded from the advertisement itself
+  # (src/lynceus/ble_continuity.py), so patterns are required and the
+  # severity here is the one that fires.
+  #
+  # Requires the passive BLE bridge (ble_bridge.enabled) — the Kismet
+  # classic-HCI path surfaces no advertisement payload to decode, so this
+  # rule is inert without it.
+  #
+  # Deliberately matches 'find_my', NOT 'find_my_separated': the
+  # separated-from-owner status bit is UNVALIDATED against real hardware
+  # (see _FIND_MY_SEPARATED_MASK in ble_continuity.py). Add
+  # 'find_my_separated' here only after a rig capture confirms it.
+  #
+  # - name: apple_find_my
+  #   rule_type: ble_device_class
+  #   severity: med
+  #   patterns: [find_my]
+  #   description: "Apple Find My tracker advertising nearby"
+
   # ---- ble_local_name delegation (v0.6.1+) ----
   #
   # Matches the BLE Core Spec §4.5.2 Complete Local Name (Flock

@@ -99,6 +99,7 @@ RuleType = Literal[
     "watchlist_ble_local_name",
     "new_non_randomized_device",
     "watchful_recurrence",
+    "ble_device_class",
 ]
 Severity = Literal["low", "med", "high"]
 
@@ -154,6 +155,16 @@ class Rule(BaseModel):
             if self.patterns:
                 raise ValueError(
                     f"rule {self.name!r}: watchful_recurrence must have empty patterns"
+                )
+        elif self.rule_type == "ble_device_class":
+            # Inverse of the watchlist_* types: no watchlist backs this
+            # rule type, so empty patterns cannot mean "delegate to the
+            # DB". The operator must name which decoded classes alert.
+            if not self.patterns:
+                raise ValueError(
+                    f"rule {self.name!r}: ble_device_class must have non-empty "
+                    "patterns naming the device classes to alert on "
+                    "(e.g. ['find_my'])"
                 )
         elif self.rule_type in ("watchlist_mac", "watchlist_oui", "watchlist_ssid", "ble_uuid"):
             # Delegation-capable. Empty patterns = delegate matching
@@ -1333,6 +1344,26 @@ def evaluate(
             if is_new_device and not obs.is_randomized:
                 msg = (
                     f"New non-randomized device: {obs.mac} (vendor: {obs.oui_vendor or 'unknown'})"
+                )
+                hits.append(
+                    RuleHit(
+                        rule_name=rule.name,
+                        rule_type=rule.rule_type,
+                        severity=rule.severity,
+                        message=msg,
+                        mac=obs.mac,
+                    )
+                )
+
+        elif rule.rule_type == "ble_device_class":
+            # In-memory only — the class is a decoded property of the
+            # observation (see ble_continuity), not a curated watchlist
+            # identifier, so there is no DB-delegation path here and no
+            # severity_overrides consultation. Severity is the rule's.
+            if obs.ble_device_class and obs.ble_device_class in rule.patterns:
+                msg = (
+                    f"BLE device class {obs.ble_device_class} matched: "
+                    f"{rule.description or rule.name}"
                 )
                 hits.append(
                     RuleHit(
