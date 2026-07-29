@@ -9,6 +9,7 @@
     <p>
       <strong>type:</strong> {{ device.device_type }}<br>
       <strong>vendor:</strong> {{ device.oui_vendor or "unknown" }}<br>
+      <strong>BLE class:</strong> {{ device.ble_device_class or "unknown" }}<br>
       <strong>randomized:</strong> {% if device.is_randomized %}yes{% else %}no{% endif %}<br>
       <strong>first seen:</strong> <time datetime="{{ device.first_seen | unix_to_iso }}">{{ device.first_seen | unix_to_iso }}</time><br>
       <strong>last seen:</strong> <time datetime="{{ device.last_seen | unix_to_iso }}">{{ device.last_seen | unix_to_iso }}</time><br>

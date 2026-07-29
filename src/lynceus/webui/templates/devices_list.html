@@ -110,6 +110,7 @@
        {'label': 'Type', 'sort': 'device_type', 'nowrap': true, 'key': 'device_type'},
        {'label': 'Vendor', 'sort': 'oui_vendor', 'key': 'oui_vendor'},
        {'label': 'BLE name', 'sort': 'ble_name', 'key': 'ble_name'},
+       {'label': 'BLE class', 'key': 'ble_device_class'},
        {'label': 'Probes', 'key': 'probes'},
        {'label': 'Randomized', 'sort': 'is_randomized', 'key': 'is_randomized'},
        {'label': 'First seen', 'sort': 'first_seen', 'key': 'first_seen'},
@@ -142,6 +143,7 @@
               <td style="white-space: nowrap;">{{ d.device_type }}</td>
               <td>{{ d.oui_vendor or "—" }}</td>
               <td>{{ d.ble_name or "—" }}</td>
+              <td>{{ d.ble_device_class or "—" }}</td>
               <td>{{ d.probe_ssids | probe_ssids_list | join(", ") }}</td>
               <td>{% if d.is_randomized %}&check;{% endif %}</td>
               <td><time datetime="{{ d.first_seen | unix_to_iso }}">{{ d.first_seen | unix_to_iso }}</time></td>
