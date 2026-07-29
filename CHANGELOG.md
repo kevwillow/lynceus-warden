@@ -6,85 +6,84 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-07-28
+
+Lynceus learns to listen to Bluetooth properly, and to tell your AirPods
+apart from something worth worrying about. Both new pieces ship switched
+off. Read the honest-status notes before you turn them on.
+
 ### Added
 
-- **A passive BLE bridge now captures the advertisement-payload fields Kismet's
-  classic-HCI datasource cannot decode — flag-gated and OFF by default.** The
-  `ble_uuid`, `ble_manufacturer_id`, and drone Remote-ID matchers have shipped
-  and been tested for several releases but never fired in the field, because
-  Kismet's classic Bluetooth datasource surfaces no advertisement payload: the
-  company ids and service UUIDs they match on never reached the matcher. The new
-  `lynceus.bridges.ble.BleBridge` opens a passive BlueZ/`bleak` scan on its own
-  adapter and feeds what it sees into the existing watchlist-matching and
-  alerting path, so those matchers finally have a capture path. It runs on a
-  tick model — a per-MAC dedup buffer accumulating company ids and service
-  UUIDs, flushed on its own interval (defaulting to `poll_interval_seconds`)
-  into one `DeviceObservation` per MAC — and holds its **own** `Database()`
-  handle on the same path, a deliberate WAL second writer rather than a shared
-  connection with the poll loop. When `ble_bridge.enabled` is set, `run_forever`
-  starts it in a daemon thread and stops/joins it in the same `finally` that
-  closes the poller's DB; a bridge that fails to start is logged and the daemon
-  continues without it, so the flag can never take the poll loop down with it.
-  Passive-only throughout, consistent with the project stance — it observes and
-  matches, and never connects, pairs, or probes. Hardware-validated end to end
-  from inside the daemon: real adverts captured, FK-safe alert rows written, and
-  a clean shutdown on signal.
+- **A passive BLE bridge, so the BLE matchers have something to match on
+  (off by default).** The `ble_uuid`, `ble_manufacturer_id`, and drone
+  Remote-ID matchers have shipped for several releases and fired zero
+  times in the field. That was never their fault. Kismet's classic
+  Bluetooth datasource hands over no advertisement payload, so the company
+  ids and service UUIDs they look for never arrived.
+  `lynceus.bridges.ble.BleBridge` opens a passive BlueZ/`bleak` scan on
+  its own adapter and pushes what it hears through the same matching and
+  alerting path the poll loop already uses.
 
-  **The feature is OFF by default and is not yet production-ready**, for a
-  reason that is about data rather than code: a watchlist matching raw
-  `ble_manufacturer_id` values would alert on every consumer device from the
-  same vendor (company id `004c` is *every* Apple device in range, not a
-  surveillance signal). Enabling the bridge is gated on curating that watchlist
-  first — see the BLE bridge enablement gates in `BACKLOG.md`.
+  It runs on a tick. A per-MAC buffer keeps the latest advert, then
+  flushes on its own interval (defaulting to `poll_interval_seconds`) as
+  one observation per MAC. It holds its own `Database()` handle instead of
+  sharing the poll loop's connection, which makes it a WAL second writer
+  by design. Set `ble_bridge.enabled` and `run_forever` starts it in a
+  daemon thread, then stops and joins it in the same `finally` that closes
+  the poller's DB. A bridge that fails to start logs the failure and steps
+  aside, so the flag cannot take your daemon down with it. Passive
+  throughout: it listens and matches, and it never connects, pairs, or
+  probes. Validated on hardware from inside the daemon, with real adverts
+  captured, FK-safe alert rows written, and a clean shutdown on signal.
 
-- **Apple BLE adverts are now classified by Continuity payload shape, so
-  company id `004c` resolves to a device class instead of "some Apple
-  device".** Every Apple device — phone, watch, earbuds, tracker —
-  advertises under the same company id, which is why a watchlist matching
-  raw `ble_manufacturer_id` would alert on every passer-by. The new
-  `lynceus.ble_continuity` module decodes the Continuity message type
-  carried inside the advertisement payload and resolves it to one of
-  `find_my`, `airpods`, `nearby`, or `apple_unknown`. An advert chaining
-  several messages resolves to the most surveillance-relevant one present,
-  so a tracker is never masked by a co-emitted Nearby message, and a
-  truncated or malformed payload yields no class rather than a guess.
+- **Apple adverts resolve to a device class, so `004c` stops meaning "some
+  Apple thing".** Every Apple device shares company id `004c`: your phone,
+  your watch, the AirPods two seats over, and the tracker you actually
+  care about. Matching that id alone would page you for each of them and
+  train you to ignore the alerts, which lands you worse off than having no
+  alerts at all. `lynceus.ble_continuity` reads the Continuity message
+  type inside the advertisement payload and sorts it into `find_my`,
+  `airpods`, `nearby`, or `apple_unknown`. When one advert carries several
+  messages, the most surveillance-relevant class wins, so a tracker cannot
+  hide behind a co-emitted Nearby message. Truncated or malformed payloads
+  produce no class rather than a guess.
 
-  **The payload bytes are not retained.** They are read inside the bleak
-  callback, classified, and discarded there; only the derived label is
-  buffered, persisted, or matched. The bridge's "we never retain
-  advertisement content" invariant is unchanged and is now pinned by a
-  regression test that fails if raw bytes are ever added to the buffer.
+  The payload bytes do not stick around. The decoder reads them inside the
+  bleak callback and drops them there. Only the label gets buffered,
+  stored, or matched, and a regression test fails if someone starts
+  buffering raw bytes later.
 
-  The class is stored on the device row (migration 023, nullable — NULL
-  means unknown, which is distinct from `apple_unknown`) and shown on
-  `/devices` and device detail, so ambient Apple devices are legible
-  instead of a wall of identical rows. A new `ble_device_class` rule type
-  alerts on operator-named classes; unlike the `watchlist_*` types it is
-  not DB-delegated — the class is decoded from the advert itself, so
-  patterns are required and the rule's own severity is what fires. It
-  ships commented out.
+  The class lands on the device row (migration 023, nullable, where NULL
+  means "we don't know" and `apple_unknown` means "we saw an Apple advert
+  and couldn't name it") and shows up on `/devices` and device detail. A
+  new `ble_device_class` rule type alerts on the classes you name. Unlike
+  the `watchlist_*` types it does not delegate to the DB, so patterns are
+  required and the rule's own severity is what fires. It ships commented
+  out.
 
-  **Deliberately not shipped as alerting: the separated-from-owner
-  state.** Distinguishing an AirTag travelling away from its owner from
-  one sitting on its owner's keys rides a status bit that has not been
-  confirmed against real hardware. That bit is isolated in a single
-  constant marked UNVALIDATED, the shipped rule example matches `find_my`
-  (which depends only on the well-established message-type byte), and
-  promoting `find_my_separated` is a one-line rules.yaml edit once a rig
-  capture confirms it — the same treatment `_DRONE_ID_PATHS` gets.
+  **Honest status.** Nobody has pointed this decoder at a real AirTag yet.
+  Its tests build their own payloads, which proves the parser
+  self-consistent and proves nothing about Apple. Treat it as built and
+  unproven until someone runs a capture. Separated-from-owner state, the
+  part that would tell a tracker riding in a stranger's bag from one on
+  your own keyring, rests on a status bit nobody has confirmed against
+  hardware. That bit sits in one constant marked UNVALIDATED, the shipped
+  rule example matches `find_my` (which leans only on the well-established
+  message-type byte), and promoting `find_my_separated` takes a one-line
+  rules.yaml edit once a capture settles it. `_DRONE_ID_PATHS` carries the
+  same warning for the same reason.
 
 ### Changed
 
-- **The per-observation pipeline is extracted from `poll_once` into a shared
-  `process_observation(...)`.** The device-upsert → sighting → rule-eval →
-  FK-safe-alert sequence lived inline in `poll_once`, which made it reachable
-  only from a Kismet poll tick. It is now a module-level function that
-  `poll_once` calls per admitted observation and the BLE bridge calls per
-  flushed observation, so the bridge reuses the *exact* persistence and alerting
-  path — including the ordering that guarantees the device row exists before an
-  alert references it — instead of reimplementing a parallel one that could
-  drift. Behavior-preserving refactor: poll behavior, counters, drop gates, and
-  logging are unchanged.
+- **`poll_once` handed its per-observation work to a shared
+  `process_observation(...)`.** The device-upsert, sighting, rule-eval,
+  FK-safe-alert sequence used to sit inline, reachable only from a Kismet
+  poll tick. It is now a module-level function that `poll_once` calls per
+  admitted observation and the BLE bridge calls per flushed one, so the
+  bridge reuses the exact persistence and alerting path (including the
+  ordering that guarantees a device row exists before an alert points at
+  it) instead of growing a parallel copy that drifts. Behavior stays put:
+  poll behavior, counters, drop gates, and logging are unchanged.
 
 ## [0.9.2] - 2026-06-17
 
