@@ -426,14 +426,22 @@ watchlist would alert on every passer-by's phone and earbuds. The curation
 decision — which company ids (or which id + payload-shape pairs) are a
 surveillance signal rather than consumer noise — is Argus-side data work, not
 lynceus-side code.
+**Substantially reduced for Apple by the Continuity decoder (unreleased).**
+`lynceus.ble_continuity` now resolves `004c` to `find_my` / `airpods` /
+`nearby` / `apple_unknown`, and the `ble_device_class` rule type alerts on
+named classes — so the Apple case is a classification problem rather than a
+vendor blocklist, and the alert-storm risk for Apple is gone. What remains:
+(a) every NON-Apple company id is still uncurated and would storm the same
+way, and (b) the separated-from-owner refinement that makes `find_my`
+precise is still pending rig validation.
 - **Trigger**: blocking. Must be resolved before `ble_bridge.enabled` is ever
   set in a real deployment.
-- **Notes**: in the shipped `config/rules.yaml` template the
-  `argus_ble_manufacturer_id` rule is still commented out, so the repo default
-  is safe. **Verify the deployed rig config separately** — if that rule is
-  uncommented there, enabling the bridge storms immediately with no further
-  warning. Largely dissolved by the Find My / Apple Continuity decoder arc
-  below, which turns `004c` into a device class instead of a vendor.
+- **Notes**: in the shipped `config/rules.yaml` template both
+  `argus_ble_manufacturer_id` and the new `apple_find_my` rule are commented
+  out, so the repo default is safe. **Verify the deployed rig config
+  separately** — if `argus_ble_manufacturer_id` is uncommented there,
+  enabling the bridge storms immediately with no further warning, and the
+  decoder does not help because that rule matches company id, not class.
 
 ### BLE-G2: kismet_sources source-gate vs bridge provenance (BLOCKING)
 Latent silent failure. The bridge stamps its observations with
@@ -496,23 +504,52 @@ deploy the bridge or roll it back.
   enablement, since "is the running code the code we reviewed?" is currently
   unanswerable. Land a real clone first.
 
-### Find My / Apple Continuity payload decoder (next arc)
-With the capture bridge in place, the advertisement payload is finally
-available to decode. A Find My / Apple Continuity decoder would classify Apple
-adverts by payload shape — AirTag-in-separated-mode vs AirPods vs a paired
-iPhone — turning `ble_manufacturer_id=004c` from a useless vendor-wide match
-into a device class. This is the payload-format-signature work the BLE capture
-entry above always identified as the real matching strategy.
-- **Trigger**: next arc; the capture foundation it needs is now in place.
-- **Estimated**: decoder + classification + tests, on captured payload samples
-  from the rig. No new capture path required.
-- **Notes**: largely dissolves BLE-G1 — a decoder that separates "AirTag in
-  separated mode" from "someone's AirPods" makes curation a classification
-  problem instead of a vendor-blocklist problem. It is also what the README's
-  "AirTag-class recognition" claim actually requires (see the README-integrity
-  follow-up). Follow-detection — distinguishing a tracker that persists across
-  locations from an incidental one — is the arc after this one, and still wants
-  the real-world capture corpus the stalking-heuristics entry describes.
+### Migration 014 replay drops every devices column added after it
+`014_devices_remote_id.sql` is a full table rebuild with a hardcoded column
+list, so replaying it — the "narrow recovery path" its own test docstring
+describes, for a DB whose 014 row is missing but whose table was already
+rebuilt — recreates `devices` at the 014-era shape and silently drops every
+column added since. That is currently `ble_name` and `ble_device_class`.
+Surfaced while adding migration 023, which is the first migration to add a
+`devices` column after 014; nothing had exercised the interaction before.
+- **Trigger**: before anyone actually uses the 014 replay recovery path, or
+  the next time a `devices` column is added.
+- **Estimated**: investigation-first. Options include making the rebuild
+  column list dynamic (`PRAGMA table_info`), or documenting the replay as
+  "re-run migrations to head afterwards" and making the runner do so.
+  Editing an already-applied migration in place is NOT an option.
+- **Notes**: normal operation is unaffected — migrations run in order, once,
+  and 023 adds the column after 014 has run. This only bites on replay. The
+  local `test_migration_014_sql_replay_is_safe_rebuild` was reworked to
+  assert the CHECK constraint via a raw INSERT rather than `upsert_device`,
+  so it tests the constraint instead of tripping on the dropped column.
+
+### Find My / Apple Continuity payload decoder
+**Status: landed (unreleased).** `lynceus.ble_continuity` decodes the
+Continuity message type and resolves an Apple advert to `find_my` /
+`airpods` / `nearby` / `apple_unknown`; the class is persisted on the device
+row (migration 023), shown on `/devices`, and matchable via the
+`ble_device_class` rule type. Payload bytes are read in the bleak callback
+and discarded there — only the derived label survives, pinned by a
+regression test. See the CHANGELOG `[Unreleased]` entry.
+
+**The one thing NOT done is the part that makes it precise: separated
+state.** Telling an AirTag travelling with a stranger apart from one sitting
+on its owner's desk rides a Find My status bit that has never been checked
+against real hardware. It is isolated in `_FIND_MY_SEPARATED_MASK`, marked
+UNVALIDATED, and no shipped rule matches `find_my_separated`.
+- **Trigger**: a rig capture of a known AirTag in both states — with its
+  owner present, and genuinely separated — to confirm which bit flips.
+- **Estimated**: small once the capture exists: confirm the mask, then add
+  `find_my_separated` to the rules.yaml example. The decoder, persistence,
+  matcher, and tests are all already in place.
+- **Notes**: same shape as the D2 drone field-path entry — everything built
+  and tested, one runtime fact obtainable only from hardware. Until then
+  `find_my` alone is correct but coarse: it fires on any Find My advert,
+  including the owner's own tracker. Follow-detection — distinguishing a
+  tracker that persists across locations from an incidental one — is the arc
+  after this, and still wants the real-world capture corpus the
+  stalking-heuristics entry describes.
 
 ### D2 drone Remote-ID live field-path confirmation
 The `drone_id_prefix` leading-substring matcher (v0.9.2) is correct but inert:

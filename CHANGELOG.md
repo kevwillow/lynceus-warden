@@ -37,6 +37,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   surveillance signal). Enabling the bridge is gated on curating that watchlist
   first — see the BLE bridge enablement gates in `BACKLOG.md`.
 
+- **Apple BLE adverts are now classified by Continuity payload shape, so
+  company id `004c` resolves to a device class instead of "some Apple
+  device".** Every Apple device — phone, watch, earbuds, tracker —
+  advertises under the same company id, which is why a watchlist matching
+  raw `ble_manufacturer_id` would alert on every passer-by. The new
+  `lynceus.ble_continuity` module decodes the Continuity message type
+  carried inside the advertisement payload and resolves it to one of
+  `find_my`, `airpods`, `nearby`, or `apple_unknown`. An advert chaining
+  several messages resolves to the most surveillance-relevant one present,
+  so a tracker is never masked by a co-emitted Nearby message, and a
+  truncated or malformed payload yields no class rather than a guess.
+
+  **The payload bytes are not retained.** They are read inside the bleak
+  callback, classified, and discarded there; only the derived label is
+  buffered, persisted, or matched. The bridge's "we never retain
+  advertisement content" invariant is unchanged and is now pinned by a
+  regression test that fails if raw bytes are ever added to the buffer.
+
+  The class is stored on the device row (migration 023, nullable — NULL
+  means unknown, which is distinct from `apple_unknown`) and shown on
+  `/devices` and device detail, so ambient Apple devices are legible
+  instead of a wall of identical rows. A new `ble_device_class` rule type
+  alerts on operator-named classes; unlike the `watchlist_*` types it is
+  not DB-delegated — the class is decoded from the advert itself, so
+  patterns are required and the rule's own severity is what fires. It
+  ships commented out.
+
+  **Deliberately not shipped as alerting: the separated-from-owner
+  state.** Distinguishing an AirTag travelling away from its owner from
+  one sitting on its owner's keys rides a status bit that has not been
+  confirmed against real hardware. That bit is isolated in a single
+  constant marked UNVALIDATED, the shipped rule example matches `find_my`
+  (which depends only on the well-established message-type byte), and
+  promoting `find_my_separated` is a one-line rules.yaml edit once a rig
+  capture confirms it — the same treatment `_DRONE_ID_PATHS` gets.
+
 ### Changed
 
 - **The per-observation pipeline is extracted from `poll_once` into a shared
