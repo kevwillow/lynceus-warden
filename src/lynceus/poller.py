@@ -221,6 +221,7 @@ def process_observation(
         oui_vendor=obs.oui_vendor,
         is_randomized=int(obs.is_randomized),
         now_ts=now_ts,
+        ble_device_class=obs.ble_device_class,
     )
     if config.capture.probe_ssids and obs.probe_ssids:
         stored, truncated = db.merge_device_probe_ssids(obs.mac, obs.probe_ssids)

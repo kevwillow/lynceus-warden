@@ -565,20 +565,35 @@ class Database:
         oui_vendor: str | None,
         is_randomized: int,
         now_ts: int,
+        ble_device_class: str | None = None,
     ) -> None:
         with self._conn:
             self._conn.execute(
                 """
                 INSERT INTO devices(
                     mac, device_type, first_seen, last_seen,
-                    sighting_count, oui_vendor, is_randomized
+                    sighting_count, oui_vendor, is_randomized, ble_device_class
                 )
-                VALUES (?, ?, ?, ?, 1, ?, ?)
+                VALUES (?, ?, ?, ?, 1, ?, ?, ?)
                 ON CONFLICT(mac) DO UPDATE SET
                     last_seen = excluded.last_seen,
-                    sighting_count = devices.sighting_count + 1
+                    sighting_count = devices.sighting_count + 1,
+                    -- Coalescing, NOT clobbering: adverts are intermittent, so
+                    -- a later capture that decodes to NULL must not erase a
+                    -- class we already learned. A non-NULL new value wins.
+                    ble_device_class = COALESCE(
+                        excluded.ble_device_class, devices.ble_device_class
+                    )
                 """,
-                (mac, device_type, now_ts, now_ts, oui_vendor, is_randomized),
+                (
+                    mac,
+                    device_type,
+                    now_ts,
+                    now_ts,
+                    oui_vendor,
+                    is_randomized,
+                    ble_device_class,
+                ),
             )
 
     PROBE_SSIDS_PER_DEVICE_CAP = 50
@@ -2004,6 +2019,7 @@ class Database:
         sql = (
             "SELECT mac, device_type, first_seen, last_seen, sighting_count, "
             "oui_vendor, is_randomized, notes, probe_ssids, ble_name, "
+            "ble_device_class, "
             "(SELECT rssi FROM sightings WHERE sightings.mac = devices.mac "
             "ORDER BY ts DESC, id DESC LIMIT 1) AS last_rssi, "
             "(SELECT ssid FROM sightings WHERE sightings.mac = devices.mac "
@@ -2214,7 +2230,8 @@ class Database:
             raise ValueError("sighting_limit must be in [1, 1000]")
         dev_row = self._conn.execute(
             "SELECT mac, device_type, first_seen, last_seen, sighting_count, "
-            "oui_vendor, is_randomized, notes FROM devices WHERE mac = ?",
+            "oui_vendor, is_randomized, notes, ble_device_class "
+            "FROM devices WHERE mac = ?",
             (mac,),
         ).fetchone()
         if dev_row is None:
