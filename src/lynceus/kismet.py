@@ -107,6 +107,14 @@ class DeviceObservation(BaseModel):
     # when not present in the Kismet record — see _extract_ble_
     # manufacturer_id for the field-path uncertainty caveat.
     ble_manufacturer_id: str | None = None
+    # Derived Apple Continuity class (see ble_continuity.classify) — one
+    # of 'find_my', 'find_my_separated', 'airpods', 'nearby',
+    # 'apple_unknown', or None when the advert carried no decodable
+    # Continuity message. This is a DERIVED label, never raw
+    # advertisement content; the payload bytes it came from are not
+    # retained anywhere. Only the passive BLE bridge populates it — the
+    # Kismet classic-HCI path has no payload and always leaves it None.
+    ble_device_class: str | None = None
     # Canonical persistent form of an ANSI/CTA-2063-A Remote-ID
     # serial-number prefix extracted from a drone Remote-ID
     # broadcast — uppercase ASCII alphanumeric, 3-32 chars (e.g.
@@ -195,8 +203,13 @@ class DeviceObservation(BaseModel):
 
     @model_validator(mode="after")
     def _drop_uuids_for_non_ble(self) -> DeviceObservation:
-        if self.device_type != "ble" and self.ble_service_uuids:
-            object.__setattr__(self, "ble_service_uuids", ())
+        if self.device_type != "ble":
+            if self.ble_service_uuids:
+                object.__setattr__(self, "ble_service_uuids", ())
+            # A decoded Continuity class is meaningless on a non-BLE
+            # observation; blank it so a wrong caller can't persist one.
+            if self.ble_device_class is not None:
+                object.__setattr__(self, "ble_device_class", None)
         return self
 
 

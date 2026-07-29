@@ -29,6 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..allowlist import Allowlist
+from ..ble_continuity import classify_manufacturer_data
 from ..config import load_config
 from ..db import Database
 from ..kismet import DeviceObservation, normalize_mac, normalize_uuid
@@ -92,6 +93,8 @@ class _BufferEntry:
     rssi: int | None
     manufacturer_ids: tuple[int, ...]
     service_uuids: tuple[str, ...]
+    # Derived Continuity label only — never raw payload bytes.
+    device_class: str | None = None
 
 
 class BleBridge:
@@ -168,6 +171,9 @@ class BleBridge:
         # and are dropped (privacy-lean — we never retain advertisement content).
         manufacturer_ids = tuple(manufacturer_data or ())
         uuids = tuple(service_uuids or ())
+        # Raw payload bytes are read HERE and nowhere else, and only the
+        # derived label is kept — see ble_continuity's module docstring.
+        device_class = classify_manufacturer_data(manufacturer_data)
         existing = self._buffer.get(mac)
         if existing is None:
             self._buffer[mac] = _BufferEntry(
@@ -176,6 +182,7 @@ class BleBridge:
                 rssi=rssi,
                 manufacturer_ids=manufacturer_ids,
                 service_uuids=uuids,
+                device_class=device_class,
             )
         else:
             # Keep the latest advert's fields; preserve the window's first_seen.
@@ -183,6 +190,7 @@ class BleBridge:
             existing.rssi = rssi
             existing.manufacturer_ids = manufacturer_ids
             existing.service_uuids = uuids
+            existing.device_class = device_class
 
     @staticmethod
     def _select_manufacturer_id(manufacturer_ids) -> str | None:
@@ -226,6 +234,7 @@ class BleBridge:
             ble_manufacturer_id=self._select_manufacturer_id(entry.manufacturer_ids),
             ble_service_uuids=self._normalize_uuids(entry.service_uuids),
             seen_by_sources=(f"ble:{self.adapter}",),
+            ble_device_class=entry.device_class,
         )
 
     def _flush(self, now_ts: int) -> int:
