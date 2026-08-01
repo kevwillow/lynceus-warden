@@ -40,6 +40,7 @@ from ._adapter_descriptors import (  # noqa: F401  (re-exported for test monkeyp
 # ``wiz.subprocess.Popen``, ``wiz.SetupError``, etc. via this module's
 # namespace; pulling the same names back here keeps every test seam
 # pointing at the same objects without editing 200 test imports.
+from ..ble_bridge_checks import check_bridge_readiness
 from ..setup.core import (  # noqa: F401  (test-namespace re-exports)
     BUNDLED_ABSENT_MESSAGE,
     BUNDLED_IMPORT_TIMEOUT_SECONDS,
@@ -49,6 +50,7 @@ from ..setup.core import (  # noqa: F401  (test-namespace re-exports)
     DELEGATION_RULES,
     SEVERITY_OVERRIDES_TEMPLATE,
     SetupError,
+    _DEFAULT_BLE_ADAPTER,
     _apply_system_perms_to_dir,
     _apply_system_perms_to_file,
     _atomic_write,
@@ -1096,6 +1098,47 @@ anywhere except your generated lynceus.yaml.
         default=True,
         input_fn=in_fn,
     )
+
+    # (f2) passive BLE bridge. Asked here because it is the other BLE capture
+    # decision, and asked at all because the default is off and undiscoverable.
+    _print_section("Passive BLE bridge (optional)")
+    _print_context(
+        """
+Kismet's Bluetooth datasource hands over no advertisement payload, so
+Lynceus cannot see Apple Find My trackers, AirPods, or BLE service UUIDs
+through Kismet alone. The passive BLE bridge opens its OWN Bluetooth scan
+to get that payload and feeds it through the same matching and alerting
+path as everything else.
+
+That makes it a capture path, not a decoder over Kismet's data — so it
+needs a Bluetooth adapter Kismet is NOT already capturing on. It listens
+only: it never connects, pairs, or probes.
+
+Lynceus default is OFF.
+"""
+    )
+    bridge_adapter = _DEFAULT_BLE_ADAPTER
+    # Rule types are not chosen until the enable-alerting flow further down,
+    # so only the config-derivable gates can be evaluated here; the alerting
+    # flow re-checks with the real rule set once it knows it.
+    bridge_warnings = check_bridge_readiness(
+        adapter=bridge_adapter,
+        kismet_sources=kismet_sources,
+        enabled_rule_types=(),
+    )
+    if bridge_warnings:
+        print(f"Before you decide — {len(bridge_warnings)} thing(s) would stop this working here:")
+        print()
+        for warning in bridge_warnings:
+            print(f"  ! {warning.summary}")
+            print(f"    Fix: {warning.remedy}")
+            print()
+    answers["ble_bridge_enabled"] = prompt_yes_no(
+        f"Enable the passive BLE bridge on {bridge_adapter}?",
+        default=False,
+        input_fn=in_fn,
+    )
+    answers["ble_bridge_adapter"] = bridge_adapter
 
     # (g) ntfy URL — empty input skips ntfy entirely. When non-empty, the same
     # scheme-and-host validation runs before any probe.
