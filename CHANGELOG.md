@@ -13,8 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to off and had no prompt anywhere, so the only way to find it was to read
   the source. Both wizard front-ends — `lynceus-setup` and
   `lynceus-setup --web` — now ask, directly after the other BLE capture
-  question, and the generated `lynceus.yaml` always carries a commented
-  `ble_bridge:` block so the setting is visible and hand-editable either way.
+  question, and the generated `lynceus.yaml` always carries a live
+  `ble_bridge:` block — explanatory comments above it, not commented out —
+  so the setting is visible and hand-editable either way.
 
   The prompt leads with what the bridge actually is, because the natural
   assumption is wrong in a way that matters: it is a capture path of its
