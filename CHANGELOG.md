@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Setup now asks whether you want the passive BLE bridge, and `/settings`
+  tells you afterwards whether it is doing anything.** The bridge defaults
+  to off and had no prompt anywhere, so the only way to find it was to read
+  the source. Both wizard front-ends — `lynceus-setup` and
+  `lynceus-setup --web` — now ask, directly after the other BLE capture
+  question, and the generated `lynceus.yaml` always carries a commented
+  `ble_bridge:` block so the setting is visible and hand-editable either way.
+
+  The prompt leads with what the bridge actually is, because the natural
+  assumption is wrong in a way that matters: it is a capture path of its
+  own, not a decoder running over Kismet's data. Kismet's Bluetooth
+  datasource hands over no advertisement payload, which is why the bridge
+  opens its own passive scan — and why it needs an adapter Kismet is not
+  already capturing on.
+
+  **Warn, then allow.** Three known configurations make an enabled bridge
+  silently useless or noisy: Kismet holding the same adapter, a
+  `kismet_sources` list that omits the bridge's own `ble:<adapter>`
+  provenance and therefore drops every observation it produces, and a raw
+  company-id rule that alerts on an entire vendor. All three are decidable
+  from configuration alone, so the wizard prints what would go wrong along
+  with the fix, and still lets you say yes — blocking would override an
+  operator who knows their setup better than the check does.
+
+  The new `/settings` card reports status, adapter, and a per-class
+  breakdown of what has actually been decoded. That count comes from
+  `devices.ble_device_class`, which is the right evidence precisely because
+  only the bridge ever writes it, so a non-empty breakdown means capturing
+  *and* decoding rather than merely enabled. Readiness is shown whether or
+  not the bridge is on, so the card answers "what would stop this working if
+  I turned it on" as well as "this is on but quiet" — and when there are no
+  warnings and nothing decoded, it says which explanations are left instead
+  of leaving a silence that reads as working. Read-only, like the rest of
+  the page.
+
 ### Fixed
 
 - **The passive BLE bridge could not see a single Apple device, and said
