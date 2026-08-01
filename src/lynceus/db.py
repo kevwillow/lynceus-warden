@@ -2093,6 +2093,23 @@ class Database:
             ).fetchone()[0]
         )
 
+    def count_devices_by_ble_device_class(self) -> dict[str, int]:
+        """Per-class device counts for the decoded Apple Continuity class.
+
+        Only the passive BLE bridge ever populates ``ble_device_class`` —
+        the Kismet classic-HCI path surfaces no advertisement payload to
+        decode and leaves it NULL — so a non-empty result is direct
+        evidence the bridge is capturing and decoding, which is what the
+        /settings panel reports. NULL rows are excluded because they mean
+        "no Continuity data", not a class.
+        """
+        rows = self._conn.execute(
+            "SELECT ble_device_class, COUNT(*) FROM devices "
+            "WHERE ble_device_class IS NOT NULL "
+            "GROUP BY ble_device_class ORDER BY COUNT(*) DESC"
+        ).fetchall()
+        return {str(row[0]): int(row[1]) for row in rows}
+
     def list_probe_devices(
         self, *, limit: int = 200, offset: int = 0, q: str | None = None
     ) -> list[dict]:

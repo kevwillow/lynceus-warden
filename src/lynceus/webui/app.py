@@ -33,6 +33,7 @@ from lynceus.allowlist import (
     load_allowlist_with_source,
     remove_ui_entry,
 )
+from lynceus.ble_bridge_checks import bridge_source_name, check_bridge_readiness
 from lynceus.config import Config
 from lynceus.db import (
     DEVICES_DEFAULT_DIR,
@@ -916,10 +917,41 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
     except importlib.metadata.PackageNotFoundError:
         lynceus_version = __version__
 
+    # Readiness is evaluated even when the bridge is off, so the panel can
+    # answer "what would happen if I turned this on" as well as "why is this
+    # on but quiet". Rule types are known here (unlike in the wizard), so all
+    # three gates are checked. A ruleset that fails to load is not this
+    # page's problem — the ruleset card reports that separately.
+    try:
+        enabled_rule_types = [
+            r.rule_type
+            for r in rules_mod.load_ruleset(config.rules_path).rules
+            if r.enabled
+        ] if config.rules_path else []
+    except Exception:
+        enabled_rule_types = []
+
+    try:
+        ble_class_counts = db.count_devices_by_ble_device_class()
+    except sqlite3.Error:
+        ble_class_counts = {}
+
     return {
         "capture": {
             "probe_ssids": bool(config.capture.probe_ssids),
             "ble_friendly_names": bool(config.capture.ble_friendly_names),
+        },
+        "ble_bridge": {
+            "enabled": bool(config.ble_bridge.enabled),
+            "adapter": config.ble_bridge.adapter,
+            "source_name": bridge_source_name(config.ble_bridge.adapter),
+            "warnings": check_bridge_readiness(
+                adapter=config.ble_bridge.adapter,
+                kismet_sources=config.kismet_sources,
+                enabled_rule_types=enabled_rule_types,
+            ),
+            "class_counts": ble_class_counts,
+            "decoded_total": sum(ble_class_counts.values()),
         },
         "kismet": {
             "url": config.kismet_url,

@@ -85,6 +85,68 @@
   </article>
 
   <article class="settings-card">
+    <header><strong>passive BLE bridge</strong></header>
+    <dl class="metadata-grid">
+      <dt>status</dt>
+      <dd>{% if ble_bridge.enabled %}ON{% else %}OFF{% endif %}</dd>
+      <dt>adapter</dt>
+      <dd><code>{{ ble_bridge.adapter }}</code></dd>
+      <dt>provenance</dt>
+      <dd><code>{{ ble_bridge.source_name }}</code></dd>
+      <dt>devices decoded</dt>
+      <dd>
+        {% if ble_bridge.decoded_total %}
+          {{ ble_bridge.decoded_total }}
+        {% else %}
+          <em>none yet</em>
+        {% endif %}
+      </dd>
+    </dl>
+
+    {% if ble_bridge.class_counts %}
+      <dl class="metadata-grid">
+        {% for cls, count in ble_bridge.class_counts.items() %}
+          <dt><code>{{ cls }}</code></dt><dd>{{ count }}</dd>
+        {% endfor %}
+      </dl>
+    {% endif %}
+
+    {% if ble_bridge.warnings %}
+      <p>
+        <strong>
+          {{ ble_bridge.warnings | length }} thing(s) would stop this working
+          {% if not ble_bridge.enabled %}if you turned it on{% endif %}:
+        </strong>
+      </p>
+      <ul>
+        {% for warning in ble_bridge.warnings %}
+          <li>
+            {{ warning.summary }}
+            <br><small><em>Fix:</em> {{ warning.remedy }}</small>
+          </li>
+        {% endfor %}
+      </ul>
+    {% elif ble_bridge.enabled and not ble_bridge.decoded_total %}
+      <p>
+        <small>
+          Nothing decoded yet. Nothing in the configuration explains that, so
+          the likely causes are no Apple device in range, or the adapter being
+          unavailable at daemon start &mdash; check the log.
+        </small>
+      </p>
+    {% endif %}
+
+    <p>
+      <small>
+        Its own passive scan, not a decoder over Kismet's data &mdash; it needs
+        an adapter Kismet is not capturing on. Never connects, pairs, or probes.
+        To change, run <code>lynceus-setup --reconfigure</code> or edit
+        <code>ble_bridge.enabled</code>, then restart the daemon.
+      </small>
+    </p>
+  </article>
+
+  <article class="settings-card">
     <header><strong>ntfy notifications</strong></header>
     {% if ntfy.configured %}
       <dl class="metadata-grid">
