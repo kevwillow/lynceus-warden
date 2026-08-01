@@ -32,7 +32,7 @@ from typing import Literal
 import requests
 
 from lynceus import paths
-from lynceus.config import Config
+from lynceus.config import BleBridgeConfig, Config
 from lynceus.kismet import KismetClient
 from lynceus.setup.models import ApplyReport, ApplyStep, ArgusChoice, ProgressSink
 
@@ -430,6 +430,11 @@ def _yaml_bool(value: bool) -> str:
     return "true" if value else "false"
 
 
+# Kept in step with the model default rather than restated, so the emitted
+# file and BleBridgeConfig cannot drift apart.
+_DEFAULT_BLE_ADAPTER = BleBridgeConfig().adapter
+
+
 # --- Config write -----------------------------------------------------------
 
 
@@ -460,6 +465,17 @@ def render_config_yaml(answers: dict) -> str:
         "capture:",
         f"  probe_ssids: {_yaml_bool(answers['probe_ssids'])}",
         f"  ble_friendly_names: {_yaml_bool(answers['ble_friendly_names'])}",
+        "",
+        "# --- Passive BLE bridge (opt-in, off unless you asked for it) ---",
+        "# This is a capture path of its own, NOT a decoder over Kismet's data:",
+        "# Kismet's Bluetooth datasource hands over no advertisement payload, so",
+        "# the bridge opens its own passive scan to get one. It therefore needs",
+        "# an adapter Kismet is not already capturing on — check kismet_sources",
+        "# above and Kismet's own source= lines. Passive throughout: it listens",
+        "# and matches, and never connects, pairs, or probes.",
+        "ble_bridge:",
+        f"  enabled: {_yaml_bool(answers.get('ble_bridge_enabled', False))}",
+        f"  adapter: {_yaml_str(answers.get('ble_bridge_adapter') or _DEFAULT_BLE_ADAPTER)}",
         "",
         "# --- Notifications (ntfy) ---",
         "# Topic acts as the shared secret — anyone who knows it can publish",
@@ -1042,6 +1058,8 @@ def _answers_from_config(config: Config) -> dict:
         "kismet_sources": list(config.kismet_sources or []),
         "probe_ssids": config.capture.probe_ssids,
         "ble_friendly_names": config.capture.ble_friendly_names,
+        "ble_bridge_enabled": config.ble_bridge.enabled,
+        "ble_bridge_adapter": config.ble_bridge.adapter,
         "ntfy_url": config.ntfy_url or "",
         "ntfy_topic": config.ntfy_topic or "",
         "min_rssi": config.min_rssi if config.min_rssi is not None else 0,
