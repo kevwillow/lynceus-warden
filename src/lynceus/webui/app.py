@@ -919,17 +919,21 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
 
     # Readiness is evaluated even when the bridge is off, so the panel can
     # answer "what would happen if I turned this on" as well as "why is this
-    # on but quiet". Rule types are known here (unlike in the wizard), so all
-    # three gates are checked. A ruleset that fails to load is not this
-    # page's problem — the ruleset card reports that separately.
-    try:
-        enabled_rule_types = [
-            r.rule_type
-            for r in rules_mod.load_ruleset(config.rules_path).rules
-            if r.enabled
-        ] if config.rules_path else []
-    except Exception:
-        enabled_rule_types = []
+    # on but quiet". Rule types are known here (unlike in the wizard), so the
+    # alert-storm gate can be checked too — but only if the ruleset actually
+    # loads. When it does not we cannot evaluate that gate, and the panel says
+    # so rather than rendering a clean result that means "not checked".
+    enabled_rule_types: list[str] = []
+    rules_unreadable = False
+    if config.rules_path:
+        try:
+            enabled_rule_types = [
+                r.rule_type
+                for r in rules_mod.load_ruleset(config.rules_path).rules
+                if r.enabled
+            ]
+        except Exception:
+            rules_unreadable = True
 
     try:
         ble_class_counts = db.count_devices_by_ble_device_class()
@@ -952,6 +956,7 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             ),
             "class_counts": ble_class_counts,
             "decoded_total": sum(ble_class_counts.values()),
+            "rules_unreadable": rules_unreadable,
         },
         "kismet": {
             "url": config.kismet_url,

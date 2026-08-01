@@ -126,7 +126,18 @@
           </li>
         {% endfor %}
       </ul>
-    {% elif ble_bridge.enabled and not ble_bridge.decoded_total %}
+    {% endif %}
+
+    {% if ble_bridge.rules_unreadable %}
+      <p>
+        <small>
+          The rules file could not be read, so the alert-storm check was not
+          run &mdash; treat the result above as incomplete, not clean.
+        </small>
+      </p>
+    {% endif %}
+
+    {% if not ble_bridge.warnings and ble_bridge.enabled and not ble_bridge.decoded_total %}
       <p>
         <small>
           Nothing decoded yet. Nothing in the configuration explains that, so
