@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-08-01
+
+The Bluetooth work from 0.9.3 met real hardware, and real hardware had
+notes. Two of them were the kind that do not announce themselves: the
+bridge could not see a single Apple device and said nothing about it, and
+the flag meant to tell a tracker away from its owner apart from one on its
+owner's desk was reading a bit that is always zero. Both are fixed, both
+were found by pointing a passive capture at the thing rather than by
+reasoning about it, and the release notes say what was measured.
+
+Setup now also asks whether you want the bridge at all, instead of leaving
+it as a config key you had to already know about — and warns you about the
+three ways an enabled bridge quietly does nothing.
+
 ### Added
 
 - **Setup now asks whether you want the passive BLE bridge, and `/settings`
