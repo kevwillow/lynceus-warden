@@ -29,6 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..allowlist import Allowlist
+from ..ble_bridge_checks import bridge_source_name
 from ..ble_continuity import classify_manufacturer_data
 from ..config import load_config
 from ..db import Database
@@ -257,7 +258,7 @@ class BleBridge:
             is_randomized=_derive_is_randomized(mac),
             ble_manufacturer_id=self._select_manufacturer_id(entry.manufacturer_ids),
             ble_service_uuids=self._normalize_uuids(entry.service_uuids),
-            seen_by_sources=(f"ble:{self.adapter}",),
+            seen_by_sources=(bridge_source_name(self.adapter),),
             ble_device_class=entry.device_class,
         )
 
