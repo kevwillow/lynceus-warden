@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The passive BLE bridge could not see a single Apple device, and said
+  nothing about it.** The BlueZ `AdvertisementMonitor` was keyed only on
+  the Flags AD element. Apple Continuity adverts are non-connectable and
+  carry no Flags element at all, so the monitor never fired for them: the
+  bridge started cleanly, logged no error, and reported zero Apple devices
+  forever. Every AirTag, AirPod, and Find My accessory in range was
+  invisible, which also made the whole 0.9.3 Continuity decoder dead code
+  the moment it shipped. The Apple manufacturer-data pattern (AD type
+  `0xff`, company id `004c`) now leads the pattern set. Measured on the rig
+  over matched 20-second windows: Flags-only found 0 devices and 0 frames
+  on both runs; with the manufacturer pattern, 7 devices / 61 frames and 5
+  devices / 5 frames. The Flags patterns are kept, so non-Apple capture is
+  unchanged — the set now sits at exactly 7, which is also where BlueZ
+  starts silently dropping the monitor, so it cannot grow without trading
+  something away.
+
+- **Find My separated-from-owner state was decided by a status bit that is
+  always zero.** 0.9.3 shipped `_FIND_MY_SEPARATED_MASK = 0x04` marked
+  UNVALIDATED, on the theory that it was inert until a rig capture
+  confirmed it. It was worse than inert. Across 204 Find My frames from 5
+  devices — both advert forms, iPhone present and absent — bit `0x04` was
+  never set once, so the mask reported "not separated" for every device on
+  earth, including genuinely separated ones. A mask pointing at a
+  permanently-zero bit is indistinguishable from a correct one that was
+  never exercised, and it looks implemented.
+
+  Separation is now read from the advert's structure instead. A tracker
+  away from its owner broadcasts the long form carrying rotating public-key
+  material for the finder network; one near its owner broadcasts a short
+  status-only form. That is a shape we observed directly rather than a bit
+  whose meaning we guessed, and it matches the offline-finding layout
+  documented by OpenHaystack and Heinrich et al.
+
+  The state is three-valued, and unknown is a real value: `find_my_separated`
+  (long form), `find_my_paired` (short form), and `find_my` for any advert
+  in neither observed form. Unknown never collapses into "not separated",
+  and it outranks `find_my_paired` when one advert carries several messages.
+  The commented-out example rule in `config/rules.yaml` now matches
+  `find_my_separated` and `find_my` and deliberately omits `find_my_paired`,
+  which every passing stranger's own tracker emits.
+
+  Note for anyone who has already written a rule: `find_my` used to be the
+  class for *every* Find My advert and is now only the unknown-form case, so
+  a rule matching `find_my` alone covers much less than it did. The bridge
+  ships disabled and the example rule ships commented out, so no configured
+  deployment changes behaviour on upgrade.
+
 ## [0.9.3] - 2026-07-28
 
 Lynceus learns to listen to Bluetooth properly, and to tell your AirPods

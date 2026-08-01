@@ -504,6 +504,29 @@ deploy the bridge or roll it back.
   enablement, since "is the running code the code we reviewed?" is currently
   unanswerable. Land a real clone first.
 
+### BLE-G6: adapter contention — Kismet claims the adapter the bridge needs
+Confirmed on the rig 2026-08-01. `/etc/kismet/kismet_site.conf` declares both
+Bluetooth adapters as Kismet sources (`hci0` and `hci1`), and
+`BleBridgeConfig.adapter` defaults to `hci1`. Kismet holds the adapter for the
+lifetime of the daemon, so with Kismet running there is no free BT adapter and
+the bridge cannot scan. The 2026-08-01 capture only succeeded because Kismet
+was stopped for it — which is not a state the daemon can ship in.
+- **Trigger**: blocking, before enabling the bridge on the rig. Same gate class
+  as BLE-G1/BLE-G2.
+- **Estimated**: config only, no code. Drop the `source=hci1` line from
+  `kismet_site.conf` so Kismet keeps `hci0`, and make the matching edit to
+  `kismet_sources` in `/etc/lynceus/lynceus.yaml`, which currently lists both.
+- **Notes**: adapter identity is easy to invert and worth stating once —
+  `hci1` is the Intel, `28:C5:D2:0A:6D:D2`, HCI 5.3; `hci0` is the Realtek,
+  `3C:78:95:9B:8A:EA`, HCI 5.1. Also on that rig config, and harmless but
+  worth tidying in the same pass: `kismet_sources` lists the Wi-Fi adapter
+  twice, and the file carries no `ble_bridge` key at all, so the
+  `BleBridgeConfig` defaults govern (`enabled: False`). Note too that
+  `~/.config/lynceus/lynceus.yaml` has diverged from the daemon's `/etc` copy
+  — the unit runs `User=lynceus` with `ProtectHome=true` and cannot read
+  `/home` at all, so the home copy is dev-only and must not be used to reason
+  about production behaviour.
+
 ### Migration 014 replay drops every devices column added after it
 `014_devices_remote_id.sql` is a full table rebuild with a hardcoded column
 list, so replaying it — the "narrow recovery path" its own test docstring
@@ -525,31 +548,46 @@ Surfaced while adding migration 023, which is the first migration to add a
   so it tests the constraint instead of tripping on the dropped column.
 
 ### Find My / Apple Continuity payload decoder
-**Status: landed (unreleased).** `lynceus.ble_continuity` decodes the
-Continuity message type and resolves an Apple advert to `find_my` /
+**Status: landed (unreleased), and now actually reachable.**
+`lynceus.ble_continuity` decodes the Continuity message type and resolves an
+Apple advert to `find_my_separated` / `find_my` / `find_my_paired` /
 `airpods` / `nearby` / `apple_unknown`; the class is persisted on the device
 row (migration 023), shown on `/devices`, and matchable via the
 `ble_device_class` rule type. Payload bytes are read in the bleak callback
 and discarded there — only the derived label survives, pinned by a
-regression test. See the CHANGELOG `[Unreleased]` entry.
+regression test. See the CHANGELOG `[Unreleased]` entries.
 
-**The one thing NOT done is the part that makes it precise: separated
-state.** Telling an AirTag travelling with a stranger apart from one sitting
-on its owner's desk rides a Find My status bit that has never been checked
-against real hardware. It is isolated in `_FIND_MY_SEPARATED_MASK`, marked
-UNVALIDATED, and no shipped rule matches `find_my_separated`.
-- **Trigger**: a rig capture of a known AirTag in both states — with its
-  owner present, and genuinely separated — to confirm which bit flips.
-- **Estimated**: small once the capture exists: confirm the mask, then add
-  `find_my_separated` to the rules.yaml example. The decoder, persistence,
-  matcher, and tests are all already in place.
-- **Notes**: same shape as the D2 drone field-path entry — everything built
-  and tested, one runtime fact obtainable only from hardware. Until then
-  `find_my` alone is correct but coarse: it fires on any Find My advert,
-  including the owner's own tracker. Follow-detection — distinguishing a
-  tracker that persists across locations from an incidental one — is the arc
-  after this, and still wants the real-world capture corpus the
-  stalking-heuristics entry describes.
+**Both gates this entry was waiting on are closed by the 2026-08-01 rig
+capture** (~490 Apple TLVs, 3 message types, 0 structure failures):
+- The bridge's BlueZ monitor was Flags-only and matched no Apple advert at
+  all, so the decoder was unreachable in the field regardless of its
+  correctness. Fixed — the Apple manufacturer-data pattern now leads the set.
+- Separated state no longer rides a status bit. `_FIND_MY_SEPARATED_MASK`
+  is deleted: `0x04` was never set across 204 Find My frames, so it reported
+  "not separated" universally. Separation is read from advert length instead,
+  three-valued, with unknown kept distinct from near-owner.
+
+**What is still open is the part hardware cannot settle.** Passive
+re-identification of a given tracker across time is cryptographically
+foreclosed: the BLE address rotates and the Find My key rotates roughly
+every 15 minutes, by design, specifically to defeat observers outside the
+trust system. Apple's own stalking alerts work because an iPhone holds owner
+keys and can query Apple's servers; no third-party passive listener can
+replicate that on any adapter. An AirTag and an AirPods case also emit
+identically-shaped `0x12` adverts, so they cannot be told apart.
+- **Honest capability ceiling**: "an unfamiliar separated Find My emitter is
+  in range, correlated within one rotation window" — not "this specific
+  AirTag is following you". Do not build heuristics that imply the latter,
+  and do not describe the feature that way in the README.
+- **Next arc**: follow-detection — a tracker that persists across locations
+  versus an incidental one — bounded by that rotation window. Still wants the
+  real-world capture corpus the stalking-heuristics entry describes.
+- **Optional, low value**: a clean separated/paired ground-truth experiment
+  (AirPods in a closed case, iPhone Bluetooth off via Settings rather than
+  Control Centre, undisturbed 30 minutes). Two attempts on 2026-08-01 failed
+  — the AirPods slept, and the phone's Bluetooth re-enabled itself 12 minutes
+  in. The length-based rule does not depend on it; this would only raise
+  confidence.
 
 ### D2 drone Remote-ID live field-path confirmation
 The `drone_id_prefix` leading-substring matcher (v0.9.2) is correct but inert:
