@@ -427,13 +427,16 @@ decision — which company ids (or which id + payload-shape pairs) are a
 surveillance signal rather than consumer noise — is Argus-side data work, not
 lynceus-side code.
 **Substantially reduced for Apple by the Continuity decoder (unreleased).**
-`lynceus.ble_continuity` now resolves `004c` to `find_my` / `airpods` /
-`nearby` / `apple_unknown`, and the `ble_device_class` rule type alerts on
-named classes — so the Apple case is a classification problem rather than a
-vendor blocklist, and the alert-storm risk for Apple is gone. What remains:
-(a) every NON-Apple company id is still uncurated and would storm the same
-way, and (b) the separated-from-owner refinement that makes `find_my`
-precise is still pending rig validation.
+`lynceus.ble_continuity` now resolves `004c` to `find_my_separated` /
+`find_my` / `find_my_paired` / `airpods` / `nearby` / `apple_unknown`, and
+the `ble_device_class` rule type alerts on named classes — so the Apple case
+is a classification problem rather than a vendor blocklist, and the
+alert-storm risk for Apple is gone. The separated-from-owner refinement that
+makes this precise is no longer pending: it is length-based and rig-validated
+as of 2026-08-01, so `find_my_separated` is the class an operator actually
+wants and `find_my_paired` is the noise to leave out. What remains for this
+gate: every NON-Apple company id is still uncurated and would storm the same
+way.
 - **Trigger**: blocking. Must be resolved before `ble_bridge.enabled` is ever
   set in a real deployment.
 - **Notes**: in the shipped `config/rules.yaml` template both
