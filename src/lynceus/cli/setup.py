@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 from .. import __version__, paths
-from ..config import DEFAULT_KISMET_URL, CaptureConfig, Config
+from ..config import DEFAULT_KISMET_URL, BleBridgeConfig, CaptureConfig, Config
 from ..kismet import KismetClient
 from ..notify import NtfyNotifier
 from ..redact import redact_ntfy_topic, redact_topic_in_url
@@ -1298,6 +1298,13 @@ and enter the topic exactly as written.
             probe_ssids=answers["probe_ssids"],
             ble_friendly_names=answers["ble_friendly_names"],
         ),
+        # apply_config renders lynceus.yaml from this Config, not from
+        # answers — a field collected but not threaded through here is
+        # silently discarded, and the wizard still reports success.
+        ble_bridge=BleBridgeConfig(
+            enabled=answers["ble_bridge_enabled"],
+            adapter=answers["ble_bridge_adapter"],
+        ),
         ntfy_url=answers["ntfy_url"] or None,
         ntfy_topic=answers["ntfy_topic"] or None,
         min_rssi=answers["min_rssi"],
@@ -1340,6 +1347,10 @@ and enter the topic exactly as written.
     print(f"  kismet_sources:    {', '.join(answers['kismet_sources'])}")
     print(f"  probe_ssids:       {answers['probe_ssids']}")
     print(f"  ble_friendly_names:{answers['ble_friendly_names']}")
+    print(
+        f"  ble_bridge:        {answers['ble_bridge_enabled']}"
+        f" ({answers['ble_bridge_adapter']})"
+    )
     print(f"  ntfy_url:          {answers['ntfy_url'] or '(skipped)'}")
     # Redact the topic in the wizard summary — terminal scrollback and any
     # tee'd install log otherwise capture the shared-secret value. The

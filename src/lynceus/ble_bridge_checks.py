@@ -22,6 +22,16 @@ The checks correspond to the enablement gates in ``BACKLOG.md``:
 
 This module deliberately reports rather than decides. Every finding carries a
 remedy, and the caller chooses whether to warn, block, or ignore.
+
+Known limitation, and it is a false-negative one: the contention check compares
+the adapter against ``kismet_sources`` by exact string. Kismet datasources can
+be given arbitrary names (``source=hci1:type=linuxbluetooth,name=local_bt``),
+and the wizard stores whichever form the operator picked, so a renamed source
+on the bridge's adapter will not be spotted. An empty result therefore means
+"nothing known is wrong", never "proven to work" — only a live capture shows
+that. Substring matching was considered and rejected: it would flag unrelated
+adapters whose names happen to overlap, and a warning an operator learns to
+ignore is worse than one that is occasionally absent.
 """
 
 from __future__ import annotations
