@@ -54,12 +54,36 @@ try:
 except Exception as _exc:  # pragma: no cover - rig-only path
     _BLEAK_IMPORT_ERROR = f"{type(_exc).__name__}: {_exc}"
 
-# Passive AdvertisementMonitor recipe promoted verbatim from the spike
+# Passive AdvertisementMonitor recipe promoted from the spike
 # (scripts/spike_ble_bridge.py:97-103): BlueZ needs a non-empty or_patterns set
-# and drops the monitor above ~7 patterns; the working set is the Flags AD type
-# (0x01) with each of these single content bytes.
+# and drops the monitor above ~7 patterns; the Flags working set is the Flags AD
+# type (0x01) with each of these single content bytes.
 _FLAGS_AD_TYPE = 0x01
 _FLAGS_CONTENT_BYTES = (0x06, 0x1A, 0x02, 0x04, 0x05, 0x00)
+
+# Apple manufacturer-specific data (AD type 0xFF), company id 0x004C in wire
+# order. Apple Continuity adverts are non-connectable and carry NO Flags AD
+# element, so the Flags set alone matches none of them.
+_MFR_DATA_AD_TYPE = 0xFF
+_APPLE_COMPANY_BYTES = b"\x4c\x00"
+
+
+def _or_pattern_specs() -> tuple[tuple[int, int, bytes], ...]:
+    """``(start_position, ad_type, content)`` triples for the BlueZ monitor.
+
+    The Apple manufacturer pattern is REQUIRED, not an optimization: on-rig A/B
+    on 2026-08-01 over matched 20s windows gave Flags-only 0 devices / 0 frames
+    both rounds, versus 7 devices / 61 frames and 5 devices / 5 frames with it.
+    Without it the monitor never fires for Continuity and ble_continuity decodes
+    nothing — the bridge runs clean and logs no error while capturing zero.
+
+    Apple leads the tuple because BlueZ drops the monitor above ~7 patterns and
+    this sits exactly at 7; if the set ever has to be trimmed, trim from Flags.
+    """
+    return ((0, _MFR_DATA_AD_TYPE, _APPLE_COMPANY_BYTES),) + tuple(
+        (0, _FLAGS_AD_TYPE, bytes([b])) for b in _FLAGS_CONTENT_BYTES
+    )
+
 
 # Rig prod DB — the bridge WRITES (devices/sightings), so a smoke run must never
 # target it. Promoted from scripts/spike_ble_bridge.py:88.
@@ -305,7 +329,7 @@ class BleBridge:
     def _make_scanner(self):  # pragma: no cover - rig-only path
         if _BLEAK_IMPORT_ERROR is not None:
             raise RuntimeError(f"bleak is not importable here: {_BLEAK_IMPORT_ERROR}")
-        or_patterns = [OrPattern(0, _FLAGS_AD_TYPE, bytes([b])) for b in _FLAGS_CONTENT_BYTES]
+        or_patterns = [OrPattern(*spec) for spec in _or_pattern_specs()]
         return BleakScanner(
             detection_callback=self._detection_callback,
             scanning_mode="passive",  # passive-only invariant — never active
