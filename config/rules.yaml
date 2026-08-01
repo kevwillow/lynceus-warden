@@ -156,16 +156,26 @@ rules:
   # classic-HCI path surfaces no advertisement payload to decode, so this
   # rule is inert without it.
   #
-  # Deliberately matches 'find_my', NOT 'find_my_separated': the
-  # separated-from-owner status bit is UNVALIDATED against real hardware
-  # (see _FIND_MY_SEPARATED_MASK in ble_continuity.py). Add
-  # 'find_my_separated' here only after a rig capture confirms it.
+  # Find My separation state is three-valued and decoded from the advert's
+  # STRUCTURE, not a status bit (the earlier status-bit guess was retired by
+  # the 2026-08-01 rig capture — see ble_continuity.py):
+  #
+  #   find_my_separated  long form, carries rotating key material — the
+  #                      device is not near its owner. The signal you want.
+  #   find_my_paired     short form — near its owner. Every passer-by's own
+  #                      tracker looks like this; matching it is a noise
+  #                      generator, which is why it is not listed below.
+  #   find_my            a Find My advert in neither observed form. Unknown
+  #                      separation, deliberately NOT treated as benign.
+  #
+  # Match both listed classes: dropping 'find_my' would silently discard
+  # every advert form the rig has not seen yet.
   #
   # - name: apple_find_my
   #   rule_type: ble_device_class
   #   severity: med
-  #   patterns: [find_my]
-  #   description: "Apple Find My tracker advertising nearby"
+  #   patterns: [find_my_separated, find_my]
+  #   description: "Apple Find My tracker away from its owner"
 
   # ---- ble_local_name delegation (v0.6.1+) ----
   #

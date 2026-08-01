@@ -21,27 +21,45 @@ _MSG_FIND_MY = 0x12
 
 CLASS_FIND_MY_SEPARATED = "find_my_separated"
 CLASS_FIND_MY = "find_my"
+CLASS_FIND_MY_PAIRED = "find_my_paired"
 CLASS_AIRPODS = "airpods"
 CLASS_NEARBY = "nearby"
 CLASS_APPLE_UNKNOWN = "apple_unknown"
 
 # Most surveillance-relevant first. A device emitting several Continuity
 # messages in one advert resolves to the highest-ranked class present, so
-# a tracker is never masked by a co-emitted Nearby message.
+# a tracker is never masked by a co-emitted Nearby message. Unknown
+# separation outranks known-paired: an unmeasured state must never be
+# reported as the benign one.
 _PRIORITY = (
     CLASS_FIND_MY_SEPARATED,
     CLASS_FIND_MY,
+    CLASS_FIND_MY_PAIRED,
     CLASS_AIRPODS,
     CLASS_NEARBY,
     CLASS_APPLE_UNKNOWN,
 )
 
-# UNVALIDATED — pending a real rig capture. Directly analogous to
-# kismet._DRONE_ID_PATHS: the surrounding matcher is built and tested, but
-# which bit of the Find My status byte means "separated from owner" has
-# NOT been confirmed against hardware. Do not promote
-# CLASS_FIND_MY_SEPARATED into an alerting rule until it has been.
-_FIND_MY_SEPARATED_MASK = 0x04
+# Separated state is read from the Find My message's STRUCTURE, not from a
+# status-flag bit.
+#
+# A prior revision guessed a `status & 0x04` mask. The 2026-08-01 rig
+# capture retired it: across 204 Find My frames from 5 devices, both length
+# forms, iPhone present and absent, 0x04 was never set once (0x10 and 0x40
+# were equally dead while every odd bit varied). A mask pointing at a
+# permanently-zero bit is indistinguishable from a correct mask that was
+# never exercised — it would have reported "not separated" for every device
+# on earth, including genuinely separated ones. That is worse than an
+# unimplemented field because it looks implemented.
+#
+# The long form carries the rotating EC public key the finder network needs
+# to report a sighting; a device only broadcasts that when it is not near
+# its owner. The short form carries status and hint bytes only. This is the
+# offline-finding layout documented by OpenHaystack and Heinrich et al.,
+# "Who Can Find My Devices?", and it is a structural difference we observed
+# directly rather than a bit whose meaning we inferred.
+_FIND_MY_SEPARATED_LEN = 0x19  # 25 — status + rotating public key material
+_FIND_MY_PAIRED_LEN = 0x02  # status + hint, no key material
 
 
 def classify(company_id: int, payload: bytes) -> str | None:
@@ -95,11 +113,24 @@ def classify_manufacturer_data(manufacturer_data) -> str | None:
     return best
 
 
+def _classify_find_my(body: bytes) -> str:
+    """Three-valued separation state for one Find My message.
+
+    Separated and paired are the two forms observed on hardware; any other
+    body length is a form we have not seen, and resolves to the unqualified
+    CLASS_FIND_MY rather than being forced into either. Unknown separation
+    is a real state and must never collapse into "not separated".
+    """
+    if len(body) == _FIND_MY_SEPARATED_LEN:
+        return CLASS_FIND_MY_SEPARATED
+    if len(body) == _FIND_MY_PAIRED_LEN:
+        return CLASS_FIND_MY_PAIRED
+    return CLASS_FIND_MY
+
+
 def _classify_one(msg_type: int, body: bytes) -> str:
     if msg_type == _MSG_FIND_MY:
-        if body and (body[0] & _FIND_MY_SEPARATED_MASK):
-            return CLASS_FIND_MY_SEPARATED
-        return CLASS_FIND_MY
+        return _classify_find_my(body)
     if msg_type == _MSG_PROXIMITY_PAIRING:
         return CLASS_AIRPODS
     if msg_type == _MSG_NEARBY:

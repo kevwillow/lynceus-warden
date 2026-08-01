@@ -108,8 +108,8 @@ class DeviceObservation(BaseModel):
     # manufacturer_id for the field-path uncertainty caveat.
     ble_manufacturer_id: str | None = None
     # Derived Apple Continuity class (see ble_continuity.classify) — one
-    # of 'find_my', 'find_my_separated', 'airpods', 'nearby',
-    # 'apple_unknown', or None when the advert carried no decodable
+    # of 'find_my_separated', 'find_my', 'find_my_paired', 'airpods',
+    # 'nearby', 'apple_unknown', or None when the advert carried no decodable
     # Continuity message. This is a DERIVED label, never raw
     # advertisement content; the payload bytes it came from are not
     # retained anywhere. Only the passive BLE bridge populates it — the
