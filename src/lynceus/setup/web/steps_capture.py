@@ -25,12 +25,14 @@ from typing import TYPE_CHECKING
 from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from lynceus.ble_bridge_checks import check_bridge_readiness
 from lynceus.cli.setup import (
     DEFAULT_NTFY_BROKER,
     DEFAULT_RSSI_THRESHOLD,
     probe_ntfy,
 )
 from lynceus.redact import redact_topic_in_url
+from lynceus.setup.core import _DEFAULT_BLE_ADAPTER
 from lynceus.setup.prompts import _is_valid_url, _looks_like_ntfy_topic
 
 if TYPE_CHECKING:
@@ -89,11 +91,21 @@ async def probe_ssids_post(request: Request) -> HTMLResponse:
 
 async def ble_names_get(request: Request) -> HTMLResponse:
     session = _session(request)
+    # Rule types are chosen in a later step, so only the config-derivable
+    # gates can be evaluated here — same limitation as the CLI wizard.
+    bridge_warnings = check_bridge_readiness(
+        adapter=_DEFAULT_BLE_ADAPTER,
+        kismet_sources=session.answers.get("kismet_sources"),
+        enabled_rule_types=(),
+    )
     return _render(
         request,
         "ble_friendly_names.html",
         step_index=6,
         ble_friendly_names=bool(session.answers.get("ble_friendly_names", True)),
+        ble_bridge_enabled=bool(session.answers.get("ble_bridge_enabled", False)),
+        ble_bridge_adapter=_DEFAULT_BLE_ADAPTER,
+        bridge_warnings=bridge_warnings,
     )
 
 
@@ -101,6 +113,8 @@ async def ble_names_post(request: Request) -> HTMLResponse:
     session = _session(request)
     form = await request.form()
     session.answers["ble_friendly_names"] = form.get("ble_friendly_names") == "yes"
+    session.answers["ble_bridge_enabled"] = form.get("ble_bridge_enabled") == "yes"
+    session.answers["ble_bridge_adapter"] = _DEFAULT_BLE_ADAPTER
     return _redirect(request, "/step/7")
 
 

@@ -42,7 +42,11 @@ STEP_TITLES: tuple[str, ...] = (
     "Kismet probe",
     "Kismet sources",
     "Probe SSIDs",
-    "BLE friendly names",
+    # Carries two decisions: capturing BLE advertised names, and whether to
+    # run the passive BLE bridge. Both are "how much Bluetooth do you want",
+    # and an operator treats them as one choice — same reasoning as the
+    # Touch 5 merge below.
+    "BLE capture",
     "ntfy URL",
     "ntfy topic",
     "ntfy probe",

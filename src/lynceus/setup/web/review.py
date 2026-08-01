@@ -50,7 +50,7 @@ from pydantic import ValidationError
 
 from lynceus import paths
 from lynceus.cli.setup import _redact_kismet_api_key
-from lynceus.config import CaptureConfig, Config
+from lynceus.config import BleBridgeConfig, CaptureConfig, Config
 from lynceus.redact import redact_ntfy_topic
 from lynceus.setup.core import apply_config
 from lynceus.setup.models import ApplyReport, ApplyStep, ArgusChoice
@@ -146,6 +146,13 @@ def _build_config_from_session(answers: dict[str, Any]) -> Config:
         capture=CaptureConfig(
             probe_ssids=bool(answers.get("probe_ssids", False)),
             ble_friendly_names=bool(answers.get("ble_friendly_names", True)),
+        ),
+        # Must be threaded through: apply_config renders the file from this
+        # Config, so omitting it would silently discard the operator's answer
+        # and always emit enabled: false.
+        ble_bridge=BleBridgeConfig(
+            enabled=bool(answers.get("ble_bridge_enabled", False)),
+            adapter=answers.get("ble_bridge_adapter") or BleBridgeConfig().adapter,
         ),
         ntfy_url=answers.get("ntfy_url") or None,
         ntfy_topic=answers.get("ntfy_topic") or None,
@@ -266,6 +273,8 @@ def _summarize(answers: dict[str, Any], config: Config | None) -> dict[str, Any]
         "kismet_sources": answers.get("kismet_sources") or [],
         "probe_ssids": bool(answers.get("probe_ssids", False)),
         "ble_friendly_names": bool(answers.get("ble_friendly_names", True)),
+        "ble_bridge_enabled": bool(answers.get("ble_bridge_enabled", False)),
+        "ble_bridge_adapter": answers.get("ble_bridge_adapter") or BleBridgeConfig().adapter,
         "ntfy_url": answers.get("ntfy_url", "") or "(ntfy skipped)",
         "ntfy_topic_preview": (
             redact_ntfy_topic(answers.get("ntfy_topic", ""))

@@ -43,6 +43,10 @@
     <dl>
       <dt>probe SSIDs</dt><dd>{{ "ON" if summary.probe_ssids else "OFF" }}</dd>
       <dt>BLE friendly names</dt><dd>{{ "ON" if summary.ble_friendly_names else "OFF" }}</dd>
+      <dt>passive BLE bridge</dt>
+      <dd>
+        {% if summary.ble_bridge_enabled %}ON ({{ summary.ble_bridge_adapter }}){% else %}OFF{% endif %}
+      </dd>
     </dl>
   </article>
 

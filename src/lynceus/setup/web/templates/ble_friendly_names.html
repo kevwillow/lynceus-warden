@@ -1,8 +1,8 @@
 {% extends "_base.html" %}
-{% block title %}lynceus-setup &mdash; BLE friendly names{% endblock %}
+{% block title %}lynceus-setup &mdash; BLE capture{% endblock %}
 {% block step_indicator %}{% include "_progress.html" %}{% endblock %}
 {% block content %}
-  <h1>Step 6: BLE friendly names</h1>
+  <h1>Step 6: BLE capture</h1>
   <p>
     Capture BLE advertised names? These are broadcast publicly with
     intent (e.g. <code>Kev's iPhone</code>, <code>AirPods Pro</code>),
@@ -18,6 +18,49 @@
       <label>
         <input type="radio" name="ble_friendly_names" value="no" {% if not ble_friendly_names %}checked{% endif %}>
         No
+      </label>
+    </fieldset>
+
+    <h2>Passive BLE bridge</h2>
+    <p>
+      Kismet's Bluetooth datasource hands over no advertisement payload, so
+      Lynceus cannot see Apple Find My trackers, AirPods, or BLE service
+      UUIDs through Kismet alone. The bridge opens its <strong>own</strong>
+      passive scan on <code>{{ ble_bridge_adapter }}</code> to get that
+      payload.
+    </p>
+    <p>
+      That makes it a capture path, not a decoder over Kismet's data &mdash;
+      so it needs a Bluetooth adapter Kismet is <strong>not</strong> already
+      capturing on. It listens only: it never connects, pairs, or probes.
+      Lynceus default is OFF.
+    </p>
+    {% if bridge_warnings %}
+      <article>
+        <header>
+          <strong>{{ bridge_warnings | length }} thing(s) would stop this working here</strong>
+        </header>
+        <ul>
+          {% for warning in bridge_warnings %}
+            <li>
+              {{ warning.summary }}
+              <br><small><em>Fix:</em> {{ warning.remedy }}</small>
+            </li>
+          {% endfor %}
+        </ul>
+        <footer>
+          <small>You can still enable it &mdash; these are warnings, not blocks.</small>
+        </footer>
+      </article>
+    {% endif %}
+    <fieldset>
+      <label>
+        <input type="radio" name="ble_bridge_enabled" value="yes" {% if ble_bridge_enabled %}checked{% endif %}>
+        Yes &mdash; run the passive BLE bridge on {{ ble_bridge_adapter }}
+      </label>
+      <label>
+        <input type="radio" name="ble_bridge_enabled" value="no" {% if not ble_bridge_enabled %}checked{% endif %}>
+        No (default)
       </label>
     </fieldset>
     <div class="wizard-footer">
