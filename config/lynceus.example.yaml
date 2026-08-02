@@ -141,12 +141,21 @@ capture:
 # payload, so service UUIDs, company ids and Remote-ID serials never reach
 # the matchers. The bridge opens its own passive bleak scan to feed them.
 #
+# It also needs the `bleak` library, which is an OPTIONAL extra that a
+# default install does not include:
+#
+#     pip install 'lynceus[ble]'
+#
+# Without it an enabled bridge logs one warning at startup and then captures
+# nothing, which looks exactly like a working bridge hearing nothing. This is
+# the readiness failure you get without misconfiguring anything.
+#
 # Consequence: it needs a Bluetooth adapter Kismet is NOT already capturing
 # on. Kismet holds an adapter for the lifetime of its daemon. Three
 # configurations make an enabled bridge silently useless or noisy --
 # adapter contention, a kismet_sources list missing the bridge's own
 # "ble:<adapter>" provenance, and a raw company-id rule that alerts on a
-# whole vendor. `lynceus-setup` checks all three and prints the fix.
+# whole vendor. `lynceus-setup` checks all four and prints the fix.
 #
 # See docs/CONFIGURATION.md before enabling.
 ble_bridge:
@@ -180,68 +189,3 @@ evidence_store_gps: false
 # Age (days) at which /settings flags the imported watchlist as stale. The
 # bundled lynceus-refresh.timer runs weekly, well inside this window.
 watchlist_staleness_warn_days: 30
-
-# --- Passive BLE bridge (OFF by default) ---
-#
-# A SECOND capture path, not a decoder over Kismet's data. Kismet's classic
-# Bluetooth datasource hands over no advertisement payload, which leaves the
-# ble_uuid / ble_manufacturer_id / drone Remote-ID matchers with nothing to
-# match on. This runs its own passive scan and feeds them.
-#
-# Consequences of that, all of which bite in practice:
-#   * It needs a Bluetooth adapter Kismet is NOT already capturing on.
-#     Kismet holds a datasource for as long as it runs.
-#   * It requires the optional `bleak` dependency, which a default install
-#     does NOT include:  pip install 'lynceus[ble]'
-#     Without it the daemon logs one warning at startup and then captures
-#     nothing, which looks exactly like a working bridge hearing nothing.
-#   * If kismet_sources is set, it must also list this bridge's own
-#     provenance ('ble:<adapter>') or every observation it produces is
-#     dropped by the source filter.
-#
-# `lynceus-setup` checks all three and prints what would break. /settings
-# shows the same warnings plus a per-class count of what has actually been
-# decoded. It never transmits, connects, pairs, or probes.
-ble_bridge:
-  enabled: false
-  # BlueZ adapter for the bridge's own scan. Must not be one Kismet uses.
-  adapter: hci1
-  # Bridge's own flush cadence in seconds, separate from the Kismet poll
-  # loop. Must be >= 1. Unset falls back to poll_interval_seconds.
-  # flush_interval: 60
-
-# --- Alert-time evidence capture ---
-#
-# Stores the full Kismet device record at the moment an alert fires, so the
-# sighting can be reviewed after the device is long gone.
-evidence_capture_enabled: true
-
-# How long evidence snapshots are kept, in days. Must be in [1, 3650].
-# Pruning is opportunistic, and note that WAL sidecars retain recently
-# deleted rows until a checkpoint -- see SECURITY.md before handing the
-# database to anyone.
-evidence_retention_days: 90
-
-# Whether to persist the GPS fix alongside an evidence snapshot.
-#
-# Read this one carefully: Kismet sources the geopoint from the RECEIVER's
-# GPS, so these coordinates are the OPERATOR's location at alert time, not
-# the observed device's. Enabling it builds a high-resolution log of your
-# own movements, retained for evidence_retention_days. OFF by default and
-# independent of evidence_capture_enabled, so turning evidence on does not
-# silently opt you into a movement log.
-evidence_store_gps: false
-
-# Age (days) at which an imported Argus watchlist is considered stale. Flips
-# the startup log line from INFO to WARNING with a refresh hint, and shows a
-# stale badge on /settings. 30 matches Argus's nominal release cadence; raise
-# it for air-gapped or kiosk deployments that refresh on their own schedule.
-watchlist_staleness_warn_days: 30
-
-# Path to severity_overrides.yaml -- the same file lynceus-import-argus reads
-# via --override-file. The poller reads the runtime-relevant subset
-# (device_category_severity, suppress_categories) at startup and applies it to
-# watchlist-match alerts. Unset disables the runtime override layer entirely,
-# and matches fire at their imported severities. The wizard scaffolds this
-# file but does NOT write this key, so opting in is explicit.
-# severity_overrides_path: ~/.config/lynceus/severity_overrides.yaml
