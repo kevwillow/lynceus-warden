@@ -25,6 +25,19 @@ Taken on 2026-08-02, on Windows with Python 3.11, on the full local suite.
 | `python -m build --wheel` | `lynceus-0.9.4-py3-none-any.whl` |
 | `ruff format --check .` | 93 files (22 under `src/`, 70 under `tests/`) |
 
+**From a clone**, measured at `db62433` in a throwaway worktree, which is
+what CI and a contributor see:
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` | 3024 passed, 27 skipped, 47 deselected, ~11 min |
+| `ruff check .` | clean |
+| `python -m build --wheel` | wheel written |
+
+The 484-test gap is the eleven withheld files. Quote the clone number when
+reporting on anything a reader could reproduce, and say so when you quote the
+local one.
+
 A drop below 3508 is a regression. So is a **rise** in the 28 skips, even
 though the run stays green.
 
