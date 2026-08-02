@@ -2295,14 +2295,60 @@ def test_empty_optional_fields_become_null_in_metadata(tmp_path, db):
     assert row["notes"] is None
 
 
-def test_empty_confidence_logged_as_row_error(tmp_path, db):
+def test_empty_confidence_imports_as_unscored(tmp_path, db):
+    """Argus ships confidence nullable; an unscored row is still importable.
+
+    Rejecting these discarded registry-grade records over a field whose
+    only uses are an optional downgrade and an operator-set floor.
+    """
     path = _write_csv(
         tmp_path / "wl.csv",
         [_row(argus_record_id="c1", confidence="")],
     )
     report = import_csv(db, path, OverrideConfig())
-    assert report.errors == 1
-    assert any("confidence" in msg for msg in report.error_log)
+    assert report.errors == 0, report.error_log
+    assert report.imported_new == 1
+
+
+def test_unscored_row_is_not_downgraded_by_the_confidence_threshold(tmp_path, db):
+    """Absence of a score is not evidence of a low one.
+
+    Defaulting a missing confidence to 0 would silently downgrade every
+    unscored row, which is the failure this guards against. A scored row
+    below the threshold is downgraded in the same run, so the test fails
+    if the threshold stops working altogether.
+    """
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(argus_record_id="unscored", identifier="aa:bb:cc:dd:ee:01", confidence=""),
+            _row(argus_record_id="scored_low", identifier="aa:bb:cc:dd:ee:02", confidence="10"),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig(confidence_downgrade_threshold=50))
+    assert report.errors == 0, report.error_log
+    by_pattern = {e["pattern"]: e for e in db.list_watchlist()}
+    unscored = by_pattern["aa:bb:cc:dd:ee:01"]["severity"]
+    scored_low = by_pattern["aa:bb:cc:dd:ee:02"]["severity"]
+    assert unscored != scored_low, (
+        f"unscored row was treated like a low-confidence one (both {unscored!r}); "
+        "a missing score must not trigger the downgrade"
+    )
+
+
+def test_min_confidence_floor_drops_unscored_rows(tmp_path, db):
+    """An unscored row cannot be shown to clear an explicit floor.
+
+    Only applies when the operator sets one; the default path keeps it.
+    """
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [_row(argus_record_id="c1", confidence="")],
+    )
+    report = import_csv(db, path, OverrideConfig(), min_confidence=50)
+    assert report.errors == 0, report.error_log
+    assert report.imported_new == 0
+    assert report.dropped_low_confidence == 1
 
 
 def test_non_int_confidence_logged_as_row_error(tmp_path, db):
@@ -3720,21 +3766,34 @@ def test_argus_schema_version_31_accepted_silently(tmp_path, db, caplog):
     assert report.imported_new == 1
 
 
-def test_argus_schema_version_32_above_ceiling_warns_imports_anyway(tmp_path, db, caplog):
-    """Post-0.9.1: the ceiling boundary is now pinned at 31. Extending
-    the accept-list to include 31 did NOT widen admission
-    speculatively — a future v32 still WARNs with the same WARN-don't-
-    abort contract as the far-out '99' case."""
+def test_argus_schema_version_34_above_ceiling_warns_imports_anyway(tmp_path, db, caplog):
+    """Post-0.9.5: the ceiling boundary moved to 33, the version the
+    2026-07-28 export declares. Extending the accept-list to cover it did
+    NOT widen admission speculatively — a future v34 still WARNs, with the
+    same WARN-don't-abort contract as the far-out '99' case."""
     path = _write_csv_with_meta(
-        tmp_path / "v32.csv",
-        "# meta: schema_version=32, exported_at=2026-06-03T00:00:00Z, record_count=1",
-        [_row(argus_record_id="v32-1")],
+        tmp_path / "v34.csv",
+        "# meta: schema_version=34, exported_at=2026-07-28T00:00:00Z, record_count=1",
+        [_row(argus_record_id="v34-1")],
     )
     with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
         report = import_csv(db, path, OverrideConfig())
     warnings = _warnings_for_schema_version(caplog)
     assert len(warnings) == 1
-    assert "'32'" in warnings[0].getMessage()
+    assert "'34'" in warnings[0].getMessage()
+    assert report.imported_new == 1
+
+
+def test_argus_schema_version_33_is_accepted_without_warning(tmp_path, db, caplog):
+    """The version the live export actually declares must not warn."""
+    path = _write_csv_with_meta(
+        tmp_path / "v33.csv",
+        "# meta: schema_version=33, exported_at=2026-07-28T00:00:00Z, record_count=1",
+        [_row(argus_record_id="v33-1")],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+    assert _warnings_for_schema_version(caplog) == []
     assert report.imported_new == 1
 
 
