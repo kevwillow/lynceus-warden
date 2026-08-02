@@ -72,6 +72,16 @@ public source it came from:
 signatures across BLE UUID, MAC, MAC range, SSID pattern, and BLE local name
 types, each with an argus id and a confidence score](docs/images/watchlist-argus.png)
 
+Probe history on `/probes`, with the reveals expanded. Two devices with
+nothing else in common are both asking for `Hendricks_Home`, which is the
+kind of correlation a randomised MAC address will never give you:
+
+![The probes page listing five devices with the networks each one probed for,
+two of them sharing a network named Hendricks_Home, each row's SSID list
+sitting behind a reveal control](docs/images/probes-history.png)
+
+That page is off by default and every SSID stays collapsed until you click.
+
 And the part most tools skip. `/settings` says when a feature is switched on
 but cannot possibly work, instead of leaving you to guess at antennas:
 
@@ -197,6 +207,26 @@ These are design commitments, not current limitations:
   corpus at `/watchlist`; every row links to the Argus record behind it:
   vendor, source URL, source excerpt, FCC ID, geographic scope, first-seen and
   last-verified. Cross-links to the alerts it matched. CSV export included.
+- **Probe-SSID history** *(off by default)*. Phones and laptops shout the
+  names of networks they have joined before, looking for them again. `/probes`
+  collects that per device, and inverts it: which networks did this device
+  ask for, and which devices asked for this network.
+
+  This is the surface that answers a question a MAC address cannot. Modern
+  phones randomise their MAC, so the same device looks like a new one every
+  time it appears. Its probe list does not randomise. A device you have never
+  seen before, asking for a network you recognise, is a much stronger signal
+  than an address, and two unrelated devices asking for the same unusual
+  network are probably connected to each other. If you are trying to work out
+  whether someone you know is turning up where you are, that correlation is
+  the thing that tells you.
+
+  It is off by default and stays off until you say otherwise, because a probe
+  list is a partial history of where a person has been and switching this on
+  captures it from everyone in range, not just from whoever you are worried
+  about. `/settings` shows a recording warning whenever it is on. `/probes`
+  keeps every SSID collapsed behind a click, so the page does not put other
+  people's history on screen just because you opened it.
 - **Passive BLE bridge + Apple Continuity decoder** *(off by default)*.
   Kismet's classic Bluetooth path surfaces no advertisement payload, which
   left the BLE matchers with nothing to chew on. A passive `bleak` scan on its
