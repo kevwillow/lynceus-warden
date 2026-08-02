@@ -62,6 +62,35 @@ _BLEAK_MODULE = "bleak"
 # and pyproject's optional-dependencies table are edited together.
 _BLEAK_EXTRA = "ble"
 
+# Where install.sh puts the venv for each scope. The operator cannot use a
+# bare `pip install` here: the lynceus commands are symlinks into a venv that
+# is deliberately never activated, so `pip` on their PATH is the system one
+# and would install bleak somewhere the daemon never looks. These paths are
+# install.sh's layout (create_or_update_venv), and they live here because the
+# remedy text is the only thing that has ever needed them.
+_VENV_PIP = {
+    "user": "~/.local/share/lynceus/.venv/bin/pip",
+    "system": "/opt/lynceus/.venv/bin/pip",
+}
+
+
+def bleak_install_command(scope: str | None = None) -> str:
+    """The exact command that installs the bridge's scan library.
+
+    ``scope`` is ``"user"`` or ``"system"`` when the caller knows which one
+    it is, which the setup wizard does. Anything else, including ``None``,
+    yields the editable-clone form, because that is what is left when the
+    layout is not install.sh's.
+
+    Returned rather than printed so the CLI wizard, the web wizard, and the
+    /settings panel all quote the same string instead of three drifting
+    copies of it.
+    """
+    pip = _VENV_PIP.get(scope or "")
+    if pip is None:
+        return f"pip install -e '.[{_BLEAK_EXTRA}]'"
+    return f"{pip} install 'lynceus[{_BLEAK_EXTRA}]'"
+
 # The rule type that matches a bare Bluetooth SIG company identifier.
 _RAW_COMPANY_ID_RULE_TYPE = "watchlist_ble_manufacturer_id"
 
@@ -123,11 +152,11 @@ def check_bleak_available() -> BridgeWarning | None:
         ),
         remedy=(
             f"Install the optional extra that provides it, then restart the daemon. "
-            f"For an install.sh deployment that means the venv pip directly, e.g. "
-            f"`~/.local/share/lynceus/.venv/bin/pip install 'lynceus[{_BLEAK_EXTRA}]'` "
-            f"(--user scope) or `/opt/lynceus/.venv/bin/pip install 'lynceus[{_BLEAK_EXTRA}]'` "
-            f"(--system). install.sh does not install it: the bridge ships off, so the "
-            f"dependency stays opt-in with it."
+            f"Use the venv's pip directly, not the one on your PATH: "
+            f"`{bleak_install_command('user')}` for a --user install, or "
+            f"`{bleak_install_command('system')}` for --system. From a clone, "
+            f"`{bleak_install_command()}`. install.sh does not install it, because "
+            f"the bridge ships off and the dependency stays opt-in with it."
         ),
     )
 

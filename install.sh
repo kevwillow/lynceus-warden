@@ -329,14 +329,16 @@ note_path_if_missing() {
 
 print_next_steps() {
     local scope="$1"  # user | system
-    local sudo_pfx setup_scope run_step
+    local sudo_pfx setup_scope run_step ble_pip
 
     if [[ "$scope" == "system" ]]; then
         sudo_pfx="sudo "
         setup_scope=" --system"
+        ble_pip="$SYSTEM_VENV"
     else
         sudo_pfx=""
         setup_scope=""
+        ble_pip="$USER_VENV"
     fi
 
     log ""
@@ -375,6 +377,13 @@ print_next_steps() {
     log "         ${sudo_pfx}lynceus-setup${setup_scope} --web"
     log "     (prints a loopback URL with a single-use token; open it in"
     log "     a browser to walk through the same 12-step flow)."
+    log ""
+    log "     If you say yes to the passive BLE bridge, it needs one extra"
+    log "     library that this installer does not pull in, because the"
+    log "     bridge ships off. Run this afterwards, then restart the daemon:"
+    log "         ${ble_pip}/bin/pip install 'lynceus[ble]'"
+    log "     Use that pip, not the one on your PATH: the lynceus commands"
+    log "     are symlinks into a venv that never gets activated."
     log ""
 
     if [[ "$scope" == "system" ]]; then

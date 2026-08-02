@@ -49,7 +49,24 @@
           {% endfor %}
         </ul>
         <footer>
-          <small>You can still enable it &mdash; these are warnings, not blocks.</small>
+          <small>You can still enable it. These are warnings, not blocks.</small>
+        </footer>
+      </article>
+    {% endif %}
+
+    {% if bleak_missing %}
+      {# install.sh runs before this wizard, so the library the bridge needs
+         cannot already be there when the operator answers. One command, this
+         install's scope already resolved, so there is nothing to work out. #}
+      <article>
+        <header><strong>If you turn this on, run this afterwards</strong></header>
+        <p><code>{{ bleak_install_command }}</code></p>
+        <footer>
+          <small>
+            Then restart the daemon. Until you do, the bridge starts, logs one
+            warning, and captures nothing. <code>/settings</code> will keep
+            saying so.
+          </small>
         </footer>
       </article>
     {% endif %}

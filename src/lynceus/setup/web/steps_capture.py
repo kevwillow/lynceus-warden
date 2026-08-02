@@ -25,7 +25,11 @@ from typing import TYPE_CHECKING
 from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from lynceus.ble_bridge_checks import collect_bridge_warnings
+from lynceus.ble_bridge_checks import (
+    bleak_install_command,
+    check_bleak_available,
+    collect_bridge_warnings,
+)
 from lynceus.cli.setup import (
     DEFAULT_NTFY_BROKER,
     DEFAULT_RSSI_THRESHOLD,
@@ -98,6 +102,10 @@ async def ble_names_get(request: Request) -> HTMLResponse:
         kismet_sources=session.answers.get("kismet_sources"),
         enabled_rule_types=(),
     )
+    # install.sh runs before this wizard, so the operator reaches the bridge
+    # question after the only step that could have installed its library.
+    # Hand the template the exact command for THIS install's scope rather
+    # than leaving them to pick from the two paths in the warning's remedy.
     return _render(
         request,
         "ble_friendly_names.html",
@@ -106,6 +114,8 @@ async def ble_names_get(request: Request) -> HTMLResponse:
         ble_bridge_enabled=bool(session.answers.get("ble_bridge_enabled", False)),
         ble_bridge_adapter=_DEFAULT_BLE_ADAPTER,
         bridge_warnings=bridge_warnings,
+        bleak_missing=check_bleak_available() is not None,
+        bleak_install_command=bleak_install_command(getattr(request.app.state, "scope", None)),
     )
 
 

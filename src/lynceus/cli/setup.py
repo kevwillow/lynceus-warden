@@ -28,7 +28,11 @@ from .. import __version__, paths
 # ``wiz.subprocess.Popen``, ``wiz.SetupError``, etc. via this module's
 # namespace; pulling the same names back here keeps every test seam
 # pointing at the same objects without editing 200 test imports.
-from ..ble_bridge_checks import collect_bridge_warnings
+from ..ble_bridge_checks import (
+    bleak_install_command,
+    check_bleak_available,
+    collect_bridge_warnings,
+)
 from ..config import DEFAULT_KISMET_URL, BleBridgeConfig, CaptureConfig, Config
 from ..kismet import KismetClient
 from ..notify import NtfyNotifier
@@ -1138,6 +1142,24 @@ Lynceus default is OFF.
         input_fn=in_fn,
     )
     answers["ble_bridge_adapter"] = bridge_adapter
+    # Saying yes is not enough on its own, and the gap is easy to walk past:
+    # install.sh runs before this wizard, so the operator decides they want
+    # the bridge AFTER the only step that could have installed its library.
+    # The warning above already said bleak is missing; this repeats the fix
+    # as one line they can paste, with the scope already resolved, because a
+    # remedy that makes you work out which of two paths applies to you is a
+    # remedy people skip.
+    if answers["ble_bridge_enabled"] and check_bleak_available() is not None:
+        print()
+        print("=" * 68)
+        print("ONE MORE STEP: the bridge needs a library that is not installed yet.")
+        print()
+        print(f"    {bleak_install_command(scope)}")
+        print()
+        print("Until you run that, the bridge starts, logs one warning, and")
+        print("captures nothing. /settings will keep saying so.")
+        print("=" * 68)
+        print()
 
     # (g) ntfy URL — empty input skips ntfy entirely. When non-empty, the same
     # scheme-and-host validation runs before any probe.
