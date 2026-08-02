@@ -50,7 +50,7 @@ def test_systemd_check_refuses_when_lynceus_service_active(monkeypatch):
         return MagicMock(stdout="active\n" if active else "inactive\n")
 
     monkeypatch.setattr(quickstart.subprocess, "run", fake_run)
-    monkeypatch.setattr(quickstart.os, "name", "posix")
+    monkeypatch.setattr(quickstart, "_is_windows", lambda: False)
     err = quickstart.check_no_systemd()
     assert err is not None
     assert "already running under systemd" in err
@@ -61,7 +61,7 @@ def test_systemd_check_refuses_when_lynceus_ui_service_active(monkeypatch):
         return MagicMock(stdout="active\n" if "lynceus-ui.service" in cmd else "inactive\n")
 
     monkeypatch.setattr(quickstart.subprocess, "run", fake_run)
-    monkeypatch.setattr(quickstart.os, "name", "posix")
+    monkeypatch.setattr(quickstart, "_is_windows", lambda: False)
     err = quickstart.check_no_systemd()
     assert err is not None
     assert "already running under systemd" in err
@@ -78,7 +78,7 @@ def test_systemd_check_probes_both_units_under_both_scopes(monkeypatch):
         return MagicMock(stdout="inactive\n")
 
     monkeypatch.setattr(quickstart.subprocess, "run", fake_run)
-    monkeypatch.setattr(quickstart.os, "name", "posix")
+    monkeypatch.setattr(quickstart, "_is_windows", lambda: False)
     assert quickstart.check_no_systemd() is None
 
     flat = [tuple(c) for c in seen]
@@ -96,7 +96,7 @@ def test_systemd_check_passes_when_all_inactive(monkeypatch):
         "run",
         lambda cmd, **kw: MagicMock(stdout="inactive\n"),
     )
-    monkeypatch.setattr(quickstart.os, "name", "posix")
+    monkeypatch.setattr(quickstart, "_is_windows", lambda: False)
     assert quickstart.check_no_systemd() is None
 
 
@@ -108,7 +108,7 @@ def test_systemd_check_skipped_on_windows(monkeypatch):
         return MagicMock(stdout="active\n")
 
     monkeypatch.setattr(quickstart.subprocess, "run", fake_run)
-    monkeypatch.setattr(quickstart.os, "name", "nt")
+    monkeypatch.setattr(quickstart, "_is_windows", lambda: True)
     assert quickstart.check_no_systemd() is None
     assert called == [], "subprocess.run must not be invoked on Windows"
 
@@ -584,26 +584,30 @@ def test_popen_kwargs_windows_has_no_preexec(monkeypatch):
     # branch this test simulates raises AttributeError before it can return.
     # Stub it rather than skipping: the assertion below (Windows gets a
     # process group and never a preexec_fn) is worth keeping on every host.
+    # This one patch on a module singleton is deliberate and safe: it ADDS a
+    # missing constant (raising=False) rather than redefining platform
+    # dispatch, so nothing else in the process reads it. The os.name patch
+    # that used to sit below it was neither, and is now _is_windows.
     monkeypatch.setattr(
         quickstart.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False
     )
-    monkeypatch.setattr(quickstart.os, "name", "nt")
+    monkeypatch.setattr(quickstart, "_is_windows", lambda: True)
     kwargs = quickstart._popen_kwargs()
     assert "creationflags" in kwargs
     assert "preexec_fn" not in kwargs
 
 
 def test_popen_kwargs_linux_registers_pdeathsig(monkeypatch):
-    monkeypatch.setattr(quickstart.os, "name", "posix")
-    monkeypatch.setattr(quickstart.sys, "platform", "linux")
+    monkeypatch.setattr(quickstart, "_is_windows", lambda: False)
+    monkeypatch.setattr(quickstart, "_is_linux", lambda: True)
     kwargs = quickstart._popen_kwargs()
     assert kwargs.get("start_new_session") is True
     assert kwargs.get("preexec_fn") is quickstart._set_pdeathsig
 
 
 def test_popen_kwargs_macos_isolates_session_without_pdeathsig(monkeypatch):
-    monkeypatch.setattr(quickstart.os, "name", "posix")
-    monkeypatch.setattr(quickstart.sys, "platform", "darwin")
+    monkeypatch.setattr(quickstart, "_is_windows", lambda: False)
+    monkeypatch.setattr(quickstart, "_is_linux", lambda: False)
     kwargs = quickstart._popen_kwargs()
     assert kwargs.get("start_new_session") is True
     assert "preexec_fn" not in kwargs

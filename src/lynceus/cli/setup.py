@@ -46,6 +46,7 @@ from ..setup.core import (  # noqa: F401  (test-namespace re-exports)
     _apply_system_perms_to_dir,
     _apply_system_perms_to_file,
     _atomic_write,
+    _is_macos,
     _is_windows,
     _yaml_bool,
     _yaml_str,
@@ -542,13 +543,11 @@ def enumerate_bluetooth_adapters() -> list[str] | None:
     wizard can print an informational note and let the operator configure
     Kismet's BT source manually.
     """
-    if os.name != "posix":
-        return None
-    if sys.platform == "darwin":
+    if _is_windows() or _is_macos():
         return None
     # os.path.isdir takes a str and never instantiates a pathlib.Path, so the
-    # missing-dir branch stays safe even when os.name is patched to "posix" on a
-    # Windows host (3.11 refuses to build a PosixPath there). The Path below is
+    # not-Linux branches above can be simulated on any host without pathlib
+    # picking a Path subclass that cannot be built there. The Path below is
     # only reached on real Linux where the directory exists and PosixPath works.
     if not os.path.isdir("/sys/class/bluetooth"):
         return []

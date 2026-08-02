@@ -54,8 +54,21 @@ class SetupError(Exception):
 
 def _is_windows() -> bool:
     """Indirection point for tests — monkeypatch this rather than ``os.name``,
-    which would also flip pathlib's native Path subclass at runtime."""
+    which would also flip pathlib's native Path subclass at runtime.
+
+    That is not a style preference. ``os.name`` reaches the interpreter-wide
+    ``os`` singleton, so a ``"nt"`` patch on POSIX makes pytest's own failure
+    reporting build a WindowsPath and raise NotImplementedError, which pytest
+    escalates to INTERNALERROR and which aborts the whole session. Measured:
+    it killed the first Linux run of this suite at 42%.
+    """
     return os.name == "nt"
+
+
+def _is_macos() -> bool:
+    """Indirection point for tests — monkeypatch this rather than
+    ``sys.platform``, for the same reason as ``_is_windows``."""
+    return sys.platform == "darwin"
 
 
 def _frontend_is_windows() -> bool:
@@ -76,6 +89,19 @@ def _frontend_is_windows() -> bool:
     """
     from lynceus.cli import setup as _frontend
     return _frontend._is_windows()
+
+
+def _frontend_is_macos() -> bool:
+    """Lazy lookup of ``_is_macos`` through the CLI frontend module.
+
+    Same seam and same laziness rationale as ``_frontend_is_windows``; see
+    that docstring. Exists so the ``--system`` Linux-only guards below can be
+    driven from a test without patching ``sys.platform``, which is the
+    interpreter-wide singleton and therefore also steers ``paths._platform()``
+    and anything else in the process that reads it.
+    """
+    from lynceus.cli import setup as _frontend
+    return _frontend._is_macos()
 
 
 def _frontend_render_config_yaml(answers: dict) -> str:
@@ -197,7 +223,7 @@ def _apply_system_perms_to_file(path: Path, *, group: str = "lynceus", mode: int
     """
     if _frontend_is_windows():
         return
-    if sys.platform == "darwin":
+    if _frontend_is_macos():
         raise SetupError("--system mode is Linux-only with systemd; not supported on macOS.")
     import grp
 
@@ -228,7 +254,7 @@ def _apply_system_perms_to_dir(
     """
     if _frontend_is_windows():
         return
-    if sys.platform == "darwin":
+    if _frontend_is_macos():
         raise SetupError("--system mode is Linux-only with systemd; not supported on macOS.")
     import grp
     import pwd

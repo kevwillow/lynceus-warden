@@ -38,6 +38,34 @@ SHUTDOWN_GRACE_SECONDS = 10.0
 SUPERVISE_POLL_INTERVAL = 0.5
 TAIL_LINES_ON_CRASH = 20
 
+
+# --- Platform indirection ---------------------------------------------------
+#
+# Mirrors paths._platform() and setup.core._is_windows(). Patch THESE in
+# tests, never os.name or sys.platform.
+#
+# `quickstart.os` is not a copy of the os module, it is the interpreter-wide
+# singleton, so monkeypatching os.name here changes it for every caller in the
+# process, pytest included. pathlib picks its concrete Path subclass off
+# os.name at call time, so under a "nt" patch on POSIX, pytest's own
+# _repr_failure_py builds a WindowsPath and raises NotImplementedError while
+# it is rendering a traceback. monkeypatch teardown runs AFTER the report is
+# built, so the patch is still live when that happens. pytest reports it as
+# INTERNALERROR and aborts the entire session: not one failure, every
+# remaining test silently unrun. Measured on the first Linux run of this
+# suite, which died at 42%.
+
+
+def _is_windows() -> bool:
+    """True on Windows. Test seam: patch this, not ``os.name``."""
+    return os.name == "nt"
+
+
+def _is_linux() -> bool:
+    """True on Linux. Test seam: patch this, not ``sys.platform``."""
+    return sys.platform.startswith("linux")
+
+
 BANNER = """\
 ===============================================
 LYNCEUS QUICKSTART — DEV/DEMO LAUNCHER
@@ -70,7 +98,7 @@ def check_no_systemd() -> str | None:
     daemon (``lynceus.service``) and the UI (``lynceus-ui.service``) under
     user-scope and system-scope. No-op on Windows or when systemctl is not
     available on PATH."""
-    if os.name != "posix":
+    if _is_windows():
         return None
     probes: list[list[str]] = []
     for unit in SYSTEMD_UNITS:
@@ -162,10 +190,10 @@ def _popen_kwargs() -> dict:
     (POSIX) or process group (Windows), so a Ctrl+C in the parent terminal
     does not also race the children. On Linux, additionally register a
     parent-death signal so an abnormal quickstart exit can't orphan them."""
-    if os.name == "nt":
+    if _is_windows():
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     kwargs: dict = {"start_new_session": True}
-    if sys.platform.startswith("linux"):
+    if _is_linux():
         kwargs["preexec_fn"] = _set_pdeathsig
     return kwargs
 
@@ -177,7 +205,7 @@ def _resolve_entry_point(name: str) -> list[str]:
     """
     bin_dir = Path(sys.executable).parent
     candidates: list[Path] = []
-    if os.name == "nt":
+    if _is_windows():
         candidates.append(bin_dir / f"{name}.exe")
         candidates.append(bin_dir / "Scripts" / f"{name}.exe")
     else:
