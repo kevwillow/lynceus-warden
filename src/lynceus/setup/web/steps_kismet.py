@@ -26,14 +26,13 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from lynceus.cli.setup import (
     _locate_kismet_api_key,
     _redact_kismet_api_key,
     enumerate_capture_adapters,
-    enumerate_wireless_interfaces,
     probe_kismet,
     probe_kismet_sources,
 )
@@ -587,6 +586,7 @@ def _existing_kismet_sources(target_path) -> list[str] | None:
     the existing file must not crash the wizard; the operator can
     still recover by ticking checkboxes manually."""
     from pathlib import Path
+
     from lynceus.config import load_config
     try:
         p = Path(target_path)
@@ -604,7 +604,7 @@ def _existing_kismet_sources(target_path) -> list[str] | None:
 # ---- registration ----------------------------------------------------------
 
 
-def register_kismet_steps(app: "FastAPI") -> None:
+def register_kismet_steps(app: FastAPI) -> None:
     """Mount the four Kismet steps onto the wizard app.
 
     Routes are added in registration order; literal ``/step/<n>``

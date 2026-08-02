@@ -45,7 +45,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import ValidationError
 
 from lynceus import paths
@@ -888,7 +894,7 @@ async def apply_stream_get(request: Request) -> Response:
 # ---- registration ---------------------------------------------------------
 
 
-def register_review_routes(app: "FastAPI") -> None:
+def register_review_routes(app: FastAPI) -> None:
     app.add_api_route("/review", review_get, methods=["GET"], response_class=HTMLResponse)
     app.add_api_route("/apply", apply_post, methods=["POST"])
     app.add_api_route(

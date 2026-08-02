@@ -22,18 +22,6 @@ import sys
 from pathlib import Path
 
 from .. import __version__, paths
-from ..config import DEFAULT_KISMET_URL, BleBridgeConfig, CaptureConfig, Config
-from ..kismet import KismetClient
-from ..notify import NtfyNotifier
-from ..redact import redact_ntfy_topic, redact_topic_in_url
-from ..setup.models import ApplyStep, ArgusChoice  # noqa: F401  (test re-export)
-from ._adapter_descriptors import (  # noqa: F401  (re-exported for test monkeypatching)
-    _enrich_adapter_from_sysfs,
-    _read_sysfs_mac,
-    _read_sysfs_optional,
-    _read_sysfs_symlink_basename,
-    format_adapter_descriptor,
-)
 
 # Re-exports from setup.core so existing test imports survive the Touch 2
 # move. The 200 setup-wizard tests reach for ``wiz._atomic_write``,
@@ -41,7 +29,12 @@ from ._adapter_descriptors import (  # noqa: F401  (re-exported for test monkeyp
 # namespace; pulling the same names back here keeps every test seam
 # pointing at the same objects without editing 200 test imports.
 from ..ble_bridge_checks import check_bridge_readiness
+from ..config import DEFAULT_KISMET_URL, BleBridgeConfig, CaptureConfig, Config
+from ..kismet import KismetClient
+from ..notify import NtfyNotifier
+from ..redact import redact_ntfy_topic, redact_topic_in_url
 from ..setup.core import (  # noqa: F401  (test-namespace re-exports)
+    _DEFAULT_BLE_ADAPTER,
     BUNDLED_ABSENT_MESSAGE,
     BUNDLED_IMPORT_TIMEOUT_SECONDS,
     BUNDLED_WATCHLIST_PACKAGE,
@@ -50,7 +43,6 @@ from ..setup.core import (  # noqa: F401  (test-namespace re-exports)
     DELEGATION_RULES,
     SEVERITY_OVERRIDES_TEMPLATE,
     SetupError,
-    _DEFAULT_BLE_ADAPTER,
     _apply_system_perms_to_dir,
     _apply_system_perms_to_file,
     _atomic_write,
@@ -68,11 +60,12 @@ from ..setup.core import (  # noqa: F401  (test-namespace re-exports)
     subprocess,
     write_config,
 )
+from ..setup.models import ApplyStep, ArgusChoice  # noqa: F401  (test re-export)
 from ..setup.prompts import (  # noqa: F401  (test-namespace re-exports)
-    NTFY_TOPIC_MAX_ATTEMPTS,
-    URL_PROMPT_MAX_ATTEMPTS,
     _NTFY_TOPIC_DENY_LIST,
     _NTFY_TOPIC_RE,
+    NTFY_TOPIC_MAX_ATTEMPTS,
+    URL_PROMPT_MAX_ATTEMPTS,
     _is_valid_url,
     _looks_like_ntfy_topic,
     _looks_like_path,
@@ -85,7 +78,13 @@ from ..setup.prompts import (  # noqa: F401  (test-namespace re-exports)
     prompt_url,
     prompt_yes_no,
 )
-
+from ._adapter_descriptors import (  # noqa: F401  (re-exported for test monkeypatching)
+    _enrich_adapter_from_sysfs,
+    _read_sysfs_mac,
+    _read_sysfs_optional,
+    _read_sysfs_symlink_basename,
+    format_adapter_descriptor,
+)
 
 # --- CLI progress sink ------------------------------------------------------
 
@@ -1330,7 +1329,6 @@ and enter the topic exactly as written.
     scaffold_step = next(s for s in report.steps if s.name == "scaffold_severity_overrides")
     sev_created = bool(scaffold_step.detail and scaffold_step.detail.get("scaffolded"))
     import_step = next(s for s in report.steps if s.name == "import_bundled_watchlist")
-    bundled_ok = import_step.status == "ok"
     bundled_msg = import_step.message
     chown_step = next(s for s in report.steps if s.name == "chown_db_files")
     chowned_db_files: list[Path] = (
@@ -1463,7 +1461,10 @@ and enter the topic exactly as written.
         # units only ship via install.sh --system; a --user install has
         # no systemd integration and the operator would hit a
         # "Failed to enable unit" if we suggested the command here.
-        print("  sudo systemctl enable --now lynceus-refresh.timer              # weekly auto-refresh")
+        print(
+            "  sudo systemctl enable --now lynceus-refresh.timer"
+            "              # weekly auto-refresh"
+        )
     else:
         print("  lynceus-import-argus --from-github            # latest from GitHub")
         print("  lynceus-import-argus --input <path-to-csv>    # air-gapped")

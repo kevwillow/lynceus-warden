@@ -19,7 +19,6 @@ import getpass
 import re
 from urllib.parse import urlsplit
 
-
 # --- Free-form prompts -----------------------------------------------------
 
 

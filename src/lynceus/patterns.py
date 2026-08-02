@@ -268,7 +268,10 @@ def canonicalize_mac_range_pattern(prefix_hex: str, length_bits: int) -> str:
     if length_bits == 28:
         return f"{prefix_hex[0:2]}:{prefix_hex[2:4]}:{prefix_hex[4:6]}:{prefix_hex[6:7]}/28"
     if length_bits == 36:
-        return f"{prefix_hex[0:2]}:{prefix_hex[2:4]}:{prefix_hex[4:6]}:{prefix_hex[6:8]}:{prefix_hex[8:9]}/36"
+        return (
+            f"{prefix_hex[0:2]}:{prefix_hex[2:4]}:{prefix_hex[4:6]}:"
+            f"{prefix_hex[6:8]}:{prefix_hex[8:9]}/36"
+        )
     raise ValueError(f"unsupported mac_range length: {length_bits}")
 
 

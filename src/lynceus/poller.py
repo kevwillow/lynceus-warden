@@ -209,7 +209,10 @@ def process_observation(
     severity_overrides=None,
     rule_type_suppression_counter=None,
 ) -> None:
-    """Persist one observation and run its alert pipeline (extracted from poll_once; accumulators mutated in place)."""
+    """Persist one observation and run its alert pipeline.
+
+    Extracted from poll_once; accumulators are mutated in place.
+    """
     existing_device = db.get_device(obs.mac)
     is_new = existing_device is None
     if effective_location_id not in ensured_locations:

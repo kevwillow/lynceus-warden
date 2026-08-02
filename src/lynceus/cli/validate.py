@@ -39,7 +39,7 @@ import argparse
 import logging
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -51,7 +51,6 @@ from ..allowlist import Allowlist, derive_ui_path, load_allowlist
 from ..cli.import_argus import DEFAULT_CATEGORY_SEVERITIES
 from ..config import Config, load_config
 from ..rules import (
-    RuntimeSeverityOverride,
     load_ruleset,
     load_runtime_severity_overrides,
 )
@@ -134,7 +133,7 @@ def _closest(value: str, candidates: tuple[str, ...], *, max_distance: int = 3) 
 
 
 def _format_iso_utc(epoch: int) -> str:
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _build_line_map(path: Path) -> dict[tuple[Any, ...], int]:

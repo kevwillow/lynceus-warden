@@ -2604,7 +2604,11 @@ class Database:
         is the caller's job (the route uses the shared
         ``build_pagination`` helper for that).
         """
-        if pattern_type is not None and pattern_type != "" and pattern_type not in self._WATCHLIST_PATTERN_TYPES:
+        if (
+            pattern_type is not None
+            and pattern_type != ""
+            and pattern_type not in self._WATCHLIST_PATTERN_TYPES
+        ):
             raise ValueError(f"pattern_type must be one of {self._WATCHLIST_PATTERN_TYPES}")
         if severity is not None and severity != "" and severity not in self._ALERT_SEVERITIES:
             raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
@@ -2668,7 +2672,11 @@ class Database:
         # fcc_id, geographic_scope, first_seen, last_verified, and
         # notes from watchlist_metadata so operators get the full
         # Argus provenance for offline triage.
-        if pattern_type is not None and pattern_type != "" and pattern_type not in self._WATCHLIST_PATTERN_TYPES:
+        if (
+            pattern_type is not None
+            and pattern_type != ""
+            and pattern_type not in self._WATCHLIST_PATTERN_TYPES
+        ):
             raise ValueError(f"pattern_type must be one of {self._WATCHLIST_PATTERN_TYPES}")
         if severity is not None and severity != "" and severity not in self._ALERT_SEVERITIES:
             raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")

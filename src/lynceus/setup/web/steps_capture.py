@@ -307,7 +307,7 @@ async def rssi_post(request: Request) -> HTMLResponse:
 # ---- registration ----------------------------------------------------------
 
 
-def register_capture_steps(app: "FastAPI") -> None:
+def register_capture_steps(app: FastAPI) -> None:
     """Mount the six capture/ntfy/RSSI steps onto the wizard app."""
     app.add_api_route("/step/5", probe_ssids_get, methods=["GET"], response_class=HTMLResponse)
     app.add_api_route("/step/5", probe_ssids_post, methods=["POST"], response_class=HTMLResponse)

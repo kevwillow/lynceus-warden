@@ -107,7 +107,10 @@ async def severity_post(request: Request) -> HTMLResponse:
             "severity.html",
             step_index=11,
             severity_path=raw,
-            error="That doesn't look like a file path. Use a full path or leave blank for the default.",
+            error=(
+                "That doesn't look like a file path. Use a full path or "
+                "leave blank for the default."
+            ),
         )
     session.answers["severity_overrides_path"] = raw
     return _redirect(request, "/step/12")
@@ -253,7 +256,7 @@ async def rules_post(request: Request) -> HTMLResponse:
 # ---- registration ----------------------------------------------------------
 
 
-def register_severity_rules_steps(app: "FastAPI") -> None:
+def register_severity_rules_steps(app: FastAPI) -> None:
     """Mount the two severity/rules steps onto the wizard app."""
     app.add_api_route("/step/11", severity_get, methods=["GET"], response_class=HTMLResponse)
     app.add_api_route("/step/11", severity_post, methods=["POST"], response_class=HTMLResponse)

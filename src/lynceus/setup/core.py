@@ -29,8 +29,6 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-import requests
-
 from lynceus import paths
 from lynceus.config import BleBridgeConfig, Config
 from lynceus.kismet import KismetClient

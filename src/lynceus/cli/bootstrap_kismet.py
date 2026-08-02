@@ -68,8 +68,8 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable, Iterable
 
 from .. import __version__
 from ._adapter_descriptors import (
@@ -584,7 +584,6 @@ def install_kismet_package(*, dry_run: bool) -> None:
     re-running on an already-installed system is a no-op.
     """
     _print(f"Installing {KISMET_PACKAGE} package (apt-get install -y {KISMET_PACKAGE})")
-    env_args: list[str] = []
     # DEBIAN_FRONTEND=noninteractive so apt doesn't try to throw a
     # debconf prompt at a non-tty operator -- Kismet's postinst asks
     # "Install kismet with suid root?" by default.
@@ -1052,10 +1051,10 @@ def print_closing_pointer(
     if not kismet_on_path:
         notes.append(
             "Kismet was not installed by this script and is not on PATH. "
-            f"Install it per https://www.kismetwireless.net/packages/ "
-            f"(or your distro's package manager, or re-run with --install "
-            f"on Debian/Ubuntu/Kali), then re-run lynceus-bootstrap-kismet "
-            f"to configure it."
+            "Install it per https://www.kismetwireless.net/packages/ "
+            "(or your distro's package manager, or re-run with --install "
+            "on Debian/Ubuntu/Kali), then re-run lynceus-bootstrap-kismet "
+            "to configure it."
         )
     if site_conf_skipped:
         candidates = ", ".join(str(d) for d in KISMET_SITE_CONF_DIRS)

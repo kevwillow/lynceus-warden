@@ -38,7 +38,7 @@ import os
 import sys
 import tarfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -116,7 +116,7 @@ class ExportPlan:
 
 def _utc_timestamp() -> str:
     """Sortable, unambiguous UTC stamp: ``20260517T143022Z``."""
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _lynceus_version() -> str:
@@ -376,7 +376,12 @@ def _build_readme(plan: ExportPlan, manifest: dict) -> str:
     lines.append(f"Scope           : {manifest['scope']}")
     lines.append(f"Includes state  : {'yes' if plan.include_state else 'no'}")
     lines.append(
-        f"Redaction       : {'enabled' if not plan.include_secrets else 'DISABLED — archive contains raw secrets'}"
+        "Redaction       : "
+        + (
+            "enabled"
+            if not plan.include_secrets
+            else "DISABLED - archive contains raw secrets"
+        )
     )
     lines.append("")
     lines.append("Contents")
@@ -498,7 +503,7 @@ def _write_archive(plan: ExportPlan, output_path: Path, manifest: dict) -> None:
     Caller has already validated that ``output_path`` is writable and
     is not an existing file (or that --force was set).
     """
-    mtime = int(datetime.now(timezone.utc).timestamp())
+    mtime = int(datetime.now(UTC).timestamp())
     manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
     readme_bytes = _build_readme(plan, manifest).encode("utf-8")
 
@@ -734,7 +739,7 @@ def _iso_timestamp(compact: str) -> str:
     different consumers: the compact form sorts cleanly as a filename
     component; the expanded form is what JSON tooling expects to parse."""
     # compact is fixed-width: YYYYMMDDTHHMMSSZ
-    dt = datetime.strptime(compact, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    dt = datetime.strptime(compact, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

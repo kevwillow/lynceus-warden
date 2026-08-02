@@ -36,7 +36,7 @@ async def argus_post(request: Request) -> RedirectResponse:
     return _redirect(request)
 
 
-def register_argus_step(app: "FastAPI") -> None:
+def register_argus_step(app: FastAPI) -> None:
     """Mount the legacy /step/13 redirects onto the wizard app."""
     app.add_api_route("/step/13", argus_get, methods=["GET"], response_class=HTMLResponse)
     app.add_api_route("/step/13", argus_post, methods=["POST"], response_class=HTMLResponse)

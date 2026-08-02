@@ -12,6 +12,7 @@ import math
 import sqlite3
 import time
 from pathlib import Path
+from typing import get_args as _typing_get_args
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
@@ -21,8 +22,6 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from lynceus import __version__, kismet, paths
-from typing import get_args as _typing_get_args
-
 from lynceus import allowlist as allowlist_mod
 from lynceus import rules as rules_mod
 from lynceus.allowlist import (
@@ -1856,7 +1855,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         def _iso_utc(ts) -> str:
             if ts is None:
                 return ""
-            return _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc).strftime(
+            return _dt.datetime.fromtimestamp(int(ts), tz=_dt.UTC).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             )
 
@@ -1908,7 +1907,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 buf.seek(0)
                 buf.truncate(0)
 
-        ts_now = _dt.datetime.fromtimestamp(now_ts, tz=_dt.timezone.utc).strftime(
+        ts_now = _dt.datetime.fromtimestamp(now_ts, tz=_dt.UTC).strftime(
             "%Y%m%dT%H%M%SZ"
         )
         filename = f"alerts-{ts_now}.csv"
@@ -3706,7 +3705,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         def _iso_utc(ts) -> str:
             if ts is None:
                 return ""
-            return _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc).strftime(
+            return _dt.datetime.fromtimestamp(int(ts), tz=_dt.UTC).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             )
 
@@ -3754,7 +3753,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 buf.seek(0)
                 buf.truncate(0)
 
-        ts_now = _dt.datetime.fromtimestamp(int(time.time()), tz=_dt.timezone.utc).strftime(
+        ts_now = _dt.datetime.fromtimestamp(int(time.time()), tz=_dt.UTC).strftime(
             "%Y%m%dT%H%M%SZ"
         )
         filename = f"watchlist-{ts_now}.csv"
