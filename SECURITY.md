@@ -8,12 +8,12 @@ no formal disclosure SLA. Vulnerability reports are welcomed and taken
 seriously, but response is best-effort.
 
 Only the latest release is supported. There are no backported security
-fixes for older tags — upgrade first, then report if the issue persists.
+fixes for older tags. Upgrade first, then report if the issue persists.
 
 ## Threat model
 
 **In scope.** Lynceus is designed to help an operator detect passive
-surveillance devices in their own RF environment — drones, ALPRs,
+surveillance devices in their own RF environment. Drones, ALPRs,
 gunshot-detection sensors, known hacking hardware, and similar gear. The
 operator is the user; bystanders are not part of the threat model.
 
@@ -46,7 +46,7 @@ Two surfaces in `lynceus.db` are notably sensitive:
   (default 90).
 - **WAL sidecars (`lynceus.db-wal`, `lynceus.db-shm`)** retain
   recently-written rows even after a `DELETE` has logically removed
-  them — the prune does not synchronously rewrite the WAL. Standard
+  them. The prune does not synchronously rewrite the WAL. Standard
   rsync/borg backups sweep both files alongside `lynceus.db`.
   Operators who care about post-deletion residue should checkpoint
   the WAL before backing up:
@@ -61,11 +61,11 @@ Two surfaces in `lynceus.db` are notably sensitive:
 
 ## Reporting a vulnerability
 
-**Preferred — private security advisory:**
+**Preferred, private security advisory:**
 <https://github.com/kevwillow/lynceus-warden/security/advisories/new>
 (GitHub: Settings → Security → Report a vulnerability)
 
-**Low-severity issues — public issue tracker:**
+**Low-severity issues, public issue tracker:**
 <https://github.com/kevwillow/lynceus-warden/issues>
 
 Please include:
@@ -90,10 +90,10 @@ Response is best-effort. No SLA is promised.
 
 **Out of scope** (report to the relevant upstream):
 
-- Kismet — report to Kismet upstream.
-- ntfy — report to ntfy upstream.
+- Kismet. Report to Kismet upstream.
+- ntfy. Report to ntfy upstream.
 - Python dependencies (FastAPI, uvicorn, Jinja2, requests, pydantic,
-  etc.) — report to their maintainers.
+  etc.). Report to their maintainers.
 - The operator's host OS, the Linux kernel, and hardware drivers.
 
 ## Disclosure timing

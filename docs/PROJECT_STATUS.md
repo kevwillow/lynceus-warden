@@ -8,7 +8,7 @@ weekend?"
 
 See [`src/lynceus/__init__.py`](../src/lynceus/__init__.py) or
 `lynceus --version` for the version actually installed. This document
-is a **narrative snapshot, not a version-tracked inventory** — it has
+is a **narrative snapshot, not a version-tracked inventory**. It has
 drifted behind the release cadence more than once, so the
 [CHANGELOG](../CHANGELOG.md) and the [README](../README.md) feature
 list are the authoritative record of what has shipped. A full rewrite
@@ -46,7 +46,7 @@ tag. Where it names a version, read it as "as of that cycle".
   triage button, recurrence digest grouped by ISO week.
 - CSRF middleware on POST routes.
 - Localhost-bound by default; non-loopback bind requires an explicit
-  `ui_allow_remote: true` flag (intentional friction — v0.2 has no auth).
+  `ui_allow_remote: true` flag (intentional friction, v0.2 has no auth).
 
 **Setup (`lynceus-setup`)**
 
@@ -97,9 +97,9 @@ The headlines:
 
 ## Test coverage at a glance
 
-Several thousand tests, growing with each cycle. Deliberately not pinned to an exact number here — the count went stale every release and a stale count is worse than none. Coverage spans the daemon, the UI (read-only dashboard + web setup wizard), the rules engine, the notifier, the database layer, the watchlist + Argus import path, the setup core + CLI + web frontends, install.sh, and packaging.
+Several thousand tests, growing with each cycle. Deliberately not pinned to an exact number here. The count went stale every release and a stale count is worse than none. Coverage spans the daemon, the UI (read-only dashboard + web setup wizard), the rules engine, the notifier, the database layer, the watchlist + Argus import path, the setup core + CLI + web frontends, install.sh, and packaging.
 
-**The suite is maintained outside this repository** and is not part of a clone — see [TESTING.md](TESTING.md) for what that means and why.
+**The suite is maintained outside this repository** and is not part of a clone. See [TESTING.md](TESTING.md) for what that means and why.
 
 The `slow` mark is a wheel-build round-trip. Skip with
 `pytest -v -m "not slow"` for fast iteration; run the full suite before
@@ -141,7 +141,7 @@ Things lynceus explicitly does not do today:
   database layer, the Argus import path, the setup core + CLI + web
   frontends, install.sh, and packaging.
 - **Tested on hardware.** The end-to-end run on real hardware against a
-  real Kismet capture is no longer outstanding — the 0.9.x cycle is
+  real Kismet capture is no longer outstanding. The 0.9.x cycle is
   hardware-verified on-device, and the 0.9.3/0.9.4 Bluetooth fixes came
   out of rig captures rather than reasoning. See the
   [CHANGELOG](../CHANGELOG.md) for what each capture actually settled.
@@ -153,7 +153,7 @@ Things lynceus explicitly does not do today:
 ## Should you deploy this today?
 
 If you're comfortable with a personal-use, self-hosted, "early but
-working" project — yes. The code paths are exercised, the docs walk you
+working" project. Yes. The code paths are exercised, the docs walk you
 through setup and verification, and the failure modes are honest about
 what they are. If you want a polished, hardened, audited product, this
 isn't that yet.

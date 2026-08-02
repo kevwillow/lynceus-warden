@@ -48,7 +48,7 @@ The configuration wizard `lynceus-setup` (added end-to-end in v0.7.0) ships with
 lynceus-setup --web --skip-probes --output lynceus.yaml
 ```
 
-`--skip-probes` is the right posture here — there's no real Kismet to probe in the dev environment. The wizard prints a loopback URL with a single-use token; open it in your browser, walk through the 12 steps, and click Apply. The resulting `lynceus.yaml` is byte-compatible with the CLI flow's output and the daemon will load it directly.
+`--skip-probes` is the right posture here. There's no real Kismet to probe in the dev environment. The wizard prints a loopback URL with a single-use token; open it in your browser, walk through the 12 steps, and click Apply. The resulting `lynceus.yaml` is byte-compatible with the CLI flow's output and the daemon will load it directly.
 
 ## Running the web UI
 
@@ -66,7 +66,7 @@ Open `http://127.0.0.1:8765/` in your browser. You should see the index with hea
 - Rules fire and alerts persist; `ntfy` notifications fail silently unless you configure a real ntfy server in `lynceus.yaml`.
 - The web UI renders fully against the local DB.
 - You can ack / unack alerts (single, bulk, ack-all-visible), view device history, and exercise the alerts/devices filters.
-- Per-source location labelling works against the fixture — set `kismet_source_locations` in `lynceus.yaml` mapping `dev-builtin-wifi` / `dev-alfa-wifi` / `dev-builtin-bt` to override location IDs and verify the per-source attribution path.
+- Per-source location labelling works against the fixture. Set `kismet_source_locations` in `lynceus.yaml` mapping `dev-builtin-wifi` / `dev-alfa-wifi` / `dev-builtin-bt` to override location IDs and verify the per-source attribution path.
 - The static-asset regression tests (`tests/test_static_assets.py`) catch placeholder vendoring; a real browser load against `lynceus-ui` confirms Pico CSS is actually styling the pages.
 
 ## What doesn't work locally
@@ -79,7 +79,7 @@ Open `http://127.0.0.1:8765/` in your browser. You should see the index with hea
 ## Iteration tips
 
 - Edit fixtures to test new scenarios. [tests/fixtures/dev_kismet.json](../tests/fixtures/dev_kismet.json) and the `integration_kismet_*.json` files are good templates. The Kismet device shape is documented inline in [src/lynceus/kismet.py](../src/lynceus/kismet.py) (`parse_kismet_device`).
-- Edit `rules.yaml` and `allowlist.yaml` on disk; restart the daemon to pick up changes. (Live reload is deferred — see [BACKLOG.md](../BACKLOG.md) under "Web UI editing for rules and allowlist"; no version target.)
+- Edit `rules.yaml` and `allowlist.yaml` on disk; restart the daemon to pick up changes. (Live reload is deferred, see [BACKLOG.md](../BACKLOG.md) under "Web UI editing for rules and allowlist"; no version target.)
 - Use the fast test loop while iterating:
 
   ```powershell
@@ -99,7 +99,7 @@ When this happens, run:
 python scripts/rebump_dev_fixture.py
 ```
 
-This rewrites the fixture's timestamps to be relative to "now" (anchored one hour back, with devices spread across the last several hours). The fixture's MACs, vendors, SSIDs, and BLE service UUIDs are preserved verbatim — only timestamps change.
+This rewrites the fixture's timestamps to be relative to "now" (anchored one hour back, with devices spread across the last several hours). The fixture's MACs, vendors, SSIDs, and BLE service UUIDs are preserved verbatim. Only timestamps change.
 
 Use `--dry-run` first if you want to see what the script will do:
 
@@ -107,7 +107,7 @@ Use `--dry-run` first if you want to see what the script will do:
 python scripts/rebump_dev_fixture.py --dry-run
 ```
 
-Why this is necessary: integration test fixtures freeze time within their tests, so they don't have this problem. The dev fixture is consumed by a live daemon, which compares fixture timestamps against the system clock. The durable fix is auto-shift-on-load in `FakeKismetClient` — see [BACKLOG.md](../BACKLOG.md). Until that lands, manual rebumping every few months is the expedient.
+Why this is necessary: integration test fixtures freeze time within their tests, so they don't have this problem. The dev fixture is consumed by a live daemon, which compares fixture timestamps against the system clock. The durable fix is auto-shift-on-load in `FakeKismetClient`. See [BACKLOG.md](../BACKLOG.md). Until that lands, manual rebumping every few months is the expedient.
 
 Commit the resulting fixture change separately from any other work, with a message like `chore: rebump dev fixture timestamps`. Future-you will appreciate the clean diff.
 
@@ -118,7 +118,7 @@ Single-line commit messages work the same everywhere: `git commit -m "..."`.
 For multi-line commit messages, use a bash heredoc, not a PowerShell
 here-string. Even on this Windows box, automated commits run through a tool
 that executes `bash`, and bash does not understand PowerShell's `@'...'@`
-here-string syntax — it treats the leading `@'` literally and leaves a stray
+here-string syntax. It treats the leading `@'` literally and leaves a stray
 `@` in the commit subject and body. Use:
 
 ```bash

@@ -1,4 +1,4 @@
-# Kali smoke checklist — Linux validation walkthrough
+# Kali smoke checklist: Linux validation walkthrough
 
 Operator-facing verification script for the Kali laptop smoke
 session that follows a push of the pending branch. Pair with
@@ -10,7 +10,7 @@ end-to-end works on a fresh Kali host.
 
 Each step has an **action**, an **expected output**, and a
 **flag condition**. If any step flags, **stop and capture
-output** before proceeding — later steps assume earlier ones
+output** before proceeding. Later steps assume earlier ones
 passed.
 
 The smoke session runs against the version on `main` at push
@@ -42,7 +42,7 @@ command -v sqlite3 >/dev/null && echo "sqlite3 OK"
 OK`, `sqlite3 OK`.
 
 **Flag:** Python < 3.11 (`apt install python3` first); no
-`systemctl` (this isn't a systemd host — checklist assumes
+`systemctl` (this isn't a systemd host, checklist assumes
 systemd from §6 onward); no `sqlite3` (`apt install sqlite3` for
 the alert-row sanity check in §10).
 
@@ -107,12 +107,12 @@ Breakdown vs Windows:
   `chmod`/file-mode tests). They contribute the +18 delta.
 
 **Flag:** any failure. Specifically:
-- `test_packaging.py::test_wheel_install_finds_migrations` —
+- `test_packaging.py::test_wheel_install_finds_migrations`.
   known Windows-flaky, should pass cleanly on Linux. If it
   fails here, the failure is real and needs investigation.
-- `test_install_sh.py::*` — any failure means install.sh has
+- `test_install_sh.py::*`. Any failure means install.sh has
   drifted from what the tests pin. Capture output and stop.
-- `test_paths.py::test_*_perms` — chmod / mode round-trip
+- `test_paths.py::test_*_perms`. Chmod / mode round-trip
   tests. Failure means the install.sh perm-set logic is
   divergent from what's expected.
 
@@ -129,7 +129,7 @@ pytest -m diagnostic
 **Expected:** `22 passed, 2830 deselected`.
 
 **Flag:** anything other than 22 passed. The diagnostic suite
-is observation-only — failures here mean a surface assumption
+is observation-only. Failures here mean a surface assumption
 has drifted between Windows and Linux runs.
 
 ---
@@ -203,7 +203,7 @@ lynceus-seed-watchlist --help | head -5
 
 **Flag:** non-zero exit or `ImportError` traceback. Most
 common cause: missing optional dep (`PyYAML` or `pydantic`
-mismatch) — re-check step 2.
+mismatch). Re-check step 2.
 
 ---
 
@@ -247,7 +247,7 @@ failures:
   something.
 - `/etc/lynceus` directory traversal denied (perms drift). The
   install.sh logic is `chown root:lynceus /etc/lynceus &&
-  chmod 0750 /etc/lynceus` — if the perms are off, the daemon
+  chmod 0750 /etc/lynceus`. If the perms are off, the daemon
   user can't read its own config.
 
 ---
@@ -347,7 +347,7 @@ If **any** step flags:
 1. **Stop.** Don't proceed past the flag.
 2. Capture the failing command's full output (stdout + stderr +
    journalctl context for service-level flags).
-3. File a fix prompt — small Linux-side fixups land as their own
+3. File a fix prompt. Small Linux-side fixups land as their own
    commits before re-running. Don't try to push-through.
 4. Re-run the flagged step *only* after the fix lands.
 

@@ -1,12 +1,12 @@
 # First-run smoke checklist
 
-Run this **after** installing per the [README install section](../README.md#installation). Each step has an action, a verify command, an expected outcome, and a troubleshooting bullet. If any step fails, **stop and debug** — later steps assume earlier ones passed.
+Run this **after** installing per the [README install section](../README.md#installation). Each step has an action, a verify command, an expected outcome, and a troubleshooting bullet. If any step fails, **stop and debug**. Later steps assume earlier ones passed.
 
 The checklist assumes the standard install paths: config at `/etc/lynceus/lynceus.yaml`, database at `/var/lib/lynceus/lynceus.db`, services running as the `lynceus` system user, both the `lynceus` poller daemon and the `lynceus-ui` web UI installed as systemd units.
 
-Configuration can come from either wizard — the interactive CLI `lynceus-setup --system` or the browser-based `lynceus-setup --system --web` added in v0.7.0. Both flows write the same `lynceus.yaml`; the steady-state checks below are wizard-frontend-agnostic.
+Configuration can come from either wizard. The interactive CLI `lynceus-setup --system` or the browser-based `lynceus-setup --system --web` added in v0.7.0. Both flows write the same `lynceus.yaml`; the steady-state checks below are wizard-frontend-agnostic.
 
-For local development without a Pi or a real Kismet — building, testing, exercising the UI — see [docs/WINDOWS_DEV.md](WINDOWS_DEV.md). For deferred features so you don't burn time wondering why something isn't there, see [BACKLOG.md](../BACKLOG.md).
+For local development without a Pi or a real Kismet (building, testing, exercising the UI), see [docs/WINDOWS_DEV.md](WINDOWS_DEV.md). For deferred features so you don't burn time wondering why something isn't there, see [BACKLOG.md](../BACKLOG.md).
 
 ## 0. Pre-flight (sizing guidance)
 
@@ -34,8 +34,8 @@ curl -s -b "KISMET=$KEY" http://localhost:2501/datasource/all_sources.json \
 
 **Troubleshoot:**
 - Monitor mode not enabled on the capture adapter (`iw dev`, then check Kismet's `kismet_site.conf`).
-- Wrong adapter selected — Kismet attached to the host's regular WiFi rather than a dedicated monitor interface.
-- Source name mismatch — `kismet_sources:` in `lynceus.yaml` is matched **exactly** against the `kismet.datasource.name` reported above. Typo on either side and observations are silently dropped.
+- Wrong adapter selected. Kismet attached to the host's regular WiFi rather than a dedicated monitor interface.
+- Source name mismatch. `kismet_sources:` in `lynceus.yaml` is matched **exactly** against the `kismet.datasource.name` reported above. Typo on either side and observations are silently dropped.
 
 ## 2. Lynceus daemon is running
 
@@ -48,12 +48,12 @@ sudo systemctl status lynceus
 sudo journalctl -u lynceus -n 80 --no-pager | grep -E '(Kismet health check|poll cycle|Traceback)'
 ```
 
-**Expected:** unit is `active (running)`. The journal shows `Kismet health check passed` near startup (the v0.2 fail-fast probe — if Kismet is unreachable at boot, `Poller.__init__` raises and the daemon exits immediately rather than running blind). After that, you should see one poll-cycle log line per `poll_interval_seconds`. No Python tracebacks.
+**Expected:** unit is `active (running)`. The journal shows `Kismet health check passed` near startup (the v0.2 fail-fast probe, if Kismet is unreachable at boot, `Poller.__init__` raises and the daemon exits immediately rather than running blind). After that, you should see one poll-cycle log line per `poll_interval_seconds`. No Python tracebacks.
 
 **Troubleshoot:**
 - Missing config file at `/etc/lynceus/lynceus.yaml` (the unit hard-fails on `FileNotFoundError`).
 - `Kismet health check failed` line at startup → fix Kismet (step 1) before retrying. If you legitimately want to start lynceus before Kismet is ready, set `kismet_health_check_on_startup: false`.
-- Bad permissions on `/var/lib/lynceus` — must be owned by the `lynceus` user with mode `0750`.
+- Bad permissions on `/var/lib/lynceus`. Must be owned by the `lynceus` user with mode `0750`.
 - Kismet API key wrong (look for `requests` exceptions or 401s in the journal).
 
 ## 3. Lynceus UI is running
@@ -71,9 +71,9 @@ curl -sS http://127.0.0.1:8765/healthz | grep -E 'schema version|devices tracked
 **Expected:** unit is `active (running)`. The first curl returns HTTP 200 with `Content-Type: text/html`. The body contains `schema version` and `devices tracked` near the top.
 
 **Troubleshoot:**
-- Port 8765 already in use — `sudo ss -ltnp '( sport = :8765 )'`. Pick a different port via `ui_bind_port` in `lynceus.yaml`.
+- Port 8765 already in use. `sudo ss -ltnp '(sport = :8765)'`. Pick a different port via `ui_bind_port` in `lynceus.yaml`.
 - `ui-bind_host` set to non-loopback without `ui_allow_remote: true` → config load fails. Either revert to `127.0.0.1` or set the flag explicitly (and put real auth in front of it; lynceus has none of its own).
-- DB path mismatch — `lynceus-ui` reads the same `db_path` as `lynceus`. If they point at different files, the UI shows zeros while the daemon writes elsewhere.
+- DB path mismatch. `lynceus-ui` reads the same `db_path` as `lynceus`. If they point at different files, the UI shows zeros while the daemon writes elsewhere.
 
 ## 4. Database is being written (and per-source attribution works)
 
@@ -92,10 +92,10 @@ sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
 **Expected:** the count increases between the two reads. The per-location query lists every `location_id` you configured under `kismet_source_locations`, each with a non-zero count. (If you didn't set `kismet_source_locations`, you'll see only the global `location_id`.)
 
 **Troubleshoot:**
-- `poll_interval_seconds` set high — drop to `5` for the duration of the smoke test.
-- Kismet returning no devices since the last poll — re-do step 1, or walk past the Pi with your phone's Wi-Fi on.
+- `poll_interval_seconds` set high. Drop to `5` for the duration of the smoke test.
+- Kismet returning no devices since the last poll. Re-do step 1, or walk past the Pi with your phone's Wi-Fi on.
 - Per-source location row missing → the corresponding source isn't actually capturing. `iw dev` and Kismet's source list (step 1) will tell you which one.
-- DB permissions — file must be writable by the `lynceus` user.
+- DB permissions. File must be writable by the `lynceus` user.
 
 ## 5. Watchlist seeded
 
@@ -111,8 +111,8 @@ sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
 **Expected:** at least one row for `pattern_type = 'oui'` (from `--threat-ouis`). If you ran `--ble-uuids` you'll also see a row for `pattern_type = 'uuid'`.
 
 **Troubleshoot:**
-- Seed step skipped during install — re-run `lynceus-seed-watchlist --db /var/lib/lynceus/lynceus.db --threat-ouis --ble-uuids`.
-- Wrong DB path — confirm the seed CLI and the lynceus service point at the same file (`grep db_path /etc/lynceus/lynceus.yaml`).
+- Seed step skipped during install. Re-run `lynceus-seed-watchlist --db /var/lib/lynceus/lynceus.db --threat-ouis --ble-uuids`.
+- Wrong DB path. Confirm the seed CLI and the lynceus service point at the same file (`grep db_path /etc/lynceus/lynceus.yaml`).
 
 ## 6. Test rule fires
 
@@ -124,7 +124,7 @@ rules:
     rule_type: watchlist_mac
     severity: high
     patterns: ["aa:bb:cc:dd:ee:ff"]   # replace with your laptop's MAC
-    description: smoke test — remove after step 10
+    description: smoke test, remove after step 10
 ```
 
 ```bash
@@ -146,9 +146,9 @@ curl -sS 'http://127.0.0.1:8765/alerts?search=smoke_test' | grep -c smoke_test
 **Expected:** within one poll interval, the journal shows an `alert` line for the high-severity hit. The `/alerts?search=smoke_test` curl prints a non-zero count. The line `Failed to write alert` should **not** appear.
 
 **Troubleshoot:**
-- Rule YAML syntax — `python3 -c "import yaml; yaml.safe_load(open('/etc/lynceus/rules.yaml'))"`.
-- MAC format — lynceus normalizes to lowercase, colon-separated. Hyphens accepted, case-insensitive.
-- Allowlist — if you previously allowlisted your laptop, it suppresses this alert. Comment out the relevant entry for the test.
+- Rule YAML syntax. `python3 -c "import yaml; yaml.safe_load(open('/etc/lynceus/rules.yaml'))"`.
+- MAC format. Lynceus normalizes to lowercase, colon-separated. Hyphens accepted, case-insensitive.
+- Allowlist. If you previously allowlisted your laptop, it suppresses this alert. Comment out the relevant entry for the test.
 
 ## 7. Acknowledge from the web UI
 
@@ -163,7 +163,7 @@ sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
   "SELECT action, actor FROM alert_actions WHERE alert_id = (SELECT id FROM alerts WHERE rule_name = 'smoke_test' ORDER BY id DESC LIMIT 1);"
 ```
 
-**Expected:** `acknowledged = 1`, `ack_actor` set to your client IP. The action row records `action = 'ack'` with the same actor — this is the audit trail.
+**Expected:** `acknowledged = 1`, `ack_actor` set to your client IP. The action row records `action = 'ack'` with the same actor. This is the audit trail.
 
 **Troubleshoot:**
 - 403 / "missing CSRF token" → cookies disabled in your browser, or you opened the form via `curl` and didn't carry the cookie. The token is set on the first GET and required as a form field on POST.
@@ -176,14 +176,14 @@ sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
 
 **Action:** confirm the alert from step 6 reached the ntfy app on your phone.
 
-**Verify:** your phone should buzz with the lynceus alert within seconds of the journal line in step 6. The high severity is the test here — severity-based priority (`low=2`, `med=3`, `high=5`) means the high-tier alert breaks through Do Not Disturb on iOS and gets critical priority on Android.
+**Verify:** your phone should buzz with the lynceus alert within seconds of the journal line in step 6. The high severity is the test here. Severity-based priority (`low=2`, `med=3`, `high=5`) means the high-tier alert breaks through Do Not Disturb on iOS and gets critical priority on Android.
 
-**Expected:** notification with title `lynceus: HIGH alert` and body matching the rule message (e.g. `MAC aa:bb:cc:dd:ee:ff on watchlist: smoke test — remove after step 10`).
+**Expected:** notification with title `lynceus: HIGH alert` and body matching the rule message (e.g. `MAC aa:bb:cc:dd:ee:ff on watchlist: smoke test, remove after step 10`).
 
 **Troubleshoot:**
-- Wrong topic — `ntfy_topic` in `lynceus.yaml` must exactly match the topic your phone is subscribed to.
-- ntfy server unreachable — `curl -I "$NTFY_URL"` from the Pi should return 200.
-- Auth token mismatch — if your topic is protected, `ntfy_auth_token` must match.
+- Wrong topic. `ntfy_topic` in `lynceus.yaml` must exactly match the topic your phone is subscribed to.
+- ntfy server unreachable. `curl -I "$NTFY_URL"` from the Pi should return 200.
+- Auth token mismatch. If your topic is protected, `ntfy_auth_token` must match.
 - DnD overriding the high-priority push → check the ntfy app's notification channel settings, not just the OS.
 
 ## 9. Multi-source verification (skip if single adapter)
@@ -201,7 +201,7 @@ sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
 
 **Troubleshoot:**
 - One adapter missing → step 1 again. The most common cause is a `source=` line in `kismet_site.conf` that fails to attach silently; check `journalctl -u kismet -n 200`.
-- Counts heavily skewed (one source 100x the other) is **not** necessarily a bug — Wi-Fi 2.4 GHz at city density vs Bluetooth Classic at one-room range is a 100x density difference in the real world.
+- Counts heavily skewed (one source 100x the other) is **not** necessarily a bug. Wi-Fi 2.4 GHz at city density vs Bluetooth Classic at one-room range is a 100x density difference in the real world.
 
 ## 10. Cleanup
 
@@ -219,4 +219,4 @@ curl -sS http://127.0.0.1:8765/rules | grep -c 'smoke_test'
 
 You're deployed. Add your own gear (laptop, phone, headphones, smart-home devices) to `allowlist.yaml`, let it run for a week, and treat false positives as allowlist candidates rather than bugs. The first 24–48 hours are the system showing you what it sees, not a defect.
 
-For deferred features the operator should not expect to find — stalking heuristics, Stingray hunter integration, in-UI rule editing, allowlist auto-learn — see [BACKLOG.md](../BACKLOG.md). For development iteration without touching a Pi, see [docs/WINDOWS_DEV.md](WINDOWS_DEV.md).
+For deferred features the operator should not expect to find (stalking heuristics, Stingray hunter integration, in-UI rule editing, allowlist auto-learn), see [BACKLOG.md](../BACKLOG.md). For development iteration without touching a Pi, see [docs/WINDOWS_DEV.md](WINDOWS_DEV.md).

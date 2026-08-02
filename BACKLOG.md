@@ -47,7 +47,7 @@ v0.5.0.
   bounded to schema or importer changes if the CSV contract evolves.
 - **Notes**: maintain in its own repo or sub-tree so the dataset can
   evolve at its own pace and be forked. Permissive licence on the
-  dataset so derivatives are allowed. Detection only — lynceus does not
+  dataset so derivatives are allowed. Detection only. Lynceus does not
   jam, spoof, or otherwise interfere with any of the equipment in the
   list, and the project's "passive-only" stance applies to Argus too.
 
@@ -56,7 +56,7 @@ Re-emits hunter alerts to Lynceus ntfy topic. Independent module under
 `src/lynceus/bridges/stingray.py`, doesn't touch core.
 - **Trigger**: when active SIM is in the hotspot AND hunter is operational.
 - **Estimated**: 1 prompt, ~200 LOC + tests.
-- **Notes**: ADB workaround NOT recommended — wait for SIM. Building before
+- **Notes**: ADB workaround NOT recommended. Wait for SIM. Building before
   the hunter is operational means the integration drifts out of sync with
   Rayhunter/Crocodile Hunter releases before it's ever exercised.
 
@@ -65,12 +65,12 @@ Re-emits hunter alerts to Lynceus ntfy topic. Independent module under
 a device on the watchlist by both mac AND oui produces two alert rows
 at two potentially-different severities for the same poll-cycle
 observation. This is intentional (see CHANGELOG `[Unreleased] §
-Documentation` — audit-first design, dedup window collapses
+Documentation`, audit-first design, dedup window collapses
 near-duplicates downstream). If operators report ntfy/alert-list noise
 that the dedup window doesn't smooth out, the alternative is an opt-in
 "single-emit with resolved severity" mode: highest-severity-wins
 across the matching set, one alert row, configurable via the existing
-runtime overrides surface. NOT a default change — the current emit
+runtime overrides surface. NOT a default change. The current emit
 semantics let operators see which rule chains are catching what
 across the same observation, which is information the merged path
 would hide.
@@ -78,7 +78,7 @@ would hide.
   the dedup window can't absorb, OR a request to attribute a single
   alert to a single resolved cause for downstream tooling.
 - **Estimated**: 1 prompt, ~100 LOC in `rules.evaluate()` + a config
-  knob + tests. Architecturally cheap — the loop already collects all
+  knob + tests. Architecturally cheap. The loop already collects all
   hits before returning; a post-loop resolve step is small.
 - **Notes**: until then, do NOT "fix" the multi-emit behavior. It is
   the locked semantic. Diagnostic test
@@ -94,8 +94,8 @@ insensitive substring; that scope intentionally does not retroactively
 change `ssid`. If operators report missed alerts due to case drift on
 exact watchlist entries (vs. observed SSIDs from the same vendor), the
 fix would be either: (a) normalize at write time (would change stored
-data — needs migration), or (b) normalize at match time (preserve
-stored data, fold at lookup — symmetric to the ssid_pattern matcher).
+data, needs migration), or (b) normalize at match time (preserve
+stored data, fold at lookup, symmetric to the ssid_pattern matcher).
 - **Trigger**: operator reports of missed exact-ssid alerts traced to
   case mismatch between watchlist entry and Kismet observation.
 - **Estimated**: 1 prompt, ~30 LOC + tests + migration if (a) wins.
@@ -108,8 +108,8 @@ Operational symptom (pre-v0.6.0): re-importing the bundled Argus CSV
 inflated counters (31 false-new + 21 false-updated) and thrashed
 `updated_at` on 25 `watchlist_metadata` rows per re-import (99
 mutating SQL statements against unchanged content). The pre-v0.6.0
-hypothesis recorded here — "same-pattern Argus rows differing only
-in `device_category`" — was falsified by scouting in 2026-05-XX:
+hypothesis recorded here, "same-pattern Argus rows differing only
+in `device_category`", was falsified by scouting in 2026-05-XX:
 **0 of 15** peer-collide groups in the bundled CSV differ on
 device_category. The actual upstream-emitted shapes are documented
 in [docs/ARGUS_DEDUP_SHAPES.md](docs/ARGUS_DEDUP_SHAPES.md).
@@ -136,7 +136,7 @@ first-occurrence-wins. The collapsed peer-row's
 manufacturer/source/category data is dropped at import time,
 not persisted. If operators ever need access to per-peer-row
 metadata (e.g., severity override edge cases that depend on
-which device_category Flock-the-ALPR-vendor canonicalizes to —
+which device_category Flock-the-ALPR-vendor canonicalizes to,
 currently first-Argus-row-wins), the rework to consider is an
 `argus_record_id`-keyed `watchlist_metadata` (drop the
 `watchlist_id UNIQUE` constraint, allow 1:N), plus a row-level
@@ -192,7 +192,7 @@ revisit when a real-world capture corpus is large enough to characterise
 - **Trigger**: enough real-world data to know what "normal" looks like in
   your environment.
 
-### Watchful snooze — possible Phase 3 enhancements
+### Watchful snooze: possible Phase 3 enhancements
 Phase 1 (backend foundation), Phase 2a (operator-action backend), and
 Phase 2b (operator-facing UI) all shipped in rc6 -- the feature is
 complete and usable. Future work would be reactive to operator
@@ -208,7 +208,7 @@ usage might surface:
   unclear whether watchful's expected steady-state size makes this
   worth the UI complexity
 - richer audit predicates on `/watchful` (e.g. "escalated then
-  archived without action" — the schema already supports this via
+  archived without action", the schema already supports this via
   `escalated_at IS NOT NULL AND archived_at IS NOT NULL`)
 - **Trigger**: real-world operator feedback after a few weeks of
   usage; not worth pre-designing.
@@ -238,7 +238,7 @@ data_table macro applies table-layout:fixed + table[data-table-id] td
 /alerts ack/unack/watch currently always keep the row and re-render it in the
 new state (htmx, d886a18). This is correct on the default "all alerts" view,
 but on a filtered view (e.g. unacked-only) an acked row no longer matches the
-active filter and should be REMOVED, like the home page does — instead it
+active filter and should be REMOVED, like the home page does. Instead it
 persists until reload.
 - **Trigger**: when filtered /alerts views are used enough that stale-after-
   action rows are a real annoyance.
@@ -246,7 +246,7 @@ persists until reload.
   decide remove-vs-rerender per action (empty-body removal vs _alert_row.html
   partial), and the row forms must convey enough filter context. Regression
   tests on both no-JS (303) and htmx paths, across filtered + unfiltered.
-- **Notes**: do NOT bundle with the Pico-specificity styling arc — that table
+- **Notes**: do NOT bundle with the Pico-specificity styling arc. That table
   is already fragile; adding filter-aware swap logic on top risks tangled
   debugging. Sequence after styling is stable.
 
@@ -310,7 +310,7 @@ block) rather than first textual occurrence.
 
 ### README integrity: ble_uuid-dependent claims vs the current capture path
 The README advertises "BLE service UUID" matching and "AirTag-class tracker
-recognition", both of which ride the `ble_uuid` surface — which does not fire
+recognition", both of which ride the `ble_uuid` surface, which does not fire
 on the current Kismet classic-HCI capture path (see "BLE advertisement-payload
 capture" under Network capture features). The claims describe built, tested
 matchers that are inert in the field.
@@ -319,14 +319,14 @@ first of the two ways to make the README accurate, but it does not by itself
 make the claims true: the bridge is OFF by default (BLE-G1 curation), so in a
 default deployment the claims remain inert. "BLE service UUID matching" becomes
 accurate once the bridge is enabled and curated; **"AirTag-class tracker
-recognition" needs more than that** — distinguishing an AirTag from any other
+recognition" needs more than that**. Distinguishing an AirTag from any other
 Apple device is exactly the Find My / Apple Continuity decoder arc, which has
 not started. Softening that claim should not wait on it.
-- **Trigger**: now actionable — the bridge decision resolved in the "build it"
+- **Trigger**: now actionable. The bridge decision resolved in the "build it"
   direction. Re-check the claims once the bridge is enabled + curated, and
   again after the Find My decoder lands.
 - **Notes**: deliberately NOT bundled into the docs commit that closed the
-  bridge arc — README wording is its own change with its own review. Options
+  bridge arc. README wording is its own change with its own review. Options
   unchanged: soften to "implemented, pending a capture path", or gate the
   wording on the feature flag.
 
@@ -334,7 +334,7 @@ not started. Softening that claim should not wait on it.
 The v0.9.2 G4 fix preserves operator-seeded watchlist severities on an Argus
 collision using `existing_md is None` as the "operator-seeded" proxy. That
 proxy also catches an Argus row whose `argus_record_id` was re-keyed upstream
-(it too reads metadata-None) and would be preserved as if operator-seeded — a
+(it too reads metadata-None) and would be preserved as if operator-seeded. A
 harmless WARN + declined update rather than the silent clobber it replaced, but
 still a misfire.
 - **Trigger**: the operator-override flag work, OR observed Argus record_id
@@ -362,7 +362,7 @@ asymmetry, explicitly left unfixed in v0.9.2.
 ### Stale diagnostic: test_diag_home_ack_flow content assertions
 `test_diag_home_ack_flow` asserts page content (hx attributes) that has since
 moved into the `_alert_row.html` partial, so it fails pre-existingly under
-`pytest -m diagnostic`. Not a regression — the assertions are stale against the
+`pytest -m diagnostic`. Not a regression. The assertions are stale against the
 current template split.
 - **Trigger**: next time the diagnostic suite is run pre-push, or any arc
   touching the home-page ack flow / alert-row partial.
@@ -387,7 +387,7 @@ currently alert via ntfy when this happens. Add a "lynceus infrastructure
 alert" tier that fires on kismet-down, db-locked, etc.
 
 ### Per-channel filtering
-Same logic as per-band — wait until the simpler primitives prove
+Same logic as per-band. Wait until the simpler primitives prove
 insufficient.
 
 ### BLE advertisement-payload capture (passive bleak bridge)
@@ -395,27 +395,27 @@ The `ble_uuid`, `ble_manufacturer_id`, and drone Remote-ID matchers did not fire
 on the Kismet capture path: Kismet's classic-HCI Bluetooth datasource surfaces
 no advertisement payload, so service UUIDs, 16-bit company ids, and Remote-ID
 serials never reached the matcher. Rig-confirmed 2026-06-17 that a BlueZ/bleak
-passive scan on the *same* adapter DOES surface company ids and service UUIDs —
-the data exists; Kismet's classic path just doesn't expose it.
+passive scan on the *same* adapter DOES surface company ids and service UUIDs.
+The data exists; Kismet's classic path just doesn't expose it.
 
-**Status: the capture bridge landed (unreleased)** — `lynceus.bridges.ble`
+**Status: the capture bridge landed (unreleased)**. `lynceus.bridges.ble`
 plus daemon wiring, flag-gated on `ble_bridge.enabled` and OFF by default;
 hardware-validated end to end from inside the daemon. See the CHANGELOG
 `[Unreleased]` entry for the landing summary.
 
 **What is NOT done is the half this entry always said was the harder half:
-the matching strategy.** Company-id alone is too coarse — one id covers a
-whole vendor — so the bridge is built but must not be enabled against a raw
+the matching strategy.** Company-id alone is too coarse, one id covers a
+whole vendor, so the bridge is built but must not be enabled against a raw
 company-id watchlist. The remaining work is split into the numbered
 enablement gates below (BLE-G1 … BLE-G5); BLE-G1 and BLE-G2 are blocking.
 The payload-format-signature work that makes company ids useful is tracked
 separately as the Find My / Apple Continuity decoder arc.
 - **Trigger**: gates BLE-G1 and BLE-G2 cleared, then flip `ble_bridge.enabled`.
-- **Notes**: passive-only, consistent with the project stance — observe and
+- **Notes**: passive-only, consistent with the project stance. Observe and
   match, never connect/pair/probe; the shipped scanner is passive-mode with no
   connect path. Pairs with the README-integrity follow-up (the README already
   claims BLE-UUID / AirTag-class recognition that rides this surface) and the
-  D2 drone field-path confirmation below — D2 is unaffected by this landing and
+  D2 drone field-path confirmation below. D2 is unaffected by this landing and
   still needs a live drone capture.
 
 ### BLE-G1: watchlist curation before enabling the bridge (BLOCKING)
@@ -423,13 +423,13 @@ A watchlist matching raw `ble_manufacturer_id` values is an alert storm, not a
 detection: company id `004c` is *every* Apple device in range, `0075` every
 Samsung, and so on. Enabling the bridge against an uncurated company-id
 watchlist would alert on every passer-by's phone and earbuds. The curation
-decision — which company ids (or which id + payload-shape pairs) are a
-surveillance signal rather than consumer noise — is Argus-side data work, not
+decision, which company ids (or which id + payload-shape pairs) are a
+surveillance signal rather than consumer noise, is Argus-side data work, not
 lynceus-side code.
 **Substantially reduced for Apple by the Continuity decoder (unreleased).**
 `lynceus.ble_continuity` now resolves `004c` to `find_my_separated` /
 `find_my` / `find_my_paired` / `airpods` / `nearby` / `apple_unknown`, and
-the `ble_device_class` rule type alerts on named classes — so the Apple case
+the `ble_device_class` rule type alerts on named classes, so the Apple case
 is a classification problem rather than a vendor blocklist, and the
 alert-storm risk for Apple is gone. The separated-from-owner refinement that
 makes this precise is no longer pending: it is length-based and rig-validated
@@ -442,23 +442,23 @@ way.
 - **Notes**: in the shipped `config/rules.yaml` template both
   `argus_ble_manufacturer_id` and the new `apple_find_my` rule are commented
   out, so the repo default is safe. **Verify the deployed rig config
-  separately** — if `argus_ble_manufacturer_id` is uncommented there,
+  separately**. If `argus_ble_manufacturer_id` is uncommented there,
   enabling the bridge storms immediately with no further warning, and the
   decoder does not help because that rule matches company id, not class.
 
 ### BLE-G2: kismet_sources source-gate vs bridge provenance (BLOCKING)
 Latent silent failure. The bridge stamps its observations with
-`seen_by_sources=(f"ble:{adapter}",)` — e.g. `ble:hci1`. The poller's step-1
+`seen_by_sources=(f"ble:{adapter}",)`. E.g. `ble:hci1`. The poller's step-1
 source gate admits an observation only when one of its `seen_by_sources` is a
 member of the `kismet_sources` allowlist. If an operator's `kismet_sources`
 lists the bare adapter name (`hci1`), the membership test against `ble:hci1`
-fails and **every** bridge observation is dropped — the bridge would run,
+fails and **every** bridge observation is dropped. The bridge would run,
 scan, and buffer correctly while contributing nothing, with only DEBUG-level
 drop logging to show for it. The alias-map expansion does not rescue this:
 aliases come from Kismet's own `list_sources()`, which has no knowledge of the
 bridge's synthetic source name.
 - **Trigger**: blocking. Verify before enabling, not after.
-- **Estimated**: read-only verification first — inspect the deployed
+- **Estimated**: read-only verification first. Inspect the deployed
   `kismet_sources` and decide the contract. If a change is needed the options
   are to document `ble:<adapter>` as the value operators must allowlist, or to
   exempt bridge-stamped provenance from the gate; the latter is a real code
@@ -469,13 +469,13 @@ bridge's synthetic source name.
 ### BLE-G3: startup health check blocks the bridge when Kismet is down
 `Poller.__init__` runs `_startup_health_check()` when
 `kismet_health_check_on_startup` is set, and that raises before `run_forever`
-is ever reached — so with Kismet down the daemon never starts, and the BLE
+is ever reached, so with Kismet down the daemon never starts, and the BLE
 bridge never starts either. The bridge is adapter-independent and does not need
 Kismet to do useful work, so coupling its availability to Kismet's is arguably
 wrong once the bridge is a real capture path rather than an experiment.
 - **Trigger**: after the bridge is enabled, if a Kismet outage is observed to
   take BLE capture down with it.
-- **Estimated**: small, but it is a policy decision before it is code — should
+- **Estimated**: small, but it is a policy decision before it is code. Should
   `ble_bridge.enabled` relax or bypass the Kismet startup health check, and
   does a Kismet-less daemon still deserve the startup banner and health
   semantics it currently gets? Decide the semantics, then implement + test.
@@ -489,52 +489,52 @@ into the backend-args kwarg and will drop the standalone `adapter=` parameter,
 at which point the scanner construction breaks on upgrade.
 - **Trigger**: before any bleak major-version bump, or on the first deprecation
   warning observed on the rig.
-- **Estimated**: a few lines — fold the adapter into the `bluez=` kwarg. The
+- **Estimated**: a few lines. Fold the adapter into the `bluez=` kwarg. The
   module already carries an import-layout fallback for older/newer bleak module
   paths, so the compatibility pattern to follow is in place.
 - **Notes**: the scan path is rig-only (`# pragma: no cover`), so this cannot
-  be caught by the dev-box suite — it will surface as a runtime failure on the
+  be caught by the dev-box suite. It will surface as a runtime failure on the
   rig, not a test failure.
 
-### BLE-G5: rig provenance — /opt/lynceus is not a git clone
+### BLE-G5: rig provenance, /opt/lynceus is not a git clone
 The deployed tree at `/opt/lynceus` was installed from an unzipped `~/Downloads`
 tree rather than a git clone, and no clone containing the bridge commits
 (`07c561a`, `bb3d51c`, `ecfbf89`) exists on the rig. There is therefore no way
 to confirm from the rig which revision is actually running, and no clean path to
 deploy the bridge or roll it back.
 - **Trigger**: before deploying the bridge to the rig.
-- **Notes**: deployment hygiene, not a code defect — but it blocks trustworthy
+- **Notes**: deployment hygiene, not a code defect, but it blocks trustworthy
   enablement, since "is the running code the code we reviewed?" is currently
   unanswerable. Land a real clone first.
 
-### BLE-G6: adapter contention — Kismet claims the adapter the bridge needs
+### BLE-G6: adapter contention, Kismet claims the adapter the bridge needs
 Confirmed on the rig 2026-08-01. `/etc/kismet/kismet_site.conf` declares both
 Bluetooth adapters as Kismet sources (`hci0` and `hci1`), and
 `BleBridgeConfig.adapter` defaults to `hci1`. Kismet holds the adapter for the
 lifetime of the daemon, so with Kismet running there is no free BT adapter and
 the bridge cannot scan. The 2026-08-01 capture only succeeded because Kismet
-was stopped for it — which is not a state the daemon can ship in.
+was stopped for it, which is not a state the daemon can ship in.
 - **Trigger**: blocking, before enabling the bridge on the rig. Same gate class
   as BLE-G1/BLE-G2.
 - **Estimated**: config only, no code. Drop the `source=hci1` line from
   `kismet_site.conf` so Kismet keeps `hci0`, and make the matching edit to
   `kismet_sources` in `/etc/lynceus/lynceus.yaml`, which currently lists both.
-- **Notes**: adapter identity is easy to invert and worth stating once —
+- **Notes**: adapter identity is easy to invert and worth stating once.
   `hci1` is the Intel, `28:C5:D2:0A:6D:D2`, HCI 5.3; `hci0` is the Realtek,
   `3C:78:95:9B:8A:EA`, HCI 5.1. Also on that rig config, and harmless but
   worth tidying in the same pass: `kismet_sources` lists the Wi-Fi adapter
   twice, and the file carries no `ble_bridge` key at all, so the
   `BleBridgeConfig` defaults govern (`enabled: False`). Note too that
   `~/.config/lynceus/lynceus.yaml` has diverged from the daemon's `/etc` copy
-  — the unit runs `User=lynceus` with `ProtectHome=true` and cannot read
+ . The unit runs `User=lynceus` with `ProtectHome=true` and cannot read
   `/home` at all, so the home copy is dev-only and must not be used to reason
   about production behaviour.
 
 ### Migration 014 replay drops every devices column added after it
 `014_devices_remote_id.sql` is a full table rebuild with a hardcoded column
-list, so replaying it — the "narrow recovery path" its own test docstring
+list, so replaying it (the "narrow recovery path" its own test docstring
 describes, for a DB whose 014 row is missing but whose table was already
-rebuilt — recreates `devices` at the 014-era shape and silently drops every
+rebuilt), recreates `devices` at the 014-era shape and silently drops every
 column added since. That is currently `ble_name` and `ble_device_class`.
 Surfaced while adding migration 023, which is the first migration to add a
 `devices` column after 014; nothing had exercised the interaction before.
@@ -544,7 +544,7 @@ Surfaced while adding migration 023, which is the first migration to add a
   column list dynamic (`PRAGMA table_info`), or documenting the replay as
   "re-run migrations to head afterwards" and making the runner do so.
   Editing an already-applied migration in place is NOT an option.
-- **Notes**: normal operation is unaffected — migrations run in order, once,
+- **Notes**: normal operation is unaffected. Migrations run in order, once,
   and 023 adds the column after 014 has run. This only bites on replay. The
   local `test_migration_014_sql_replay_is_safe_rebuild` was reworked to
   assert the CHECK constraint via a raw INSERT rather than `upsert_device`,
@@ -557,14 +557,14 @@ Apple advert to `find_my_separated` / `find_my` / `find_my_paired` /
 `airpods` / `nearby` / `apple_unknown`; the class is persisted on the device
 row (migration 023), shown on `/devices`, and matchable via the
 `ble_device_class` rule type. Payload bytes are read in the bleak callback
-and discarded there — only the derived label survives, pinned by a
+and discarded there. Only the derived label survives, pinned by a
 regression test. See the CHANGELOG `[Unreleased]` entries.
 
 **Both gates this entry was waiting on are closed by the 2026-08-01 rig
 capture** (~490 Apple TLVs, 3 message types, 0 structure failures):
 - The bridge's BlueZ monitor was Flags-only and matched no Apple advert at
   all, so the decoder was unreachable in the field regardless of its
-  correctness. Fixed — the Apple manufacturer-data pattern now leads the set.
+  correctness. Fixed. The Apple manufacturer-data pattern now leads the set.
 - Separated state no longer rides a status bit. `_FIND_MY_SEPARATED_MASK`
   is deleted: `0x04` was never set across 204 Find My frames, so it reported
   "not separated" universally. Separation is read from advert length instead,
@@ -579,27 +579,27 @@ keys and can query Apple's servers; no third-party passive listener can
 replicate that on any adapter. An AirTag and an AirPods case also emit
 identically-shaped `0x12` adverts, so they cannot be told apart.
 - **Honest capability ceiling**: "an unfamiliar separated Find My emitter is
-  in range, correlated within one rotation window" — not "this specific
+  in range, correlated within one rotation window", not "this specific
   AirTag is following you". Do not build heuristics that imply the latter,
   and do not describe the feature that way in the README.
-- **Next arc**: follow-detection — a tracker that persists across locations
-  versus an incidental one — bounded by that rotation window. Still wants the
+- **Next arc**: follow-detection, a tracker that persists across locations
+  versus an incidental one, bounded by that rotation window. Still wants the
   real-world capture corpus the stalking-heuristics entry describes.
 - **Optional, low value**: a clean separated/paired ground-truth experiment
   (AirPods in a closed case, iPhone Bluetooth off via Settings rather than
   Control Centre, undisturbed 30 minutes). Two attempts on 2026-08-01 failed
-  — the AirPods slept, and the phone's Bluetooth re-enabled itself 12 minutes
+ . The AirPods slept, and the phone's Bluetooth re-enabled itself 12 minutes
   in. The length-based rule does not depend on it; this would only raise
   confidence.
 
 ### D2 drone Remote-ID live field-path confirmation
 The `drone_id_prefix` leading-substring matcher (v0.9.2) is correct but inert:
 the live Kismet Remote-ID JSON field path (`kismet._DRONE_ID_PATHS`) is still an
-unverified guess — no drone has been captured, so which path carries the serial
+unverified guess. No drone has been captured, so which path carries the serial
 is unknown. `_DRONE_ID_PATHS` is unchanged until a live capture proves it.
 - **Trigger**: a live drone Remote-ID capture on the rig, or a confirmed Kismet
   field-path reference.
-- **Notes**: blocks nothing else — the matcher, capture coercion, and allowlist
+- **Notes**: blocks nothing else. The matcher, capture coercion, and allowlist
   mirror are all in place and tested; this is the one runtime fact that can only
   come from real hardware. Likely confirmed alongside the BLE advertisement-
   payload bridge above.

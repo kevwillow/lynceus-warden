@@ -1,4 +1,4 @@
-# Watchful Snooze — Design Document
+# Watchful Snooze: Design Document
 
 Status: design (no code). Targets v0.4.0-rc6.
 
@@ -8,7 +8,7 @@ Watchful snooze is a third snooze surface for Lynceus, alongside the
 permanent allowlist and the time-bounded snoozes introduced earlier in
 the rc cycle. It exists for a specific operator situation: an alert
 fires, the operator looks at it, and the operator's honest answer is
-*"I'm not sure — probably fine, but I want to know if it comes back."*
+*"I'm not sure. Probably fine, but I want to know if it comes back."*
 That answer doesn't fit either of the existing surfaces. Allowlisting
 the device says "this is fine forever," which is a stronger claim than
 the operator actually wants to make. Snoozing for 30 days says "shut up
@@ -21,8 +21,8 @@ A device under watchful snooze is silently tracked across subsequent
 sightings. Recurrences are counted with a 24-hour debounce so a device
 that lingers nearby (a neighbor's phone parked in range for an evening)
 doesn't burn through the counter. When the device has been observed on
-four distinct days, an escalation alert fires — separate rule type,
-separate notification, separate row in the alerts table — and the entry
+four distinct days, an escalation alert fires (separate rule type,
+separate notification, separate row in the alerts table), and the entry
 is surfaced prominently on a new `/watchful` page for the operator to
 review.
 
@@ -42,7 +42,7 @@ Each handles a different shape of operator intent:
 | **Permanent allowlist** | `allowlist.yaml`, operator-edited | Pattern (`mac` / `oui` / `ssid` / …) | None | No | "This is fine forever." |
 | **Per-alert snooze** | `allowlist_ui.yaml`, UI-managed | Observation attributes | `expires_at` timestamp | No | "Shut up about this specific alert for a while." |
 | **Per-rule_type snooze** (rc6) | `rule_type_snoozes` DB row, UI-managed | A whole `rule_type` | Bounded window | No | "Shut up about this entire alert class for a while." |
-| **Watchful snooze** (this doc) | `watchful_tracking` DB row, UI-managed | A specific MAC | Bounded by recurrence/auto-archive | **Yes**, on threshold | "Probably fine — tell me if it keeps showing up." |
+| **Watchful snooze** (this doc) | `watchful_tracking` DB row, UI-managed | A specific MAC | Bounded by recurrence/auto-archive | **Yes**, on threshold | "Probably fine. Tell me if it keeps showing up." |
 
 Watchful snooze is the only one of the four that escalates. It is also
 the only one whose entry's lifecycle is shaped by the device's own
@@ -59,7 +59,7 @@ Three concrete operator scenarios, each ending in a different outcome.
 it."** Operator gets an alert on an unknown smart-home device an
 upstairs neighbor probably owns. It looks innocuous, but they're not
 sure. They click watchful snooze with the default 30-day duration. Over
-the next few weeks, the device shows up twice — once on a Saturday
+the next few weeks, the device shows up twice. Once on a Saturday
 afternoon, once a week later in the evening. Both sightings are
 recorded; neither triggers a new alert. The operator checks `/watchful`
 during their weekly review, sees two non-escalated entries with low
@@ -68,7 +68,7 @@ to permanent allowlist." The entry transitions to `promoted`; an
 allowlist entry is appended with the note "promoted from watchful."
 
 **2. "I want to know if a tracker follows me across multiple
-locations."** Operator runs Lynceus across two Pi sites — home and
+locations."** Operator runs Lynceus across two Pi sites. Home and
 office. An unknown BLE device shows up at home one Tuesday. They put it
 under watchful snooze (24-hour duration; aggressive). The same MAC
 appears at the office the next morning, at home that evening, and at
@@ -77,14 +77,14 @@ The operator gets a priority-4 ntfy push titled "watchful escalation:
 recurrence threshold reached" with the message describing four
 sightings across two locations. They open `/alerts`, see the escalation
 row, click through to the underlying watchful entry, mark it for
-active investigation, and add the note "appeared at both sites — pull
+active investigation, and add the note "appeared at both sites. Pull
 sightings detail." Tracking continues; no further escalations fire
 until they take definitive action.
 
 **3. "I want to verify a device is actually neighbors-not-watchers."**
 Operator alerts on what they suspect is a recently-installed building
 camera. They watchful-snooze it. Over six weeks the device is observed
-nineteen times — always in the same RSSI band, always overnight, never
+nineteen times. Always in the same RSSI band, always overnight, never
 moving. The operator opens `/watchful`, reviews the sighting timeline,
 concludes it's a fixed installation rather than a mobile tracker,
 clicks "mark as confirmed not suspicious." The entry transitions to
@@ -151,7 +151,7 @@ in the DB for audit. (Detail in *Integration with existing surfaces*.)
 **Operator action: reset count.** State stays `tracking`,
 `sighting_count` resets to 1, `last_counted_sighting_at` resets to the
 current timestamp, `reset_count` increments. `first_watched_at` and
-`first_alert_id` are unchanged — the operator's mental model is "start
+`first_alert_id` are unchanged. The operator's mental model is "start
 over from now," but the historical anchor stays for the audit trail.
 
 **Operator action: mark for active investigation.** A separate flag
@@ -163,14 +163,14 @@ signal. The /watchful page shows flagged entries at the top.
 transitions to `confirmed_safe`. Future watchful-snooze attempts on
 this MAC find the existing `confirmed_safe` entry and refuse to create
 a new tracking row. This MAC is permanently exempt from watchful
-tracking regardless of what the operator does later in the UI — a
+tracking regardless of what the operator does later in the UI. A
 stricter exit than dismiss, because the operator is making a positive
 statement about the device, not just declining to watch it.
 
 **90 days without observation.** A daily housekeeping pass (piggybacked
 on the existing evidence-prune cycle) transitions any entry whose
 `last_observation_at + 90 days < now` to `archived`, regardless of
-prior state — including `escalated` entries the operator never acted
+prior state, including `escalated` entries the operator never acted
 on. Archived entries are retained read-only and visible on the
 /watchful archived view. They do not count toward future recurrence
 detection.
@@ -201,7 +201,7 @@ CREATE TABLE watchful_tracking (
     CHECK (state IN (
         'tracking', 'escalated', 'dismissed',
         'promoted', 'confirmed_safe', 'archived'
-    )),
+   )),
     CHECK (snooze_duration IN ('forever', '24h', '7d', '30d'))
 );
 
@@ -219,7 +219,7 @@ CREATE INDEX idx_watchful_last_observation
 
 - **`mac`** is the canonical identifier for recurrence matching.
   Stored normalized (lower-hex, colon-separated) per
-  `lynceus.kismet.normalize_mac`. Not unique in the table — a MAC
+  `lynceus.kismet.normalize_mac`. Not unique in the table. A MAC
   may have one active row plus many historical rows (dismissed,
   promoted, archived). The partial unique index enforces "at most one
   active row per MAC" without preventing the audit trail.
@@ -255,7 +255,7 @@ CREATE INDEX idx_watchful_last_observation
   entry is still in `tracking` state, the entry transitions back to
   effectively-inactive (see open question below).
 - **`under_investigation`** and **`investigation_note`** form the
-  visual-flag mechanism. The flag is orthogonal to state — an entry
+  visual-flag mechanism. The flag is orthogonal to state. An entry
   can be flagged in any active state.
 - **`reset_count`** tracks how many times the operator has reset the
   entry. Surfaced on /watchful as a small audit indicator
@@ -271,7 +271,7 @@ CREATE INDEX idx_watchful_last_observation
   extension.
 
 The two partial indexes (`mac_active` and `last_observation`) keep the
-hot path — finding the active entry for an incoming observation —
+hot path, finding the active entry for an incoming observation,
 narrow and fast. The full-table `state` index supports the /watchful
 filter UI.
 
@@ -300,7 +300,7 @@ with timestamp `t`:
    `escalated_at = t`, set `state_changed_at = t`, emit a synthetic
    alert via the existing alert-pipeline path with
    `rule_type = 'watchful_recurrence'`. If `sighting_count > 4`:
-   already escalated, no additional alert emitted (anti-spam — see
+   already escalated, no additional alert emitted (anti-spam, see
    *Escalation behavior*).
 6. **Continue.** The observation continues through the rest of the
    poll loop. Watchful tracking does not suppress the original alert
@@ -312,7 +312,7 @@ with timestamp `t`:
   `sighting_count = 1`, `last_observation_at` set to the alert's
   observation timestamp. The next observation goes through the
   algorithm above. The "first sighting" itself is the alert that
-  triggered the watch — the operator's mental model is "I'm at 1, three
+  triggered the watch. The operator's mental model is "I'm at 1, three
   more triggers escalation."
 - **Sighting at exactly the 24-hour boundary.** `gap > 86400` is a
   strict greater-than. At exactly `gap == 86400` (one second short of
@@ -329,7 +329,7 @@ with timestamp `t`:
   is the canonical identifier; multiple seeing-sources for the same MAC
   in the same poll resolve to a single observation upstream (in the
   Kismet client merge). Even if they didn't, the algorithm is
-  idempotent under "same MAC observed twice within seconds" — see the
+  idempotent under "same MAC observed twice within seconds". See the
   prior bullet.
 
 ## Escalation behavior
@@ -352,8 +352,8 @@ alert. Per the locked decisions:
   and one below the maximum-5 (`high` severity, currently used for
   watchlist hits the operator explicitly opted to take seriously). In
   the ntfy app this renders with a slightly stronger notification
-  presentation than default — a different tone or vibration pattern on
-  most clients — without the dramatic treatment ntfy reserves for
+  presentation than default, a different tone or vibration pattern on
+  most clients, without the dramatic treatment ntfy reserves for
   priority-5 / `urgent`. The current notify.py mapping is
   `low/med/high → 2/3/5`; priority 4 has no pre-existing severity
   binding, which is precisely why the plumbing is an open question.
@@ -365,7 +365,7 @@ alert. Per the locked decisions:
 **Subsequent recurrences after escalation: stay quiet until operator
 action.** This is the recommended behavior in the locked decisions and
 it is the right call. A device that has tripped the threshold doesn't
-need to keep paging the operator — the operator already knows. The
+need to keep paging the operator. The operator already knows. The
 /watchful page surfaces the current count, the timeline, and the
 flagged-investigation state. If the operator wants the alert to fire
 again, the "reset count" action does that explicitly: the entry
@@ -421,7 +421,7 @@ you sure?") because the action is non-reversible from the UI.
 **Weekly digest.** A `/watchful` section at the top of the dashboard
 (or a small standalone digest view) summarizing the past week:
 escalations fired, sightings recorded, entries reaching investigation
-flag, entries archived. This is the deliberate anti-spam surface — the
+flag, entries archived. This is the deliberate anti-spam surface. The
 operator gets one regular touchpoint rather than push notifications
 for every recurrence past threshold. The digest is render-on-load, not
 emailed or pushed.
@@ -434,10 +434,10 @@ original rule had any).
 ## Integration with existing surfaces
 
 **Per-alert snooze vs watchful snooze.** Per-alert snooze is for *"I've
-already decided this is fine."* Watchful snooze is for *"I'm not sure
-— tell me if it comes back."* The UI labels and tooltips reflect this:
+already decided this is fine."* Watchful snooze is for *"I'm not sure.
+Tell me if it comes back."* The UI labels and tooltips reflect this:
 the per-alert snooze button reads "Snooze (Xh)" and the watchful button
-reads "Watchful snooze (Xd) — tell me if it recurs." Operator guidance
+reads "Watchful snooze (Xd). Tell me if it recurs." Operator guidance
 in the docs: prefer per-alert snooze when the operator is confident the
 alert is noise; prefer watchful when the operator wants ongoing
 visibility.
@@ -446,8 +446,8 @@ visibility.
 and consistent: the operator can mute the entire `watchful_recurrence`
 class temporarily, which gates the escalation alert at the existing
 rule_type snooze gate in the poll loop. Watchful detection itself
-continues — `sighting_count` still increments and entries still
-transition to `escalated` — but the escalation alert is suppressed
+continues, `sighting_count` still increments and entries still
+transition to `escalated`, but the escalation alert is suppressed
 until the rule_type snooze expires. This is consistent with how
 rule_type snooze treats every other rule type: detection runs;
 notification doesn't.
@@ -456,7 +456,7 @@ notification doesn't.
 to the daemon-managed `allowlist_ui.yaml` (the UI-write sibling file
 derived by `derive_ui_path`). The operator-curated primary
 `allowlist.yaml` is read-only from the daemon's perspective per the
-existing allowlist module contract — the daemon never edits it, which
+existing allowlist module contract. The daemon never edits it, which
 is the property that lets operators hand-format and comment the file
 without fear of clobbering. The promote write therefore lands as a UI
 entry with `expires_at: None` (permanent), the matching `pattern_type`
@@ -472,7 +472,7 @@ entry with `expires_at: None` (permanent), the matching `pattern_type`
 The watchful tracking row's state transitions to `promoted` and remains
 in the DB for audit. Future sightings hit the allowlist gate first and
 never reach the watchful gate at all. An operator who wants the entry
-moved into the operator-curated `allowlist.yaml` does so by hand — the
+moved into the operator-curated `allowlist.yaml` does so by hand. The
 same path used for any other UI-written allowlist entry the operator
 decides to make canonical.
 
@@ -517,7 +517,7 @@ These are deliberate. Future contributors: please don't strip them
 without thinking through the operator-experience consequences.
 
 - **Descriptive UI language, not alarmist.** "Seen N times since first
-  watch — review?" rather than "STALKER DETECTED" or "TRACKER ALERT."
+  watch. Review?" rather than "STALKER DETECTED" or "TRACKER ALERT."
   Rationale: most watchful-snooze targets are neighbors, smart-home
   devices, or stray BLE peripherals. Alarmist language trains operators
   to dismiss the surface as noise. Calm language preserves signal.
@@ -529,7 +529,7 @@ without thinking through the operator-experience consequences.
 - **Default escalation is priority 4, not 5.** Notable, not urgent.
   Rationale: a recurrence is information, not a panic-alarm. Reserving
   priority 5 for severity-`high` watchlist hits preserves the meaning
-  of the ntfy max-priority tier — operators who get a priority-5 push
+  of the ntfy max-priority tier. Operators who get a priority-5 push
   should know it's serious.
 - **Weekly digest instead of per-recurrence pings.** The /watchful page
   aggregates rather than pinging. Rationale: a single weekly review is
@@ -548,9 +548,9 @@ each time (or no tracking at all, if the operator didn't watchful-snooze
 each new MAC). The 24-hour-debounce recurrence rule has no way to
 recognize "this is the same device under a new MAC." This is a known
 fundamental limitation of MAC-based correlation, not specific to
-watchful. Lynceus records randomization status per device — the
+watchful. Lynceus records randomization status per device, the
 `DeviceObservation.is_randomized` flag is populated via
-`is_locally_administered(mac)` at parse time — so the /watchful UI can
+`is_locally_administered(mac)` at parse time, so the /watchful UI can
 surface a "randomized" indicator on each entry, letting the operator
 reason about which entries are subject to this limitation. The doc
 captures the limitation explicitly so operators understand the threat
@@ -572,7 +572,7 @@ the original alert until it expires (existing rc-cycle behavior), and
 the watchful gate still tracks every observation. The two are
 orthogonal. If the per-alert snooze expires before the watchful
 threshold trips, future alerts under the original rule type fire
-normally — watchful does not suppress those.
+normally. Watchful does not suppress those.
 
 **Operator removes watchful snooze before any recurrence.** Equivalent
 to "dismiss" with the entry having `sighting_count = 1`. State
@@ -601,7 +601,7 @@ watchful entry.
 allowlist entry.** Resolution: allowlist precedence wins (allowlist is
 checked first in `poll_once`). The watchful entry is never reached for
 that MAC. The watchful entry remains in the DB in whatever state it
-was in, but it's effectively orphaned — sightings stop arriving at the
+was in, but it's effectively orphaned. Sightings stop arriving at the
 watchful gate. The /watchful UI should surface this case ("this entry's
 MAC matches an allowlist pattern; tracking is effectively paused") so
 the operator can decide whether to dismiss the watchful entry or
@@ -615,7 +615,7 @@ for the implementation prompt.
 **OQ-1: How does ntfy priority 4 get expressed?** `notify.py`'s
 `SEVERITY_TO_PRIORITY` maps `low/med/high → 2/3/5`. Priority 4 is
 unused, and the `Notifier.send` signature today is
-`(severity, title, message)` — there is no per-call override knob.
+`(severity, title, message)`. There is no per-call override knob.
 Options:
 
 - (a) Add a new severity tier between `med` and `high` (call it
@@ -629,12 +629,12 @@ Options:
   `priority_override=4`. Minimal touch surface: notify.py gains one
   optional arg, poller.py passes it at the watchful emit-site, no
   schema changes.
-- (c) Add a rule_type-keyed priority lookup inside `notify.py` — a
+- (c) Add a rule_type-keyed priority lookup inside `notify.py`. A
   small dict mapping `rule_type → priority` that overrides the
   severity-mapped default. Requires plumbing `rule_type` through to
   the notifier (which currently takes `severity` only).
 
-Recommendation: **(b)** — smallest schema change, no new public
+Recommendation: **(b)**. Smallest schema change, no new public
 abstractions, and the override knob localized at exactly the surface
 that needs it. The `Severity` literal stays a three-tier UX concept;
 the priority bump is an emit-time decision the poller makes for one
@@ -651,8 +651,8 @@ types (`watchlist_mac`, `watchlist_oui`, `watchlist_ssid`,
 system-emitted (the poll loop generates it; users don't author it in
 yaml). The literal needs extending. The `Rule` model's validator
 branches (each rule_type spelled out explicitly per the comment block
-at `rules.py:51`) need an additional branch for `watchful_recurrence`
-— following the `new_non_randomized_device` precedent of
+at `rules.py:51`) need an additional branch for `watchful_recurrence`.
+Following the `new_non_randomized_device` precedent of
 patterns-forbidden, since synthetic rule_types don't admit
 user-authored patterns. The /rules page needs to render system-emitted
 rule_types differently (no patterns to show; statistics column still
@@ -725,7 +725,7 @@ multi-location heuristics get their own design pass.
 "how do we surface location distribution in the UI without changing
 the algorithm").
 
-**OQ-6: Operator action endpoints — REST shape.** Five operator
+**OQ-6: Operator action endpoints: REST shape.** Five operator
 actions (dismiss, promote, reset, flag-investigate, mark-safe) plus
 the alert-side watchful-snooze creation. Two reasonable URL shapes:
 
@@ -851,7 +851,7 @@ and so the BACKLOG has a place to point.
 - **ML-based threshold tuning.** The 4-sighting / 24h-debounce
   parameters are fixed in v1. Adaptive tuning based on per-operator
   noise levels is future work, and probably not the right next step
-  either — operator-explainable rules are more valuable than
+  either. Operator-explainable rules are more valuable than
   hyperparameter optimization.
 - **Cross-device pattern detection.** "Multiple devices following you"
   is a real surveillance concern but a different feature: it requires
@@ -859,7 +859,7 @@ and so the BACKLOG has a place to point.
   recurrence detection. Separate design doc when the time comes.
 - **Geographic clustering.** Devices appearing across physically
   distinct regions (different cities, not just different Pi sources)
-  is a cross-Pi correlation problem — see the BACKLOG's existing
+  is a cross-Pi correlation problem. See the BACKLOG's existing
   multi-location-stalking-heuristics item.
 - **MAC randomization correlation.** The fundamental limitation
   documented in *Edge cases*. Cross-rotation correlation requires

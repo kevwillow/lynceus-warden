@@ -1,6 +1,6 @@
 # Lynceus Run Log
 
-Per-release ship narratives. Companion to `CHANGELOG.md` — the changelog
+Per-release ship narratives. Companion to `CHANGELOG.md`. The changelog
 is the structured user-facing history; this is the engineering ship
 report (what was broken, what now works, what departed from spec, what
 was deferred).
@@ -9,23 +9,23 @@ was deferred).
 
 ### Ship-blockers closed
 
-- **C1 — Kismet datasource name probe** (0a55b43): the wizard offered
+- **C1, Kismet datasource name probe** (0a55b43): the wizard offered
   kernel interface names (`wlan0`, `wlan1`) from `/sys/class/net`, but
   the poller filters incoming observations against Kismet's configured
-  datasource *names* (e.g. `external_wifi`) — every observation in the
+  datasource *names* (e.g. `external_wifi`). Every observation in the
   field was silently dropped. The wizard now probes
   `/datasource/all_sources.json` after the health check and presents
   the actual source names; OS enumeration remains as a guarded fallback
   with an explicit "verify against Kismet `name=`" warning so the
   fallback can't silently reintroduce the bug.
-- **H1 + H2 — URL scheme validation at config and prompt layers**
+- **H1 + H2, URL scheme validation at config and prompt layers**
   (fec81a0): scheme-less inputs like `127.0.0.1:2501` flowed through
   the wizard into `requests.get` and raised `MissingSchema` /
   `InvalidSchema` at poll time. A pydantic `field_validator` on
   `kismet_url` and `ntfy_url` now rejects bad shapes at config-load
   time (suspenders), and the wizard re-validates the prompts before
   any probe with a 4-attempt cap (belt).
-- **Bug 5 — `DEFAULT_KISMET_URL` deduplication and quickstart user-config
+- **Bug 5, `DEFAULT_KISMET_URL` deduplication and quickstart user-config
   fallback** (fec81a0): `lynceus-quickstart` hardcoded
   `/etc/lynceus/lynceus.yaml`, so a user-mode install couldn't start
   without an explicit `--config` flag; and the default Kismet URL was
@@ -36,13 +36,13 @@ was deferred).
   `DEFAULT_KISMET_URL` lives once in `lynceus.config` (loopback IP, no
   `/etc/hosts` or v4/v6 ambiguity) with the wizard importing from
   there.
-- **M5 / G2 — `Database.__init__` parent-dir creation** (fec81a0): the
+- **M5 / G2, `Database.__init__` parent-dir creation** (fec81a0): the
   wizard had a local `data_dir.mkdir` patch (rc1.30c) but
   `Database.__init__` itself did not create parent dirs before
   `sqlite3.connect`, so any other caller constructing `Database()` with
   a nested path got "unable to open database file". Now
   `Database.__init__` defensively creates parents (skipping `:memory:`).
-- **Bug 6 / S1 / S2 / S5 — system-mode ownership and atomic perms**
+- **Bug 6 / S1 / S2 / S5, system-mode ownership and atomic perms**
   (cdce4a0): rc1 shipped `--system` mode broken-by-default. The daemon
   (`User=lynceus`) couldn't read its config (Bug 6) or write its DB
   (S1); `/etc/lynceus` denied directory traversal so file-level perms
@@ -56,7 +56,7 @@ was deferred).
   lynceus:lynceus 0640 for the DB plus `-wal`/`-shm` sidecars); and
   patched `install.sh` to chown `/etc/lynceus` to root:lynceus 0750
   after `mkdir` so the daemon's group has explicit traversal rights.
-- **H3 — Kismet startup health-check retry** (64fe967): under
+- **H3, Kismet startup health-check retry** (64fe967): under
   `After=network.target`, Kismet may still be coming up when
   `lynceus.service` starts, and rc1's single-shot health check turned
   a transient probe failure into a daemon crash. The startup probe is
@@ -64,7 +64,7 @@ was deferred).
   exposed as `HEALTH_CHECK_RETRY_BACKOFF` (so tests override to zero
   waits); final failure raises the same `RuntimeError` text callers
   depend on.
-- **H4 — poll-loop transient-exception catch** (4225c35): a single
+- **H4, poll-loop transient-exception catch** (4225c35): a single
   `ConnectionError`, Kismet 5xx, or pydantic `ValidationError` mid-poll
   used to escape `run_forever` and exit the daemon. The per-tick body
   is now wrapped in `try/except Exception` with the traceback logged at
@@ -72,18 +72,18 @@ was deferred).
   `SystemExit` (`BaseException`, not `Exception`) still propagate so
   Ctrl+C and `systemctl stop` actually stop the daemon, and the outer
   `try/finally` keeps `DB.close()` running on the way out.
-- **H5 — `KismetClient` transport-level retry** (0f93d9a): mounted a
+- **H5, `KismetClient` transport-level retry** (0f93d9a): mounted a
   urllib3 `Retry` policy on a `requests.Session` so transient 5xx
   (502/503/504), connection errors, and read timeouts no longer
   propagate to the poll loop (3 retries, `backoff_factor=0.5`,
-  0.5s/1.0s/2.0s — covers the typical Kismet recovery window; 4xx is
+  0.5s/1.0s/2.0s, covers the typical Kismet recovery window; 4xx is
   intentionally out of `status_forcelist` because retrying a bad token
   won't change the answer). All three HTTP-issuing methods on
   `KismetClient` (`health_check`, `get_devices_since`, `list_sources`)
   route through `self._session.get`; a grep-based regression test
   guards against the next method slipping past with a bare
   `requests.get`.
-- **Bug 7 — ntfy topic validation** (a415603, with semantics correction
+- **Bug 7, ntfy topic validation** (a415603, with semantics correction
   in 7fa8408): rc1 accepted any non-empty string as the ntfy topic, so
   a fat-fingered `na`/`skip`/`n/a` silently became the topic and
   alerts routed to a topic the operator never subscribed to. Tightened
@@ -113,14 +113,14 @@ workarounds with the contract verified separately by structural tests.
 - **H3 backoff list size**: spec called for an unbounded retry schedule
   with exponential growth; landed with a fixed 3-attempt list
   `[2.0, 4.0, 8.0]` exposed as `HEALTH_CHECK_RETRY_BACKOFF`. Three
-  attempts cover the typical Kismet recovery window — an unbounded
+  attempts cover the typical Kismet recovery window. An unbounded
   schedule would push visible-failure feedback past the systemd
   start-timeout and look indistinguishable from a hang.
 - **H4 outer `KeyboardInterrupt` handler removed**: spec had nested
   `try` blocks (inner `except Exception`, outer `except BaseException`).
   Landed with a single `except Exception` plus `try/finally` for
   `DB.close()`. `BaseException` (KeyboardInterrupt, SystemExit)
-  propagates naturally out of the inner block — the outer handler was
+  propagates naturally out of the inner block. The outer handler was
   redundant and would have masked unrelated bugs.
 - **H5 contract-vs-true behavioural test**: spec described an
   end-to-end retry test with a real loopback server, real failures,
@@ -129,10 +129,10 @@ workarounds with the contract verified separately by structural tests.
   `allowed_methods`) plus the grep regression. Rationale: the
   real-loopback variant added ~30s to the suite for a property that
   is already expressed declaratively in the urllib3 `Retry` config.
-- **H5 `tests/conftest.py` `Retry.increment` patch — DO NOT DELETE AS
+- **H5 `tests/conftest.py` `Retry.increment` patch: DO NOT DELETE AS
   CLEANUP**: a new autouse fixture short-circuits
   `urllib3.Retry.increment` during the suite. This is a **performance
-  workaround**, not test scaffolding to be tidied away — the webui
+  workaround**, not test scaffolding to be tidied away. The webui
   status header alone contributes ~120 closed-loopback probes per run
   on Windows test machines, each paying 4 connect attempts of
   ECONNREFUSED latency, which adds multiple minutes to suite runtime.
@@ -144,7 +144,7 @@ workarounds with the contract verified separately by structural tests.
 - **Bug 7 blank-topic semantics correction** (7fa8408 reversed
   a415603): the original Bug 7 fix made blank input at the ntfy *topic*
   prompt skip ntfy entirely (and clear `ntfy_url`). That collapsed two
-  distinct paths — skip-ntfy and accept-suggested-default — and was
+  distinct paths, skip-ntfy and accept-suggested-default, and was
   operator-hostile: once the URL is set, the operator has committed to
   ntfy and a blank topic should accept the suggested random topic shown
   at the prompt. Final semantics: URL blank → skip ntfy entirely; URL
@@ -162,15 +162,15 @@ closing a real regression path that mock-driven coverage had missed.
 Diagnostic findings flagged but intentionally not addressed in this
 cycle:
 
-- **H6 — migration sort order**: alphabetic sort over `0NN_` prefixes
+- **H6, migration sort order**: alphabetic sort over `0NN_` prefixes
   works today but breaks at `100_`. Defer until we cross 100 migrations
   or the next migration touches the pre-existing ordering assumptions.
-- **H7 through H11 — UI hygiene**: cosmetic and accessibility issues
+- **H7 through H11, UI hygiene**: cosmetic and accessibility issues
   in `/watchlist`, `/settings`, and alert detail (focus order, ARIA
   labelling, contrast on dark backgrounds, mobile-viewport overflow).
   Cluster into a single UI-pass commit when there's a clean block of
   time.
-- **M-series UI items**: same shape as H7–H11 — paper cuts in the web
+- **M-series UI items**: same shape as H7–H11, paper cuts in the web
   UI that don't block detection or notification.
 - **S2 atomic-write coverage gap**: `_atomic_write` replaced every
   `write_text + chmod` pair *in `setup.py`*, but other modules may
@@ -190,9 +190,9 @@ dropped and this becomes `v0.3.0` final.
 ### Feature: evidence preservation
 
 The headline feature for v0.4.0. On every alert the poller now writes a
-full snapshot of what was observed — the complete Kismet device record
+full snapshot of what was observed (the complete Kismet device record
 as JSON, the RSSI history at the moment the alert fired, and (opt-in)
-the operator's GPS fix at capture time — into a new `evidence_snapshots`
+the operator's GPS fix at capture time), into a new `evidence_snapshots`
 table keyed by `alert_id`. Snapshots are pruned by age on each poll
 tick per `evidence_retention_days`, and the alert detail page surfaces
 the snapshot inline (Kismet record block, RSSI sparkline, optional OSM
@@ -202,7 +202,7 @@ webui surface in b56c7ac.
 
 ### Privacy posture
 
-This is the most sensitive feature shipped to date — every dimension of
+This is the most sensitive feature shipped to date. Every dimension of
 the privacy posture is called out explicitly here so an operator
 deciding whether to enable evidence capture has the full picture in one
 place.
@@ -215,14 +215,14 @@ place.
   probe SSIDs into evidence. Closed in 9debb43 (C-1).
 - Operator GPS in evidence rows is opt-in via a new `evidence_store_gps`
   config knob, default `false`. The geopoint Kismet emits is the
-  receiver's fix, not the observed device's location — capturing it by
+  receiver's fix, not the observed device's location. Capturing it by
   default would have built a high-resolution operator-movement log into
   the privacy-sensitive evidence path. Closed in f5a8396 (C-2). The
   README privacy section was updated in the same commit to document
   the knob and the rationale.
 - Capture failures log only the exception type, not its `repr`. The
   `repr` of common exceptions can include the values that triggered
-  them — fragments of MACs, SSIDs, hostnames — and a capture-failure
+  them (fragments of MACs, SSIDs, hostnames), and a capture-failure
   log line is exactly the sort of thing operators tail in a terminal
   or pipe to a third-party log shipper. Closed in b0879e2 (H-7).
 - `SECURITY.md` documents the data-at-rest threat model for the
@@ -244,7 +244,7 @@ place.
   `TypeError: not JSON serializable` mid-capture and dropped the
   snapshot for that alert. H-1, d4f0c16.
 - Non-finite floats (`inf`, `-inf`, `nan`) are sanitized to `null`
-  before serialization. Same shape as H-1 — Kismet records can carry
+  before serialization. Same shape as H-1, Kismet records can carry
   these from upstream sensor noise and the default `json.dumps`
   encoder rejects them. H-2, d4ea850.
 - `raw_record` is only carried on observations when
@@ -259,13 +259,13 @@ place.
   `rel="noopener noreferrer"`) so a triage click doesn't navigate
   the operator away from the alert detail page mid-investigation.
   H-6, d04bb0b.
-- The `PRAGMA foreign_keys` contract is pinned by a dedicated test —
+- The `PRAGMA foreign_keys` contract is pinned by a dedicated test.
   the FK-cascade behavior on `evidence_snapshots` (alert delete →
   snapshot delete) silently depends on it being on, and the only
   prior coverage was load-bearing on PRAGMA state set elsewhere.
   H-10, 502d91e.
 - The `rssi_history_corrupt` branch in both `db` and `webui` has
-  dedicated regression coverage — pre-fix it was a never-exercised
+  dedicated regression coverage. Pre-fix it was a never-exercised
   defensive branch, exactly the shape of bug the rc3 G-series
   pattern was built to catch. H-11, c2859c2.
 
@@ -291,7 +291,7 @@ place.
 The pre-shakedown diagnostic for v0.4.0 surfaced two privacy
 criticals (C-1 capture-toggle bypass, C-2 operator GPS leakage) plus
 six should-fix items, all of which landed in this rc. Static review
-caught what mock-driven tests had missed — the same rc3 G-series
+caught what mock-driven tests had missed. The same rc3 G-series
 pattern recurred in three distinct places in the v0.4.0 codebase: a
 shared Kismet test fixture lacking `signal_rrd`/`location` so the
 RSSI-history and GPS paths were exercised against synthetic absence
@@ -300,7 +300,7 @@ on PRAGMA state set in an unrelated conftest; the
 `rssi_history_corrupt` defensive branch never reached by any
 existing test. All three are closed by dedicated regression tests in
 this rc. The "diagnostic-first, then code" cycle is a pattern worth
-keeping for future feature releases — the cost of a static review
+keeping for future feature releases. The cost of a static review
 pass before the ship-or-not call is small relative to the cost of
 shipping a privacy bug.
 
@@ -330,11 +330,11 @@ mock-tested.
 Diagnostic findings flagged but intentionally not addressed in this
 rc:
 
-- **H-9 — replace synthetic Kismet fixture with one captured during
-  Kali shakedown**: the highest-value test addition possible —
+- **H-9, replace synthetic Kismet fixture with one captured during
+  Kali shakedown**: the highest-value test addition possible,
   every other privacy/hardening fix in this rc would have been
   one-shot caught by exercising the path against a real Kismet
-  device record — but it requires real hardware data and so belongs
+  device record, but it requires real hardware data and so belongs
   to the post-shakedown follow-up, not release prep.
 - **M-series remaining**: `last_time` int-only check, RSSI history
   not `:60`-truncated, geopoint length-3 silent accept,
@@ -343,7 +343,7 @@ rc:
   `IF NOT EXISTS`, `<pre>` block size caps, bidi defense on inline
   fields, `alert.message` `<pre>` block sizing, capture-failure log
   lacks evidence row id.
-- **L-series**: UI accessibility and operator affordances —
+- **L-series**: UI accessibility and operator affordances.
   delete-all-evidence CLI, storage indicator on `/settings`,
   sparkline `aria-label` min/max folding, `focus-visible` on
   details summary.

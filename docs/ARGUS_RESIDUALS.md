@@ -20,7 +20,7 @@ this cycle (migration 020 + ``patterns._normalize_ble_local_name``
 + the watchlist_ble_local_name rule_type), moving 3 v1.4.0 rows
 plus the 20 v1.4.1 rows due to land via the coordinated Argus
 v1.4.2 release from drop-entirely to admit. The v1.4.0 verdict
-(drop-entirely on yield grounds — 3 rows, below the
+(drop-entirely on yield grounds, 3 rows, below the
 ``NEGLIGIBLE_YIELD_THRESHOLD=5``) was correct at the prior yield;
 v1.4.1's 6.7× jump (3 → 20) closes the residual with admit.
 Numbers in the table below reflect the snapshot at audit time
@@ -68,35 +68,35 @@ alongside this Lynceus change.
 
 Detailed surface rationale for each residual type. The table above shows the classification label; the prose below shows why.
 
-- **`device_class_id`** (no-observation-surface): DJI ``device_type`` decoder enum (``DJI device_type=1`` ... ``=70`` mapping to model names like Inspire 1 via the ``DRONEID_DRONE_TYPES`` table in the RUB-SysSec/DroneSecurity decoder). The byte IS in the DJI DroneID broadcast, but the Argus values are model-class enum codes from a decoder catalog rather than per-device identifiers — admitting them as watchlist patterns would alert on every drone of that model class in range, mirroring the unbounded-fanout posture the audit already records for ``rf_channel``. Per-device Remote-ID coverage is via ``drone_id_prefix`` (ANSI/CTA-2063-A serial number prefix, the UAS-ID field), already admitted and observed via ``_DRONE_ID_PATHS`` in ``src/lynceus/kismet.py``. Lynceus has no current probe for the device-type byte and adding one would require a new pattern_type + schema migration + observation surface for a match semantic the watchlist primitive does not fit. Verdict from the rc5 device_class_id archaeology pass (see CHANGELOG).
-- **`chipset_codename`** (no-observation-surface): Silicon vendor part number (e.g. ``APQ8009``, ``BCM43xx``) — static manufacturer metadata, not present in Kismet runtime device emissions.
-- **`product_family_codename`** (no-observation-surface): Vendor-internal product family designation (``AVICORE``, ``CONDOR``) — static spec metadata, never advertised.
+- **`device_class_id`** (no-observation-surface): DJI ``device_type`` decoder enum (``DJI device_type=1`` ... ``=70`` mapping to model names like Inspire 1 via the ``DRONEID_DRONE_TYPES`` table in the RUB-SysSec/DroneSecurity decoder). The byte IS in the DJI DroneID broadcast, but the Argus values are model-class enum codes from a decoder catalog rather than per-device identifiers. Admitting them as watchlist patterns would alert on every drone of that model class in range, mirroring the unbounded-fanout posture the audit already records for ``rf_channel``. Per-device Remote-ID coverage is via ``drone_id_prefix`` (ANSI/CTA-2063-A serial number prefix, the UAS-ID field), already admitted and observed via ``_DRONE_ID_PATHS`` in ``src/lynceus/kismet.py``. Lynceus has no current probe for the device-type byte and adding one would require a new pattern_type + schema migration + observation surface for a match semantic the watchlist primitive does not fit. Verdict from the rc5 device_class_id archaeology pass (see CHANGELOG).
+- **`chipset_codename`** (no-observation-surface): Silicon vendor part number (e.g. ``APQ8009``, ``BCM43xx``). Static manufacturer metadata, not present in Kismet runtime device emissions.
+- **`product_family_codename`** (no-observation-surface): Vendor-internal product family designation (``AVICORE``, ``CONDOR``). Static spec metadata, never advertised.
 - **`ble_protocol_byte_table`** (plausible-needs-smoke): First-byte protocol indicator inside the BLE manufacturer advertisement payload. Observable in principle via ``kismet.device.base.advdata`` but the byte-table view needs a live emission sample to pin the exact field.
-- **`rf_channel`** (no-observation-surface): RF center frequency in MHz. Kismet emits ``kismet.device.base.frequency`` per device, but watchlist semantics — alert on every device on a given frequency — have unbounded fanout and no real detection value.
-- **`asdstan_enum_value`** (no-observation-surface): ASD-STAN F3411 enum descriptor (e.g. ``asdstan_id_type_values.0=None``) — Remote-ID taxonomy spec value, not a runtime field.
-- **`alpr_model`** (no-observation-surface): Argus-internal ALPR model identifier (``builtin-flock``, ``builtin-motorola``) — taxonomy metadata; no equivalent in Kismet emissions.
-- **`asdstan_message_type`** (no-observation-surface): ASD-STAN F3411 message-type descriptor — Remote-ID spec taxonomy, not a runtime field.
-- **`ssid_pattern`** (admitted rc6): Case-insensitive substring SSID match. Kismet already emits SSIDs and Lynceus already extracts them; the matcher landed in rc6 as ``db.resolve_matched_ssid_pattern_for_eval`` (case-insensitive substring via ``COLLATE NOCASE``), dispatched alongside the exact-match ``ssid`` type under the same ``watchlist_ssid`` rule_type. Migration 019 extended the ``pattern_type`` CHECK constraint to admit the new type. L-RULES-10 (case/whitespace folding for the existing ``ssid`` type) remains deferred — case-insensitivity is scoped to ``ssid_pattern`` only.
-- **`ble_protocol_byte`** (plausible-needs-smoke): Single BLE protocol byte — same observation surface as ``ble_protocol_byte_table``, smaller value cardinality.
-- **`firmware_sha256_hash`** (no-observation-surface): Firmware binary hash — static spec metadata from image inspection, never broadcast.
-- **`frequency_band`** (no-observation-surface): Cellular band label (``GSM900``, ``DCS1800``) — Kismet does not emit a band-label field; closest is per-device frequency in MHz, which carries different semantics.
-- **`rf_protocol_constant`** (no-observation-surface): PHY-layer protocol constants (Zadoff-Chu seeds, gold polynomials, CRC init/poly) — static spec values, not per-device emissions.
+- **`rf_channel`** (no-observation-surface): RF center frequency in MHz. Kismet emits ``kismet.device.base.frequency`` per device, but watchlist semantics, alert on every device on a given frequency, have unbounded fanout and no real detection value.
+- **`asdstan_enum_value`** (no-observation-surface): ASD-STAN F3411 enum descriptor (e.g. ``asdstan_id_type_values.0=None``). Remote-ID taxonomy spec value, not a runtime field.
+- **`alpr_model`** (no-observation-surface): Argus-internal ALPR model identifier (``builtin-flock``, ``builtin-motorola``). Taxonomy metadata; no equivalent in Kismet emissions.
+- **`asdstan_message_type`** (no-observation-surface): ASD-STAN F3411 message-type descriptor. Remote-ID spec taxonomy, not a runtime field.
+- **`ssid_pattern`** (admitted rc6): Case-insensitive substring SSID match. Kismet already emits SSIDs and Lynceus already extracts them; the matcher landed in rc6 as ``db.resolve_matched_ssid_pattern_for_eval`` (case-insensitive substring via ``COLLATE NOCASE``), dispatched alongside the exact-match ``ssid`` type under the same ``watchlist_ssid`` rule_type. Migration 019 extended the ``pattern_type`` CHECK constraint to admit the new type. L-RULES-10 (case/whitespace folding for the existing ``ssid`` type) remains deferred. Case-insensitivity is scoped to ``ssid_pattern`` only.
+- **`ble_protocol_byte`** (plausible-needs-smoke): Single BLE protocol byte. Same observation surface as ``ble_protocol_byte_table``, smaller value cardinality.
+- **`firmware_sha256_hash`** (no-observation-surface): Firmware binary hash. Static spec metadata from image inspection, never broadcast.
+- **`frequency_band`** (no-observation-surface): Cellular band label (``GSM900``, ``DCS1800``). Kismet does not emit a band-label field; closest is per-device frequency in MHz, which carries different semantics.
+- **`rf_protocol_constant`** (no-observation-surface): PHY-layer protocol constants (Zadoff-Chu seeds, gold polynomials, CRC init/poly). Static spec values, not per-device emissions.
 - **`ble_characteristic`** (plausible-needs-smoke): BLE GATT characteristic UUID. Kismet does not enumerate GATT services in its default device emission (only advertised service UUIDs); confirming requires a live capture against a connected device.
-- **`ble_local_name`** (verified-lynceus, admitted v0.6.1): Kismet emits the BLE friendly name at ``kismet.device.base.name`` — already harvested in ``src/lynceus/kismet.py`` (``_BLE_NAME_FIELD``) when ``capture.ble_friendly_names`` is enabled. Lynceus v0.6.1 admits the pattern_type via migration 020 + ``patterns._normalize_ble_local_name`` + the ``watchlist_ble_local_name`` rule_type. The observation field was renamed ``obs.ble_name → obs.ble_local_name`` for symmetry with the pattern_type. Coordinated with Argus v1.4.2's ``IDENTIFIER_TYPE_TO_PATTERN_TYPE`` promotion; the consumer (Lynceus) admits first so the next Argus emission lands without dropping at the IDENTIFIER_TYPE_MAP gate. v1.4.0 yield was 3 rows (Flock Safety BLE device names: ``Penguin``, ``Flock``, ``FS Ext Battery``); v1.4.1 yield jumps 6.7× to 20 rows (adds ``FLOCK``, ``Flock-*`` shape variants).
-- **`gpt_partition_uuid`** (no-observation-surface): GPT partition UUID from firmware image inspection — static metadata, never broadcast.
-- **`operator_profile`** (no-observation-surface): Argus-internal operator profile (``builtin-lowes``, ``builtin-home-depot``) — taxonomy metadata.
-- **`x509_cert_sha256_prefix`** (no-observation-surface): X.509 certificate hash prefix — TLS handshake artifact, not in Kismet's device emission surface.
-- **`ble_adv_interval`** (no-observation-surface): BLE advertising interval in seconds — Kismet does not expose this as a per-device watchlist-shaped value.
-- **`dji_protocol_struct_format`** (no-observation-surface): DJI binary struct-pack format string — spec descriptor for payload layout, not a runtime emission.
-- **`firmware_build_string`** (no-observation-surface): Firmware build identifier (``BOOT.BF.3.3-00163``) from manufacturer specs — static metadata.
-- **`bandwidth_mhz`** (no-observation-surface): Channel bandwidth in MHz — Kismet may expose channel width but watchlist semantics are not meaningful.
-- **`ble_payload_offset`** (no-observation-surface): Byte offset descriptor inside a BLE adv payload — spec metadata, not a per-device runtime field.
-- **`firmware_branded_string`** (no-observation-surface): Firmware-branded marker (e.g. ``usb:force_eDL``) — static spec string, never advertised.
-- **`firmware_build_uuid`** (no-observation-surface): Firmware build UUID from manufacturer specs — static metadata, never broadcast.
-- **`firmware_image_variant`** (no-observation-surface): Firmware image variant tag — static manufacturer metadata.
-- **`network_endpoint`** (no-observation-surface): URL (CRL / OCSP endpoint) — TLS-layer artifact discovered in firmware inspection, not in Kismet emissions.
-- **`qualcomm_chip_format_id`** (no-observation-surface): Qualcomm chip format identifier — static spec metadata.
-- **`rf_burst_duration`** (no-observation-surface): RF burst duration in seconds — spec metadata, not a per-device emission.
+- **`ble_local_name`** (verified-lynceus, admitted v0.6.1): Kismet emits the BLE friendly name at ``kismet.device.base.name``. Already harvested in ``src/lynceus/kismet.py`` (``_BLE_NAME_FIELD``) when ``capture.ble_friendly_names`` is enabled. Lynceus v0.6.1 admits the pattern_type via migration 020 + ``patterns._normalize_ble_local_name`` + the ``watchlist_ble_local_name`` rule_type. The observation field was renamed ``obs.ble_name → obs.ble_local_name`` for symmetry with the pattern_type. Coordinated with Argus v1.4.2's ``IDENTIFIER_TYPE_TO_PATTERN_TYPE`` promotion; the consumer (Lynceus) admits first so the next Argus emission lands without dropping at the IDENTIFIER_TYPE_MAP gate. v1.4.0 yield was 3 rows (Flock Safety BLE device names: ``Penguin``, ``Flock``, ``FS Ext Battery``); v1.4.1 yield jumps 6.7× to 20 rows (adds ``FLOCK``, ``Flock-*`` shape variants).
+- **`gpt_partition_uuid`** (no-observation-surface): GPT partition UUID from firmware image inspection. Static metadata, never broadcast.
+- **`operator_profile`** (no-observation-surface): Argus-internal operator profile (``builtin-lowes``, ``builtin-home-depot``). Taxonomy metadata.
+- **`x509_cert_sha256_prefix`** (no-observation-surface): X.509 certificate hash prefix. TLS handshake artifact, not in Kismet's device emission surface.
+- **`ble_adv_interval`** (no-observation-surface): BLE advertising interval in seconds. Kismet does not expose this as a per-device watchlist-shaped value.
+- **`dji_protocol_struct_format`** (no-observation-surface): DJI binary struct-pack format string. Spec descriptor for payload layout, not a runtime emission.
+- **`firmware_build_string`** (no-observation-surface): Firmware build identifier (``BOOT.BF.3.3-00163``) from manufacturer specs. Static metadata.
+- **`bandwidth_mhz`** (no-observation-surface): Channel bandwidth in MHz. Kismet may expose channel width but watchlist semantics are not meaningful.
+- **`ble_payload_offset`** (no-observation-surface): Byte offset descriptor inside a BLE adv payload. Spec metadata, not a per-device runtime field.
+- **`firmware_branded_string`** (no-observation-surface): Firmware-branded marker (e.g. ``usb:force_eDL``). Static spec string, never advertised.
+- **`firmware_build_uuid`** (no-observation-surface): Firmware build UUID from manufacturer specs. Static metadata, never broadcast.
+- **`firmware_image_variant`** (no-observation-surface): Firmware image variant tag. Static manufacturer metadata.
+- **`network_endpoint`** (no-observation-surface): URL (CRL / OCSP endpoint). TLS-layer artifact discovered in firmware inspection, not in Kismet emissions.
+- **`qualcomm_chip_format_id`** (no-observation-surface): Qualcomm chip format identifier. Static spec metadata.
+- **`rf_burst_duration`** (no-observation-surface): RF burst duration in seconds. Spec metadata, not a per-device emission.
 
 ## Summary
 
@@ -112,11 +112,11 @@ Row counts are derived by parsing the Argus CSV with the importer's ``parse_argu
 
 Surface verification is desk research, not live capture. Each residual type maps to a classification in ``RESIDUAL_SURFACE_TABLE`` in ``scripts/audit_residuals.py``:
 
-- ``normalization-variant`` — the residual is the same underlying concept as an admitted ``pattern_type``, blocked only by case / hex-shape / dual-form rendering. Fix is in the importer's normalization layer, not a new Kismet surface.
-- ``verified-lynceus`` — Lynceus's ``src/lynceus/kismet.py`` already extracts the underlying Kismet field for some purpose, so the observation path is confirmed by the existing code rather than speculative.
-- ``verified-kismet-docs`` — the field appears in Kismet's documented device schema with a clear path; Lynceus has no current consumer but the surface is known.
-- ``plausible-needs-smoke`` — likely observable based on the Kismet device data model, but not pinned to a specific documented field. A live capture against representative hardware is needed before committing to an admit path.
-- ``no-observation-surface`` — the residual is static manufacturer metadata, taxonomy descriptors, or PHY-spec constants that Kismet does not emit at runtime.
+- ``normalization-variant``. The residual is the same underlying concept as an admitted ``pattern_type``, blocked only by case / hex-shape / dual-form rendering. Fix is in the importer's normalization layer, not a new Kismet surface.
+- ``verified-lynceus``. Lynceus's ``src/lynceus/kismet.py`` already extracts the underlying Kismet field for some purpose, so the observation path is confirmed by the existing code rather than speculative.
+- ``verified-kismet-docs``. The field appears in Kismet's documented device schema with a clear path; Lynceus has no current consumer but the surface is known.
+- ``plausible-needs-smoke``. Likely observable based on the Kismet device data model, but not pinned to a specific documented field. A live capture against representative hardware is needed before committing to an admit path.
+- ``no-observation-surface``. The residual is static manufacturer metadata, taxonomy descriptors, or PHY-spec constants that Kismet does not emit at runtime.
 
 Recommendation logic (see ``classify_recommendation``):
 
@@ -124,7 +124,7 @@ Recommendation logic (see ``classify_recommendation``):
 - ``drop-entirely`` if surface is ``no-observation-surface``, OR if yield is below ``NEGLIGIBLE_YIELD_THRESHOLD = 5`` (small-tail residuals don't justify a new code path).
 - ``admit`` if surface is ``verified-lynceus`` and yield clears the threshold.
 - ``defer-pending-smoke`` for the remainder (``verified-kismet-docs`` / ``plausible-needs-smoke`` with yield above the threshold).
-- ``needs-classification`` if the residual type is not in ``RESIDUAL_SURFACE_TABLE`` at all — the audit refuses to fabricate a verdict for an unknown type and surfaces it for a table refresh.
+- ``needs-classification`` if the residual type is not in ``RESIDUAL_SURFACE_TABLE`` at all. The audit refuses to fabricate a verdict for an unknown type and surfaces it for a table refresh.
 
 ## Re-running
 

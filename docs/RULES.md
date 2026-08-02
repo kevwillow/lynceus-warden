@@ -23,7 +23,7 @@ Each `Rule`:
 | `patterns` | list of string | `[]` | Required and non-empty for all `watchlist_*` and `ble_uuid` rules. Must be empty for `new_non_randomized_device`. |
 | `description` | string \| null | `null` | Free-form note. When set, it appears in the alert message body. |
 
-Pattern format depends on rule type — see the per-type sections below. Patterns are normalized at load time (e.g. MACs are lowercased and converted to colon-separated form), so `AA-BB-CC-DD-EE-FF` and `aa:bb:cc:dd:ee:ff` are equivalent.
+Pattern format depends on rule type. See the per-type sections below. Patterns are normalized at load time (e.g. MACs are lowercased and converted to colon-separated form), so `AA-BB-CC-DD-EE-FF` and `aa:bb:cc:dd:ee:ff` are equivalent.
 
 ## The five rule types
 
@@ -73,15 +73,15 @@ Two modes, picked by whether `patterns` is empty:
 
 **DB-delegation mode (empty `patterns`):** the rule consults the watchlist DB for every observation, dispatching two pattern_types under one rule:
 
-- `pattern_type='ssid'` — **case-sensitive exact match**, consulted first.
-- `pattern_type='ssid_pattern'` — **case-insensitive substring match**, consulted as a fallback when the exact match misses. The watchlist row's stored `pattern` is the substring needle; the observation's `ssid` is the haystack.
+- `pattern_type='ssid'`. **case-sensitive exact match**, consulted first.
+- `pattern_type='ssid_pattern'`. **case-insensitive substring match**, consulted as a fallback when the exact match misses. The watchlist row's stored `pattern` is the substring needle; the observation's `ssid` is the haystack.
 
 Severity comes from the matched DB row (not from `rule.severity`, which is ignored in this mode). The bundled `argus_ssid` rule in `config/rules.yaml` is the default-enabled delegation entry; the bundled `default_watchlist.csv` ships SSID rows imported from Argus (Flock cameras, Penguin trackers, and the FS Ext Battery family at the rc6 snapshot).
 
 ```yaml
 - name: argus_ssid
   rule_type: watchlist_ssid
-  severity: low  # ignored — actual severity comes from the matched row
+  severity: low  # ignored; actual severity comes from the matched row
   patterns: []
   description: "Argus + bundled SSID watchlist (exact + substring)"
 ```
@@ -90,7 +90,7 @@ Both modes coexist in the same ruleset. A typical deployment runs the delegation
 
 ### `ble_uuid`
 
-Fires when the device's advertised BLE GATT service UUIDs include any pattern. Patterns must be 128-bit UUIDs in the standard `8-4-4-4-12` hex form; they are normalized at load time (lowercased, dashes preserved). Only BLE devices populate `ble_service_uuids` — Wi-Fi and Bluetooth Classic sightings always miss.
+Fires when the device's advertised BLE GATT service UUIDs include any pattern. Patterns must be 128-bit UUIDs in the standard `8-4-4-4-12` hex form; they are normalized at load time (lowercased, dashes preserved). Only BLE devices populate `ble_service_uuids`. Wi-Fi and Bluetooth Classic sightings always miss.
 
 This is the AirTag-class detector: Apple's tracker advertises a known service UUID even when in lost mode, and the same shape works for a growing list of consumer trackers. Bring your own list; the seed file in `src/lynceus/seeds/` is a starting point, not exhaustive.
 
@@ -105,7 +105,7 @@ This is the AirTag-class detector: Apple's tracker advertises a known service UU
 
 ### `new_non_randomized_device`
 
-Fires the **first** time a device shows up at this location — but only if it looks like the device is broadcasting a real, factory-assigned MAC address rather than a randomized one. (Technically: the second bit of the first byte of the MAC must be 0. Devices that are deliberately randomizing flip this bit on; real-vendor MACs leave it off.) The intent is to catch things like IoT gear, older laptops, and hardware that doesn't try to hide its identity, while ignoring the constant churn of randomized phones walking past. `patterns` must be empty for this rule type.
+Fires the **first** time a device shows up at this location, but only if it looks like the device is broadcasting a real, factory-assigned MAC address rather than a randomized one. (Technically: the second bit of the first byte of the MAC must be 0. Devices that are deliberately randomizing flip this bit on; real-vendor MACs leave it off.) The intent is to catch things like IoT gear, older laptops, and hardware that doesn't try to hide its identity, while ignoring the constant churn of randomized phones walking past. `patterns` must be empty for this rule type.
 
 ```yaml
 - name: new_device_alert
@@ -130,7 +130,7 @@ A rough calibration: reserve `high` for things you would actually drop a meeting
 
 ## Allowlist semantics
 
-The allowlist is checked **before** rule evaluation. If a device matches any allowlist entry, **all** alerts are suppressed for that sighting — including `new_non_randomized_device`.
+The allowlist is checked **before** rule evaluation. If a device matches any allowlist entry, **all** alerts are suppressed for that sighting, including `new_non_randomized_device`.
 
 This is a deliberate design choice: the allowlist is meant to mean "I know this device, do not bother me about it ever" with no per-rule carve-outs. If you find yourself wanting to allowlist a device for one rule but still alert on another, the right answer is usually to disable or scope down the noisy rule rather than to add a more granular allowlist.
 
@@ -147,19 +147,19 @@ Allowlist patterns are normalized identically to rule patterns.
 
 ## Dedup window
 
-After a rule fires and an alert is written, the same `(rule_name, mac)` pair is suppressed for `alert_dedup_window_seconds` (default `3600`). This is the single most important knob for noise control on a long-running deployment — without it, a Pineapple sitting in your environment would generate one alert per poll, forever.
+After a rule fires and an alert is written, the same `(rule_name, mac)` pair is suppressed for `alert_dedup_window_seconds` (default `3600`). This is the single most important knob for noise control on a long-running deployment, without it, a Pineapple sitting in your environment would generate one alert per poll, forever.
 
 Dedup is keyed on `(rule_name, mac)`, not on rule type or severity, so:
 
 - The same MAC matched by two different rules emits two alerts (one per rule), both subject to their own dedup window.
 - Two different MACs matched by the same rule emit two alerts.
-- Setting `alert_dedup_window_seconds: 0` disables dedup entirely — every hit becomes an alert. Useful in travel mode; painful at home.
+- Setting `alert_dedup_window_seconds: 0` disables dedup entirely. Every hit becomes an alert. Useful in travel mode; painful at home.
 
 Dedup state lives in the `alerts` table, so it survives restarts.
 
 ## A note on MAC randomization
 
-Lynceus does not try to defeat MAC randomization, and you should not expect it to. Modern iPhones and Android phones change their WiFi MAC for each network they connect to (sometimes for each individual connection), and they rotate their Bluetooth Low Energy address every few minutes regardless. So if the same phone walks past your Pi twice, it will most likely look like two completely different devices — neither `watchlist_mac` nor `new_non_randomized_device` can stitch those sightings together.
+Lynceus does not try to defeat MAC randomization, and you should not expect it to. Modern iPhones and Android phones change their WiFi MAC for each network they connect to (sometimes for each individual connection), and they rotate their Bluetooth Low Energy address every few minutes regardless. So if the same phone walks past your Pi twice, it will most likely look like two completely different devices. Neither `watchlist_mac` nor `new_non_randomized_device` can stitch those sightings together.
 
 What lynceus **is** useful for:
 
@@ -173,16 +173,16 @@ If your threat model is "is a specific person's iPhone in this room," lynceus is
 
 ## Tuning playbook (first week)
 
-False positives in the first 24–48 hours are not a bug — they're the system showing you what it sees. Plan to spend the first week curating, not debugging.
+False positives in the first 24–48 hours are not a bug. They're the system showing you what it sees. Plan to spend the first week curating, not debugging.
 
 A rough triage flow when an alert fires:
 
 1. **Identify the device.** Look up the OUI vendor (the `oui_vendor` column in the `devices` table or any online OUI database). If it's your printer, your fridge, or a coworker's laptop: allowlist candidate.
 2. **Decide: allowlist, disable, or tune?**
    - **Allowlist** when the device is yours or otherwise expected. Add an entry to `allowlist.yaml` keyed by MAC for one device or by OUI for a vendor block. This is the right answer for the bulk of first-week noise.
-   - **Disable a rule** (`enabled: false`) when the rule itself doesn't fit your environment — for example, `new_non_randomized_device` set to `med` in a coffee shop is going to be useless. Drop its severity or turn it off.
+   - **Disable a rule** (`enabled: false`) when the rule itself doesn't fit your environment, for example, `new_non_randomized_device` set to `med` in a coffee shop is going to be useless. Drop its severity or turn it off.
    - **Raise the dedup window** when a single device legitimately matches but you don't need to be told every hour. Bump `alert_dedup_window_seconds` from `3600` to `86400` (one day) for a noisy persistent match.
-3. **Restart lynceus** so the changes take effect (no live reload yet — see [CONFIGURATION.md](CONFIGURATION.md) and [BACKLOG.md](../BACKLOG.md)).
+3. **Restart lynceus** so the changes take effect (no live reload yet, see [CONFIGURATION.md](CONFIGURATION.md) and [BACKLOG.md](../BACKLOG.md)).
 4. **Keep notes.** A short comment on each allowlist entry (`note:`) is worth its weight three months later when you can't remember why a MAC is on the list.
 
 By the end of week one, you should be down to a handful of alerts per day, almost all of which are interesting. If you're still drowning, the next move is usually to drop `new_non_randomized_device` to `low` (or off) and rely on the `watchlist_*` rules for signal.

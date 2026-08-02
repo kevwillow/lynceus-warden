@@ -8,16 +8,16 @@ Total CSV rows: 22533
 
 Sibling of [`ARGUS_RESIDUALS.md`](ARGUS_RESIDUALS.md), which audits
 the dropped pattern *types*. This document audits the dropped
-pattern *rows* — Argus emissions that the Lynceus importer's per-
+pattern *rows*. Argus emissions that the Lynceus importer's per-
 row dispatch gates so the bundled-CSV no-op re-import is
 idempotent (v0.6.0). Two bucket shapes:
 
-- **Bucket A — peer-collide via natural-key collision.** Argus
+- **Bucket A: peer-collide via natural-key collision.** Argus
   emits two or more rows with distinct `argus_record_id`s that
   the Lynceus canonicalizer collapses to the same `(pattern,
   pattern_type)`. First row admitted; peers gated to
   `dropped_peer_collision`.
-- **Bucket B — within-import duplicate `argus_record_id` with
+- **Bucket B: within-import duplicate `argus_record_id` with
   content drift.** Argus emits the same `argus_record_id` 2-3×
   within a single CSV with different metadata fields. First
   occurrence admitted; later occurrences gated to
@@ -30,10 +30,10 @@ the Lynceus-side evidence and remains the authoritative
 inventory for why specific rows are gated even if upstream
 cleanup hasn't landed.
 
-## Bucket A — peer-collide via natural-key collision
+## Bucket A: peer-collide via natural-key collision
 
 15 groups, 31 rows, 16 gated peers (sum members − 1 per group).
-0 of 15 groups differ on `device_category` — the original BACKLOG
+0 of 15 groups differ on `device_category`. The original BACKLOG
 hypothesis was falsified. The actual discriminator is
 `manufacturer` (vendor-name shape drift across crowdsourced and
 canonical-IEEE feeds), case/leading-zero normalization, and
@@ -49,7 +49,7 @@ dual-form CIDR/bare-prefix rendering.
 
 ### `mac_range` legacy bare-prefix vs CIDR (8 groups)
 
-Argus emitted the same prefix range twice — once as a legacy bare
+Argus emitted the same prefix range twice. Once as a legacy bare
 prefix string (e.g. `10:63:a3:1`) and once as the canonical CIDR
 form (e.g. `10:63:a3:1/28`). Both canonicalize via
 `canonicalize_mac_range_pattern` to the CIDR form. Manufacturer
@@ -70,7 +70,7 @@ shorthand). All `device_category="unknown"`.
 ### `ble_manufacturer_id` case / leading-zero variants (6 groups)
 
 Argus emitted the same 16-bit Bluetooth SIG manufacturer ID twice
-or more — sometimes as the canonical 4-hex-char string, sometimes
+or more. Sometimes as the canonical 4-hex-char string, sometimes
 with a shorter representation. `normalize_pattern("ble_manufacturer_id", …)`
 folds both shapes to lowercase canonical 4-hex. Manufacturer
 strings differ (IEEE-registered name vs blank).
@@ -85,7 +85,7 @@ strings differ (IEEE-registered name vs blank).
 | `010c` | `8df00a86bc1475ce`, `285f963670394ab2` | `0x010C`, `0x010C` | Transducers Direct, LLC / `<blank>` |
 
 The `004c` group has 3 distinct argus_record_ids (Apple, Inc.,
-plus two blank-vendor records — one as `0x4C` short-form, one as
+plus two blank-vendor records, one as `0x4C` short-form, one as
 `0x004C`). This is the only 3-member group in Bucket A.
 
 ### `ble_uuid` short-form (1 group)
@@ -99,12 +99,12 @@ shorthand; `normalize_pattern("ble_uuid", …)` expands to the full
 128-bit form via the standard base UUID
 (`0000XXXX-0000-1000-8000-00805F9B34FB`).
 
-## Bucket B — within-import duplicate `argus_record_id` with content drift
+## Bucket B: within-import duplicate `argus_record_id` with content drift
 
 12 sets, 25 rows, 13 raw "extra" rows (sum c−1 per set). Of those
 13, 11 reach the within-import-dup gate and increment
 `dropped_in_import_dup`; the remaining 2 belong to two sets whose
-`identifier_type` is `ble_protocol_byte_table` — not in
+`identifier_type` is `ble_protocol_byte_table`, not in
 `IDENTIFIER_TYPE_MAP`, so all occurrences are dropped to
 `dropped_unknown_type` before reaching the seen-argus_ids gate.
 
@@ -196,7 +196,7 @@ the losers increment the appropriate `dropped_*` counter.
 
 ### Why highest-severity-wins
 
-Lynceus's posture is "if in doubt, alert higher" — the gates
+Lynceus's posture is "if in doubt, alert higher". The gates
 exist to prevent the importer from silently downgrading what the
 operator sees. Argus's `primary_registry` vs `crowdsourced` OUI
 overlay and Flock Safety's alpr-vs-gunshot_detect dual-category
@@ -209,7 +209,7 @@ resolved alert behavior rather than to the upstream emission
 order.
 
 The confidence and CSV-index tiers exist to make the selection
-fully deterministic — two re-runs of the same CSV against fresh
+fully deterministic: two re-runs of the same CSV against fresh
 DBs must produce identical winners, identical insertion order,
 and identical alert severities. The
 `test_tiebreak_is_deterministic_across_repeated_imports`
@@ -240,7 +240,7 @@ The 2026-05-17 bundled snapshot exhibits severity drift in:
     same shape.
 
 The remaining Bucket B sets are content-identical or severity-
-identical between members (8 of the 12 — including one
+identical between members (8 of the 12, including one
 3-member Parrot OUI set where all three members resolve to
 `low`); the tiebreak still selects deterministically via the
 confidence or CSV-index tier.
@@ -255,7 +255,7 @@ groups gained or lost severity drift.
 ## Upstream tracking
 
 These shapes originate in Argus emissions. The upstream-side fix
-is per-record canonicalization in Argus — emit one record per
+is per-record canonicalization in Argus. Emit one record per
 canonical `(pattern, pattern_type)` shape, merging
 manufacturer / source / category per a documented policy; emit
 one record per `argus_record_id` (no within-CSV duplication).
@@ -264,7 +264,7 @@ Tracking against the Argus repo
 (`kevwillow/argus-db#TBD`, issue to be filed by the operator
 out-of-band against the Argus repo). The Lynceus-side gates
 remain in place as defense-in-depth regardless of upstream
-landing — first-wins is operationally honest; rejecting the
+landing. First-wins is operationally honest; rejecting the
 duplicate emission entirely would silently lose Argus-side
 information.
 
@@ -285,7 +285,7 @@ counters (which are themselves the path being audited):
   `argus_record_id` member; Bucket B is the set of
   `argus_record_id`s appearing more than once across all rows.
 - The two buckets are disjoint at the canonical-pattern level
-  for the current snapshot — all 15 nk-collide groups contain
+  for the current snapshot. All 15 nk-collide groups contain
   argus_record_ids that appear exactly once, and all 12
   dup-argus_record_id sets resolve to a single canonical
   pattern per set.

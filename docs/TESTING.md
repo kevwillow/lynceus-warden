@@ -7,7 +7,7 @@ checkout will not run anything, and nothing here can be independently
 verified by a reader. That is a deliberate trade, not an oversight.
 
 The suite carries fixtures and diagnostics shaped around a specific
-physical rig — adapter names, MAC addresses, capture artifacts, and
+physical rig. Adapter names, MAC addresses, capture artifacts, and
 watchlist entries reflecting a real deployment. Publishing it would
 publish that, which is a poor trade for a tool whose whole point is not
 handing an observer your RF environment. So the tests are maintained
@@ -19,18 +19,18 @@ What this means in practice:
   rule in this project; it just lands out-of-tree.
 - **Test-count and pass-rate claims in the docs are unverifiable from a
   clone.** Take them as the maintainer's word, weigh them accordingly,
-  and read the source — which *is* published in full.
+  and read the source, which *is* published in full.
 - **Contributors** should describe the behaviour a change relies on in
   the PR. Coverage gets added on the maintainer's side.
 - The parts a clone *can* check are the shipped artifact and the code
   itself: `ruff check .` and `python -m build` both run from a clean
   checkout.
 
-## Historical audit — pre-0.5.0
+## Historical audit: pre-0.5.0
 
 Everything below is a snapshot of the suite captured **2026-05-19**,
-before tag 0.5.0. It is preserved for the shape of the suite — the slow
-profile, the marker conventions, the caveats that gate a tag — not for
+before tag 0.5.0. It is preserved for the shape of the suite (the slow
+profile, the marker conventions, the caveats that gate a tag), not for
 its numbers, which are long superseded. Sister doc to
 [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
@@ -52,7 +52,7 @@ alongside this document.
 - **Collected items.** 2428 (via `pytest --collect-only -q`).
 - **Unique test functions.** 2334 (collected items with `[…]`
   parametrize suffixes folded out).
-- **Parametrize-expanded delta.** 94 — items minus functions. The two
+- **Parametrize-expanded delta.** 94, items minus functions. The two
   largest contributors are
   `tests/test_migration_rollback.py::test_per_migration_up_down_up`
   (18 IDs, one per reversible migration) and
@@ -79,7 +79,7 @@ individually:
 | 64.52s | `tests/test_bundled_watchlist.py::test_bundled_csv_end_to_end_flock_observation_fires_argus_ssid_alert` |
 | 16.76s | `tests/test_packaging.py::test_wheel_install_finds_migrations` |
 
-Everything else is sub-2.5s — the next-fastest entries cluster around
+Everything else is sub-2.5s. The next-fastest entries cluster around
 the Jinja-template-rendering tests in `test_webui.py` /
 `test_webui_theme.py` / `test_ui_watchlist.py`, each at ~2.1-2.3s.
 
@@ -130,7 +130,7 @@ the Jinja-template-rendering tests in `test_webui.py` /
   `test_pagination.py`, `test_redact.py`, `test_install_sh.py`,
   `test_packaging.py`.
 
-The counts above are coarse — several files cross-cut more than one
+The counts above are coarse. Several files cross-cut more than one
 area. The accurate count is "43 test files." The area labels exist
 for operator-facing "where does X coverage live" navigation.
 
@@ -147,7 +147,7 @@ for operator-facing "where does X coverage live" navigation.
   audit re-run passes the test cleanly (16.76s). The test is
   `@pytest.mark.slow`-gated, so it's only exercised in full-suite
   runs, not the fast `-m "not slow"` loop. If a future regression
-  re-surfaces the FileNotFoundError, the test catches it — but the
+  re-surfaces the FileNotFoundError, the test catches it, but the
   failure may be a Windows venv/symlink quirk rather than a
   packaging-data regression.
 - **No flake-prone tests surfaced.** The audit run was a single
@@ -162,7 +162,7 @@ commits (H1 migration rollback + H2 deployment runbook, plus CHANGELOG
 tidy). The parametrize expansion in the new
 `test_migration_rollback.py` lifts the item count by 23 over the
 pre-chain baseline; the function count moves by less. No skipped
-tests are project-state-conditional — they're all platform-mode skips
+tests are project-state-conditional. They're all platform-mode skips
 that come back in on Linux. Tagging 0.5.0 against this commit is
 safe from a test-suite perspective; remaining release work is
 operator-side (CHANGELOG section rename, tag, push).
@@ -172,14 +172,14 @@ operator-side (CHANGELOG section rename, tag, push).
 A small sibling layer of tests deliberately diverges from the rest of
 the suite. **They observe and dump production behavior; they do not
 assert content.** A diagnostic test "passes" when the production code
-under exercise didn't crash — the artifact is the per-test `.log`
+under exercise didn't crash. The artifact is the per-test `.log`
 file, which a reviewer reads offline against design intent.
 
 Why this exists: unit tests pin what we expect, but the v0.4.0rc6
 pre-smoke dry-exercise surfaced operator-visible divergences (version
 drift, import-argus counter lies) that every existing unit test
 missed because they assert on the expected-good shape. Diagnostic
-tests are the unit-level equivalent of that dry-exercise — small
+tests are the unit-level equivalent of that dry-exercise. Small
 synthetic fixtures, real production code, and a structured dump of
 what actually happened.
 
@@ -238,7 +238,7 @@ NOTES:
 ### Reviewing
 
 Findings flagged in diagnostic output are surfaced for **separate
-fix prompts** — diagnostic tests intentionally do not fix what they
+fix prompts**. Diagnostic tests intentionally do not fix what they
 find. The current pass turned up at least one issue worth filing:
 `mac_in_mac_range(None, ...)` raises `AttributeError` when an alert
 with NULL mac is in the table and `has_action=with_action` is in

@@ -2,7 +2,7 @@
 
 Lynceus reads a single YAML config file at startup. The path is passed via `--config` (e.g. the systemd unit invokes `lynceus --config /etc/lynceus/lynceus.yaml`). Every field has a default; only override what your environment requires.
 
-The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and rejects unknown fields — a typo will fail validation rather than silently being ignored.
+The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and rejects unknown fields. A typo will fail validation rather than silently being ignored.
 
 ## Field reference
 
@@ -10,7 +10,7 @@ The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and r
 | --- | --- | --- | --- | --- |
 | `kismet_url` | string | `http://127.0.0.1:2501` | Base URL of the Kismet REST API. Must include scheme (`http://` or `https://`); scheme-less values like `127.0.0.1:2501` are rejected at load. | `http://192.168.1.10:2501` |
 | `kismet_api_key` | string \| null | `null` | Kismet API key (sent as the `KISMET` cookie). Required for any Kismet instance with auth enabled. | `abc123def456...` |
-| `kismet_fixture_path` | string \| null | `null` | Path to a JSON fixture matching the Kismet device-list shape. When set, lynceus uses `FakeKismetClient` and never makes HTTP calls — useful for offline development and tests. | `tests/fixtures/kismet_devices.json` |
+| `kismet_fixture_path` | string \| null | `null` | Path to a JSON fixture matching the Kismet device-list shape. When set, lynceus uses `FakeKismetClient` and never makes HTTP calls. Useful for offline development and tests. | `tests/fixtures/kismet_devices.json` |
 | `db_path` | string | `lynceus.db` | Path to the SQLite database file. Override to a stable absolute path on production. | `/var/lib/lynceus/lynceus.db` |
 | `location_id` | string | `default` | Identifier recorded on every sighting. Use to distinguish multiple Pis. | `home` |
 | `location_label` | string | `Default Location` | Human-readable label paired with `location_id`. | `Living Room` |
@@ -36,25 +36,25 @@ The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and r
 | `severity_overrides_path` | string \| null | `null` | Path to a `severity_overrides.yaml` file holding operator-local vendor overrides, device-category severity bumps, the confidence-downgrade threshold, and the Argus CSV schema-version accept-list. Read by `lynceus-import-argus --override-file`, so edits take effect at the next import. | `/etc/lynceus/severity_overrides.yaml` |
 | `watchlist_staleness_warn_days` | integer | `30` | Age at which `/settings` marks the imported watchlist stale. The bundled `lynceus-refresh.timer` runs weekly, comfortably inside this window, so the badge stays cold on a host that has enabled it. | `14` |
 
-### `capture` — Tier 1 passive metadata
+### `capture`: Tier 1 passive metadata
 
 Nested block. Both toggles govern whether broadcast metadata is stored on the device row; when a toggle is off the poller does not read the underlying Kismet field at all, so opt-out means the data never enters the Lynceus process.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `capture.probe_ssids` | bool | `false` | Store the probe-request SSID list Wi-Fi clients broadcast — effectively a partial history of the networks a device has joined. **Off by default and deliberately so:** capturing it by default would point Lynceus at bystanders rather than at surveillance equipment. `lynceus-setup` prompts explicitly, and `/settings` renders a prominent recording warning when it is on. |
+| `capture.probe_ssids` | bool | `false` | Store the probe-request SSID list Wi-Fi clients broadcast, effectively a partial history of the networks a device has joined. **Off by default and deliberately so:** capturing it by default would point Lynceus at bystanders rather than at surveillance equipment. `lynceus-setup` prompts explicitly, and `/settings` renders a prominent recording warning when it is on. |
 | `capture.ble_friendly_names` | bool | `true` | Store the BLE GAP friendly name (e.g. `Tile_a1b2`). On by default: these are broadcast publicly and with intent, and they materially help triage. |
 
-### `ble_bridge` — passive BLE capture bridge
+### `ble_bridge`: passive BLE capture bridge
 
 Nested block, **off by default**. This is a capture path of its own, not a decoder running over Kismet's data: Kismet's classic Bluetooth datasource surfaces no advertisement payload, so the bridge opens its own passive `bleak` scan to feed the `ble_uuid`, `ble_manufacturer_id`, `ble_device_class`, and drone Remote-ID matchers.
 
-It therefore needs a Bluetooth adapter **Kismet is not already capturing on**. Read [the enablement notes in the README](../README.md) before turning it on — three configurations make an enabled bridge silently useless or noisy, and `lynceus-setup` checks all three.
+It therefore needs a Bluetooth adapter **Kismet is not already capturing on**. Read [the enablement notes in the README](../README.md) before turning it on: three configurations make an enabled bridge silently useless or noisy, and `lynceus-setup` checks all three.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `ble_bridge.enabled` | bool | `false` | Run the passive BLE scan in a background thread alongside the Kismet poll loop, with its own DB connection. Enabling changes no existing poll behaviour. |
-| `ble_bridge.adapter` | string | `hci1` | HCI adapter the bridge scans on. Must not be an adapter Kismet holds — Kismet claims an adapter for the lifetime of the daemon. |
+| `ble_bridge.adapter` | string | `hci1` | HCI adapter the bridge scans on. Must not be an adapter Kismet holds. Kismet claims an adapter for the lifetime of the daemon. |
 | `ble_bridge.flush_interval` | integer \| null | `null` | Bridge tick interval in seconds, independent of the Kismet poll loop. Minimum `1`. `null` falls back to `poll_interval_seconds`. |
 
 Observations from the bridge are stamped with a synthetic source of `ble:<adapter>` (e.g. `ble:hci1`). If `kismet_sources` is set, that exact string must appear in it, or the poller's source gate drops every observation the bridge produces.
@@ -131,12 +131,12 @@ entries:
     note: company-issued thinkpads (vendor block)
   - pattern: corp-wifi
     pattern_type: ssid
-    note: office SSID — don't alert on the AP itself
+    note: office SSID, don't alert on the AP itself
 ```
 
 ### 3. Travel mode, elevated severity defaults
 
-A portable Pi for hotel and conference deployments. Faster poll, no dedup, separate ntfy topic so travel alerts don't mix with home traffic. The lynceus config doesn't have a "travel mode" flag — you configure travel posture by tightening the dedup window and pointing at a stricter `rules.yaml`.
+A portable Pi for hotel and conference deployments. Faster poll, no dedup, separate ntfy topic so travel alerts don't mix with home traffic. The lynceus config doesn't have a "travel mode" flag. You configure travel posture by tightening the dedup window and pointing at a stricter `rules.yaml`.
 
 ```yaml
 kismet_url: http://127.0.0.1:2501
@@ -147,14 +147,14 @@ db_path: /var/lib/lynceus/travel.db
 location_id: travel
 location_label: Travel Pi
 
-# Faster polling — you may only be in a given location for hours.
+# Faster polling: you may only be in a given location for hours.
 poll_interval_seconds: 30
 log_level: DEBUG
 
 rules_path: /etc/lynceus/rules.travel.yaml
 allowlist_path: /etc/lynceus/allowlist.travel.yaml
 
-# Disable dedup entirely — every hit is interesting on the road.
+# Disable dedup entirely: every hit is interesting on the road.
 alert_dedup_window_seconds: 0
 
 ntfy_url: https://ntfy.sh
@@ -165,7 +165,7 @@ The companion `rules.travel.yaml` should bump the `new_non_randomized_device` ru
 
 ## Multi-adapter deployments
 
-Two adapters on a single Pi — say a 2.4 GHz Wi-Fi monitor and an internal Bluetooth radio — let you label sightings by which adapter heard them. This is the right shape for a Pi placed in a corner of the room where you want to know whether a device was *seen on Wi-Fi* (so it's at LAN range) versus *seen on Bluetooth* (closer, weaker, more interesting).
+Two adapters on a single Pi, say a 2.4 GHz Wi-Fi monitor and an internal Bluetooth radio, let you label sightings by which adapter heard them. This is the right shape for a Pi placed in a corner of the room where you want to know whether a device was *seen on Wi-Fi* (so it's at LAN range) versus *seen on Bluetooth* (closer, weaker, more interesting).
 
 Configure Kismet with both `source=` lines first; lynceus doesn't drive Kismet's adapter selection. Then on the lynceus side, list the source names and (optionally) attach a location label per source:
 
@@ -189,7 +189,7 @@ kismet_sources:
 # Useful when the two radios have meaningfully different ranges.
 kismet_source_locations:
   alfa-2.4ghz: living-room-wifi
-  builtin-bt:  living-room-bt
+  builtin-bt: living-room-bt
 
 # Optional: drop weak observations early. -85 dBm is roughly the floor
 # below which RSSI is too noisy to be useful for proximity reasoning.
@@ -200,7 +200,7 @@ kismet_timeout_seconds: 5.0
 
 # Default; explicit here for visibility. With multi-adapter setups, a
 # misconfigured Kismet (e.g. one of the sources failed to attach) is a
-# common cause of "lynceus is silent" — fail fast at startup so you notice.
+# common cause of "lynceus is silent": fail fast at startup so you notice.
 kismet_health_check_on_startup: true
 
 rules_path: /etc/lynceus/rules.yaml
@@ -214,7 +214,7 @@ sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
   "SELECT location_id, COUNT(*) FROM sightings GROUP BY location_id;"
 ```
 
-Both `living-room-wifi` and `living-room-bt` should appear with non-zero counts within an hour. If one is missing, the corresponding Kismet `source=` line is probably failing to attach — check `kismet -d` output for that adapter.
+Both `living-room-wifi` and `living-room-bt` should appear with non-zero counts within an hour. If one is missing, the corresponding Kismet `source=` line is probably failing to attach. Check `kismet -d` output for that adapter.
 
 ## Web UI routes
 
@@ -255,19 +255,19 @@ All POST routes require the CSRF token: a cookie set on the first GET, plus the 
 
 ## Poll-tick observability
 
-Every poll cycle the daemon writes five counters to the database — admitted observations plus three drop reasons — and emits one INFO heartbeat line to journalctl. The aim is to make a working-but-silent daemon distinguishable from a stuck one without needing DEBUG logging or a SQLite shell.
+Every poll cycle the daemon writes five counters to the database, admitted observations plus three drop reasons, and emits one INFO heartbeat line to journalctl. The aim is to make a working-but-silent daemon distinguishable from a stuck one without needing DEBUG logging or a SQLite shell.
 
 Where to read them:
 
-- **Dashboard** — the "last poll" card on `/` shows when the most recent tick completed, how many observations were admitted, and a per-reason breakdown of anything dropped. The relative-time stamp ("just now", "5m ago") makes a stalled daemon obvious at a glance.
-- **journalctl** — every tick logs one INFO line of the form `poll tick: 5 admitted, 1 dropped (source_allowlist=0, min_rssi=0, unparseable=1)`. Grep `journalctl -u lynceus.service` for `poll tick:` to confirm the heartbeat is firing.
-- **/healthz + /healthz.json** — both surfaces include the same counters in a `poll_tick` block, plus an `is_stale` boolean that flips true when the last tick is more than 2× `poll_interval_seconds` old. Monitoring scripts read the JSON; operators glance at the HTML.
+- **Dashboard**. The "last poll" card on `/` shows when the most recent tick completed, how many observations were admitted, and a per-reason breakdown of anything dropped. The relative-time stamp ("just now", "5m ago") makes a stalled daemon obvious at a glance.
+- **journalctl**. Every tick logs one INFO line of the form `poll tick: 5 admitted, 1 dropped (source_allowlist=0, min_rssi=0, unparseable=1)`. Grep `journalctl -u lynceus.service` for `poll tick:` to confirm the heartbeat is firing.
+- **/healthz + /healthz.json**: both surfaces include the same counters in a `poll_tick` block, plus an `is_stale` boolean that flips true when the last tick is more than 2× `poll_interval_seconds` old. Monitoring scripts read the JSON; operators glance at the HTML.
 
 The three drop reasons map to the three silent-drop sites in the poll loop, each with operator-readable copy on the dashboard:
 
-- **allowlist mismatch** (`dropped_source_allowlist`) — the observation came from a Kismet datasource that isn't in your `kismet_sources` list. Common when you've added a new adapter to Kismet but haven't updated `lynceus.yaml` to include it.
-- **below signal threshold** (`dropped_min_rssi`) — the observation's RSSI is weaker than your configured `min_rssi`. If you've cranked the threshold to filter distant noise, expect a steady non-zero count here.
-- **unrecognized device type** (`dropped_unparseable`) — Kismet returned a record whose `kismet.device.base.type` isn't in the Lynceus type map (e.g. RTL433 traffic from a 433 MHz datasource you're running in parallel). Harmless when intentional.
+- **allowlist mismatch** (`dropped_source_allowlist`). The observation came from a Kismet datasource that isn't in your `kismet_sources` list. Common when you've added a new adapter to Kismet but haven't updated `lynceus.yaml` to include it.
+- **below signal threshold** (`dropped_min_rssi`). The observation's RSSI is weaker than your configured `min_rssi`. If you've cranked the threshold to filter distant noise, expect a steady non-zero count here.
+- **unrecognized device type** (`dropped_unparseable`). Kismet returned a record whose `kismet.device.base.type` isn't in the Lynceus type map (e.g. RTL433 traffic from a 433 MHz datasource you're running in parallel). Harmless when intentional.
 
 ## Reload semantics
 
@@ -278,11 +278,11 @@ sudo systemctl restart lynceus
 sudo systemctl restart lynceus-ui
 ```
 
-Live reload (SIGHUP, file-watch, or a control socket) is tracked in [BACKLOG.md](../BACKLOG.md) under web-UI editing — that work needs the validation/rollback machinery first. Until then, plan to bundle config edits and restart deliberately rather than tweaking and hoping.
+Live reload (SIGHUP, file-watch, or a control socket) is tracked in [BACKLOG.md](../BACKLOG.md) under web-UI editing. That work needs the validation/rollback machinery first. Until then, plan to bundle config edits and restart deliberately rather than tweaking and hoping.
 
 ## Database migration rollback
 
-Lynceus tracks DB schema state via the `schema_migrations` table — one row per applied migration, populated when the migration runner first ran the corresponding `NNN_*.sql` file. As of v0.5.0 every shipped migration has a paired `NNN_*_down.sql` rollback file, and `lynceus-validate rollback` is the operator surface for reversing applied migrations.
+Lynceus tracks DB schema state via the `schema_migrations` table: one row per applied migration, populated when the migration runner first ran the corresponding `NNN_*.sql` file. As of v0.5.0 every shipped migration has a paired `NNN_*_down.sql` rollback file, and `lynceus-validate rollback` is the operator surface for reversing applied migrations.
 
 > **Back up the DB first. Always.** Rollback is destructive: every migration that added a column or table loses the rows in it on the way down. Run `sqlite3 <DB_PATH> ".backup '<DB_PATH>.bak-$(date +%Y%m%d%H%M%S)'"` (or copy the file while the daemon is stopped) before invoking rollback.
 
@@ -305,8 +305,8 @@ lynceus-validate rollback --db /tmp/lynceus.db --target-version 0 --yes
 
 **Conditional-reverse migrations.** Migrations 011, 013, 014, and 019 relaxed CHECK constraints on `watchlist.pattern_type` and `devices.device_type` to admit new identifier categories. Their down files tighten the CHECK back to the pre-migration set via a table rebuild. If rows of the newly-disallowed type exist (e.g. you have `mac_range` rows in the watchlist and you're trying to roll back past 011), the rebuild's `INSERT ... SELECT` raises `CHECK constraint failed` and the rollback aborts AT THAT STEP. Earlier migrations in the chain that already reverted stay reverted; the offending step's `schema_migrations` row is preserved. To proceed: either delete the offending rows manually first (e.g. `DELETE FROM watchlist WHERE pattern_type='mac_range';`) or restore from a backup taken before the migration applied, then re-invoke rollback.
 
-**Irreversible migrations.** Migration 010 (`normalize_watchlist_patterns`) ran a one-way `UPDATE` that case-folded `watchlist.pattern` and collapsed separators. The pre-normalization text is not recoverable from the post-normalization row — there's no forensic column to reverse from. Its down file carries the sentinel comment `IRREVERSIBLE:` which the runner detects: it logs a `WARNING`, removes the `schema_migrations` row so the chain can continue past this point, and executes NO SQL. The current data state is unchanged. If you need the original pattern text restored, you must do so from a pre-010 backup before re-running rollback.
+**Irreversible migrations.** Migration 010 (`normalize_watchlist_patterns`) ran a one-way `UPDATE` that case-folded `watchlist.pattern` and collapsed separators. The pre-normalization text is not recoverable from the post-normalization row. There's no forensic column to reverse from. Its down file carries the sentinel comment `IRREVERSIBLE:` which the runner detects: it logs a `WARNING`, removes the `schema_migrations` row so the chain can continue past this point, and executes NO SQL. The current data state is unchanged. If you need the original pattern text restored, you must do so from a pre-010 backup before re-running rollback.
 
-**Schema-version after rollback.** Each step that successfully runs (or skips, for IRREVERSIBLE) removes its `schema_migrations` row. After `--target-version 0`, the table is empty. Restarting the daemon at that point will RE-APPLY the full chain forward via the standard `_apply_migrations` path — handy if you wanted to roll back, edit a seed CSV, then start fresh. If you don't want that, stop the daemon and keep it stopped until you've inspected the state.
+**Schema-version after rollback.** Each step that successfully runs (or skips, for IRREVERSIBLE) removes its `schema_migrations` row. After `--target-version 0`, the table is empty. Restarting the daemon at that point will RE-APPLY the full chain forward via the standard `_apply_migrations` path. Handy if you wanted to roll back, edit a seed CSV, then start fresh. If you don't want that, stop the daemon and keep it stopped until you've inspected the state.
 
 **Recovery from a bad rollback.** Restore the backup file you took at the start (you took one, right?), restart the daemon, confirm `lynceus-validate` reports a clean config, and (if the rollback was triggered by a real problem) think about whether the issue is in the DB or in the schema-migration logic itself.

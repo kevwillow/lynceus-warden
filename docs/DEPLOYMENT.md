@@ -1,4 +1,4 @@
-# Deployment runbook — fresh host to working Lynceus
+# Deployment runbook: fresh host to working Lynceus
 
 End-to-end install runbook for an operator with a fresh Kali / Debian
 / Ubuntu laptop who wants Lynceus capturing, alerting, and the web UI
@@ -7,7 +7,7 @@ serving locally.
 Each step has an **action** (the command to run), an **expected
 output** (so you can tell whether it worked), and a brief
 **explanation** (why this step exists). If any step fails, **stop
-and debug** before moving on — later steps assume earlier ones
+and debug** before moving on. Later steps assume earlier ones
 landed cleanly. The cross-referenced docs (`CONFIGURATION.md`,
 `RULES.md`, `NTFY_SETUP.md`, `SMOKE.md`) carry the deep-dive content;
 this runbook is the install spine.
@@ -55,7 +55,7 @@ the tip commit you intend to install. If you're installing a tagged
 release, `git checkout v0.5.0` (substitute your target tag).
 
 **Explanation:** Lynceus is installed from source. There is no
-PyPI package and no `curl | bash` installer by design — read the
+PyPI package and no `curl | bash` installer by design. Read the
 script before running it.
 
 ## 2. Install Lynceus
@@ -84,8 +84,8 @@ lynceus --version
 # lynceus 0.5.0 (or your target version)
 ```
 
-**Explanation:** `install.sh` is the offline install path —
-it does not call the network. It uses a dedicated venv to comply
+**Explanation:** `install.sh` is the offline install path.
+It does not call the network. It uses a dedicated venv to comply
 with PEP 668 on Debian-family distros where the system Python is
 externally-managed. See `README.md` §Installation for the full
 flag set (`--dry-run`, `--uninstall`, `--purge`).
@@ -96,17 +96,17 @@ flag set (`--dry-run`, `--uninstall`, `--purge`).
   package name.
 - `lynceus-*` commands not found on `PATH`: `~/.local/bin` (for
   `--user`) or `/usr/local/bin` (for `--system`) isn't on `PATH`.
-  Add it to your shell profile — `install.sh --user` prints a
+  Add it to your shell profile. `install.sh --user` prints a
   one-liner hint when it detects this.
 
 ## 3. Bootstrap Kismet
 
 By default `lynceus-bootstrap-kismet` assumes Kismet is already
 installed and only configures it. Pass `--install` to ALSO add the
-official Kismet apt repo and install the `kismet` package first — that
+official Kismet apt repo and install the `kismet` package first. That
 apt path covers Debian, Ubuntu, and Kali only.
 
-**Action (Debian/Ubuntu/Kali — let Lynceus install Kismet too):**
+**Action (Debian/Ubuntu/Kali: let Lynceus install Kismet too):**
 
 ```sh
 sudo lynceus-bootstrap-kismet --install
@@ -115,17 +115,17 @@ sudo lynceus-bootstrap-kismet --install
 **Expected:** the helper adds the official Kismet apt repo, installs
 the `kismet` package, detects monitor-mode-capable WiFi adapters
 plus any `hci*` Bluetooth controllers, patches
-`/etc/kismet/kismet_site.conf` (append-only — your edits survive),
+`/etc/kismet/kismet_site.conf` (append-only, your edits survive),
 and adds your user to the `kismet` group. The final line summarizes
-what it did. Idempotent — safe to re-run if you add hardware later.
+what it did. Idempotent. Safe to re-run if you add hardware later.
 
-**Action (other distros — Parrot, Fedora, Arch, RHEL, etc. — or any
+**Action (other distros: Parrot, Fedora, Arch, RHEL, etc.: or any
 host where Kismet is already installed):**
 
 The apt-install path (`--install`) covers Debian, Ubuntu, and Kali
 only. On other distros, install Kismet manually per
 [kismetwireless.net/packages](https://www.kismetwireless.net/packages/)
-(every Linux distro is supported on the Kismet side — there's a
+(every Linux distro is supported on the Kismet side, there's a
 package or build instructions for each), then run:
 
 ```sh
@@ -148,7 +148,7 @@ groups | tr ' ' '\n' | grep -x kismet
 sudo systemctl status kismet  # should be enabled (may not yet be running)
 ```
 
-**Explanation:** Lynceus does not capture directly — it polls
+**Explanation:** Lynceus does not capture directly. It polls
 Kismet over its REST API. Kismet handles the radio capture, channel
 hopping, and source attribution. `lynceus-bootstrap-kismet` is the
 ONE Lynceus CLI that touches the network during install (the
@@ -170,7 +170,7 @@ In the browser:
 1. Set the admin password (Kismet prompts on first visit).
 2. Navigate to **Settings → API Keys**.
 3. Create a new key named `lynceus`, role `readonly`.
-4. Copy the key value to your clipboard — you'll need it in step 5.
+4. Copy the key value to your clipboard. You'll need it in step 5.
 
 **Expected:** Kismet's web UI loads, the admin password is set, and
 the new `lynceus` key appears in the API Keys list. Kismet's
@@ -178,7 +178,7 @@ service is `active (running)` (`sudo systemctl status kismet`).
 
 **Explanation:** Lynceus needs Kismet running before its own
 configuration wizard can probe for connectivity. The API key is
-read-only — Lynceus never writes back to Kismet.
+read-only. Lynceus never writes back to Kismet.
 
 ## 5. Configure Lynceus
 
@@ -188,14 +188,14 @@ read-only — Lynceus never writes back to Kismet.
 lynceus-setup
 ```
 
-Pass `--web` instead if you'd prefer the browser-based wizard added in v0.7.0 — same questions, validated through the same `Config` constructor, loopback-bound on port 8766 with a single-use token. Useful on headless / SSH-tunneled Pi installs where copy-pasting values into a remote terminal feels fiddly. Every other flag (`--user`, `--system`, `--reconfigure`, `--skip-probes`, `--output`) works identically.
+Pass `--web` instead if you'd prefer the browser-based wizard added in v0.7.0, same questions, validated through the same `Config` constructor, loopback-bound on port 8766 with a single-use token. Useful on headless / SSH-tunneled Pi installs where copy-pasting values into a remote terminal feels fiddly. Every other flag (`--user`, `--system`, `--reconfigure`, `--skip-probes`, `--output`) works identically.
 
 The wizard:
 
 1. Probes Kismet at `http://localhost:2501` and auto-locates the
    API key from `~/.kismet/session.db` (so you usually don't need
-   the key you copied — the wizard finds it automatically).
-2. Asks about probe SSID capture (privacy-sensitive — defaults to
+   the key you copied, the wizard finds it automatically).
+2. Asks about probe SSID capture (privacy-sensitive, defaults to
    **off**; opt in only if you understand the implications).
 3. Detects available Bluetooth (`hci*`) adapters and offers to add
    them as Kismet sources.
@@ -203,7 +203,7 @@ The wizard:
    notifications. See [docs/NTFY_SETUP.md](NTFY_SETUP.md) for
    broker selection guidance.
 5. Auto-imports the bundled threat-data watchlist (~22.5k Argus
-   rows) — no manual import needed for the default coverage.
+   rows). No manual import needed for the default coverage.
 
 **Expected:** the wizard ends with a `Setup complete — exiting.`
 line and writes `lynceus.yaml` to the canonical config dir
@@ -232,8 +232,8 @@ lynceus-import-argus --from-github
 **Expected:** the importer fetches the latest Argus CSV from
 GitHub Releases, caches it under
 `<data-dir>/argus-cache/<ref>__argus_export.csv`, and reports the
-number of rows imported / updated / skipped / dropped. Idempotent —
-re-running against unchanged content writes only the `import_runs`
+number of rows imported / updated / skipped / dropped. Idempotent.
+Re-running against unchanged content writes only the `import_runs`
 staleness-signal row; the `watchlist` and `watchlist_metadata`
 tables are not touched (per the v0.6.0 per-Argus-record dedup
 rework). The report's `dropped_peer_collision` and
@@ -260,15 +260,15 @@ sudo -u lynceus lynceus-validate --scope system
 
 **Expected:** stdout shows each config file with `OK` plus a one-line
 summary; the trailing line reads `Summary: 0 errors, 0 warnings
-across N files`. Exit code 0. If there are warnings, read them —
-they may surface typos in optional files (severity overrides,
+across N files`. Exit code 0. If there are warnings, read them.
+They may surface typos in optional files (severity overrides,
 allowlist) that would silently disable a layer at daemon startup.
 
 **Explanation:** `lynceus-validate` is the pre-flight check. It
 re-uses the daemon's actual config loaders, so any error it
 reports is what the daemon would hit at startup. Run this every
 time you edit a YAML file. (`lynceus-validate` also hosts the
-`rollback` subcommand for reversing DB migrations — see
+`rollback` subcommand for reversing DB migrations, see
 [docs/CONFIGURATION.md §Database migration rollback](CONFIGURATION.md#database-migration-rollback)
 for that operator-facing flow.)
 
@@ -292,7 +292,7 @@ namespaces, the `lynceus` system user) into
 `/etc/systemd/system/` but doesn't auto-enable them. Enabling +
 starting is the explicit operator decision.
 
-**Optional — auto-refresh timer.** If you want the watchlist to
+**Optional: auto-refresh timer.** If you want the watchlist to
 refresh on a schedule (default weekly), enable
 `lynceus-refresh.timer`:
 
@@ -319,7 +319,7 @@ everything down cleanly.
 
 **Explanation:** `lynceus-quickstart` is the convenience launcher
 for development and demonstration. It is **not** suitable for
-unattended operation — for that, install system-wide and use the
+unattended operation, for that, install system-wide and use the
 systemd units (step 8a above).
 
 ## 9. Smoke verification
@@ -335,7 +335,7 @@ Run through [docs/SMOKE.md](SMOKE.md) to confirm:
   remaining SMOKE steps).
 
 SMOKE.md is the authoritative post-install verification surface and
-covers every check + troubleshoot bullet — this runbook intentionally
+covers every check + troubleshoot bullet. This runbook intentionally
 does not duplicate its content.
 
 ## Common issues
@@ -366,7 +366,7 @@ successful `install.sh` run.
 **Cause:** the install's bin directory isn't on `PATH`. For
 `--user`, that's `~/.local/bin`; for `--system`, that's
 `/usr/local/bin`. The `--user` case is the common one on minimal
-Kali installs — the directory exists and contains the symlinks
+Kali installs. The directory exists and contains the symlinks
 but isn't on `PATH` for non-login shells.
 
 **Fix:** `install.sh --user` prints a one-liner shell-profile
@@ -392,7 +392,7 @@ managed mode, OR the adapter doesn't actually support monitor mode
 control; if the adapter still won't switch, check
 `iw list | grep -A 8 'Supported interface modes'` for `monitor`
 support. If the adapter genuinely doesn't support monitor mode,
-you need a different USB adapter — Alfa AWUS036ACS and similar
+you need a different USB adapter. Alfa AWUS036ACS and similar
 RTL8812AU-based devices are common Kali-compatible choices.
 
 ### 4. ntfy notifications never arrive
@@ -407,7 +407,7 @@ portal that blocks the ntfy WebSocket.
 URL the daemon is hitting. Copy that exact URL into your phone's
 ntfy app subscription. The topic is the last path segment; spaces
 and dashes matter. If the broker URL is `https://ntfy.sh/secret-foo`,
-subscribe to `secret-foo` on the phone — NOT `Secret-Foo` or
+subscribe to `secret-foo` on the phone, NOT `Secret-Foo` or
 `secret_foo`. See [docs/NTFY_SETUP.md](NTFY_SETUP.md) for the
 end-to-end verification flow.
 
@@ -440,7 +440,7 @@ if you want to wipe state too.
 
 **Symptom:** at the end of `lynceus-setup` (CLI or `--web`), an
 apply-step warning fires naming one or more of the adapter names you
-selected — e.g. *Kismet doesn't currently expose these source
+selected. E.g. *Kismet doesn't currently expose these source
 name(s): wlan0. Observations from them will silently drop.* The
 wizard still completes; this is non-blocking.
 
@@ -464,7 +464,7 @@ adapter and the dashboard looks empty.
   select the name that already appears in
   `kismet_site.conf`.
 
-**Adjacent symptom — "Could not reach Kismet to verify source
+**Adjacent symptom: "Could not reach Kismet to verify source
 names":** Kismet wasn't responding to its REST API at apply time
 (daemon not started, firewall, wrong URL). The cross-check skips
 rather than warns and the wizard finishes regardless; re-run
@@ -476,16 +476,16 @@ from the name-mismatch case above.
 
 After install, the operator-facing documentation surfaces are:
 
-- [docs/CONFIGURATION.md](CONFIGURATION.md) — schema reference,
+- [docs/CONFIGURATION.md](CONFIGURATION.md). Schema reference,
   worked examples, multi-adapter deployments, web UI POST routes,
   database migration rollback flow.
-- [docs/RULES.md](RULES.md) — the rules engine, the five rule
+- [docs/RULES.md](RULES.md). The rules engine, the five rule
   types, severity tiers, allowlist semantics.
-- [docs/NTFY_SETUP.md](NTFY_SETUP.md) — ntfy broker selection,
+- [docs/NTFY_SETUP.md](NTFY_SETUP.md). Ntfy broker selection,
   phone app setup, end-to-end verification, privacy notes.
-- [docs/SMOKE.md](SMOKE.md) — first-run smoke checklist (also
+- [docs/SMOKE.md](SMOKE.md). First-run smoke checklist (also
   the post-restart verification surface).
-- [README.md](../README.md) — project overview, install summary,
+- [README.md](../README.md). Project overview, install summary,
   CLI surface, architecture diagram.
 
 For backlog / deferred items, see [BACKLOG.md](../BACKLOG.md). For

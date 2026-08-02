@@ -18,7 +18,7 @@ Free. No setup. Works in 60 seconds. Use this if you want to get notifications
 working today and don't want to run infrastructure.
 
 The trade-off is privacy. ntfy.sh has no per-topic authentication on the
-free tier — anyone who guesses your topic name can subscribe to it and read
+free tier. Anyone who guesses your topic name can subscribe to it and read
 your alerts. Topic names are the only secret. Pick a topic name that's
 hard to guess: think `lynceus-alerts-7f3a9c2e1b4d`, not `my-alerts`. Use a
 random-string generator if you don't trust yourself to pick something
@@ -27,7 +27,7 @@ unguessable.
 Alert messages pass through ntfy.sh's infrastructure during delivery. They're
 not stored long-term (ntfy.sh's default retention is 12 hours), but they
 ARE visible to ntfy.sh during transit. Alert content includes MAC addresses
-and rule names — privacy-sensitive but not catastrophic.
+and rule names. Privacy-sensitive but not catastrophic.
 
 ### Option B: Self-host ntfy (more privacy, more work)
 
@@ -53,7 +53,7 @@ Setup guide is at https://docs.ntfy.sh/install/. Out of scope for this doc.
 
 ### Option C: Paid ntfy.sh tier (privacy without ops)
 
-ntfy.sh's paid tier (currently around USD $5/month — confirm current pricing
+ntfy.sh's paid tier (currently around USD $5/month, confirm current pricing
 on their site) gives you private topics with proper authentication, longer
 retention, and dedicated rate limits. If you want privacy without running
 your own server, this is the option. Configuration in lynceus is identical
@@ -87,7 +87,7 @@ For Option B with auth or Option C:
   generate via the dashboard for paid ntfy.sh)
 
 If both `ntfy_url` and `ntfy_topic` are unset, lynceus falls back silently to
-the null notifier — no alerts go out, nothing crashes. This is the right
+the null notifier. No alerts go out, nothing crashes. This is the right
 behavior for development and testing. If you intend notifications to work and
 they don't, double-check both fields are set in `lynceus.yaml`.
 
@@ -141,7 +141,7 @@ If notifications aren't arriving:
   broker is unreachable from where lynceus runs (firewall, DNS, TLS).
 - Check your phone app: is the topic visible in the subscribed list? Has
   it received any messages historically? Some apps suppress notifications
-  if the OS has revoked permission — check Settings → Apps → ntfy →
+  if the OS has revoked permission. Check Settings → Apps → ntfy →
   Notifications.
 
 ## Privacy and security notes
@@ -155,13 +155,13 @@ If notifications aren't arriving:
   surveillance gear (if any) is around your home. This is the threat model
   reason to use Option B or C if you're worried about specific adversaries.
 - **No retention beyond ntfy's default.** lynceus does not keep a record of
-  notifications it sent — the audit trail is the alerts table in the local
+  notifications it sent. The audit trail is the alerts table in the local
   database, not the notification history. ntfy.sh's default is 12 hours of
   retention. Self-hosted ntfy retention is configurable.
 - **Lossy by design.** lynceus treats notification delivery as best-effort.
   If ntfy is unreachable when an alert fires, the alert still lands in the
   database (that's the source of truth) but no notification goes out and
-  no retry happens. This is a deliberate v0.2 design — see BACKLOG for
+  no retry happens. This is a deliberate v0.2 design. See BACKLOG for
   the queued-delivery work.
 
 ## Recommended setup for first deployment
