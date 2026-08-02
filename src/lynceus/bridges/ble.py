@@ -108,6 +108,7 @@ def _canonical_db_paths() -> tuple[str, ...]:
             continue
     return tuple(found)
 
+
 # Backoff before restarting the scan after a bleak/BlueZ failure.
 _RESTART_BACKOFF_SECONDS = 5.0
 
