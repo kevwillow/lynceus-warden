@@ -140,12 +140,18 @@ These are design commitments, not current limitations:
 - **Passive only.** Lynceus never transmits, probes, injects, or associates.
   It reads what Kismet already heard. That applies to Argus too: detection
   only, no jamming, no spoofing, no interference.
-- **The read-only UI is a security boundary.** The web UI surfaces state and
-  never mutates configuration. Every config change happens out-of-band via
-  `lynceus-setup` or the YAML. Read-only is a feature, not a missing one.
-- **No telemetry.** Lynceus does not phone home. At runtime the only outbound
-  connections are to the ntfy broker you configured and to GitHub, when you
-  explicitly run a watchlist refresh. (Installation itself resolves Python
+- **The read-only UI is a security boundary.** The web UI never mutates your
+  configuration: `lynceus.yaml`, rules and capture settings change only
+  out-of-band, via `lynceus-setup` or the YAML. It does record operator
+  decisions — acks, notes, snoozes, watchful entries, and the daemon-managed
+  `allowlist_ui.yaml` — because triage is what the UI is for. What it cannot do
+  is change what Lynceus captures or how it is deployed. Read-only about
+  configuration is a feature, not a missing one.
+- **No telemetry.** Lynceus does not phone home. At runtime it connects to the
+  Kismet instance you point it at (`kismet_url`, `http://127.0.0.1:2501` by
+  default, but any host you configure), to the ntfy broker you configured, and
+  to GitHub when you explicitly run a watchlist refresh. That is the whole
+  list. (Installation itself resolves Python
   dependencies from PyPI through `pip`, like any Python project. The
   installer fetches no Lynceus or Argus artifacts, and ships no `curl | bash`
   path.)
