@@ -208,8 +208,11 @@ DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD = 70
 #
 # Post-0.9.1: extended to 31 for the 2026-06-03 bundled snapshot
 # refresh (default_watchlist.csv now declares schema_version=31).
+# Post-0.9.5: extended to 33. The 2026-07-28 export declares
+# schema_version=33; 32 is included so a snapshot taken between the two
+# does not warn.
 DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST: tuple[str, ...] = (
-    "25", "26", "27", "28", "29", "30", "31",
+    "25", "26", "27", "28", "29", "30", "31", "32", "33",
 )
 
 # GitHub-fetch defaults for `--from-github`. Argus publishes its
@@ -326,7 +329,7 @@ def resolve_severity(
     *,
     manufacturer: str | None,
     device_category: str | None,
-    confidence: int,
+    confidence: int | None,
     overrides: OverrideConfig,
 ) -> str:
     """First match wins: vendor override > category override > built-in default.
@@ -347,7 +350,10 @@ def resolve_severity(
     if sev not in VALID_SEVERITIES:
         raise ValueError(f"invalid severity {sev!r} (expected one of {VALID_SEVERITIES} or 'drop')")
     threshold = overrides.confidence_downgrade_threshold
-    if threshold > 0 and confidence < threshold:
+    # An unscored row (confidence None) is not downgraded: absence of a
+    # score is not evidence of a low one, and the rows Argus ships
+    # unscored are disproportionately primary_registry.
+    if threshold > 0 and confidence is not None and confidence < threshold:
         sev = _downgrade(sev)
     return sev
 
@@ -778,7 +784,7 @@ def parse_argus_csv(path: str) -> list[dict[str, str]]:
         return rows
 
 
-def _build_metadata_fields(row: dict[str, str], confidence: int) -> dict[str, Any]:
+def _build_metadata_fields(row: dict[str, str], confidence: int | None) -> dict[str, Any]:
     return {
         "argus_record_id": row["argus_record_id"],
         "device_category": _empty_to_none(row["device_category"]),
@@ -855,7 +861,7 @@ class _Candidate:
     pattern: str
     pattern_type: str
     severity: str
-    confidence: int
+    confidence: int | None
     description: str | None
     new_metadata: dict
     mac_range_prefix: str | None
@@ -940,17 +946,38 @@ def _classify_row(
             report.dropped_geographic_filter += 1
             return None
 
+        # Argus treats confidence as nullable: as of schema_version 33,
+        # 185 of 43116 exported rows carry no score, across every
+        # source_type including primary_registry. Rejecting those threw
+        # away registry-grade records -- Bluetooth SIG assigned-numbers
+        # entries among them -- over a field whose only uses are an
+        # OPTIONAL severity downgrade and an operator-set floor. An
+        # unscored row is not a zero-confidence row, so it is carried
+        # through as None rather than defaulted to a number that would
+        # silently downgrade it.
         conf_str = row["confidence"]
+        confidence: int | None
         if conf_str is None or conf_str == "":
-            raise ValueError("confidence is required")
-        try:
-            confidence = int(conf_str)
-        except ValueError as exc:
-            raise ValueError(f"confidence must be int, got {conf_str!r}") from exc
+            confidence = None
+        else:
+            try:
+                confidence = int(conf_str)
+            except ValueError as exc:
+                raise ValueError(f"confidence must be int, got {conf_str!r}") from exc
 
         # Hard skip for --min-confidence. Distinct from
         # overrides.confidence_downgrade_threshold, which downgrades
-        # severity but still imports the row.
+        # severity but still imports the row. An unscored row cannot be
+        # shown to clear an explicit operator floor, so it is dropped
+        # when one is set -- and only then.
+        if min_confidence is not None and confidence is None:
+            report.dropped_low_confidence += 1
+            logger.info(
+                "row argus_record_id=%r: skipped (no confidence score, --min-confidence=%d set)",
+                argus_id,
+                min_confidence,
+            )
+            return None
         if min_confidence is not None and confidence < min_confidence:
             report.dropped_low_confidence += 1
             logger.info(
@@ -1122,7 +1149,10 @@ def _select_winners(
         # max() picks the candidate with the highest tuple. Negate
         # csv_index so that, within ties on severity AND confidence,
         # the EARLIER row (lower csv_index) wins.
-        return (_severity_rank(c.severity), c.confidence, -c.csv_index)
+        # Unscored sorts below every real score (Argus range is 0-100),
+        # so an unscored row never outranks a scored one on a tie.
+        conf = -1 if c.confidence is None else c.confidence
+        return (_severity_rank(c.severity), conf, -c.csv_index)
 
     # Phase A — group by argus_record_id; highest-sev-wins per group.
     by_argus: dict[str, list[_Candidate]] = {}
