@@ -38,8 +38,26 @@ The 484-test gap is the eleven withheld files. Quote the clone number when
 reporting on anything a reader could reproduce, and say so when you quote the
 local one.
 
-A drop below 3508 is a regression. So is a **rise** in the 28 skips, even
-though the run stays green.
+**On Linux**, measured at `ef1f566` in a throwaway worktree, on the clone
+(118 files), Python 3.11.14, BlueZ 5.72, kernel 7.0.0:
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` | 3048 passed, 3 skipped, 47 deselected, 27m09s |
+| `pytest -m diagnostic` | 46 passed, **1 failed** — pre-existing, see below |
+| `ruff check .` | clean |
+| `python -m build --wheel` | `lynceus-0.9.5-py3-none-any.whl` |
+| `ruff format --check .` | 94 files (22 `src/`, 70 `tests/`, 1 `scripts/`, 1 `docs/`) |
+
+This was the first execution of the suite on Linux, and it is the number to
+beat here. Against the Windows clone run it is **+24 passed / -24 skipped**:
+the POSIX-only `install.sh`, file-mode and symlink tests converted one-for-one
+into live passes. Eleven tests failed on that very first run. All eleven were
+test defects that Windows could not structurally expose, fixed in `9b2636c`;
+**no product bugs were found**. See that commit message for the mechanisms.
+
+A drop below 3508 (local) or 3048 (Linux clone) is a regression. A **rise** in
+skips is usually one too — but not always, and the exceptions are below.
 
 The formatter number is worth splitting when you read it. The `src/` figure
 is the one that matters: it was 23 before a stray blank line in
@@ -47,6 +65,13 @@ is the one that matters: it was 23 before a stray blank line in
 is back to 22 now. The `tests/` figure only became visible when the suite was
 published, because ruff respects `.gitignore` and had been skipping the whole
 directory.
+
+The Windows "93" and the Linux "94" are the same source state, not drift.
+93 is `22 src/ + 70 tests/ + 1 scripts/` — the `scripts/` file is the one the
+"22 + 70" phrasing above silently omits. The 94th is a **Markdown** file:
+ruff 0.16.1 formats Python fenced inside `.md`, which older ruff did not, so
+`docs/superpowers/plans/2026-07-28-ble-continuity-decoder.md` now counts.
+Compare the `src/` figure across versions, not the total.
 
 ## The traps this repo actually has
 
@@ -65,10 +90,39 @@ observation-only and asserts nothing about content. Run it explicitly with
 `pytest -m diagnostic` before a push. A green default run says nothing about
 those 50.
 
+⛔ **That warning has already come true. v0.9.5 shipped with a failing
+diagnostic test.** `tests/test_diag_home_ack_flow.py::test_diag_home_ack_flow`
+asserts every `hx-*` hit comes from `index.html`, but `4d135ac` extracted
+`_alert_row.html` as a partial and the `hx-*` attributes moved with it. The
+test was never updated, and because the default run deselects it, no release
+gate ever saw it. It is platform-independent — it fails on Windows too — and
+it is **not** caused by the Linux fixes: `b5f9127..ef1f566` touches no
+template or webui file. Fixing it means deciding whether the assertion should
+follow the partial or keep pinning `index.html`; that decision is open.
+
 **28 skips are expected on Windows** and are POSIX-only `install.sh`,
 file-mode, and symlink checks. On Linux that number should drop and the pass
 count should rise. A Windows run is not evidence about the systemd or
-installer paths.
+installer paths. Confirmed: on Linux the clone run skips 3, not 27.
+
+**A rise in skips is not automatically a regression.** Two of the three Linux
+skips are caused by the host being *better* equipped, not worse.
+`test_setup_wizard.py:1958` skips precisely *because* `/sys/class/bluetooth`
+exists — with a real BT adapter plugged in it cannot exercise the missing-dir
+branch. Read each skip reason before calling a rise a regression.
+
+**No single run as one user can be fully green.** Some tests need root (the
+`--system` scope paths); `test_install_sh.py:232` explicitly skips when the
+runner *is* root, because it exercises the non-root pass-through. Running as
+an ordinary user is the right default and is what the numbers above were
+measured with.
+
+⚠️ **How you invoke the venv changes the result.** Running
+`./.venv/bin/python -m pytest` without activating leaves `python` off `PATH`,
+and on a distro with no bare `python` (Ubuntu, Debian) `test_packaging.py:19`
+skips itself with "python not on PATH" — silently dropping the wheel-build
+gate with no failure. Activate the venv, or prepend `.venv/bin` to `PATH`.
+That single test is the difference between the 3048/3 above and 3049/2.
 
 **The formatter gate is red on purpose.** `make lint` runs only
 `ruff check .` so it stays a gate that is expected to pass. Reformatting all
