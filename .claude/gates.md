@@ -59,6 +59,59 @@ test defects that Windows could not structurally expose, fixed in `9b2636c`;
 A drop below 3508 (local) or 3048 (Linux clone) is a regression. A **rise** in
 skips is usually one too — but not always, and the exceptions are below.
 
+### Measured again from the repo root, 2026-08-02, at `eca081a`
+
+Same host and interpreter, but run from `/home/kev/lynceus-warden` itself with
+`.venv/bin` on `PATH`, rather than from a throwaway worktree:
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` | **3060 passed, 1 FAILED, 1 skipped**, 47 deselected, 21m53s |
+| `pytest -m diagnostic` | 47 passed, 0 failed, 4m54s |
+| `ruff check .` | clean |
+| `ruff format --check .` | 94 files (22 `src/`, 70 `tests/`, 1 `scripts/`, 1 `docs/`) |
+
++12 passes over the worktree baseline are the new BLE-G8 tests. The skip count
+falls from 3 to 1 for two different reasons, and **only one of them is good**:
+
+- `test_packaging.py` passes because `.venv/bin` was on `PATH`. Good.
+- `test_import_argus.py` stopped skipping and started **failing**. Not good, and
+  not a regression either — see the trap below.
+
+⛔ **Running the gates in `.claude/worktrees/` silently disables the cross-repo
+Argus test.** `test_cross_repo_live_argus_csv_imports_without_errors` locates the
+live dataset relative to its own file:
+`Path(__file__).parents[1].parent / "argus" / "exports" / "argus_export.csv"`.
+From the repo root that resolves to `/home/kev/argus/exports/argus_export.csv`,
+which has existed since 2026-07-28. From `.claude/worktrees/verify` it resolves
+to `.claude/worktrees/argus/...`, which does not exist, so the test skips itself
+with "live Argus CSV not found".
+
+The baseline above therefore recorded it as a benign environment skip when it was
+actually a **failing test hidden by the recommended verification procedure**. The
+Commands section of this file tells you to run gates in a worktree; that
+instruction is what removed the gate.
+
+That is the **third** instance of one pattern in this repo, and the pattern is
+worth naming: *how* you invoke the suite silently changes which gates exist.
+`test_packaging.py` vanishes without `python` on `PATH`; the whole diagnostic
+suite vanishes behind `-m 'not diagnostic'`; this one vanishes inside a
+worktree. All three fail open — no error, no red, just a smaller suite. **Read
+the skip reasons. A skip is a gate that did not run.**
+
+The failure itself is pre-existing and is not a Lynceus regression:
+`src/lynceus/cli/import_argus.py` and `tests/test_import_argus.py` are
+byte-identical between `b5f9127` and `eca081a`. It is Argus-side drift, and it
+needs a decision rather than a quick fix:
+
+- 11 of 43116 rows are rejected with `confidence is required`.
+- The export announces `schema_version='33'`; the accept-list is `25`–`31`.
+
+So the export has moved two schema versions ahead of what Lynceus admits, and
+`confidence` appears to have become optional or absent upstream. Whether the
+fix is to widen the accept-list, relax the `confidence` requirement, or treat
+these rows as legitimately bad data is a product call, not a test fix.
+
 The formatter number is worth splitting when you read it. The `src/` figure
 is the one that matters: it was 23 before a stray blank line in
 `bridges/ble.py` pushed it to 24, which is how that drift was caught, and it
