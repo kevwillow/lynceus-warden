@@ -582,7 +582,8 @@ def test_evaluate_watchlist_mac_range_without_db_logs_error(caplog):
         hits = evaluate(rs, _obs(mac="aa:bb:cc:d1:23:45"), is_new_device=False)
     assert hits == []
     errors = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelno == logging.ERROR
         and "watchlist_mac_range" in r.getMessage()
         and "argus_mac_range" in r.getMessage()
@@ -741,7 +742,8 @@ def test_evaluate_watchlist_mac_delegation_without_db_logs_error(caplog):
         hits = evaluate(rs, _obs(mac="a4:83:e7:11:22:33"), is_new_device=False)
     assert hits == []
     errors = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelno == logging.ERROR
         and "watchlist_mac" in r.getMessage()
         and "del_mac" in r.getMessage()
@@ -822,7 +824,8 @@ def test_evaluate_watchlist_oui_delegation_without_db_logs_error(caplog):
         hits = evaluate(rs, _obs(mac="00:13:37:aa:bb:cc"), is_new_device=False)
     assert hits == []
     errors = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelno == logging.ERROR and "watchlist_oui" in r.getMessage()
     ]
     assert len(errors) == 1
@@ -878,7 +881,10 @@ def db_with_reserved_oui_rows(tmp_path):
     ],
 )
 def test_evaluate_watchlist_oui_skips_reserved_or_bogus(
-    db_with_reserved_oui_rows, mac, prefix_label, caplog,
+    db_with_reserved_oui_rows,
+    mac,
+    prefix_label,
+    caplog,
 ):
     """The argus_oui delegation rule must NOT produce a hit for MACs
     whose OUI is reserved/multicast/broadcast or whose first octet
@@ -896,8 +902,7 @@ def test_evaluate_watchlist_oui_skips_reserved_or_bogus(
             db=db_with_reserved_oui_rows,
         )
     assert hits == [], (
-        f"reserved/bogus {prefix_label} MAC {mac} unexpectedly hit "
-        f"argus_oui watchlist row"
+        f"reserved/bogus {prefix_label} MAC {mac} unexpectedly hit argus_oui watchlist row"
     )
 
 
@@ -1048,7 +1053,8 @@ def test_evaluate_watchlist_ssid_delegation_without_db_logs_error(caplog):
         )
     assert hits == []
     errors = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelno == logging.ERROR and "watchlist_ssid" in r.getMessage()
     ]
     assert len(errors) == 1
@@ -1169,9 +1175,7 @@ def test_evaluate_watchlist_ssid_exact_takes_precedence_over_ssid_pattern(tmp_pa
                 "VALUES (?, 'ssid_pattern', 'high', 'flock substring')",
                 ("flock",),
             )
-        rule = Rule(
-            name="del_ssid", rule_type="watchlist_ssid", severity="med", patterns=[]
-        )
+        rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="med", patterns=[])
         rs = Ruleset(rules=[rule])
         hits = evaluate(
             rs,
@@ -1181,8 +1185,7 @@ def test_evaluate_watchlist_ssid_exact_takes_precedence_over_ssid_pattern(tmp_pa
         )
         assert len(hits) == 1
         assert hits[0].severity == "low", (
-            "exact ssid row (severity=low) must win over substring "
-            "ssid_pattern row (severity=high)"
+            "exact ssid row (severity=low) must win over substring ssid_pattern row (severity=high)"
         )
     finally:
         db.close()
@@ -1297,8 +1300,7 @@ def test_evaluate_ble_uuid_delegation_without_db_logs_error(caplog):
         hits = evaluate(rs, _ble_obs(uuids=(_AIRTAG_UUID,)), is_new_device=False)
     assert hits == []
     errors = [
-        r for r in caplog.records
-        if r.levelno == logging.ERROR and "ble_uuid" in r.getMessage()
+        r for r in caplog.records if r.levelno == logging.ERROR and "ble_uuid" in r.getMessage()
     ]
     assert len(errors) == 1
 
@@ -1468,8 +1470,7 @@ def test_evaluate_watchlist_ble_manufacturer_id_delegation_without_db_logs_error
     errors = [
         r
         for r in caplog.records
-        if r.levelno == logging.ERROR
-        and "watchlist_ble_manufacturer_id" in r.getMessage()
+        if r.levelno == logging.ERROR and "watchlist_ble_manufacturer_id" in r.getMessage()
     ]
     assert len(errors) == 1
 
@@ -1629,8 +1630,7 @@ def test_evaluate_watchlist_drone_id_prefix_delegation_without_db_logs_error(cap
     errors = [
         r
         for r in caplog.records
-        if r.levelno == logging.ERROR
-        and "watchlist_drone_id_prefix" in r.getMessage()
+        if r.levelno == logging.ERROR and "watchlist_drone_id_prefix" in r.getMessage()
     ]
     assert len(errors) == 1
 
@@ -1814,8 +1814,7 @@ def test_evaluate_watchlist_ble_local_name_delegation_without_db_logs_error(capl
     errors = [
         r
         for r in caplog.records
-        if r.levelno == logging.ERROR
-        and "watchlist_ble_local_name" in r.getMessage()
+        if r.levelno == logging.ERROR and "watchlist_ble_local_name" in r.getMessage()
     ]
     assert len(errors) == 1
 
@@ -1850,9 +1849,7 @@ def db_with_new_categorized_rows(tmp_path):
 def test_evaluate_runtime_remap_watchlist_ble_manufacturer_id(
     db_with_new_categorized_rows,
 ):
-    overrides = RuntimeSeverityOverride(
-        device_category_severity={"hacking_tool": "high"}
-    )
+    overrides = RuntimeSeverityOverride(device_category_severity={"hacking_tool": "high"})
     rule = Rule(
         name="del_blm",
         rule_type="watchlist_ble_manufacturer_id",
@@ -2157,9 +2154,7 @@ def test_evaluate_runtime_remap_other_categories_unaffected(db_with_categorized_
     """A remap that doesn't cover the match's category is a no-op
     on this match (the remap dict is per-category; non-listed
     categories pass through)."""
-    overrides = RuntimeSeverityOverride(
-        device_category_severity={"some_other_category": "high"}
-    )
+    overrides = RuntimeSeverityOverride(device_category_severity={"some_other_category": "high"})
     rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
     rs = Ruleset(rules=[rule])
     hits = evaluate(
@@ -2194,7 +2189,8 @@ def test_evaluate_runtime_suppress_watchlist_mac(db_with_categorized_rows, caplo
         )
     assert hits == []
     info = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelno == logging.INFO
         and "suppressing category=alpr" in r.getMessage()
         and "del_mac" in r.getMessage()
@@ -2347,9 +2343,7 @@ def db_with_vendored_rows(db_with_categorized_rows):
     exercise the load-time normalization (lowercase + strip) end-
     to-end."""
     db = db_with_categorized_rows
-    rows = db._conn.execute(
-        "SELECT id, pattern_type FROM watchlist"
-    ).fetchall()
+    rows = db._conn.execute("SELECT id, pattern_type FROM watchlist").fetchall()
     vendor_by_pattern_type = {
         "mac": "Mitsubishi Electric US, Inc.",
         "oui": "Hak5 LLC",
@@ -2374,9 +2368,7 @@ def test_evaluate_runtime_suppress_vendor_watchlist_mac(db_with_vendored_rows, c
     """Vendor-suppress on the watchlist_mac delegation branch. Match
     has manufacturer="Mitsubishi Electric US, Inc." (set by fixture);
     override suppresses that vendor → no RuleHit + INFO log."""
-    overrides = RuntimeSeverityOverride(
-        suppress_vendors=_vendors("Mitsubishi Electric US, Inc.")
-    )
+    overrides = RuntimeSeverityOverride(suppress_vendors=_vendors("Mitsubishi Electric US, Inc."))
     rule = Rule(name="del_mac", rule_type="watchlist_mac", severity="low", patterns=[])
     rs = Ruleset(rules=[rule])
     with caplog.at_level(logging.INFO, logger="lynceus.rules"):
@@ -2389,7 +2381,8 @@ def test_evaluate_runtime_suppress_vendor_watchlist_mac(db_with_vendored_rows, c
         )
     assert hits == []
     info = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.levelno == logging.INFO
         and "suppressing manufacturer=" in r.getMessage()
         and "Mitsubishi Electric US, Inc." in r.getMessage()
@@ -2445,12 +2438,8 @@ def test_evaluate_runtime_suppress_vendor_watchlist_mac_range(db_with_vendored_r
     Argus-registered manufacturer string. An operator wanting them
     in the DB for annotation but not for alerts can suppress that
     vendor at runtime without re-importing."""
-    overrides = RuntimeSeverityOverride(
-        suppress_vendors=_vendors("Acme Surveillance Corp")
-    )
-    rule = Rule(
-        name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[]
-    )
+    overrides = RuntimeSeverityOverride(suppress_vendors=_vendors("Acme Surveillance Corp"))
+    rule = Rule(name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[])
     rs = Ruleset(rules=[rule])
     hits = evaluate(
         rs,
@@ -2633,8 +2622,7 @@ def db_with_argus_record_ids(db_with_categorized_rows):
     with db._conn:
         for row in rows:
             db._conn.execute(
-                "UPDATE watchlist_metadata SET argus_record_id = ? "
-                "WHERE watchlist_id = ?",
+                "UPDATE watchlist_metadata SET argus_record_id = ? WHERE watchlist_id = ?",
                 (arid_by_pattern_type[row["pattern_type"]], int(row["id"])),
             )
     return db
@@ -2709,9 +2697,7 @@ def test_evaluate_runtime_pattern_overrides_watchlist_mac_range(db_with_argus_re
     bulk-imported IEEE-registry corpus and tune just that one row's
     severity — exactly the use case the matrix is designed for."""
     overrides = RuntimeSeverityOverride(pattern_overrides={_ARID_MAC_RANGE: "high"})
-    rule = Rule(
-        name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[]
-    )
+    rule = Rule(name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[])
     rs = Ruleset(rules=[rule])
     hits = evaluate(
         rs,
@@ -2829,8 +2815,7 @@ def test_evaluate_runtime_pattern_overrides_loses_to_suppress_vendors(
     db = db_with_argus_record_ids
     with db._conn:
         db._conn.execute(
-            "UPDATE watchlist_metadata SET vendor = ? "
-            "WHERE argus_record_id = ?",
+            "UPDATE watchlist_metadata SET vendor = ? WHERE argus_record_id = ?",
             ("Mitsubishi Electric US, Inc.", _ARID_MAC),
         )
     overrides = RuntimeSeverityOverride(
@@ -2913,9 +2898,7 @@ def test_evaluate_runtime_vendor_severity_watchlist_mac(db_with_vendored_rows):
 
 
 def test_evaluate_runtime_vendor_severity_watchlist_oui(db_with_vendored_rows):
-    overrides = RuntimeSeverityOverride(
-        vendor_severity=_vendor_remap("Hak5 LLC", "med")
-    )
+    overrides = RuntimeSeverityOverride(vendor_severity=_vendor_remap("Hak5 LLC", "med"))
     rule = Rule(name="del_oui", rule_type="watchlist_oui", severity="low", patterns=[])
     rs = Ruleset(rules=[rule])
     hits = evaluate(
@@ -2930,9 +2913,7 @@ def test_evaluate_runtime_vendor_severity_watchlist_oui(db_with_vendored_rows):
 
 
 def test_evaluate_runtime_vendor_severity_watchlist_ssid(db_with_vendored_rows):
-    overrides = RuntimeSeverityOverride(
-        vendor_severity=_vendor_remap("DJI Inc.", "high")
-    )
+    overrides = RuntimeSeverityOverride(vendor_severity=_vendor_remap("DJI Inc.", "high"))
     rule = Rule(name="del_ssid", rule_type="watchlist_ssid", severity="low", patterns=[])
     rs = Ruleset(rules=[rule])
     hits = evaluate(
@@ -2947,9 +2928,7 @@ def test_evaluate_runtime_vendor_severity_watchlist_ssid(db_with_vendored_rows):
 
 
 def test_evaluate_runtime_vendor_severity_ble_uuid(db_with_vendored_rows):
-    overrides = RuntimeSeverityOverride(
-        vendor_severity=_vendor_remap("Apple Inc.", "med")
-    )
+    overrides = RuntimeSeverityOverride(vendor_severity=_vendor_remap("Apple Inc.", "med"))
     rule = Rule(name="del_ble", rule_type="ble_uuid", severity="low", patterns=[])
     rs = Ruleset(rules=[rule])
     hits = evaluate(
@@ -2971,9 +2950,7 @@ def test_evaluate_runtime_vendor_severity_watchlist_mac_range(db_with_vendored_r
     overrides = RuntimeSeverityOverride(
         vendor_severity=_vendor_remap("Acme Surveillance Corp", "high")
     )
-    rule = Rule(
-        name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[]
-    )
+    rule = Rule(name="argus_mr", rule_type="watchlist_mac_range", severity="low", patterns=[])
     rs = Ruleset(rules=[rule])
     hits = evaluate(
         rs,
@@ -3156,3 +3133,52 @@ def test_evaluate_runtime_vendor_severity_loses_to_suppress_categories(
         severity_overrides=overrides,
     )
     assert hits == []
+
+
+# ---------------------------------------------------------------------------
+# The SHIPPED config, not a fixture.
+# ---------------------------------------------------------------------------
+
+
+def test_shipped_rules_yaml_makes_ui_watchlist_entries_actually_match(tmp_path):
+    """A MAC added via /devices/<mac>/watchlist must alert on the next poll.
+
+    This asserts against ``config/rules.yaml`` as shipped, deliberately.
+    Every fixture-based rules test passed while this was broken: the UI
+    wrote the row, turned green, and promised "It will raise alerts on
+    every future sighting", but no enabled rule consulted the watchlist
+    table because the ``argus_mac`` delegation entry was commented out.
+    A ``watchlist_mac`` rule with non-empty patterns matches in memory
+    and never reads the database, so the shipped ruleset had no path to
+    those rows at all.
+
+    Measured before the fix: one watchlist row, zero rule hits.
+
+    Re-commenting ``argus_mac`` fails this test.
+    """
+    shipped = Path(__file__).parents[1] / "config" / "rules.yaml"
+    ruleset = load_ruleset(str(shipped))
+
+    db = Database(str(tmp_path / "ui.db"))
+    try:
+        # Exactly what the route does.
+        db.add_watchlist(
+            pattern="aa:bb:cc:dd:ee:ff",
+            pattern_type="mac",
+            severity="high",
+            description="added via webui at 2026-08-02T00:00:00Z",
+        )
+        hits = evaluate(
+            ruleset,
+            _obs(mac="aa:bb:cc:dd:ee:ff"),
+            is_new_device=False,
+            db=db,
+        )
+        assert hits, (
+            "a MAC added through the UI produced no rule hit against the "
+            "SHIPPED config -- the watchlist button is writing rows nothing reads"
+        )
+        # Severity comes from the matched DB row, not the rule's 'low'.
+        assert any(h.severity == "high" for h in hits), [(h.rule_name, h.severity) for h in hits]
+    finally:
+        db.close()
