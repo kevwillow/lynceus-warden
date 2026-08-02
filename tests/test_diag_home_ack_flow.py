@@ -1,8 +1,17 @@
 """Diagnostic: read-only baseline of the home-page unacknowledged-alerts
 ack-flow (0.9.0 FIX arc, step 1).
 
-Captures, in a runnable + inspectable form, the CURRENT behavior so the
-later htmx-partial-swap fix has a documented baseline to diff against:
+Captures, in a runnable + inspectable form, the behavior AS OF the 0.9.0
+FIX arc step-1, so the step-2 htmx-partial-swap fix had a documented
+baseline to diff against.
+
+⚠️ Step-2 has since SHIPPED. The bullets below are that pre-fix baseline,
+NOT current behavior: the home ack control now carries hx-post/hx-target/
+hx-swap, and htmx wiring is no longer absent from the templates. The
+assertions at the foot of this test are the part that tracks today's
+state; read them, not this list, for what is true now.
+
+Baseline as captured:
 
   - the per-alert ack route's response when clicked from the home
     surface: POST /alerts/{id}/ack -> 303 redirect to / (a FULL document
@@ -403,12 +412,20 @@ def test_diag_home_ack_flow(diag, tmp_path):
     assert ack_resp.headers["location"] == "/"
     assert is_full_doc
     # FLIPPED by 0.9.0 FIX arc step-2: the home ack control now carries
-    # hx-post/hx-target/hx-swap, making index.html the first AND only
-    # template that emits hx-* attributes. (Was: `assert "hx-" not in block`
-    # / `assert len(hx_hits) == 0` — both pinned the pre-fix "no htmx
-    # wiring anywhere" baseline.) The `all(...)` also reasserts the read-
-    # only boundary: the swap is isolated to the home unack table; no other
-    # surface gained an htmx affordance.
+    # hx-post/hx-target/hx-swap. (Was: `assert "hx-" not in block` /
+    # `assert len(hx_hits) == 0` -- both pinned the pre-fix "no htmx wiring
+    # anywhere" baseline.)
+    #
+    # This diagnostic's subject is the HOME ack flow, so `block` is what it
+    # gets to assert on. It used to add `all("index.html" in h for h in
+    # hx_hits)`, claiming the swap stayed isolated to the home unack table.
+    # That clause pinned a boundary the project deliberately crossed:
+    # _device_actions.html gained hx-post at 7cb6667 and _alert_row.html at
+    # d886a18. htmx wiring is now a general pattern, not a home-page
+    # exception, so a global "only index.html" claim asserts something the
+    # codebase never promised and re-breaks on every new htmx surface.
+    # hx_hits stays as recorded observation (ITEM 4 above prints all of it);
+    # it is asserted non-empty only to catch htmx being ripped out wholesale.
     assert "hx-post" in block
-    assert hx_hits and all("index.html" in h for h in hx_hits)
+    assert hx_hits
     assert '{% extends "base.html" %}' in bulk  # bulk-ack "partial" is a full page
