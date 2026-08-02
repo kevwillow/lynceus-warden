@@ -41,13 +41,10 @@ this entry is the surrounding drift it surfaced.
   respects `.gitignore` and had never linted the directory. 81 mechanical
   findings, all fixed.
 
-- **Screenshots, and a gate baseline.** The README shows the dashboard, the
-  alerts triage row, the watchlist filtered to plate readers, and the
-  `/settings` card reporting a missing `bleak`. They are captured against the
-  repo's synthetic fixtures, so every MAC on screen is a test value.
-  `.claude/gates.md` records what to run, the numbers for both the clone and
-  the local suite, and the three traps that make a green run here mean less
-  than it looks like.
+- **Screenshots in the README.** The dashboard, the alerts triage row, the
+  watchlist filtered to plate readers, and the `/settings` card reporting a
+  missing `bleak`. Captured against the repo's synthetic fixtures, so every
+  MAC on screen is a test value rather than a real capture.
 
 - **`bleak` is now an installable extra, and a missing install is reported
   rather than inferred.** `pip install 'lynceus[ble]'` provides it, pinned
@@ -101,24 +98,14 @@ this entry is the surrounding drift it surfaced.
 
 ### Changed
 
-- **Em dashes are gone from every public-facing doc, from the shipped config
-  and install files, and from the wizard's printed output.** 785 in the docs,
-  54 in the README, 45 across both example configs, the rules template, the
-  deploy and systemd units and the install scripts, rewritten rather
-  than character-swapped, so bracketing pairs became commas or parentheses,
-  headings and `**Label: description.**` entries took colons, and clauses
-  that a dash was welding together became sentences. Nine printed strings
-  changed with them, and the docs that quote those strings moved in
-  lockstep. Two surfaces keep theirs because neither is prose: the
-  `bootstrap_kismet` capture prompt uses `<iface> - <descriptor>` as a
-  tested structural separator, and `notify.build_type_suffix` uses an em
-  dash as the placeholder that distinguishes an absent Argus category from
-  a literal category of `unknown`.
-- **README leads with what Lynceus does**, and three claims that overstated
-  were corrected. `make lint` runs `ruff check .` only and passes clean;
-  formatter drift moved to a separate `make format-check` that is expected
-  to fail until a dedicated reformatting pass, on the grounds that a
-  permanently red gate is one people stop reading.
+- **`make lint` and `make format-check` are separate targets.** `lint` runs
+  `ruff check .` and is expected to pass. Formatter drift moved to its own
+  target, which currently fails and will until someone does a dedicated
+  reformatting pass; folding it into `lint` only teaches people to ignore a
+  permanently red gate.
+- **Three README claims that overstated were corrected**, including the
+  watchlist row count, which quoted the export size rather than what actually
+  lands in the database.
 - **The configuration reference covers every field.** Six had drifted past
   the docs, including both nested blocks (`capture` and `ble_bridge`),
   which are the privacy-relevant ones. `docs/PROJECT_STATUS.md` stopped
