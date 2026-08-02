@@ -4,11 +4,57 @@ Findings from the gap audit: **what a surface claims** vs **what the code does**
 the control plane working while the payload never lands — the handler returns 200, the row is
 written, the UI turns green, and the thing that was supposed to change never changes.
 
-**Taken at**: `3704737`, 2026-08-02. Wave 1 of a planned sweep; 4 of ~16 surfaces covered.
+**Taken at**: `3704737`, 2026-08-02. Waves 1–2; 13 of ~16 surfaces covered.
+
+**Suite baseline at `3704737`, repo root**: `3060 passed, 1 failed, 1 skipped, 47 deselected` in
+15m46s. The one failure is the known Argus schema drift.
 
 Every entry below was confirmed at its file:line by re-reading the code, not accepted from the
 auditor that reported it. **Three of the four reported CORE-BROKEN findings did not survive that
 check** — see *Refuted* below, and read it before re-reporting any of them.
+
+---
+
+## 🔴 Finding 0 — adding a device to the watchlist from the UI does nothing
+
+**Reproduced live**, not inferred. Run `scripts/audit/repro_watchlist_gap.py`.
+
+**The promise**, verbatim: `Add {mac} to the watchlist? It will raise alerts on every future
+sighting.` — `src/lynceus/webui/templates/_device_actions.html:31`
+
+**What happens**: `POST /devices/{mac}/watchlist` calls `db.add_watchlist(...)`
+(`webui/app.py:3204`). The row is written, the UI turns green, the entry appears on `/watchlist`.
+
+**Where the chain stops**: `rules.py:804`. A `watchlist_mac` rule with **non-empty** `patterns`
+matches in memory and never consults the database. Database rows are only consulted by the
+*delegation* path, which requires an enabled `watchlist_mac` rule with **empty** `patterns`. In the
+shipped `config/rules.yaml`, `argus_mac` (line 85) and `argus_mac_range` (line 51) are both
+commented out — "Default is OFF; uncomment to enable". The only enabled empty-pattern rule is
+`argus_ssid`, which is `watchlist_ssid`.
+
+**Measured** against the shipped ruleset, unmodified:
+
+```
+watchlist rows in DB: 1 -> aa:bb:cc:dd:ee:ff (high)
+enabled rules: [('hak5_pineapple_oui','watchlist_oui',1), ('known_bad_mac','watchlist_mac',1),
+                ('rogue_ssids','watchlist_ssid',2), ('new_device_alert',...), ('argus_ssid','watchlist_ssid',0)]
+RuleHits produced for that MAC: 0
+```
+
+**Why it survived**: both tests stop before the boundary. The route test builds a config with no
+`rules_path` and asserts only that the row exists (`tests/test_device_actions.py:34`, `:71`). The
+poll integration test **hand-injects** an empty-pattern `Ruleset` (`tests/test_alert_linkage.py:1197`),
+supplying exactly the production wiring that is missing.
+
+**Why manual testing cannot catch it**: the failure mode is an alert that does not fire. Everything
+an operator can see — the confirmation, the row, the `/watchlist` entry — is correct. Nobody notices
+silence.
+
+⛔ **Decision required before fixing.** `config/rules.yaml:78-83` makes an explicit backward-compat
+promise: "existing operator deployments see zero behavioral change unless they deliberately
+uncomment one of the entries below." Enabling `argus_mac` by default breaks that promise on purpose.
+The alternatives are to have the route refuse or warn when no delegation rule is active, or to have
+the UI write an entry that matches regardless of ruleset shape. Not fixed unilaterally.
 
 ---
 
@@ -62,12 +108,28 @@ verbatim before judging whether code violates it. A delegate's report is a lead,
 
 ---
 
+## Wave 2 — reported clean, with evidence
+
+Nine surfaces swept. Eight returned no CORE-BROKEN finding; the ninth produced Finding 0 above.
+These are **reported** clean, not independently re-verified line by line — treat as lower-confidence
+than the ✅ list, which I did re-read.
+
+Rules-engine match types (MAC, OUI, MAC range, BLE) all reachable from a live poll · alerts triage
+(ack, unack, bulk-ack, ack-all-visible, notes, CSV) · `/healthz` and poll-tick observability · config
+reload semantics, with no field documented hot-reloadable but read only at startup · multi-adapter
+`kismet_source_locations` mapping reaching sighting rows · systemd hardening directives really
+installed and consumed · migrations and rollback implemented and CLI-reachable · dark-mode
+persistence and the no-flash claim.
+
+⚠️ Wave 1 refuted three of four CORE-BROKEN claims on verification, so a delegate reporting *clean*
+deserves the same scepticism as one reporting *broken*. Spot-check before relying on this section.
+
 ## Not yet audited
 
-`/settings` and the ntfy notifier were swept but their reports are not yet verified. Untouched:
-watchlist provenance, rules-engine matching, devices and probes surfaces, health and poll-tick
-observability, dark-mode persistence, config reload semantics, multi-adapter deployment, systemd
-unit hardening, migration rollback.
+`/settings` and the ntfy notifier were swept but their reports are not yet verified. The watchlist
+report's second claim — that provenance cross-links are not universal, `webui/app.py:3766` and
+`watchlist_detail.html:97` — is unverified and lower severity. Untouched: devices and probes
+surfaces, the `lynceus-setup` wizard, and the Argus import path.
 
 ## Method note
 
