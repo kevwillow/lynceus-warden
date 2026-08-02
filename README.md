@@ -1,5 +1,29 @@
 # Lynceus Warden
 
+```
+██╗     ██╗   ██╗███╗   ██╗ ██████╗███████╗██╗   ██╗███████╗
+██║     ╚██╗ ██╔╝████╗  ██║██╔════╝██╔════╝██║   ██║██╔════╝
+██║      ╚████╔╝ ██╔██╗ ██║██║     █████╗  ██║   ██║███████╗
+██║       ╚██╔╝  ██║╚██╗██║██║     ██╔══╝  ██║   ██║╚════██║
+███████╗   ██║   ██║ ╚████║╚██████╗███████╗╚██████╔╝███████║
+╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝╚══════╝ ╚═════╝ ╚══════╝
+        W A R D E N  -  passive RF counter-surveillance
+
+
+      ((( o )))          ((( o )))          ((( o )))
+          |                  |                  |
+         alpr              drone             tracker
+          +------------------+------------------+
+                             |
+                             v
+                   +--------------------+
+                   |  lynceus  listens  |   never transmits
+                   +---------+----------+
+                             |
+                             v
+                     your phone buzzes
+```
+
 **Something near you is broadcasting. Lynceus tells you what.**
 
 A passive RF watchtower for the airspace you actually live in. It listens to
@@ -24,6 +48,37 @@ it tells you the truth about what it heard.
 > with anything that matters.
 
 ---
+
+## What it looks like
+
+The dashboard, running against the repo's own synthetic fixtures plus the
+bundled Argus snapshot. Every MAC below is a test value, not a real capture.
+
+![Lynceus dashboard: health, last poll, devices seen, alert severity matrix, a
+30-day alerts-per-day sparkline, and recent unacknowledged alerts](docs/images/dashboard.png)
+
+Triage on `/alerts`. Acknowledge, snooze, or start watching a MAC without
+leaving the row:
+
+![The alerts table showing a high-severity Hak5 WiFi Pineapple OUI match
+alongside low-severity new-device alerts, each row carrying an Acknowledge
+button and a Watch control with a duration dropdown](docs/images/alerts-triage.png)
+
+The bundled watchlist, filtered to license-plate readers. Every row carries
+its Argus record id, vendor, and confidence score, and links through to the
+public source it came from:
+
+![The watchlist filtered to the alpr category, showing Flock Safety
+signatures across BLE UUID, MAC, MAC range, SSID pattern, and BLE local name
+types, each with an argus id and a confidence score](docs/images/watchlist-argus.png)
+
+And the part most tools skip. `/settings` says when a feature is switched on
+but cannot possibly work, instead of leaving you to guess at antennas:
+
+![The passive BLE bridge card on the settings page, reporting that the bleak
+library is not installed, that an enabled bridge would log one warning and
+then capture nothing, and giving the exact pip command to fix
+it](docs/images/settings-ble-bridge.png)
 
 ## What Lynceus does
 
