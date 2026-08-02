@@ -37,7 +37,7 @@ it tells you the truth about what it heard.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Status: v0.9.4](https://img.shields.io/badge/Status-v0.9.4-blue.svg)](#project-status)
+[![Status: v0.9.5](https://img.shields.io/badge/Status-v0.9.5-blue.svg)](#project-status)
 [![Counter-Surveillance](https://img.shields.io/badge/Counter--Surveillance-passive%20only-1f6feb.svg)](#privacy--threat-model)
 [![Watching the Watchers](https://img.shields.io/badge/Watching-the%20Watchers-black.svg)](#what-lynceus-does)
 
@@ -255,16 +255,19 @@ serial. Both are tracked openly in [BACKLOG.md](BACKLOG.md).
 
 ## Project status
 
-**v0.9.4.** Feature-complete for the 0.9.x line and hardware-verified
+**v0.9.5.** Feature-complete for the 0.9.x line and hardware-verified
 on-device. The Bluetooth fixes in 0.9.3 and 0.9.4 came out of real rig
 captures, not out of reasoning about what should work.
 
-The test suite is maintained **outside this repository** and gates every
-release; `tests/` is gitignored, so `make test` does nothing on a fresh clone
-and no test claim here is independently verifiable by a reader. That trade is
-deliberate, because the fixtures describe a real rig, and
-[docs/TESTING.md](docs/TESTING.md) explains it. What you *can* verify from a
-clone is the code itself, `ruff check .`, and `python -m build`.
+**The test suite ships, so you can check the claims on this page yourself.**
+`pytest -q` on a clone runs 3024 tests, and `ruff check .` and
+`python -m build` both pass. Eleven test files stay out of the repo because
+they embed the capture adapter's own MAC or the rig account name, which is
+what "the fixtures describe a real rig" actually meant; they are listed by
+name in `.gitignore` rather than hidden behind a glob. The full local suite
+is 3508, so the numbers differ and this page quotes the one you can
+reproduce. `.claude/gates.md` records both, along with the traps that make a
+green run mean less than it looks like.
 
 ## Installation
 

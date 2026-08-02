@@ -1,3 +1,3 @@
 """Lynceus — personal RF security monitoring platform for Raspberry Pi."""
 
-__version__ = "0.9.4"
+__version__ = "0.9.5"

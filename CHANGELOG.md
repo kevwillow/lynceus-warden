@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-08-02
+
 The BLE bridge shipped in 0.9.4 with a prompt asking whether you wanted it,
 and one way to answer yes and get nothing. `bleak` was never a dependency of
 anything, so no documented install path put it in the venv, and an enabled
@@ -15,6 +17,37 @@ two causes, neither of them the real one. That is closed, and the rest of
 this entry is the surrounding drift it surfaced.
 
 ### Added
+
+- **The test suite is in the repository.** `tests/` was excluded by three
+  overlapping patterns, so a clone carried nothing and `make test` exited 5
+  with "no tests collected". A reader could not check a single claim the
+  README made, and CI had nothing to gate on, which is an odd position for a
+  project that tells you to read the source before trusting it.
+
+  118 files ship, 110 of them test modules, covering the rules engine, the
+  importer, the database and its migrations, the web UI, the setup wizard,
+  redaction, CSRF, and the Continuity decoder. A clone runs 3024 tests; the
+  full local suite is 3508.
+
+  Eleven files stay out, and the reason is the one the README always gave:
+  they describe a real rig. Six embed the capture adapter's identity, as the
+  `wlx<mac>` interface name or the `00:c0:ca` OUI it derives from, one hard-
+  codes the rig account path, and one is a capture-chain probe document. They
+  are now listed by name in `.gitignore` so the exclusion can be audited,
+  rather than inferred from a `*tests*` glob. A new test that hard-codes a
+  real adapter or host belongs on that list.
+
+  Publishing them turned `ruff check` red for the first time, because ruff
+  respects `.gitignore` and had never linted the directory. 81 mechanical
+  findings, all fixed.
+
+- **Screenshots, and a gate baseline.** The README shows the dashboard, the
+  alerts triage row, the watchlist filtered to plate readers, and the
+  `/settings` card reporting a missing `bleak`. They are captured against the
+  repo's synthetic fixtures, so every MAC on screen is a test value.
+  `.claude/gates.md` records what to run, the numbers for both the clone and
+  the local suite, and the three traps that make a green run here mean less
+  than it looks like.
 
 - **`bleak` is now an installable extra, and a missing install is reported
   rather than inferred.** `pip install 'lynceus[ble]'` provides it, pinned
@@ -68,8 +101,10 @@ this entry is the surrounding drift it surfaced.
 
 ### Changed
 
-- **Em dashes are gone from every public-facing doc and from the wizard's
-  printed output.** 785 in the docs and 54 in the README, rewritten rather
+- **Em dashes are gone from every public-facing doc, from the shipped config
+  and install files, and from the wizard's printed output.** 785 in the docs,
+  54 in the README, 45 across both example configs, the rules template, the
+  deploy and systemd units and the install scripts, rewritten rather
   than character-swapped, so bracketing pairs became commas or parentheses,
   headings and `**Label: description.**` entries took colons, and clauses
   that a dash was welding together became sentences. Nine printed strings
