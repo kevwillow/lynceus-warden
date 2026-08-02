@@ -82,11 +82,22 @@ rules:
   # existing operator deployments see zero behavioral change unless
   # they deliberately uncomment one of the entries below.
   #
-  # - name: argus_mac
-  #   rule_type: watchlist_mac
-  #   severity: low  # ignored, actual severity comes from the matched row
-  #   patterns: []
-  #   description: "Argus + bundled exact-MAC watchlist"
+  # argus_mac is enabled by default as of 0.9.6. It was commented out,
+  # and the consequence was not the intended conservatism: the
+  # /devices/<mac>/watchlist button writes a watchlist row, turns the
+  # panel green, and promises "It will raise alerts on every future
+  # sighting" -- while no enabled rule consulted the table, so the next
+  # poll ignored it. Measured on the shipped config: one watchlist row,
+  # zero rule hits. See scripts/audit/repro_watchlist_gap.py.
+  #
+  # This deliberately breaks the backward-compat promise stated below,
+  # for the exact-MAC case only. The promise protected a behaviour
+  # nobody wants -- a watchlist that does not watch.
+  - name: argus_mac
+    rule_type: watchlist_mac
+    severity: low  # ignored, actual severity comes from the matched row
+    patterns: []
+    description: "Argus + bundled exact-MAC watchlist"
   #
   # - name: argus_oui
   #   rule_type: watchlist_oui
