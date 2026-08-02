@@ -7,7 +7,9 @@ written, the UI turns green, and the thing that was supposed to change never cha
 **Taken at**: `3704737`, 2026-08-02. Waves 1–2; 13 of ~16 surfaces covered.
 
 **Suite baseline at `3704737`, repo root**: `3060 passed, 1 failed, 1 skipped, 47 deselected` in
-15m46s. The one failure is the known Argus schema drift.
+15m46s. The one failure was the Argus import drift, **since fixed** — at `962dab6` the suite is
+`3064 passed, 1 skipped, 0 failed`, green for the first time. Both halves of that drift were on
+Lynceus's side, not Argus's: see the commit for the nullable-confidence and accept-list reasoning.
 
 Every entry below was confirmed at its file:line by re-reading the code, not accepted from the
 auditor that reported it. **Three of the four reported CORE-BROKEN findings did not survive that
@@ -55,6 +57,35 @@ promise: "existing operator deployments see zero behavioral change unless they d
 uncomment one of the entries below." Enabling `argus_mac` by default breaks that promise on purpose.
 The alternatives are to have the route refuse or warn when no delegation rule is active, or to have
 the UI write an entry that matches regardless of ruleset shape. Not fixed unilaterally.
+
+---
+
+## 🔴 Finding 0b — Open Drone ID service name is not matched, and the code says so
+
+`org.opendroneid.remoteid` — ASTM F3411 Remote ID, category `drone`, confidence 85 — arrives in the
+Argus export as `identifier_type=wifi_aware_service_name`. That type is in neither
+`IDENTIFIER_TYPE_MAP` nor `NON_RF_IDENTIFIER_TYPES`, so the importer drops it and logs
+(`import_argus.py:578`):
+
+> *"1 Argus identifier type(s) are neither mapped nor recorded as non-RF: wifi_aware_service_name=1.
+> If any of these ARE observable over the air, Lynceus is silently not matching them."*
+
+It **is** observable over the air — Remote ID broadcasts it as a Wi-Fi Aware (NAN) service name — and
+the README advertises Remote-ID detection.
+
+**Partly mitigated**: Lynceus does capture Remote ID by a different route,
+`kismet.device.base.remote_id` → `serial_number` / `uas_id` (`kismet.py:411-412`), feeding the
+`drone_id_prefix` rule type. So Remote-ID-broadcasting drones are not wholly invisible; what is
+missed is the generic service name that marks *any* compliant broadcast.
+
+⛔ **Deliberately left unfixed, and the warning deliberately left firing.** Filing
+`wifi_aware_service_name` under `NON_RF_IDENTIFIER_TYPES` would silence it in one line and would be
+**false**: that set means "resolved over IP, recovered by teardown, or paperwork — never broadcast"
+(`import_argus.py:115-133`). A NAN service name is broadcast. Silencing a true warning with a false
+classification is strictly worse than leaving a known gap visible.
+
+Closing it properly needs a Wi-Fi Aware capture path — first question is whether Kismet exposes NAN
+service names at all, which is unestablished. That is feature work, not drift.
 
 ---
 
