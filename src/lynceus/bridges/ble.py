@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from .. import paths
 from ..allowlist import Allowlist
 from ..ble_bridge_checks import bridge_source_name
 from ..ble_continuity import classify_manufacturer_data
@@ -86,9 +87,26 @@ def _or_pattern_specs() -> tuple[tuple[int, int, bytes], ...]:
     )
 
 
-# Rig prod DB — the bridge WRITES (devices/sightings), so a smoke run must never
-# target it. Promoted from scripts/spike_ble_bridge.py:88.
-_PROD_DB_PATH = "/home/guru/.local/share/lynceus/lynceus.db"
+def _canonical_db_paths() -> tuple[str, ...]:
+    """Canonical DB locations a smoke run must never write to.
+
+    The bridge WRITES devices/sightings, so the standalone runner refuses to
+    open a real database. This used to be one hardcoded developer path
+    (``/home/guru/...``), which shipped in the wheel and protected exactly one
+    machine while naming its owner. Resolving the canonical paths instead
+    guards every install of either scope, on whatever host is running it.
+
+    ``default_db_path`` raises NotImplementedError for the system scope off
+    Linux, so scopes are probed independently and an unavailable one simply
+    contributes nothing to the guard.
+    """
+    found: list[str] = []
+    for scope in ("user", "system"):
+        try:
+            found.append(str(paths.default_db_path(scope)))
+        except NotImplementedError:
+            continue
+    return tuple(found)
 
 # Backoff before restarting the scan after a bleak/BlueZ failure.
 _RESTART_BACKOFF_SECONDS = 5.0
@@ -422,7 +440,7 @@ class BleBridge:
 def _guard_not_prod(db_path: str, config_db_path: str | None) -> None:
     """Hard-exit if the chosen DB resolves to a prod DB (the bridge writes)."""
     target = os.path.realpath(os.path.expanduser(db_path))
-    for prod in (_PROD_DB_PATH, config_db_path):
+    for prod in _canonical_db_paths() + (config_db_path,):
         if prod and target == os.path.realpath(os.path.expanduser(prod)):
             sys.exit(
                 f"REFUSING TO RUN: --db resolves to a prod DB ({prod}). This bridge "

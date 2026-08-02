@@ -151,8 +151,10 @@ These are design commitments, not current limitations:
   there — only the label survives, and a regression test fails the build if
   anyone starts buffering the raw bytes. Read
   [the enablement notes](docs/CONFIGURATION.md#ble_bridge--passive-ble-capture-bridge)
-  before switching it on; it needs an adapter Kismet isn't holding, and the
-  setup wizard checks the three ways it silently does nothing.
+  before switching it on: it needs an adapter Kismet isn't holding, and it
+  needs the optional scan library, which a default install does not ship —
+  `pip install 'lynceus[ble]'`. The setup wizard and `/settings` both check
+  the four ways an enabled bridge silently does nothing, and print the fix.
 - **Ergonomic CLI tooling.** A wizard (`lynceus-setup`, with a browser-based
   `--web` flow for headless boxes), a Kismet bootstrapper, a config validator
   with migration rollback, a config exporter for backup and diffing, and
@@ -187,6 +189,11 @@ ceiling. Treat any product promising more than that with suspicion.
 The same honesty applies elsewhere: the BLE service-UUID and manufacturer-id
 matchers are built and tested, but they are **inert unless you enable the BLE
 bridge**, because Kismet's classic capture path never hands them any payload.
+And an enabled bridge is inert too until `bleak` is installed — it is an
+optional extra, so a default install starts the bridge, logs one warning, and
+captures nothing. That is indistinguishable from a working bridge that has
+heard nothing, which is why `/settings` now says so outright instead of
+leaving you to guess at antennas.
 The drone Remote-ID matcher is likewise correct but unproven in the field —
 no drone has been captured yet to confirm which Kismet field carries the
 serial. Both are tracked openly in [BACKLOG.md](BACKLOG.md).
