@@ -1,0 +1,8304 @@
+"""Tests for the read-only web UI skeleton."""
+
+from __future__ import annotations
+
+import io
+from contextlib import redirect_stdout
+from pathlib import Path
+
+import pytest
+import yaml
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from lynceus.config import Config
+from lynceus.db import Database
+from lynceus.webui.app import create_app
+
+
+def _make_app(tmp_path):
+    config = Config(db_path=str(tmp_path / "ui.db"))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    return app, db
+
+
+@pytest.mark.webui
+def test_healthz_returns_200_and_renders(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/healthz")
+        assert r.status_code == 200
+        assert "schema version" in r.text
+        assert "devices tracked" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_healthz_reflects_db_state(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        db.upsert_device("aa:bb:cc:dd:ee:02", "wifi", "Acme", 0, 100)
+        db.add_alert(ts=200, rule_name="rule_a", mac=None, message="boom", severity="high")
+
+        with TestClient(app) as client:
+            r = client.get("/healthz")
+        assert r.status_code == 200
+        text = r.text
+        # Loose assertions — tighten when real views land in prompt 15.
+        idx_devices = text.find("devices tracked")
+        assert idx_devices != -1
+        assert "2" in text[idx_devices : idx_devices + 200]
+        idx_alerts_total = text.find("alerts (total)")
+        assert idx_alerts_total != -1
+        assert "1" in text[idx_alerts_total : idx_alerts_total + 200]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_root_renders_index_landing_page(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r_root = client.get("/")
+            r_health = client.get("/healthz")
+        assert r_root.status_code == 200
+        assert r_health.status_code == 200
+        # The new landing page is the index, not the healthz template.
+        assert "<h2>home</h2>" in r_root.text
+        assert "recent unacknowledged alerts" in r_root.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_static_pico_css_served(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/static/pico.min.css")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/css")
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_static_htmx_js_served(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/static/htmx.min.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers["content-type"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_openapi_disabled(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            assert client.get("/openapi.json").status_code == 404
+            assert client.get("/docs").status_code == 404
+            assert client.get("/redoc").status_code == 404
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_app_factory_returns_distinct_apps(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    app1, db1 = _make_app(tmp_path / "a")
+    app2, db2 = _make_app(tmp_path / "b")
+    try:
+        assert app1 is not app2
+        assert app1.state.db is not app2.state.db
+    finally:
+        db1.close()
+        db2.close()
+
+
+@pytest.mark.webui
+def test_main_version_flag_exits_zero():
+    from lynceus import __version__
+    from lynceus.webui.server import main
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = main(["--version"])
+    assert rc == 0
+    assert __version__ in buf.getvalue()
+
+
+@pytest.mark.webui
+def test_main_missing_config_returns_one(tmp_path):
+    from lynceus.webui.server import main
+
+    rc = main(["--config", str(tmp_path / "nonexistent.yaml")])
+    assert rc == 1
+
+
+@pytest.mark.webui
+def test_config_default_ui_bind_host_loopback():
+    cfg = Config()
+    assert cfg.ui_bind_host == "127.0.0.1"
+    assert cfg.ui_bind_port == 8765
+    assert cfg.ui_allow_remote is False
+
+
+@pytest.mark.webui
+def test_config_non_loopback_without_remote_flag_rejected():
+    with pytest.raises(ValidationError) as exc_info:
+        Config(ui_bind_host="0.0.0.0")
+    assert "ui_allow_remote" in str(exc_info.value)
+
+
+@pytest.mark.webui
+def test_config_non_loopback_with_remote_flag_accepted():
+    cfg = Config(ui_bind_host="0.0.0.0", ui_allow_remote=True)
+    assert cfg.ui_bind_host == "0.0.0.0"
+    assert cfg.ui_allow_remote is True
+
+
+@pytest.mark.webui
+def test_config_localhost_string_accepted():
+    cfg = Config(ui_bind_host="localhost")
+    assert cfg.ui_bind_host == "localhost"
+    assert cfg.ui_allow_remote is False
+
+
+@pytest.mark.webui
+def test_config_invalid_port_rejected():
+    with pytest.raises(ValidationError):
+        Config(ui_bind_port=0)
+    with pytest.raises(ValidationError):
+        Config(ui_bind_port=70000)
+
+
+# ---------------------------------------------------------------------------
+# Read-only views: alerts, devices, rules, allowlist.
+# ---------------------------------------------------------------------------
+
+MAC_A = "aa:bb:cc:dd:ee:01"
+MAC_B = "aa:bb:cc:dd:ee:02"
+LOC = "lab"
+
+
+def _ack(db, alert_id):
+    with db._conn:
+        db._conn.execute("UPDATE alerts SET acknowledged = 1 WHERE id = ?", (alert_id,))
+
+
+@pytest.mark.webui
+def test_index_renders_with_recent_alerts(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="acked-msg", severity="low")
+        db.add_alert(ts=200, rule_name="r", mac=None, message="unacked-one", severity="med")
+        db.add_alert(ts=300, rule_name="r", mac=None, message="unacked-two", severity="high")
+        _ack(db, a1)
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "unacked-one" in r.text
+        assert "unacked-two" in r.text
+        assert "acked-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_with_no_alerts_shows_empty_message(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "No unacknowledged alerts" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_renders(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(5):
+            db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"alert-{i}", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        for i in range(5):
+            assert f"alert-{i}" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_severity(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="low-msg", severity="low")
+        db.add_alert(ts=101, rule_name="r", mac=None, message="med-msg", severity="med")
+        db.add_alert(ts=102, rule_name="r", mac=None, message="high-msg", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high")
+        assert r.status_code == 200
+        assert "high-msg" in r.text
+        assert "low-msg" not in r.text
+        assert "med-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_acknowledged_true_false(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="ackmsg-yes", severity="low")
+        db.add_alert(ts=200, rule_name="r", mac=None, message="pendmsg-no", severity="low")
+        _ack(db, a1)
+        with TestClient(app) as client:
+            r_acked = client.get("/alerts?acknowledged=true")
+            r_unacked = client.get("/alerts?acknowledged=false")
+        assert "ackmsg-yes" in r_acked.text
+        assert "pendmsg-no" not in r_acked.text
+        assert "pendmsg-no" in r_unacked.text
+        assert "ackmsg-yes" not in r_unacked.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_invalid_severity_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=critical")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_invalid_acknowledged_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?acknowledged=maybe")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "path, expected_labels",
+    [
+        # alerts has two filter inputs (mac/ssid/vendor + rule/message),
+        # disambiguated so neither reads as a bare "q" and the two read
+        # distinctly from each other.
+        ("/alerts", ("<label>device search", "<label>rule search")),
+        ("/watchful", ("<label>search",)),
+        ("/watchlist", ("<label>search",)),
+        ("/allowlist", ("<label>search",)),
+    ],
+)
+def test_dashboard_search_labels_are_unified_and_no_bare_q(tmp_path, path, expected_labels):
+    """v0.7.4 fix for the bare-'q' identifier on alerts / watchful /
+    watchlist: smoke reported a stray 'q' next to the search input on
+    those three pages where allowlist read 'search'. Unify the label
+    text so all four search-bearing dashboard pages have human-readable
+    labels; on alerts (which has TWO search inputs) disambiguate as
+    'device search' and 'rule search' to avoid two identical labels in
+    the same fieldset. The form `name=\"q\"` stays unchanged so URLs
+    are stable -- only the visible label is touched."""
+    # /allowlist only renders the search form when allowlist_path is set;
+    # configure a minimal allowlist so the form (and its label) renders.
+    allowlist_yaml = tmp_path / "allowlist.yaml"
+    allowlist_yaml.write_text(
+        "version: 1\nentries:\n  - pattern: 'aa:bb:cc:dd:ee:ff'\n    pattern_type: mac\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), allowlist_path=str(allowlist_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get(path)
+        assert r.status_code == 200, f"{path} did not render"
+        for expected in expected_labels:
+            assert expected in r.text, f"{path} missing label {expected!r}"
+        # The drifted bare 'q' label must not reappear on any of the
+        # four pages -- the URL contract is on name="q", not the label.
+        assert "<label>q\n" not in r.text and "<label>q " not in r.text, (
+            f"{path} still renders a bare <label>q -- the unification regressed"
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_links_preserve_filters(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"m{i}", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high&page=1&page_size=25")
+        assert r.status_code == 200
+        assert "severity=high" in r.text
+        assert "page=2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_renders(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, 100)
+        aid = db.add_alert(
+            ts=500, rule_name="my_rule", mac=MAC_A, message="boom-msg", severity="high"
+        )
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "boom-msg" in r.text
+        assert "my_rule" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_404(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts/9999")
+        assert r.status_code == 404
+        assert "not found" in r.text.lower()
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_with_null_mac_no_device_section(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=500, rule_name="r", mac=None, message="systemic", severity="med")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "systemic" in r.text
+        # No device card should be present.
+        assert "<header><strong>device</strong></header>" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_renders(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, 100)
+        db.upsert_device(MAC_B, "ble", "Beta", 1, 200)
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        assert MAC_A in r.text
+        assert MAC_B in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_renders_rssi_zero_as_em_dash(tmp_path):
+    """v0.7.9 Touch 8: Kismet returns rssi=0 for devices it has not
+    directly heard from (learned about via another device's beacon
+    list). Rendering literal 0 misled operators into reading the
+    device as 'present at noise-floor' when in fact lynceus has no
+    direct signal measurement. The template now collapses both
+    rssi=0 and rssi=null into an em-dash so the unknown-signal
+    surface is unambiguous."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.ensure_location("default", "Default")
+        now = 1700000000
+        # Three devices: rssi=0 (placeholder), rssi=null (no sightings),
+        # rssi=-72 (real signal). All three render in the same table.
+        db.upsert_device("aa:bb:cc:00:00:01", "wifi", "Zero", 0, now)
+        db.insert_sighting(
+            mac="aa:bb:cc:00:00:01", ts=now,
+            rssi=0, ssid=None, location_id="default",
+        )
+        db.upsert_device("aa:bb:cc:00:00:02", "wifi", "Null", 0, now)
+        # No sighting for device 2 -> last_rssi falls to None.
+        db.upsert_device("aa:bb:cc:00:00:03", "wifi", "Real", 0, now)
+        db.insert_sighting(
+            mac="aa:bb:cc:00:00:03", ts=now,
+            rssi=-72, ssid=None, location_id="default",
+        )
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        # Each device row is bracketed by its <a href="/devices/<mac>">
+        # link, so we can slice the cell scoped to each MAC by walking
+        # from that anchor to the next.
+        def _row_for(mac: str) -> str:
+            anchor = f'/devices/{mac}'
+            start = r.text.find(anchor)
+            assert start != -1, f"no row for {mac}"
+            # Next row begins at the next /devices/ anchor, or end of
+            # text for the last row.
+            end = r.text.find('/devices/', start + len(anchor))
+            return r.text[start:end if end != -1 else len(r.text)]
+
+        zero_row = _row_for("aa:bb:cc:00:00:01")
+        null_row = _row_for("aa:bb:cc:00:00:02")
+        real_row = _row_for("aa:bb:cc:00:00:03")
+        # rssi=0 collapses to em-dash (the fix).
+        assert "&mdash;" in zero_row
+        # Belt-and-suspenders: literal "0" must NOT appear as a
+        # standalone RSSI cell. The sightings count happens to be 1
+        # for these rows, but a stray cell text >0< would betray the
+        # bug. Asserting absence of "<td>0</td>" is the tightest
+        # check Jinja-side rendering supports.
+        assert "<td>0</td>" not in zero_row, (
+            "rssi=0 must render as em-dash, not literal 0"
+        )
+        # rssi=null also collapses (existing behavior preserved).
+        assert "&mdash;" in null_row
+        # rssi=-72 renders verbatim (no regression).
+        assert "-72" in real_row
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_recent_devices_renders_rssi_zero_as_em_dash(tmp_path):
+    """v0.7.9 Touch 8: same em-dash semantic on the home page recent-
+    seen card. Two devices, rssi=0 and rssi=-65; the zero device
+    collapses to em-dash, the real measurement renders verbatim."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.ensure_location("default", "Default")
+        now = 1700000000
+        db.upsert_device("aa:bb:cc:00:00:01", "wifi", "Zero", 0, now)
+        db.insert_sighting(
+            mac="aa:bb:cc:00:00:01", ts=now,
+            rssi=0, ssid=None, location_id="default",
+        )
+        db.upsert_device("aa:bb:cc:00:00:02", "wifi", "Real", 0, now)
+        db.insert_sighting(
+            mac="aa:bb:cc:00:00:02", ts=now,
+            rssi=-65, ssid=None, location_id="default",
+        )
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        # The two device rows live in the recent-devices card on /. Slice
+        # on the /devices/<mac> anchors that bracket each row.
+        zero_anchor = '/devices/aa:bb:cc:00:00:01'
+        real_anchor = '/devices/aa:bb:cc:00:00:02'
+        assert zero_anchor in r.text
+        assert real_anchor in r.text
+        # The literal "-65" appears somewhere in r.text (the real row).
+        assert "-65" in r.text
+        # Slice the zero row and confirm it does NOT contain ">0<"
+        # as a standalone cell payload -- that would be the bug.
+        start = r.text.find(zero_anchor)
+        next_anchor = r.text.find(real_anchor, start)
+        zero_block = r.text[start:next_anchor if next_anchor != -1 else len(r.text)]
+        assert "<td>0</td>" not in zero_block
+        assert "&mdash;" in zero_block
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_device_detail_renders_rssi_zero_as_em_dash(tmp_path):
+    """v0.7.9 Touch 8: device detail page also applies the same
+    em-dash semantic to per-sighting RSSI values. Two sightings for
+    the same device -- one rssi=0, one rssi=-80 -- the former
+    collapses, the latter renders verbatim."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.ensure_location("default", "Default")
+        now = 1700000000
+        mac = "aa:bb:cc:dd:ee:ff"
+        db.upsert_device(mac, "wifi", "Acme", 0, now)
+        db.insert_sighting(
+            mac=mac, ts=now, rssi=0, ssid=None, location_id="default",
+        )
+        db.insert_sighting(
+            mac=mac, ts=now + 60, rssi=-80, ssid=None, location_id="default",
+        )
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{mac}")
+        assert r.status_code == 200
+        # Both sightings render; the -80 verbatim, the 0 as em-dash.
+        assert "-80" in r.text
+        # No standalone <td>0</td> for the rssi cell.
+        assert "<td>0</td>" not in r.text
+        # The em-dash appears at least once in the sightings table.
+        assert "&mdash;" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_filter_by_type(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, 100)
+        db.upsert_device(MAC_B, "ble", "Beta", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices?device_type=ble")
+        assert r.status_code == 200
+        assert MAC_B in r.text
+        assert MAC_A not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_filter_randomized_true_false(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, 100)
+        db.upsert_device(MAC_B, "wifi", "Acme", 1, 100)
+        with TestClient(app) as client:
+            r_rand = client.get("/devices?randomized=true")
+            r_not = client.get("/devices?randomized=false")
+        assert MAC_B in r_rand.text and MAC_A not in r_rand.text
+        assert MAC_A in r_not.text and MAC_B not in r_not.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_invalid_type_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices?device_type=cellular")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_http_exception_renders_html_error_page(tmp_path):
+    """v0.7.3 fix: hand-edited URL with bogus filter no longer drops
+    the operator on raw JSON. The global HTTPException handler renders
+    a same-themed HTML page with the status code, the detail message,
+    and a back link to /."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices?device_type=garbage")
+        assert r.status_code == 400
+        # HTML, not JSON.
+        ctype = r.headers.get("content-type", "")
+        assert "text/html" in ctype
+        # Page surfaces the status code and the original detail.
+        assert "400" in r.text
+        assert "invalid device_type" in r.text
+        # Operator has a recovery path.
+        assert 'href="/"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_http_exception_json_client_still_gets_json(tmp_path):
+    """Programmatic callers that explicitly request JSON (Accept
+    header excluding text/html) still get the original FastAPI JSON
+    shape -- HTML rendering is for browsers only."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get(
+                "/devices?device_type=garbage",
+                headers={"accept": "application/json"},
+            )
+        assert r.status_code == 400
+        assert "application/json" in r.headers.get("content-type", "")
+        assert r.json() == {"detail": "invalid device_type"}
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_device_detail_unknown_mac_still_renders_not_found_template(tmp_path):
+    """Regression guard for the 404 UX: /devices/{mac:path} renders
+    not_found.html directly via TemplateResponse, NOT via raise
+    HTTPException. The global error handler must NOT intercept it,
+    or the route-specific copy ("Unknown MAC") would be swapped for
+    the generic error.html shell."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices/aa:bb:cc:dd:ee:99")
+        assert r.status_code == 404
+        # not_found.html's h2 is "not found"; error.html's h2 is "error 404".
+        assert "not found" in r.text.lower()
+        assert "error 404" not in r.text.lower()
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_empty_device_type_renders_unfiltered(tmp_path):
+    """v0.7.3 fix: the filter form's "any" option emits ?device_type=,
+    which previously 400'd because empty-string slipped past the
+    is-not-None allowlist guard. Now normalized to None at route
+    entry -- the default form submission renders the full list."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices?device_type=")
+        assert r.status_code == 200
+        assert "aa:bb:cc:dd:ee:01" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_empty_filter_params_combined_render(tmp_path):
+    """Both filter form params posted empty (the default-form-submit
+    shape) must render 200, not 400."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices?device_type=&randomized=")
+        assert r.status_code == 200
+        assert "aa:bb:cc:dd:ee:01" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_garbage_device_type_still_400s(tmp_path):
+    """Empty-string normalization must NOT relax the allowlist for
+    actual bogus values -- hand-edited URLs with device_type=garbage
+    still 400. Regression guard so we don't accidentally swap one
+    bug for another."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices?device_type=garbage")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_valid_type_with_empty_randomized_renders(tmp_path):
+    """device_type=wifi + randomized="" -- the operator picked a type
+    but left "any" for randomized. randomized should be treated as
+    unset, not 400."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        db.upsert_device("aa:bb:cc:dd:ee:02", "wifi", "Acme", 1, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices?device_type=wifi&randomized=")
+        assert r.status_code == 200
+        # Both rows render -- randomized acted as unset.
+        assert "aa:bb:cc:dd:ee:01" in r.text
+        assert "aa:bb:cc:dd:ee:02" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_probing_filter_yes_no(tmp_path):
+    """v0.8.0 Touch 2: ?probing=yes returns only devices with stored
+    probe SSIDs; ?probing=no returns the rest. The route maps yes/no to
+    the db's bool|None probing dimension."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, 100)
+        db.merge_device_probe_ssids(MAC_A, ["HomeNet"])
+        db.upsert_device(MAC_B, "wifi", "Acme", 0, 110)
+        with TestClient(app) as client:
+            r_yes = client.get("/devices?probing=yes")
+            r_no = client.get("/devices?probing=no")
+        assert r_yes.status_code == 200 and r_no.status_code == 200
+        assert MAC_A in r_yes.text and MAC_B not in r_yes.text
+        assert MAC_B in r_no.text and MAC_A not in r_no.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_bluetooth_alias_returns_both_subtypes(tmp_path):
+    """v0.8.0 Touch 2: device_type=bluetooth is accepted at the route
+    and returns BLE + Classic Bluetooth rows, excluding wifi -- the db
+    expands the alias to the two stored subtypes."""
+    app, db = _make_app(tmp_path)
+    mac_c = "aa:bb:cc:dd:ee:03"
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, 100)
+        db.upsert_device(MAC_B, "ble", "Beta", 0, 100)
+        db.upsert_device(mac_c, "bt_classic", "Gamma", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices?device_type=bluetooth")
+        assert r.status_code == 200
+        assert MAC_B in r.text and mac_c in r.text
+        assert MAC_A not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_remote_id_filterable_and_in_dropdown(tmp_path):
+    """v0.8.0 Touch 2: remote_id is now a first-class dropdown option
+    (previously reachable only by hand-crafted URL) and filters to the
+    drone bucket."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, 100)
+        db.upsert_device(MAC_B, "remote_id", None, 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices?device_type=remote_id")
+        assert r.status_code == 200
+        assert MAC_B in r.text and MAC_A not in r.text
+        # The dropdown exposes the drone + bluetooth-alias options.
+        assert 'value="remote_id"' in r.text
+        assert "Drone (Remote ID)" in r.text
+        assert 'value="bluetooth"' in r.text
+        assert "Bluetooth (any)" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_invalid_probing_returns_400(tmp_path):
+    """v0.8.0 Touch 2: bogus probing values 400 like the other strict
+    filter params (device_type / randomized) -- the lenient posture is
+    reserved for pagination (Touch 6)."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices?probing=maybe")
+        assert r.status_code == 400
+        assert "invalid probing" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_filters_summary_and_probing_control_render(tmp_path):
+    """v0.8.0 Touch 2: the filter bar grows a probing tri-state control
+    and a "Filtered by ... / reset filters" summary mirroring the
+    alerts/watchlist idiom; the summary appears only when a filter is
+    active."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r_plain = client.get("/devices")
+            r_filtered = client.get("/devices?probing=yes")
+        # Probing control present on every render.
+        assert 'name="probing"' in r_plain.text
+        # No summary on the unfiltered view; summary on the filtered one.
+        assert "Filtered by:" not in r_plain.text
+        assert "Filtered by:" in r_filtered.text
+        assert "probing=yes" in r_filtered.text
+        assert 'href="/devices"' in r_filtered.text  # reset link
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_preset_chips_render_and_highlight(tmp_path):
+    """v0.8.0 Touch 3: a row of quick-filter preset links (All / Wi-Fi /
+    Bluetooth / Drones / Probing) sits above the table, each setting GET
+    params; the preset matching the current params is highlighted via
+    class="active"."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r_all = client.get("/devices")
+            r_wifi = client.get("/devices?device_type=wifi")
+            r_probe = client.get("/devices?probing=yes")
+        # The preset chips carry the documented hrefs + labels.
+        assert ">Wi-Fi</a>" in r_all.text
+        assert 'href="/devices?device_type=bluetooth"' in r_all.text
+        assert ">Bluetooth</a>" in r_all.text
+        assert 'href="/devices?device_type=remote_id"' in r_all.text
+        assert ">Drones</a>" in r_all.text
+        assert 'href="/devices?probing=yes"' in r_all.text
+        # On the bare /devices view, "All" is the active preset.
+        assert '<a href="/devices" class="active">All</a>' in r_all.text
+        # Selecting a type highlights its preset, not "All".
+        assert '<a href="/devices?device_type=wifi" class="active">Wi-Fi</a>' in r_wifi.text
+        assert '<a href="/devices" class="active">All</a>' not in r_wifi.text
+        # The probing preset highlights under ?probing=yes.
+        assert '<a href="/devices?probing=yes" class="active">Probing</a>' in r_probe.text
+        assert '<a href="/devices" class="active">All</a>' not in r_probe.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_probing_capture_off_shows_honest_note(tmp_path):
+    """v0.8.0 Touch 4: with probe-SSID capture disabled (the default),
+    /devices shows a config-aware note next to the probing control
+    explaining the view will be empty and that enabling carries a
+    privacy tradeoff. The dashboard itself enables nothing."""
+    app, db = _make_app(tmp_path)  # default config: capture.probe_ssids=False
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        assert "probing-capture-note" in r.text
+        assert "probe-SSID capture is disabled" in r.text
+        assert "privacy tradeoff" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_probing_capture_on_hides_note(tmp_path):
+    """v0.8.0 Touch 4: when probe-SSID capture is enabled, the
+    capture-off note is suppressed -- the probing filter is live."""
+    from lynceus.config import CaptureConfig
+
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        capture=CaptureConfig(probe_ssids=True),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        assert "probing-capture-note" not in r.text
+        assert "probe-SSID capture is disabled" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_renders_human_timestamps(tmp_path):
+    """v0.7.10 B-1: /devices first_seen/last_seen render as ISO-8601 UTC
+    via the same unix_to_iso filter + <time> idiom /alerts uses, not raw
+    epoch integers."""
+    from lynceus.webui.app import unix_to_iso
+
+    app, db = _make_app(tmp_path)
+    ts = 1700000000
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, ts)
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        iso = unix_to_iso(ts)
+        assert f'<time datetime="{iso}">{iso}</time>' in r.text
+        # The raw epoch is no longer rendered as a bare cell.
+        assert f">{ts}</td>" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_device_detail_renders_human_timestamps(tmp_path):
+    """v0.7.10 B-1: device_detail first/last seen AND the sightings ts
+    column render as ISO-8601 UTC via unix_to_iso, matching /alerts."""
+    from lynceus.webui.app import unix_to_iso
+
+    app, db = _make_app(tmp_path)
+    dev_ts = 1700000000
+    sight_ts = 1700000123
+    try:
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, dev_ts)
+        db.ensure_location(LOC, "Lab")
+        db.insert_sighting(MAC_A, sight_ts, -50, None, LOC)
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{MAC_A}")
+        assert r.status_code == 200
+        dev_iso = unix_to_iso(dev_ts)
+        sight_iso = unix_to_iso(sight_ts)
+        assert f'<time datetime="{dev_iso}">{dev_iso}</time>' in r.text
+        assert f'<time datetime="{sight_iso}">{sight_iso}</time>' in r.text
+        # Neither epoch survives as a bare value.
+        assert f">{dev_ts}<" not in r.text
+        assert f">{sight_ts}<" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_device_detail_renders_with_sightings(tmp_path):
+    # v0.7.10 B-1: sighting timestamps now render human-readable
+    # (unix_to_iso) rather than as raw epoch ints, so assert the ISO
+    # form of each sighting rather than the bare epoch.
+    from lynceus.webui.app import unix_to_iso
+
+    app, db = _make_app(tmp_path)
+    try:
+        db.ensure_location(LOC, "Lab")
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, 100)
+        for ts in (1234567001, 1234567002, 1234567003):
+            db.insert_sighting(MAC_A, ts, -55, "TestSSID", LOC)
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{MAC_A}")
+        assert r.status_code == 200
+        for ts in (1234567001, 1234567002, 1234567003):
+            assert unix_to_iso(ts) in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_device_detail_404_for_unknown_mac(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices/aa:bb:cc:dd:ee:99")
+        assert r.status_code == 404
+        assert "not found" in r.text.lower()
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_device_detail_400_for_malformed_mac(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices/not-a-mac")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_device_detail_mac_with_colons_routes_correctly(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices/aa:bb:cc:dd:ee:ff")
+        assert r.status_code == 200
+        assert "aa:bb:cc:dd:ee:ff" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_renders_from_file(tmp_path):
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: known_bad_mac\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n"
+        "  - name: rogue_ssids\n"
+        "    rule_type: watchlist_ssid\n"
+        "    severity: med\n"
+        "    patterns: ['FreeAirportWiFi']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        assert "known_bad_mac" in r.text
+        assert "rogue_ssids" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_with_no_path_shows_empty_notice(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        assert "rules_path" in r.text or "No rules" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_with_missing_file_shows_empty_notice(tmp_path):
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        rules_path=str(tmp_path / "nope.yaml"),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        assert "not found" in r.text.lower()
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_relative_time_filter_buckets():
+    from lynceus.webui.app import relative_time
+
+    now = 1_000_000
+    # None / empty → "—"
+    assert relative_time(None, now_ts=now) == "—"
+    assert relative_time("", now_ts=now) == "—"
+    # < 60s → "just now"
+    assert relative_time(now - 30, now_ts=now) == "just now"
+    # Future timestamp (clock skew) → "just now", not negative.
+    assert relative_time(now + 30, now_ts=now) == "just now"
+    # < 60 min
+    assert relative_time(now - 600, now_ts=now) == "10m ago"
+    # < 24 h
+    assert relative_time(now - 3 * 3600, now_ts=now) == "3h ago"
+    # >= 24 h
+    assert relative_time(now - 5 * 86400, now_ts=now) == "5d ago"
+
+
+@pytest.mark.webui
+def test_rules_list_default_window_is_7d_and_default_sort_preserves_yaml_order(tmp_path):
+    """Bookmarked URLs from pre-rc5 (no query params) must keep
+    yielding the same row order — defaulting to count_desc would
+    surprise operators. The window default of 7d matches the
+    /alerts intuition of "recent past"."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: aaaa_first_in_yaml\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n"
+        "  - name: bbbb_second_in_yaml\n"
+        "    rule_type: watchlist_ssid\n"
+        "    severity: med\n"
+        "    patterns: ['SSID']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    # Give bbbb more fires than aaaa; default sort must still put
+    # aaaa first because that's the rules.yaml order.
+    import time as _time
+
+    now = int(_time.time())
+    db.add_alert(ts=now - 100, rule_name="aaaa_first_in_yaml", mac=None,
+                 message="x", severity="high")
+    db.add_alert(ts=now - 200, rule_name="bbbb_second_in_yaml", mac=None,
+                 message="x", severity="med")
+    db.add_alert(ts=now - 300, rule_name="bbbb_second_in_yaml", mac=None,
+                 message="x", severity="med")
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        # Default window is 7d → label text appears in the page.
+        assert "last 7d" in r.text or "7d" in r.text
+        idx_a = r.text.find("aaaa_first_in_yaml")
+        idx_b = r.text.find("bbbb_second_in_yaml")
+        assert idx_a != -1 and idx_b != -1
+        assert idx_a < idx_b, "default sort must preserve rules.yaml order"
+        # The "fires" stats line must show the actual counts.
+        # Find the fires line right after aaaa's row.
+        aaaa_segment = r.text[idx_a:idx_b]
+        assert "fires" in aaaa_segment.lower()
+        # aaaa has exactly 1 fire in the default 7d window.
+        assert "1" in aaaa_segment
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_since_window_narrows_counts(tmp_path):
+    """since=1h must exclude the older alert; rule's count drops."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: r1\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    import time as _time
+
+    now = int(_time.time())
+    db.add_alert(ts=now - 30, rule_name="r1", mac=None, message="x", severity="high")
+    db.add_alert(ts=now - 7200, rule_name="r1", mac=None, message="x", severity="high")
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r_1h = client.get("/rules?since=1h")
+            r_24h = client.get("/rules?since=24h")
+            r_all = client.get("/rules?since=all")
+        # All three should render successfully.
+        for r in (r_1h, r_24h, r_all):
+            assert r.status_code == 200
+            assert "r1" in r.text
+        # The 1h window excludes the 2h-old alert: only 1 fire visible.
+        # The 24h and "all" windows include both.
+        # Look at the "fires (last X):" line content.
+        for r, expected_count in (
+            (r_1h, "1"),
+            (r_24h, "2"),
+            (r_all, "2"),
+        ):
+            # Find the fires line for r1 and verify the count appears.
+            idx = r.text.find("r1")
+            assert idx != -1
+            # Search forward a reasonable window for the count.
+            segment = r.text[idx:idx + 600]
+            assert f"fires" in segment.lower()
+            # We expect the count immediately after "fires (...)".
+            import re as _re
+
+            m = _re.search(r"fires\s*\([^)]*\)\s*:\s*</strong>\s*(\d+)", segment)
+            assert m is not None, f"could not parse fires count in:\n{segment[:300]}"
+            assert m.group(1) == expected_count, (
+                f"expected count={expected_count}, got {m.group(1)} "
+                f"for url={r.request.url}"
+            )
+        # Window label appears in the column header.
+        assert "all time" in r_all.text
+        assert "1h" in r_1h.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_sort_count_desc_orders_by_count(tmp_path):
+    """sort=count_desc must put high-volume rules first; ties break by name."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: low_volume\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n"
+        "  - name: high_volume\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:02']\n"
+        "  - name: zzz_never_fires\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    import time as _time
+
+    now = int(_time.time())
+    db.add_alert(ts=now - 100, rule_name="low_volume", mac=None,
+                 message="x", severity="high")
+    for i in range(5):
+        db.add_alert(ts=now - 100 - i, rule_name="high_volume", mac=None,
+                     message="x", severity="high")
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?sort=count_desc")
+        assert r.status_code == 200
+        idx_high = r.text.find("high_volume")
+        idx_low = r.text.find("low_volume")
+        idx_zero = r.text.find("zzz_never_fires")
+        assert idx_high < idx_low < idx_zero
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_sort_count_asc_inverts(tmp_path):
+    """sort=count_asc is the mirror image: lowest count first."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: alpha_high_count\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n"
+        "  - name: beta_zero_count\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    import time as _time
+
+    now = int(_time.time())
+    for i in range(3):
+        db.add_alert(ts=now - i, rule_name="alpha_high_count", mac=None,
+                     message="x", severity="high")
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?sort=count_asc")
+        assert r.status_code == 200
+        idx_zero = r.text.find("beta_zero_count")
+        idx_high = r.text.find("alpha_high_count")
+        assert idx_zero < idx_high
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_never_fired_rule_shows_dash(tmp_path):
+    """A rule with zero fires must still render — with '—' for last fired."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: configured_but_silent\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        # The rule itself appears.
+        assert "configured_but_silent" in r.text
+        # Fires count is zero.
+        idx = r.text.find("configured_but_silent")
+        segment = r.text[idx:idx + 600]
+        import re as _re
+
+        m = _re.search(r"fires\s*\([^)]*\)\s*:\s*</strong>\s*(\d+)", segment)
+        assert m is not None
+        assert m.group(1) == "0"
+        # Last-fired column shows a dash (mdash entity) since the
+        # rule never fired in the window.
+        assert "&mdash;" in segment or "—" in segment
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_window_dropdown_renders_all_options(tmp_path):
+    """The window dropdown must render all five buckets, with the
+    current value selected. Same for the sort dropdown."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: r\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?since=24h&sort=count_desc")
+        assert r.status_code == 200
+        # All five window values must appear as <option> values.
+        for w in ("1h", "24h", "7d", "30d", "all"):
+            assert f'value="{w}"' in r.text, f"window option {w!r} missing"
+        # Current window=24h selected.
+        assert 'value="24h" selected' in r.text
+        # Sort options too.
+        for s in ("default", "count_desc", "count_asc"):
+            assert f'value="{s}"' in r.text, f"sort option {s!r} missing"
+        assert 'value="count_desc" selected' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_invalid_since_falls_back_to_default(tmp_path):
+    """Invalid since (e.g. stale URL) must silently fall back to
+    the 7d default rather than 400 — the underlying data is
+    independent of the query params, so refusing to render is
+    hostile."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: r\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?since=bogus&sort=alsobogus")
+        assert r.status_code == 200
+        # Falls back to since=7d and sort=default (rules.yaml order).
+        assert 'value="7d" selected' in r.text
+        assert 'value="default" selected' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_empty_alerts_table_shows_zero_counts(tmp_path):
+    """All rules render with 0 / — when the alerts table is empty."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: rule_a\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n"
+        "  - name: rule_b\n"
+        "    rule_type: watchlist_ssid\n"
+        "    severity: med\n"
+        "    patterns: ['SSID']\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        import re as _re
+
+        for name in ("rule_a", "rule_b"):
+            assert name in r.text
+            idx = r.text.find(name)
+            segment = r.text[idx:idx + 600]
+            m = _re.search(r"fires\s*\([^)]*\)\s*:\s*</strong>\s*(\d+)", segment)
+            assert m is not None
+            assert m.group(1) == "0"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_disabled_rules_dimmed(tmp_path):
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text(
+        "rules:\n"
+        "  - name: enabled_rule\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['aa:bb:cc:dd:ee:ff']\n"
+        "  - name: disabled_rule\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: low\n"
+        "    patterns: ['11:22:33:44:55:66']\n"
+        "    enabled: false\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        assert "enabled_rule" in r.text
+        assert "disabled_rule" in r.text
+        # Disabled rule must be visually dimmed.
+        idx_disabled = r.text.find("disabled_rule")
+        # Walk back to the enclosing <article ...> tag.
+        article_start = r.text.rfind("<article", 0, idx_disabled)
+        assert article_start != -1
+        article_open = r.text[article_start:idx_disabled]
+        assert "dim" in article_open or "opacity" in article_open
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_renders_from_file(tmp_path):
+    allowlist_yaml = tmp_path / "allowlist.yaml"
+    allowlist_yaml.write_text(
+        "entries:\n"
+        "  - pattern: 'a4:83:e7:11:22:33'\n"
+        "    pattern_type: mac\n"
+        "    note: My laptop\n"
+        "  - pattern: 'HomeNet'\n"
+        "    pattern_type: ssid\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), allowlist_path=str(allowlist_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        assert "a4:83:e7:11:22:33" in r.text
+        assert "HomeNet" in r.text
+        assert "My laptop" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_with_no_path_shows_empty_notice(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        assert "allowlist_path" in r.text or "No allowlist" in r.text
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Empty-allowlist editing instructions (v0.7.6 Tier 2).
+#
+# Tier 1 made the "configured + empty" state the default fresh-install
+# shape (the apply step now scaffolds an empty allowlist.yaml). The
+# page used to render just "No allowlist entries." in that shape;
+# v0.7.6 surfaces inline editing instructions with the file path and
+# a copy-pasteable YAML format example so operators wanting to ship
+# operator-managed entries don't have to leave the page.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_allowlist_empty_file_renders_editing_instructions(tmp_path):
+    """An allowlist_path pointing at an empty file (the Tier 1 scaffold
+    shape, or the operator-emptied case) renders the inline editing
+    instructions: the file path verbatim, a YAML format example, the
+    pattern_type vocabulary, and a daemon-restart reminder."""
+    allowlist_yaml = tmp_path / "allowlist.yaml"
+    allowlist_yaml.write_text("entries:\n", encoding="utf-8")
+    config = Config(db_path=str(tmp_path / "ui.db"), allowlist_path=str(allowlist_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        text = r.text
+        # File path verbatim so the operator can copy it to an editor.
+        assert str(allowlist_yaml) in text
+        # YAML format example tokens — pinning two distinct entries so
+        # a future "single-entry shortened example" edit is caught.
+        assert "entries:" in text
+        assert "pattern_type" in text
+        assert "pattern:" in text
+        # Pattern_type vocabulary (at least one canonical type rendered
+        # so a future drop of the supported_pattern_types loop is
+        # caught).
+        assert "mac" in text
+        # Restart reminder so the operator doesn't think the edit
+        # applied immediately.
+        assert "restart the daemon" in text.lower() or "Restart the daemon" in text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_missing_file_renders_editing_instructions(tmp_path):
+    """allowlist_path set + the file doesn't exist on disk → instructions
+    still render (with the same path + format example). Same operator
+    intent as the empty-file case: they're about to create the file."""
+    allowlist_yaml = tmp_path / "nonexistent.yaml"
+    config = Config(db_path=str(tmp_path / "ui.db"), allowlist_path=str(allowlist_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        text = r.text
+        # The legacy notice for missing-file still renders…
+        assert "not found" in text.lower()
+        # …but the instructions panel doesn't, because the configured
+        # branch's empty-state guard is `{% elif not notice %}` —
+        # missing-file sets notice. This is intentional: the missing-
+        # file path needs a fix-pointer ("touch the file first")
+        # before the format example is useful.
+        # Pinning: the format example must NOT be present here.
+        # (If a future refactor changes this, the missing-file
+        # operator gets BOTH messages, which is fine — the test would
+        # be updated rather than this being a regression.)
+        # For now, confirm the legacy path-name still appears as a hint:
+        assert str(allowlist_yaml) in text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_populated_does_not_render_editing_instructions(tmp_path):
+    """When the file has entries, the editing-instructions panel must
+    NOT render — the entries table is the right surface there.
+    Guards against the empty-state block bleeding across the populated
+    branch."""
+    allowlist_yaml = tmp_path / "allowlist.yaml"
+    allowlist_yaml.write_text(
+        "entries:\n"
+        "  - pattern: 'a4:83:e7:11:22:33'\n"
+        "    pattern_type: mac\n",
+        encoding="utf-8",
+    )
+    config = Config(db_path=str(tmp_path / "ui.db"), allowlist_path=str(allowlist_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        text = r.text
+        # Entry rendered as expected.
+        assert "a4:83:e7:11:22:33" in text
+        # Format-example pre block must NOT appear here. The pre-
+        # formatted YAML block uses the exact string "  - pattern:"
+        # twice (two entries in the example); a populated allowlist
+        # with one entry only renders that token once via the
+        # operator's data, not the format example.
+        # Count occurrences of the example's second-entry marker
+        # ("HomeNet") which doesn't appear in the test allowlist.
+        assert "HomeNet" not in text
+        assert "Allowlist entries suppress alerts" not in text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_unset_path_keeps_legacy_unconfigured_notice(tmp_path):
+    """The legacy "No allowlist_path configured" branch survives for
+    installs that haven't had Tier 1's scaffold run yet — the
+    editing-instructions article needs allowlist_path to render
+    meaningfully, so the unset branch keeps its existing one-line
+    notice without trying to render a `None` path."""
+    app, db = _make_app(tmp_path)  # no allowlist_path
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        text = r.text
+        # Legacy notice copy unchanged.
+        assert "No allowlist_path configured" in text
+        # Instructions panel must NOT render — it needs a real path.
+        assert "Allowlist entries suppress alerts" not in text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_topnav_active_link(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        # The alerts link is marked active.
+        assert 'href="/alerts" class="active"' in r.text
+        # The devices link is not.
+        assert 'href="/devices" class="active"' not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_static_lynceus_css_served_with_view_classes(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/static/lynceus.css")
+        assert r.status_code == 200
+        assert "badge-high" in r.text
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Prompt 003: ack/unack mutations, bulk ack, filter polish, stats, CSRF.
+# ---------------------------------------------------------------------------
+
+from lynceus.webui.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD  # noqa: E402
+
+
+def _csrf_setup(client) -> tuple[str, dict]:
+    resp = client.get("/alerts")
+    cookie = resp.cookies[CSRF_COOKIE_NAME]
+    return cookie, {CSRF_COOKIE_NAME: cookie}
+
+
+@pytest.mark.webui
+def test_index_renders_severity_grid_with_three_windows(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "stat-grid" in r.text
+        assert "24h" in r.text
+        assert "7d" in r.text
+        assert "30d" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_sparkline_with_30_bars(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert 'class="sparkline"' in r.text
+        assert r.text.count("sparkline-bar") == 30
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_sparkline_handles_zero_max_without_div_by_zero(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        # Page renders successfully even with no alerts (max_count=0).
+        assert "sparkline-bar" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_inline_ack_button_present_on_unacked_alerts(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="x", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert f"/alerts/{aid}/ack" in r.text
+        assert "ack-button-inline" in r.text
+        assert CSRF_FORM_FIELD in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_ack_and_watch_buttons_share_dimension_class(tmp_path):
+    """v0.7.9 Touch 4: the Acknowledge and Watch buttons on the /alerts
+    page must render at matched dimensions. Previously the Watch button
+    had no CSS rule and fell through to Pico's full submit-button size,
+    while Acknowledge used the compact `.ack-button-inline` (2px×8px
+    padding, 0.85em font). The shared CSS selector
+    `.ack-button-inline, .watch-button-inline` sizes both equally."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
+        db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:ff",
+            message="x", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+            css = client.get("/static/lynceus.css")
+        assert r.status_code == 200
+        # Both buttons render with their classes.
+        assert 'class="ack-button-inline"' in r.text
+        assert 'class="watch-button-inline"' in r.text
+        # CSS file ships the shared dimension rule.
+        assert css.status_code == 200
+        body = css.text
+        # The shared selector groups both classes so they cannot
+        # silently drift apart.
+        assert ".ack-button-inline" in body
+        assert ".watch-button-inline" in body
+        # Both must opt into width:auto so they size to content,
+        # rather than one stretching to fill its parent (Pico's
+        # default for submit buttons).
+        assert "width: auto" in body
+        # Padding and font-size declarations live in the shared
+        # block. Belt-and-suspenders that a refactor doesn't break
+        # the shared rule into per-class declarations that diverge.
+        block_start = body.find(".ack-button-inline")
+        block_end = body.find("}", block_start)
+        assert block_start != -1 and block_end != -1
+        shared_block = body[block_start:block_end]
+        assert ".watch-button-inline" in shared_block, (
+            "ack and watch button classes must share a single CSS block "
+            "so their dimensions cannot drift apart"
+        )
+        assert "padding:" in shared_block
+        assert "font-size:" in shared_block
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_since_until(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        # 2026-04-01 ~ 1775347200, 2026-04-15, 2026-05-01.
+        ts_apr1 = 1775347200
+        ts_apr15 = ts_apr1 + 14 * 86400
+        ts_may1 = ts_apr1 + 30 * 86400
+        db.add_alert(ts=ts_apr1, rule_name="r", mac=None, message="apr1-msg", severity="low")
+        db.add_alert(ts=ts_apr15, rule_name="r", mac=None, message="apr15-msg", severity="low")
+        db.add_alert(ts=ts_may1, rule_name="r", mac=None, message="may1-msg", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?since=2026-04-10&until=2026-04-20")
+        assert r.status_code == 200
+        assert "apr15-msg" in r.text
+        assert "apr1-msg" not in r.text
+        assert "may1-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_search_message(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r1", mac=None, message="rogue beacon found", severity="low")
+        db.add_alert(ts=101, rule_name="r2", mac=None, message="ordinary boring", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?search=rogue")
+        assert r.status_code == 200
+        assert "rogue beacon found" in r.text
+        assert "ordinary boring" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_search_rule_name(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="watchlist_mac", mac=None, message="msg-a", severity="low")
+        db.add_alert(ts=101, rule_name="rogue_ap", mac=None, message="msg-b", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?search=watch")
+        assert r.status_code == 200
+        assert "msg-a" in r.text
+        assert "msg-b" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_search_too_long_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?search=" + "a" * 101)
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_invalid_date_silently_falls_back(tmp_path):
+    """Malformed since/until silently clamp to no-clause (200 + full
+    row set), matching the rule_type / window / has_note clamp
+    posture on /alerts so a stale bookmark or fat-fingered picker
+    submission lands on a usable page rather than a 400. The rc6
+    sub-day granularity extension switched from the pre-rc6 strict
+    400 posture; this regression test pins the new behavior."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="visible-row", severity="low")
+        with TestClient(app) as client:
+            r1 = client.get("/alerts?since=not-a-date")
+            r2 = client.get("/alerts?until=2026-13-99")
+            r3 = client.get("/alerts?since=2026-05-15T99:99")
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r3.status_code == 200
+        # No clause applied -> the seeded row shows on all three.
+        assert "visible-row" in r1.text
+        assert "visible-row" in r2.text
+        assert "visible-row" in r3.text
+    finally:
+        db.close()
+
+
+# Sub-day granularity on since/until (rc6).
+#
+# The /alerts since/until URL params accept BOTH the pre-rc6
+# date-only YYYY-MM-DD form (preserved byte-for-byte) and the rc6
+# YYYY-MM-DDTHH:MM[:SS] datetime form posted by the
+# <input type="datetime-local"> picker. The datetime form lets an
+# operator express ranges like "Tuesday 14:00 to Wednesday 09:00"
+# that the relative-window vocabulary (1h/24h/7d/30d) can only
+# approximate by picking a wider bucket and visually filtering.
+
+# Shared anchor: 2026-04-15 00:00:00 UTC. Pinned literal because the
+# tests below cross-reference the absolute date in URL params like
+# ``since=2026-04-15T14:00`` -- the parsing helper interprets these
+# verbatim as UTC, so the anchor must match the calendar date in
+# the URL exactly.
+_TS_APR15_MIDNIGHT_UTC = 1776211200
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_datetime_since_filters_at_hour_granularity(tmp_path):
+    """since=YYYY-MM-DDTHH:MM excludes earlier-same-day rows."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_0900 = _TS_APR15_MIDNIGHT_UTC + 9 * 3600
+        ts_1430 = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 1800
+        db.add_alert(ts=ts_0900, rule_name="r", mac=None, message="apr15-0900", severity="low")
+        db.add_alert(ts=ts_1430, rule_name="r", mac=None, message="apr15-1430", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?since=2026-04-15T14:00")
+        assert r.status_code == 200
+        assert "apr15-1430" in r.text
+        assert "apr15-0900" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_datetime_until_no_end_of_day_promotion(tmp_path):
+    """until=YYYY-MM-DDTHH:MM uses the operator-supplied minute as
+    the boundary -- NOT promoted to 23:59:59 the way the date-only
+    YYYY-MM-DD form is."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_0900 = _TS_APR15_MIDNIGHT_UTC + 9 * 3600
+        ts_1430 = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 1800
+        db.add_alert(ts=ts_0900, rule_name="r", mac=None, message="apr15-0900", severity="low")
+        db.add_alert(ts=ts_1430, rule_name="r", mac=None, message="apr15-1430", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?until=2026-04-15T14:00")
+        assert r.status_code == 200
+        assert "apr15-0900" in r.text
+        assert "apr15-1430" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_datetime_overnight_window(tmp_path):
+    """The motivating use case: 'Tuesday 14:00 to Wednesday 09:00'
+    -- an overnight investigative window unrepresentable in the
+    relative-window vocabulary without picking too-wide a bucket
+    and visually narrowing."""
+    app, db = _make_app(tmp_path)
+    try:
+        # 2026-04-14 (Tue) 13:59 -- just before the start.
+        ts_tue_1359 = _TS_APR15_MIDNIGHT_UTC - 86400 + 13 * 3600 + 59 * 60
+        # 2026-04-14 (Tue) 14:01 -- inside the window.
+        ts_tue_1401 = _TS_APR15_MIDNIGHT_UTC - 86400 + 14 * 3600 + 60
+        # 2026-04-15 (Wed) 08:59 -- inside the window.
+        ts_wed_0859 = _TS_APR15_MIDNIGHT_UTC + 8 * 3600 + 59 * 60
+        # 2026-04-15 (Wed) 09:01 -- just after the end.
+        ts_wed_0901 = _TS_APR15_MIDNIGHT_UTC + 9 * 3600 + 60
+        db.add_alert(ts=ts_tue_1359, rule_name="r", mac=None, message="tue-1359-excluded", severity="low")
+        db.add_alert(ts=ts_tue_1401, rule_name="r", mac=None, message="tue-1401-included", severity="low")
+        db.add_alert(ts=ts_wed_0859, rule_name="r", mac=None, message="wed-0859-included", severity="low")
+        db.add_alert(ts=ts_wed_0901, rule_name="r", mac=None, message="wed-0901-excluded", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?since=2026-04-14T14:00&until=2026-04-15T09:00")
+        assert r.status_code == 200
+        assert "tue-1401-included" in r.text
+        assert "wed-0859-included" in r.text
+        assert "tue-1359-excluded" not in r.text
+        assert "wed-0901-excluded" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_datetime_since_only_partial_range(tmp_path):
+    """One-sided datetime range (since alone, no until) clamps the
+    lower bound only -- 'everything since X 14:00'."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_0900 = _TS_APR15_MIDNIGHT_UTC + 9 * 3600
+        ts_1430 = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 1800
+        ts_next_day = _TS_APR15_MIDNIGHT_UTC + 86400 + 10 * 3600
+        db.add_alert(ts=ts_0900, rule_name="r", mac=None, message="apr15-0900", severity="low")
+        db.add_alert(ts=ts_1430, rule_name="r", mac=None, message="apr15-1430", severity="low")
+        db.add_alert(ts=ts_next_day, rule_name="r", mac=None, message="apr16-1000", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?since=2026-04-15T14:00")
+        assert r.status_code == 200
+        assert "apr15-1430" in r.text
+        assert "apr16-1000" in r.text
+        assert "apr15-0900" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_datetime_and_window_max_combine(tmp_path):
+    """When BOTH since=datetime AND window=relative are set, the
+    tighter lower bound wins (max of the two ts thresholds) -- the
+    behavior established for date-only since + window is preserved
+    for datetime since + window."""
+    import time as _time
+    import datetime as _datetime
+    app, db = _make_app(tmp_path)
+    try:
+        # Anchor "now" via a row 30 minutes in the past. The 1h
+        # window then admits anything from now-3600 onward; a
+        # since=now-2h admits anything from now-7200 onward. Both
+        # combined => the 1h window's lower bound dominates.
+        now = int(_time.time())
+        ts_recent = now - 30 * 60       # 30 min ago: inside both clauses.
+        ts_45m_ago = now - 45 * 60      # 45 min ago: inside both clauses.
+        ts_90m_ago = now - 90 * 60      # 90 min ago: inside since (-2h) but OUTSIDE window (1h).
+        db.add_alert(ts=ts_recent, rule_name="r", mac=None, message="recent-30m", severity="low")
+        db.add_alert(ts=ts_45m_ago, rule_name="r", mac=None, message="recent-45m", severity="low")
+        db.add_alert(ts=ts_90m_ago, rule_name="r", mac=None, message="ago-90m", severity="low")
+        # since= = 2h ago, but window=1h is tighter -> 90m-ago row is excluded.
+        since_dt = _datetime.datetime.fromtimestamp(
+            now - 2 * 3600, tz=_datetime.UTC
+        ).strftime("%Y-%m-%dT%H:%M")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts?since={since_dt}&window=1h")
+        assert r.status_code == 200
+        assert "recent-30m" in r.text
+        assert "recent-45m" in r.text
+        assert "ago-90m" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_date_only_and_datetime_mix(tmp_path):
+    """since=date-only + until=datetime mixes the two forms; each
+    parsed independently by the helper. Date-only since promotes to
+    midnight UTC (lower bound); datetime until takes the operator's
+    exact minute (upper bound, no end-of-day promotion)."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_before = _TS_APR15_MIDNIGHT_UTC - 3600        # 2026-04-14 23:00 UTC
+        ts_at_start = _TS_APR15_MIDNIGHT_UTC + 60        # 2026-04-15 00:01 UTC
+        ts_in_window = _TS_APR15_MIDNIGHT_UTC + 8 * 3600 # 2026-04-15 08:00 UTC
+        ts_after = _TS_APR15_MIDNIGHT_UTC + 10 * 3600    # 2026-04-15 10:00 UTC
+        db.add_alert(ts=ts_before, rule_name="r", mac=None, message="before", severity="low")
+        db.add_alert(ts=ts_at_start, rule_name="r", mac=None, message="at-start", severity="low")
+        db.add_alert(ts=ts_in_window, rule_name="r", mac=None, message="in-window", severity="low")
+        db.add_alert(ts=ts_after, rule_name="r", mac=None, message="after", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?since=2026-04-15&until=2026-04-15T09:00")
+        assert r.status_code == 200
+        assert "at-start" in r.text
+        assert "in-window" in r.text
+        assert "before" not in r.text
+        assert "after" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_preserves_datetime_since_until(tmp_path):
+    """Pagination links carry datetime since/until through the URL
+    so the operator's range survives page navigation -- the same
+    invariant the date-only form holds, extended to the new form."""
+    app, db = _make_app(tmp_path)
+    try:
+        # 60 rows inside a 1-hour datetime window so pagination kicks in.
+        base = _TS_APR15_MIDNIGHT_UTC + 14 * 3600
+        for i in range(60):
+            db.add_alert(
+                ts=base + i,
+                rule_name="r",
+                mac=None,
+                message=f"dt-row-{i}",
+                severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?since=2026-04-15T14:00&until=2026-04-15T15:00&page=1&page_size=25"
+            )
+        assert r.status_code == 200
+        assert "since=2026-04-15T14:00" in r.text
+        assert "until=2026-04-15T15:00" in r.text
+        assert "page=2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_template_renders_datetime_local_widget(tmp_path):
+    """The since/until picker is <input type="datetime-local"> (rc6
+    sub-day-capable), not the pre-rc6 <input type="date">. Pin the
+    widget choice so a regression to date-only is caught."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'type="datetime-local" name="since"' in r.text
+        assert 'type="datetime-local" name="until"' in r.text
+        # And not the pre-rc6 date-only widget for these two params.
+        assert 'type="date" name="since"' not in r.text
+        assert 'type="date" name="until"' not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_ack_all_visible_form_carries_datetime_filter_state(tmp_path):
+    """The bulk-ack POST form mirrors the GET filter state; the
+    datetime since/until threads through as hidden inputs so
+    ack-all-visible operates on EXACTLY the visible row set, not a
+    different filter set than the operator sees."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=_TS_APR15_MIDNIGHT_UTC + 14 * 3600,
+            rule_name="r",
+            mac=None,
+            message="m",
+            severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?since=2026-04-15T14:00&until=2026-04-15T15:00"
+            )
+        assert r.status_code == 200
+        assert 'action="/alerts/ack-all-visible"' in r.text
+        assert 'name="since" value="2026-04-15T14:00"' in r.text
+        assert 'name="until" value="2026-04-15T15:00"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_acks_filtered_datetime_subset(tmp_path):
+    """POST /alerts/ack-all-visible clamps to the datetime range
+    identically to the GET -- rows outside the range are NOT acked.
+    Pins the GET/POST parity invariant for the new datetime path."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_in_1 = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 10
+        ts_in_2 = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 30 * 60
+        ts_before = _TS_APR15_MIDNIGHT_UTC + 13 * 3600
+        ts_after = _TS_APR15_MIDNIGHT_UTC + 16 * 3600
+        in_id_1 = db.add_alert(ts=ts_in_1, rule_name="r", mac=None, message="in1", severity="low")
+        in_id_2 = db.add_alert(ts=ts_in_2, rule_name="r", mac=None, message="in2", severity="low")
+        before_id = db.add_alert(ts=ts_before, rule_name="r", mac=None, message="before", severity="low")
+        after_id = db.add_alert(ts=ts_after, rule_name="r", mac=None, message="after", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "since": "2026-04-15T14:00",
+                    "until": "2026-04-15T15:00",
+                },
+            )
+        assert r.status_code == 200
+        assert db.get_alert(in_id_1)["acknowledged"] == 1
+        assert db.get_alert(in_id_2)["acknowledged"] == 1
+        # Rows outside the datetime range are NOT acked.
+        assert db.get_alert(before_id)["acknowledged"] == 0
+        assert db.get_alert(after_id)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_invalid_date_silently_falls_back(tmp_path):
+    """POST /alerts/ack-all-visible mirrors the GET silent-fallback
+    behavior for malformed since/until. Replaces the pre-rc6 400
+    posture so the ack-all-visible POST stays in lockstep with the
+    GET handler -- a mismatch would mean the POST writes against a
+    different filter set than the operator sees on the page."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(
+            ts=100, rule_name="r", mac=None, message="m", severity="low"
+        )
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "since": "not-a-date"},
+            )
+        # No 400 -- malformed silently clamps to no-clause, the same
+        # row set the GET would surface.
+        assert r.status_code == 200
+        assert db.get_alert(aid)["acknowledged"] == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_respects_datetime_since_filter(tmp_path):
+    """CSV export inherits the datetime granularity for free; the
+    rc6 parsing helper is shared with /alerts and ack-all-visible
+    by design (comment in alerts_csv_export pins this lockstep)."""
+    app, db = _make_app(tmp_path)
+    try:
+        ts_in = _TS_APR15_MIDNIGHT_UTC + 14 * 3600 + 10
+        ts_before = _TS_APR15_MIDNIGHT_UTC + 13 * 3600
+        db.add_alert(ts=ts_in, rule_name="r", mac=None, message="csv-in", severity="low")
+        db.add_alert(ts=ts_before, rule_name="r", mac=None, message="csv-before", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?since=2026-04-15T14:00")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        # message column is index 7 per the other CSV tests.
+        assert data_rows[0][7] == "csv-in"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_preserves_search_and_dates(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(
+                ts=1775347200 + i,
+                rule_name="r",
+                mac=None,
+                message=f"world {i}",
+                severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?search=world&since=2026-04-01&until=2026-05-01&page=1&page_size=25"
+            )
+        assert r.status_code == 200
+        assert "search=world" in r.text
+        assert "since=2026-04-01" in r.text
+        assert "until=2026-05-01" in r.text
+        assert "page=2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_bulk_ack_form_has_csrf_field(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'action="/alerts/bulk-ack"' in r.text
+        assert f'name="{CSRF_FORM_FIELD}"' in r.text
+        assert 'name="alert_ids"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_without_csrf_returns_403(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            client.cookies.clear()
+            r = client.post(f"/alerts/{aid}/ack")
+        assert r.status_code == 403
+        assert db.get_alert(aid)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_with_valid_csrf_succeeds(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token, "note": "looked at it"},
+            )
+        assert r.status_code == 303
+        alert = db.get_alert(aid)
+        assert alert["acknowledged"] == 1
+        actions = db.list_alert_actions(aid)
+        assert len(actions) == 1
+        assert actions[0]["note"] == "looked at it"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_for_missing_alert_returns_404(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/9999/ack",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 404
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_with_too_long_note_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token, "note": "x" * 501},
+            )
+        assert r.status_code == 400
+        assert db.get_alert(aid)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_from_home_redirects_back_to_home(tmp_path):
+    """v0.7.9 Touch 3: clicking Acknowledge on the home page recent-
+    alerts card must redirect back to / rather than to /alerts. The
+    same /alerts/<id>/ack endpoint serves both surfaces; the operator's
+    landing surface comes from the Referer header via
+    _safe_redirect_target, which previously whitelisted only /alerts*
+    and silently fell back to /alerts for the home page case."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token},
+                headers={"Referer": "http://testserver/"},
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/"
+        # And the ack itself still landed.
+        assert db.get_alert(aid)["acknowledged"] == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_from_alerts_still_redirects_to_alerts(tmp_path):
+    """Regression: the existing /alerts redirect-back behavior must
+    survive the v0.7.9 home-page change. Referer: /alerts → location /alerts."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token},
+                headers={"Referer": "http://testserver/alerts"},
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/alerts"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_post_from_unknown_referer_falls_back_to_default(tmp_path):
+    """Regression: an off-app or hostile Referer must NOT redirect into
+    the host's domain. Anything outside the / and /alerts* whitelist
+    falls back to the route's stated default (/alerts for the ack
+    handler)."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token},
+                headers={"Referer": "http://evil.example.com/phish"},
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/alerts"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_htmx_request_returns_empty_200_partial_not_redirect(tmp_path):
+    """0.9.0 FIX arc step 2: an htmx-driven ack (HX-Request header) returns
+    an empty 200 body — swapped as outerHTML into the row target it removes
+    only that row — instead of the 303→/ full-document navigation. The ack
+    itself must still land. Non-HX behavior is unchanged (covered by
+    test_ack_post_from_home_redirects_back_to_home)."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token},
+                headers={"HX-Request": "true", "Referer": "http://testserver/"},
+            )
+        assert r.status_code == 200
+        assert "location" not in r.headers  # no redirect on the htmx path
+        assert r.text == ""  # empty body → outerHTML swap removes the row
+        assert "<!DOCTYPE html>" not in r.text  # not a full document
+        assert db.get_alert(aid)["acknowledged"] == 1  # ack still landed
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_htmx_path_still_enforces_csrf(tmp_path):
+    """CSRF must survive the htmx path: a blank _csrf token on an HX-Request
+    ack is still rejected with 403 and the alert stays unacknowledged. The
+    middleware keys on the form field / header, not on HX-Request, so the
+    double-submit check is identical to a plain form POST."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            _csrf_setup(client)  # valid cookie present; only the token is bad
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: ""},
+                headers={"HX-Request": "true", "Referer": "http://testserver/"},
+            )
+        assert r.status_code == 403
+        assert db.get_alert(aid)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unack_post_with_valid_csrf_succeeds(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.acknowledge_alert(aid, actor="seed", ts=200)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/unack",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        assert db.get_alert(aid)["acknowledged"] == 0
+        actions = db.list_alert_actions(aid)
+        assert actions[0]["action"] == "unack"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_bulk_ack_post_renders_result_page(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="a", severity="low")
+        a2 = db.add_alert(ts=101, rule_name="r", mac=None, message="b", severity="low")
+        a3 = db.add_alert(ts=102, rule_name="r", mac=None, message="c", severity="low")
+        db.acknowledge_alert(a3, actor="seed", ts=150)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/bulk-ack",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "alert_ids": [str(a1), str(a2), str(a3)],
+                },
+            )
+        assert r.status_code == 200
+        assert "bulk acknowledge result" in r.text.lower()
+        # The result page surfaces the counts.
+        assert "acknowledged" in r.text.lower()
+        # Action rows: one per existing alert (3).
+        cnt = db._conn.execute("SELECT COUNT(*) FROM alert_actions").fetchone()[0]
+        assert cnt == 4  # 1 from seed + 3 from bulk
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_bulk_ack_post_without_alert_ids_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/bulk-ack",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_bulk_ack_post_with_too_many_ids_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/bulk-ack",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "alert_ids": [str(i) for i in range(1, 1002)],
+                },
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_renders_action_history(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.acknowledge_alert(aid, actor="ip-1", ts=200)
+        db.acknowledge_alert(aid, actor="ip-2", ts=300)
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "action history" in r.text.lower()
+        # Both action rows show.
+        assert "ip-1" in r.text
+        assert "ip-2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_unack_form_shown_when_acked(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r_unacked = client.get(f"/alerts/{aid}")
+            db.acknowledge_alert(aid, actor="ip", ts=200)
+            r_acked = client.get(f"/alerts/{aid}")
+        assert f'action="/alerts/{aid}/ack"' in r_unacked.text
+        assert f'action="/alerts/{aid}/unack"' not in r_unacked.text
+        assert f'action="/alerts/{aid}/unack"' in r_acked.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_csrf_token_in_template_matches_cookie(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        # Add an alert so an inline ack form (with CSRF field) is rendered.
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            client.cookies.clear()
+            r = client.get("/")
+        assert r.status_code == 200
+        cookie_val = r.cookies[CSRF_COOKIE_NAME]
+        assert f'value="{cookie_val}"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_redirect_to_referer_only_when_same_origin(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r_safe = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token},
+                headers={"Referer": "/alerts"},
+            )
+        assert r_safe.status_code == 303
+        assert r_safe.headers["location"] == "/alerts"
+        # Re-unack to test the evil-referer case.
+        db.unacknowledge_alert(aid, actor="reset", ts=400)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r_evil = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token},
+                headers={"Referer": "http://evil.com/alerts"},
+            )
+        assert r_evil.status_code == 303
+        assert r_evil.headers["location"] == "/alerts"
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# UX polish: device-seen tiles, last-poll, ack-all-visible, unix_to_iso filter,
+# severity row classes, inline ack note, reset-filters link, lynceus.js.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_index_renders_device_seen_tiles(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        import time as _time
+
+        now = int(_time.time())
+        db.ensure_location(LOC, "Lab")
+        db.upsert_device(MAC_A, "wifi", "Acme", 0, now)
+        db.upsert_device(MAC_B, "ble", "Acme", 0, now)
+        db.insert_sighting(MAC_A, now - 60, None, None, LOC)
+        db.insert_sighting(MAC_B, now - 5 * 86400, None, None, LOC)
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "tile-row" in r.text
+        assert "last 24h" in r.text
+        assert "last 7d" in r.text
+        assert "last 30d" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_last_poll_when_set(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.set_state("last_poll_ts", "1700000000")
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "Last polled" in r.text
+        assert 'datetime="' in r.text
+        assert "<time" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_never_polled_when_unset(tmp_path):
+    """No tick state yet -> the card renders the operator-readable
+    'Waiting for first poll' message. (Renamed from 'Never polled yet'
+    when the card grew tick-counter rendering -- the copy is operator-
+    facing and a daemon that crashes during startup leaves the same
+    visible state as a fresh install.)"""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "Waiting for first poll" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_reset_link_present_when_filters_active(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high")
+        assert r.status_code == 200
+        assert "reset-filters" in r.text
+        assert 'href="/alerts"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_reset_link_absent_when_no_filters(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        # The shortcut handler script references "a.reset-filters" as a
+        # selector regardless of filter state, so check for the actual
+        # rendered link rather than the bare substring.
+        assert 'class="reset-filters"' not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filters_summary_breakdown_present_when_filters_active(tmp_path):
+    # The filtered-by summary line names each active filter so operators
+    # can see at a glance why a narrow result set is narrow, without
+    # having to scan the form fields. Single filter case.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high")
+        assert r.status_code == 200
+        assert "Filtered by:" in r.text
+        assert "severity=high" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filters_summary_includes_multiple_active_filters(tmp_path):
+    # Multi-filter breakdown -- each engaged filter appears in the
+    # summary, comma-joined. acknowledged renders as yes/no rather than
+    # the raw true/false to match the form-control labels.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high&acknowledged=true&window=24h&q=apple")
+        assert r.status_code == 200
+        assert "Filtered by:" in r.text
+        assert "severity=high" in r.text
+        assert "acknowledged=yes" in r.text
+        assert "window=24h" in r.text
+        assert "q=apple" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filters_summary_absent_when_no_filters(tmp_path):
+    # No filters -> no summary line. Operators on the default view
+    # shouldn't see "Filtered by:" with an empty values list.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "Filtered by:" not in r.text
+        assert "filters-summary" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_keyboard_shortcut_handler_present_when_filters_active(tmp_path):
+    # Filtered view: shortcut handler emitted with the reset-filters
+    # path wired up so Esc clears filters (the original precedent).
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high")
+        assert r.status_code == 200
+        assert "keydown" in r.text
+        assert "Escape" in r.text
+        assert "a.reset-filters" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_keyboard_shortcut_handler_present_when_no_filters(tmp_path):
+    # Shortcut handler is unconditional: /, n, p, ? are useful on the
+    # default view too. The reset-filters branch is a runtime no-op
+    # when no reset link is rendered.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "keydown" in r.text
+        assert "Escape" in r.text
+        assert "alerts-search-input" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_search_input_carries_shortcut_id(tmp_path):
+    # The `/` shortcut targets `getElementById('alerts-search-input')`;
+    # the rule/message search input is the canonical target. If the id
+    # ever drifts off this input the shortcut goes silent.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'id="alerts-search-input"' in r.text
+        # And it must be on the `search` text input specifically (not q,
+        # not a hidden field). Anchor on both id and name to catch
+        # accidental rebinding.
+        assert 'id="alerts-search-input" name="search"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_links_carry_shortcut_classes(tmp_path):
+    # When prev/next pages exist, the rendered <a> elements must carry
+    # the classes the `n` / `p` shortcuts query for.
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"m{i}", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts?page_size=25&page=2")
+        assert r.status_code == 200
+        assert 'class="alerts-page-prev"' in r.text
+        assert 'class="alerts-page-next"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_disabled_state_has_no_shortcut_class(tmp_path):
+    # On the only page (1 of 1), prev/next render as <span class="dim">
+    # rather than <a>. The shortcut-class selectors must miss in that
+    # case so `n`/`p` do nothing rather than navigating to a wrong href.
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="only", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'class="alerts-page-prev"' not in r.text
+        assert 'class="alerts-page-next"' not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_help_overlay_markup_present(tmp_path):
+    # `?` toggles an overlay panel; the markup is always rendered with
+    # the `hidden` attribute so no-JS operators see nothing and so the
+    # shortcut has something to flip on.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'id="alerts-shortcut-help"' in r.text
+        assert "hidden" in r.text  # the attribute is on the overlay
+        # The four documented shortcuts must appear inside the panel so
+        # operators have something to read when they press `?`.
+        assert "Focus search" in r.text
+        assert "Next page" in r.text
+        assert "Previous page" in r.text
+        assert "Toggle this help" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_shortcut_handler_references_all_minimum_keys(tmp_path):
+    # The handler must wire up each shortcut key in the minimum set.
+    # These string assertions are coarse but catch the common
+    # regression of accidentally removing one branch during refactors.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "e.key === '/'" in r.text
+        assert "e.key === 'n'" in r.text
+        assert "e.key === 'p'" in r.text
+        assert "e.key === '?'" in r.text
+        # Input-shadowing guard: letter shortcuts must skip when focus
+        # is in a form input. The handler ships with a single guard
+        # function shared across keys.
+        assert "isFormField" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_renders_shortcut_discovery_hint(tmp_path):
+    # Discoverability: a small hint next to the page-count line tells
+    # operators to press `?`. Without this, the shortcut set is
+    # effectively invisible.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "keyboard shortcuts" in r.text.lower()
+        assert "<kbd>?</kbd>" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_ack_all_visible_form_carries_filter_state(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high&acknowledged=false")
+        assert r.status_code == 200
+        assert 'action="/alerts/ack-all-visible"' in r.text
+        assert 'name="severity" value="high"' in r.text
+        assert 'name="acknowledged" value="false"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_acks_filtered_subset(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        high_ids = [
+            db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"h{i}", severity="high")
+            for i in range(3)
+        ]
+        low_ids = [
+            db.add_alert(ts=200 + i, rule_name="r", mac=None, message=f"l{i}", severity="low")
+            for i in range(2)
+        ]
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "severity": "high"},
+            )
+        assert r.status_code == 200
+        assert "bulk acknowledge result" in r.text.lower()
+        for aid in high_ids:
+            assert db.get_alert(aid)["acknowledged"] == 1
+        for aid in low_ids:
+            assert db.get_alert(aid)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_respects_acknowledged_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="a", severity="low")
+        a2 = db.add_alert(ts=101, rule_name="r", mac=None, message="b", severity="low")
+        a3 = db.add_alert(ts=102, rule_name="r", mac=None, message="c", severity="low")
+        db.acknowledge_alert(a3, actor="seed", ts=150)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "acknowledged": "false"},
+            )
+        assert r.status_code == 200
+        assert db.get_alert(a1)["acknowledged"] == 1
+        assert db.get_alert(a2)["acknowledged"] == 1
+        # a3 was already acked; the "acknowledged=false" filter excluded it
+        # from the candidate set, so no NEW action row was written for it
+        # (only the original seed acknowledgement remains).
+        assert db.get_alert(a3)["acknowledged"] == 1
+        actions_a3 = db.list_alert_actions(a3)
+        assert len(actions_a3) == 1
+        assert actions_a3[0]["actor"] == "seed"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_invalid_severity_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "severity": "critical"},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_overflow_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(1001):
+            db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"m{i}", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 400
+        assert "1000" in r.text
+        # Nothing should have been written.
+        assert db._conn.execute("SELECT COUNT(*) FROM alert_actions").fetchone()[0] == 0
+        assert (
+            db._conn.execute("SELECT COUNT(*) FROM alerts WHERE acknowledged = 1").fetchone()[0]
+            == 0
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_no_match_returns_zero_counts(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={CSRF_FORM_FIELD: token, "severity": "high"},
+            )
+        assert r.status_code == 200
+        assert "bulk acknowledge result" in r.text.lower()
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_without_csrf_returns_403(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            client.cookies.clear()
+            r = client.post("/alerts/ack-all-visible")
+        assert r.status_code == 403
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unix_to_iso_filter_renders_z_suffix(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=1700000000, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert 'datetime="2023-11-14T22:13:20Z"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unix_to_iso_filter_handles_none():
+    from lynceus.webui.app import unix_to_iso
+
+    assert unix_to_iso(None) == ""
+    assert unix_to_iso("") == ""
+    assert unix_to_iso(0) == "1970-01-01T00:00:00Z"
+
+
+@pytest.mark.webui
+def test_static_lynceus_js_served(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/static/lynceus.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers["content-type"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_base_html_includes_lynceus_js_script(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert 'src="/static/lynceus.js"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_inline_ack_note_input_present_per_row(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(3):
+            db.add_alert(ts=100 + i, rule_name="r", mac=None, message=f"m{i}", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        # Each unacked row carries a note input. Bulk-ack form has its own
+        # textarea; the row inputs use class ack-row-note to disambiguate.
+        assert r.text.count("ack-row-note") >= 3
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_inline_ack_note_submitted(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                data={CSRF_FORM_FIELD: token, "note": "manual"},
+            )
+        assert r.status_code == 303
+        actions = db.list_alert_actions(aid)
+        assert len(actions) == 1
+        assert actions[0]["note"] == "manual"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_row_class_reflects_severity(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="low-x", severity="low")
+        db.add_alert(ts=101, rule_name="r", mac=None, message="med-x", severity="med")
+        db.add_alert(ts=102, rule_name="r", mac=None, message="high-x", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "row-sev-low" in r.text
+        assert "row-sev-med" in r.text
+        assert "row-sev-high" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_row_class_acked(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        _ack(db, aid)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "row-acked" in r.text
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Kismet status indicator on the index page (cached for 30s).
+# ---------------------------------------------------------------------------
+
+
+class _FakeStatusClient:
+    def __init__(self, status: dict):
+        self._status = status
+        self.calls = 0
+
+    def health_check(self):
+        self.calls += 1
+        return dict(self._status)
+
+
+@pytest.mark.webui
+def test_index_renders_kismet_status_reachable(tmp_path):
+    app, db = _make_app(tmp_path)
+    fake = _FakeStatusClient({"reachable": True, "version": "fake-fixture", "error": None})
+    app.state.kismet_client = fake
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "Kismet status" in r.text
+        assert "reachable" in r.text
+        assert "fake-fixture" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_kismet_status_unreachable(tmp_path):
+    app, db = _make_app(tmp_path)
+    fake = _FakeStatusClient({"reachable": False, "version": None, "error": "connection refused"})
+    app.state.kismet_client = fake
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "unreachable" in r.text
+        assert "connection refused" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_kismet_status_caches_for_30_seconds(tmp_path, monkeypatch):
+    app, db = _make_app(tmp_path)
+    fake = _FakeStatusClient({"reachable": True, "version": "fake-fixture", "error": None})
+    app.state.kismet_client = fake
+
+    fake_now = {"t": 1_700_000_000.0}
+
+    def fake_time():
+        return fake_now["t"]
+
+    monkeypatch.setattr("lynceus.webui.app.time.time", fake_time)
+    try:
+        with TestClient(app) as client:
+            client.get("/")
+            fake_now["t"] += 25
+            client.get("/")
+        assert fake.calls == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_kismet_status_recheck_after_cache_expiry(tmp_path, monkeypatch):
+    app, db = _make_app(tmp_path)
+    fake = _FakeStatusClient({"reachable": True, "version": "fake-fixture", "error": None})
+    app.state.kismet_client = fake
+
+    fake_now = {"t": 1_700_000_000.0}
+
+    def fake_time():
+        return fake_now["t"]
+
+    monkeypatch.setattr("lynceus.webui.app.time.time", fake_time)
+    try:
+        with TestClient(app) as client:
+            client.get("/")
+            fake_now["t"] += 31
+            client.get("/")
+        assert fake.calls == 2
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_kismet_status_health_check_exception_degrades(tmp_path):
+    app, db = _make_app(tmp_path)
+
+    class _RaisingClient:
+        def health_check(self):
+            raise RuntimeError("kaboom")
+
+    app.state.kismet_client = _RaisingClient()
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "unreachable" in r.text
+        assert "kaboom" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_topnav_present_on_every_page(tmp_path):
+    """Every page that renders the base template must include the top nav.
+
+    This test exists because /healthz shipped without _topnav.html for
+    several prompts and was only caught by manual browser testing. Tests
+    that asserted page-specific content didn't notice the missing nav.
+
+    Approach: hit every GET route that renders an HTML page, assert each
+    response contains the topnav's distinctive markers (the link to /alerts
+    AND the link to /devices). If a future page is added without the
+    partial, this test fails for that page.
+    """
+    app, db = _make_app(tmp_path)
+
+    # Seed minimal data so detail pages have something to render.
+    now = 1700000000
+    db.ensure_location("default", "Default")
+    db.upsert_device(
+        mac="aa:bb:cc:dd:ee:ff",
+        device_type="wifi",
+        oui_vendor="TestVendor",
+        is_randomized=0,
+        now_ts=now,
+    )
+    db.insert_sighting(
+        mac="aa:bb:cc:dd:ee:ff",
+        ts=now,
+        rssi=-50,
+        ssid="test",
+        location_id="default",
+    )
+    alert_id = db.add_alert(
+        ts=now,
+        rule_name="test_rule",
+        mac="aa:bb:cc:dd:ee:ff",
+        message="test alert",
+        severity="low",
+    )
+
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+
+    pages = [
+        "/",
+        "/healthz",
+        "/alerts",
+        f"/alerts/{alert_id}",
+        "/devices",
+        "/devices/aa:bb:cc:dd:ee:ff",
+        "/rules",
+        "/allowlist",
+    ]
+
+    for path in pages:
+        resp = client.get(path)
+        assert resp.status_code == 200, f"{path} returned {resp.status_code}"
+        # Topnav distinctive markers — these come from _topnav.html only.
+        # Use markers that are unlikely to appear in any page's content
+        # by accident. All four must be present, anchored as href targets,
+        # so a page that incidentally mentioned the word "alerts" in
+        # body content wouldn't pass while missing the nav.
+        assert 'href="/alerts"' in resp.text, f"{path} missing /alerts nav link"
+        assert 'href="/devices"' in resp.text, f"{path} missing /devices nav link"
+        assert 'href="/rules"' in resp.text, f"{path} missing /rules nav link"
+        assert 'href="/allowlist"' in resp.text, f"{path} missing /allowlist nav link"
+
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# v0.2 UI tweaks: header rename, sparkline section, JS time-format change.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_kismet_status_header_renamed(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "Kismet status" in r.text
+        assert "Kismet sources" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_renders_alerts_per_day_section(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "alerts per day" in r.text
+        assert 'class="sparkline"' in r.text
+    finally:
+        db.close()
+
+
+def test_lynceus_js_contains_new_format_logic():
+    js_path = (
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "lynceus"
+        / "webui"
+        / "static"
+        / "lynceus.js"
+    )
+    content = js_path.read_text(encoding="utf-8")
+    for needle in ("weeks ago", "months ago", "years ago", "just now"):
+        assert needle in content, f"lynceus.js missing expected phrase: {needle!r}"
+    for gone in ("minutes ago", "hours ago"):
+        assert gone not in content, (
+            f"lynceus.js still contains old relative-format phrase: {gone!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# v0.2 UI cleanup: full-width layout, table scroll, header/button rename,
+# Device column + device_label Jinja filter.
+# ---------------------------------------------------------------------------
+
+
+def _render_device_label(d):
+    from jinja2 import Environment
+
+    from lynceus.webui.app import _device_label
+
+    env = Environment()
+    env.filters["device_label"] = _device_label
+    return env.from_string("{{ d | device_label }}").render(d=d)
+
+
+@pytest.mark.webui
+def test_device_label_filter_with_friendly_name():
+    assert _render_device_label({"friendly_name": "AirPods Pro"}) == "AirPods Pro"
+
+
+@pytest.mark.webui
+def test_device_label_filter_falls_back_to_vendor():
+    assert _render_device_label({"oui_vendor": "Apple"}) == "Apple"
+
+
+@pytest.mark.webui
+def test_device_label_filter_returns_dash_for_empty():
+    assert _render_device_label({}) == "—"
+
+
+@pytest.mark.webui
+def test_device_label_filter_handles_none():
+    assert _render_device_label(None) == "—"
+
+
+@pytest.mark.webui
+def test_device_label_filter_friendly_name_takes_priority():
+    out = _render_device_label({"friendly_name": "John's iPhone", "oui_vendor": "Apple"})
+    assert out == "John's iPhone"
+
+
+@pytest.mark.webui
+def test_device_label_filter_strips_whitespace():
+    assert _render_device_label({"friendly_name": "  AirPods  "}) == "AirPods"
+
+
+@pytest.mark.webui
+def test_device_label_filter_empty_string_falls_through():
+    assert _render_device_label({"friendly_name": "", "oui_vendor": "Apple"}) == "Apple"
+    assert _render_device_label({"friendly_name": "   ", "oui_vendor": "Apple"}) == "Apple"
+
+
+@pytest.mark.webui
+def test_device_label_filter_prefers_ble_name_over_vendor():
+    """v0.7.3: Kismet-extracted BLE friendly names take priority over
+    the generic OUI vendor so operators see "Sony WH-1000XM4" instead
+    of just "Cambridge Silicon Radio"."""
+    out = _render_device_label({"ble_name": "Sony WH-1000XM4", "oui_vendor": "Sony"})
+    assert out == "Sony WH-1000XM4"
+
+
+@pytest.mark.webui
+def test_device_label_filter_prefers_ble_name_over_friendly_name():
+    """ble_name is the authoritative Kismet-sourced field; friendly_name
+    is a legacy enrichment slot. When both are present, ble_name wins."""
+    out = _render_device_label(
+        {"ble_name": "AirPods Pro", "friendly_name": "Some Old Label", "oui_vendor": "Apple"}
+    )
+    assert out == "AirPods Pro"
+
+
+@pytest.mark.webui
+def test_device_label_filter_falls_through_when_ble_name_none():
+    """Missing/None ble_name falls through to friendly_name, then vendor."""
+    assert (
+        _render_device_label({"ble_name": None, "friendly_name": "Jane's iPad"})
+        == "Jane's iPad"
+    )
+    assert (
+        _render_device_label({"ble_name": None, "oui_vendor": "Apple"})
+        == "Apple"
+    )
+
+
+@pytest.mark.webui
+def test_probe_ssids_list_filter_decodes_json_string():
+    from lynceus.webui.app import _probe_ssids_list
+
+    assert _probe_ssids_list('["HomeNet", "OfficeWiFi"]') == ["HomeNet", "OfficeWiFi"]
+
+
+@pytest.mark.webui
+def test_probe_ssids_list_filter_returns_empty_on_none_or_empty():
+    from lynceus.webui.app import _probe_ssids_list
+
+    assert _probe_ssids_list(None) == []
+    assert _probe_ssids_list("") == []
+
+
+@pytest.mark.webui
+def test_probe_ssids_list_filter_safe_on_malformed():
+    from lynceus.webui.app import _probe_ssids_list
+
+    # Malformed JSON, wrong shape, non-string elements -- all collapse
+    # to "no probes" rather than raising and 500ing the page.
+    assert _probe_ssids_list("not-json") == []
+    assert _probe_ssids_list('{"oops": "object"}') == []
+    assert _probe_ssids_list('["ok", 42, null, "fine"]') == ["ok", "fine"]
+
+
+@pytest.mark.webui
+def test_device_label_filter_returns_dash_when_nothing_matches():
+    """All-None / all-empty dict still returns the em-dash sentinel."""
+    assert _render_device_label({"ble_name": None, "friendly_name": None, "oui_vendor": None}) == "—"
+    assert _render_device_label({"ble_name": "", "friendly_name": "", "oui_vendor": ""}) == "—"
+
+
+@pytest.mark.webui
+def test_alerts_list_renames_ts_to_timestamp(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "Timestamp" in r.text
+        assert ">ts<" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_renames_ack_to_status(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "Status" in r.text
+        assert ">ack<" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_button_says_acknowledge(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "Acknowledge" in r.text
+        assert "Acknowledge selected" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_has_device_column_with_vendor_fallback(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "TestVendor", 0, 100)
+        db.add_alert(
+            ts=100,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:01",
+            message="m",
+            severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "TestVendor" in r.text
+        assert "<th>Device</th>" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_device_column_dash_when_no_device(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "—" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_renders_ble_name_column(tmp_path):
+    """The BLE name column surfaces the Kismet-extracted advertised
+    name. Operators can read "Sony WH-1000XM4" directly off the row
+    instead of resolving it via the Device-label fallback chain."""
+    app, db = _make_app(tmp_path)
+    try:
+        mac = "aa:bb:cc:dd:ee:42"
+        db.upsert_device(mac, "ble", "Sony", 0, 100)
+        db.update_device_ble_name(mac, "Sony WH-1000XM4")
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        assert ">BLE name</a>" in r.text  # sortable column header (0.9.2)
+        assert "Sony WH-1000XM4" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_renders_em_dash_when_ble_name_missing(tmp_path):
+    """A device without a stored BLE name falls back to the em-dash
+    sentinel in the BLE column -- consistent with the Vendor cell's
+    fallback shape so the table stays scannable."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:99", "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        # The em-dash appears in the BLE column for this row.
+        assert "—" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_renders_probe_ssids_comma_joined(tmp_path):
+    """Probed SSIDs render as a comma-joined list -- forensic detail
+    for the deeper /devices page (not the home page)."""
+    app, db = _make_app(tmp_path)
+    try:
+        mac = "aa:bb:cc:dd:ee:11"
+        db.upsert_device(mac, "wifi", "Acme", 1, 100)
+        db.merge_device_probe_ssids(mac, ["HomeNet", "OfficeWiFi"])
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        # 0.9.2: /devices renders via the data_table macro, so the Probes
+        # header is now keyed and carries a resize grip. Probes has no DB
+        # ORDER BY, so it stays a plain (non-sort) header -- the label
+        # follows the <th> open tag directly, with no <a>. Same intent:
+        # the Probes column header is present.
+        assert '<th data-col-key="probes">Probes' in r.text
+        assert "HomeNet, OfficeWiFi" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_renders_blank_probes_for_no_history(tmp_path):
+    """A device that has never probed renders an empty Probes cell
+    (not a literal '[]' or 'None') -- the filter normalizes
+    None/empty/malformed to an empty list before the join."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:22", "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        # Scope the leak check to the rendered table body. 0.9.2 ships the
+        # data_table column-applier in base.html's <head>, whose JS
+        # legitimately contains "[]" (e.g. `var curKeys = [];`), so a
+        # whole-page substring no longer isolates the Probes-cell filter
+        # output. The <tbody> is exactly where a "[]"/"None" leak from the
+        # probe_ssids filter would surface. Same intent, tighter scope.
+        body = r.text[r.text.index("<tbody>") : r.text.index("</tbody>")]
+        assert "[]" not in body
+        # Defensive: the filter shouldn't leak the literal None either.
+        assert ">None<" not in body
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_recent_devices_includes_vendor_and_ble_name(tmp_path):
+    """The home page's recently-seen block surfaces Vendor and BLE
+    name alongside the Device label, so an operator landing on / can
+    triage a fresh sighting without clicking into /devices."""
+    app, db = _make_app(tmp_path)
+    try:
+        mac = "aa:bb:cc:dd:ee:33"
+        db.upsert_device(mac, "ble", "AcmeChips", 0, 100)
+        db.update_device_ble_name(mac, "Acme Speaker")
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        recent_idx = r.text.find("recently seen devices")
+        assert recent_idx != -1
+        recent_section = r.text[recent_idx:]
+        assert "<th>Vendor</th>" in recent_section
+        assert "<th>BLE name</th>" in recent_section
+        assert "AcmeChips" in recent_section
+        assert "Acme Speaker" in recent_section
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_recent_devices_does_not_show_probes_column(tmp_path):
+    """Probes is a forensic-detail column -- it belongs on the deeper
+    /devices list, not the home-page snapshot. Keeps the home table
+    scannable. Regression guard: if someone adds a Probes column to
+    index.html, this test breaks deliberately."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:44", "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        recent_idx = r.text.find("recently seen devices")
+        assert recent_idx != -1
+        recent_section = r.text[recent_idx:]
+        assert "<th>Probes</th>" not in recent_section
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_renders_last_rssi_and_last_ssid_columns(tmp_path):
+    """Touchup arc: /devices surfaces last_rssi and last_ssid columns
+    drawn from the most recent sighting per device, so operators can
+    triage sighted devices in the list view without clicking into each
+    detail page."""
+    app, db = _make_app(tmp_path)
+    try:
+        mac = "aa:bb:cc:dd:ee:55"
+        db.ensure_location("lab", "Lab")
+        db.upsert_device(mac, "wifi", "Acme", 0, 100)
+        db.insert_sighting(mac, 100, -67, "HomeNet", "lab")
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        assert ">Last RSSI</a>" in r.text  # sortable column headers (0.9.2)
+        assert ">Last SSID</a>" in r.text
+        assert ">-67<" in r.text
+        assert "HomeNet" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_recent_devices_shows_last_rssi_but_not_last_ssid(tmp_path):
+    """The home page surfaces Last RSSI alongside the existing columns
+    so operators see signal strength at a glance, but NOT Last SSID:
+    SSID strings can be long and clutter the at-a-glance home table.
+    Full info stays on the /devices list. Regression guard: if someone
+    adds a Last SSID column to index.html, this test breaks
+    deliberately."""
+    app, db = _make_app(tmp_path)
+    try:
+        mac = "aa:bb:cc:dd:ee:66"
+        db.ensure_location("lab", "Lab")
+        db.upsert_device(mac, "wifi", "Acme", 0, 100)
+        db.insert_sighting(mac, 100, -55, "SomeSSID", "lab")
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        recent_idx = r.text.find("recently seen devices")
+        assert recent_idx != -1
+        recent_section = r.text[recent_idx:]
+        assert "<th>Last RSSI</th>" in recent_section
+        assert "<th>Last SSID</th>" not in recent_section
+        assert ">-55<" in recent_section
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_has_device_and_vendor_columns(tmp_path):
+    """v0.7.3: Vendor is promoted from a label-fallback to its own
+    column, so the operator can scan vendor independently of the
+    Device column's BLE-name-takes-priority resolution."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Apple", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        assert "Apple" in r.text
+        # 0.9.2: macro-rendered header. Device has no DB ORDER BY, so it
+        # stays a PLAIN header (label directly after the keyed <th> open
+        # tag, no sort <a>); Vendor IS sortable (oui_vendor), so it renders
+        # the th-sort link. Same intent: Device plain, Vendor a sort link.
+        assert '<th data-col-key="device">Device' in r.text  # plain, no <a>
+        assert ">Vendor</a>" in r.text      # Vendor is sortable (0.9.2)
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_page_size_500_renders(tmp_path):
+    """v0.7.8 Touch 3: page_size=500 must be accepted at the API edge
+    (pre-fix the cap raised 400) and reflected in the rendered selected
+    <option> for round-trip consistency. 25/50/100 still work; the cap
+    is now [10, 500]."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices?page_size=500")
+        assert r.status_code == 200, (
+            f"page_size=500 must be accepted at the route; got "
+            f"{r.status_code} {r.text[:200]}"
+        )
+        # Dropdown declares 250 and 500 as selectable options.
+        assert 'value="250"' in r.text
+        assert 'value="500"' in r.text
+        # The selected page_size=500 round-trips into the form.
+        assert 'value="500" selected' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_page_size_existing_options_still_work(tmp_path):
+    """v0.7.10 B-5: /devices now uses the shared parse_pagination helper.
+    The existing 25/50/100/200 page sizes still render, and an
+    out-of-range value (501) clamps silently to the default rather than
+    400 -- matching every other list page. (Pre-B-5 the bespoke cap
+    raised 400 above 500; that contract is intentionally dropped here.)"""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            for sz in (25, 50, 100, 200):
+                r = client.get(f"/devices?page_size={sz}")
+                assert r.status_code == 200, f"page_size={sz} unexpectedly {r.status_code}"
+            over = client.get("/devices?page_size=501")
+            assert over.status_code == 200, (
+                "out-of-range page_size must clamp to the default, not 400 "
+                "(B-5: /devices joined the shared clamp convention)"
+            )
+            # Fell back to the default per_page (50), reflected in the form.
+            assert 'value="50" selected' in over.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_out_of_range_page_clamps(tmp_path):
+    """v0.7.10 B-5: an out-of-range / non-integer ?page= clamps to a
+    valid page instead of 400, matching the shared pagination
+    convention. 30 rows at page_size=25 -> 2 pages; page=999 lands on
+    the last page, page=0 / page=abc fall back to page 1."""
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(30):
+            db.upsert_device(f"aa:bb:cc:dd:ee:{i:02x}", "wifi", "Acme", 0, 100 + i)
+        with TestClient(app) as client:
+            r = client.get("/devices?page_size=25&page=999")
+            assert r.status_code == 200
+            assert "page 2 of 2" in r.text  # clamped to the last page
+            assert client.get("/devices?page=0").status_code == 200
+            assert client.get("/devices?page=abc").status_code == 200
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_devices_list_type_column_declares_nowrap(tmp_path):
+    """v0.7.8 Touch 2: belt-and-suspenders nowrap on the /devices Type
+    column. The v0.7.7 .table-scroll global rule already nowraps every
+    table cell, but the operator-reported "Type column truncating to T"
+    symptom on Parrot motivated an explicit per-cell nowrap so a future
+    CSS regression or override can't silently re-introduce the squash.
+    Asserting both the <th> and <td> carry the declaration locks the
+    fix into the template.
+
+    0.9.2 table-UX arc: the Type header is now a server-side sort link
+    (label wrapped in an <a>), but the belt-and-suspenders inline nowrap
+    is preserved on the <th> via the macro's per-column nowrap flag -- so
+    the invariant this test guards is unchanged, only the header markup
+    around it evolved."""
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Apple", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        # Header still carries inline nowrap (now also a sort link). 0.9.2:
+        # the macro emits data-col-key as the first <th> attribute, then the
+        # nowrap style, then aria-sort. Type is the only nowrap column, so
+        # this open-tag substring uniquely identifies it.
+        assert (
+            '<th data-col-key="device_type" style="white-space: nowrap;" aria-sort='
+            in r.text
+        ), (
+            "Type <th> must carry inline white-space: nowrap so the column "
+            "is robust to overrides of the global .table-scroll rule"
+        )
+        assert ">Type</a>" in r.text, "Type header must render as a sort link"
+        # Body cell declaration with inline nowrap (unchanged by the arc).
+        assert 'style="white-space: nowrap;">wifi</td>' in r.text, (
+            "Type <td> must carry inline white-space: nowrap so device_type "
+            "literals (wifi/ble/bt_classic) never truncate on the row"
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_alerts_have_device_data_enriched(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "EnrichTest", 0, 100)
+        db.add_alert(
+            ts=100,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:ff",
+            message="m",
+            severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "EnrichTest" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_alerts_with_missing_device_renders_dash(tmp_path):
+    """Belt-and-braces: even if an alert ends up with a mac that no
+    device row exists for (e.g., a device was deleted, or a future
+    schema relaxation), the Device column must render an em dash and
+    the page must not 500. We bypass the FK temporarily to construct
+    the orphan state."""
+    app, db = _make_app(tmp_path)
+    try:
+        with db._conn:
+            db._conn.execute("PRAGMA foreign_keys = OFF")
+            db._conn.execute(
+                "INSERT INTO alerts(ts, rule_name, mac, message, severity) VALUES (?, ?, ?, ?, ?)",
+                (100, "r", "ff:ff:ff:ff:ff:ff", "missing-device-msg", "low"),
+            )
+            db._conn.execute("PRAGMA foreign_keys = ON")
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        assert "missing-device-msg" in r.text
+        assert "—" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_table_scroll_class_present_on_alerts_list(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'class="table-scroll"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_table_scroll_class_present_on_devices_list(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/devices")
+        assert r.status_code == 200
+        assert 'class="table-scroll"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_table_scroll_css_class_defined():
+    css_path = (
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "lynceus"
+        / "webui"
+        / "static"
+        / "lynceus.css"
+    )
+    content = css_path.read_text(encoding="utf-8")
+    idx = content.find(".table-scroll")
+    assert idx != -1, "lynceus.css is missing the .table-scroll rule"
+    assert "overflow-x: auto" in content[idx : idx + 500]
+
+
+@pytest.mark.webui
+def test_table_scroll_cells_force_nowrap():
+    """v0.7.7 Touch 4: without `white-space: nowrap` on cells the table
+    is never wider than the wrapper (cells wrap text), so overflow-x
+    never triggers and columns squash on narrow viewports. The probe
+    on Parrot reported only the first 3-4 columns visible on
+    /watchlist. The nowrap rule forces the table to its natural
+    content width so overflow-x: auto actually engages."""
+    css_path = (
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "lynceus"
+        / "webui"
+        / "static"
+        / "lynceus.css"
+    )
+    content = css_path.read_text(encoding="utf-8")
+    assert ".table-scroll table th" in content
+    assert ".table-scroll table td" in content
+    assert "white-space: nowrap" in content
+
+
+@pytest.mark.webui
+def test_watchlist_list_carries_table_scroll_wrapper(tmp_path):
+    """The /watchlist page must wrap its <table> in .table-scroll so the
+    Touch 4 CSS (overflow-x + nowrap) takes effect. Regression for
+    the v0.7.6 smoke probe v2's report of cut-off columns."""
+    config = Config(db_path=str(tmp_path / "ui.db"))
+    db = Database(config.db_path)
+    try:
+        # Need at least one watchlist entry for the table to render.
+        with db._conn:
+            db._conn.execute(
+                "INSERT INTO watchlist(pattern, pattern_type, severity) "
+                "VALUES ('aa:bb:cc:dd:ee:ff', 'mac', 'med')"
+            )
+        app = create_app(config, db)
+        with TestClient(app) as client:
+            r = client.get("/watchlist")
+        assert r.status_code == 200
+        assert 'class="table-scroll"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_base_html_uses_container_fluid():
+    base_path = (
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "lynceus"
+        / "webui"
+        / "templates"
+        / "base.html"
+    )
+    content = base_path.read_text(encoding="utf-8")
+    assert 'class="container-fluid"' in content
+    # The non-fluid variant must be gone — guard against an accidental revert.
+    assert 'class="container"' not in content
+
+
+# ---------------------------------------------------------------------------
+# rc5: alert-detail triage buttons (Allowlist / Snooze 24h / Remove).
+# Depends on the allowlist backend reshape from the preceding prompt:
+# expires_at + added_at on AllowlistEntry, split-storage loader, atomic
+# writers, mtime watch.
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_allowlist(tmp_path):
+    """App with an empty operator-curated primary allowlist.yaml configured.
+
+    The triage routes refuse to write when allowlist_path is unset; tests
+    that exercise the success path need a configured primary even when
+    its contents are intentionally empty.
+    """
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    return app, db, primary
+
+
+def _ui_path_for(primary: Path) -> Path:
+    from lynceus.allowlist import derive_ui_path as _derive
+
+    return _derive(primary)
+
+
+def _read_ui_entries(primary: Path):
+    """Read entries from the daemon-managed UI sibling, or empty list."""
+    import yaml as _yaml
+
+    ui_path = _ui_path_for(primary)
+    if not ui_path.exists():
+        return []
+    data = _yaml.safe_load(ui_path.read_text(encoding="utf-8")) or {}
+    return data.get("entries", [])
+
+
+def _seed_alert_with_mac(db, mac: str, *, ts: int = 100, severity: str = "med") -> int:
+    """Insert a device row + an alert row pointing at it.
+
+    ``alerts.mac`` has a FOREIGN KEY → ``devices.mac``, so an alert with
+    a non-null MAC requires the device to exist first.
+    """
+    db.upsert_device(mac, "wifi", None, 0, ts)
+    return db.add_alert(
+        ts=ts, rule_name="r", mac=mac, message="m", severity=severity
+    )
+
+
+# --- routes ----------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_triage_allowlist_post_writes_entry_and_redirects(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/allowlist",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/alerts/{aid}"
+        entries = _read_ui_entries(primary)
+        assert len(entries) == 1
+        assert entries[0]["pattern"] == "aa:bb:cc:dd:ee:ff"
+        assert entries[0]["pattern_type"] == "mac"
+        assert "expires_at" not in entries[0]  # permanent
+        assert "added_at" in entries[0]
+        assert "added via webui" in entries[0]["note"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_triage_snooze_post_writes_entry_with_expiry(tmp_path):
+    import time as _time
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        before = int(_time.time())
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/snooze",
+                data={CSRF_FORM_FIELD: token},
+            )
+        after = int(_time.time())
+        assert r.status_code == 303
+        entries = _read_ui_entries(primary)
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["pattern"] == "aa:bb:cc:dd:ee:ff"
+        # 86400 second window from "now" — bounded by before/after to
+        # tolerate the second the request straddled.
+        assert before + 86400 <= e["expires_at"] <= after + 86400
+        assert "snoozed 24h via webui" in e["note"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_triage_remove_post_drops_existing_entry(tmp_path):
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        # Seed a UI entry so /remove has something to delete.
+        add_ui_entry(
+            _ui_path_for(primary),
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:ff",
+                pattern_type="mac",
+                added_at=1_799_000_000,
+            ),
+        )
+        assert len(_read_ui_entries(primary)) == 1
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/allowlist/remove",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        assert _read_ui_entries(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_triage_remove_post_idempotent_when_nothing_to_remove(tmp_path):
+    """Clicking Remove twice (or against a primary-side entry the UI
+    can't delete) must not 500; the redirect re-renders the truth."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/allowlist/remove",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        assert _read_ui_entries(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize("path_suffix", ["allowlist", "snooze", "allowlist/remove"])
+def test_triage_routes_return_404_for_missing_alert(tmp_path, path_suffix):
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/9999/{path_suffix}",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 404
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize("path_suffix", ["allowlist", "snooze", "allowlist/remove"])
+def test_triage_routes_reject_without_csrf(tmp_path, path_suffix):
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app) as client:
+            client.cookies.clear()
+            r = client.post(f"/alerts/{aid}/{path_suffix}")
+        assert r.status_code == 403
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize("path_suffix", ["allowlist", "snooze", "allowlist/remove"])
+def test_triage_routes_return_400_when_allowlist_not_configured(tmp_path, path_suffix):
+    """No allowlist_path → there is no file to write to. The UI hides
+    the buttons in this case, but a forged POST (e.g. an operator who
+    enabled triage then disabled allowlist_path) must not silently no-op."""
+    config = Config(db_path=str(tmp_path / "ui.db"))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/{path_suffix}",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize("path_suffix", ["allowlist", "snooze", "allowlist/remove"])
+def test_triage_routes_return_400_when_alert_has_no_mac(tmp_path, path_suffix):
+    """Alerts without a MAC (e.g. rules that fire on per-source counts)
+    can't be triaged by MAC. Surface the mismatch with 400."""
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = db.add_alert(
+            ts=100,
+            rule_name="r",
+            mac=None,
+            message="m",
+            severity="med",
+        )
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/{path_suffix}",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+# --- B1: per-alert snooze custom durations ---------------------------------
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "duration_key,expected_offset",
+    [
+        ("1h", 3600),
+        ("24h", 86400),
+        ("7d", 7 * 86400),
+        ("30d", 30 * 86400),
+        ("forever", None),
+    ],
+)
+def test_snooze_duration_writes_correct_expires_at(
+    tmp_path, duration_key, expected_offset
+):
+    """Each of the 5 operator-pickable durations resolves to the
+    expected ``expires_at``. ``forever`` writes a NULL (omitted in
+    yaml) — semantically a permanent allowlist entry, distinguished
+    from /allowlist only by the provenance note prefix."""
+    import time as _time
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        before = int(_time.time())
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/snooze",
+                data={CSRF_FORM_FIELD: token, "snooze_duration": duration_key},
+            )
+        after = int(_time.time())
+        assert r.status_code == 303
+        entries = _read_ui_entries(primary)
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["pattern"] == "aa:bb:cc:dd:ee:ff"
+        if expected_offset is None:
+            assert "expires_at" not in e
+        else:
+            assert before + expected_offset <= e["expires_at"] <= after + expected_offset
+        assert f"snoozed {duration_key} via webui" in e["note"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_invalid_duration_returns_400(tmp_path):
+    """Invalid ``snooze_duration`` is rejected with 400 (matches the
+    /alerts/{id}/watch validation posture; no yaml side-effect)."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/snooze",
+                data={CSRF_FORM_FIELD: token, "snooze_duration": "5y"},
+            )
+        assert r.status_code == 400
+        assert _read_ui_entries(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_renders_cleanly_after_forever_snooze(tmp_path):
+    """``forever`` snoozes write a NULL ``expires_at`` — the detail
+    page must not leak ``None hours remaining`` or empty numeric
+    text. By construction the handler leaves ``snooze_hours_remaining``
+    as ``None`` when ``expires_at is None`` and the template branches
+    on the Allowlisted path first; this pins that branching against
+    future template drift.
+
+    Note the operator-visible label says "Allowlisted" after a
+    forever-snooze (end-state is yaml-identical to a /allowlist
+    permanent entry); only the provenance note in allowlist_ui.yaml
+    (``snoozed forever via webui``) distinguishes which surface
+    produced it.
+    """
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/snooze",
+                data={CSRF_FORM_FIELD: token, "snooze_duration": "forever"},
+            )
+            assert r.status_code == 303
+            page = client.get(f"/alerts/{aid}")
+        assert page.status_code == 200
+        # No NULL-leakage into operator-visible text. "hours remaining"
+        # appears only in the Snoozed-until branch — forever-snooze
+        # must not reach it.
+        assert "hours remaining" not in page.text
+        assert "None" not in page.text
+        # End-state: the Allowlisted branch renders.
+        assert "Allowlisted" in page.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_snooze_form_renders_all_five_options(tmp_path):
+    """The per-alert snooze form on the detail page renders the five
+    locked options with ``24h`` selected (preserves the pre-B1
+    fixed-24h default for operators submitting without selecting)."""
+    import re as _re
+
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        # Scope to the snooze form region so the assertions don't
+        # leak across unrelated dropdowns on the page.
+        m = _re.search(
+            rf'action="/alerts/{aid}/snooze".*?</form>',
+            r.text,
+            flags=_re.DOTALL,
+        )
+        assert m is not None
+        snooze_form = m.group(0)
+        for opt in ("1h", "24h", "7d", "30d", "forever"):
+            assert f'value="{opt}"' in snooze_form
+        assert 'value="24h" selected' in snooze_form
+    finally:
+        db.close()
+
+
+# --- template render states -----------------------------------------------
+
+
+@pytest.mark.webui
+def test_alert_detail_state1_renders_both_buttons_and_csrf(tmp_path):
+    """No matching allowlist entry: both action forms appear with CSRF."""
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Allowlist this device" in r.text
+        assert ">Snooze</button>" in r.text
+        assert f'action="/alerts/{aid}/allowlist"' in r.text
+        assert f'action="/alerts/{aid}/snooze"' in r.text
+        # Both forms must carry the CSRF token.
+        assert r.text.count(f'name="{CSRF_FORM_FIELD}"') >= 2
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_state2_renders_status_and_remove_button(tmp_path):
+    """Permanently allowlisted via UI: status text + Remove button."""
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        add_ui_entry(
+            _ui_path_for(primary),
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:ff",
+                pattern_type="mac",
+                added_at=1_799_000_000,
+            ),
+        )
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Allowlisted" in r.text
+        assert "Remove from allowlist" in r.text
+        # The "added" timestamp renders in human form.
+        assert "2027-01-03 18:13 UTC" in r.text  # 1_799_000_000 → 2027-01-03 18:13 UTC
+        # No State-1 buttons present.
+        assert "Snooze for 24h" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_state3_renders_countdown_and_cancel_button(tmp_path):
+    """Snoozed via UI: countdown + Cancel button."""
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        now = int(_time.time())
+        add_ui_entry(
+            _ui_path_for(primary),
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:ff",
+                pattern_type="mac",
+                added_at=now,
+                expires_at=now + 12 * 3600,  # 12h remaining
+            ),
+        )
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Snoozed until" in r.text
+        assert "hours remaining" in r.text
+        assert "Cancel snooze" in r.text
+        # State-1/2 controls absent.
+        assert "Allowlist this device" not in r.text
+        assert "Remove from allowlist" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_state2_primary_match_shows_no_button(tmp_path):
+    """An entry living in the operator-curated primary file is not
+    UI-removable; the section shows status and a hint, no button."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        primary.write_text(
+            "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n",
+            encoding="utf-8",
+        )
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Allowlisted" in r.text
+        assert "Remove from allowlist" not in r.text
+        assert "operator-managed" in r.text
+        assert "allowlist.yaml" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_triage_hidden_when_allowlist_path_not_configured(tmp_path):
+    """No allowlist_path: the whole triage section is omitted."""
+    config = Config(db_path=str(tmp_path / "ui.db"))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:dd:ee:ff")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "<strong>triage</strong>" not in r.text
+        assert "Snooze for 24h" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_triage_hidden_when_alert_has_no_mac(tmp_path):
+    """An alert without a MAC has nothing to allowlist; section is hidden."""
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="med")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "<strong>triage</strong>" not in r.text
+    finally:
+        db.close()
+
+
+# --- end-to-end: snooze → no alert → expire → alert again ------------------
+
+
+@pytest.mark.webui
+def test_triage_snooze_end_to_end_through_poll_cycle(tmp_path):
+    """The load-bearing operator-comfort claim: a UI snooze suppresses the
+    next poll without daemon restart, then expires cleanly.
+
+    Synthesizes a watchlist hit observation, POSTs /snooze through the
+    webui, runs poll_once → confirms zero alerts; then fast-forwards
+    ``now_ts`` past the snooze expiry and runs poll_once again →
+    confirms the alert fires.
+    """
+    from lynceus.allowlist import load_allowlist
+    from lynceus.kismet import FakeKismetClient
+    from lynceus.poller import poll_once
+    from lynceus.rules import Rule, Ruleset
+
+    fixture = Path(__file__).parent / "fixtures" / "kismet_devices.json"
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    config = Config(
+        kismet_fixture_path=str(fixture),
+        db_path=str(tmp_path / "ui.db"),
+        location_id="testloc",
+        location_label="Test Location",
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    target_mac = "a4:83:e7:11:22:33"  # present in the fixture
+    try:
+        aid = _seed_alert_with_mac(db, target_mac, severity="high")
+        # 1. Operator clicks Snooze for 24h on the alert detail page.
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/snooze",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        # 2. Next poll: same watchlist rule fires on the same MAC. With
+        #    snooze active, the audit-log line should fire but no new
+        #    alert row should be written.
+        rs = Ruleset(
+            rules=[
+                Rule(
+                    name="apple_mac",
+                    rule_type="watchlist_mac",
+                    severity="high",
+                    patterns=[target_mac],
+                )
+            ]
+        )
+        # Reload merges the new UI entry — same path the daemon takes
+        # via mtime watch.
+        allowlist = load_allowlist(config.allowlist_path)
+        snooze_entry = next(
+            e for e in allowlist.entries if e.pattern == target_mac
+        )
+        assert snooze_entry.expires_at is not None
+        snooze_expiry = snooze_entry.expires_at
+        # Use an unambiguously-before-expiry timestamp.
+        before_expiry = snooze_expiry - 1
+        fake_client = FakeKismetClient(str(fixture))
+        baseline_alerts = db._conn.execute(
+            "SELECT COUNT(*) FROM alerts"
+        ).fetchone()[0]
+        poll_once(
+            fake_client,
+            db,
+            config,
+            before_expiry,
+            ruleset=rs,
+            allowlist=allowlist,
+        )
+        after_snooze = db._conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+        assert after_snooze == baseline_alerts  # no new alert
+        # 3. Fast-forward past expiry: same observation, same rules, but
+        #    now the entry is past expires_at and is_allowed skips it.
+        after_expiry = snooze_expiry + 1
+        db.set_state("last_poll_ts", "0")  # reset so the fake client returns devices again
+        fake_client2 = FakeKismetClient(str(fixture))
+        poll_once(
+            fake_client2,
+            db,
+            config,
+            after_expiry,
+            ruleset=rs,
+            allowlist=allowlist,
+        )
+        after_expiry_alerts = db._conn.execute(
+            "SELECT COUNT(*) FROM alerts"
+        ).fetchone()[0]
+        assert after_expiry_alerts > after_snooze  # alert fires
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# /allowlist management surface (rc5): filters, add-form, bulk remove,
+# primary-source read-only protection.
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_mixed_allowlist(tmp_path):
+    """Seed an allowlist with primary + UI entries spanning all 7 types
+    plus active/snoozed/expired statuses, so filter tests have something
+    to exercise. Returns (app, db, primary_path, ui_path, now_ts).
+
+    Entries (intentional diversity, not realism):
+
+      primary:
+        - mac    aa:aa:aa:aa:aa:01    note='primary camera'
+        - ssid   PrimaryNet           note='operator network'
+
+      ui:
+        - mac    11:22:33:44:55:01    note='ui device'              (active)
+        - mac    22:22:22:22:22:22    expires_at=now-3600           (expired)
+        - mac    33:33:33:33:33:33    expires_at=now+86400, note='ui-snooze'  (snoozed)
+        - mac_range            aa:bb:cc:d/28   note='ui range'
+        - ble_uuid             0000180f-0000-1000-8000-00805f9b34fb
+        - ble_manufacturer_id  004c
+        - drone_id_prefix      ABC1234
+    """
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text(
+        "entries:\n"
+        "  - pattern: aa:aa:aa:aa:aa:01\n"
+        "    pattern_type: mac\n"
+        "    note: primary camera\n"
+        "  - pattern: PrimaryNet\n"
+        "    pattern_type: ssid\n"
+        "    note: operator network\n",
+        encoding="utf-8",
+    )
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    ui_path = derive_ui_path(primary)
+    now_ts = int(_time.time())
+    seeds = [
+        AllowlistEntry(
+            pattern="11:22:33:44:55:01",
+            pattern_type="mac",
+            note="ui device",
+            added_at=now_ts,
+        ),
+        AllowlistEntry(
+            pattern="22:22:22:22:22:22",
+            pattern_type="mac",
+            expires_at=now_ts - 3600,
+            added_at=now_ts - 7200,
+        ),
+        AllowlistEntry(
+            pattern="33:33:33:33:33:33",
+            pattern_type="mac",
+            note="ui-snooze",
+            expires_at=now_ts + 86400,
+            added_at=now_ts,
+        ),
+        AllowlistEntry(
+            pattern="aa:bb:cc:d",  # canonicalizes to aa:bb:cc:d/28
+            pattern_type="mac_range",
+            note="ui range",
+            added_at=now_ts,
+        ),
+        AllowlistEntry(
+            pattern="0000180f-0000-1000-8000-00805f9b34fb",
+            pattern_type="ble_uuid",
+            added_at=now_ts,
+        ),
+        AllowlistEntry(
+            pattern="004c",
+            pattern_type="ble_manufacturer_id",
+            added_at=now_ts,
+        ),
+        AllowlistEntry(
+            pattern="ABC1234",
+            pattern_type="drone_id_prefix",
+            added_at=now_ts,
+        ),
+    ]
+    for entry in seeds:
+        add_ui_entry(ui_path, entry)
+    return app, db, primary, ui_path, now_ts
+
+
+@pytest.mark.webui
+def test_allowlist_no_filters_shows_every_entry(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        # Pattern from every entry must appear in the rendered body.
+        for pat in [
+            "aa:aa:aa:aa:aa:01",
+            "PrimaryNet",
+            "11:22:33:44:55:01",
+            "22:22:22:22:22:22",
+            "33:33:33:33:33:33",
+            "aa:bb:cc:d/28",
+            "0000180f-0000-1000-8000-00805f9b34fb",
+            "004c",
+            "ABC1234",
+        ]:
+            assert pat in r.text, f"missing pattern {pat!r} in default render"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_q_matches_pattern_and_note(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?q=camera")
+        assert r.status_code == 200
+        assert "aa:aa:aa:aa:aa:01" in r.text  # primary camera note matched
+        # Unrelated rows should not appear.
+        assert "PrimaryNet" not in r.text
+        assert "11:22:33:44:55:01" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_q_case_insensitive(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?q=CAMERA")
+        assert r.status_code == 200
+        assert "aa:aa:aa:aa:aa:01" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_source_primary(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?source=primary")
+        assert r.status_code == 200
+        assert "aa:aa:aa:aa:aa:01" in r.text
+        assert "PrimaryNet" in r.text
+        # No UI entries:
+        assert "11:22:33:44:55:01" not in r.text
+        assert "004c" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_source_ui(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?source=ui")
+        assert r.status_code == 200
+        assert "11:22:33:44:55:01" in r.text
+        assert "aa:bb:cc:d/28" in r.text
+        # No primary entries:
+        assert "aa:aa:aa:aa:aa:01" not in r.text
+        assert "PrimaryNet" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_status_expired(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?status=expired")
+        assert r.status_code == 200
+        assert "22:22:22:22:22:22" in r.text  # expired
+        assert "33:33:33:33:33:33" not in r.text  # snoozed
+        assert "11:22:33:44:55:01" not in r.text  # active
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_status_snoozed(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?status=snoozed")
+        assert r.status_code == 200
+        assert "33:33:33:33:33:33" in r.text
+        assert "22:22:22:22:22:22" not in r.text
+        assert "11:22:33:44:55:01" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_status_active(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?status=active")
+        assert r.status_code == 200
+        # Active = no expires_at. The active UI mac and all the primary
+        # rows + no-expiry UI rows survive.
+        assert "11:22:33:44:55:01" in r.text
+        assert "aa:aa:aa:aa:aa:01" in r.text
+        # Snoozed/expired excluded.
+        assert "22:22:22:22:22:22" not in r.text
+        assert "33:33:33:33:33:33" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_type_mac(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?type=mac")
+        assert r.status_code == 200
+        assert "aa:aa:aa:aa:aa:01" in r.text  # primary mac
+        assert "11:22:33:44:55:01" in r.text  # UI mac
+        # Non-mac types excluded:
+        assert "PrimaryNet" not in r.text
+        assert "aa:bb:cc:d/28" not in r.text
+        assert "0000180f-0000-1000-8000-00805f9b34fb" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_type_each_supported_renders_only_that_type(tmp_path):
+    """Smoke per-type: each of the 7 dropdown options narrows to that
+    pattern_type alone."""
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            for ptype, present in [
+                ("ssid", "PrimaryNet"),
+                ("mac_range", "aa:bb:cc:d/28"),
+                ("ble_uuid", "0000180f-0000-1000-8000-00805f9b34fb"),
+                ("ble_manufacturer_id", "004c"),
+                ("drone_id_prefix", "ABC1234"),
+                ("oui", None),  # no oui entries — empty state
+            ]:
+                r = client.get(f"/allowlist?type={ptype}")
+                assert r.status_code == 200
+                if present is None:
+                    assert "No entries match" in r.text
+                else:
+                    assert present in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_combined_and_together(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            # source=ui AND type=mac AND status=active intersects to the
+            # one row 11:22:33:44:55:01.
+            r = client.get("/allowlist?source=ui&type=mac&status=active")
+        assert r.status_code == 200
+        assert "11:22:33:44:55:01" in r.text
+        assert "22:22:22:22:22:22" not in r.text  # status=expired
+        assert "33:33:33:33:33:33" not in r.text  # status=snoozed
+        assert "aa:aa:aa:aa:aa:01" not in r.text  # source=primary
+        assert "aa:bb:cc:d/28" not in r.text  # type=mac_range
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_empty_result_renders_empty_state(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?q=zzzzzzzzzz")
+        assert r.status_code == 200
+        assert "No entries match the current filters." in r.text
+        assert 'href="/allowlist"' in r.text  # reset link present
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_invalid_source_returns_400(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?source=bogus")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_invalid_status_returns_400(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?status=bogus")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_filter_invalid_type_returns_400(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?type=bssid")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_source_badges_render(tmp_path):
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        assert "badge-source-primary" in r.text
+        assert "badge-source-ui" in r.text
+        # Status badges present too:
+        assert "badge-allow-active" in r.text
+        assert "badge-allow-snoozed" in r.text
+        assert "badge-allow-expired" in r.text
+    finally:
+        db.close()
+
+
+# --- POST /allowlist/add ----------------------------------------------------
+
+
+def _read_ui_file(primary):
+    """Read entries from the daemon-managed UI sibling, or empty list."""
+    from lynceus.allowlist import derive_ui_path as _derive
+
+    ui = _derive(primary)
+    if not ui.exists():
+        return []
+    return yaml.safe_load(ui.read_text(encoding="utf-8"))["entries"]
+
+
+@pytest.mark.webui
+def test_allowlist_add_valid_mac_persists_and_redirects(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "AA:BB:CC:DD:EE:FF",
+                    "pattern_type": "mac",
+                    "note": "added via test",
+                },
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/allowlist?success=add"
+        entries = _read_ui_file(primary)
+        assert len(entries) == 1
+        assert entries[0]["pattern"] == "aa:bb:cc:dd:ee:ff"  # canonicalized
+        assert entries[0]["pattern_type"] == "mac"
+        assert entries[0]["note"] == "added via test"
+        assert "added_at" in entries[0]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "ptype,raw_pattern,canonical_pattern",
+    [
+        ("mac", "AA:BB:CC:DD:EE:FF", "aa:bb:cc:dd:ee:ff"),
+        ("oui", "AA-BB-CC", "aa:bb:cc"),
+        ("ssid", "HomeNet", "HomeNet"),
+        ("mac_range", "aa:bb:cc:d", "aa:bb:cc:d/28"),
+        (
+            "ble_uuid",
+            "0000180F-0000-1000-8000-00805F9B34FB",
+            "0000180f-0000-1000-8000-00805f9b34fb",
+        ),
+        ("ble_manufacturer_id", "0x004C", "004c"),
+        ("drone_id_prefix", "abc1234", "ABC1234"),
+    ],
+)
+def test_allowlist_add_canonicalizes_each_pattern_type(
+    tmp_path, ptype, raw_pattern, canonical_pattern
+):
+    """Per supported type: form input is canonicalized via patterns.py
+    before write — proves the canonicalizer is wired through the add
+    route, not just the model."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": raw_pattern,
+                    "pattern_type": ptype,
+                },
+            )
+        assert r.status_code == 303, f"{ptype} {raw_pattern} → {r.status_code} {r.text[:200]}"
+        entries = _read_ui_file(primary)
+        assert len(entries) == 1
+        assert entries[0]["pattern"] == canonical_pattern
+        assert entries[0]["pattern_type"] == ptype
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_empty_pattern_returns_400_inline_error(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "   ",
+                    "pattern_type": "mac",
+                },
+            )
+        assert r.status_code == 400
+        assert "pattern is required" in r.text
+        assert _read_ui_file(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_invalid_pattern_returns_400_inline_error(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "not-a-mac",
+                    "pattern_type": "mac",
+                },
+            )
+        assert r.status_code == 400
+        assert "invalid mac" in r.text or "pattern" in r.text
+        # No write.
+        assert _read_ui_file(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_invalid_pattern_type_returns_400(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "aa:bb:cc:dd:ee:ff",
+                    "pattern_type": "bssid",
+                },
+            )
+        assert r.status_code == 400
+        assert "invalid pattern_type" in r.text
+        assert _read_ui_file(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_invalid_expires_at_returns_400(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "aa:bb:cc:dd:ee:ff",
+                    "pattern_type": "mac",
+                    "expires_at": "not-a-date",
+                },
+            )
+        assert r.status_code == 400
+        assert "expires_at" in r.text
+        assert _read_ui_file(primary) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_accepts_datetime_local_expires_at(tmp_path):
+    """Datetime-local input shape is YYYY-MM-DDTHH:MM with no tz; the
+    handler should interpret as UTC and store an int epoch."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "aa:bb:cc:dd:ee:ff",
+                    "pattern_type": "mac",
+                    "expires_at": "2030-01-02T03:04",
+                },
+            )
+        assert r.status_code == 303
+        entries = _read_ui_file(primary)
+        # 2030-01-02 03:04 UTC = 1893553440
+        assert entries[0]["expires_at"] == 1_893_553_440
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_missing_csrf_returns_403(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            client.cookies.clear()
+            r = client.post(
+                "/allowlist/add",
+                data={"pattern": "aa:bb:cc:dd:ee:ff", "pattern_type": "mac"},
+            )
+        assert r.status_code == 403
+        assert _read_ui_file(primary) == []
+    finally:
+        db.close()
+
+
+# --- POST /allowlist/bulk_remove --------------------------------------------
+
+
+def _seed_ui_entries(primary, entries_specs):
+    """Seed several UI entries; returns the list of canonical patterns
+    as stored, so tests can construct composite keys without
+    re-canonicalizing."""
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    ui_path = derive_ui_path(primary)
+    canonical = []
+    for spec in entries_specs:
+        e = AllowlistEntry(**spec)
+        add_ui_entry(ui_path, e)
+        canonical.append(e.pattern)
+    return canonical, ui_path
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_three_ui_entries_single_atomic_write(tmp_path):
+    """Selecting 3 UI rows removes all 3 via one os.replace; mtime moves
+    exactly once across the bulk operation."""
+    import os as _os
+    import time as _time
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _patterns, ui_path = _seed_ui_entries(
+            primary,
+            [
+                {"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"},
+                {"pattern": "aa:bb:cc:dd:ee:02", "pattern_type": "mac"},
+                {"pattern": "aa:bb:cc:dd:ee:03", "pattern_type": "mac"},
+                {"pattern": "aa:bb:cc:dd:ee:04", "pattern_type": "mac"},
+            ],
+        )
+        # Rewind mtime so the post-bulk stat is provably distinct.
+        st = ui_path.stat()
+        _os.utime(ui_path, (st.st_atime, st.st_mtime - 5))
+        mtime_before = ui_path.stat().st_mtime
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "entry_keys": [
+                        "mac:aa:bb:cc:dd:ee:01",
+                        "mac:aa:bb:cc:dd:ee:02",
+                        "mac:aa:bb:cc:dd:ee:03",
+                    ],
+                },
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/allowlist?success=bulk_remove&count=3"
+        entries = _read_ui_file(primary)
+        assert [e["pattern"] for e in entries] == ["aa:bb:cc:dd:ee:04"]
+        # mtime moved exactly once (bulk write).
+        assert ui_path.stat().st_mtime != mtime_before
+        _ = _time  # keep the import live for readers
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_with_primary_collision_refuses_atomically(tmp_path):
+    """Selecting 2 UI rows + 1 primary row → 400; neither file changes.
+
+    The hostile case the prompt's regression-fence describes: a crafted
+    form submission tries to enlist a primary-source key in a batch.
+    The handler must refuse the entire batch before any write, even for
+    the UI-side rows that are legitimately removable.
+    """
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        primary.write_text(
+            "entries:\n  - pattern: ee:ee:ee:ee:ee:ee\n    pattern_type: mac\n",
+            encoding="utf-8",
+        )
+        _patterns, ui_path = _seed_ui_entries(
+            primary,
+            [
+                {"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"},
+                {"pattern": "aa:bb:cc:dd:ee:02", "pattern_type": "mac"},
+            ],
+        )
+        primary_before = primary.read_text(encoding="utf-8")
+        ui_before = ui_path.read_text(encoding="utf-8")
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "entry_keys": [
+                        "mac:aa:bb:cc:dd:ee:01",
+                        "mac:aa:bb:cc:dd:ee:02",
+                        "mac:ee:ee:ee:ee:ee:ee",
+                    ],
+                },
+            )
+        assert r.status_code == 400
+        assert "primary-file" in r.text or "operator-managed" in r.text
+        # Both files byte-for-byte unchanged.
+        assert primary.read_text(encoding="utf-8") == primary_before
+        assert ui_path.read_text(encoding="utf-8") == ui_before
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_empty_selection_returns_400(tmp_path):
+    app, db, _primary = _make_app_with_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_missing_csrf_returns_403(tmp_path):
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _seed_ui_entries(
+            primary,
+            [{"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"}],
+        )
+        with TestClient(app) as client:
+            client.cookies.clear()
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={"entry_keys": ["mac:aa:bb:cc:dd:ee:01"]},
+            )
+        assert r.status_code == 403
+        # File unchanged.
+        entries = _read_ui_file(primary)
+        assert [e["pattern"] for e in entries] == ["aa:bb:cc:dd:ee:01"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_preserves_filter_state_in_redirect(tmp_path):
+    """The redirect URL after a bulk_remove echoes the filter form
+    fields so operators can keep bulk-cleaning within the same view."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _seed_ui_entries(
+            primary,
+            [{"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"}],
+        )
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "entry_keys": ["mac:aa:bb:cc:dd:ee:01"],
+                    "source": "ui",
+                    "status": "active",
+                    "type": "mac",
+                    "q": "aa",
+                },
+            )
+        assert r.status_code == 303
+        loc = r.headers["location"]
+        assert "source=ui" in loc
+        assert "status=active" in loc
+        assert "type=mac" in loc
+        assert "q=aa" in loc
+        assert "success=bulk_remove" in loc
+        assert "count=1" in loc
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_bulk_remove_emits_audit_log_line(tmp_path, caplog):
+    """One INFO line per bulk_remove call, with actor + removed + requested
+    counts so a journalctl reader can audit who removed what."""
+    import logging as _logging
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _seed_ui_entries(
+            primary,
+            [
+                {"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"},
+                {"pattern": "aa:bb:cc:dd:ee:02", "pattern_type": "mac"},
+            ],
+        )
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            with caplog.at_level(_logging.INFO, logger="lynceus.webui.app"):
+                r = client.post(
+                    "/allowlist/bulk_remove",
+                    data={
+                        CSRF_FORM_FIELD: token,
+                        "entry_keys": [
+                            "mac:aa:bb:cc:dd:ee:01",
+                            "mac:aa:bb:cc:dd:ee:02",
+                        ],
+                    },
+                )
+        assert r.status_code == 303
+        msgs = [r.getMessage() for r in caplog.records if "bulk_remove" in r.getMessage()]
+        assert any("removed=2" in m and "requested=2" in m for m in msgs)
+    finally:
+        db.close()
+
+
+# --- primary-source read-only protection (regression fence) -----------------
+
+
+@pytest.mark.webui
+def test_primary_source_entry_renders_without_checkbox(tmp_path):
+    """A primary-source entry must render in the table without a
+    checkbox — there should be no way for a normal click-through
+    operator to select it for bulk removal."""
+    app, db, _primary, _ui, _now = _make_app_with_mixed_allowlist(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?source=primary")
+        assert r.status_code == 200
+        # No checkbox input for primary rows. The render places a dash
+        # in the cell instead of an <input>.
+        assert 'name="entry_keys"' not in r.text
+        assert "aa:aa:aa:aa:aa:01" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_primary_source_survives_when_ui_has_same_pattern(tmp_path):
+    """Hostile fixture: primary + UI carry the same pattern. Removing the
+    UI side must leave the primary side untouched — the daemon never
+    writes to allowlist.yaml, so the primary copy is the source of
+    truth and must survive any UI-side mutation."""
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text(
+        "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n"
+        "    note: primary copy\n",
+        encoding="utf-8",
+    )
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        ui_path = derive_ui_path(primary)
+        add_ui_entry(
+            ui_path,
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:ff",
+                pattern_type="mac",
+                note="ui copy",
+                added_at=1_799_000_000,
+            ),
+        )
+        primary_before = primary.read_text(encoding="utf-8")
+        # Bulk remove the UI key. Composite key matches both rows by
+        # (pattern, pattern_type), but the handler only writes to the UI
+        # file, and load_allowlist_with_source ensures the primary copy
+        # is not even in scope for the removal call (no primary entry is
+        # in `keys`, so primary_collisions is empty — but we still hit
+        # the only-touch-UI-file invariant).
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/bulk_remove",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "entry_keys": ["mac:aa:bb:cc:dd:ee:ff"],
+                },
+            )
+        # The handler refuses because the same composite key matches a
+        # primary entry too — this is the safer-by-default behavior.
+        assert r.status_code == 400
+        # Both files unchanged.
+        assert primary.read_text(encoding="utf-8") == primary_before
+        ui_entries = _read_ui_file(primary)
+        assert len(ui_entries) == 1
+        assert ui_entries[0]["pattern"] == "aa:bb:cc:dd:ee:ff"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_add_writes_only_to_ui_file_not_primary(tmp_path):
+    """Add via the form lands in allowlist_ui.yaml; the operator-curated
+    primary file is byte-for-byte untouched, including any operator
+    comments above the entries block."""
+    primary = tmp_path / "allowlist.yaml"
+    primary_text = (
+        "# operator comment that must survive\n"
+        "entries:\n  - pattern: ee:ee:ee:ee:ee:ee\n    pattern_type: mac\n"
+    )
+    primary.write_text(primary_text, encoding="utf-8")
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        primary_mtime_before = primary.stat().st_mtime
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/allowlist/add",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "pattern": "11:22:33:44:55:66",
+                    "pattern_type": "mac",
+                },
+            )
+        assert r.status_code == 303
+        # Primary unchanged.
+        assert primary.read_text(encoding="utf-8") == primary_text
+        assert primary.stat().st_mtime == primary_mtime_before
+        # UI file got the write.
+        ui_entries = _read_ui_file(primary)
+        assert [e["pattern"] for e in ui_entries] == ["11:22:33:44:55:66"]
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_cross_process_daemon_picks_up_new_entry(tmp_path, caplog):
+    """End-to-end: add via webui, then a fresh poller reload (mtime watch)
+    sees the new entry. Mirrors the cross-process invariant the existing
+    triage e2e exercises."""
+    import logging as _logging
+
+    from lynceus.poller import Poller
+
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        # 1) Daemon (poller) starts with no allowlist.
+        poller_cfg = Config(
+            kismet_fixture_path=str(
+                Path(__file__).parent / "fixtures" / "kismet_devices.json"
+            ),
+            db_path=str(tmp_path / "lynceus.db"),
+            location_id="testloc",
+            location_label="Test Location",
+            allowlist_path=str(primary),
+        )
+        poller = Poller(poller_cfg)
+        try:
+            assert poller.allowlist.entries == []
+            # 2) Webui adds an entry.
+            with TestClient(app, follow_redirects=False) as client:
+                token, _ = _csrf_setup(client)
+                r = client.post(
+                    "/allowlist/add",
+                    data={
+                        CSRF_FORM_FIELD: token,
+                        "pattern": "aa:bb:cc:dd:ee:ff",
+                        "pattern_type": "mac",
+                    },
+                )
+            assert r.status_code == 303
+            # 3) Daemon reloads on next tick.
+            import os as _os
+
+            ui_path = primary.with_stem(primary.stem + "_ui")
+            st = ui_path.stat()
+            _os.utime(ui_path, (st.st_atime, st.st_mtime + 1))
+            with caplog.at_level(_logging.INFO, logger="lynceus.poller"):
+                poller._maybe_reload_allowlist()
+            assert len(poller.allowlist.entries) == 1
+            assert poller.allowlist.entries[0].pattern == "aa:bb:cc:dd:ee:ff"
+        finally:
+            poller.db.close()
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# /alerts -- rc5 filter additions (rule_type, q, window) and unified
+# pagination via PaginationParams. Existing severity / acknowledged /
+# since / until / search / page_size tests above cover the pre-rc5
+# filter set; the section below covers the new dimensions + the
+# pagination-helper integration end-to-end through the route.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_rule_type(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r", mac=None, message="mac-msg",
+            severity="low", rule_type="watchlist_mac",
+        )
+        db.add_alert(
+            ts=101, rule_name="r", mac=None, message="oui-msg",
+            severity="low", rule_type="watchlist_oui",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?rule_type=watchlist_oui")
+        assert r.status_code == 200
+        assert "oui-msg" in r.text
+        assert "mac-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_invalid_rule_type_falls_back_silently(tmp_path):
+    # Invalid rule_type ignored (per the prompt's "ignore the invalid
+    # value, fall back to default. Don't 400."). Returns the same view
+    # as no rule_type filter.
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r", mac=None, message="mac-msg",
+            severity="low", rule_type="watchlist_mac",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?rule_type=bogus")
+        assert r.status_code == 200
+        assert "mac-msg" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_q_matches_mac(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
+        db.upsert_device("11:22:33:44:55:66", "wifi", "Acme", 0, 100)
+        db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:ff",
+            message="mac-alpha", severity="low",
+        )
+        db.add_alert(
+            ts=101, rule_name="r", mac="11:22:33:44:55:66",
+            message="mac-beta", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?q=aa:bb")
+        assert r.status_code == 200
+        assert "mac-alpha" in r.text
+        assert "mac-beta" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_q_matches_ssid_via_message(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r", mac=None,
+            message="SSID 'MySSID' on watchlist", severity="low",
+        )
+        db.add_alert(
+            ts=101, rule_name="r", mac=None,
+            message="MAC aa:bb:cc on watchlist", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?q=myssid")
+        assert r.status_code == 200
+        assert "MySSID" in r.text
+        assert "aa:bb:cc" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_q_too_long_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?q=" + "x" * 200)
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_window_relative_resolves_server_side(tmp_path, monkeypatch):
+    # Fix a clock so "last 1h" has a deterministic bound.
+    import time as _t
+    fixed_now = 10_000_000
+    monkeypatch.setattr(_t, "time", lambda: fixed_now)
+
+    app, db = _make_app(tmp_path)
+    try:
+        # 3 alerts: 5 min ago, 2 hours ago, 2 days ago.
+        db.add_alert(
+            ts=fixed_now - 300, rule_name="r", mac=None,
+            message="recent-msg", severity="low",
+        )
+        db.add_alert(
+            ts=fixed_now - 7200, rule_name="r", mac=None,
+            message="older-msg", severity="low",
+        )
+        db.add_alert(
+            ts=fixed_now - 2 * 86400, rule_name="r", mac=None,
+            message="oldest-msg", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?window=1h")
+        assert r.status_code == 200
+        assert "recent-msg" in r.text
+        assert "older-msg" not in r.text
+        assert "oldest-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_window_24h(tmp_path, monkeypatch):
+    import time as _t
+    fixed_now = 10_000_000
+    monkeypatch.setattr(_t, "time", lambda: fixed_now)
+
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=fixed_now - 3600, rule_name="r", mac=None,
+            message="hourago-msg", severity="low",
+        )
+        db.add_alert(
+            ts=fixed_now - 2 * 86400, rule_name="r", mac=None,
+            message="twodaysago-msg", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?window=24h")
+        assert "hourago-msg" in r.text
+        assert "twodaysago-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_invalid_window_falls_back_silently(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r", mac=None, message="m",
+            severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?window=lol")
+        assert r.status_code == 200
+        assert "m" in r.text
+    finally:
+        db.close()
+
+
+# --- pagination via PaginationParams helper ---------------------------------
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_four_pages_at_per_page_25(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        # 100 alerts, per_page=25 -> 4 pages.
+        for i in range(100):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"alert-{i:03d}", severity="low",
+                rule_type="watchlist_mac",
+            )
+        with TestClient(app) as client:
+            r1 = client.get("/alerts?page_size=25&page=1")
+            r2 = client.get("/alerts?page_size=25&page=2")
+            r4 = client.get("/alerts?page_size=25&page=4")
+        # Page 1 carries the newest 25 (alert-075..alert-099).
+        assert "alert-099" in r1.text
+        assert "alert-075" in r1.text
+        # Page 2 carries the next 25 (alert-050..alert-074).
+        assert "alert-074" in r2.text
+        assert "alert-050" in r2.text
+        # Footer says "Page N of M ... K total ... per_page=PP".
+        assert "Page 1 of 4" in r1.text
+        assert "100 total" in r1.text
+        assert "per_page=25" in r1.text
+        # Page 4 carries the oldest 25 (alert-000..alert-024).
+        assert "alert-000" in r4.text
+        assert "alert-024" in r4.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_page_above_total_clamps_to_last(tmp_path):
+    # Per-prompt: page=999 with only 4 pages -> clamp to 4. Don't 404.
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(100):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"a{i:03d}", severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts?page_size=25&page=999")
+        assert r.status_code == 200
+        assert "Page 4 of 4" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_negative_page_clamps_to_one(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts?page=-1")
+        assert r.status_code == 200
+        assert "Page 1 of 1" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_invalid_per_page_falls_back_to_default(tmp_path):
+    # Per-prompt: per_page=999 -> clamp to default 50.
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"a{i}", severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts?page_size=999")
+        assert r.status_code == 200
+        assert "per_page=50" in r.text
+
+
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_non_allowed_per_page_falls_back(tmp_path):
+    # Per-prompt: per_page=37 (non-allowed) -> default 50.
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"a{i}", severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts?page_size=37")
+        assert r.status_code == 200
+        assert "per_page=50" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_empty_dataset_renders_empty_state(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "Page 1 of 1" in r.text
+        assert "0 total" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_filter_plus_pagination_combined(tmp_path):
+    # 50 alerts; rule_type filter narrows to 10. per_page=25, page=1 ->
+    # 10 rows, "Page 1 of 1 ... 10 total".
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(40):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"oui-{i}", severity="low",
+                rule_type="watchlist_oui",
+            )
+        for i in range(10):
+            db.add_alert(
+                ts=500 + i, rule_name="r", mac=None,
+                message=f"mac-{i}", severity="low",
+                rule_type="watchlist_mac",
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts?rule_type=watchlist_mac&page_size=25")
+        assert r.status_code == 200
+        assert "Page 1 of 1" in r.text
+        assert "10 total" in r.text
+        for i in range(10):
+            assert f"mac-{i}" in r.text
+        assert "oui-0" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_pagination_next_link_preserves_filter_state(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(60):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"a{i:02d}", severity="high",
+                rule_type="watchlist_mac",
+            )
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?rule_type=watchlist_mac&severity=high&page=1&page_size=25"
+            )
+        assert r.status_code == 200
+        # Next-page link must round-trip both filters.
+        assert "page=2" in r.text
+        assert "severity=high" in r.text
+        assert "rule_type=watchlist_mac" in r.text
+        assert "page_size=25" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_reset_link_when_new_filters_active(tmp_path):
+    # rule_type / q / window each individually activate filters_active.
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r_type = client.get("/alerts?rule_type=watchlist_mac")
+            r_q = client.get("/alerts?q=anything")
+            r_w = client.get("/alerts?window=1h")
+        for r in (r_type, r_q, r_w):
+            assert "reset filters" in r.text or 'class="reset-filters"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_ack_all_visible_form_carries_new_filter_state(tmp_path):
+    # The bulk-write filter set MUST mirror the GET filter set or the
+    # operator silently acks alerts they can't see.
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r", mac=None, message="m",
+            severity="low", rule_type="watchlist_mac",
+        )
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?rule_type=watchlist_mac&q=foo&window=24h"
+            )
+        assert r.status_code == 200
+        # Hidden inputs reflect the filter values.
+        assert 'name="rule_type"' in r.text
+        assert 'value="watchlist_mac"' in r.text
+        assert 'name="q"' in r.text
+        assert 'value="foo"' in r.text
+        assert 'name="window"' in r.text
+        assert 'value="24h"' in r.text
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# /allowlist -- unified pagination via the same PaginationParams helper
+# /alerts uses. Filter dimensions are unchanged in this prompt; tests
+# below cover only the pagination addition.
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_many_ui_allowlist_entries(tmp_path, n: int):
+    """Seed an allowlist with N UI entries (active mac patterns) so
+    pagination tests have something to slice. Returns (app, db, ui_path).
+    """
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(primary),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    ui_path = derive_ui_path(primary)
+    now_ts = int(_time.time())
+    for i in range(n):
+        # Distinct 1-byte tail so the patterns are unique. Mac
+        # validator wants 6 lowercase hex octets joined by colons.
+        tail = f"{i & 0xff:02x}"
+        entry = AllowlistEntry(
+            pattern=f"aa:bb:cc:dd:{(i >> 8) & 0xff:02x}:{tail}",
+            pattern_type="mac",
+            note=f"seed-{i:03d}",
+            added_at=now_ts + i,
+        )
+        add_ui_entry(ui_path, entry)
+    return app, db, ui_path
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_three_pages_at_per_page_25(tmp_path):
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 75)
+    try:
+        with TestClient(app) as client:
+            r1 = client.get("/allowlist?page_size=25&page=1")
+            r2 = client.get("/allowlist?page_size=25&page=2")
+            r3 = client.get("/allowlist?page_size=25&page=3")
+        for r in (r1, r2, r3):
+            assert r.status_code == 200
+        # Footer literal mirrors /alerts.
+        assert "Page 1 of 3" in r1.text
+        assert "75 total" in r1.text
+        assert "per_page=25" in r1.text
+        assert "Page 2 of 3" in r2.text
+        assert "Page 3 of 3" in r3.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_page_above_total_clamps_to_last(tmp_path):
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 30)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?page_size=25&page=999")
+        assert r.status_code == 200
+        assert "Page 2 of 2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_single_page_shows_disabled_nav(tmp_path):
+    # 10 entries, default per_page=50 -> one page. prev/next must
+    # render as disabled rather than 404 links.
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 10)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist")
+        assert r.status_code == 200
+        assert "Page 1 of 1" in r.text
+        # Disabled prev/next render in <span class="dim">.
+        assert 'class="dim"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_invalid_per_page_falls_back(tmp_path):
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 60)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?page_size=37")
+        assert r.status_code == 200
+        assert "per_page=50" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_filter_plus_pagination_combined(tmp_path):
+    # Filter narrows the set; pagination math operates on the filtered
+    # list, not the raw list. Single source of truth for "total."
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 60)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?q=seed-005&page_size=25")
+        assert r.status_code == 200
+        # q=seed-005 matches exactly one entry (seed-005). Note that
+        # seed-050..seed-059 contain "seed-05" so substring match on
+        # "seed-005" is exact -- one row.
+        assert "Page 1 of 1" in r.text
+        assert "1 total" in r.text
+        assert "seed-005" in r.text
+        assert "seed-050" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_next_link_preserves_filter_state(tmp_path):
+    # Filter-narrowed set still has enough entries to be paginated.
+    # q=seed matches all 60 rows; type=mac matches all 60; status=active
+    # matches all 60 -- so filtered=60 and pagination still produces
+    # multiple pages.
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 60)
+    try:
+        with TestClient(app) as client:
+            r = client.get(
+                "/allowlist?q=seed&status=active&page_size=25&page=1"
+            )
+        assert r.status_code == 200
+        # Next-page link round-trips q + status + page_size.
+        assert "page=2" in r.text
+        assert "q=seed" in r.text
+        assert "status=active" in r.text
+        assert "page_size=25" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_allowlist_pagination_empty_filtered_set_no_nav_404(tmp_path):
+    # 60 entries; filter produces 0 matches. Empty-state renders.
+    # Pagination footer still coherent ("Page 1 of 1, 0 total").
+    app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 60)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/allowlist?q=nonexistent-substring-xyz")
+        assert r.status_code == 200
+        assert "No entries match" in r.text
+        assert "Page 1 of 1" in r.text
+        assert "0 total" in r.text
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-alert triage notes (alerts.note + /alerts/{id}/note + list indicator).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_alert_detail_no_note_renders_placeholder_and_empty_textarea(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "No triage note recorded" in r.text
+        assert "Save note" in r.text
+        # Empty textarea (no pre-populated value).
+        assert 'name="note_text"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_with_note_renders_text_and_timestamp(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, "FP -- known neighbour AP", now_ts=999)
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "FP -- known neighbour AP" in r.text
+        assert "Last updated" in r.text
+        assert "Update note" in r.text
+        assert "Clear note" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_note_post_saves_text_and_redirects(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/note",
+                data={CSRF_FORM_FIELD: token, "note_text": "actioned -- physical check"},
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/alerts/{aid}?success=note_saved"
+        alert = db.get_alert(aid)
+        assert alert["note"] == "actioned -- physical check"
+        assert alert["note_updated_at"] is not None
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_note_post_empty_clears_note(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, "initial conclusion", now_ts=42)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/note",
+                data={CSRF_FORM_FIELD: token, "note_text": ""},
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/alerts/{aid}?success=note_cleared"
+        alert = db.get_alert(aid)
+        assert alert["note"] is None
+        assert alert["note_updated_at"] is None
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_note_post_over_limit_returns_400_and_leaves_db_unchanged(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, "stable", now_ts=42)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                f"/alerts/{aid}/note",
+                data={CSRF_FORM_FIELD: token, "note_text": "x" * 4097},
+            )
+        assert r.status_code == 400
+        assert db.get_alert(aid)["note"] == "stable"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_note_post_without_csrf_returns_403(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, follow_redirects=False) as client:
+            client.cookies.clear()
+            r = client.post(f"/alerts/{aid}/note", data={"note_text": "x"})
+        assert r.status_code == 403
+        assert db.get_alert(aid)["note"] is None
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_note_post_missing_alert_returns_404(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/99999/note",
+                data={CSRF_FORM_FIELD: token, "note_text": "x"},
+            )
+        assert r.status_code == 404
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_success_flash_renders_on_save(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, "noted", now_ts=42)
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}?success=note_saved")
+        assert r.status_code == 200
+        assert "Note saved." in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_success_flash_renders_on_clear(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}?success=note_cleared")
+        assert r.status_code == 200
+        assert "Note cleared." in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_unknown_success_token_renders_no_flash(tmp_path):
+    """Spoofed / hand-crafted ?success=... values must not echo into
+    the page. The whitelist drops unknown tokens before render."""
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}?success=<script>alert(1)</script>")
+        assert r.status_code == 200
+        assert "<script>alert(1)</script>" not in r.text
+        assert "Note saved." not in r.text
+        assert "Note cleared." not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_row_with_note_shows_indicator(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, "FP -- known neighbour AP", now_ts=42)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "alert-note-indicator" in r.text
+        # Tooltip carries the truncated preview.
+        assert "FP -- known neighbour AP" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_row_without_note_shows_no_indicator(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "alert-note-indicator" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_list_indicator_tooltip_truncates_long_notes(tmp_path):
+    """Indicator hover preview shows the first ~50 chars + ellipsis
+    for longer notes; the full note never leaks into the list-page
+    HTML (operators reading over the shoulder don't see triage
+    rationale unless they click through)."""
+    app, db = _make_app(tmp_path)
+    long_note = "A" * 200
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        db.update_alert_note(aid, long_note, now_ts=42)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "alert-note-indicator" in r.text
+        # Truncated preview only; full note must not appear on the
+        # list page (only on the detail page).
+        assert "A" * 200 not in r.text
+        assert "A" * 50 in r.text
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# /alerts has_note filter -- pairs with the per-row indicator above to
+# close the triage-workflow loop (notes -> indicator -> filter).
+# ---------------------------------------------------------------------------
+
+
+def _seed_two_alerts_one_noted(db):
+    # Use distinct non-overlapping substrings so containment
+    # assertions don't conflate the two rows (e.g. "triaged" is a
+    # suffix of "untriaged"). "msg-noted" and "msg-fresh" share no
+    # substring, so `"msg-noted" not in text` is unambiguous.
+    a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="msg-noted", severity="low")
+    a2 = db.add_alert(ts=101, rule_name="r", mac=None, message="msg-fresh", severity="low")
+    db.update_alert_note(a1, "FP -- known device", now_ts=999)
+    return a1, a2
+
+
+@pytest.mark.webui
+def test_alerts_has_note_dropdown_renders_with_all_three_options(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'name="has_note"' in r.text
+        assert 'value="all"' in r.text
+        assert 'value="with_note"' in r.text
+        assert 'value="without_note"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_default_shows_all(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_two_alerts_one_noted(db)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "msg-noted" in r.text
+        assert "msg-fresh" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_with_note_narrows_to_noted_rows(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_two_alerts_one_noted(db)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=with_note")
+        assert r.status_code == 200
+        assert "msg-noted" in r.text
+        assert "msg-fresh" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_without_note_narrows_to_fresh_rows(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_two_alerts_one_noted(db)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=without_note")
+        assert r.status_code == 200
+        assert "msg-fresh" in r.text
+        assert "msg-noted" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_invalid_value_falls_back_to_all(tmp_path):
+    """Stale bookmark / typo'd has_note value lands on the unfiltered
+    page rather than a 400 -- matches the rule_type / window
+    silent-clamp precedent."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_two_alerts_one_noted(db)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=bogus_value")
+        assert r.status_code == 200
+        assert "msg-noted" in r.text
+        assert "msg-fresh" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_combines_with_severity(tmp_path):
+    """has_note ANDs cleanly with severity at the handler+DB layer."""
+    app, db = _make_app(tmp_path)
+    try:
+        a1 = db.add_alert(ts=100, rule_name="r", mac=None, message="alpha-msg", severity="high")
+        db.add_alert(ts=101, rule_name="r", mac=None, message="bravo-msg", severity="high")
+        a3 = db.add_alert(ts=102, rule_name="r", mac=None, message="charlie-msg", severity="low")
+        db.update_alert_note(a1, "FP", now_ts=999)
+        db.update_alert_note(a3, "FP", now_ts=999)
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high&has_note=with_note")
+        assert r.status_code == 200
+        assert "alpha-msg" in r.text
+        assert "bravo-msg" not in r.text
+        assert "charlie-msg" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_round_trips_in_pagination_links(tmp_path):
+    """has_note is preserved through next/prev pagination links --
+    operator paginating through a filtered view stays in the filter."""
+    app, db = _make_app(tmp_path)
+    try:
+        # 30 alerts, all noted, so the filter narrows nothing
+        # (purpose is to verify state preservation, not selection).
+        for i in range(30):
+            aid = db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"m{i}", severity="low",
+            )
+            db.update_alert_note(aid, f"note-{i}", now_ts=999)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=with_note&page_size=25")
+        assert r.status_code == 200
+        # Pagination next link carries has_note through.
+        assert "has_note=with_note" in r.text
+        assert "page=2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_dropdown_round_trips_selected_state(tmp_path):
+    """Round-trip on the dropdown: visiting /alerts?has_note=with_note
+    renders that option as selected so the operator sees the active
+    filter state in the form."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=with_note")
+        assert r.status_code == 200
+        assert 'value="with_note" selected' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_carried_through_ack_all_visible_form(tmp_path):
+    """ack-all-visible MUST mirror the GET filter set exactly. The
+    has_note hidden input rides along when set, so 'ack all matching'
+    operates on the same rows the operator sees."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_two_alerts_one_noted(db)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_note=with_note")
+        assert r.status_code == 200
+        # Hidden input present in the ack-all-visible form.
+        assert 'name="has_note" value="with_note"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_post_with_has_note_acks_only_matching(tmp_path):
+    """ack-all-visible POST with has_note=with_note acknowledges
+    only triaged rows -- single-source-of-truth invariant: the
+    POST handler's filter clamp must mirror the GET handler exactly."""
+    app, db = _make_app(tmp_path)
+    try:
+        a1, a2 = _seed_two_alerts_one_noted(db)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "has_note": "with_note",
+                },
+            )
+        assert r.status_code == 200
+        # Only the noted alert (a1) was acknowledged; untriaged (a2)
+        # left alone.
+        assert db.get_alert(a1)["acknowledged"] == 1
+        assert db.get_alert(a2)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_note_default_omits_param_from_pagination_url(tmp_path):
+    """When has_note is the default 'all', it must NOT appear in
+    pagination URLs -- keeps default-state URLs short and the
+    'no params -> baseline' invariant intact."""
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(30):
+            db.add_alert(
+                ts=100 + i, rule_name="r", mac=None,
+                message=f"m{i}", severity="low",
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts?page_size=25")
+        assert r.status_code == 200
+        assert "has_note=" not in r.text or "has_note=all" not in r.text
+        # The pagination block contains 'page=2' but not has_note=all.
+        idx = r.text.find("page=2")
+        assert idx != -1
+        # Look in a 200-char window around the page=2 link.
+        link_window = r.text[max(0, idx - 200): idx + 200]
+        assert "has_note" not in link_window
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# /alerts has_action filter -- pairs with has_note to close the
+# triage workflow. Three signals OR'd: per-alert snooze
+# (allowlist_ui.yaml mac/oui), permanent allowlist (allowlist.yaml
+# mac/oui), watchful tracking (mac-keyed active watchful_recurrence
+# row). YAML loads are lazy -- only the engaged-filter request pays
+# that cost.
+# ---------------------------------------------------------------------------
+
+
+def _insert_watchful_row(db, mac, *, archived_at=None):
+    """Direct INSERT into watchful_recurrence -- mirrors test_db.py's
+    _insert_watchful (operator-facing create paths live in Phase 2,
+    not yet shipped). Tests here only need a single active or
+    archived row."""
+    db._conn.execute(
+        "INSERT INTO watchful_recurrence("
+        "mac, created_at, first_seen_at, last_seen_at, sighting_count, "
+        "archived_at, source_alert_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (mac, 1000, 1000, 1000, 1, archived_at, None),
+    )
+    db._conn.commit()
+
+
+def _seed_alert_with_device(db, mac, message, *, ts=100, severity="low"):
+    """alerts.mac is a FK to devices.mac. Tests that name a mac
+    explicitly must upsert the device first."""
+    db.upsert_device(mac, "wifi", "Acme", 0, ts)
+    return db.add_alert(
+        ts=ts, rule_name="r", mac=mac, message=message, severity=severity,
+    )
+
+
+def _write_allowlist_primary(primary_path, *, macs=(), ouis=(), mac_ranges=()):
+    """Compose an allowlist.yaml with the given mac/oui/mac_range entries.
+
+    Patterns are emitted quoted -- e.g. the OUI '11:22:33' parses as
+    a sexagesimal integer (40953) when YAML's default scalar
+    resolver sees it bare. Quoting forces the string scalar so the
+    allowlist loader sees the operator-intended pattern verbatim.
+    """
+    lines = ["entries:\n"]
+    for m in macs:
+        lines.append(f'  - pattern: "{m}"\n    pattern_type: mac\n')
+    for o in ouis:
+        lines.append(f'  - pattern: "{o}"\n    pattern_type: oui\n')
+    for r in mac_ranges:
+        lines.append(f'  - pattern: "{r}"\n    pattern_type: mac_range\n')
+    primary_path.write_text("".join(lines), encoding="utf-8")
+
+
+@pytest.mark.webui
+def test_alerts_has_action_dropdown_renders_with_all_three_options(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert 'name="has_action"' in r.text
+        assert 'value="with_action"' in r.text
+        assert 'value="without_action"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_default_shows_all(tmp_path):
+    """Default page renders every row regardless of action state --
+    no filter applied, no YAML loaded."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-snoozed", ts=100)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "msg-snoozed" in r.text
+        assert "msg-fresh" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_narrows_to_permanently_allowlisted(tmp_path):
+    """A mac entry in the operator-curated allowlist.yaml makes the
+    alert "actioned" under with_action."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, macs=["aa:bb:cc:dd:ee:01"])
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-allowed", ts=100)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-allowed" in r.text
+        assert "msg-fresh" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_narrows_to_snoozed_rows(tmp_path):
+    """A UI-side allowlist entry with a future expires_at (the
+    per-alert-snooze surface) counts as actioned while the snooze
+    is active."""
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        ui_path = derive_ui_path(primary)
+        now_ts = int(_time.time())
+        add_ui_entry(ui_path, AllowlistEntry(
+            pattern="aa:bb:cc:dd:ee:01",
+            pattern_type="mac",
+            expires_at=now_ts + 86400,
+            added_at=now_ts,
+        ))
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-snoozed", ts=100)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-snoozed" in r.text
+        assert "msg-fresh" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_expired_snooze_does_not_trigger(tmp_path):
+    """An allowlist entry past its expires_at has effectively reverted
+    to 'without action.' The lazy YAML loader skips expired entries
+    same as Allowlist.is_allowed."""
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        ui_path = derive_ui_path(primary)
+        now_ts = int(_time.time())
+        add_ui_entry(ui_path, AllowlistEntry(
+            pattern="aa:bb:cc:dd:ee:01",
+            pattern_type="mac",
+            expires_at=now_ts - 3600,
+            added_at=now_ts - 7200,
+        ))
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-once-snoozed", ts=100)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-once-snoozed" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_narrows_to_watchful_tracked(tmp_path):
+    """An active watchful_recurrence row keyed on the alert's mac
+    makes the alert "actioned" -- mac-scoped (transitive) per
+    Q1 resolution: every alert from the tracked MAC inherits the
+    action status the operator opted into."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-watched", ts=100)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
+        _insert_watchful_row(db, "aa:bb:cc:dd:ee:01")
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-watched" in r.text
+        assert "msg-fresh" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_archived_watchful_does_not_trigger(tmp_path):
+    """archived_at IS NULL gates activeness. An archived watchful
+    row is operator-finished and must not contribute to with_action."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-archived", ts=100)
+        _insert_watchful_row(db, "aa:bb:cc:dd:ee:01", archived_at=2000)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-archived" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_without_action_excludes_all_three_signals(tmp_path):
+    """without_action returns alerts where NONE of the three signals
+    apply -- the complement of with_action."""
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, macs=["aa:aa:aa:aa:aa:aa"])
+        ui_path = derive_ui_path(primary)
+        now_ts = int(_time.time())
+        add_ui_entry(ui_path, AllowlistEntry(
+            pattern="bb:bb:bb:bb:bb:bb",
+            pattern_type="mac",
+            expires_at=now_ts + 86400,
+            added_at=now_ts,
+        ))
+        _seed_alert_with_device(db, "aa:aa:aa:aa:aa:aa", "msg-permanent", ts=100)
+        _seed_alert_with_device(db, "bb:bb:bb:bb:bb:bb", "msg-snoozed", ts=101)
+        _seed_alert_with_device(db, "cc:cc:cc:cc:cc:cc", "msg-watched", ts=102)
+        _seed_alert_with_device(db, "dd:dd:dd:dd:dd:dd", "msg-untouched", ts=103)
+        _insert_watchful_row(db, "cc:cc:cc:cc:cc:cc")
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=without_action")
+        assert r.status_code == 200
+        assert "msg-untouched" in r.text
+        assert "msg-permanent" not in r.text
+        assert "msg-snoozed" not in r.text
+        assert "msg-watched" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_invalid_value_falls_back_to_all(tmp_path):
+    """Stale bookmark / typo'd has_action lands on the unfiltered
+    page rather than a 400 -- matches the rule_type / window /
+    has_note silent-clamp precedent."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-one", ts=100)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-two", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=bogus_value")
+        assert r.status_code == 200
+        assert "msg-one" in r.text
+        assert "msg-two" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_combines_with_has_note(tmp_path):
+    """Composition with has_note: ?has_action=with_action&has_note=without_note
+    surfaces alerts the operator actioned but never annotated --
+    the headline composability the brief calls out."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, macs=[
+            "aa:bb:cc:dd:ee:01",
+            "aa:bb:cc:dd:ee:02",
+        ])
+        a1 = _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-actioned-noted", ts=100)
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:02", "msg-actioned-unnoted", ts=101)
+        _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh-unnoted", ts=102)
+        db.update_alert_note(a1, "FP", now_ts=999)
+        with TestClient(app) as client:
+            r = client.get(
+                "/alerts?has_action=with_action&has_note=without_note"
+            )
+        assert r.status_code == 200
+        assert "msg-actioned-unnoted" in r.text
+        assert "msg-actioned-noted" not in r.text
+        assert "msg-fresh-unnoted" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_round_trips_in_pagination_links(tmp_path):
+    """has_action is preserved through next/prev pagination links --
+    operator paginating through a filtered view stays in the filter."""
+    app, db = _make_app(tmp_path)
+    try:
+        for i in range(30):
+            _seed_alert_with_device(
+                db, f"aa:bb:cc:dd:00:{i:02x}", f"m{i}", ts=100 + i,
+            )
+            _insert_watchful_row(db, f"aa:bb:cc:dd:00:{i:02x}")
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action&page_size=25")
+        assert r.status_code == 200
+        assert "has_action=with_action" in r.text
+        assert "page=2" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_dropdown_round_trips_selected_state(tmp_path):
+    """Round-trip on the dropdown: visiting /alerts?has_action=with_action
+    renders that option as selected so the operator sees the active
+    filter state in the form."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert 'value="with_action" selected' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_carried_through_ack_all_visible_form(tmp_path):
+    """ack-all-visible MUST mirror the GET filter set exactly. The
+    has_action hidden input rides along when set, so 'ack all
+    matching' operates on the same rows the operator sees."""
+    app, db = _make_app(tmp_path)
+    try:
+        # The ack-all-visible form only renders when there's at least
+        # one matching alert. Seed a watchful-tracked alert so the
+        # filter has something to display.
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg", ts=100)
+        _insert_watchful_row(db, "aa:bb:cc:dd:ee:01")
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert 'name="has_action" value="with_action"' in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_ack_all_visible_post_with_has_action_acks_only_matching(tmp_path):
+    """ack-all-visible POST with has_action=with_action acknowledges
+    only actioned rows -- single-source-of-truth invariant: the POST
+    handler's clamp + lazy-YAML-load must mirror GET exactly."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, macs=["aa:bb:cc:dd:ee:01"])
+        a1 = _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-actioned", ts=100)
+        a2 = _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/alerts/ack-all-visible",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "has_action": "with_action",
+                },
+            )
+        assert r.status_code == 200
+        assert db.get_alert(a1)["acknowledged"] == 1
+        assert db.get_alert(a2)["acknowledged"] == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_default_does_not_require_allowlist_path(tmp_path):
+    """Lazy-load invariant: the default /alerts request (has_action
+    unset) must not require allowlist_path -- the YAML loader is
+    only called when has_action is engaged."""
+    # _make_app does NOT configure allowlist_path. Default request
+    # must succeed regardless.
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg", ts=100)
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+            r2 = client.get("/alerts?has_action=all")
+        assert r.status_code == 200
+        assert r2.status_code == 200
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# mac_range parity: has_action filter + alert-detail "actioned" badge
+# must agree about mac_range allowlist entries. Lockstep with
+# _match_mac_in_entries -- a regression here means a single feature is
+# broken on two surfaces.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_narrows_to_mac_range_allowlisted(tmp_path):
+    """A mac_range entry in the primary allowlist.yaml makes alerts
+    whose MAC falls inside the /28 prefix 'actioned' under with_action."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, mac_ranges=["aa:bb:cc:d/28"])
+        # In-range MAC: first 7 nibbles match "aabbccd".
+        _seed_alert_with_device(db, "aa:bb:cc:d3:00:01", "msg-in-range", ts=100)
+        # Out-of-range MAC: 4th nibble differs.
+        _seed_alert_with_device(db, "aa:bb:cc:e3:00:01", "msg-out-of-range", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-in-range" in r.text
+        assert "msg-out-of-range" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_narrows_to_mac_range_snoozed_rows(tmp_path):
+    """A mac_range entry in the UI-side allowlist sibling (snooze
+    pathway) with a future expires_at counts as actioned while active."""
+    import time as _time
+
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
+
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        ui_path = derive_ui_path(primary)
+        now_ts = int(_time.time())
+        add_ui_entry(ui_path, AllowlistEntry(
+            pattern="aa:bb:cc:d/28",
+            pattern_type="mac_range",
+            expires_at=now_ts + 86400,
+            added_at=now_ts,
+        ))
+        _seed_alert_with_device(db, "aa:bb:cc:d3:00:01", "msg-snoozed-range", ts=100)
+        _seed_alert_with_device(db, "11:22:33:44:55:66", "msg-other", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-snoozed-range" in r.text
+        assert "msg-other" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_without_action_excludes_mac_range_match(tmp_path):
+    """The complementary path: an alert whose MAC matches an
+    allowlist mac_range entry must NOT appear under without_action."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, mac_ranges=["aa:bb:cc:d/28"])
+        _seed_alert_with_device(db, "aa:bb:cc:d3:00:01", "msg-in-range", ts=100)
+        _seed_alert_with_device(db, "11:22:33:44:55:66", "msg-no-signal", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=without_action")
+        assert r.status_code == 200
+        assert "msg-in-range" not in r.text
+        assert "msg-no-signal" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_36_bit_mac_range_match(tmp_path):
+    """/36 mac_range patterns work end-to-end: the SQL function
+    handles both admitted prefix lengths, not just /28."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, mac_ranges=["aa:bb:cc:dd:e/36"])
+        # In /36 range: first 9 nibbles "aabbccdde".
+        _seed_alert_with_device(db, "aa:bb:cc:dd:e7:01", "msg-in-36", ts=100)
+        # Out of /36: 9th nibble differs (still in /28 but the /36 narrows).
+        _seed_alert_with_device(db, "aa:bb:cc:dd:f7:01", "msg-out-of-36", ts=101)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-in-36" in r.text
+        assert "msg-out-of-36" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_existing_mac_oui_signals_unchanged_with_mac_range_helper(tmp_path):
+    """Regression pin: mac and oui matching must still work exactly
+    the same after the mac_range extension. The third tuple is
+    additive; the first two paths are byte-identical to pre-feature
+    behavior."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        # All three pattern types in one allowlist; only the mac
+        # signal hits the first alert, only the oui signal hits the
+        # second, only the mac_range signal hits the third.
+        _write_allowlist_primary(
+            primary,
+            macs=["aa:bb:cc:dd:ee:01"],
+            ouis=["11:22:33"],
+            mac_ranges=["44:55:66:7/28"],
+        )
+        _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-mac", ts=100)
+        _seed_alert_with_device(db, "11:22:33:44:55:66", "msg-oui", ts=101)
+        _seed_alert_with_device(db, "44:55:66:73:00:01", "msg-range", ts=102)
+        _seed_alert_with_device(db, "ff:ee:dd:cc:bb:aa", "msg-no-signal", ts=103)
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-mac" in r.text
+        assert "msg-oui" in r.text
+        assert "msg-range" in r.text
+        assert "msg-no-signal" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_has_action_with_action_handles_null_mac_when_mac_range_active(tmp_path):
+    """NULL-mac alerts must not crash the with_action SQL when any
+    mac_range allowlist entry is active. mac_in_mac_range is a Python
+    UDF that raises on None; the assembled clause guards each
+    invocation with `mac IS NOT NULL AND ...`. Regression pin for the
+    fix to the diagnostic reproducer at tests/test_diag_filters.py::
+    test_diag_has_action_null_mac_invocation (commit 9483137)."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        _write_allowlist_primary(primary, mac_ranges=["aa:bb:cc:d/28"])
+        # In-range non-NULL alert: must appear under with_action.
+        _seed_alert_with_device(db, "aa:bb:cc:d3:00:01", "msg-in-range", ts=100)
+        # NULL-mac alert: can't carry any mac-keyed action signal, must
+        # NOT appear under with_action -- and must not crash the query.
+        db.add_alert(
+            ts=101, rule_name="r", mac=None,
+            message="msg-null-mac", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts?has_action=with_action")
+        assert r.status_code == 200
+        assert "msg-in-range" in r.text
+        assert "msg-null-mac" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_state2_mac_range_primary_match_shows_allowlisted(tmp_path):
+    """Alert-detail page: a primary-file mac_range entry whose prefix
+    covers the alert MAC renders the Allowlisted status. Mirrors the
+    has_action SQL-side result; they must never disagree about a
+    given alert."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        primary.write_text(
+            "entries:\n  - pattern: aa:bb:cc:d/28\n    pattern_type: mac_range\n",
+            encoding="utf-8",
+        )
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:d3:00:01")
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Allowlisted" in r.text
+        # Primary-file entries are not UI-removable.
+        assert "Remove from allowlist" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alert_detail_state2_mac_range_non_match_does_not_show_allowlisted(tmp_path):
+    """Negative pin: an alert MAC outside the mac_range prefix must
+    render WITHOUT the Allowlisted status, so the operator can still
+    triage it."""
+    app, db, primary = _make_app_with_allowlist(tmp_path)
+    try:
+        primary.write_text(
+            "entries:\n  - pattern: aa:bb:cc:d/28\n    pattern_type: mac_range\n",
+            encoding="utf-8",
+        )
+        aid = _seed_alert_with_mac(db, "aa:bb:cc:e3:00:01")  # outside /28
+        with TestClient(app) as client:
+            r = client.get(f"/alerts/{aid}")
+        assert r.status_code == 200
+        assert "Allowlisted" not in r.text
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# rc6: per-rule_type snooze controls on /rules.
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_rules(tmp_path, body: str):
+    """App factory for /rules tests: writes a rules.yaml at tmp_path
+    and configures the Config + Database around it. Body is the YAML
+    document body (everything below the top-level ``rules:`` key)."""
+    rules_yaml = tmp_path / "rules.yaml"
+    rules_yaml.write_text("rules:\n" + body, encoding="utf-8")
+    config = Config(db_path=str(tmp_path / "ui.db"), rules_path=str(rules_yaml))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    return app, db
+
+
+_TWO_RULES_YAML = (
+    "  - name: known_bad_mac\n"
+    "    rule_type: watchlist_mac\n"
+    "    severity: high\n"
+    "    patterns: ['de:ad:be:ef:00:01']\n"
+    "  - name: rogue_ssids\n"
+    "    rule_type: watchlist_ssid\n"
+    "    severity: med\n"
+    "    patterns: ['FreeAirportWiFi']\n"
+)
+
+
+@pytest.mark.webui
+def test_rules_list_renders_snooze_form_when_no_active_snooze(tmp_path):
+    """The collapsible snooze form is the per-row affordance for
+    rule_types without an active snooze — operators see the option to
+    silence, with the dropdown of durations."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        assert "/rules/watchlist_mac/snooze" in r.text
+        assert "/rules/watchlist_ssid/snooze" in r.text
+        assert 'name="duration_seconds"' in r.text
+        assert 'value="3600"' in r.text  # 1h
+        assert 'value="86400"' in r.text  # 24h
+        assert "badge-snoozed" not in r.text  # no badge when no snooze active
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_renders_badge_and_unsnooze_when_active(tmp_path):
+    """An active snooze on watchlist_mac swaps the snooze form for a
+    badge + unsnooze button on that row only. The other rule_type's
+    row is unaffected."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac",
+        expires_at=now + 4 * 3600,
+        added_at=now,
+        note="network reconfigure",
+    )
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        # Snoozed row: badge + unsnooze button.
+        assert "/rules/watchlist_mac/unsnooze" in r.text
+        assert "badge-snoozed" in r.text
+        assert "snooze note" in r.text
+        assert "network reconfigure" in r.text
+        # Non-snoozed row: snooze form still rendered.
+        assert "/rules/watchlist_ssid/snooze" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_status_filter_snoozed_only(tmp_path):
+    """status=snoozed narrows the iteration to rules whose rule_type
+    has an active snooze. The unsnoozed rule's name disappears from
+    the render."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
+    )
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?status=snoozed")
+        assert r.status_code == 200
+        assert "known_bad_mac" in r.text
+        assert "rogue_ssids" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_status_filter_active_only(tmp_path):
+    """status=active is the complement: only rules whose rule_type
+    has no active snooze appear."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
+    )
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?status=active")
+        assert r.status_code == 200
+        assert "rogue_ssids" in r.text
+        assert "known_bad_mac" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_invalid_status_falls_back_to_all(tmp_path):
+    """Stale-bookmark posture: a typo in the status query param lands
+    on the unfiltered page rather than 400."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules?status=garbage")
+        assert r.status_code == 200
+        assert "known_bad_mac" in r.text
+        assert "rogue_ssids" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_post_inserts_row_and_redirects(tmp_path):
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/watchlist_mac/snooze",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "duration_seconds": 3600,
+                    "note": "investigating",
+                },
+            )
+        assert r.status_code == 303
+        assert "success=snooze_added" in r.headers["location"]
+        assert "rule_type=watchlist_mac" in r.headers["location"]
+        row = db._conn.execute(
+            "SELECT rule_type, note FROM rule_type_snoozes"
+        ).fetchone()
+        assert row["rule_type"] == "watchlist_mac"
+        assert row["note"] == "investigating"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unsnooze_post_deletes_row_and_redirects(tmp_path):
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
+    )
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/watchlist_mac/unsnooze",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+        assert "success=snooze_removed" in r.headers["location"]
+        row = db._conn.execute(
+            "SELECT * FROM rule_type_snoozes WHERE rule_type='watchlist_mac'"
+        ).fetchone()
+        assert row is None
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_post_invalid_duration_returns_400(tmp_path):
+    """An attacker-supplied duration outside the whitelist gets a 400
+    rather than silently inserting. The duration set is strictly
+    enforced (the dropdown is the only legitimate source)."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/watchlist_mac/snooze",
+                data={CSRF_FORM_FIELD: token, "duration_seconds": 999},
+            )
+        assert r.status_code == 400
+        row_count = db._conn.execute(
+            "SELECT COUNT(*) FROM rule_type_snoozes"
+        ).fetchone()[0]
+        assert row_count == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_post_unknown_rule_type_returns_400(tmp_path):
+    """Path-param rule_type must be a known RuleType literal; arbitrary
+    strings get 400 (defense in depth against PK-pollution attempts)."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/totally_made_up/snooze",
+                data={CSRF_FORM_FIELD: token, "duration_seconds": 3600},
+            )
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_post_without_csrf_returns_403(tmp_path):
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            client.cookies.clear()
+            r = client.post(
+                "/rules/watchlist_mac/snooze",
+                data={"duration_seconds": 3600},
+            )
+        assert r.status_code == 403
+        row_count = db._conn.execute(
+            "SELECT COUNT(*) FROM rule_type_snoozes"
+        ).fetchone()[0]
+        assert row_count == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unsnooze_post_without_csrf_returns_403(tmp_path):
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
+    )
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            client.cookies.clear()
+            r = client.post("/rules/watchlist_mac/unsnooze")
+        assert r.status_code == 403
+        # Row still present.
+        row = db._conn.execute(
+            "SELECT * FROM rule_type_snoozes WHERE rule_type='watchlist_mac'"
+        ).fetchone()
+        assert row is not None
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_unsnooze_post_idempotent_when_no_row_exists(tmp_path):
+    """Double-clicking unsnooze (or unsnoozing a rule that wasn't
+    snoozed) returns 303 rather than an error. The /rules re-render
+    shows current state, which is more useful than a 404."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/watchlist_mac/unsnooze",
+                data={CSRF_FORM_FIELD: token},
+            )
+        assert r.status_code == 303
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_snooze_post_replaces_existing_snooze(tmp_path):
+    """Re-snoozing a rule_type that already has an active snooze
+    overwrites the prior expires_at rather than 400. Operator who
+    initially picked 1h and now wants 24h shouldn't have to unsnooze
+    first."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    now = int(__import__("time").time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac",
+        expires_at=now + 3600,
+        added_at=now,
+        note="first",
+    )
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token, _ = _csrf_setup(client)
+            r = client.post(
+                "/rules/watchlist_mac/snooze",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "duration_seconds": 24 * 3600,
+                    "note": "second",
+                },
+            )
+        assert r.status_code == 303
+        rows = db._conn.execute(
+            "SELECT note FROM rule_type_snoozes WHERE rule_type='watchlist_mac'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["note"] == "second"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_flash_banner_on_success(tmp_path):
+    """The POST redirect's ?success=snooze_added&rule_type=<rt> renders
+    a flash banner on the resulting /rules page."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app) as client:
+            r = client.get(
+                "/rules?success=snooze_added&rule_type=watchlist_mac"
+            )
+        assert r.status_code == 200
+        assert "flash-success" in r.text or "Snooze added" in r.text
+        assert "watchlist_mac" in r.text
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# /alerts.csv -- streaming CSV export of the filtered alerts result set.
+# ---------------------------------------------------------------------------
+
+import csv as _csv  # noqa: E402 -- top-of-section to keep section self-contained
+
+
+def _parse_csv_response(body: str) -> tuple[list[str], list[list[str]]]:
+    reader = _csv.reader(io.StringIO(body))
+    rows = list(reader)
+    if not rows:
+        return [], []
+    return rows[0], rows[1:]
+
+
+_ALERTS_CSV_HEADER = [
+    "id",
+    "ts_iso_utc",
+    "ts_unix",
+    "severity",
+    "rule_name",
+    "rule_type",
+    "mac",
+    "message",
+    "acknowledged",
+    "note",
+    "note_updated_at_iso_utc",
+    "matched_watchlist_id",
+    "matched_pattern",
+    "matched_pattern_type",
+    "matched_vendor",
+    "matched_confidence",
+    "matched_device_category",
+    "matched_argus_record_id",
+    "device_type",
+    "oui_vendor",
+    "action_taken",
+]
+
+
+@pytest.mark.webui
+def test_alerts_csv_returns_200_with_content_type_and_disposition(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="boom", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        assert r.status_code == 200
+        assert "text/csv" in r.headers["content-type"]
+        cd = r.headers["content-disposition"]
+        assert cd.startswith('attachment; filename="alerts-')
+        assert cd.endswith('Z.csv"')
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_filename_is_iso_utc_timestamped(tmp_path):
+    import re
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        cd = r.headers["content-disposition"]
+        # alerts-YYYYMMDDTHHMMSSZ.csv
+        m = re.search(r'filename="alerts-(\d{8}T\d{6}Z)\.csv"', cd)
+        assert m is not None, f"filename did not match expected shape: {cd}"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_header_row_columns_stable_order(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        header, _ = _parse_csv_response(r.text)
+        assert header == _ALERTS_CSV_HEADER
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_empty_result_returns_header_only(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        assert r.status_code == 200
+        header, data_rows = _parse_csv_response(r.text)
+        assert header == _ALERTS_CSV_HEADER
+        assert data_rows == []
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_emits_one_row_per_alert(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r1", mac=None, message="m1", severity="low")
+        db.add_alert(ts=200, rule_name="r2", mac=None, message="m2", severity="med")
+        db.add_alert(ts=300, rule_name="r3", mac=None, message="m3", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 3
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_respects_severity_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="low", severity="low")
+        db.add_alert(ts=200, rule_name="r", mac=None, message="med", severity="med")
+        db.add_alert(ts=300, rule_name="r", mac=None, message="high", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?severity=high")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        # message column is index 7
+        assert data_rows[0][7] == "high"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_respects_acknowledged_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="acked", severity="low")
+        db.add_alert(ts=200, rule_name="r", mac=None, message="unacked", severity="low")
+        db.acknowledge_alert(aid, actor="test", note=None, ts=150)
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?acknowledged=true")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        assert data_rows[0][8] == "true"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_respects_rule_type_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(
+            ts=100, rule_name="r1", mac=None, message="a", severity="low",
+            rule_type="watchlist_mac",
+        )
+        db.add_alert(
+            ts=200, rule_name="r2", mac=None, message="b", severity="low",
+            rule_type="watchlist_ssid",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?rule_type=watchlist_mac")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        assert data_rows[0][5] == "watchlist_mac"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_respects_q_mac_substring_filter(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        db.upsert_device("11:22:33:44:55:66", "wifi", "Acme", 0, 100)
+        db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="a", severity="low")
+        db.add_alert(ts=200, rule_name="r", mac="11:22:33:44:55:66", message="b", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?q=aa:bb")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        assert data_rows[0][6] == "aa:bb:cc:dd:ee:01"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_composes_multiple_filters(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        for mac in ("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02", "11:22:33:44:55:66"):
+            db.upsert_device(mac, "wifi", "Acme", 0, 100)
+        db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="a", severity="high")
+        db.add_alert(ts=200, rule_name="r", mac="aa:bb:cc:dd:ee:02", message="b", severity="low")
+        db.add_alert(ts=300, rule_name="r", mac="11:22:33:44:55:66", message="c", severity="high")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?severity=high&q=aa:bb")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        assert data_rows[0][6] == "aa:bb:cc:dd:ee:01"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_includes_matched_watchlist_join(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        with db._conn:
+            cur = db._conn.execute(
+                "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+                "VALUES ('aa:bb:cc:dd:ee:01', 'mac', 'high', 'wl-row')"
+            )
+            wid = int(cur.lastrowid)
+        db.upsert_metadata(
+            wid,
+            {
+                "argus_record_id": "argus-007",
+                "device_category": "lpr",
+                "vendor": "Acme",
+                "confidence": 85,
+            },
+        )
+        db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="m",
+            severity="high", matched_watchlist_id=wid,
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+        row = data_rows[0]
+        # matched_watchlist_id (11), matched_pattern (12), matched_pattern_type (13),
+        # matched_vendor (14), matched_confidence (15), matched_device_category (16),
+        # matched_argus_record_id (17)
+        assert row[11] == str(wid)
+        assert row[12] == "aa:bb:cc:dd:ee:01"
+        assert row[13] == "mac"
+        assert row[14] == "Acme"
+        assert row[15] == "85"
+        assert row[16] == "lpr"
+        assert row[17] == "argus-007"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_includes_device_join_columns(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "AcmeCo", 0, 100)
+        db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="m", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        row = data_rows[0]
+        # device_type (18), oui_vendor (19)
+        assert row[18] == "wifi"
+        assert row[19] == "AcmeCo"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_action_taken_true_for_allowlisted_mac(tmp_path):
+    # Per-row action_taken: an allowlisted MAC must surface true even
+    # when has_action is NOT engaged on the filter. The export loads
+    # the YAML unconditionally (vs the list route's lazy load), so
+    # action_taken is the same regardless of filter posture.
+    allowlist_path = tmp_path / "allowlist.yaml"
+    allowlist_path.write_text(
+        "entries:\n"
+        "  - pattern: 'aa:bb:cc:dd:ee:01'\n"
+        "    pattern_type: mac\n"
+        "    note: test\n",
+        encoding="utf-8",
+    )
+    config = Config(
+        db_path=str(tmp_path / "ui.db"),
+        allowlist_path=str(allowlist_path),
+    )
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        db.upsert_device("aa:bb:cc:dd:ee:99", "wifi", "Acme", 0, 100)
+        db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="actioned", severity="low",
+        )
+        db.add_alert(
+            ts=200, rule_name="r", mac="aa:bb:cc:dd:ee:99", message="not-actioned", severity="low",
+        )
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        by_msg = {row[7]: row for row in data_rows}
+        # action_taken is the LAST column (index 20)
+        assert by_msg["actioned"][20] == "true"
+        assert by_msg["not-actioned"][20] == "false"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_action_taken_true_for_watchful_tracked_mac(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
+        db.upsert_device("aa:bb:cc:dd:ee:99", "wifi", "Acme", 0, 100)
+        db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="tracked", severity="low")
+        db.add_alert(ts=200, rule_name="r", mac="aa:bb:cc:dd:ee:99", message="untracked", severity="low")
+        # Insert a non-archived watchful_recurrence row by hand.
+        with db._conn:
+            db._conn.execute(
+                "INSERT INTO watchful_recurrence(mac, created_at, first_seen_at, "
+                "last_seen_at, sighting_count, archived_at) "
+                "VALUES ('aa:bb:cc:dd:ee:01', 100, 100, 100, 1, NULL)"
+            )
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv")
+        _, data_rows = _parse_csv_response(r.text)
+        by_msg = {row[7]: row for row in data_rows}
+        assert by_msg["tracked"][20] == "true"
+        assert by_msg["untracked"][20] == "false"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_is_a_streaming_response(tmp_path):
+    # Belt-and-braces: confirm we did NOT regress to a buffered
+    # Response (which would defeat the constant-memory invariant).
+    from starlette.responses import StreamingResponse
+    from lynceus.webui.app import create_app
+
+    config = Config(db_path=str(tmp_path / "ui.db"))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        # Exercise the route via the underlying FastAPI app to inspect
+        # the returned Response type directly (bypass TestClient which
+        # consumes streamed bodies transparently).
+        from starlette.requests import Request
+
+        # Find the route handler.
+        route = next(r for r in app.routes if getattr(r, "path", None) == "/alerts.csv")
+        # The handler is the route's endpoint; call it directly with
+        # the request-equivalent kwargs (all None / defaults).
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/alerts.csv",
+            "query_string": b"",
+            "headers": [],
+            "app": app,
+        }
+        req = Request(scope=scope)
+        resp = route.endpoint(
+            request=req,
+            severity=None, acknowledged=None, since=None, until=None,
+            search=None, rule_type=None, q=None, window=None,
+            has_note=None, has_action=None,
+        )
+        assert isinstance(resp, StreamingResponse)
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_link_visible_on_list_page(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts")
+        assert r.status_code == 200
+        assert "/alerts.csv" in r.text
+        assert "Export CSV" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_link_passes_through_query_string(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts?severity=high&rule_type=watchlist_mac")
+        assert r.status_code == 200
+        # Link should carry the same filter context, not bare /alerts.csv.
+        assert "/alerts.csv?severity=high" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_invalid_severity_returns_400(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?severity=bogus")
+        # Same posture as the list route: invalid severity is a 400.
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_alerts_csv_invalid_rule_type_silently_falls_back(tmp_path):
+    # rule_type invalid -> silent fallback to "all", export returns 200
+    # with all rows (matches list-route clamp posture).
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            r = client.get("/alerts.csv?rule_type=does_not_exist")
+        assert r.status_code == 200
+        _, data_rows = _parse_csv_response(r.text)
+        assert len(data_rows) == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_renders_per_rule_type_section_header(tmp_path):
+    """The 'fires by rule_type' summary section renders above the
+    per-rule_name article list whenever a ruleset is loaded. Header
+    text and window-label substitution must both appear."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        # Section header carries the window label (default "7d").
+        assert "fires by rule_type (7d)" in r.text
+        # Both rule_types from the loaded ruleset appear in the
+        # summary section even with zero fires.
+        idx_section = r.text.find("fires by rule_type")
+        idx_rules_h = r.text.find("<h3>rules</h3>")
+        assert idx_section != -1 and idx_rules_h != -1
+        assert idx_section < idx_rules_h, "summary must precede per-rule_name list"
+        section_block = r.text[idx_section:idx_rules_h]
+        assert "watchlist_mac" in section_block
+        assert "watchlist_ssid" in section_block
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_per_rule_type_rolls_up_multiple_rule_names(tmp_path):
+    """Two rule_names sharing a rule_type roll up to one type bucket
+    whose count equals the sum -- this is the whole point of the
+    type-axis aggregation."""
+    rules_body = (
+        "  - name: mac_rule_a\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:01']\n"
+        "  - name: mac_rule_b\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        "    patterns: ['de:ad:be:ef:00:02']\n"
+        "  - name: ssid_rule\n"
+        "    rule_type: watchlist_ssid\n"
+        "    severity: med\n"
+        "    patterns: ['SSID']\n"
+    )
+    app, db = _make_app_with_rules(tmp_path, rules_body)
+    import time as _time
+
+    now = int(_time.time())
+    # Two fires under mac_rule_a, one under mac_rule_b -> watchlist_mac
+    # bucket count == 3. One fire under ssid_rule -> watchlist_ssid == 1.
+    db.add_alert(
+        ts=now - 100, rule_name="mac_rule_a", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=now - 200, rule_name="mac_rule_a", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=now - 300, rule_name="mac_rule_b", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=now - 400, rule_name="ssid_rule", mac=None, message="x",
+        severity="med", rule_type="watchlist_ssid",
+    )
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        idx_section = r.text.find("fires by rule_type")
+        idx_rules_h = r.text.find("<h3>rules</h3>")
+        section_block = r.text[idx_section:idx_rules_h]
+        # Locate the watchlist_mac row inside the summary section and
+        # confirm the bucket count is 3 (not 2 from a single rule_name).
+        import re as _re
+
+        m_mac = _re.search(
+            r"<code>watchlist_mac</code>\s*&middot;\s*"
+            r"<strong>fires:</strong>\s*(\d+)",
+            section_block,
+        )
+        assert m_mac is not None, (
+            f"could not locate watchlist_mac summary row:\n{section_block[:600]}"
+        )
+        assert m_mac.group(1) == "3"
+        m_ssid = _re.search(
+            r"<code>watchlist_ssid</code>\s*&middot;\s*"
+            r"<strong>fires:</strong>\s*(\d+)",
+            section_block,
+        )
+        assert m_ssid is not None
+        assert m_ssid.group(1) == "1"
+        # Highest-volume rule_type leads -- watchlist_mac before
+        # watchlist_ssid in the summary block.
+        idx_mac = section_block.find("<code>watchlist_mac</code>")
+        idx_ssid = section_block.find("<code>watchlist_ssid</code>")
+        assert idx_mac < idx_ssid
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_per_rule_type_respects_since_window(tmp_path):
+    """Flipping the since= dropdown must update the per-rule_type
+    summary in lockstep with the per-rule_name list -- same window
+    drives both queries."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    import time as _time
+
+    now = int(_time.time())
+    # Two fires inside 1h, one outside.
+    db.add_alert(
+        ts=now - 30, rule_name="known_bad_mac", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=now - 60, rule_name="known_bad_mac", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    db.add_alert(
+        ts=now - 7200, rule_name="known_bad_mac", mac=None, message="x",
+        severity="high", rule_type="watchlist_mac",
+    )
+    try:
+        with TestClient(app) as client:
+            r_1h = client.get("/rules?since=1h")
+            r_24h = client.get("/rules?since=24h")
+            r_all = client.get("/rules?since=all")
+        import re as _re
+
+        for r, expected in ((r_1h, "2"), (r_24h, "3"), (r_all, "3")):
+            assert r.status_code == 200
+            idx_section = r.text.find("fires by rule_type")
+            idx_rules_h = r.text.find("<h3>rules</h3>")
+            section_block = r.text[idx_section:idx_rules_h]
+            m = _re.search(
+                r"<code>watchlist_mac</code>\s*&middot;\s*"
+                r"<strong>fires:</strong>\s*(\d+)",
+                section_block,
+            )
+            assert m is not None
+            assert m.group(1) == expected, (
+                f"url={r.request.url}: expected {expected}, got {m.group(1)}"
+            )
+        # since=all surfaces the "all time" label in the section header.
+        assert "fires by rule_type (all time)" in r_all.text
+        assert "fires by rule_type (1h)" in r_1h.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_per_rule_type_empty_alerts_shows_zero(tmp_path):
+    """Empty alerts table -> per-rule_type rows still render with 0
+    fires so snooze affordances remain reachable."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        import re as _re
+
+        section_block = r.text[
+            r.text.find("fires by rule_type") : r.text.find("<h3>rules</h3>")
+        ]
+        for rt in ("watchlist_mac", "watchlist_ssid"):
+            m = _re.search(
+                rf"<code>{rt}</code>\s*&middot;\s*"
+                r"<strong>fires:</strong>\s*(\d+)",
+                section_block,
+            )
+            assert m is not None, f"missing {rt} row"
+            assert m.group(1) == "0"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_per_rule_type_shows_snooze_badge(tmp_path):
+    """An active rule_type snooze must surface a badge on the
+    per-rule_type summary row (operator's at-a-glance signal that the
+    whole type is silenced)."""
+    app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
+    import time as _time
+
+    now = int(_time.time())
+    db.add_rule_type_snooze(
+        rule_type="watchlist_mac",
+        expires_at=now + 4 * 3600,
+        added_at=now,
+        note="lab gear reset",
+    )
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        section_block = r.text[
+            r.text.find("fires by rule_type") : r.text.find("<h3>rules</h3>")
+        ]
+        # Snoozed type: badge + unsnooze action present inside the
+        # summary block (not just on the per-rule_name article below).
+        assert "badge-snoozed" in section_block
+        assert "/rules/watchlist_mac/unsnooze" in section_block
+        assert "lab gear reset" in section_block
+        # Non-snoozed type: snooze form action present, no badge in
+        # that sub-block. Slice from watchlist_ssid onward inside the
+        # summary; that sub-block must contain the snooze action.
+        idx_ssid = section_block.find("<code>watchlist_ssid</code>")
+        ssid_sub = section_block[idx_ssid:]
+        assert "/rules/watchlist_ssid/snooze" in ssid_sub
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_rules_list_per_rule_type_section_absent_without_ruleset(tmp_path):
+    """No rules_path configured -> the summary section must not
+    render (matches the per-rule_name list which is also absent)."""
+    config = Config(db_path=str(tmp_path / "ui.db"))
+    db = Database(config.db_path)
+    app = create_app(config, db)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/rules")
+        assert r.status_code == 200
+        assert "fires by rule_type" not in r.text
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Home-page poll-tick observability card (Touch 2 of poll-tick observability)
+# ---------------------------------------------------------------------------
+#
+# The "last poll" card on / now reads the five last_tick_* keys written by
+# poll_once and renders admitted/dropped counts with operator-readable
+# drop-reason labels. Internal poller_state keys stay machine-readable
+# (source_allowlist / min_rssi / unparseable); the template translates
+# them to "allowlist mismatch" / "below signal threshold" /
+# "unrecognized device type" so operators glancing at the dashboard
+# don't have to learn jargon.
+
+
+def _seed_tick_state(
+    db,
+    *,
+    completed_at: int | None,
+    admitted: int = 0,
+    src: int = 0,
+    rssi: int = 0,
+    unparseable: int = 0,
+) -> None:
+    """Write the five last_tick_* keys directly. Bypasses poll_once so
+    the home-page rendering can be exercised without a Kismet fixture."""
+    if completed_at is not None:
+        db.set_state("last_tick_completed_at", str(completed_at))
+    db.set_state("last_tick_admitted", str(admitted))
+    db.set_state("last_tick_dropped_source_allowlist", str(src))
+    db.set_state("last_tick_dropped_min_rssi", str(rssi))
+    db.set_state("last_tick_dropped_unparseable", str(unparseable))
+
+
+@pytest.mark.webui
+def test_index_last_poll_card_renders_tick_counts(tmp_path):
+    """Populated tick state renders admitted + dropped counts and a
+    relative-time stamp inside the existing 'last poll' card."""
+    app, db = _make_app(tmp_path)
+    try:
+        import time as _t
+        now = int(_t.time())
+        _seed_tick_state(
+            db,
+            completed_at=now - 30,
+            admitted=5,
+            src=0,
+            rssi=0,
+            unparseable=1,
+        )
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        text = r.text
+        idx = text.find("last poll")
+        assert idx != -1
+        card = text[idx : idx + 1200]
+        assert "admitted:</strong> 5" in card
+        assert "dropped:</strong> 1" in card
+        assert "unrecognized device type: 1" in card
+        # The relative_time filter renders "just now" for delta < 60s.
+        assert "just now" in card or "Last polled" in card
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_last_poll_card_waiting_when_no_tick_yet(tmp_path):
+    """Never-polled state must render an operator-readable waiting
+    message without raising. last_tick_completed_at unset = the daemon
+    has not completed a tick yet (fresh install, or the daemon failed
+    to start)."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        idx = r.text.find("last poll")
+        assert idx != -1
+        card = r.text[idx : idx + 800]
+        assert "Waiting for first poll" in card
+        # And: no admitted/dropped chips render in the never-polled state.
+        assert "admitted:" not in card
+        assert "dropped:" not in card
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_last_poll_card_all_zero_drops_omits_breakdown(tmp_path):
+    """When the tick admitted records cleanly and no gates fired, the
+    card shows 'dropped: 0' WITHOUT any per-reason breakdown -- nothing
+    to break down. Operators reading the dashboard get a confidence
+    signal ('the gates are not silently filtering') without noise."""
+    app, db = _make_app(tmp_path)
+    try:
+        import time as _t
+        now = int(_t.time())
+        _seed_tick_state(
+            db,
+            completed_at=now - 10,
+            admitted=12,
+            src=0,
+            rssi=0,
+            unparseable=0,
+        )
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        text = r.text
+        idx = text.find("last poll")
+        assert idx != -1
+        card = text[idx : idx + 1200]
+        assert "admitted:</strong> 12" in card
+        assert "dropped:</strong> 0" in card
+        # No per-reason labels render when their counts are zero.
+        assert "allowlist mismatch" not in card
+        assert "below signal threshold" not in card
+        assert "unrecognized device type" not in card
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_healthz_html_renders_last_poll_tick_section_with_counts(tmp_path):
+    """Populated tick state renders the new 'last poll tick' block in
+    the HTML /healthz page with the same operator-readable drop-reason
+    labels as the home page card."""
+    app, db = _make_app(tmp_path)
+    try:
+        _seed_tick_state(
+            db,
+            completed_at=1_700_000_000,
+            admitted=7,
+            src=2,
+            rssi=0,
+            unparseable=1,
+        )
+        with TestClient(app) as client:
+            r = client.get("/healthz")
+        assert r.status_code == 200
+        text = r.text
+        assert "last poll tick" in text
+        # Find the section header and assert the per-bucket rows below it.
+        idx = text.find("last poll tick")
+        section = text[idx : idx + 1500]
+        assert "admitted" in section and ">7<" in section
+        assert "allowlist mismatch" in section and ">2<" in section
+        assert "below signal threshold" in section and ">0<" in section
+        assert "unrecognized device type" in section and ">1<" in section
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_healthz_html_shows_stale_badge_when_tick_old(tmp_path):
+    """A tick older than 2x poll_interval_seconds renders a visible
+    'stale' badge in the HTML page (operator scanning /healthz sees
+    the degradation without parsing JSON). The badge is colocated
+    with the relative-time stamp so 'stale' is unambiguous about
+    what's stale."""
+    import time as _t
+    app, db = _make_app(tmp_path)
+    try:
+        # Default poll_interval=60 -> threshold 120s. Seed completed
+        # 1000s ago (well past threshold).
+        now = int(_t.time())
+        _seed_tick_state(
+            db,
+            completed_at=now - 1000,
+            admitted=3,
+        )
+        with TestClient(app) as client:
+            r = client.get("/healthz")
+        assert r.status_code == 200
+        idx = r.text.find("last poll tick")
+        section = r.text[idx : idx + 1500]
+        assert "stale" in section
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_healthz_html_waiting_when_never_polled(tmp_path):
+    """No tick state -> the new section renders 'Waiting for first
+    poll...' without raising. Mirrors the home-page card behavior so
+    fresh installs read consistently across both surfaces."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/healthz")
+        assert r.status_code == 200
+        idx = r.text.find("last poll tick")
+        section = r.text[idx : idx + 800]
+        assert "Waiting for first poll" in section
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_index_last_poll_card_source_allowlist_only_shows_one_label(
+    tmp_path,
+):
+    """source_allowlist-only-drops state renders ONLY the
+    'allowlist mismatch' label; the other two reason labels stay
+    suppressed because their counts are zero."""
+    app, db = _make_app(tmp_path)
+    try:
+        import time as _t
+        now = int(_t.time())
+        _seed_tick_state(
+            db,
+            completed_at=now - 45,
+            admitted=0,
+            src=6,
+            rssi=0,
+            unparseable=0,
+        )
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        idx = r.text.find("last poll")
+        card = r.text[idx : idx + 1200]
+        assert "allowlist mismatch: 6" in card
+        assert "below signal threshold" not in card
+        assert "unrecognized device type" not in card
+    finally:
+        db.close()

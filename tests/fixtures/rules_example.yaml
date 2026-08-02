@@ -1,0 +1,22 @@
+rules:
+  - name: hak5_pineapple_oui
+    rule_type: watchlist_oui
+    severity: high
+    patterns: ["00:13:37"]
+    description: Hak5 WiFi Pineapple OUI prefix
+  - name: known_bad_mac
+    rule_type: watchlist_mac
+    severity: high
+    patterns: ["DE:AD:BE:EF:00:01"]
+  - name: rogue_ssids
+    rule_type: watchlist_ssid
+    severity: med
+    patterns: ["FreeAirportWiFi", "attwifi-rogue"]
+  - name: new_device_alert
+    rule_type: new_non_randomized_device
+    severity: low
+  - name: temporarily_disabled
+    rule_type: watchlist_mac
+    severity: low
+    patterns: ["11:22:33:44:55:66"]
+    enabled: false

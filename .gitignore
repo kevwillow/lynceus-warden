@@ -16,11 +16,28 @@ talos.yaml
 prompts/
 logs/
 tests/diagnostic_output/
-tests/
-/tests
-*tests*
 .claude/launch.json
 scripts/smoke_wizard.py
+
+# Tests: publish the suite, except the files that describe the operator's own
+# rig. The withheld ones embed the capture adapter's MAC (as the wlx<mac>
+# interface name and as the 00:c0:ca OUI) or the rig account name, which is
+# the reason the suite was held back wholesale in the first place. Everything
+# else is ordinary unit testing and belongs in the repo, where a reader can
+# run it and a CI job can gate on it.
+#
+# Adding a test that hard-codes a real adapter or host? Add it here too.
+tests/Lynceus_wifi_probe.txt
+tests/test_adapter_descriptors.py
+tests/test_ble_bridge.py
+tests/test_bootstrap_kismet.py
+tests/test_diag_wifi_adapter_enrichment_parity.py
+tests/test_diag_wizard_adapter_sysfs_matrix.py
+tests/test_diag_wizard_step4.py
+tests/test_kismet.py
+tests/test_poller.py
+tests/test_setup_core.py
+tests/test_setup_web_kismet.py
 
 # Internal CC working notes — local-only, never published to the public repo
 /CLAUDE.md

@@ -1,0 +1,12 @@
+entries:
+  - pattern: "A4:83:E7:11:22:33"
+    pattern_type: mac
+    note: My laptop
+  - pattern: "00:1A:7D:DA:71:11"
+    pattern_type: mac
+    note: Roommate's headphones
+  - pattern: "AA:BB:CC"
+    pattern_type: oui
+    note: Trusted vendor block
+  - pattern: HomeNet
+    pattern_type: ssid

@@ -1,0 +1,5356 @@
+"""Tests for lynceus.cli.setup — the interactive first-run configuration wizard."""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import os
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+import yaml
+
+from lynceus.cli import setup as wiz
+
+# Stash the real Kismet-API-key auto-locate resolver before the autouse
+# fixture below replaces it with a no-op. Unit tests of the resolver
+# call this reference directly so they're not short-circuited by the
+# default stub.
+_REAL_KISMET_CANDIDATE_PATHS = wiz._kismet_api_key_candidate_paths
+
+
+# ---- autouse: default-stub the Kismet API key auto-locator -----------------
+
+
+@pytest.fixture(autouse=True)
+def _disable_kismet_key_autolocate(monkeypatch):
+    """Default the Kismet API key auto-locator to a miss for every test.
+
+    The wizard's auto-locate step (rc5) reads ``~/.kismet/session.db`` —
+    if the developer happens to have a real Kismet install on the test
+    host, the wizard would otherwise hit it and ask "Use this key?"
+    which is an unscripted prompt that would consume the next ``input``
+    answer and break every wizard test. Tests that exercise the
+    auto-locate flow itself override this stub explicitly; the resolver
+    unit tests use ``_REAL_KISMET_CANDIDATE_PATHS`` to bypass it.
+    """
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [])
+
+
+# ---- helpers ---------------------------------------------------------------
+
+
+def _args(**overrides):
+    """Build an argparse.Namespace with sensible defaults for the wizard."""
+    base = dict(
+        user=False,
+        system=False,
+        reconfigure=False,
+        output=None,
+        skip_probes=True,  # default tests off-network unless explicitly testing probes
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _input_seq(answers):
+    """Create an input function that returns successive entries from a list."""
+    it = iter(answers)
+
+    def _input(prompt=""):
+        try:
+            return next(it)
+        except StopIteration as exc:  # pragma: no cover - test bug
+            raise AssertionError(
+                f"input() called past end of provided answers; prompt={prompt!r}"
+            ) from exc
+
+    return _input
+
+
+def _getpass_seq(answers):
+    """Create a getpass function that returns successive entries from a list."""
+    it = iter(answers)
+
+    def _gp(prompt=""):
+        try:
+            return next(it)
+        except StopIteration as exc:  # pragma: no cover - test bug
+            raise AssertionError(
+                f"getpass() called past end of provided answers; prompt={prompt!r}"
+            ) from exc
+
+    return _gp
+
+
+def _full_input_sequence(*, interface=None, ntfy_topic="lynceus-deadbeef"):
+    """Default end-to-end input sequence used by the smoke test and probe variants.
+
+    Tests using this helper must monkeypatch ``enumerate_bluetooth_adapters``
+    to return ``None`` (or use ``_stub_path_resolution`` which does it), so
+    no Bluetooth-related inputs need to be threaded in.
+    """
+    seq = [
+        "",  # Kismet URL: accept default
+    ]
+    if interface == "numbered":
+        seq.append("1")
+    elif interface is None:
+        seq.append("wlan0")  # free-form fallback
+    elif interface == "freeform":
+        seq.append("wlan0")
+    seq += [
+        "",  # probe_ssids: default (N -> False)
+        "",  # ble_friendly_names: default (Y -> True)
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL (non-empty so we don't skip ntfy)
+        ntfy_topic,  # ntfy topic
+        "",  # RSSI: accept default
+        "",  # severity overrides path: accept default
+        "",  # enable-alerting gate: default (N -> skip rules.yaml flow)
+    ]
+    return seq
+
+
+# ---- pre-flight: existing config -------------------------------------------
+
+
+def test_preflight_refuses_existing_config_without_reconfigure(tmp_path):
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("kismet_url: x\n")
+    err = wiz.preflight_existing(target, reconfigure=False)
+    assert err is not None
+    assert "Config already exists at" in err
+    assert "--reconfigure" in err
+
+
+def test_preflight_allows_existing_config_with_reconfigure(tmp_path):
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("kismet_url: x\n")
+    assert wiz.preflight_existing(target, reconfigure=True) is None
+
+
+def test_preflight_allows_when_no_config_yet(tmp_path):
+    target = tmp_path / "lynceus.yaml"
+    assert wiz.preflight_existing(target, reconfigure=False) is None
+
+
+# ---- pre-flight: scope/privilege -------------------------------------------
+
+
+def test_system_on_posix_without_root_rejected(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 1000)
+    err = wiz.preflight_scope("system", tmp_path / "lynceus.yaml")
+    assert err is not None
+    assert "sudo" in err
+    assert "--user" in err
+
+
+def test_system_on_posix_with_root_accepted(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)
+    assert wiz.preflight_scope("system", tmp_path / "lynceus.yaml") is None
+
+
+def test_user_scope_does_not_require_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 1000)
+    assert wiz.preflight_scope("user", tmp_path / "lynceus.yaml") is None
+
+
+def test_system_on_windows_without_writable_parent_rejected(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    monkeypatch.setattr(wiz, "is_writable_system_path", lambda p: False)
+    err = wiz.preflight_scope("system", tmp_path / "lynceus.yaml")
+    assert err is not None
+    assert "Administrator" in err
+
+
+def test_user_is_default_when_not_root():
+    args = _args()
+    assert wiz.determine_scope(args) == "user"
+
+
+def test_system_chosen_when_flag_set():
+    args = _args(system=True)
+    assert wiz.determine_scope(args) == "system"
+
+
+# ---- path resolution -------------------------------------------------------
+
+
+def test_path_user_linux_branch(monkeypatch):
+    """Linux/macOS branch: ends with .config/lynceus/lynceus.yaml under home."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    p = wiz.resolve_config_path("user", None)
+    assert p.parts[-3:] == (".config", "lynceus", "lynceus.yaml")
+
+
+def test_path_user_linux_respects_xdg(monkeypatch):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/var/operator/config")
+    p = wiz.resolve_config_path("user", None)
+    # Components ".../lynceus/lynceus.yaml"
+    assert p.parts[-2:] == ("lynceus", "lynceus.yaml")
+    assert "/var/operator/config" in p.as_posix()
+
+
+def test_path_user_windows_branch(monkeypatch):
+    """Windows branch: APPDATA/Lynceus/lynceus.yaml — verify components."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    monkeypatch.setenv("APPDATA", "/some/appdata/dir")
+    p = wiz.resolve_config_path("user", None)
+    assert p.parts[-2:] == ("Lynceus", "lynceus.yaml")
+    assert "appdata" in p.as_posix().lower()
+
+
+def test_path_system_linux_branch(monkeypatch):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    p = wiz.resolve_config_path("system", None)
+    assert p.as_posix() == "/etc/lynceus/lynceus.yaml"
+
+
+def test_path_system_windows_branch(monkeypatch):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    monkeypatch.setenv("ProgramData", "/some/programdata")
+    p = wiz.resolve_config_path("system", None)
+    assert p.parts[-2:] == ("Lynceus", "lynceus.yaml")
+    assert "programdata" in p.as_posix().lower()
+
+
+def test_path_output_overrides_user(tmp_path):
+    custom = str(tmp_path / "elsewhere.yaml")
+    p = wiz.resolve_config_path("user", custom)
+    assert p == Path(custom)
+
+
+def test_path_output_overrides_system(tmp_path):
+    custom = str(tmp_path / "elsewhere.yaml")
+    p = wiz.resolve_config_path("system", custom)
+    assert p == Path(custom)
+
+
+# ---- prompt helpers --------------------------------------------------------
+
+
+def test_prompt_default_accepts_default_on_empty():
+    val = wiz.prompt_default("Q", default="hello", input_fn=_input_seq([""]))
+    assert val == "hello"
+
+
+def test_prompt_default_accepts_custom_value():
+    val = wiz.prompt_default("Q", default="hello", input_fn=_input_seq(["world"]))
+    assert val == "world"
+
+
+def _capturing_input(answer):
+    """Input fn that records the prompt string and returns a fixed answer."""
+    seen: list[str] = []
+
+    def _input(prompt=""):
+        seen.append(prompt)
+        return answer
+
+    return _input, seen
+
+
+def test_prompt_default_shows_default_value_and_enter_cue():
+    """A defaulted prompt must display the default value AND a clear cue
+    that Enter accepts it. Empty Enter still resolves to the default.
+
+    Gap fix: bracketed prompts (Kismet URL, RSSI, severity path) showed
+    the value in [...] but gave no 'Enter keeps it' cue, unlike the ntfy
+    prompts later in the same wizard. The cue is now consistent."""
+    fn, seen = _capturing_input("")
+    val = wiz.prompt_default("Some setting", default="thedefault", input_fn=fn)
+    assert val == "thedefault"  # empty Enter -> default applied
+    assert "[thedefault]" in seen[0]  # default value displayed
+    assert "Enter to keep default" in seen[0]  # explicit Enter cue
+
+
+def test_prompt_default_none_omits_keep_default_cue():
+    """With no default, the helper must NOT inject a keep-default cue.
+
+    The ntfy URL/topic prompts pass default=None and carry their own
+    '(Enter to skip/accept ...)' cue; a second 'keep default' cue would
+    contradict their skip/accept-suggested semantics."""
+    fn, seen = _capturing_input("typed-value")
+    val = wiz.prompt_default(
+        "ntfy topic name (Enter to accept the suggested topic above)",
+        default=None,
+        input_fn=fn,
+    )
+    assert val == "typed-value"
+    assert "keep default" not in seen[0]
+
+
+def test_prompt_url_kismet_default_on_empty_enter_with_cue():
+    """The Kismet API URL prompt (the reporter's case): a bare Enter
+    resolves to DEFAULT_KISMET_URL, and the prompt both shows the default
+    and labels that Enter keeps it."""
+    fn, seen = _capturing_input("")
+    val = wiz.prompt_url(
+        "Kismet API URL",
+        default=wiz.DEFAULT_KISMET_URL,
+        required=True,
+        input_fn=fn,
+    )
+    assert val == wiz.DEFAULT_KISMET_URL  # empty Enter -> default, not ""
+    assert wiz.DEFAULT_KISMET_URL in seen[0]  # default shown
+    assert "Enter to keep default" in seen[0]  # cue present
+
+
+def test_prompt_required_rejects_empty_then_accepts(capsys):
+    val = wiz.prompt_default(
+        "Q", default=None, required=True, input_fn=_input_seq(["", "  ", "value"])
+    )
+    assert val == "value"
+
+
+def test_prompt_secret_required_rejects_empty(capsys):
+    val = wiz.prompt_secret("Token", getpass_fn=_getpass_seq(["", "  ", "secret"]))
+    assert val == "secret"
+
+
+def test_prompt_yes_no_default_yes_on_empty():
+    val = wiz.prompt_yes_no("OK?", default=True, input_fn=_input_seq([""]))
+    assert val is True
+
+
+def test_prompt_yes_no_default_no_on_empty():
+    val = wiz.prompt_yes_no("OK?", default=False, input_fn=_input_seq([""]))
+    assert val is False
+
+
+def test_prompt_yes_no_accepts_y_and_n():
+    assert wiz.prompt_yes_no("Q", default=False, input_fn=_input_seq(["y"])) is True
+    assert wiz.prompt_yes_no("Q", default=True, input_fn=_input_seq(["n"])) is False
+
+
+def test_prompt_yes_no_re_prompts_on_garbage(capsys):
+    val = wiz.prompt_yes_no("Q", default=False, input_fn=_input_seq(["garbage", "y"]))
+    assert val is True
+
+
+def test_prompt_numbered_choice_valid_pick():
+    val = wiz.prompt_numbered_choice("Pick:", ["a", "b", "c"], input_fn=_input_seq(["2"]))
+    assert val == "b"
+
+
+def test_prompt_numbered_choice_rejects_out_of_range_then_accepts(capsys):
+    val = wiz.prompt_numbered_choice("Pick:", ["a", "b", "c"], input_fn=_input_seq(["9", "0", "1"]))
+    assert val == "a"
+
+
+def test_prompt_numbered_choice_rejects_non_integer(capsys):
+    val = wiz.prompt_numbered_choice("Pick:", ["a", "b"], input_fn=_input_seq(["abc", "2"]))
+    assert val == "b"
+
+
+# ---- section / context helpers --------------------------------------------
+
+
+def test_print_section_emits_title_with_underline(capsys):
+    """``_print_section`` prints a blank line, the title, a ``═`` underline
+    matching the title's length, and a trailing blank line. This is the
+    visual scaffolding the Kismet + ntfy sections rely on; if the
+    underline gets out of sync with the title the section header looks
+    broken on a real terminal."""
+    wiz._print_section("Kismet Connection")
+    out = capsys.readouterr().out
+    lines = out.split("\n")
+    assert lines[0] == ""
+    assert lines[1] == "Kismet Connection"
+    assert lines[2] == "═" * len("Kismet Connection")
+    assert lines[3] == ""
+
+
+def test_print_context_strips_outer_whitespace_and_emits_blank_trailer(capsys):
+    """A triple-quoted literal with a leading newline and trailing
+    blank line is the natural way to write a context block. The helper
+    must strip the outer whitespace so the block renders flush-left,
+    then add one blank line after for separation from the prompt."""
+    wiz._print_context(
+        """
+First line.
+Second line.
+"""
+    )
+    out = capsys.readouterr().out
+    lines = out.split("\n")
+    # First line of output is the first real line of context (no leading blank),
+    # then the rest, then a single blank line separating from the prompt.
+    assert lines[0] == "First line."
+    assert lines[1] == "Second line."
+    assert lines[2] == ""
+
+
+# ---- wireless interface enumeration ----------------------------------------
+
+
+def test_enumerate_freeform_fallback_when_unavailable(monkeypatch):
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    assert wiz.enumerate_wireless_interfaces() is None
+
+
+# ---- probe: Kismet ---------------------------------------------------------
+
+
+def test_kismet_probe_success(monkeypatch):
+    fake = MagicMock()
+    fake.health_check.return_value = {"reachable": True, "version": "2024-08-R1", "error": None}
+    monkeypatch.setattr(wiz, "KismetClient", lambda **kw: fake)
+    ok, version, error = wiz.probe_kismet("http://x", "tok")
+    assert ok is True
+    assert version == "2024-08-R1"
+    assert error is None
+
+
+def test_kismet_probe_failure(monkeypatch):
+    fake = MagicMock()
+    fake.health_check.return_value = {"reachable": False, "version": None, "error": "boom"}
+    monkeypatch.setattr(wiz, "KismetClient", lambda **kw: fake)
+    ok, version, error = wiz.probe_kismet("http://x", "tok")
+    assert ok is False
+    assert error == "boom"
+
+
+# ---- probe: ntfy -----------------------------------------------------------
+
+
+def test_ntfy_probe_uses_notify_send_path(monkeypatch):
+    # probe_ntfy now routes through notify.NtfyNotifier so the test-publish
+    # exercises the daemon's real headers/format. Patch the notify-layer
+    # requests.post (NOT wiz.requests) — that is the seam the probe POST now
+    # flows through.
+    captured = {}
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["data"] = data
+        captured["headers"] = headers
+        r = MagicMock()
+        r.status_code = 200
+        return r
+
+    monkeypatch.setattr("lynceus.notify.requests.post", fake_post)
+    ok, error = wiz.probe_ntfy("https://ntfy.sh", "lynceus-aaa")
+    assert ok is True
+    assert error is None
+    assert captured["url"] == "https://ntfy.sh/lynceus-aaa"
+    assert b"Lynceus setup test" in captured["data"]
+    # The whole point of the reroute: the probe carries the daemon headers,
+    # not a bare body. A 200 here validates the production request shape.
+    assert captured["headers"]["Title"]
+    assert "X-Sequence-ID" in captured["headers"]
+
+
+def test_ntfy_probe_failure_http(monkeypatch):
+    def fake_post(url, data=None, headers=None, timeout=None):
+        r = MagicMock()
+        r.status_code = 503
+        return r
+
+    monkeypatch.setattr("lynceus.notify.requests.post", fake_post)
+    ok, error = wiz.probe_ntfy("https://ntfy.sh", "lynceus-aaa")
+    assert ok is False
+    assert "503" in error
+
+
+def test_ntfy_probe_failure_network(monkeypatch):
+    import requests
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        raise requests.exceptions.ConnectionError("no route to https://ntfy.sh/lynceus-aaa")
+
+    monkeypatch.setattr("lynceus.notify.requests.post", fake_post)
+    ok, error = wiz.probe_ntfy("https://ntfy.sh", "lynceus-aaa")
+    assert ok is False
+    # Error string carries the exception type + redacted URL only — the
+    # raw topic and the exception body (which often re-embeds the URL)
+    # must not appear.
+    assert "ConnectionError" in error
+    assert "lynceus-aaa" not in error
+    assert "no route" not in error
+
+
+# --------- regression: wizard must never print raw ntfy topic ----------------
+#
+# Mirrors the notify.py contract: the topic is a shared secret, and the
+# wizard's stdout (summary line, probe-error print) ends up in terminal
+# scrollback and tee'd install logs. These tests MUST FAIL PRE-FIX.
+
+
+_LEAK_TOPIC_WIZ = "lynceus-supersecret-leak"
+
+
+def test_wizard_summary_redacts_ntfy_topic(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence(ntfy_topic=_LEAK_TOPIC_WIZ)),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Raw topic must not survive into the summary; the redacted form
+    # (first 4 + bullets + last 2) must appear instead.
+    assert _LEAK_TOPIC_WIZ not in out
+    assert "lync•••ak" in out
+
+
+def test_wizard_probe_failure_redacts_ntfy_topic(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda url, token, timeout=None: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
+
+    # Real-shape ConnectionError whose __str__() embeds the URL+topic.
+    # Stub the notify-layer requests.post so the real probe_ntfy runs (and
+    # notify's in-function redaction is exercised). Do NOT monkeypatch
+    # probe_ntfy itself.
+    import requests
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        raise requests.exceptions.ConnectionError(
+            f"Max retries exceeded with url: /{_LEAK_TOPIC_WIZ}"
+        )
+
+    monkeypatch.setattr("lynceus.notify.requests.post", fake_post)
+
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",  # capture interface
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL
+        _LEAK_TOPIC_WIZ,
+        "y",  # continue after ntfy fail
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Probe-failure line ran; topic is absent; redacted URL is present.
+    assert "ntfy publish failed" in out
+    assert _LEAK_TOPIC_WIZ not in out
+    # Summary line also runs after probe — and also redacts.
+    assert "lync•••ak" in out
+
+
+# ---- run_wizard: ntfy URL guidance + test-publish (0.9.1 arc) ---------------
+#
+# The field misconfiguration this arc fixes: operator put "ntfy.sh/<topic>" in
+# the URL field AND "<topic>" in the topic field, so the daemon POSTed to
+# <url>/<topic>/<topic> — a dead topic nothing subscribed to, with zero
+# feedback at setup. These two tests pin the GUIDANCE and the TEST-PUBLISH
+# print on the CLI surface.
+
+
+def test_wizard_ntfy_url_guidance_warns_against_topic_in_url(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    low = capsys.readouterr().out.lower()
+    # The URL field is the SERVER BASE only; the topic must not be appended.
+    assert "server base" in low
+    assert "do not append" in low
+    # The concrete failure mode is spelled out so the operator recognises it.
+    assert "/<topic>/<topic>" in low
+
+
+def test_wizard_ntfy_probe_prints_redacted_resolved_target(monkeypatch, tmp_path, capsys):
+    from lynceus.redact import redact_topic_in_url
+
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda url, token, timeout=None: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
+
+    # Real probe path: stub the notify-layer POST to a clean 200.
+    def fake_post(url, data=None, headers=None, timeout=None):
+        r = MagicMock()
+        r.status_code = 200
+        return r
+
+    monkeypatch.setattr("lynceus.notify.requests.post", fake_post)
+
+    topic = "lynceus-secrettopic"
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",  # capture interface
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL
+        topic,  # ntfy topic
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The resolved POST target is printed, topic-redacted (never raw).
+    assert redact_topic_in_url(f"https://ntfy.sh/{topic}") in out
+    assert topic not in out
+    # Reachability is stated honestly — a 200 must NOT be sold as success.
+    assert "configured successfully" not in out.lower()
+    # Operator is told to confirm receipt on their device (topic correctness).
+    assert "subscrib" in out.lower()
+
+
+# ---- run_wizard: probe failure paths ---------------------------------------
+
+
+def _stub_path_resolution(monkeypatch, tmp_path):
+    """Make resolve_config_path return tmp_path/lynceus.yaml so tests don't
+    touch real user/system paths.
+
+    Also stubs ``enumerate_bluetooth_adapters`` to ``None`` so the wizard
+    silently skips the BT section by default — tests that exercise the BT
+    flow override this stub. The Kismet API key auto-locator is forced
+    to return an empty candidate list so existing tests don't
+    accidentally hit a real ``~/.kismet/session.db`` on the developer's
+    machine; tests that exercise the auto-locate flow override this.
+    """
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [])
+    return target
+
+
+def _stub_bundled_import(monkeypatch, *, success: bool = False, msg: str = "no bundled watchlist"):
+    """Stub ``import_bundled_watchlist`` so wizard end-to-end tests don't fork
+    a real ``lynceus-import-argus`` against the now-shipping bundled CSV."""
+    monkeypatch.setattr(
+        wiz,
+        "import_bundled_watchlist",
+        lambda db_path, override_file: (success, msg),
+    )
+
+
+def test_run_wizard_kismet_probe_fail_continue_yes(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz, "probe_kismet", lambda url, token, timeout=None: (False, None, "connection refused")
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda url, topic, timeout=None: (True, None))
+    inputs = [
+        "",  # kismet URL default
+        "y",  # continue after kismet fail
+        "wlan1",  # capture interface (freeform)
+        "",  # probe_ssids default no
+        "",  # ble_friendly_names default yes
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL (non-empty, so we don't skip ntfy)
+        "lynceus-deadbeef",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["sekret"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Kismet probe failed" in out
+
+
+def test_run_wizard_kismet_probe_fail_continue_no_aborts(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        wiz, "probe_kismet", lambda url, token, timeout=None: (False, None, "connection refused")
+    )
+    inputs = [
+        "",  # kismet URL default
+        "n",  # do not continue
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["sekret"]),
+    )
+    assert rc != 0
+
+
+def test_run_wizard_skip_probes_does_not_call_probes(monkeypatch, tmp_path):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    called = []
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet",
+        lambda *a, **kw: called.append("k") or (False, None, "should not be called"),
+    )
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: called.append("k_sources") or None,
+    )
+    monkeypatch.setattr(
+        wiz,
+        "probe_ntfy",
+        lambda *a, **kw: called.append("n") or (False, "should not be called"),
+    )
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert called == []
+
+
+def test_run_wizard_ntfy_probe_fail_continue_yes(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda url, token, timeout=None: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda url, topic, timeout=None: (False, "boom"))
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",  # capture interface
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL (non-empty)
+        "lynceus-cafe",
+        "y",  # continue after ntfy fail
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert "ntfy publish failed" in capsys.readouterr().out
+
+
+def test_run_wizard_ntfy_probe_fail_continue_no_aborts(monkeypatch, tmp_path):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda url, token, timeout=None: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda url, topic, timeout=None: (False, "boom"))
+    inputs = [
+        "",  # kismet URL
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL (non-empty)
+        "lynceus-cafe",
+        "n",  # don't continue
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc != 0
+
+
+# ---- run_wizard: capture interface enumeration -----------------------------
+
+
+def test_run_wizard_capture_interface_numbered_selection(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
+    inputs = [
+        "",  # kismet URL default
+        "2",  # pick wlan1
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL (non-empty)
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["wlan1"]
+
+
+def test_run_wizard_capture_interface_freeform_when_enumeration_unavailable(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlx0c",  # free-form interface
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL (non-empty)
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(_args(), input_fn=_input_seq(inputs), getpass_fn=_getpass_seq(["tok"]))
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["wlx0c"]
+
+
+# ---- run_wizard: capture toggles defaults ----------------------------------
+
+
+def test_run_wizard_probe_ssids_defaults_false(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["capture"]["probe_ssids"] is False
+
+
+def test_run_wizard_ble_friendly_names_defaults_true(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["capture"]["ble_friendly_names"] is True
+
+
+# ---- config write & shape --------------------------------------------------
+
+
+def test_config_yaml_contains_expected_keys(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok-abc"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    for key in (
+        "kismet_url",
+        "kismet_api_key",
+        "kismet_sources",
+        "capture",
+        "ntfy_url",
+        "ntfy_topic",
+        "min_rssi",
+    ):
+        assert key in data, f"missing key: {key}"
+    # And it should round-trip through the real Config validator without error.
+    from lynceus.config import Config
+
+    Config(**data)
+
+
+def test_config_yaml_contains_api_token(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["super-secret-token-xyz"]),
+    )
+    assert rc == 0
+    text = target.read_text()
+    assert "super-secret-token-xyz" in text
+    data = yaml.safe_load(text)
+    assert data["kismet_api_key"] == "super-secret-token-xyz"
+
+
+def test_write_config_uses_atomic_write_with_0600_mode_on_posix(monkeypatch, tmp_path):
+    """write_config must hand off to ``_atomic_write`` so the file is
+    created with mode 0o600 atomically — no umask-derived window between
+    create and chmod (S2). The legacy ``write_text`` + ``chmod`` two-step
+    is gone."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    captured: dict = {}
+    real_open = os.open
+
+    def fake_open(path, flags, mode=0o777, *a, **kw):
+        captured["path"] = str(path)
+        captured["flags"] = flags
+        captured["mode"] = mode
+        return real_open(path, flags, mode, *a, **kw)
+
+    monkeypatch.setattr(wiz.os, "open", fake_open)
+    target = tmp_path / "lynceus.yaml"
+    wiz.write_config(target, "kismet_url: x\n")
+    assert target.exists()
+    assert captured["mode"] == 0o600
+    assert captured["flags"] & os.O_CREAT
+    assert captured["flags"] & os.O_WRONLY
+    assert captured["flags"] & os.O_TRUNC
+
+
+def test_write_config_skips_atomic_open_on_windows(monkeypatch, tmp_path):
+    """On Windows POSIX mode bits are meaningless, so ``_atomic_write``
+    falls through to ``Path.write_text`` and never touches ``os.open``."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    open_calls = []
+    real_open = os.open
+    monkeypatch.setattr(
+        wiz.os,
+        "open",
+        lambda *a, **kw: open_calls.append((a, kw)) or real_open(*a, **kw),
+    )
+    target = tmp_path / "lynceus.yaml"
+    wiz.write_config(target, "kismet_url: x\n")
+    assert target.exists()
+    assert open_calls == [], "Windows path must not use os.open with mode bits"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only file mode check")
+def test_write_config_real_mode_is_0600(tmp_path):
+    target = tmp_path / "lynceus.yaml"
+    wiz.write_config(target, "kismet_url: x\n")
+    mode = target.stat().st_mode & 0o777
+    assert mode == 0o600
+
+
+def test_write_config_creates_parent_dir(tmp_path):
+    target = tmp_path / "nested" / "dir" / "lynceus.yaml"
+    wiz.write_config(target, "kismet_url: x\n")
+    assert target.exists()
+
+
+# ---- severity overrides scaffold -------------------------------------------
+
+
+def test_severity_overrides_created_when_missing(tmp_path):
+    p = tmp_path / "severity_overrides.yaml"
+    created = wiz.scaffold_severity_overrides(p)
+    assert created is True
+    assert p.exists()
+    text = p.read_text()
+    # Template should mention each known override section. Runtime
+    # keys (suppress_categories, suppress_vendors, pattern_overrides)
+    # plus import-time keys (vendor_overrides, geographic_filter, ...)
+    # and the BOTH-layer remap (device_category_severity).
+    assert "vendor_overrides" in text
+    assert "device_category_severity" in text
+    assert "suppress_categories" in text
+    assert "suppress_vendors" in text
+    assert "pattern_overrides" in text
+    assert "geographic_filter" in text
+    assert "argus_schema_version_accept_list" in text
+    # Forward-compat category seed (Argus §F.1) — zero active rows in
+    # v1.4.1, but the commented example should appear in the scaffold
+    # so operators see it in context when the data lands.
+    assert "automotive_telematics" in text
+
+
+def test_severity_overrides_not_overwritten_when_present(tmp_path):
+    p = tmp_path / "severity_overrides.yaml"
+    original = "# operator's existing notes\nvendor_overrides:\n  Acme: high\n"
+    p.write_text(original)
+    created = wiz.scaffold_severity_overrides(p)
+    assert created is False
+    assert p.read_text() == original
+
+
+# ---- end-to-end smoke ------------------------------------------------------
+
+
+def test_run_wizard_end_to_end_smoke(monkeypatch, tmp_path, capsys):
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
+    # Probes: skip via flag.
+    inputs = [
+        "http://10.0.0.5:2501",  # custom kismet URL
+        "1",  # pick wlan0
+        "y",  # opt in to probe ssids
+        "",  # default ble names
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # explicit ntfy URL
+        "lynceus-feedface",
+        "-80",  # custom rssi
+        "",  # severity overrides default path
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["my-token-123"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert target.exists()
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_url"] == "http://10.0.0.5:2501"
+    assert data["kismet_api_key"] == "my-token-123"
+    assert data["kismet_sources"] == ["wlan0"]
+    assert data["capture"]["probe_ssids"] is True
+    assert data["capture"]["ble_friendly_names"] is True
+    assert data["ntfy_url"] == "https://ntfy.sh"
+    assert data["ntfy_topic"] == "lynceus-feedface"
+    assert data["min_rssi"] == -80
+    assert "Setup complete" in out
+    assert str(target) in out
+    # UI URL hint
+    assert "http://127.0.0.1:" in out
+    # Explicit end-of-wizard marker. Without this final visible boundary
+    # the shell prompt returns mixed with the last hint line and operators
+    # perceive --system as having hung silently. The marker must be the
+    # LAST thing the wizard prints so the operator sees a clear "done"
+    # signal between the hints and the shell prompt.
+    assert "Setup complete, exiting." in out
+    # Position check: the explicit-exit marker comes AFTER the UI URL
+    # hint (i.e. it really is the trailing line, not something printed
+    # mid-flow). A regression that moves "Setup complete, exiting." up
+    # would re-introduce the perception-hang.
+    assert out.rindex("Setup complete, exiting.") > out.rindex("http://127.0.0.1:")
+
+
+def test_run_wizard_system_scope_prints_quickstart_scope_note(monkeypatch, tmp_path, capsys):
+    """UX-polish arc Touch 5: a system-scope wizard run tells the operator
+    that lynceus-quickstart reads the user scope by default, so they know
+    to pass `lynceus-quickstart --system` to launch against this config.
+    The user-scope run (test_run_wizard_end_to_end_smoke) prints no such
+    note — it's specific to the scope-mismatch footgun.
+
+    System scope is Linux-only in the paths module (and apply_config does
+    a real chown), so the system-scope side effects are mocked to keep the
+    test platform-independent; we exercise only the scope-dependent
+    next-steps output."""
+    from lynceus import paths as lynceus_paths
+    from lynceus.setup.models import ApplyReport, ApplyStep
+
+    target = tmp_path / "etc" / "lynceus.yaml"
+    db_path = tmp_path / "etc" / "lynceus.db"
+    allowlist_path = tmp_path / "etc" / "allowlist.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    monkeypatch.setattr(wiz, "preflight_scope", lambda scope, target: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0"])
+    # System-scope paths are Linux-only; redirect them into tmp.
+    monkeypatch.setattr(lynceus_paths, "default_allowlist_path", lambda scope: allowlist_path)
+    monkeypatch.setattr(lynceus_paths, "default_db_path", lambda scope: db_path)
+    # Mock the apply chain (avoids real writes + a Windows-incompatible
+    # chown); return the steps run_wizard reads back.
+    fake_report = ApplyReport(steps=(
+        ApplyStep(name="scaffold_severity_overrides", status="ok",
+                  message="scaffolded", detail={"scaffolded": True}),
+        ApplyStep(name="import_bundled_watchlist", status="skipped",
+                  message="no bundled watchlist"),
+        ApplyStep(name="chown_db_files", status="ok", message="chowned",
+                  detail={"files": []}),
+    ))
+    monkeypatch.setattr(wiz, "apply_config", lambda *a, **k: fake_report)
+    # Alerting gate off: no rules written, no DB query.
+    monkeypatch.setattr(wiz, "run_enable_alerting_flow", lambda *a, **k: (None, False))
+
+    inputs = [
+        "http://10.0.0.5:2501",  # kismet URL
+        "1",  # pick wlan0
+        "",  # default probe ssids
+        "",  # default ble names
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL
+        "lynceus-feedface",  # ntfy topic
+        "",  # default rssi
+        "",  # severity overrides default path
+    ]
+    rc = wiz.run_wizard(
+        _args(system=True, skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["my-token-123"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "lynceus-quickstart --system" in out
+    assert "reads the user-scope config" in out
+
+
+def test_run_wizard_user_scope_omits_quickstart_scope_note(monkeypatch, tmp_path, capsys):
+    """The quickstart scope note is system-scope-only — a user-scope run
+    (the common case) must not emit it."""
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0"])
+    inputs = [
+        "http://10.0.0.5:2501", "1", "", "", "", "https://ntfy.sh",
+        "lynceus-feedface", "", "", "",
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),  # user scope (default)
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["my-token-123"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "lynceus-quickstart --system" not in out
+
+
+# ---- Arc B verify_kismet_sources rendering through run_wizard --------------
+
+
+def test_run_wizard_prints_warning_when_kismet_source_names_mismatch(
+    monkeypatch, tmp_path, capsys
+):
+    """When apply_config emits a verify_kismet_sources step in warning
+    status, the CLI wizard must surface the warning message verbatim
+    to the operator. Pre-Touch-2 the CLI sink swallowed every step
+    silently and the warning lived only in the structured report —
+    invisible to the operator who would discover the silent-drop
+    state only after wondering why the dashboard is empty."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
+
+    # Inject a fake Kismet client whose source list does NOT contain the
+    # operator's chosen "wlan0" — the cross-check will emit a warning
+    # naming that specific mismatch.
+    from lynceus.setup import core as setup_core
+
+    class _MismatchingClient:
+        def list_sources(self, *, only_running=True):
+            return [{"name": "external_wifi", "interface": "wlan1", "running": True}]
+
+    monkeypatch.setattr(
+        setup_core, "_make_verify_kismet_client", lambda config: _MismatchingClient()
+    )
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence(interface="numbered")),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    # WARNING line surfaces with the specific mismatched name and the
+    # recovery copy. Non-blocking: rc == 0 and the rest of the summary
+    # is still emitted.
+    assert "WARNING:" in out
+    assert "wlan0" in out
+    assert "silently drop" in out
+    assert "lynceus-bootstrap-kismet" in out
+    # Trailing marker still present — the warning landed BEFORE the
+    # final "Setup complete, exiting." so it doesn't interrupt the
+    # exit-cue contract.
+    assert "Setup complete, exiting." in out
+    assert out.rindex("WARNING:") < out.rindex("Setup complete, exiting.")
+
+
+def test_run_wizard_silent_when_kismet_source_cross_check_passes(
+    monkeypatch, tmp_path, capsys
+):
+    """Symmetric to the warning test: when every configured source
+    name appears in Kismet's exposed list, the cross-check emits ok
+    silently — the CLI does NOT print a "Kismet source names verified"
+    line. An ok cross-check is implicit success; only the non-ok
+    branches surface to the operator (warning → WARNING:, mismatch
+    skip → Note:)."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
+
+    from lynceus.setup import core as setup_core
+
+    class _MatchingClient:
+        def list_sources(self, *, only_running=True):
+            return [
+                {"name": "wlan0", "interface": "wlan0", "running": True},
+                {"name": "wlan1", "interface": "wlan1", "running": True},
+            ]
+
+    monkeypatch.setattr(
+        setup_core, "_make_verify_kismet_client", lambda config: _MatchingClient()
+    )
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence(interface="numbered")),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    # No warning, no Note, no "verified" line — implicit success.
+    assert "WARNING:" not in out
+    assert "Kismet source names verified" not in out
+
+
+# ---- main() ----------------------------------------------------------------
+
+
+def test_main_refuses_existing_config_without_reconfigure(monkeypatch, tmp_path, capsys):
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("kismet_url: x\n")
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    rc = wiz.main(["--user"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Config already exists" in err
+
+
+def test_main_system_without_root_refuses(monkeypatch, tmp_path, capsys):
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 1000)
+    rc = wiz.main(["--system"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "sudo" in err or "Administrator" in err
+
+
+# ---- sudo-without-system refusal -----------------------------------------
+#
+# rc4 live smoke: `sudo lynceus-setup --reconfigure` (no --system)
+# silently regenerated /root/.config/lynceus/lynceus.yaml while the
+# system daemon was reading from /etc/lynceus/lynceus.yaml. The wizard
+# followed its scope rules literally (euid=0, scope=user, Path.home() is
+# /root) but the operator-facing result was a stale /etc/ config
+# diverging from "what I just configured". The invariant going forward:
+# the wizard NEVER silently switches scopes — a misplaced config is
+# worse than a refusal.
+
+
+def test_main_sudo_without_system_refuses_with_actionable_message(
+    monkeypatch, tmp_path, capsys
+):
+    """The exact rc4 footgun: euid=0, --system not passed, --reconfigure
+    set. The wizard must refuse (rc=2), name the misplacement path that
+    would have been written, and show both correct invocations
+    side-by-side. No prompts, no file writes."""
+    target = tmp_path / "lynceus.yaml"
+    write_calls: list[Path] = []
+
+    def _explode_resolve(scope, output):
+        # If the early refusal fires, resolve_config_path must NOT be
+        # called — we should bail before any path resolution. Calling
+        # it would mean main() proceeded past the check.
+        raise AssertionError(
+            f"resolve_config_path must not be called when sudo-without-system "
+            f"refusal fires (scope={scope!r})"
+        )
+
+    monkeypatch.setattr(wiz, "resolve_config_path", _explode_resolve)
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)
+
+    # If we somehow leak past the check, _atomic_write would be the next
+    # observable side effect; trip it loudly.
+    def _explode_write(path, content, *, mode=0o600):
+        write_calls.append(path)
+        raise AssertionError(f"_atomic_write must not be called; got path={path!r}")
+
+    monkeypatch.setattr(wiz, "_atomic_write", _explode_write)
+
+    rc = wiz.main(["--reconfigure"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    # Operator-facing message must name *why* and show *what to do*.
+    assert "Refusing to run as root without --system" in err
+    assert "/root/.config/lynceus/lynceus.yaml" in err
+    assert "sudo lynceus-setup --system" in err
+    assert "lynceus-setup" in err  # the non-sudo invocation
+    # No config written.
+    assert not target.exists()
+    assert write_calls == []
+
+
+def test_main_sudo_without_system_refuses_even_with_explicit_user_flag(
+    monkeypatch, capsys
+):
+    """`sudo lynceus-setup --user` is the same trap as `sudo lynceus-setup`
+    — args.system is still False, scope still resolves to user, the
+    write still lands in /root/.config. The refusal must fire regardless
+    of whether --user is passed explicitly."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)
+
+    def _explode_resolve(scope, output):
+        raise AssertionError("resolve_config_path called despite sudo-without-system refusal")
+
+    monkeypatch.setattr(wiz, "resolve_config_path", _explode_resolve)
+
+    rc = wiz.main(["--user", "--reconfigure"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Refusing to run as root without --system" in err
+
+
+def test_main_sudo_with_system_does_not_trigger_refusal(monkeypatch, capsys):
+    """euid=0 AND --system is the legitimate system install. The new
+    refusal must NOT fire — main() must reach run_wizard. We stub
+    run_wizard with a sentinel so we don't have to drive the full
+    interactive flow."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)
+
+    sentinel = {"called": False, "args": None}
+
+    def _fake_run_wizard(args, **kwargs):
+        sentinel["called"] = True
+        sentinel["args"] = args
+        return 0
+
+    monkeypatch.setattr(wiz, "run_wizard", _fake_run_wizard)
+
+    rc = wiz.main(["--system"])
+    assert rc == 0
+    assert sentinel["called"] is True
+    assert sentinel["args"].system is True
+    # The sudo-without-system message must NOT have been emitted.
+    err = capsys.readouterr().err
+    assert "Refusing to run as root without --system" not in err
+
+
+def test_main_non_root_user_scope_does_not_trigger_refusal(monkeypatch, capsys):
+    """The common case: non-root operator, default --user scope. The new
+    refusal must NOT fire and main() must dispatch to run_wizard."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 1000)
+
+    sentinel = {"called": False}
+
+    def _fake_run_wizard(args, **kwargs):
+        sentinel["called"] = True
+        return 0
+
+    monkeypatch.setattr(wiz, "run_wizard", _fake_run_wizard)
+
+    rc = wiz.main([])
+    assert rc == 0
+    assert sentinel["called"] is True
+    err = capsys.readouterr().err
+    assert "Refusing to run as root without --system" not in err
+
+
+def test_main_non_root_system_scope_unchanged_existing_refusal(monkeypatch, capsys):
+    """Sanity-check the inverse pre-existing path: non-root + --system
+    still falls into the pre-existing preflight_scope refusal, NOT the
+    new sudo-without-system refusal. The two error messages must not
+    blur together."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 1000)
+    monkeypatch.setattr(
+        wiz, "resolve_config_path", lambda scope, output: Path("/tmp/never-written.yaml")
+    )
+
+    rc = wiz.main(["--system"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    # Existing preflight_scope message — NOT the new sudo-without-system one.
+    assert "Refusing to run as root without --system" not in err
+    assert "sudo" in err or "Administrator" in err
+
+
+def test_main_sudo_without_system_no_op_on_windows(monkeypatch, capsys):
+    """Windows has no sudo trap to fall into — _euid() returns None, so
+    the new check must be a no-op. main() must dispatch to run_wizard
+    just like the non-root posix case."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    monkeypatch.setattr(wiz, "_euid", lambda: None)
+
+    sentinel = {"called": False}
+
+    def _fake_run_wizard(args, **kwargs):
+        sentinel["called"] = True
+        return 0
+
+    monkeypatch.setattr(wiz, "run_wizard", _fake_run_wizard)
+
+    rc = wiz.main([])
+    assert rc == 0
+    assert sentinel["called"] is True
+    err = capsys.readouterr().err
+    assert "Refusing to run as root without --system" not in err
+
+
+def test_run_wizard_eof_clean_exit(monkeypatch, capsys):
+    """Finding 4.1 (PRESHIP): EOFError from input() (Ctrl-D / stdin
+    closed mid-wizard) must surface as a clean "Wizard cancelled —
+    no changes written." message on stderr and exit code 130,
+    rather than the default unhandled-exception traceback.
+
+    We simulate EOF by giving run_wizard an input_fn that raises
+    EOFError on first call — fires at the very first interactive
+    prompt (Kismet URL), so the body has barely started."""
+    _stub_path_resolution(monkeypatch, tmp_path=Path("/tmp/never-written"))
+
+    def _eof_input(prompt=""):
+        raise EOFError()
+
+    rc = wiz.run_wizard(_args(), input_fn=_eof_input, getpass_fn=_getpass_seq(["x"]))
+    assert rc == 130
+    err = capsys.readouterr().err
+    assert "Wizard cancelled" in err
+    assert "no changes written" in err
+
+
+def test_run_wizard_keyboard_interrupt_clean_exit(monkeypatch, capsys):
+    """Finding 4.1 (PRESHIP): KeyboardInterrupt (Ctrl-C) at any
+    prompt must also exit cleanly via the same wrapper — same
+    exit code 130, same stderr message. Pin the parallel handling
+    so a future commit that broadens the except clause (to
+    Exception) doesn't accidentally narrow it."""
+    _stub_path_resolution(monkeypatch, tmp_path=Path("/tmp/never-written"))
+
+    def _interrupt_input(prompt=""):
+        raise KeyboardInterrupt()
+
+    rc = wiz.run_wizard(
+        _args(), input_fn=_interrupt_input, getpass_fn=_getpass_seq(["x"])
+    )
+    assert rc == 130
+    err = capsys.readouterr().err
+    assert "Wizard cancelled" in err
+    assert "no changes written" in err
+
+
+def test_main_reconfigures_both_stdout_and_stderr_to_utf8(monkeypatch):
+    """Finding 5.3 (PRESHIP): v0.6.3 reconfigured sys.stdout to UTF-8
+    to prevent Windows cp1252 crashes on box-drawing chars. stderr
+    was left at the platform default — logger.exception and
+    logger.warning calls (apply-failure tracebacks) emit there; if
+    the record contains non-ASCII on a Windows cp1252 console, the
+    handler either drops the log or crashes the wizard.
+
+    Pin that main() reconfigures BOTH streams with the same UTF-8 +
+    replace pair. Spy on reconfigure() on both streams via a
+    MagicMock; assert each was called once with the expected args.
+
+    Short-circuit main() via a stub run_wizard so we don't actually
+    drive the interactive flow.
+    """
+    stdout_calls: list[dict] = []
+    stderr_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        sys.stdout,
+        "reconfigure",
+        lambda **kw: stdout_calls.append(kw),
+    )
+    monkeypatch.setattr(
+        sys.stderr,
+        "reconfigure",
+        lambda **kw: stderr_calls.append(kw),
+    )
+
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_euid", lambda: 1000)
+    monkeypatch.setattr(wiz, "run_wizard", lambda args, **kwargs: 0)
+
+    rc = wiz.main([])
+    assert rc == 0
+    # Both streams reconfigured exactly once with the same args.
+    assert stdout_calls == [{"encoding": "utf-8", "errors": "replace"}]
+    assert stderr_calls == [{"encoding": "utf-8", "errors": "replace"}]
+
+
+def test_main_returns_zero_on_full_skip_probes_run(monkeypatch, tmp_path):
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr("builtins.input", _input_seq(_full_input_sequence()))
+    monkeypatch.setattr(wiz.getpass, "getpass", _getpass_seq(["tok"]))
+    rc = wiz.main(["--user", "--skip-probes"])
+    assert rc == 0
+    assert target.exists()
+
+
+# ---- module-level constants ------------------------------------------------
+
+
+def test_default_kismet_url_is_loopback():
+    assert wiz.DEFAULT_KISMET_URL == "http://127.0.0.1:2501"
+
+
+def test_default_ntfy_broker_is_ntfy_sh():
+    assert wiz.DEFAULT_NTFY_BROKER == "https://ntfy.sh"
+
+
+def test_default_rssi_threshold_is_minus_70():
+    assert wiz.DEFAULT_RSSI_THRESHOLD == -70
+
+
+# ---- bundled watchlist import ---------------------------------------------
+
+
+def _patch_bundled_resource(
+    monkeypatch,
+    *,
+    exists: bool,
+    real_path: Path | None = None,
+    raise_module_not_found: bool = False,
+):
+    """Stub importlib.resources.files / as_file for the bundled-import helper.
+
+    - ``raise_module_not_found=True`` simulates ``lynceus.data`` not shipped.
+    - ``exists=False`` simulates the package being present but the CSV missing.
+    - ``exists=True`` requires ``real_path`` — the on-disk file the wizard
+      will actually pass to the subprocess via ``importlib.resources.as_file``.
+    """
+    if raise_module_not_found:
+
+        def _raises(_pkg):
+            raise ModuleNotFoundError("lynceus.data")
+
+        monkeypatch.setattr(wiz.importlib.resources, "files", _raises)
+        return
+    fake_traversable = MagicMock()
+    fake_traversable.is_file.return_value = exists
+    fake_files = MagicMock()
+    fake_files.joinpath.return_value = fake_traversable
+    monkeypatch.setattr(wiz.importlib.resources, "files", lambda _pkg: fake_files)
+    if exists:
+        if real_path is None:  # pragma: no cover - test bug
+            raise AssertionError("must provide real_path when exists=True")
+
+        @contextlib.contextmanager
+        def fake_as_file(_traversable):
+            yield real_path
+
+        monkeypatch.setattr(wiz.importlib.resources, "as_file", fake_as_file)
+
+
+def test_bundled_import_skip_when_data_package_missing(monkeypatch):
+    _patch_bundled_resource(monkeypatch, exists=False, raise_module_not_found=True)
+    popen_calls = []
+    monkeypatch.setattr(
+        wiz.subprocess,
+        "Popen",
+        lambda *a, **kw: popen_calls.append(a) or MagicMock(),
+    )
+    ok, msg = wiz.import_bundled_watchlist(db_path="/x/db.sqlite", override_file=None)
+    assert ok is False
+    assert msg == "no bundled watchlist"
+    assert popen_calls == [], "Popen must not be called when data package is missing"
+
+
+def test_bundled_import_skip_when_csv_resource_absent(monkeypatch):
+    _patch_bundled_resource(monkeypatch, exists=False)
+    popen_calls = []
+    monkeypatch.setattr(
+        wiz.subprocess,
+        "Popen",
+        lambda *a, **kw: popen_calls.append(a) or MagicMock(),
+    )
+    ok, msg = wiz.import_bundled_watchlist(db_path="/x/db.sqlite", override_file=None)
+    assert ok is False
+    assert msg == "no bundled watchlist"
+    assert popen_calls == [], "Popen must not be called when CSV resource is absent"
+
+
+def test_bundled_import_invokes_subprocess_with_correct_args(monkeypatch, tmp_path):
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta: argus_export v3 (CP11)\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = list(args)
+        captured["kwargs"] = kwargs
+        proc = MagicMock()
+        proc.communicate.return_value = (
+            "Total rows in CSV: 7\nimported 7 records, updated 0, dropped 0\n",
+            "",
+        )
+        proc.returncode = 0
+        return proc
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, msg = wiz.import_bundled_watchlist(
+        db_path="/data/lynceus.db", override_file="/etc/lynceus/sev.yaml"
+    )
+    assert ok is True
+    assert "imported 7 records" in msg
+    args = captured["args"]
+    assert args[0] == "lynceus-import-argus"
+    assert args[args.index("--input") + 1] == str(csv)
+    assert args[args.index("--db") + 1] == "/data/lynceus.db"
+    assert args[args.index("--override-file") + 1] == "/etc/lynceus/sev.yaml"
+
+
+def test_bundled_import_omits_override_when_none(monkeypatch, tmp_path):
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta: argus_export v3 (CP11)\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = list(args)
+        proc = MagicMock()
+        proc.communicate.return_value = ("imported 1 records, updated 0, dropped 0", "")
+        proc.returncode = 0
+        return proc
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, _msg = wiz.import_bundled_watchlist(db_path="db.sqlite", override_file=None)
+    assert ok is True
+    assert "--override-file" not in captured["args"]
+
+
+def test_bundled_import_failure_returns_error_with_stderr(monkeypatch, tmp_path):
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta:\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+
+    def fake_popen(args, **kwargs):
+        proc = MagicMock()
+        proc.communicate.return_value = ("", "Traceback ...\nValueError: bad header")
+        proc.returncode = 1
+        return proc
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, msg = wiz.import_bundled_watchlist(db_path="db.sqlite", override_file=None)
+    assert ok is False
+    assert msg.startswith("import failed:")
+    assert "bad header" in msg
+
+
+def test_bundled_import_failure_when_command_missing(monkeypatch, tmp_path):
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta:\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+
+    def fake_popen(args, **kwargs):
+        raise FileNotFoundError(args[0])
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, msg = wiz.import_bundled_watchlist(db_path="db.sqlite", override_file=None)
+    assert ok is False
+    assert "import failed" in msg
+
+
+def test_bundled_import_timeout_kills_process_and_returns_error(monkeypatch, tmp_path):
+    """A stuck lynceus-import-argus must not wedge --system setup. The
+    previous unbounded communicate() left the wizard hanging with no
+    progress output if the child hung on, say, a malformed DB or a
+    stuck sqlite lock — operator-visible symptom identical to the
+    after-completion silent hang. Pinning the timeout + kill path so
+    a regression to unbounded would fail this test."""
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta:\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+
+    killed = {"flag": False}
+
+    def fake_popen(args, **kwargs):
+        proc = MagicMock()
+
+        def fake_communicate(timeout=None):
+            # First call (with timeout) simulates the hang.
+            if not killed["flag"]:
+                raise wiz.subprocess.TimeoutExpired(cmd=args, timeout=timeout)
+            return ("", "")
+
+        def fake_kill():
+            killed["flag"] = True
+
+        proc.communicate.side_effect = fake_communicate
+        proc.kill.side_effect = fake_kill
+        return proc
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, msg = wiz.import_bundled_watchlist(db_path="db.sqlite", override_file=None)
+    assert ok is False
+    assert "timeout" in msg
+    assert str(wiz.BUNDLED_IMPORT_TIMEOUT_SECONDS) in msg
+    assert killed["flag"], "proc.kill() must fire when communicate() times out"
+
+
+def test_bundled_import_timeout_is_600s_for_pi_class_hosts(monkeypatch, tmp_path):
+    """Pin the bundled-import subprocess timeout at 600s. The previous
+    120s ceiling fired on real Pi hardware during the v0.7.0 Linux
+    smoke — cli/import_argus.py's pass-3 commits per row, so the
+    22k-row bundled CSV on a Pi SD card routinely runs several minutes.
+    Regressing to a sub-600s ceiling would silently re-introduce the
+    smoke failure. Asserted via both the module constant AND the actual
+    ``communicate(timeout=...)`` kwarg so a constant rename can't dodge
+    this pin.
+    """
+    assert wiz.BUNDLED_IMPORT_TIMEOUT_SECONDS == 600
+
+    csv = tmp_path / "default_watchlist.csv"
+    csv.write_text("# meta:\n")
+    _patch_bundled_resource(monkeypatch, exists=True, real_path=csv)
+
+    captured = {"timeout": None}
+
+    def fake_popen(args, **kwargs):
+        proc = MagicMock()
+
+        def fake_communicate(timeout=None):
+            captured["timeout"] = timeout
+            return ("imported 0", "")
+
+        proc.communicate.side_effect = fake_communicate
+        proc.returncode = 0
+        return proc
+
+    monkeypatch.setattr(wiz.subprocess, "Popen", fake_popen)
+    ok, _ = wiz.import_bundled_watchlist(db_path="db.sqlite", override_file=None)
+    assert ok is True
+    assert captured["timeout"] == 600
+
+
+# ---- prompt-recording helper ----------------------------------------------
+
+
+def _recording_input(answers):
+    """Like _input_seq but records every prompt argument."""
+    it = iter(answers)
+    log: list[str] = []
+
+    def _input(prompt=""):
+        log.append(prompt)
+        try:
+            return next(it)
+        except StopIteration as exc:  # pragma: no cover - test bug
+            raise AssertionError(f"input() exhausted; prompt={prompt!r}") from exc
+
+    return _input, log
+
+
+# ---- wizard flow integration with bundled import --------------------------
+
+
+def test_wizard_with_bundled_present_success_prints_summary(monkeypatch, tmp_path, capsys):
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "import_bundled_watchlist",
+        lambda db_path, override_file: (True, "imported 42 records, updated 0, dropped 0"),
+    )
+    fn, prompts = _recording_input(_full_input_sequence())
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Imported bundled threat data" in out
+    assert "42 records" in out
+    # Additional-CSV prompt has been retired; ensure no flavour of it survives.
+    assert not any("additional Argus CSV" in p for p in prompts)
+    assert not any("Would you like to import Argus" in p for p in prompts)
+
+
+def test_wizard_with_bundled_present_failure_warns(monkeypatch, tmp_path, capsys):
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "import_bundled_watchlist",
+        lambda db_path, override_file: (False, "import failed: schema mismatch"),
+    )
+    fn, prompts = _recording_input(_full_input_sequence())
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Bundled threat-data import failed" in out
+    assert "schema mismatch" in out
+    assert "lynceus-import-argus" in out
+    # Retired prompt must not have come back under any wording.
+    assert not any("additional Argus CSV" in p for p in prompts)
+    assert not any("Would you like to import Argus" in p for p in prompts)
+
+
+def test_wizard_with_bundled_absent_prints_nothing_extra(monkeypatch, tmp_path, capsys):
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "import_bundled_watchlist",
+        lambda db_path, override_file: (False, "no bundled watchlist"),
+    )
+    fn, prompts = _recording_input(_full_input_sequence())
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Imported bundled threat data" not in out
+    assert "Bundled threat-data import failed" not in out
+    assert "no bundled watchlist" not in out
+    assert not any("Would you like to import Argus" in p for p in prompts)
+
+
+def test_wizard_passes_db_path_and_severity_to_bundled_helper(monkeypatch, tmp_path):
+    from lynceus import paths
+
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    captured = {}
+
+    def fake_bundled(db_path, override_file):
+        captured["db_path"] = db_path
+        captured["override_file"] = override_file
+        return (False, "no bundled watchlist")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    # Wizard now resolves the DB path through ``paths.default_db_path(scope)``
+    # rather than the bare "lynceus.db" relative filename it used before.
+    assert captured["db_path"] == str(paths.default_db_path("user"))
+    assert captured["override_file"] is not None
+    assert captured["override_file"].endswith("severity_overrides.yaml")
+
+
+def test_wizard_uses_system_db_path_when_system_scope(monkeypatch, tmp_path):
+    """Under --system, the bundled-import helper must receive the system
+    DB path so the import lands in /var/lib/lynceus/lynceus.db rather than
+    the operator's CWD. ``--system`` is Linux-only, so force the platform
+    to Linux for this test regardless of where pytest is running."""
+    from lynceus import paths
+
+    monkeypatch.setattr(paths, "_platform", lambda: "linux")
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)  # pretend we're root for --system
+    # Stub data + log dir mkdirs onto tmp_path so we don't try to mkdir
+    # /var/lib/lynceus on the test host.
+    monkeypatch.setattr(paths, "default_data_dir", lambda scope: tmp_path / "data")
+    monkeypatch.setattr(paths, "default_log_dir", lambda scope: tmp_path / "log")
+    # System-mode now applies lynceus group ownership to the freshly
+    # written config + dirs; stub the chown/chmod plumbing so this test
+    # exercises only the DB-path resolution it cares about.
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(wiz.os, "chmod", lambda *a, **kw: None, raising=False)
+    fake_grp = MagicMock()
+    fake_grp.getgrnam.return_value = MagicMock(gr_gid=2000)
+    fake_pwd = MagicMock()
+    fake_pwd.getpwnam.return_value = MagicMock(pw_uid=2000)
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "grp", fake_grp)
+    monkeypatch.setitem(_sys.modules, "pwd", fake_pwd)
+
+    captured = {}
+
+    def fake_bundled(db_path, override_file):
+        captured["db_path"] = db_path
+        return (False, "no bundled watchlist")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert captured["db_path"] == str(paths.default_db_path("system"))
+
+
+# ---- Bluetooth adapter enumeration ----------------------------------------
+
+
+def test_enumerate_bluetooth_adapters_returns_none_on_windows(monkeypatch):
+    monkeypatch.setattr(wiz.os, "name", "nt")
+    assert wiz.enumerate_bluetooth_adapters() is None
+
+
+def test_enumerate_bluetooth_adapters_returns_none_on_macos(monkeypatch):
+    monkeypatch.setattr(wiz.os, "name", "posix")
+    monkeypatch.setattr(wiz.sys, "platform", "darwin")
+    assert wiz.enumerate_bluetooth_adapters() is None
+
+
+def test_enumerate_bluetooth_adapters_returns_empty_when_dir_missing(monkeypatch):
+    """When the platform is Linux but ``/sys/class/bluetooth`` is absent
+    (e.g. running tests on a Windows host with the stubs below, or a
+    Linux kernel without the BT subsystem), the function returns an empty
+    list — distinct from ``None`` which means "platform not supported"."""
+    monkeypatch.setattr(wiz.os, "name", "posix")
+    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    # On a Windows host the path doesn't exist; on a Linux host without
+    # bluez it also doesn't exist. Either way we expect [].
+    # os.path.isdir keeps this guard on a str path; Path("/sys/class/bluetooth")
+    # would instantiate a PosixPath under the os.name="posix" patch above and
+    # raise NotImplementedError on a 3.11 Windows host.
+    if os.path.isdir("/sys/class/bluetooth"):
+        pytest.skip("real /sys/class/bluetooth present; cannot exercise missing-dir branch")
+    assert wiz.enumerate_bluetooth_adapters() == []
+
+
+# ---- enumerate_capture_adapters (unified Wi-Fi + Bluetooth) --------------
+
+
+def test_enumerate_capture_adapters_empty_when_both_subsystems_empty(monkeypatch):
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    assert wiz.enumerate_capture_adapters() == []
+
+
+_NO_SYSFS_ENRICHMENT = {
+    "bus": None,
+    "driver": None,
+    "vendor": None,
+    "product": None,
+    "usb_id": None,
+}
+
+
+def test_enumerate_capture_adapters_returns_wifi_then_bluetooth(monkeypatch):
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: ["hci0"])
+    monkeypatch.setattr(wiz, "_read_sysfs_mac", lambda p: None)
+    # Stub the sysfs enrichment so the test stays portable across
+    # Windows dev hosts (no /sys) and real Linux runners with actual
+    # adapter sysfs entries.
+    monkeypatch.setattr(wiz, "_enrich_adapter_from_sysfs", lambda d: dict(_NO_SYSFS_ENRICHMENT))
+    result = wiz.enumerate_capture_adapters()
+    # Wi-Fi first, then Bluetooth; preserves source ordering within each kind.
+    assert [a["name"] for a in result] == ["wlan0", "wlan1", "hci0"]
+    assert [a["kind"] for a in result] == ["wifi", "wifi", "bluetooth"]
+    assert all(a["mac"] is None for a in result)
+
+
+def test_enumerate_capture_adapters_attaches_mac_from_sysfs(monkeypatch, tmp_path):
+    """The helper reads MAC from /sys/class/{net,bluetooth}/<name>/address.
+    Stub _read_sysfs_mac + _enrich_adapter_from_sysfs directly so the
+    test stays portable across Windows dev hosts (no /sys) and real
+    Linux runners."""
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0"])
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: ["hci0"])
+    fake_macs = {
+        Path("/sys/class/net/wlan0/address"): "aa:bb:cc:dd:ee:ff",
+        Path("/sys/class/bluetooth/hci0/address"): "11:22:33:44:55:66",
+    }
+    monkeypatch.setattr(wiz, "_read_sysfs_mac", lambda p: fake_macs.get(p))
+    monkeypatch.setattr(wiz, "_enrich_adapter_from_sysfs", lambda d: dict(_NO_SYSFS_ENRICHMENT))
+    result = wiz.enumerate_capture_adapters()
+    # The row carries the legacy {name, kind, mac} trio AND the additive
+    # bus/USB-descriptor keys (all None here because the enrichment is
+    # stubbed empty). Backward-compat: every existing consumer key is
+    # still present with the same value; the new keys are additive.
+    assert result == [
+        {"name": "wlan0", "kind": "wifi", "mac": "aa:bb:cc:dd:ee:ff", **_NO_SYSFS_ENRICHMENT},
+        {"name": "hci0", "kind": "bluetooth", "mac": "11:22:33:44:55:66", **_NO_SYSFS_ENRICHMENT},
+    ]
+
+
+def test_enumerate_capture_adapters_handles_one_subsystem_empty(monkeypatch):
+    """If Wi-Fi enumerator returns None (no /sys/class/net) but Bluetooth
+    returns adapters, the result only contains BT — no crash on the None."""
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: ["hci0"])
+    monkeypatch.setattr(wiz, "_read_sysfs_mac", lambda p: None)
+    monkeypatch.setattr(wiz, "_enrich_adapter_from_sysfs", lambda d: dict(_NO_SYSFS_ENRICHMENT))
+    result = wiz.enumerate_capture_adapters()
+    assert [a["name"] for a in result] == ["hci0"]
+    assert [a["kind"] for a in result] == ["bluetooth"]
+
+
+# ---- sysfs enrichment (USB vendor/product/bus/driver) --------------------
+
+
+def _try_make_symlink(link: Path, target: Path) -> bool:
+    """Try to create a symlink; return False if the OS / privilege
+    level doesn't allow it (Windows without dev-mode / admin). Tests
+    that exercise the sysfs symlink branch skip in that case — the
+    helper's symlink resolution is a Linux-only behaviour anyway."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        return False
+    return True
+
+
+def test_enrich_adapter_from_sysfs_reads_full_usb_dongle(tmp_path):
+    """USB adapter (Alfa AWUS036ACS) exposes the full set of device/
+    descriptors. The helper composes ``usb_id`` from idVendor + idProduct
+    and surfaces the human-readable manufacturer + product strings."""
+    dev = tmp_path / "sys" / "class" / "net" / "wlan1" / "device"
+    dev.mkdir(parents=True)
+    (dev / "manufacturer").write_text("Ralink\n")
+    (dev / "product").write_text("Alfa AWUS036ACS\n")
+    (dev / "idVendor").write_text("148f\n")
+    (dev / "idProduct").write_text("7610\n")
+    # Bus + driver are symlinks in real sysfs; emulate via subdirs the
+    # helper's _read_sysfs_symlink_basename can resolve.
+    bus_dir = tmp_path / "sys" / "bus" / "usb"
+    bus_dir.mkdir(parents=True)
+    driver_dir = tmp_path / "sys" / "bus" / "usb" / "drivers" / "rt2800usb"
+    driver_dir.mkdir(parents=True)
+    if not _try_make_symlink(dev / "subsystem", bus_dir) or not _try_make_symlink(dev / "driver", driver_dir):
+        pytest.skip("symlinks unavailable on this platform (Windows without dev-mode/admin)")
+
+    result = wiz._enrich_adapter_from_sysfs(dev)
+    # v0.7.6 added the ``removable`` key to the enriched dict; this
+    # scenario doesn't write a removable file so the key is None.
+    assert result == {
+        "bus": "usb",
+        "driver": "rt2800usb",
+        "vendor": "Ralink",
+        "product": "Alfa AWUS036ACS",
+        "usb_id": "148f:7610",
+        "removable": None,
+    }
+
+
+def test_enrich_adapter_from_sysfs_sparse_returns_all_none(tmp_path):
+    """A non-USB adapter (or an adapter where the wizard process can't
+    read /sys/.../device/*) produces a dict with every additive key
+    set to None — same shape, no crash. Backward-compat: a sparse row
+    still feeds through _build_adapter_rows and renders a clean (if
+    less informative) label."""
+    dev = tmp_path / "empty-device"
+    dev.mkdir()
+    result = wiz._enrich_adapter_from_sysfs(dev)
+    assert result == {
+        "bus": None,
+        "driver": None,
+        "vendor": None,
+        "product": None,
+        "usb_id": None,
+        "removable": None,
+    }
+
+
+def test_enrich_adapter_from_sysfs_partial_usb_id_returns_none(tmp_path):
+    """A half-readable USB id (only idVendor present, no idProduct) is
+    not useful to operators — a bare "148f:" composite would be
+    misleading. Surface None instead so the template falls back to the
+    vendor string alone."""
+    dev = tmp_path / "half-usb-device"
+    dev.mkdir()
+    (dev / "idVendor").write_text("148f\n")
+    result = wiz._enrich_adapter_from_sysfs(dev)
+    assert result["usb_id"] is None
+
+
+def test_read_sysfs_optional_returns_none_on_missing(tmp_path):
+    """The non-fatal failure modes (missing file, no permission, dir
+    where a file was expected) all collapse to None so a sparse
+    sysfs tree just produces a sparser row instead of crashing the
+    wizard. Unrelated OSErrors still propagate so they surface in dev."""
+    assert wiz._read_sysfs_optional(tmp_path / "does-not-exist") is None
+
+
+def test_read_sysfs_optional_strips_trailing_newline(tmp_path):
+    p = tmp_path / "manufacturer"
+    p.write_text("Ralink\n")
+    assert wiz._read_sysfs_optional(p) == "Ralink"
+
+
+def test_read_sysfs_optional_empty_file_returns_none(tmp_path):
+    """An empty descriptor file means "no info" — treat same as
+    missing so the template renders a row without a vendor string
+    rather than an empty parenthesized "()" block."""
+    p = tmp_path / "product"
+    p.write_text("")
+    assert wiz._read_sysfs_optional(p) is None
+
+
+def test_read_sysfs_symlink_basename_resolves(tmp_path):
+    """The driver / subsystem entries in sysfs are symlinks; the
+    operator-meaningful identifier is the basename of the resolved
+    target (e.g. ``.../bus/usb`` → ``usb``)."""
+    target = tmp_path / "bus" / "usb"
+    target.mkdir(parents=True)
+    link = tmp_path / "subsystem"
+    if not _try_make_symlink(link, target):
+        pytest.skip("symlinks unavailable on this platform (Windows without dev-mode/admin)")
+    assert wiz._read_sysfs_symlink_basename(link) == "usb"
+
+
+def test_read_sysfs_symlink_basename_returns_none_on_missing(tmp_path):
+    assert wiz._read_sysfs_symlink_basename(tmp_path / "no-such-link") is None
+
+
+def test_read_sysfs_mac_returns_none_on_missing_path(tmp_path):
+    """Missing path → None (not an exception). Used by enumerate_capture_
+    adapters so a brand-new interface that hasn't populated /sys yet
+    just renders a row without a MAC instead of crashing the wizard."""
+    assert wiz._read_sysfs_mac(tmp_path / "does-not-exist") is None
+
+
+def test_read_sysfs_mac_strips_and_returns(tmp_path):
+    p = tmp_path / "address"
+    p.write_text("aa:bb:cc:dd:ee:ff\n")
+    assert wiz._read_sysfs_mac(p) == "aa:bb:cc:dd:ee:ff"
+
+
+def test_read_sysfs_mac_empty_file_returns_none(tmp_path):
+    """An empty /sys/class/.../address file means "no MAC known". Treat
+    same as missing — None — so the template renders a row without
+    a MAC rather than an empty string."""
+    p = tmp_path / "address"
+    p.write_text("")
+    assert wiz._read_sysfs_mac(p) is None
+
+
+# ---- run_wizard: Bluetooth flow -------------------------------------------
+
+
+def test_run_wizard_bluetooth_unsupported_platform_skipped_silently(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # _stub_path_resolution already stubs enumerate_bluetooth_adapters → None
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Bluetooth adapter selection not implemented on this platform" in out
+
+
+def test_run_wizard_bluetooth_no_adapters_skipped_with_message(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: [])
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No Bluetooth adapter detected" in out
+
+
+def test_run_wizard_bluetooth_adapter_chosen_appends_to_kismet_sources(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: ["hci0", "hci1"])
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",  # wifi capture interface (freeform)
+        "",  # bluetooth: yes (default Y)
+        "1",  # pick hci0
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["wlan0", "hci0"]
+
+
+def test_run_wizard_bluetooth_declined_keeps_wifi_only(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: ["hci0"])
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "n",  # decline bluetooth source
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(_args(), input_fn=_input_seq(inputs), getpass_fn=_getpass_seq(["tok"]))
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["wlan0"]
+
+
+# ---- run_wizard: severity-overrides explanation + path validation ---------
+
+
+def test_run_wizard_severity_overrides_explanation_printed(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Severity overrides let you customize" in out
+    assert "Argus device category" in out
+
+
+def test_run_wizard_severity_overrides_rejects_garbage_then_accepts_path(
+    monkeypatch, tmp_path, capsys
+):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    accepted_path = str(tmp_path / "custom_sev.yaml")
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "na",  # rejected
+        "skip",  # rejected
+        accepted_path,  # accepted (contains separator + .yaml)
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(_args(), input_fn=_input_seq(inputs), getpass_fn=_getpass_seq(["tok"]))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "doesn't look like a file path" in out
+    assert target.exists()
+
+
+def test_run_wizard_severity_overrides_default_accepted_on_enter(monkeypatch, tmp_path):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    # Default scaffold should have been written next to the config file.
+    assert (tmp_path / "severity_overrides.yaml").exists()
+    assert target.exists()
+
+
+def test_looks_like_path_helper_accepts_paths_and_yaml():
+    assert wiz._looks_like_path("/etc/lynceus/sev.yaml") is True
+    assert wiz._looks_like_path("C:\\config\\sev.yaml") is True
+    assert wiz._looks_like_path("relative/path") is True
+    assert wiz._looks_like_path("sev.yaml") is True
+    assert wiz._looks_like_path("sev.yml") is True
+
+
+def test_looks_like_path_helper_rejects_garbage():
+    assert wiz._looks_like_path("") is False
+    assert wiz._looks_like_path("na") is False
+    assert wiz._looks_like_path("skip") is False
+    assert wiz._looks_like_path("none") is False
+    assert wiz._looks_like_path("blah") is False
+
+
+# ---- run_wizard: ntfy skip support ----------------------------------------
+
+
+def test_run_wizard_ntfy_url_empty_skips_ntfy_and_probe(monkeypatch, tmp_path, capsys):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    probe_called = []
+    monkeypatch.setattr(
+        wiz,
+        "probe_ntfy",
+        lambda *a, **kw: probe_called.append(True) or (True, None),
+    )
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "",  # ntfy URL: empty → skip; no topic prompt should follow
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Skipping ntfy" in out
+    assert probe_called == [], "ntfy probe must not run when URL is empty"
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_url"] == ""
+    assert data["ntfy_topic"] == ""
+
+
+def test_run_wizard_ntfy_url_set_topic_empty_uses_suggested(monkeypatch, tmp_path):
+    """URL set + topic blank → wizard accepts the suggested random topic
+    shown at the prompt and persists it. The skip-ntfy path is the URL
+    prompt only; once the URL is set, the operator has committed to ntfy
+    and blank-topic is an accept-default, not an opt-out."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # Pin the random suggestion so we can assert on the exact topic written.
+    monkeypatch.setattr("lynceus.cli.setup.secrets.token_hex", lambda n: "deadbeef")
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # URL set
+        "",  # topic empty → accepts suggested
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_url"] == "https://ntfy.sh"
+    assert data["ntfy_topic"] == "lynceus-deadbeef"
+
+
+# ---- DB parent directory creation before bundled import -------------------
+
+
+def test_db_parent_dir_created_before_bundled_import(monkeypatch, tmp_path):
+    """The wizard must mkdir the data dir before invoking
+    lynceus-import-argus, otherwise the subprocess crashes with a sqlite
+    "unable to open database file" error on a fresh box."""
+    from lynceus import paths
+
+    _stub_path_resolution(monkeypatch, tmp_path)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    fake_data_dir = tmp_path / "fresh_data" / "lynceus"
+    fake_log_dir = tmp_path / "fresh_log" / "lynceus"
+    monkeypatch.setattr(paths, "default_data_dir", lambda scope: fake_data_dir)
+    monkeypatch.setattr(paths, "default_log_dir", lambda scope: fake_log_dir)
+    assert not fake_data_dir.exists(), "precondition: data dir must not exist yet"
+
+    captured = {}
+
+    def fake_bundled(db_path, override_file):
+        captured["db_path"] = db_path
+        captured["parent_existed"] = Path(db_path).parent.is_dir()
+        return (False, "no bundled watchlist")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert captured["parent_existed"] is True, (
+        "data dir must be created before lynceus-import-argus runs"
+    )
+    assert fake_log_dir.is_dir(), "log dir must be created at setup time"
+
+
+# ---- additional-CSV prompt removal ----------------------------------------
+
+
+def test_run_wizard_does_not_prompt_for_additional_argus_csv(monkeypatch, tmp_path):
+    """The optional 'import an additional Argus CSV' prompt was retired —
+    the wizard should never ask the operator about it under any flow."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    fn, prompts = _recording_input(_full_input_sequence())
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert not any("additional Argus CSV" in p for p in prompts)
+    assert not any("Would you like to import Argus" in p for p in prompts)
+    assert not any("Path to Argus CSV" in p for p in prompts)
+
+
+def test_run_wizard_prints_deferred_argus_import_hint(monkeypatch, tmp_path, capsys):
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Closing hint must surface BOTH refresh paths so operators learn
+    # about --from-github at the same moment they learn about --input.
+    # User-scope output is unprivileged (no sudo, no --scope flag).
+    assert "Watchlist refresh" in out
+    assert "lynceus-import-argus --from-github" in out
+    assert "lynceus-import-argus --input" in out
+    assert "sudo " not in out.split("Watchlist refresh", 1)[1].split("To start", 1)[0], (
+        "user-scope refresh hint must not include sudo"
+    )
+
+
+def test_run_wizard_system_scope_refresh_hint_uses_sudo_and_scope(
+    monkeypatch, tmp_path, capsys
+):
+    """System-scope wizard must surface the refresh hint with sudo +
+    --scope system so operators copy a command that actually works
+    against /var/lib/lynceus/lynceus.db, not their per-user XDG path."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # Stub the canonical path helpers — the real ones raise
+    # NotImplementedError for scope="system" on macOS / Windows, which
+    # would mask the actual hint-text assertion this test cares about
+    # behind a platform-dependent crash.
+    monkeypatch.setattr(wiz.paths, "default_data_dir", lambda scope: tmp_path / "data")
+    monkeypatch.setattr(wiz.paths, "default_log_dir", lambda scope: tmp_path / "logs")
+    monkeypatch.setattr(wiz.paths, "default_db_path", lambda scope: tmp_path / "data" / "lynceus.db")
+    monkeypatch.setattr(
+        wiz.paths,
+        "default_allowlist_path",
+        lambda scope: tmp_path / "allowlist.yaml",
+    )
+    # Avoid the system-scope chown/permission helpers actually running
+    # against the test sandbox — they assume a real lynceus group exists.
+    monkeypatch.setattr(wiz, "_apply_system_perms_to_file", lambda *a, **kw: None)
+    monkeypatch.setattr(wiz, "_apply_system_perms_to_dir", lambda *a, **kw: None)
+    rc = wiz.run_wizard(
+        _args(system=True, skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Watchlist refresh" in out
+    assert "sudo lynceus-import-argus --scope system --from-github" in out
+    assert "sudo lynceus-import-argus --scope system --input" in out
+
+
+def test_maybe_import_argus_helper_is_gone():
+    """The helper that drove the retired prompt should no longer exist."""
+    assert not hasattr(wiz, "maybe_import_argus")
+
+
+# ---- C1 fix: probe Kismet datasources for source names --------------------
+
+
+def _wifi_source(name="external_wifi", interface="wlan1", capture_interface="wlan1mon"):
+    return {
+        "name": name,
+        "interface": interface,
+        "capture_interface": capture_interface,
+        "uuid": "5fe308bd-0000-0000-0000-00c0caaaaaaa",
+        "driver": "linuxwifi",
+        "running": True,
+    }
+
+
+def _bt_source(name="local_bt", interface="hci0", capture_interface="hci0"):
+    return {
+        "name": name,
+        "interface": interface,
+        "capture_interface": capture_interface,
+        "uuid": "6fe308bd-0000-0000-0000-00c0cabbbbbb",
+        "driver": "linuxbluetooth",
+        "running": True,
+    }
+
+
+def test_format_source_label_full_form():
+    """Operator-visible label for a Kismet source must include the
+    interface and capture-interface in parentheses so it's clear what
+    the source is actually capturing on (e.g. wlan1 in monitor mode
+    becoming wlan1mon)."""
+    label = wiz._format_source_label(
+        {"name": "external_wifi", "interface": "wlan1", "capture_interface": "wlan1mon"}
+    )
+    assert label == "external_wifi  (interface: wlan1, capture: wlan1mon)"
+
+
+def test_format_source_label_drops_empty_subfields():
+    """Sources without an interface or capture_interface (older Kismet,
+    non-Linux, BT classic) should still render cleanly without empty
+    parenthetical noise."""
+    assert wiz._format_source_label({"name": "bare"}) == "bare"
+    assert (
+        wiz._format_source_label({"name": "iface_only", "interface": "wlan0"})
+        == "iface_only  (interface: wlan0)"
+    )
+
+
+def test_probe_kismet_sources_returns_list_on_success(monkeypatch):
+    """The wizard helper delegates to ``KismetClient.list_sources`` and
+    passes through whatever it returns when the call succeeds."""
+    fake = MagicMock()
+    fake.list_sources.return_value = [_wifi_source()]
+    monkeypatch.setattr(wiz, "KismetClient", lambda **kw: fake)
+    result = wiz.probe_kismet_sources("http://x", "tok")
+    assert result == [_wifi_source()]
+
+
+def test_probe_kismet_sources_returns_none_on_exception(monkeypatch, caplog):
+    """Any exception (HTTPError, ConnectionError, malformed JSON, timeout)
+    must collapse to None so the wizard cleanly falls back to OS
+    enumeration with a warning. The ground truth on what gets logged is
+    asserted via caplog."""
+    import logging as _logging
+
+    fake = MagicMock()
+    fake.list_sources.side_effect = RuntimeError("kaboom")
+    monkeypatch.setattr(wiz, "KismetClient", lambda **kw: fake)
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.setup"):
+        result = wiz.probe_kismet_sources("http://x", "tok")
+    assert result is None
+    assert any("list_sources probe failed" in r.getMessage() for r in caplog.records)
+
+
+def test_probe_kismet_sources_passes_token_to_client(monkeypatch):
+    """The wizard's probe helper must hand the API token through to
+    KismetClient so the request hits Kismet authenticated."""
+    captured = {}
+
+    def fake_client(**kw):
+        captured.update(kw)
+        m = MagicMock()
+        m.list_sources.return_value = []
+        return m
+
+    monkeypatch.setattr(wiz, "KismetClient", fake_client)
+    wiz.probe_kismet_sources("http://x:2501", "the-token")
+    assert captured.get("api_key") == "the-token"
+    assert captured.get("base_url") == "http://x:2501"
+
+
+def test_run_wizard_uses_kismet_source_name_when_probe_succeeds(monkeypatch, tmp_path):
+    """Happy path: list_sources returns one wifi source named
+    ``external_wifi``; the wizard offers it, the operator picks it, and
+    the resulting ``kismet_sources`` is the source NAME — what the
+    poller actually filters on."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: [_wifi_source(name="external_wifi")],
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    inputs = [
+        "",  # kismet URL default
+        "1",  # pick the only Kismet wifi source
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi"]
+
+
+def test_run_wizard_presents_kismet_source_names_not_iw_interfaces(monkeypatch, tmp_path, capsys):
+    """REGRESSION FOR C1 — the rc1 silent-drop bug.
+
+    Construct the exact scenario that bit the operator in the field:
+    iw enumerates ``wlan0``/``wlan1`` (kernel interface names), AND
+    Kismet's configured source NAME is ``external_wifi``. The wizard
+    must present ``external_wifi`` (the source name, which the poller
+    filters on) and MUST NOT present the kernel interface names — those
+    silently mismatch and cause every observation to be dropped.
+
+    This test would have failed against rc1 setup.py because that code
+    only ever called ``enumerate_wireless_interfaces()``. With the
+    Kismet-source probe wired in, the iw output is reduced to a
+    fallback for unreachable Kismet, and the prompt now offers the real
+    source names.
+    """
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: [_wifi_source(name="external_wifi")],
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    # iw enumeration is set up too — if the wizard fell back to it
+    # (the bug), the test would observe wlan0/wlan1 in the output.
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
+    fn, prompts = _recording_input(
+        [
+            "",  # kismet URL default
+            "1",  # pick the Kismet source
+            "",  # probe_ssids default
+            "",  # ble names default
+            "",  # ble_bridge_enabled: default (N -> False)
+            "https://ntfy.sh",
+            "lynceus-cafe",
+            "",  # rssi default
+            "",  # severity overrides default
+            "",  # enable-alerting gate: default (N)
+        ]
+    )
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The Kismet source name MUST appear in the operator-visible prompt.
+    assert "external_wifi" in out
+    # The kernel interface names MUST NOT appear in the wifi-selection
+    # prompt — they would silently mismatch the poller filter. The
+    # parenthetical "(interface: wlan1, capture: wlan1mon)" is allowed
+    # because that's clarifying context, not a selectable option; the
+    # *fallback iw enumeration* is what we're guarding against.
+    fallback_warning = "WARNING: Could not query Kismet for datasource names"
+    assert fallback_warning not in out, (
+        "Successful Kismet probe must not trigger the iw fallback warning"
+    )
+    # And the persisted config must contain the source NAME, not an iface.
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi"]
+    assert "wlan0" not in data["kismet_sources"]
+    assert "wlan1" not in data["kismet_sources"]
+    # No prompt asks the operator to free-form-type a kernel interface;
+    # ensure none of the prompts contain the iw fallback's signature
+    # phrasing.
+    assert not any("Capture interface name" in p for p in prompts)
+
+
+def test_run_wizard_aborts_when_kismet_has_no_wifi_source(monkeypatch, tmp_path, capsys):
+    """If Kismet is reachable but has zero wifi datasources, the wizard
+    cannot guess a source name and must abort with an actionable
+    message that points the operator at the kismet_site.conf snippet."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    # Kismet has only a BT source — wifi capture cannot proceed.
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: [_bt_source()])
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq([""]),  # only the kismet URL prompt is reached
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc != 0
+    assert "no Wi-Fi datasource configured" in out
+    assert "source=wlan1:name=external_wifi" in out
+    assert "/etc/kismet/kismet_site.conf" in out
+
+
+def test_run_wizard_falls_back_to_iw_with_warning_when_list_sources_fails(
+    monkeypatch, tmp_path, capsys
+):
+    """probe_kismet succeeds (Kismet up) but probe_kismet_sources fails
+    (e.g. Kismet upgrade dropped the endpoint, or partial auth). The
+    wizard must fall back to iw enumeration AND print the explicit
+    name-matching warning so the operator knows to verify the value
+    matches their Kismet ``name=`` line."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **kw: None)
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0", "wlan1"])
+    inputs = [
+        "",  # kismet URL default
+        "2",  # pick wlan1
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WARNING: Could not query Kismet for datasource names" in out
+    assert "Falling back to OS interface enumeration" in out
+    assert "silently drop every observation" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["wlan1"]
+
+
+def test_run_wizard_kismet_probe_fail_continue_y_shows_warning(monkeypatch, tmp_path, capsys):
+    """When the operator continues past a failed Kismet probe, the
+    wizard must still print the name-matching warning before iw
+    enumeration — they have no Kismet to query so the fallback rules
+    apply."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet",
+        lambda url, token, timeout=None: (False, None, "connection refused"),
+    )
+    list_sources_called = []
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: list_sources_called.append(True) or None,
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "y",  # continue past kismet failure
+        "wlan0",  # freeform capture interface (fallback)
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WARNING: Could not query Kismet for datasource names" in out
+    assert list_sources_called == [], (
+        "list_sources must not be called when probe_kismet itself failed — "
+        "Kismet is unreachable, the second call would just hang another 5s"
+    )
+
+
+def test_run_wizard_skip_probes_does_not_print_fallback_warning(monkeypatch, tmp_path, capsys):
+    """``--skip-probes`` is a deliberate operator opt-out, not a probe
+    failure. The wizard must NOT emit the name-matching WARNING in this
+    case; the operator already knows what they're doing."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WARNING: Could not query Kismet for datasource names" not in out
+
+
+def test_run_wizard_kismet_probe_fail_does_not_call_list_sources(monkeypatch, tmp_path):
+    """If probe_kismet itself fails, list_sources must not be called —
+    Kismet is unreachable, a second blocking call would just stack a
+    5-second timeout on top of the first."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet",
+        lambda url, token, timeout=None: (False, None, "connection refused"),
+    )
+    list_sources_called = []
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: list_sources_called.append(True) or None,
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL
+        "n",  # do not continue
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc != 0
+    assert list_sources_called == []
+
+
+def test_run_wizard_with_bt_source_offers_kismet_bt_prompt(monkeypatch, tmp_path, capsys):
+    """When Kismet has both a wifi and BT source, the wizard offers the
+    BT prompt using the Kismet source NAME (not /sys/class/bluetooth
+    output), and the picked NAME is appended to kismet_sources."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: [
+            _wifi_source(name="external_wifi"),
+            _bt_source(name="local_bt"),
+        ],
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    inputs = [
+        "",  # kismet URL default
+        "1",  # pick the wifi source
+        "",  # accept default Y for BT prompt
+        "1",  # pick the BT source
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "local_bt" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi", "local_bt"]
+
+
+def test_run_wizard_no_bt_source_in_kismet_skips_with_note(monkeypatch, tmp_path, capsys):
+    """When Kismet is reachable but has no BT source configured, the
+    wizard skips the BT prompt entirely and prints an actionable note
+    showing the kismet_site.conf line the operator would need to add
+    later."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    # Wifi only — no BT in the source list.
+    monkeypatch.setattr(
+        wiz, "probe_kismet_sources", lambda *a, **kw: [_wifi_source(name="external_wifi")]
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    inputs = [
+        "",  # kismet URL default
+        "1",  # pick the wifi source
+        # no BT prompt expected
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no Bluetooth datasource configured" in out
+    assert "source=hci0:type=linuxbluetooth,name=local_bt" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi"]
+
+
+def test_run_wizard_multiple_bt_sources_picks_by_number(monkeypatch, tmp_path):
+    """Two BT sources → numbered selection prompts with each Kismet
+    source name; picked NAME is appended to kismet_sources."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: [
+            _wifi_source(name="external_wifi"),
+            _bt_source(name="local_bt"),
+            _bt_source(name="usb_bt", interface="hci1", capture_interface="hci1"),
+        ],
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    inputs = [
+        "",  # kismet URL default
+        "1",  # pick the wifi source
+        "",  # accept default Y for BT prompt
+        "2",  # pick the second BT source (usb_bt)
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi", "usb_bt"]
+
+
+def test_run_wizard_kismet_bt_decline_keeps_wifi_only(monkeypatch, tmp_path):
+    """If Kismet has a BT source but the operator declines the prompt,
+    only the wifi source goes into kismet_sources."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "probe_kismet", lambda *a, **kw: (True, "v1", None))
+    monkeypatch.setattr(
+        wiz,
+        "probe_kismet_sources",
+        lambda *a, **kw: [_wifi_source(name="external_wifi"), _bt_source(name="local_bt")],
+    )
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **kw: (True, None))
+    inputs = [
+        "",  # kismet URL default
+        "1",  # pick the wifi source
+        "n",  # decline BT
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_sources"] == ["external_wifi"]
+
+
+# ---- URL prompt validation -------------------------------------------------
+#
+# rc1's wizard accepted any string at the Kismet / ntfy URL prompt. Inputs
+# without a scheme (``127.0.0.1:2501``) flowed straight into the probe and
+# blew up with ``MissingSchema``. The belt-and-suspenders fix validates the
+# input before any probe runs and re-prompts up to a hard cap before
+# aborting, so a fat-fingered operator can't loop on us.
+
+
+def test_prompt_url_accepts_well_formed_url_first_try():
+    seq = _input_seq(["http://kismet.example.com:2501"])
+    out = wiz.prompt_url("Kismet API URL", default=None, required=True, input_fn=seq)
+    assert out == "http://kismet.example.com:2501"
+
+
+def test_prompt_url_rejects_scheme_less_then_accepts(capsys):
+    seq = _input_seq(["127.0.0.1:2501", "http://127.0.0.1:2501"])
+    out = wiz.prompt_url("Kismet API URL", default=None, required=True, input_fn=seq)
+    assert out == "http://127.0.0.1:2501"
+    err_msg = capsys.readouterr().out
+    assert "URL must include a scheme" in err_msg
+    assert "127.0.0.1:2501" in err_msg
+
+
+def test_prompt_url_rejects_scheme_only_no_host(capsys):
+    seq = _input_seq(["http://", "https://kismet.local"])
+    out = wiz.prompt_url("Kismet API URL", default=None, required=True, input_fn=seq)
+    assert out == "https://kismet.local"
+    assert "URL must include a scheme" in capsys.readouterr().out
+
+
+def test_prompt_url_rejects_non_http_scheme(capsys):
+    seq = _input_seq(["ftp://kismet", "http://kismet:2501"])
+    out = wiz.prompt_url("Kismet API URL", default=None, required=True, input_fn=seq)
+    assert out == "http://kismet:2501"
+    assert "URL must include a scheme" in capsys.readouterr().out
+
+
+def test_prompt_url_aborts_after_max_attempts(capsys):
+    """Four invalid entries → abort sentinel raised. Caller turns this into
+    a non-zero exit so the operator can re-run instead of looping forever."""
+    seq = _input_seq(["bad1", "bad2", "bad3", "bad4"])
+    with pytest.raises(wiz._URLPromptAborted):
+        wiz.prompt_url("Kismet API URL", default=None, required=True, input_fn=seq)
+    out = capsys.readouterr().out
+    # All four rejections were reported to the user, not silently swallowed.
+    assert out.count("URL must include a scheme") == 4
+
+
+def test_prompt_url_accepts_default_via_enter():
+    seq = _input_seq([""])
+    out = wiz.prompt_url(
+        "Kismet API URL",
+        default=wiz.DEFAULT_KISMET_URL,
+        required=True,
+        input_fn=seq,
+    )
+    assert out == wiz.DEFAULT_KISMET_URL
+
+
+def test_prompt_url_optional_empty_returns_empty():
+    """When ``required=False`` (the ntfy URL), empty input means 'skip'."""
+    seq = _input_seq([""])
+    out = wiz.prompt_url("ntfy URL", default=None, required=False, input_fn=seq)
+    assert out == ""
+
+
+def test_run_wizard_aborts_on_persistently_invalid_kismet_url(monkeypatch, tmp_path, capsys):
+    """Wizard returns non-zero after the operator can't produce a valid URL.
+
+    G1-adjacent: the exit message tells the operator to re-run, not just a
+    silent ``rc != 0``.
+    """
+    _stub_path_resolution(monkeypatch, tmp_path)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = ["bad1", "bad2", "bad3", "bad4"]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq([]),  # never reached: aborted before token prompt
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Re-run lynceus-setup" in err
+
+
+def test_run_wizard_re_prompts_on_scheme_less_kismet_url(monkeypatch, tmp_path, capsys):
+    """Belt: bad URL gets rejected at the wizard layer with the clear error
+    message, then accepted on the next attempt — no ``MissingSchema`` ever
+    reaches a probe call."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "127.0.0.1:2501",  # rejected
+        "http://10.0.0.5:2501",  # accepted
+        "wlan0",
+        "",  # probe_ssids
+        "",  # ble names
+        "",  # ble_bridge_enabled: default (N -> False)
+        "",  # ntfy URL — skip
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "URL must include a scheme" in out
+    assert "127.0.0.1:2501" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_url"] == "http://10.0.0.5:2501"
+
+
+def test_run_wizard_re_prompts_on_scheme_less_ntfy_url(monkeypatch, tmp_path, capsys):
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # accept default kismet URL
+        "wlan0",
+        "",  # probe_ssids
+        "",  # ble names
+        "",  # ble_bridge_enabled: default (N -> False)
+        "ntfy.sh",  # rejected — no scheme
+        "https://ntfy.sh",  # accepted
+        "lynceus-test",  # ntfy topic
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "URL must include a scheme" in out
+    assert "ntfy.sh" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_url"] == "https://ntfy.sh"
+
+
+def test_run_wizard_kismet_probe_never_sees_scheme_less_url(monkeypatch, tmp_path):
+    """G1: probe_kismet must NEVER be called with a scheme-less URL.
+
+    The pre-fix flow handed the raw input straight to ``probe_kismet`` →
+    ``KismetClient(base_url=...)`` → ``requests.get`` and the operator got
+    ``MissingSchema``. With the wizard-layer guard, the URL is validated
+    BEFORE the probe runs, so any URL the probe receives is well-formed.
+    """
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+
+    seen_urls: list[str] = []
+
+    def fake_probe_kismet(url, token, timeout=None):
+        seen_urls.append(url)
+        return (True, "v1", None)
+
+    monkeypatch.setattr(wiz, "probe_kismet", fake_probe_kismet)
+    monkeypatch.setattr(wiz, "probe_kismet_sources", lambda *a, **k: None)
+    monkeypatch.setattr(wiz, "probe_ntfy", lambda *a, **k: (True, None))
+
+    inputs = [
+        "127.0.0.1:2501",  # rejected at the prompt — never reaches probe
+        "http://10.0.0.5:2501",  # accepted
+        "wlan0",
+        "",
+        "",
+        "",  # ble_bridge_enabled
+        "",  # skip ntfy
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=False),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    # Probe was called exactly once, and only with the well-formed URL.
+    assert seen_urls == ["http://10.0.0.5:2501"]
+
+
+# ---- system-mode ownership: Bug 6, S1, S2, S5 -----------------------------
+#
+# rc1's --system mode shipped three independent footguns that stacked
+# into "broken-by-default":
+#
+#   Bug 6: config written 0600 root:root → daemon (User=lynceus) can't
+#          read it → unit fails on first start.
+#   S1:    data_dir + lynceus.db owned by root → daemon can't write
+#          → first poll fails with "attempt to write a readonly database".
+#   S2:    secrets-bearing config briefly world-readable between
+#          ``write_text`` and the follow-up ``chmod`` (race window in
+#          BOTH user and system mode).
+#   S5:    /etc/lynceus dir is root:root 0755 → directory-traversal
+#          denied to the lynceus group → even properly-owned config files
+#          remain unreadable.
+#
+# Each test in this section is a regression: it exercises the path that
+# pre-fix code did not implement, so it MUST FAIL against rc1.
+
+
+# ---- S2: atomic write closes the chmod race ------------------------------
+
+
+def test_atomic_write_opens_with_target_mode_on_posix(monkeypatch, tmp_path):
+    """``_atomic_write`` must set the file mode at fd-creation time, not
+    after the fact. ``os.open(...)`` is invoked with O_CREAT|O_WRONLY|
+    O_TRUNC and the explicit 0o600 mode — no umask-derived window
+    between create and chmod."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    captured: dict = {}
+    real_open = os.open
+
+    def fake_open(path, flags, mode=0o777, *a, **kw):
+        captured["path"] = str(path)
+        captured["flags"] = flags
+        captured["mode"] = mode
+        return real_open(path, flags, mode, *a, **kw)
+
+    monkeypatch.setattr(wiz.os, "open", fake_open)
+    target = tmp_path / "secret.yaml"
+    wiz._atomic_write(target, "kismet_api_key: secret\n")
+    assert captured["mode"] == 0o600
+    assert captured["flags"] & os.O_CREAT
+    assert captured["flags"] & os.O_WRONLY
+    assert captured["flags"] & os.O_TRUNC
+    assert target.read_text() == "kismet_api_key: secret\n"
+
+
+def test_atomic_write_honours_explicit_mode(monkeypatch, tmp_path):
+    """The ``mode`` kwarg propagates to the ``os.open`` call so callers
+    that need a different default (e.g. 0o640 for a system-mode file
+    that's group-readable) get the bits they asked for."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    captured: dict = {}
+    real_open = os.open
+
+    def fake_open(path, flags, mode=0o777, *a, **kw):
+        captured["mode"] = mode
+        return real_open(path, flags, mode, *a, **kw)
+
+    monkeypatch.setattr(wiz.os, "open", fake_open)
+    target = tmp_path / "shared.yaml"
+    wiz._atomic_write(target, "x\n", mode=0o640)
+    assert captured["mode"] == 0o640
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only file mode check")
+def test_atomic_write_real_mode_is_0600(tmp_path):
+    """Belt: actually stat the file after _atomic_write and verify the
+    bits. The race window cannot exist if the mode is set at creation."""
+    target = tmp_path / "secret.yaml"
+    wiz._atomic_write(target, "kismet_api_key: secret\n")
+    mode = target.stat().st_mode & 0o777
+    assert mode == 0o600
+
+
+def test_atomic_write_on_windows_falls_back_to_write_text(monkeypatch, tmp_path):
+    """Windows has no meaningful POSIX mode bits, so the helper short-
+    circuits to Path.write_text — ``os.open`` is never called."""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    open_calls: list = []
+    real_open = os.open
+    monkeypatch.setattr(
+        wiz.os,
+        "open",
+        lambda *a, **kw: open_calls.append((a, kw)) or real_open(*a, **kw),
+    )
+    target = tmp_path / "secret.yaml"
+    wiz._atomic_write(target, "kismet_api_key: secret\n")
+    assert target.read_text() == "kismet_api_key: secret\n"
+    assert open_calls == []
+
+
+def test_setup_py_no_longer_uses_write_text_then_chmod_pattern():
+    """The legacy ``write_text(...) + chmod(0o600)`` pair leaves a
+    race window in which the secret-bearing config is briefly world-
+    readable. After the S2 fix, the pattern must not exist anywhere
+    in setup.py — every secrets-bearing write goes through
+    ``_atomic_write``."""
+    setup_py = Path(wiz.__file__).read_text(encoding="utf-8")
+    # No top-level write_text on a yaml/conf path immediately followed
+    # by a chmod. Search for the most concrete witness: a chmod 0o600
+    # call. Pre-fix code had two; post-fix code has none.
+    assert "os.chmod(path, 0o600)" not in setup_py, (
+        "Found a chmod-after-write_text remnant; convert the call site to _atomic_write."
+    )
+    assert "chmod(path, 0o600)" not in setup_py
+
+
+# ---- Bug 6: config + overrides chowned root:lynceus 0640 -----------------
+
+
+@pytest.fixture
+def _stub_perms(monkeypatch):
+    """Capture chown / chmod calls and stub pwd/grp lookups so the
+    test never has to be running as root or have a real lynceus user.
+
+    Yields a dict with ``chown_calls``, ``chmod_calls``, ``getgrnam``
+    so individual tests can extend the stub (e.g. force a KeyError).
+
+    ``raising=False`` on the os.* monkeypatches because Windows lacks
+    those attributes natively — the stub adds them so tests can run
+    cross-platform against the Linux code paths.
+    """
+    chown_calls: list = []
+    chmod_calls: list = []
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    monkeypatch.setattr(
+        wiz.os,
+        "chown",
+        lambda p, u, g: chown_calls.append((str(p), u, g)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        wiz.os,
+        "chmod",
+        lambda p, m: chmod_calls.append((str(p), m)),
+        raising=False,
+    )
+
+    fake_grp = MagicMock()
+    fake_grp.getgrnam.return_value = MagicMock(gr_gid=2000)
+    fake_pwd = MagicMock()
+    fake_pwd.getpwnam.return_value = MagicMock(pw_uid=2000)
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "grp", fake_grp)
+    monkeypatch.setitem(_sys.modules, "pwd", fake_pwd)
+    return {
+        "chown_calls": chown_calls,
+        "chmod_calls": chmod_calls,
+        "fake_grp": fake_grp,
+        "fake_pwd": fake_pwd,
+    }
+
+
+def test_apply_system_perms_to_file_chowns_and_chmods_to_0640(_stub_perms, tmp_path):
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("x\n")
+    wiz._apply_system_perms_to_file(target)
+    # owner stays root (uid 0), group becomes the resolved lynceus gid
+    assert _stub_perms["chown_calls"] == [(str(target), 0, 2000)]
+    assert _stub_perms["chmod_calls"] == [(str(target), 0o640)]
+
+
+def test_apply_system_perms_to_file_raises_setuperror_when_group_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    fake_grp = MagicMock()
+    fake_grp.getgrnam.side_effect = KeyError("lynceus")
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "grp", fake_grp)
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(wiz.os, "chmod", lambda *a, **kw: None, raising=False)
+
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("x\n")
+    with pytest.raises(wiz.SetupError) as exc:
+        wiz._apply_system_perms_to_file(target)
+    assert "Group 'lynceus' does not exist" in str(exc.value)
+    assert "install.sh --system" in str(exc.value)
+
+
+def test_apply_system_perms_to_dir_chowns_to_lynceus_lynceus_0750(_stub_perms, tmp_path):
+    d = tmp_path / "data"
+    d.mkdir()
+    wiz._apply_system_perms_to_dir(d)
+    assert _stub_perms["chown_calls"] == [(str(d), 2000, 2000)]
+    assert _stub_perms["chmod_calls"] == [(str(d), 0o750)]
+
+
+def test_apply_system_perms_to_file_noop_on_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    chown_calls: list = []
+    chmod_calls: list = []
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: chown_calls.append(a), raising=False)
+    monkeypatch.setattr(wiz.os, "chmod", lambda *a, **kw: chmod_calls.append(a), raising=False)
+    target = tmp_path / "x.yaml"
+    target.write_text("x\n")
+    wiz._apply_system_perms_to_file(target)
+    assert chown_calls == []
+    assert chmod_calls == []
+
+
+def test_apply_system_perms_raises_setuperror_on_macos(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.sys, "platform", "darwin")
+    target = tmp_path / "x.yaml"
+    target.write_text("x\n")
+    with pytest.raises(wiz.SetupError) as exc:
+        wiz._apply_system_perms_to_file(target)
+    assert "Linux-only" in str(exc.value)
+
+
+# ---- run_wizard wiring: scope=system applies perms; scope=user does not --
+
+
+def _system_scope_inputs():
+    """Identical input shape to ``_full_input_sequence`` but trimmed for
+    a wizard run that's testing the perms-applying tail."""
+    return [
+        "",  # kismet URL default
+        "wlan0",  # capture interface (freeform, since enumerate_wireless returns None)
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-cafe",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate default (N)
+    ]
+
+
+def _stub_system_wizard_paths(monkeypatch, tmp_path):
+    """Force ``--system`` config, data, and log paths to land under
+    ``tmp_path`` so the wizard doesn't try to mkdir /var/lib/lynceus on
+    the test host. Returns a dict of the stubbed paths."""
+    from lynceus import paths as paths_mod
+
+    target = tmp_path / "etc" / "lynceus" / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)  # pretend we're root
+    monkeypatch.setattr(paths_mod, "_platform", lambda: "linux")
+    data_dir = tmp_path / "var" / "lib" / "lynceus"
+    log_dir = tmp_path / "var" / "log" / "lynceus"
+    db_path = data_dir / "lynceus.db"
+    monkeypatch.setattr(paths_mod, "default_data_dir", lambda scope: data_dir)
+    monkeypatch.setattr(paths_mod, "default_log_dir", lambda scope: log_dir)
+    monkeypatch.setattr(paths_mod, "default_db_path", lambda scope: db_path)
+    return {
+        "target": target,
+        "data_dir": data_dir,
+        "log_dir": log_dir,
+        "db_path": db_path,
+    }
+
+
+def test_run_wizard_system_scope_chowns_config_to_root_lynceus_0640(
+    _stub_perms, monkeypatch, tmp_path
+):
+    """Bug 6 regression — pre-fix code wrote the config 0600 root:root and
+    never chowned it, so the daemon (User=lynceus) couldn't read it."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    chmod_pairs = {(p, m) for (p, m) in _stub_perms["chmod_calls"]}
+    # Config: root (0) : lynceus (2000), mode 0o640.
+    assert (str(paths_d["target"]), 0, 2000) in chown_pairs
+    assert (str(paths_d["target"]), 0o640) in chmod_pairs
+
+
+def test_run_wizard_system_scope_chowns_severity_overrides_to_root_lynceus_0640(
+    _stub_perms, monkeypatch, tmp_path
+):
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    sev_path = str(paths_d["target"].parent / "severity_overrides.yaml")
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    chmod_pairs = {(p, m) for (p, m) in _stub_perms["chmod_calls"]}
+    assert (sev_path, 0, 2000) in chown_pairs
+    assert (sev_path, 0o640) in chmod_pairs
+
+
+def test_run_wizard_system_scope_exits_clean_when_lynceus_group_missing(
+    monkeypatch, tmp_path, capsys
+):
+    """Operator ran ``sudo lynceus-setup --system`` without first running
+    ``sudo ./install.sh --system``. The wizard must abort with a clear
+    "run install.sh first" hint to stderr — not crash with an unhandled
+    KeyError."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(wiz.os, "chmod", lambda *a, **kw: None, raising=False)
+    fake_grp = MagicMock()
+    fake_grp.getgrnam.side_effect = KeyError("lynceus")
+    fake_pwd = MagicMock()
+    fake_pwd.getpwnam.return_value = MagicMock(pw_uid=2000)
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "grp", fake_grp)
+    monkeypatch.setitem(_sys.modules, "pwd", fake_pwd)
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "lynceus" in err
+    assert "install.sh --system" in err
+    # Sanity: target dir got created (perms code ran AFTER write_config).
+    assert paths_d["target"].exists()
+
+
+def test_run_wizard_user_scope_never_calls_chown(monkeypatch, tmp_path):
+    """User scope must NOT touch chown — the rc1 wizard didn't, and we
+    shouldn't have regressed that. The file-mode contract for user-scope
+    configs is 0600 owned by the running user, not root:lynceus 0640."""
+    target = tmp_path / "lynceus.yaml"
+    monkeypatch.setattr(wiz, "resolve_config_path", lambda s, o: target)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
+    _stub_bundled_import(monkeypatch)
+    chown_calls: list = []
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: chown_calls.append(a), raising=False)
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),  # user scope by default
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert chown_calls == [], "user-scope wizard must not call chown"
+    if os.name == "posix":
+        # 0600, not 0640 — user-scope contract is unchanged.
+        assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_run_wizard_system_scope_chowns_data_and_log_dirs(_stub_perms, monkeypatch, tmp_path):
+    """S1 part 1: data_dir and log_dir must be chowned lynceus:lynceus
+    0750 so the daemon can write under them."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    chmod_pairs = {(p, m) for (p, m) in _stub_perms["chmod_calls"]}
+    assert (str(paths_d["data_dir"]), 2000, 2000) in chown_pairs
+    assert (str(paths_d["log_dir"]), 2000, 2000) in chown_pairs
+    assert (str(paths_d["data_dir"]), 0o750) in chmod_pairs
+    assert (str(paths_d["log_dir"]), 0o750) in chmod_pairs
+
+
+def test_run_wizard_system_scope_chowns_db_and_sidecars_after_import(
+    _stub_perms, monkeypatch, tmp_path
+):
+    """S1 part 2: after lynceus-import-argus succeeds, the wizard must
+    chown the resulting lynceus.db AND any sqlite sidecars (-wal, -shm)
+    to ``lynceus:lynceus 0640``. The DB must be OWNED by lynceus (not
+    just group-readable) so the daemon can write — root:lynceus 0640
+    would manifest as "attempt to write a readonly database" on the
+    first poll. Pre-fix code never did this."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+
+    # Make the bundled import look successful AND lay down a fake DB +
+    # WAL sidecar at the expected path so the post-import chown step
+    # has something to find.
+    paths_d["data_dir"].mkdir(parents=True, exist_ok=True)
+    db = paths_d["db_path"]
+    wal = Path(str(db) + "-wal")
+
+    def fake_bundled(db_path, override_file):
+        Path(db_path).write_text("fake sqlite\n")
+        Path(str(db_path) + "-wal").write_text("fake wal\n")
+        return (True, "imported 7 records")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    chmod_pairs = {(p, m) for (p, m) in _stub_perms["chmod_calls"]}
+    # DB must be owned by lynceus (uid 2000 in our stub), not root.
+    assert (str(db), 2000, 2000) in chown_pairs
+    assert (str(wal), 2000, 2000) in chown_pairs
+    assert (str(db), 0o640) in chmod_pairs
+    assert (str(wal), 0o640) in chmod_pairs
+
+
+def test_run_wizard_system_scope_db_chown_tolerant_of_missing_sidecars(
+    _stub_perms, monkeypatch, tmp_path
+):
+    """Sidecar tolerance: a freshly-imported DB has no -wal yet (sqlite
+    only creates it when the journal goes WAL). The chown step must not
+    crash when the sidecar is absent."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    paths_d["data_dir"].mkdir(parents=True, exist_ok=True)
+    db = paths_d["db_path"]
+
+    def fake_bundled(db_path, override_file):
+        Path(db_path).write_text("fake sqlite\n")
+        # No sidecar files this time.
+        return (True, "imported 1 record")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    assert (str(db), 2000, 2000) in chown_pairs
+
+
+def test_run_wizard_system_scope_prints_summary_of_chowned_paths(
+    _stub_perms, monkeypatch, tmp_path, capsys
+):
+    """One operator-visible summary line listing every file the wizard
+    just gave lynceus group ownership to, so a `--system` run is
+    auditable from the terminal output alone."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    paths_d["data_dir"].mkdir(parents=True, exist_ok=True)
+    db = paths_d["db_path"]
+
+    def fake_bundled(db_path, override_file):
+        Path(db_path).write_text("fake\n")
+        return (True, "imported 1 record")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Applied lynceus group ownership" in out
+    assert str(paths_d["target"]) in out
+    assert str(db) in out
+
+
+# ---- Integration: every daemon-touched path ends up correct -------------
+
+
+def test_run_wizard_system_scope_all_daemon_touched_paths_have_correct_perms(
+    _stub_perms, monkeypatch, tmp_path
+):
+    """The integration regression that would have caught rc1's
+    broken-by-default --system mode end-to-end.
+
+    A full wizard run in scope="system" must give EVERY file the daemon
+    needs to read (config, severity overrides) and EVERY file/dir it
+    needs to write (DB, data_dir, log_dir) the appropriate ownership
+    and mode. If any of these regress, the unit fails on first start —
+    that's what this test exists to prevent.
+    """
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    paths_d["data_dir"].mkdir(parents=True, exist_ok=True)
+    db = paths_d["db_path"]
+
+    def fake_bundled(db_path, override_file):
+        Path(db_path).write_text("fake sqlite\n")
+        Path(str(db_path) + "-wal").write_text("fake wal\n")
+        Path(str(db_path) + "-shm").write_text("fake shm\n")
+        return (True, "imported 1 record")
+
+    monkeypatch.setattr(wiz, "import_bundled_watchlist", fake_bundled)
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(_system_scope_inputs()),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+
+    chown_index: dict[str, tuple[int, int]] = {
+        p: (u, g) for (p, u, g) in _stub_perms["chown_calls"]
+    }
+    chmod_index: dict[str, int] = {p: m for (p, m) in _stub_perms["chmod_calls"]}
+
+    sev_path = str(paths_d["target"].parent / "severity_overrides.yaml")
+    wal = str(db) + "-wal"
+    shm = str(db) + "-shm"
+
+    # READ paths: root:lynceus 0640.
+    for p in (str(paths_d["target"]), sev_path):
+        assert chown_index.get(p) == (0, 2000), f"{p} must be root:lynceus"
+        assert chmod_index.get(p) == 0o640, f"{p} must be mode 0o640"
+
+    # WRITE dirs: lynceus:lynceus 0750.
+    for p in (str(paths_d["data_dir"]), str(paths_d["log_dir"])):
+        assert chown_index.get(p) == (2000, 2000), f"{p} must be lynceus:lynceus"
+        assert chmod_index.get(p) == 0o750, f"{p} must be mode 0o750"
+
+    # WRITE files (DB + sidecars): lynceus:lynceus 0640. The daemon owns
+    # them so it can write; mode keeps the file non-executable.
+    for p in (str(db), wal, shm):
+        assert chown_index.get(p) == (2000, 2000), f"{p} must be lynceus:lynceus"
+        assert chmod_index.get(p) == 0o640, f"{p} must be mode 0o640"
+
+
+# ---- Bug 7: ntfy topic validator -------------------------------------------
+
+
+def test_looks_like_ntfy_topic_accepts_valid_topics():
+    assert wiz._looks_like_ntfy_topic("lynceus-deadbeef") is True
+    assert wiz._looks_like_ntfy_topic("lynceus_test_01") is True
+    # Boundary at 6 characters — exactly the minimum length.
+    assert wiz._looks_like_ntfy_topic("abc123") is True
+    # Boundary at 64 characters — exactly the maximum length.
+    assert wiz._looks_like_ntfy_topic("a" * 64) is True
+    assert wiz._looks_like_ntfy_topic("CamelCase-Topic_42") is True
+
+
+def test_looks_like_ntfy_topic_rejects_cancellation_words_case_insensitive():
+    """Operators who type these words mean to skip ntfy, not to use them
+    as a topic. The deny-list points them at the empty-input skip path."""
+    for word in ("na", "n/a", "none", "skip", "no", "null", "nil", "abort"):
+        assert wiz._looks_like_ntfy_topic(word) is False, word
+    # Case-insensitive — uppercase variants must also be rejected.
+    assert wiz._looks_like_ntfy_topic("NA") is False
+    assert wiz._looks_like_ntfy_topic("Skip") is False
+    assert wiz._looks_like_ntfy_topic("NONE") is False
+
+
+def test_looks_like_ntfy_topic_rejects_length_and_charset_failures():
+    # Below minimum length.
+    assert wiz._looks_like_ntfy_topic("ab") is False
+    assert wiz._looks_like_ntfy_topic("abcde") is False
+    # Above maximum length.
+    assert wiz._looks_like_ntfy_topic("a" * 65) is False
+    # Disallowed characters: spaces, punctuation, slashes.
+    assert wiz._looks_like_ntfy_topic("has spaces") is False
+    assert wiz._looks_like_ntfy_topic("has!special") is False
+    assert wiz._looks_like_ntfy_topic("with/slash") is False
+    assert wiz._looks_like_ntfy_topic("with.dot") is False
+    # Empty string is handled separately by the caller; the helper rejects.
+    assert wiz._looks_like_ntfy_topic("") is False
+
+
+def test_run_wizard_re_prompts_on_invalid_ntfy_topic_with_clear_error(
+    monkeypatch, tmp_path, capsys
+):
+    """Operator types ``na`` (a deny-list word) once, sees the clear error
+    naming the input and pointing at the skip path, then types a valid
+    topic on the second try. Wizard succeeds with the second topic
+    persisted."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL
+        "na",  # invalid topic — deny-listed
+        "lynceus-real01",  # valid topic accepted on retry
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "✗ Topic must be 6-64 alphanumeric/underscore/hyphen" in out
+    assert "got: na" in out
+    assert "Press Enter to accept the suggested topic" in out
+    assert "blank URL to skip ntfy" in out
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_topic"] == "lynceus-real01"
+
+
+def test_run_wizard_accepts_ntfy_topic_on_4th_attempt_after_3_invalid(monkeypatch, tmp_path):
+    """Three invalid inputs followed by a valid one on the 4th try: the
+    wizard accepts the valid topic and persists it. The 4-attempt cap is
+    a *failure* threshold (the 4th invalid raises) — a 4th *valid* entry
+    is fine."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL
+        "na",  # invalid #1
+        "skip",  # invalid #2
+        "ab",  # invalid #3 — too short
+        "lynceus-finalshot",  # valid on 4th try
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_topic"] == "lynceus-finalshot"
+
+
+def test_run_wizard_aborts_after_4_invalid_ntfy_topic_attempts(monkeypatch, tmp_path, capsys):
+    """Four invalid topics in a row exceeds the cap: the wizard exits
+    non-zero and prints the SetupError-style message pointing the operator
+    at re-running setup or skipping ntfy entirely."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # ntfy URL
+        "na",  # invalid #1
+        "skip",  # invalid #2
+        "ab",  # invalid #3
+        "n/a",  # invalid #4 — triggers SetupError abort
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "Could not produce a valid ntfy topic" in err
+    assert "4 attempts" in err
+    assert "leave the URL prompt blank to disable ntfy" in err
+
+
+def test_run_wizard_ntfy_blank_topic_accepts_suggested_default(monkeypatch, tmp_path):
+    """Blank-topic at the prompt accepts the suggested random topic. This
+    is the explicit accept-default path (the corollary of "leave URL blank
+    to skip ntfy"). The persisted topic matches the suggestion shown.
+    """
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr("lynceus.cli.setup.secrets.token_hex", lambda n: "cafef00d")
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # URL set
+        "",  # topic blank → accept suggested
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_topic"] == "lynceus-cafef00d"
+
+
+def test_run_wizard_ntfy_blank_topic_does_not_disable_ntfy(monkeypatch, tmp_path):
+    """Regression guard for the inverted Bug 7 fix: blank topic with URL
+    set must NOT clear ``ntfy_url``. The earlier landing of Bug 7 wrongly
+    treated topic-blank as a back-out and zeroed both fields, silently
+    turning an opt-in into an opt-out — exactly the misrouting class
+    Bug 7 was supposed to prevent. After this fix, ntfy_url stays put
+    and ntfy_topic is populated with the suggested default."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    inputs = [
+        "",  # kismet URL default
+        "wlan0",
+        "",  # probe_ssids default
+        "",  # ble names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",  # URL set
+        "",  # topic blank
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate: default (N)
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    data = yaml.safe_load(target.read_text())
+    assert data["ntfy_url"] == "https://ntfy.sh"
+    assert data["ntfy_topic"], "ntfy_topic must be non-empty when URL is set"
+
+
+# ---- Enable-alerting flow --------------------------------------------------
+#
+# The wizard's closing-arc opt-in flow that writes rules.yaml and wires
+# ``rules_path`` into lynceus.yaml. Default is NO at every prompt: alerts
+# are opt-in. Tests below exercise the gate, the per-rule_type prompts,
+# the overwrite-confirm path for an existing rules.yaml, and the
+# scope-aware path resolution.
+
+
+def _seed_watchlist_db(db_path: Path, counts: dict[str, int]) -> None:
+    """Write a minimal watchlist DB with ``counts`` rows of each pattern_type.
+
+    Uses raw sqlite — the wizard's count helper only needs the
+    ``watchlist`` table and a row count per pattern_type. We bypass the
+    real ``Database`` class so the test doesn't drag the full migration
+    machinery in.
+    """
+    import sqlite3 as _sqlite3
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = _sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE watchlist ("
+            "id INTEGER PRIMARY KEY, "
+            "pattern TEXT NOT NULL, "
+            "pattern_type TEXT NOT NULL, "
+            "severity TEXT, "
+            "description TEXT)"
+        )
+        next_id = 1
+        for pattern_type, n in counts.items():
+            for i in range(n):
+                conn.execute(
+                    "INSERT INTO watchlist(id, pattern, pattern_type, severity) "
+                    "VALUES (?, ?, ?, ?)",
+                    (next_id, f"{pattern_type}-{i}", pattern_type, "low"),
+                )
+                next_id += 1
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _stub_alerting_paths(monkeypatch, tmp_path):
+    """Force the wizard's enable-alerting flow to write rules.yaml under
+    ``tmp_path`` regardless of scope. Returns the directory rules.yaml
+    will land in (next to lynceus.yaml).
+
+    The flow resolves ``paths.default_config_dir(scope) / 'rules.yaml'``,
+    so we patch ``paths.default_config_dir`` to return the same dir
+    ``resolve_config_path`` points lynceus.yaml at. ``_stub_path_resolution``
+    must be called first so the config path is fixed.
+    """
+    from lynceus import paths as paths_mod
+
+    config_dir = tmp_path
+    monkeypatch.setattr(paths_mod, "default_config_dir", lambda scope: config_dir)
+    return config_dir
+
+
+def _alerting_inputs(*, gate, type_answers=None, overwrite=None):
+    """Build the trailing input sequence for the enable-alerting flow.
+
+    ``gate``: "y" / "n" / "" — top-level gate answer.
+    ``type_answers``: iterable of ("y"/"n"/"") strings, one per delegation
+                       type prompt the flow will issue. Empty/None → no
+                       per-type prompts (e.g. when the DB is empty).
+    ``overwrite``: ``None`` when no overwrite prompt is expected;
+                    "y"/"n"/"" when rules.yaml already exists.
+    """
+    seq = [gate]
+    if type_answers:
+        seq.extend(type_answers)
+    if overwrite is not None:
+        seq.append(overwrite)
+    return seq
+
+
+def _alerting_full_inputs(*, gate, type_answers=None, overwrite=None):
+    """Compose ``_full_input_sequence`` (minus its trailing gate "") with
+    explicit enable-alerting answers.
+
+    The default ``_full_input_sequence`` answers N at the gate so the rest
+    of the wizard tests don't care about the flow. The enable-alerting
+    tests need to drive the flow explicitly, so we strip the helper's
+    default gate answer (the last "") and substitute the full alerting
+    sequence.
+    """
+    base = _full_input_sequence()
+    assert base[-1] == "", "expected _full_input_sequence to end with default gate input"
+    return base[:-1] + _alerting_inputs(
+        gate=gate, type_answers=type_answers, overwrite=overwrite
+    )
+
+
+# ---- count_watchlist_by_pattern_type --------------------------------------
+
+
+def test_count_watchlist_by_pattern_type_missing_db_returns_zeros(tmp_path):
+    counts = wiz.count_watchlist_by_pattern_type(str(tmp_path / "nonexistent.db"))
+    assert counts == {
+        "mac_range": 0,
+        "mac": 0,
+        "oui": 0,
+        "ssid": 0,
+        "ble_uuid": 0,
+        "ble_manufacturer_id": 0,
+        "drone_id_prefix": 0,
+        "ble_local_name": 0,
+    }
+
+
+def test_count_watchlist_by_pattern_type_returns_per_type_counts(tmp_path):
+    db = tmp_path / "wl.db"
+    _seed_watchlist_db(db, {"mac_range": 17786, "mac": 5, "oui": 2, "ssid": 1, "ble_uuid": 0})
+    counts = wiz.count_watchlist_by_pattern_type(str(db))
+    assert counts["mac_range"] == 17786
+    assert counts["mac"] == 5
+    assert counts["oui"] == 2
+    assert counts["ssid"] == 1
+    assert counts["ble_uuid"] == 0
+
+
+def test_count_watchlist_by_pattern_type_missing_table_returns_zeros(tmp_path):
+    """A DB that exists but has no watchlist table (mid-init) must not
+    crash the wizard — every prompt is skipped and the flow ends cleanly."""
+    import sqlite3 as _sqlite3
+
+    db = tmp_path / "empty.db"
+    conn = _sqlite3.connect(str(db))
+    conn.close()
+    counts = wiz.count_watchlist_by_pattern_type(str(db))
+    assert all(v == 0 for v in counts.values())
+
+
+# ---- render_rules_yaml ----------------------------------------------------
+
+
+def test_render_rules_yaml_all_disabled_has_only_commented_entries():
+    content = wiz.render_rules_yaml(set())
+    # Header comment must explain the file purpose.
+    assert "generated by lynceus-setup" in content
+    # Every delegation rule appears, but all commented out.
+    for (name, _rt, _pt, _label, _desc) in wiz.DELEGATION_RULES:
+        assert f"# - name: {name}" in content
+        # No active variant of any rule.
+        assert f"\n  - name: {name}" not in content
+    # YAML still parses (commented entries become an empty rules list).
+    data = yaml.safe_load(content)
+    assert data == {"rules": None}
+
+
+def test_render_rules_yaml_one_active_keeps_others_commented():
+    content = wiz.render_rules_yaml({"watchlist_mac_range"})
+    # mac_range active.
+    assert "\n  - name: argus_mac_range" in content
+    assert "\n    rule_type: watchlist_mac_range" in content
+    assert "    patterns: []" in content
+    # Others commented.
+    for rule_name in ("argus_mac", "argus_oui", "argus_ssid", "argus_ble_uuid"):
+        assert f"# - name: {rule_name}" in content
+    # YAML round-trips with one rule.
+    data = yaml.safe_load(content)
+    assert isinstance(data.get("rules"), list)
+    assert len(data["rules"]) == 1
+    assert data["rules"][0]["rule_type"] == "watchlist_mac_range"
+    assert data["rules"][0]["patterns"] == []
+
+
+def test_render_rules_yaml_all_active_produces_all_rules():
+    rule_types = {rt for (_n, rt, _pt, _l, _d) in wiz.DELEGATION_RULES}
+    content = wiz.render_rules_yaml(rule_types)
+    data = yaml.safe_load(content)
+    assert len(data["rules"]) == len(wiz.DELEGATION_RULES)
+    seen = {rule["rule_type"] for rule in data["rules"]}
+    assert seen == rule_types
+    # Every active entry uses the DB-delegation idiom: empty patterns.
+    for rule in data["rules"]:
+        assert rule["patterns"] == []
+
+
+def test_render_rules_yaml_parses_through_real_ruleset_loader(tmp_path):
+    """The generated file must load cleanly via lynceus.rules.load_ruleset.
+    Otherwise the daemon would crash on startup with a freshly-wizard'd
+    deployment."""
+    from lynceus import rules as rules_mod
+
+    rules_file = tmp_path / "rules.yaml"
+    rules_file.write_text(
+        wiz.render_rules_yaml({"watchlist_mac_range", "ble_uuid"}),
+        encoding="utf-8",
+    )
+    ruleset = rules_mod.load_ruleset(str(rules_file))
+    rule_types = {rule.rule_type for rule in ruleset.rules}
+    assert rule_types == {"watchlist_mac_range", "ble_uuid"}
+
+
+# ---- run_wizard: enable-alerting flow integration -------------------------
+
+
+def test_enable_alerting_gate_n_writes_no_rules_yaml_and_no_rules_path(
+    monkeypatch, tmp_path
+):
+    """Touch 6 case: operator answers N at the top-level gate → no
+    rules.yaml created, lynceus.yaml's rules_path remains unset, completes
+    normally."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_alerting_full_inputs(gate="n")),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    assert not (config_dir / "rules.yaml").exists()
+    data = yaml.safe_load(target.read_text())
+    assert data.get("rules_path") is None
+
+
+def test_enable_alerting_gate_y_but_no_db_data_skips_silently(
+    monkeypatch, tmp_path, capsys
+):
+    """Touch 6 case: operator answers Y at gate but the watchlist DB is
+    empty → every per-type prompt is skipped, no rules.yaml is written,
+    rules_path stays unset, wizard ends with the informational line."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # Force the count helper to report no data — equivalent to "DB
+    # doesn't exist yet" without having to plumb default_db_path.
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {pt: 0 for (_n, _rt, pt, _l, _d) in wiz.DELEGATION_RULES},
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(_alerting_full_inputs(gate="y")),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No rule_types enabled" in out
+    assert not (config_dir / "rules.yaml").exists()
+    data = yaml.safe_load(target.read_text())
+    assert data.get("rules_path") is None
+
+
+def test_enable_alerting_gate_y_all_types_n_writes_no_rules_yaml(
+    monkeypatch, tmp_path, capsys
+):
+    """Touch 6 case: gate Y + N to every per-type prompt → no rules.yaml
+    written (no point writing an all-commented file), rules_path not set,
+    completes normally with informational line."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 5,
+            "oui": 2,
+            "ssid": 1,
+            "ble_uuid": 3,
+        },
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(gate="y", type_answers=["n"] * 5)
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "No rule_types enabled" in out
+    assert not (config_dir / "rules.yaml").exists()
+    data = yaml.safe_load(target.read_text())
+    assert data.get("rules_path") is None
+
+
+def test_enable_alerting_one_type_writes_rules_yaml_and_wires_rules_path(
+    monkeypatch, tmp_path
+):
+    """Touch 6 case: gate Y + Y to watchlist_mac_range only → rules.yaml
+    written with that one entry active, rules_path set in lynceus.yaml."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 5,
+            "oui": 2,
+            "ssid": 1,
+            "ble_uuid": 3,
+        },
+    )
+    # Type answers in DELEGATION_RULES order: mac_range, mac, oui, ssid, ble_uuid.
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(
+                gate="y",
+                type_answers=["y", "n", "n", "n", "n"],
+            )
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    assert rules_file.exists()
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    assert len(rules_data["rules"]) == 1
+    assert rules_data["rules"][0]["rule_type"] == "watchlist_mac_range"
+    assert rules_data["rules"][0]["patterns"] == []
+    # And lynceus.yaml's rules_path now points at the new file.
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data["rules_path"] == str(rules_file)
+
+
+def test_enable_alerting_all_types_writes_five_active_rules(monkeypatch, tmp_path):
+    """Touch 6 case: gate Y + Y to all types → rules.yaml written with
+    all five delegation entries active.
+
+    Stubs only the rc4 5-key count map. The rc5 additions
+    (ble_manufacturer_id, drone_id_prefix) are absent from the map, so
+    they get count==0 from .get(...) and their prompts are skipped — the
+    rc4 user journey is unchanged."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 1,
+            "mac": 1,
+            "oui": 1,
+            "ssid": 1,
+            "ble_uuid": 1,
+        },
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(
+                gate="y",
+                type_answers=["y", "y", "y", "y", "y"],
+            )
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    rule_types = {rule["rule_type"] for rule in rules_data["rules"]}
+    assert rule_types == {
+        "watchlist_mac_range",
+        "watchlist_mac",
+        "watchlist_oui",
+        "watchlist_ssid",
+        "ble_uuid",
+    }
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data["rules_path"] == str(rules_file)
+
+
+def test_enable_alerting_all_eight_types_writes_eight_active_rules(
+    monkeypatch, tmp_path
+):
+    """v0.6.1 case: all 8 delegation pattern_types present in the DB
+    (rc5 set + ble_local_name from mig-020), operator answers Y at
+    every prompt → rules.yaml carries all 8 delegation entries
+    active. Names verified against DELEGATION_RULES."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 5,
+            "oui": 2,
+            "ssid": 1,
+            "ble_uuid": 3,
+            "ble_manufacturer_id": 3969,
+            "drone_id_prefix": 427,
+            "ble_local_name": 20,
+        },
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(
+                gate="y",
+                type_answers=["y", "y", "y", "y", "y", "y", "y", "y"],
+            )
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    rule_types = {rule["rule_type"] for rule in rules_data["rules"]}
+    assert rule_types == {rt for (_n, rt, _pt, _l, _d) in wiz.DELEGATION_RULES}
+    assert len(rules_data["rules"]) == 8
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data["rules_path"] == str(rules_file)
+
+
+def test_enable_alerting_only_new_rc5_types_writes_two_active_rules(
+    monkeypatch, tmp_path
+):
+    """rc5 user journey: operator with an Argus-loaded DB picks only the
+    two new types (N to mac_range / mac / oui / ssid / ble_uuid, Y to
+    ble_manufacturer_id and drone_id_prefix). The active rules.yaml
+    contains exactly those two by name."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 5,
+            "oui": 2,
+            "ssid": 1,
+            "ble_uuid": 3,
+            "ble_manufacturer_id": 3969,
+            "drone_id_prefix": 427,
+        },
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(
+                gate="y",
+                type_answers=["n", "n", "n", "n", "n", "y", "y"],
+            )
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    rule_names = {rule["name"] for rule in rules_data["rules"]}
+    assert rule_names == {"argus_ble_manufacturer_id", "argus_drone_id_prefix"}
+
+
+def test_delegation_rules_contains_two_new_rc5_entries():
+    """Source-of-truth check: DELEGATION_RULES carries both rc5 entries
+    with the right (rule_type, pattern_type) pairs. Any drift between
+    this tuple, the rules.py RuleType Literal, the db.py
+    _WATCHLIST_PATTERN_TYPES, or the migration 013 CHECK constraint
+    surfaces here."""
+    by_name = {n: (rt, pt) for (n, rt, pt, _l, _d) in wiz.DELEGATION_RULES}
+    assert by_name["argus_ble_manufacturer_id"] == (
+        "watchlist_ble_manufacturer_id",
+        "ble_manufacturer_id",
+    )
+    assert by_name["argus_drone_id_prefix"] == (
+        "watchlist_drone_id_prefix",
+        "drone_id_prefix",
+    )
+
+
+def test_delegation_rules_contains_v061_ble_local_name_entry():
+    """Source-of-truth check: DELEGATION_RULES carries the v0.6.1
+    ble_local_name entry with the right (rule_type, pattern_type)
+    pair. Drift between this tuple, the rules.py RuleType Literal,
+    db.py _WATCHLIST_PATTERN_TYPES, or migration 020's CHECK
+    constraint surfaces here."""
+    by_name = {n: (rt, pt) for (n, rt, pt, _l, _d) in wiz.DELEGATION_RULES}
+    assert by_name["argus_ble_local_name"] == (
+        "watchlist_ble_local_name",
+        "ble_local_name",
+    )
+
+
+def test_enable_alerting_only_ble_local_name_picks_writes_one_rule(
+    monkeypatch, tmp_path
+):
+    """v0.6.1 user journey: operator with a fresh-bootstrap DB
+    (Flock Safety BLE names land via the bundled CSV's 3 v1.4.0
+    ble_local_name rows) picks ONLY the new type. Active
+    rules.yaml contains exactly argus_ble_local_name."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 5,
+            "oui": 2,
+            "ssid": 1,
+            "ble_uuid": 3,
+            "ble_manufacturer_id": 3969,
+            "drone_id_prefix": 427,
+            "ble_local_name": 3,
+        },
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(
+                gate="y",
+                # Eight type prompts in DELEGATION_RULES order
+                # (mac_range, mac, oui, ssid, ble_uuid,
+                # ble_manufacturer_id, drone_id_prefix, ble_local_name).
+                # Only the last is enabled.
+                type_answers=["n", "n", "n", "n", "n", "n", "n", "y"],
+            )
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    rule_names = {rule["name"] for rule in rules_data["rules"]}
+    assert rule_names == {"argus_ble_local_name"}
+    rule_types = {rule["rule_type"] for rule in rules_data["rules"]}
+    assert rule_types == {"watchlist_ble_local_name"}
+    # Severity placeholder remains the documented "ignored" low —
+    # the runtime severity sources from the matched DB row.
+    assert rules_data["rules"][0]["severity"] == "low"
+    assert rules_data["rules"][0]["patterns"] == []
+
+
+def test_enable_alerting_zero_count_type_skips_prompt(monkeypatch, tmp_path):
+    """Touch 6 case: a pattern_type with zero rows in the DB has its
+    per-type prompt skipped entirely. The remaining types' prompts are
+    presented in order; only the inputs for the visible prompts are
+    consumed."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 5,
+            "mac": 0,  # skipped
+            "oui": 7,
+            "ssid": 0,  # skipped
+            "ble_uuid": 2,
+        },
+    )
+    # Three visible prompts: mac_range, oui, ble_uuid. Operator answers
+    # Y to all three. mac and ssid prompts must NOT be issued — if they
+    # were, the input sequence would run out and the test would crash
+    # with an AssertionError in the recording input function.
+    fn, prompts = _recording_input(
+        _alerting_full_inputs(
+            gate="y",
+            type_answers=["y", "y", "y"],
+        )
+    )
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=fn,
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    enable_prompts = [p for p in prompts if p.startswith("Enable ")]
+    assert any("watchlist_mac_range" in p for p in enable_prompts)
+    assert any("watchlist_oui" in p for p in enable_prompts)
+    assert any("ble_uuid" in p for p in enable_prompts)
+    # The zero-count types must NOT have appeared as prompts. Match the
+    # exact rule_type name with a trailing space so watchlist_mac doesn't
+    # collide with watchlist_mac_range.
+    assert not any("watchlist_mac " in p for p in enable_prompts)
+    assert not any("watchlist_ssid" in p for p in enable_prompts)
+    rules_file = config_dir / "rules.yaml"
+    rules_data = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    rule_types = {rule["rule_type"] for rule in rules_data["rules"]}
+    assert rule_types == {"watchlist_mac_range", "watchlist_oui", "ble_uuid"}
+
+
+def test_enable_alerting_existing_rules_yaml_overwrite_n_leaves_file(
+    monkeypatch, tmp_path, capsys
+):
+    """Touch 6 case: rules.yaml already exists; operator answers N to the
+    overwrite prompt → rules.yaml is untouched, but rules_path is still
+    wired in lynceus.yaml (recovers the "manually copied, never wired"
+    case)."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 0,
+            "oui": 0,
+            "ssid": 0,
+            "ble_uuid": 0,
+        },
+    )
+    original = "# operator's hand-tuned rules.yaml\nrules: []\n"
+    existing = config_dir / "rules.yaml"
+    existing.write_text(original)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(gate="y", type_answers=["y"], overwrite="n")
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    # File untouched.
+    assert existing.read_text(encoding="utf-8") == original
+    out = capsys.readouterr().out
+    assert "untouched" in out
+    # rules_path wired up anyway (the recovery case).
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data["rules_path"] == str(existing)
+
+
+def test_enable_alerting_existing_rules_yaml_overwrite_y_replaces_file(
+    monkeypatch, tmp_path
+):
+    """Touch 6 case: rules.yaml already exists; operator answers Y to the
+    overwrite prompt → rules.yaml is replaced with the new selections."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 0,
+            "mac": 0,
+            "oui": 17,
+            "ssid": 0,
+            "ble_uuid": 0,
+        },
+    )
+    existing = config_dir / "rules.yaml"
+    existing.write_text("# old content the operator is willing to clobber\nrules: []\n")
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(gate="y", type_answers=["y"], overwrite="y")
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_data = yaml.safe_load(existing.read_text(encoding="utf-8"))
+    # The replacement file has exactly the one selected rule active.
+    assert len(rules_data["rules"]) == 1
+    assert rules_data["rules"][0]["rule_type"] == "watchlist_oui"
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data["rules_path"] == str(existing)
+
+
+def test_enable_alerting_system_scope_chowns_rules_yaml(
+    _stub_perms, monkeypatch, tmp_path
+):
+    """System scope: a freshly written rules.yaml inherits the same
+    root:lynceus 0640 contract as lynceus.yaml. Same chown/chmod pair the
+    config and severity-overrides files get."""
+    paths_d = _stub_system_wizard_paths(monkeypatch, tmp_path)
+    # rules.yaml will land in the same dir as the (stubbed) lynceus.yaml.
+    config_dir = paths_d["target"].parent
+    from lynceus import paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "default_config_dir", lambda scope: config_dir)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 0,
+            "oui": 0,
+            "ssid": 0,
+            "ble_uuid": 0,
+        },
+    )
+    # System scope input shape + alerting answers (gate Y, mac_range Y).
+    inputs = _system_scope_inputs()
+    assert inputs[-1] == "", "expected _system_scope_inputs to end with default gate input"
+    inputs = inputs[:-1] + ["y", "y"]  # gate + mac_range prompt
+    rc = wiz.run_wizard(
+        _args(skip_probes=True, system=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    assert rules_file.exists()
+    chown_pairs = {(p, u, g) for (p, u, g) in _stub_perms["chown_calls"]}
+    chmod_pairs = {(p, m) for (p, m) in _stub_perms["chmod_calls"]}
+    assert (str(rules_file), 0, 2000) in chown_pairs
+    assert (str(rules_file), 0o640) in chmod_pairs
+
+
+def test_enable_alerting_user_scope_writes_0600_rules_yaml(monkeypatch, tmp_path):
+    """User scope: rules.yaml lands at the user config dir with 0600
+    (atomic-write contract). No chown is called — user-scope perms stay
+    consistent with how lynceus.yaml is treated."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 17786,
+            "mac": 0,
+            "oui": 0,
+            "ssid": 0,
+            "ble_uuid": 0,
+        },
+    )
+    chown_calls: list = []
+    monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: chown_calls.append(a), raising=False)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(gate="y", type_answers=["y"])
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    rules_file = config_dir / "rules.yaml"
+    assert rules_file.exists()
+    assert chown_calls == [], "user-scope rules.yaml must not be chowned"
+    if os.name == "posix":
+        assert rules_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_enable_alerting_does_not_overwrite_existing_rules_path_in_config(
+    monkeypatch, tmp_path
+):
+    """If lynceus.yaml somehow already declares rules_path (operator
+    hand-edit between renders, or future config-render change), the
+    wizard must not append a duplicate key. The duplicate would break
+    yaml.safe_load with a "duplicate key" error and the daemon would
+    fail to start."""
+    target = _stub_path_resolution(monkeypatch, tmp_path)
+    config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    monkeypatch.setattr(
+        wiz,
+        "count_watchlist_by_pattern_type",
+        lambda db_path: {
+            "mac_range": 1,
+            "mac": 0,
+            "oui": 0,
+            "ssid": 0,
+            "ble_uuid": 0,
+        },
+    )
+    # Intercept render_config_yaml so its output already carries
+    # ``rules_path:`` — simulates the pre-existing key.
+    real_render = wiz.render_config_yaml
+
+    def render_with_rules_path(answers):
+        return real_render(answers) + '\nrules_path: "/operator/hand-picked/rules.yaml"\n'
+
+    monkeypatch.setattr(wiz, "render_config_yaml", render_with_rules_path)
+    rc = wiz.run_wizard(
+        _args(),
+        input_fn=_input_seq(
+            _alerting_full_inputs(gate="y", type_answers=["y"])
+        ),
+        getpass_fn=_getpass_seq(["tok"]),
+    )
+    assert rc == 0
+    # Config still parses cleanly — no duplicate key.
+    data = yaml.safe_load(target.read_text())
+    # The pre-existing value wins (the wizard refuses to append a duplicate).
+    assert data["rules_path"] == "/operator/hand-picked/rules.yaml"
+    # The new rules.yaml was still written at the wizard-chosen path.
+    assert (config_dir / "rules.yaml").exists()
+
+
+# ---- Kismet API key auto-locate (rc5) --------------------------------------
+
+
+def _write_session_db(path: Path, entries: list[dict]) -> Path:
+    import json as _json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps(entries), encoding="utf-8")
+    return path
+
+
+def test_kismet_api_key_candidate_paths_user_scope(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz.Path, "home", staticmethod(lambda: tmp_path / "alice"))
+    paths = _REAL_KISMET_CANDIDATE_PATHS("user")
+    assert paths == [tmp_path / "alice" / ".kismet" / "session.db"]
+
+
+def test_kismet_api_key_candidate_paths_system_scope_prefers_root(
+    monkeypatch, tmp_path
+):
+    """Under --system, /root/.kismet/ is probed FIRST — a production Kismet
+    runs as root under systemd, so its session DB lives in root's home.
+    $SUDO_USER's home is only a fallback. (Reversed from the rc-era ordering
+    that offered the invoking operator's key first and 401'd against a
+    root-run Kismet — the Pi bug.)"""
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setenv("SUDO_USER", "alice")
+    # Fake out pwd.getpwnam so we don't depend on the test host having an
+    # 'alice' account.
+    fake_pwd = MagicMock()
+    fake_pwd.getpwnam.return_value = MagicMock(pw_dir=str(tmp_path / "home" / "alice"))
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "pwd", fake_pwd)
+    monkeypatch.setattr(wiz.Path, "home", staticmethod(lambda: tmp_path / "root"))
+
+    paths = _REAL_KISMET_CANDIDATE_PATHS("system")
+    assert paths[0] == Path("/root") / ".kismet" / "session.db"
+    # $SUDO_USER's home is still present, as a lower-priority fallback.
+    assert tmp_path / "home" / "alice" / ".kismet" / "session.db" in paths
+    # And it must come AFTER /root in the ordering.
+    assert paths.index(Path("/root") / ".kismet" / "session.db") < paths.index(
+        tmp_path / "home" / "alice" / ".kismet" / "session.db"
+    )
+
+
+def test_kismet_api_key_candidate_paths_system_scope_no_sudo_user(monkeypatch, tmp_path):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setattr(wiz.Path, "home", staticmethod(lambda: tmp_path / "root"))
+    paths = _REAL_KISMET_CANDIDATE_PATHS("system")
+    # No SUDO_USER means we fall back to /root and Path.home().
+    assert Path("/root") / ".kismet" / "session.db" in paths
+    assert tmp_path / "root" / ".kismet" / "session.db" in paths
+
+
+def test_kismet_api_key_candidate_paths_windows_returns_empty(monkeypatch):
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
+    assert _REAL_KISMET_CANDIDATE_PATHS("user") == []
+    assert _REAL_KISMET_CANDIDATE_PATHS("system") == []
+
+
+def test_read_kismet_api_key_returns_first_when_single_entry(tmp_path):
+    p = _write_session_db(
+        tmp_path / "session.db",
+        [{"token": "deadbeefcafebabe1234", "name": "web logon", "role": "admin"}],
+    )
+    assert wiz._read_kismet_api_key(p) == ("deadbeefcafebabe1234", "web logon")
+
+
+def test_read_kismet_api_key_prefers_lynceus_named_entry(tmp_path):
+    p = _write_session_db(
+        tmp_path / "session.db",
+        [
+            {"token": "AAAA1111", "name": "web logon", "role": "admin"},
+            {"token": "BBBB2222", "name": "lynceus", "role": "readonly"},
+            {"token": "CCCC3333", "name": "other", "role": "readonly"},
+        ],
+    )
+    assert wiz._read_kismet_api_key(p) == ("BBBB2222", "lynceus")
+
+
+def test_read_kismet_api_key_prefers_readonly_over_admin(tmp_path):
+    p = _write_session_db(
+        tmp_path / "session.db",
+        [
+            {"token": "AAAA1111", "name": "web logon", "role": "admin"},
+            {"token": "BBBB2222", "name": "scanner", "role": "readonly"},
+        ],
+    )
+    assert wiz._read_kismet_api_key(p) == ("BBBB2222", "scanner")
+
+
+def test_read_kismet_api_key_falls_back_to_admin_when_no_readonly(tmp_path):
+    p = _write_session_db(
+        tmp_path / "session.db",
+        [
+            {"token": "ZZZ", "name": "scanreport", "role": "scanreport"},
+            {"token": "AAA", "name": "web logon", "role": "admin"},
+        ],
+    )
+    assert wiz._read_kismet_api_key(p) == ("AAA", "web logon")
+
+
+def test_read_kismet_api_key_returns_none_for_missing_file(tmp_path):
+    assert wiz._read_kismet_api_key(tmp_path / "does-not-exist") is None
+
+
+def test_read_kismet_api_key_returns_none_for_unreadable_file(tmp_path, monkeypatch):
+    """Simulate a permission-denied read — the parser must absorb the
+    OSError silently and return None so the wizard falls through to the
+    manual entry path."""
+    p = tmp_path / "session.db"
+    p.write_text("[]")
+
+    def _raise(*a, **kw):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(wiz.Path, "read_text", _raise)
+    assert wiz._read_kismet_api_key(p) is None
+
+
+def test_read_kismet_api_key_returns_none_for_malformed_json(tmp_path):
+    p = tmp_path / "session.db"
+    p.write_text("not-json{{{")
+    assert wiz._read_kismet_api_key(p) is None
+
+
+def test_read_kismet_api_key_returns_none_for_non_list_root(tmp_path):
+    p = tmp_path / "session.db"
+    p.write_text('{"token": "x", "name": "y"}')  # object, not list
+    assert wiz._read_kismet_api_key(p) is None
+
+
+def test_read_kismet_api_key_returns_none_for_empty_file(tmp_path):
+    p = tmp_path / "session.db"
+    p.write_text("")
+    assert wiz._read_kismet_api_key(p) is None
+
+
+def test_read_kismet_api_key_returns_none_for_empty_array(tmp_path):
+    p = _write_session_db(tmp_path / "session.db", [])
+    assert wiz._read_kismet_api_key(p) is None
+
+
+def test_read_kismet_api_key_skips_entries_with_empty_token(tmp_path):
+    p = _write_session_db(
+        tmp_path / "session.db",
+        [
+            {"token": "", "name": "ignored", "role": "readonly"},
+            {"token": "   ", "name": "also ignored", "role": "readonly"},
+            {"token": "REAL", "name": "real", "role": "admin"},
+        ],
+    )
+    assert wiz._read_kismet_api_key(p) == ("REAL", "real")
+
+
+def test_redact_kismet_api_key_format():
+    assert wiz._redact_kismet_api_key("abcd-this-is-a-long-token-wxyz") == "abcd...wxyz"
+
+
+def test_redact_kismet_api_key_short_input_collapses_to_placeholder():
+    """A pathologically short key must not approximate itself in the
+    preview — head+tail of a 6-char key would reveal the whole thing."""
+    assert wiz._redact_kismet_api_key("short") == "***"
+
+
+def test_redact_kismet_api_key_strips_whitespace():
+    assert wiz._redact_kismet_api_key("  abcd-mid-content-wxyz  ") == "abcd...wxyz"
+
+
+def test_run_wizard_autolocate_hit_yes_skips_manual_prompt(monkeypatch, tmp_path, capsys):
+    """Auto-locate finds a key; operator answers Y; the manual prompt
+    must be skipped and the located key persisted into the config."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    session_db = _write_session_db(
+        tmp_path / "alice" / ".kismet" / "session.db",
+        [{"token": "AUTOLOCATEDKEY1234567", "name": "lynceus", "role": "readonly"}],
+    )
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [session_db])
+    # Kismet up and the located key authenticates → validated offer.
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", lambda *a, **k: (True, 200))
+
+    inputs = [
+        "",  # kismet URL default
+        "y",  # use the located key
+        "wlan0",  # capture interface (freeform)
+        "",  # probe_ssids default
+        "",  # ble_friendly_names default
+        "",  # ble_bridge_enabled: default (N -> False)
+        "https://ntfy.sh",
+        "lynceus-feedface",
+        "",  # rssi default
+        "",  # severity overrides default
+        "",  # enable-alerting gate default
+    ]
+
+    # The getpass list is intentionally empty — auto-locate-hit + Y must
+    # mean prompt_secret is never called, so any getpass call would
+    # error out and fail this test.
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq([]),
+    )
+    assert rc == 0
+
+    target = tmp_path / "lynceus.yaml"
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_api_key"] == "AUTOLOCATEDKEY1234567"
+
+    out = capsys.readouterr().out
+    assert "Searching for an existing API key on disk" in out
+    assert "Found a key in" in out
+    assert "verified against Kismet" in out  # validated-offer wording
+    assert "AUTO...4567" in out  # redacted preview format
+    # The full key MUST NOT appear anywhere in stdout.
+    assert "AUTOLOCATEDKEY1234567" not in out
+
+
+def test_run_wizard_autolocate_hit_no_falls_through_to_manual(monkeypatch, tmp_path, capsys):
+    """Auto-locate finds a key; operator answers N; the Piece 1
+    walkthrough + manual prompt run unchanged, and the manually-entered
+    key (not the located one) ends up in the config."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    session_db = _write_session_db(
+        tmp_path / "alice" / ".kismet" / "session.db",
+        [{"token": "REJECTEDKEY1234567890", "name": "lynceus", "role": "readonly"}],
+    )
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [session_db])
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", lambda *a, **k: (True, 200))
+
+    inputs = [
+        "",  # kismet URL default
+        "n",  # reject the located key
+        "wlan0",
+        "",
+        "",
+        "",  # ble_bridge_enabled
+        "https://ntfy.sh",
+        "lynceus-feedface",
+        "",
+        "",
+        "",
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq(["MANUALLYTYPEDKEY"]),
+    )
+    assert rc == 0
+
+    target = tmp_path / "lynceus.yaml"
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_api_key"] == "MANUALLYTYPEDKEY"
+
+    out = capsys.readouterr().out
+    # Piece 1 walkthrough renders unchanged on the fall-through path.
+    assert "Where to find your API key" in out
+    assert "API Keys" in out
+    # Located key never echoed in full.
+    assert "REJECTEDKEY1234567890" not in out
+    # Manually-typed key likewise never echoed in any path.
+    assert "MANUALLYTYPEDKEY" not in out
+
+
+def test_run_wizard_autolocate_miss_renders_piece1_walkthrough_unchanged(
+    monkeypatch, tmp_path, capsys
+):
+    """No candidate path readable → the Piece 1 walkthrough + manual
+    prompt run exactly as before. Regression guard against accidentally
+    making auto-locate non-additive."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # Default autouse stub already returns [], but make the intent explicit:
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [])
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["manualkey"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Searching for an existing API key on disk" in out
+    assert "no existing key found" in out
+    # Piece 1 walkthrough still rendered.
+    assert "Where to find your API key" in out
+    # No false-positive "Found a key" line.
+    assert "Found a key in" not in out
+
+
+def test_run_wizard_autolocate_unreadable_file_falls_through_silently(
+    monkeypatch, tmp_path, capsys
+):
+    """A candidate path that exists but can't be parsed must result in a
+    silent miss — no permission-denied or parse-error noise reaches the
+    operator."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    # Lay down a malformed session.db on the first candidate path.
+    bad = tmp_path / "alice" / ".kismet" / "session.db"
+    bad.parent.mkdir(parents=True)
+    bad.write_text("not-json{{{")
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [bad])
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["manualkey"]),
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    out = captured.out
+    err = captured.err
+    assert "no existing key found" in out
+    # Errors must NOT bubble up to the operator.
+    assert "JSON" not in out and "json" not in out
+    assert "parse" not in out.lower()
+    assert "permission" not in out.lower()
+    assert err == ""
+
+
+def test_run_wizard_autolocate_redacted_preview_never_leaks_full_key(
+    monkeypatch, tmp_path, capsys
+):
+    """End-to-end redaction contract: the full located key must not
+    appear in stdout, stderr, or the wizard's summary block under any
+    flow, including the accept-the-key path where the key is the one
+    written into lynceus.yaml."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    sentinel = "SECRETSECRETSECRET99"
+    session_db = _write_session_db(
+        tmp_path / "alice" / ".kismet" / "session.db",
+        [{"token": sentinel, "name": "lynceus", "role": "readonly"}],
+    )
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [session_db])
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", lambda *a, **k: (True, 200))
+
+    inputs = [
+        "",  # kismet URL default
+        "",  # accept the located key (Y is default)
+        "wlan0",
+        "",
+        "",
+        "",  # ble_bridge_enabled
+        "https://ntfy.sh",
+        "lynceus-feedface",
+        "",
+        "",
+        "",
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq([]),
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out
+    assert sentinel not in captured.err
+
+
+def test_run_wizard_autolocate_walks_multiple_candidates_until_hit(
+    monkeypatch, tmp_path
+):
+    """Candidate list is consulted in order; an absent or unreadable
+    first entry doesn't short-circuit the second."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    missing = tmp_path / "missing" / "session.db"  # absent
+    hit = _write_session_db(
+        tmp_path / "alice" / ".kismet" / "session.db",
+        [{"token": "SECONDCANDIDATEKEY99", "name": "lynceus", "role": "readonly"}],
+    )
+    monkeypatch.setattr(
+        wiz, "_kismet_api_key_candidate_paths", lambda scope: [missing, hit]
+    )
+    # Kismet down → validation inconclusive → first readable candidate offered.
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", lambda *a, **k: (False, None))
+
+    inputs = [
+        "",  # kismet URL default
+        "y",  # accept located key
+        "wlan0",
+        "",
+        "",
+        "",  # ble_bridge_enabled
+        "https://ntfy.sh",
+        "lynceus-feedface",
+        "",
+        "",
+        "",
+    ]
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(inputs),
+        getpass_fn=_getpass_seq([]),
+    )
+    assert rc == 0
+    target = tmp_path / "lynceus.yaml"
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_api_key"] == "SECONDCANDIDATEKEY99"
+
+
+# ---- _locate_kismet_api_key: validate-then-offer, root-first fallback ------
+#
+# Option (d) for the --system Kismet-key location bug: validate each readable
+# candidate against the live Kismet when reachable and offer only one that
+# authenticates; fall back to a root-first unvalidated offer when Kismet is
+# down. These exercise the resolver directly (no run_wizard plumbing).
+
+
+def _kv(tmp_path, name, token):
+    return _write_session_db(
+        tmp_path / name / ".kismet" / "session.db",
+        [{"token": token, "name": "lynceus", "role": "readonly"}],
+    )
+
+
+def test_locate_returns_validated_key_when_kismet_authenticates(monkeypatch, tmp_path):
+    """Kismet up and the first candidate authenticates → return it,
+    validated=True."""
+    db = _kv(tmp_path, "root", "ROOTKEY00000000000001")
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [db])
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", lambda url, token: (True, 200))
+
+    located = wiz._locate_kismet_api_key("system", "http://127.0.0.1:2501")
+    assert located is not None
+    token, _name, path, validated = located
+    assert token == "ROOTKEY00000000000001"
+    assert path == db
+    assert validated is True
+
+
+def test_locate_prefers_first_authenticating_candidate(monkeypatch, tmp_path):
+    """With several readable candidates, the wrong one (401) is skipped and
+    the one that authenticates is returned — this is the core of the fix:
+    root's key validates even though $SUDO_USER's is also on disk."""
+    root_db = _kv(tmp_path, "root", "ROOTKEYAUTHENTICATES1")
+    sudo_db = _kv(tmp_path, "alice", "SUDOKEYREJECTED000001")
+    monkeypatch.setattr(
+        wiz, "_kismet_api_key_candidate_paths", lambda scope: [root_db, sudo_db]
+    )
+
+    def fake_validate(url, token):
+        return (True, 200) if token == "ROOTKEYAUTHENTICATES1" else (False, 401)
+
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", fake_validate)
+    located = wiz._locate_kismet_api_key("system", "http://127.0.0.1:2501")
+    assert located is not None
+    assert located[0] == "ROOTKEYAUTHENTICATES1"
+    assert located[3] is True
+
+
+def test_locate_suppresses_offer_when_kismet_rejects_every_candidate(
+    monkeypatch, tmp_path
+):
+    """Regression for the Pi 401: Kismet is up (answers 401) but no on-disk
+    key authenticates. The resolver must offer NOTHING rather than hand the
+    operator a key it just proved is wrong."""
+    sudo_db = _kv(tmp_path, "alice", "WRONGUSERKEY000000001")
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [sudo_db])
+    # Kismet answered (status 401) but rejected the key.
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", lambda url, token: (False, 401))
+
+    assert wiz._locate_kismet_api_key("system", "http://127.0.0.1:2501") is None
+
+
+def test_locate_falls_back_unvalidated_when_kismet_unreachable(monkeypatch, tmp_path):
+    """Kismet down (status None for every probe) → validation inconclusive →
+    offer the first readable candidate flagged unvalidated, since the wizard
+    supports configuring before Kismet is up."""
+    root_db = _kv(tmp_path, "root", "ROOTKEY00000000000001")
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [root_db])
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", lambda url, token: (False, None))
+
+    located = wiz._locate_kismet_api_key("system", "http://127.0.0.1:2501")
+    assert located is not None
+    assert located[0] == "ROOTKEY00000000000001"
+    assert located[3] is False
+
+
+def test_locate_no_url_returns_first_candidate_unvalidated(monkeypatch, tmp_path):
+    """No URL to validate against (can't probe) → first candidate, unvalidated.
+    _validate must not even be called."""
+    db = _kv(tmp_path, "root", "ROOTKEY00000000000001")
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [db])
+
+    def boom(*a, **k):  # pragma: no cover - must not be reached
+        raise AssertionError("validation attempted without a Kismet URL")
+
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", boom)
+    located = wiz._locate_kismet_api_key("system", None)
+    assert located is not None
+    assert located[0] == "ROOTKEY00000000000001"
+    assert located[3] is False
+
+
+def test_locate_returns_none_when_no_candidates(monkeypatch):
+    """No readable session.db anywhere → None (and no validation attempted)."""
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [])
+
+    def boom(*a, **k):  # pragma: no cover - must not be reached
+        raise AssertionError("validation attempted with no candidates")
+
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", boom)
+    assert wiz._locate_kismet_api_key("system", "http://127.0.0.1:2501") is None
+
+
+def test_run_wizard_autolocate_suppressed_when_kismet_rejects_key(
+    monkeypatch, tmp_path, capsys
+):
+    """End-to-end: an on-disk key that a reachable Kismet rejects (401) is
+    NOT auto-offered; the wizard falls through to the manual paste path."""
+    _stub_path_resolution(monkeypatch, tmp_path)
+    _stub_bundled_import(monkeypatch)
+    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+    session_db = _kv(tmp_path, "alice", "WRONGUSERKEY000000001")
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [session_db])
+    monkeypatch.setattr(wiz, "_validate_kismet_api_key", lambda *a, **k: (False, 401))
+
+    rc = wiz.run_wizard(
+        _args(skip_probes=True),
+        input_fn=_input_seq(_full_input_sequence()),
+        getpass_fn=_getpass_seq(["manualkey"]),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no existing key found" in out
+    assert "Found a key in" not in out
+    # The rejected key must never be offered or written.
+    target = tmp_path / "lynceus.yaml"
+    data = yaml.safe_load(target.read_text())
+    assert data["kismet_api_key"] == "manualkey"
+
+
+def test_validate_kismet_api_key_maps_health_check(monkeypatch):
+    """_validate_kismet_api_key forwards (reachable, status_code) from
+    KismetClient.health_check."""
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def health_check(self):
+            return {"reachable": False, "version": None, "error": "x", "status_code": 401}
+
+    monkeypatch.setattr(wiz, "KismetClient", _FakeClient)
+    assert wiz._validate_kismet_api_key("http://x", "tok") == (False, 401)
+
+
+def test_main_reconfigures_stdout_utf8_for_cp1252_consoles(monkeypatch):
+    """Windows default-console regression: cp1252 stdout must not crash main().
+
+    `_print_section` writes U+2550 BOX DRAWINGS DOUBLE HORIZONTAL, which
+    cp1252 cannot encode. Before the fix, `lynceus-setup` raised
+    UnicodeEncodeError on a Windows console whose default code page was
+    not utf-8. main() now reconfigures sys.stdout to utf-8 at entry, so
+    even a cp1252-encoded wrapper survives subsequent box-drawing prints.
+    """
+    import io
+
+    fake = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", write_through=True)
+    monkeypatch.setattr(sys, "stdout", fake)
+
+    # --version exits 0 via SystemExit after argparse prints; reaching
+    # that point at all proves the reconfigure() call inside main() ran
+    # without an AttributeError-style regression.
+    with pytest.raises(SystemExit) as excinfo:
+        wiz.main(["--version"])
+    assert excinfo.value.code == 0
+
+    # Post-reconfigure, the wrapper must accept the box-drawing char that
+    # would have raised UnicodeEncodeError under the original cp1252
+    # encoding. Call the helper directly to confirm.
+    wiz._print_section("Test")
+    fake.flush()
+    body = fake.buffer.getvalue().decode("utf-8")
+    assert "═" in body
+
+
+# Suppress the unused-import warning for sys (used by helpers above).
+_ = sys

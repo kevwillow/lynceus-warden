@@ -1,0 +1,960 @@
+"""Tests for the top-level install.sh shipped with the v0.3 release.
+
+Linux-only — install.sh is opinionated about systemd integration and
+refuses to run on macOS or Windows. Operators on those platforms use
+``pip install -e .`` from a clone instead.
+
+install.sh installs Lynceus into a dedicated Python venv (PEP 668
+compliance: recent Debian/Ubuntu/Kali ship an externally-managed
+system Python and reject ``pip install`` against it). The lynceus-*
+console scripts are exposed via symlinks from the venv's ``bin/``
+into a directory on PATH (``~/.local/bin`` for ``--user``,
+``/usr/local/bin`` for ``--system``).
+
+These tests exercise install.sh through ``--dry-run`` to avoid touching
+the real system. The dry run must:
+
+  * still complete pre-flight (Python / venv module / systemctl detection),
+  * print every command it would have executed (venv creation,
+    pip-install-into-venv, symlink commands),
+  * NOT invoke pip, python -m venv, useradd, systemctl, ln, or chown.
+
+When the dry run is exercised under ``--user`` we point ``$HOME`` at a
+``tmp_path`` sandbox so the directory-creation step lands somewhere
+disposable instead of the test runner's real home.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+INSTALL_SH = REPO_ROOT / "install.sh"
+SYSTEMD_DIR = REPO_ROOT / "systemd"
+
+# Tests that need to *run* install.sh under bash use this marker; tests
+# that only inspect file contents (grep-based perm assertions, systemd
+# unit content checks) do not, so they execute on Windows/macOS too.
+_NEEDS_BASH = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="install.sh is Linux-only; skipping bash-driven tests on non-Linux platforms.",
+)
+
+
+def _run(args, *, env_extra=None, cwd=None, check=False, timeout=30):
+    """Invoke install.sh via bash with the given args. Returns CompletedProcess."""
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - bash is required everywhere we'd run
+        pytest.skip("bash not on PATH")
+    env = os.environ.copy()
+    if env_extra:
+        env.update(env_extra)
+    cmd = [bash, str(INSTALL_SH), *args]
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(cwd) if cwd is not None else None,
+        check=check,
+        timeout=timeout,
+    )
+
+
+# ---- presence + syntax ----------------------------------------------------
+
+
+def test_install_sh_exists():
+    """Cross-platform existence check; the executable-bit assertion lives
+    on the Linux-only test below since Windows doesn't model that bit."""
+    assert INSTALL_SH.exists(), f"missing installer at {INSTALL_SH}"
+
+
+@_NEEDS_BASH
+def test_install_sh_is_executable():
+    mode = INSTALL_SH.stat().st_mode
+    assert mode & 0o111, "install.sh must be executable"
+
+
+@_NEEDS_BASH
+def test_install_sh_passes_bash_syntax_check():
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover
+        pytest.skip("bash not on PATH")
+    r = subprocess.run(
+        [bash, "-n", str(INSTALL_SH)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert r.returncode == 0, f"bash -n failed:\nstderr:\n{r.stderr}"
+
+
+# ---- --help ---------------------------------------------------------------
+
+
+@_NEEDS_BASH
+def test_install_sh_help_exits_zero_with_usage():
+    r = _run(["--help"])
+    assert r.returncode == 0, f"stderr:\n{r.stderr}"
+    out = r.stdout + r.stderr
+    assert "Usage" in out or "usage" in out
+    # Modes must be discoverable from --help.
+    assert "--user" in out
+    assert "--system" in out
+
+
+# ---- non-Linux refusal ----------------------------------------------------
+
+
+@_NEEDS_BASH
+def test_install_sh_refuses_on_non_linux_uname(tmp_path):
+    """A stub ``uname`` earlier on PATH simulates running on macOS. install.sh
+    must detect this and exit non-zero with a clear "Linux only" message."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_uname = fake_bin / "uname"
+    fake_uname.write_text("#!/usr/bin/env bash\necho Darwin\n")
+    fake_uname.chmod(0o755)
+
+    env_path = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    r = _run(["--user", "--dry-run"], env_extra={"PATH": env_path})
+    assert r.returncode != 0
+    combined = r.stdout + r.stderr
+    assert "Linux only" in combined or "Linux-only" in combined
+
+
+# ---- --user with sudo refusal (v0.7.9) -----------------------------------
+
+
+def test_install_sh_contains_sudo_user_refusal_block():
+    """Content-only check that runs on every platform. Asserts install.sh
+    carries the EUID=0 + explicit --user refusal block (and the
+    SCOPE_EXPLICIT tracking flag that gates it). Belt-and-suspenders
+    alongside the bash-driven Linux test below; this one catches a
+    refactor that drops the refusal without anyone needing to be on
+    Linux to notice."""
+    body = INSTALL_SH.read_text()
+    assert "SCOPE_EXPLICIT=1" in body, "explicit-scope tracking flag missing"
+    assert "Refusing to install --user under sudo." in body
+    assert 'SCOPE_EXPLICIT" -eq 1' in body, "refusal must gate on explicit --user"
+    assert '"$(id -u)" -eq 0' in body, "refusal must gate on EUID=0"
+
+
+@_NEEDS_BASH
+def test_install_sh_user_with_sudo_refuses(tmp_path):
+    """``sudo ./install.sh --user`` must refuse rather than silently install
+    to ``/root/.local/share/lynceus/`` (the path $HOME resolves to under
+    sudo on most distros). Auto-scope already routes EUID=0 to --system
+    when no scope flag is passed; this refusal targets the explicit
+    ``--user`` case where the operator's intent is unambiguous and the
+    correct recovery is to drop the flag (or drop the sudo).
+
+    Mirrors the analogous refusal at src/lynceus/cli/setup.py:1412 for
+    ``sudo lynceus-setup`` without ``--system``.
+
+    A stub ``id`` earlier on PATH simulates EUID=0; the real test runner
+    is a non-root user, so without this stub the auto-scope branch
+    would just set SCOPE=user and proceed."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_id = fake_bin / "id"
+    # Mimic real `id -u` (echo 0) and delegate every other invocation
+    # to the real binary so unrelated `id` callers in the script keep
+    # working. The script only consults `id -u` in two places (the
+    # auto-scope branch and the --system root check), both of which
+    # should observe the simulated EUID=0.
+    fake_id.write_text(
+        '#!/usr/bin/env bash\n'
+        'if [[ "$1" == "-u" ]]; then echo 0; exit 0; fi\n'
+        'exec /usr/bin/id "$@"\n'
+    )
+    fake_id.chmod(0o755)
+
+    env_path = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    sandbox_home = tmp_path / "home"
+    sandbox_home.mkdir()
+    env = {"HOME": str(sandbox_home), "PATH": env_path}
+    r = _run(["--user"], env_extra=env)
+    assert r.returncode == 2, f"expected exit 2; got {r.returncode}\n{r.stderr}"
+    combined = r.stdout + r.stderr
+    # The refusal must name both correct recovery invocations side-by-side.
+    assert "Refusing to install --user under sudo" in combined
+    assert "sudo ./install.sh" in combined
+    assert "./install.sh --user" in combined
+    # No install actions should have started.
+    assert "Installing Lynceus" not in combined
+
+
+@_NEEDS_BASH
+def test_install_sh_user_with_sudo_dry_run_proceeds(tmp_path):
+    """``sudo ./install.sh --user --dry-run`` must NOT refuse — dry-run is
+    explicitly the preview surface and an operator should be able to
+    inspect the user-scope plan from a root shell without first
+    desudoing. Real install (no --dry-run) is the path that refuses."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_id = fake_bin / "id"
+    fake_id.write_text(
+        '#!/usr/bin/env bash\n'
+        'if [[ "$1" == "-u" ]]; then echo 0; exit 0; fi\n'
+        'exec /usr/bin/id "$@"\n'
+    )
+    fake_id.chmod(0o755)
+
+    env_path = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    sandbox_home = tmp_path / "home"
+    sandbox_home.mkdir()
+    env = {"HOME": str(sandbox_home), "PATH": env_path}
+    if "VIRTUAL_ENV" in os.environ:
+        env["VIRTUAL_ENV"] = ""
+    r = _run(["--user", "--dry-run"], env_extra=env)
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "Refusing to install --user under sudo" not in out
+    # Dry-run still produces the user-scope plan.
+    assert "python3 -m venv" in out
+    assert ".local/share/lynceus/.venv" in out
+
+
+@_NEEDS_BASH
+def test_install_sh_user_without_sudo_proceeds(tmp_path):
+    """Regression check: the new refusal must NOT fire for a normal
+    ``--user`` install (EUID != 0). Without the fake-id stub, the test
+    runner's own UID is observed and the install proceeds as before."""
+    if os.geteuid() == 0:
+        pytest.skip("test runner is root; cannot exercise the non-root pass-through")
+    sandbox_home = tmp_path / "home"
+    sandbox_home.mkdir()
+    env = {"HOME": str(sandbox_home)}
+    if "VIRTUAL_ENV" in os.environ:
+        env["VIRTUAL_ENV"] = ""
+    r = _run(["--user", "--dry-run"], env_extra=env)
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "Refusing to install --user under sudo" not in out
+
+
+@_NEEDS_BASH
+def test_install_sh_no_args_with_euid_zero_auto_resolves_system(tmp_path):
+    """Regression check: ``sudo ./install.sh`` (no scope flag) under EUID=0
+    must still auto-resolve to --system, not trip the new --user refusal.
+    The refusal only fires on EXPLICIT --user; auto-scope is unchanged."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_id = fake_bin / "id"
+    fake_id.write_text(
+        '#!/usr/bin/env bash\n'
+        'if [[ "$1" == "-u" ]]; then echo 0; exit 0; fi\n'
+        'exec /usr/bin/id "$@"\n'
+    )
+    fake_id.chmod(0o755)
+
+    env_path = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    env = {"PATH": env_path}
+    if shutil.which("systemctl") is None:
+        pytest.skip("systemctl not on PATH; --system pre-flight would fail")
+    r = _run(["--dry-run"], env_extra=env)
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "Refusing to install --user under sudo" not in out
+    # Auto-resolved to system: --system markers must appear.
+    assert "/opt/lynceus/.venv" in out
+    assert "lynceus:lynceus" in out
+
+
+# ---- --system without root -----------------------------------------------
+
+
+@_NEEDS_BASH
+def test_install_sh_system_without_root_refuses():
+    """Tests run as a regular user. A real ``--system`` install must
+    reject with a clear ``Use sudo`` hint instead of attempting the
+    install. (``--system --dry-run`` is intentionally allowed without
+    root so operators can preview the install plan; that path is
+    covered separately below.)"""
+    if os.geteuid() == 0:
+        pytest.skip("test runner is root; cannot exercise the non-root rejection path")
+    r = _run(["--system"])
+    assert r.returncode != 0
+    combined = r.stdout + r.stderr
+    assert "sudo" in combined.lower()
+
+
+# ---- --user dry-run -------------------------------------------------------
+
+
+@_NEEDS_BASH
+def test_install_sh_user_dry_run_prints_venv_and_pip_commands(tmp_path):
+    """``--user --dry-run`` must report the venv creation and pip-in-venv
+    install it *would* have run, and must not actually invoke either."""
+    sandbox_home = tmp_path / "home"
+    sandbox_home.mkdir()
+    env = {"HOME": str(sandbox_home)}
+    if "VIRTUAL_ENV" in os.environ:
+        env["VIRTUAL_ENV"] = ""
+    r = _run(["--user", "--dry-run"], env_extra=env)
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    # Dry-run must reveal both the venv creation and a pip-in-venv install.
+    assert "python3 -m venv" in out
+    assert "pip install" in out
+    # PEP 668 compliance: install.sh must NOT bypass the system policy.
+    assert "--break-system-packages" not in out
+    # User install creates a venv under ~/.local/share/lynceus/.venv.
+    assert ".local/share/lynceus/.venv" in out
+    # Symlinks for the console scripts go into ~/.local/bin.
+    assert ".local/bin" in out
+    # Standard XDG-style targets are still referenced for config/data/log.
+    assert ".config/lynceus" in out
+    assert ".local/share/lynceus" in out
+
+
+@_NEEDS_BASH
+def test_install_sh_user_dry_run_lists_console_script_symlinks(tmp_path):
+    """Each entry-point command shipped in pyproject.toml must show up
+    in the dry-run plan as a symlink target."""
+    sandbox_home = tmp_path / "home"
+    sandbox_home.mkdir()
+    env = {"HOME": str(sandbox_home)}
+    if "VIRTUAL_ENV" in os.environ:
+        env["VIRTUAL_ENV"] = ""
+    r = _run(["--user", "--dry-run"], env_extra=env)
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    for script in (
+        "lynceus",
+        "lynceus-ui",
+        "lynceus-quickstart",
+        "lynceus-setup",
+        "lynceus-seed-watchlist",
+        "lynceus-import-argus",
+    ):
+        assert script in out, f"console script {script!r} missing from dry-run output"
+
+
+@_NEEDS_BASH
+def test_install_sh_user_dry_run_does_not_invoke_pip(tmp_path):
+    """A stub pip on PATH that touches a tripwire file proves dry-run did
+    NOT actually call pip — neither the (now-irrelevant) system pip, nor
+    the venv pip we create."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    tripwire = tmp_path / "pip-was-called"
+    fake_pip = fake_bin / "pip"
+    fake_pip.write_text(f'#!/usr/bin/env bash\necho "fake-pip invoked" > {tripwire}\nexit 0\n')
+    fake_pip.chmod(0o755)
+
+    sandbox_home = tmp_path / "home"
+    sandbox_home.mkdir()
+    env_path = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    env = {"HOME": str(sandbox_home), "PATH": env_path}
+    if "VIRTUAL_ENV" in os.environ:
+        env["VIRTUAL_ENV"] = ""
+    r = _run(["--user", "--dry-run"], env_extra=env)
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    assert not tripwire.exists(), "dry-run must not invoke pip"
+
+
+# ---- --system dry-run -----------------------------------------------------
+
+
+@_NEEDS_BASH
+def test_install_sh_system_dry_run_mentions_venv_path():
+    """``--system --dry-run`` (no root needed for preview) must reference
+    the dedicated /opt/lynceus/.venv path and a pip-in-venv install."""
+    if shutil.which("systemctl") is None:
+        pytest.skip("systemctl not on PATH; --system pre-flight would fail")
+    r = _run(["--system", "--dry-run"])
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "/opt/lynceus/.venv" in out
+    assert "python3 -m venv" in out
+    assert "pip install" in out
+    assert "--break-system-packages" not in out
+    # Symlinks land in /usr/local/bin under --system.
+    assert "/usr/local/bin" in out
+    # Ownership is set to the lynceus system user.
+    assert "chown" in out
+    assert "lynceus:lynceus" in out
+
+
+@_NEEDS_BASH
+def test_install_sh_system_dry_run_is_non_editable():
+    """Regression (Pi --system import crash): --system must install
+    NON-editable. ``pip install -e`` leaves an ``__editable__*.pth`` pointing
+    at ``$SCRIPT_DIR/src`` in the invoking operator's $HOME, which the
+    ``lynceus`` service user can't traverse — so the systemd daemon (running
+    as User=lynceus) crashes at import on every start. The --system pip line
+    must therefore NOT carry ``-e``; it still installs the package, just
+    copied into /opt/lynceus/.venv (a wheel build) rather than as an editable
+    pointer into $HOME."""
+    if shutil.which("systemctl") is None:
+        pytest.skip("systemctl not on PATH; --system pre-flight would fail")
+    r = _run(["--system", "--dry-run"])
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "pip install --upgrade -e" not in out, (
+        "--system must not pip-install editable; an __editable__*.pth into "
+        "$HOME is exactly what the lynceus service user cannot traverse"
+    )
+    assert "pip install --upgrade" in out
+
+
+@_NEEDS_BASH
+def test_install_sh_user_dry_run_is_editable(tmp_path):
+    """The --user path stays editable (``pip install -e``) for dev
+    convenience — the Bug 2 fix is scoped to --system only and must not
+    change --user behavior."""
+    sandbox_home = tmp_path / "home"
+    sandbox_home.mkdir()
+    env = {"HOME": str(sandbox_home)}
+    if "VIRTUAL_ENV" in os.environ:
+        env["VIRTUAL_ENV"] = ""
+    r = _run(["--user", "--dry-run"], env_extra=env)
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "pip install --upgrade -e" in out
+
+
+# ---- --uninstall dry-run --------------------------------------------------
+
+
+@_NEEDS_BASH
+def test_install_sh_uninstall_dry_run_lists_symlinks_and_venv():
+    """``--uninstall --dry-run`` must list both the venv that would be
+    removed and the console-script symlinks that would be unlinked."""
+    if shutil.which("systemctl") is None:
+        pytest.skip("systemctl not on PATH; --uninstall pre-flight would fail")
+    r = _run(["--uninstall", "--dry-run"])
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "/opt/lynceus/.venv" in out
+    assert "/usr/local/bin" in out
+    # Each console script must show up so the operator can audit the plan.
+    for script in (
+        "lynceus-ui",
+        "lynceus-quickstart",
+        "lynceus-setup",
+        "lynceus-seed-watchlist",
+        "lynceus-import-argus",
+    ):
+        assert script in out, f"console script {script!r} missing from uninstall dry-run"
+
+
+# ---- python3-venv module missing -----------------------------------------
+
+
+@_NEEDS_BASH
+def test_install_sh_aborts_when_python3_venv_unavailable(tmp_path):
+    """Some minimal Debian/Ubuntu images ship python3 without the venv
+    module. install.sh must detect this in pre-flight and exit with a
+    pointer to ``apt install python3-venv`` rather than crashing midway
+    through the install."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_python3 = fake_bin / "python3"
+    fake_python3.write_text(
+        "#!/usr/bin/env bash\n"
+        "# Stub python3: passes through to the real interpreter for everything\n"
+        "# except 'python3 -m venv ...', which exits non-zero to simulate a\n"
+        "# system that's missing the python3-venv apt package.\n"
+        'if [[ "${1:-}" == "-m" && "${2:-}" == "venv" ]]; then\n'
+        "    echo 'Error: No module named venv' >&2\n"
+        "    exit 1\n"
+        "fi\n"
+        "for cand in /usr/bin/python3 /usr/local/bin/python3 /bin/python3; do\n"
+        '    if [[ -x "$cand" ]]; then exec "$cand" "$@"; fi\n'
+        "done\n"
+        "echo 'no real python3 available for stub passthrough' >&2\n"
+        "exit 127\n"
+    )
+    fake_python3.chmod(0o755)
+
+    sandbox_home = tmp_path / "home"
+    sandbox_home.mkdir()
+    env_path = f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    env = {"HOME": str(sandbox_home), "PATH": env_path}
+    if "VIRTUAL_ENV" in os.environ:
+        env["VIRTUAL_ENV"] = ""
+    r = _run(["--user", "--dry-run"], env_extra=env)
+    assert r.returncode != 0, f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    combined = r.stdout + r.stderr
+    assert "python3-venv" in combined
+    assert "apt install python3-venv" in combined
+
+
+# ---- systemd unit files ---------------------------------------------------
+
+
+@pytest.mark.parametrize("unit_name", ["lynceus.service", "lynceus-ui.service"])
+def test_systemd_unit_has_required_sections(unit_name):
+    unit_path = SYSTEMD_DIR / unit_name
+    assert unit_path.exists(), f"missing unit file: {unit_path}"
+    content = unit_path.read_text()
+    for section in ("[Unit]", "[Service]", "[Install]"):
+        assert section in content, f"{unit_name} missing {section}"
+
+
+def test_systemd_unit_lynceus_execstart_invokes_lynceus_with_config():
+    content = (SYSTEMD_DIR / "lynceus.service").read_text()
+    assert "ExecStart=" in content
+    # ExecStart points at the venv binary directly so the daemon does
+    # not depend on whatever happens to be on the systemd PATH and so a
+    # PEP-668-managed system Python is irrelevant at runtime.
+    assert "/opt/lynceus/.venv/bin/lynceus" in content
+    assert "--config /etc/lynceus/lynceus.yaml" in content
+
+
+def test_systemd_unit_lynceus_ui_execstart_invokes_lynceus_ui():
+    content = (SYSTEMD_DIR / "lynceus-ui.service").read_text()
+    assert "/opt/lynceus/.venv/bin/lynceus-ui" in content
+    assert "--config /etc/lynceus/lynceus.yaml" in content
+
+
+def test_systemd_units_run_as_lynceus_user():
+    for name in ("lynceus.service", "lynceus-ui.service"):
+        content = (SYSTEMD_DIR / name).read_text()
+        assert "User=lynceus" in content, f"{name} must run as lynceus user"
+        assert "Group=lynceus" in content, f"{name} must run in lynceus group"
+
+
+def test_systemd_units_have_hardening_directives():
+    """Spot-check that the units pick up the hardening the prompt
+    enumerated, so a future careless edit cannot quietly drop them."""
+    for name in ("lynceus.service", "lynceus-ui.service"):
+        content = (SYSTEMD_DIR / name).read_text()
+        assert "NoNewPrivileges=true" in content, f"{name} missing NoNewPrivileges"
+        assert "ProtectSystem=strict" in content, f"{name} missing ProtectSystem"
+        assert "ProtectHome=true" in content, f"{name} missing ProtectHome"
+        assert "PrivateTmp=true" in content, f"{name} missing PrivateTmp"
+        # ReadWritePaths must include both the data and log directories or
+        # the daemon cannot persist anything under ProtectSystem=strict.
+        assert "/var/lib/lynceus" in content
+        assert "/var/log/lynceus" in content
+
+
+def test_systemd_unit_lynceus_ui_orders_after_daemon():
+    content = (SYSTEMD_DIR / "lynceus-ui.service").read_text()
+    # Look at the [Unit] section to make sure the UI starts after the daemon.
+    unit_block = content.split("[Service]", 1)[0]
+    assert "lynceus.service" in unit_block, (
+        "lynceus-ui must declare After=/Wants= on lynceus.service in [Unit]"
+    )
+
+
+# ---- S5 regression: /etc/lynceus directory ownership ----------------------
+#
+# rc1's install.sh created /etc/lynceus root:root 0755 and only chowned
+# /var/lib/lynceus and /var/log/lynceus to lynceus:lynceus. The lynceus
+# group could enter /etc/lynceus through the world-execute bit, but a
+# defence-in-depth posture (or future tightening) requires that the
+# directory itself grant traversal explicitly to the daemon's group.
+# The fix grants ``root:lynceus 0750``: file-level perms (0640) on
+# lynceus.yaml are then sufficient because the daemon can traverse
+# /etc/lynceus on the strength of being in the lynceus group, and
+# nothing else on the box can (mode 0750 = no other-traverse).
+#
+# These tests are grep-based on install.sh content, so they don't need
+# bash and run on every platform.
+
+
+def test_install_sh_grants_lynceus_group_traversal_on_etc_lynceus():
+    """The install.sh /etc/lynceus mkdir must be followed by an explicit
+    ``chown root:lynceus`` and ``chmod 0750`` so the daemon can traverse
+    the directory to reach lynceus.yaml. Without this S5 fix, file-level
+    perms on the config don't matter — the daemon is denied at the
+    directory boundary."""
+    content = INSTALL_SH.read_text()
+    assert "chown root:lynceus /etc/lynceus" in content, (
+        "missing chown root:lynceus on /etc/lynceus — file-level perms "
+        "on lynceus.yaml are useless without dir-level traversal grant"
+    )
+    assert "chmod 0750 /etc/lynceus" in content, (
+        "missing chmod 0750 on /etc/lynceus — leaves the dir world-traversable"
+    )
+
+
+def test_install_sh_etc_lynceus_chown_lives_inside_install_system():
+    """The /etc/lynceus chown must live inside install_system(), not
+    install_user() or uninstall_system() — otherwise --user installs
+    would try to chown a directory that doesn't apply, and --uninstall
+    would re-chown a directory we may be about to remove."""
+    content = INSTALL_SH.read_text()
+    install_system_block = content.split("install_system()", 1)[1].split("uninstall_system()", 1)[0]
+    assert "chown root:lynceus /etc/lynceus" in install_system_block, (
+        "/etc/lynceus chown must be inside install_system()"
+    )
+    assert "chmod 0750 /etc/lynceus" in install_system_block, (
+        "/etc/lynceus chmod must be inside install_system()"
+    )
+
+
+def test_install_sh_existing_var_chowns_preserved():
+    """Defensive: the new /etc/lynceus chown additions must not have
+    broken the pre-existing chowns of /var/lib/lynceus and
+    /var/log/lynceus. The daemon needs both to write."""
+    content = INSTALL_SH.read_text()
+    assert "chown -R lynceus:lynceus /var/lib/lynceus /var/log/lynceus" in content, (
+        "the original /var/lib + /var/log chown was lost; daemon would "
+        "fail with EACCES on first write"
+    )
+
+
+def test_install_sh_etc_lynceus_chown_runs_after_mkdir():
+    """The chown lines must come after the mkdir, otherwise we'd be
+    chowning a path that doesn't exist yet."""
+    content = INSTALL_SH.read_text()
+    install_system_block = content.split("install_system()", 1)[1].split("uninstall_system()", 1)[0]
+    mkdir_idx = install_system_block.find("mkdir -p /etc/lynceus")
+    chown_idx = install_system_block.find("chown root:lynceus /etc/lynceus")
+    chmod_idx = install_system_block.find("chmod 0750 /etc/lynceus")
+    assert mkdir_idx >= 0, "expected /etc/lynceus mkdir in install_system()"
+    assert chown_idx > mkdir_idx, "chown root:lynceus must run AFTER mkdir"
+    assert chmod_idx > mkdir_idx, "chmod 0750 must run AFTER mkdir"
+
+
+# ---- lynceus-refresh.{service,timer} ---------------------------------------
+#
+# The rc5 auto-refresh layer ships two systemd units that re-run
+# ``lynceus-import-argus --from-github`` on a schedule. Both files are
+# copied by ``install.sh --system`` but install.sh does NOT enable the
+# timer — that stays an explicit operator opt-in so install.sh's offline
+# invariant holds (the only Lynceus surface that opts the host into a
+# recurring outbound network call is the timer the operator enables, not
+# the install).
+#
+# These tests are grep-based on file content, so they run on every
+# platform — no bash needed.
+
+
+def test_refresh_service_unit_exists_with_required_sections():
+    unit_path = SYSTEMD_DIR / "lynceus-refresh.service"
+    assert unit_path.exists(), f"missing unit file: {unit_path}"
+    content = unit_path.read_text()
+    for section in ("[Unit]", "[Service]", "[Install]"):
+        assert section in content, f"lynceus-refresh.service missing {section}"
+
+
+def test_refresh_timer_unit_exists_with_required_sections():
+    unit_path = SYSTEMD_DIR / "lynceus-refresh.timer"
+    assert unit_path.exists(), f"missing unit file: {unit_path}"
+    content = unit_path.read_text()
+    for section in ("[Unit]", "[Timer]", "[Install]"):
+        assert section in content, f"lynceus-refresh.timer missing {section}"
+
+
+def test_refresh_service_is_oneshot_running_as_lynceus():
+    """The refresh service must run as the same user as the daemon so
+    /var/lib/lynceus writes line up with the daemon's ownership, and
+    Type=oneshot so the timer's ``Requires=`` semantics treat each fire
+    as a discrete event rather than a long-lived service."""
+    content = (SYSTEMD_DIR / "lynceus-refresh.service").read_text()
+    assert "Type=oneshot" in content, "refresh service must be Type=oneshot"
+    assert "User=lynceus" in content, "refresh service must run as lynceus user"
+    assert "Group=lynceus" in content, "refresh service must run as lynceus group"
+
+
+def test_refresh_service_execstart_invokes_import_argus_from_github():
+    """The whole point of the unit. ``--scope system`` is mandatory: the
+    daemon user has --no-create-home, so the importer's default --scope
+    user would fail to resolve ~lynceus/.local/share/lynceus/argus-cache."""
+    content = (SYSTEMD_DIR / "lynceus-refresh.service").read_text()
+    assert "ExecStart=" in content
+    assert "/opt/lynceus/.venv/bin/lynceus-import-argus" in content
+    assert "--from-github" in content
+    assert "--scope system" in content
+
+
+def test_refresh_service_has_no_restart_directive():
+    """No Restart= on purpose — tight retry loops on a sustained network
+    outage burn through the GitHub API budget and never resolve. The
+    timer's next OnCalendar fire is the correct retry surface.
+
+    Match directive lines only (start of line, no leading `#`) so the
+    rationale comment that *mentions* ``Restart=`` in prose doesn't
+    trip the assertion.
+    """
+    content = (SYSTEMD_DIR / "lynceus-refresh.service").read_text()
+    directive_lines = [
+        line for line in content.splitlines()
+        if line.strip().startswith("Restart=")
+    ]
+    assert not directive_lines, (
+        "refresh service must NOT set Restart= — the timer is the retry "
+        f"surface, not the service. Found: {directive_lines!r}"
+    )
+
+
+def test_refresh_service_has_hardening_directives():
+    """Mirror the lynceus.service hardening posture: same user, same
+    ProtectSystem, same ReadWritePaths. A future edit that strips a
+    hardening directive from one unit but not the other would create a
+    quiet posture drift."""
+    content = (SYSTEMD_DIR / "lynceus-refresh.service").read_text()
+    assert "NoNewPrivileges=true" in content
+    assert "ProtectSystem=strict" in content
+    assert "ProtectHome=true" in content
+    assert "PrivateTmp=true" in content
+    # /var/lib/lynceus is where the import writes both lynceus.db and
+    # the argus-cache. Without it in ReadWritePaths the oneshot would
+    # fail with EROFS under ProtectSystem=strict.
+    assert "/var/lib/lynceus" in content
+
+
+def test_refresh_timer_oncalendar_and_failure_semantics():
+    content = (SYSTEMD_DIR / "lynceus-refresh.timer").read_text()
+    assert "OnCalendar=" in content, "timer must declare OnCalendar"
+    # Default cadence is weekly; operators wanting a different cadence
+    # drop in a systemctl edit override. If the default changes, this
+    # assertion intentionally fails — cadence is a deliberate decision.
+    assert "OnCalendar=weekly" in content
+    # Persistent=true catches up missed runs after a reboot or extended
+    # downtime, so a host that was off for the scheduled window doesn't
+    # wait another full cycle.
+    assert "Persistent=true" in content
+    # RandomizedDelaySec spreads load across deployments so we don't
+    # hammer GitHub's raw endpoint at the same moment of every Monday.
+    assert "RandomizedDelaySec=" in content
+
+
+def test_refresh_timer_requires_refresh_service():
+    """The timer's [Unit] must Requires= the service so they're treated
+    as a single unit (timer pulls the service when it fires; disabling
+    one is enough to stop refreshes)."""
+    content = (SYSTEMD_DIR / "lynceus-refresh.timer").read_text()
+    unit_block = content.split("[Timer]", 1)[0]
+    assert "Requires=lynceus-refresh.service" in unit_block
+
+
+def test_install_sh_copies_refresh_units_into_install_system():
+    """The two new units must be ``install -m 0644``'d under
+    install_system(), alongside the existing daemon + UI units, so a
+    fresh --system install lays them down on disk."""
+    content = INSTALL_SH.read_text()
+    install_system_block = content.split("install_system()", 1)[1].split("uninstall_system()", 1)[0]
+    assert "lynceus-refresh.service" in install_system_block, (
+        "install_system() must install lynceus-refresh.service"
+    )
+    assert "lynceus-refresh.timer" in install_system_block, (
+        "install_system() must install lynceus-refresh.timer"
+    )
+
+
+def test_install_sh_does_not_enable_refresh_timer():
+    """Hard constraint: install.sh stays offline. Enabling the timer
+    would opt every fresh install into a recurring outbound network
+    call without operator consent. The hint in install_system's
+    post-install summary is the opt-in surface; ``systemctl enable``
+    must not appear next to the refresh timer in install.sh."""
+    content = INSTALL_SH.read_text()
+    # We rule out the two failure modes:
+    # 1. `systemctl enable lynceus-refresh.timer`
+    # 2. `systemctl enable --now lynceus-refresh.timer` as an executed
+    #    command (the hint that's printed to stdout is a `log "..."`
+    #    string, NOT a `run systemctl enable ...` invocation).
+    assert "systemctl enable lynceus-refresh.timer" not in content
+    assert "run systemctl enable --now lynceus-refresh.timer" not in content
+    assert "run systemctl enable lynceus-refresh.timer" not in content
+
+
+def test_install_sh_uninstall_removes_refresh_units():
+    """uninstall_system() must include the refresh units in its stop /
+    disable / rm loop, otherwise an --uninstall leaves stale unit files
+    in /etc/systemd/system pointing at a /opt/lynceus path that no
+    longer has a venv."""
+    content = INSTALL_SH.read_text()
+    uninstall_block = content.split("uninstall_system()", 1)[1]
+    # The for-loop's unit list must mention both refresh units.
+    assert "lynceus-refresh.service" in uninstall_block, (
+        "uninstall_system() must remove lynceus-refresh.service"
+    )
+    assert "lynceus-refresh.timer" in uninstall_block, (
+        "uninstall_system() must remove lynceus-refresh.timer"
+    )
+
+
+def test_install_sh_system_dry_run_mentions_refresh_units():
+    """End-to-end: a system dry-run must reveal the new unit installs
+    in its plan output so an operator previewing ``--system --dry-run``
+    sees the refresh units land alongside the daemon + UI."""
+    if sys.platform != "linux":
+        pytest.skip("install.sh is Linux-only; skipping bash-driven dry-run")
+    if shutil.which("systemctl") is None:
+        pytest.skip("systemctl not on PATH; --system pre-flight would fail")
+    r = _run(["--system", "--dry-run"])
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "lynceus-refresh.service" in out
+    assert "lynceus-refresh.timer" in out
+    # The post-install hint must surface the opt-in command so operators
+    # discover the timer exists.
+    assert "systemctl enable --now lynceus-refresh.timer" in out
+
+
+# ---- Touch C: enriched post-install "Next steps" hint block --------------
+#
+# install.sh's post-install hint used to be a two-line "Need Kismet? Run
+# X. Already have it? Run Y." Touch C expands it into a numbered
+# getting-started block: install Kismet (with distinct paths for
+# supported-apt distros vs other distros via --skip-install), log out
+# and back in, start Kismet + create API key, configure Lynceus, then
+# either lynceus-quickstart (--user) or systemctl enable (--system),
+# with pointers to DEPLOYMENT.md and SMOKE.md for the full runbook.
+#
+# These are grep-based on install.sh content so they run on every
+# platform without a bash dependency. A live dry-run assertion lives
+# in the Linux-only test at the bottom of this section.
+
+
+def test_install_sh_hint_helper_function_exists():
+    """The hint logic is centralised in print_next_steps() to keep the
+    bash readable and the per-scope adaptation cheap. install_user and
+    install_system both delegate to it instead of duplicating the
+    Kismet / Setup / Run block."""
+    content = INSTALL_SH.read_text()
+    assert "print_next_steps()" in content, (
+        "install.sh must define print_next_steps() as a shared helper"
+    )
+    # Both modes must call it.
+    install_user_block = content.split("install_user()", 1)[1].split("install_system()", 1)[0]
+    install_system_block = content.split("install_system()", 1)[1].split("uninstall_user()", 1)[0]
+    assert "print_next_steps user" in install_user_block, (
+        "install_user() must invoke print_next_steps with 'user' scope"
+    )
+    assert "print_next_steps system" in install_system_block, (
+        "install_system() must invoke print_next_steps with 'system' scope"
+    )
+
+
+def test_install_sh_hint_distinguishes_kismet_install_paths():
+    """The hint must distinguish three Kismet-install scenarios for
+    operators: the supported-distro apt path (opt-in via --install), the
+    other-distro plain-bootstrap path (now the universal default: config +
+    group, no apt), and already-have-Kismet. Without this distinction
+    operators on Debian / Ubuntu / Kali never discover that --install is
+    how they pull the apt package."""
+    content = INSTALL_SH.read_text()
+    next_steps_block = content.split("print_next_steps()", 1)[1].split("# --- modes", 1)[0]
+    # Supported-apt-distro: full bootstrap. Use Debian as a sentinel
+    # since the matrix lists it explicitly; if a future refactor
+    # changes the list of distro names this assertion needs updating.
+    assert "Debian" in next_steps_block and "Ubuntu" in next_steps_block
+    # Supported-apt-distro path mentions --install explicitly so the apt
+    # opt-in is discoverable (it is no longer the default).
+    assert "--install" in next_steps_block
+    # Upstream packaging URL is the pointer for non-apt-matrix distros.
+    assert "kismetwireless.net/packages" in next_steps_block
+
+
+def test_install_sh_hint_mentions_web_wizard_alternative():
+    """v0.7.0 Linux smoke: install.sh's "Configure Lynceus" step
+    advertised only the CLI wizard (`lynceus-setup`) — operators on
+    boxes where they'd prefer the browser-based flow
+    (`lynceus-setup --web`, shipped in 0.7.0) had no in-band signal
+    that it existed. The CLI-only mention also conflicted with the
+    matching docs/DEPLOYMENT.md block (which already mentioned the
+    --web alternative). Add a --web hint to print_next_steps so an
+    operator running install.sh discovers the option without having
+    to read DEPLOYMENT.md."""
+    content = INSTALL_SH.read_text()
+    next_steps_block = content.split("print_next_steps()", 1)[1].split("# --- modes", 1)[0]
+    assert "lynceus-setup" in next_steps_block, "baseline CLI wizard mention"
+    assert "--web" in next_steps_block, (
+        "Step 4 (Configure Lynceus) must mention --web as an alternative "
+        "to the CLI wizard so operators discover the browser-based flow"
+    )
+
+
+def test_install_sh_hint_references_runbook_and_smoke_docs():
+    """The hint must end by pointing at docs/DEPLOYMENT.md (full
+    runbook + troubleshooting) and docs/SMOKE.md (post-install
+    verification). The hint block stays a getting-started block, not
+    a manual; the docs hold the long form."""
+    content = INSTALL_SH.read_text()
+    next_steps_block = content.split("print_next_steps()", 1)[1].split("# --- modes", 1)[0]
+    assert "docs/DEPLOYMENT.md" in next_steps_block, (
+        "hint must point at docs/DEPLOYMENT.md for the full runbook"
+    )
+    assert "docs/SMOKE.md" in next_steps_block, (
+        "hint must point at docs/SMOKE.md for post-install verification"
+    )
+
+
+def test_install_sh_hint_adapts_to_install_scope():
+    """The hint adapts to --user vs --system so operators don't see a
+    step that doesn't apply: --system gets `sudo systemctl enable
+    --now lynceus.service`; --user gets `lynceus-quickstart`. Both
+    are conditional on the scope argument inside print_next_steps()."""
+    content = INSTALL_SH.read_text()
+    next_steps_block = content.split("print_next_steps()", 1)[1].split("# --- modes", 1)[0]
+    # System-scope step is gated by an `if`/`==`/`system` check on scope.
+    assert "scope" in next_steps_block
+    # The two scope-specific commands must both appear in the helper
+    # body somewhere -- the gate selects which one prints at runtime.
+    assert "systemctl enable --now lynceus.service lynceus-ui.service" in next_steps_block, (
+        "system-scope branch must offer enable+start of daemon + UI units"
+    )
+    assert "lynceus-quickstart" in next_steps_block, (
+        "user-scope branch must offer lynceus-quickstart for dev/demo"
+    )
+
+
+def test_install_sh_user_dry_run_prints_new_hint_block():
+    """Live dry-run check on the --user path. Asserts the numbered
+    "Next steps" block lands in the actual stdout, not just in the
+    file content."""
+    if sys.platform != "linux":
+        pytest.skip("install.sh is Linux-only; skipping bash-driven dry-run")
+    if shutil.which("bash") is None:
+        pytest.skip("bash not on PATH")
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        sandbox_home = Path(td) / "home"
+        sandbox_home.mkdir()
+        env = {"HOME": str(sandbox_home)}
+        if "VIRTUAL_ENV" in os.environ:
+            env["VIRTUAL_ENV"] = ""
+        r = _run(["--user", "--dry-run"], env_extra=env)
+        assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+        out = r.stdout + r.stderr
+        assert "Next steps:" in out
+        # Step 1 (Install Kismet) surfaces both supported + other-distro
+        # paths so the operator sees --install (the apt opt-in) as an option.
+        assert "sudo lynceus-bootstrap-kismet" in out
+        assert "--install" in out
+        # User scope -> step 5 is lynceus-quickstart, NOT systemctl.
+        assert "lynceus-quickstart" in out
+        # Docs pointer surfaces.
+        assert "docs/DEPLOYMENT.md" in out
+
+
+def test_install_sh_system_dry_run_prints_new_hint_block():
+    """Live dry-run check on the --system path. Mirrors the user-scope
+    test but asserts the system-scope branch (systemctl enable
+    --now lynceus.service) and that lynceus-quickstart is NOT
+    offered as a "run" step (it's a dev/demo command, scope-inappropriate
+    for a daemon-managed system install)."""
+    if sys.platform != "linux":
+        pytest.skip("install.sh is Linux-only; skipping bash-driven dry-run")
+    if shutil.which("systemctl") is None:
+        pytest.skip("systemctl not on PATH; --system pre-flight would fail")
+    r = _run(["--system", "--dry-run"])
+    assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    out = r.stdout + r.stderr
+    assert "Next steps:" in out
+    assert "sudo lynceus-bootstrap-kismet" in out
+    assert "--install" in out
+    # System-scope branch fires: enable + start of daemon + UI units.
+    assert "systemctl enable --now lynceus.service lynceus-ui.service" in out
+    # lynceus-quickstart is a --user dev/demo helper; it must NOT
+    # appear as a Next-Step on the --system path.
+    assert "lynceus-quickstart" not in out
+    # Docs pointer surfaces.
+    assert "docs/DEPLOYMENT.md" in out
