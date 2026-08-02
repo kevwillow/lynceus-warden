@@ -1190,8 +1190,12 @@ def test_rules_list_since_window_narrows_counts(tmp_path):
             (r_24h, "2"),
             (r_all, "2"),
         ):
-            # Find the fires line for r1 and verify the count appears.
-            idx = r.text.find("r1")
+            # Anchor on the rendered rule heading, not the bare name. A plain
+            # find("r1") also matches inside generated ids and CSRF tokens, and
+            # when one of those sorts earlier in the document the 600-char
+            # window below misses the fires line entirely. Measured: roughly one
+            # run in a hundred, which is how it survived.
+            idx = r.text.find("<strong>r1</strong>")
             assert idx != -1
             # Search forward a reasonable window for the count.
             segment = r.text[idx : idx + 600]
