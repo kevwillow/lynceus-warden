@@ -797,7 +797,7 @@ class Poller:
         # Kismet's linux_wifi capture path auto-creates a monitor VIF
         # (`kismon0`) on the parent adapter and stamps observations with
         # the VIF's name, while the operator configures the parent name
-        # (`wlx00c0cab966f8`) in lynceus.yaml. The two appear in
+        # (`wlx00c0ca112233`) in lynceus.yaml. The two appear in
         # /datasource/all_sources.json as two rows sharing one UUID;
         # grouping by UUID gives the alias set.
         self._source_alias_map: dict[str, frozenset[str]] | None = None
@@ -1026,9 +1026,9 @@ class Poller:
     def _resolve_source_allowlist(self) -> frozenset[str] | None:
         """Expand the configured allowlist through the alias map.
 
-        Operator config of `kismet_sources: [wlx00c0cab966f8, hci1]` plus
-        an alias map `{wlx00c0cab966f8: {wlx00c0cab966f8, kismon0}, ...}`
-        yields `{wlx00c0cab966f8, kismon0, hci1}`. Names not present in
+        Operator config of `kismet_sources: [wlx00c0ca112233, hci1]` plus
+        an alias map `{wlx00c0ca112233: {wlx00c0ca112233, kismon0}, ...}`
+        yields `{wlx00c0ca112233, kismon0, hci1}`. Names not present in
         the map fall back to themselves, so a typo or an adapter Kismet
         isn't reporting still gates correctly (configured name always
         matches itself — operators can't lose admit-ability via mapping

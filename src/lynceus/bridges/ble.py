@@ -91,9 +91,9 @@ def _canonical_db_paths() -> tuple[str, ...]:
     """Canonical DB locations a smoke run must never write to.
 
     The bridge WRITES devices/sightings, so the standalone runner refuses to
-    open a real database. This used to be one hardcoded developer path
-    (``/home/guru/...``), which shipped in the wheel and protected exactly one
-    machine while naming its owner. Resolving the canonical paths instead
+    open a real database. This used to be one hardcoded developer home path,
+    which shipped in the wheel and protected exactly one machine while naming
+    its owner in every install. Resolving the canonical paths instead
     guards every install of either scope, on whatever host is running it.
 
     ``default_db_path`` raises NotImplementedError for the system scope off
