@@ -258,7 +258,8 @@ class Config(BaseModel):
             raise ValueError(
                 "ui_bind_host is non-loopback but ui_allow_remote is False. "
                 "Set ui_allow_remote: true explicitly to bind to a non-loopback address. "
-                "This is a footgun — lynceus has no auth layer in v0.2."
+                "This is a footgun — lynceus has no auth layer, so anything that "
+                "can reach the bound address can read the UI."
             )
         return self
 
