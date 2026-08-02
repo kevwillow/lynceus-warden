@@ -1760,9 +1760,23 @@ def test_get_alert_shape_through_migrations(db):
 
 
 def _write_remote_id_fixture(tmp_path) -> str:
-    """Write a one-record JSON fixture with a Remote-ID-typed device
-    carrying a serial-number at the kismet.device.base.remote_id.*
-    path that _DRONE_ID_PATHS now probes first. Returns the path."""
+    """Write a one-record fixture shaped like Kismet's real emission.
+
+    Shape verified against Kismet's source, 2026-08-02:
+
+    - The UAV phy sets ``phyname = "UAV"`` (phy_uav_drone.cc:111) and
+      attaches a ``uav.device`` component (``:128``) to a device the
+      Wi-Fi or BTLE phy already tracks. It does NOT mint a base type,
+      so the record is typed "Wi-Fi Device", not "Remote ID".
+    - The serial lives at ``uav.serialnumber`` (phy_uav_drone.h:323).
+
+    The previous version of this fixture used
+    ``kismet.device.base.type == "Remote ID"`` and
+    ``kismet.device.base.remote_id.serial_number``. Neither exists in
+    Kismet. It matched the guesses in _DRONE_ID_PATHS exactly, so this
+    test passed end to end while the feature could not fire against a
+    real capture -- the fixture and the code shared one misconception.
+    """
     import json as _json
 
     path = tmp_path / "remote_id_devices.json"
@@ -1771,15 +1785,17 @@ def _write_remote_id_fixture(tmp_path) -> str:
             [
                 {
                     "kismet.device.base.macaddr": "02:11:22:33:44:55",
-                    "kismet.device.base.type": "Remote ID",
+                    "kismet.device.base.type": "Wi-Fi Device",
                     "kismet.device.base.first_time": 1700000000,
                     "kismet.device.base.last_time": 1700000100,
                     "kismet.device.base.signal": {
                         "kismet.common.signal.last_signal": -70
                     },
                     "kismet.device.base.manuf": "DroneCorp",
-                    "kismet.device.base.remote_id": {
-                        "serial_number": "21239ESA2"
+                    "uav.device": {
+                        "uav.serialnumber": "21239ESA2",
+                        "uav.manufacturer": "DroneCorp",
+                        "uav.match_type": "DroneID WiFi",
                     },
                 }
             ]

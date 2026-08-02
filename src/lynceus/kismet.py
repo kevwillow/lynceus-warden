@@ -68,6 +68,19 @@ _TYPE_MAP: dict[str, Literal["wifi", "ble", "bt_classic", "remote_id"]] = {
     # the front of this map; remove any stale guesses behind it.
     # See the rc5 CHANGELOG caveat for the residual probe-path
     # verification step.
+    # VERIFIED 2026-08-02 against Kismet's source: these two strings do
+    # not exist. Kismet's UAV phy sets phyname = "UAV"
+    # (phy_uav_drone.cc:111) and attaches a "uav.device" component to a
+    # device the Wi-Fi or BTLE phy already tracks -- it never mints a
+    # base type of its own. A drone therefore arrives typed "Wi-Fi
+    # Device" or "BTLE", and is recognised by the presence of the
+    # component, not by its type string. See _DRONE_ID_PATHS.
+    #
+    # Kept as inert aliases rather than deleted: they cost one dict
+    # miss, they cannot produce a false positive (no Kismet version
+    # emits them), and removing the "remote_id" device_type would
+    # ripple through the Literal, migration 014 and devices.device_type
+    # for no gain.
     "Remote ID": "remote_id",
     "Remote ID Drone": "remote_id",
 }
@@ -398,28 +411,35 @@ def _extract_ble_manufacturer_id(raw: dict) -> str | None:
 # runs on every observation regardless of device_type — see the
 # control-flow comment in parse_kismet_device.
 #
-# Operator follow-up: capture a live Remote-ID record from
-# /devices/views/all/devices.json and confirm which path actually
-# resolves; add the confirmed path to the front of this tuple and
-# remove any stale guesses behind it. See the rc5 CHANGELOG
-# caveat for the residual probe-path verification step.
+# That "arrives on records typed Wi-Fi Device or BTLE" note is exactly
+# right, and it is now the whole story: Kismet's UAV phy decorates an
+# existing device rather than minting a device type of its own, so
+# running on every observation is not defensive, it is the only way a
+# drone is ever seen.
+#
+# Residual unknown: a live capture is still worth taking to confirm
+# the JSON nests "uav.serialnumber" inside "uav.device" as the
+# tracker_component layout implies, rather than flattening it. The
+# helper tolerates either -- see the flattened-key fallback below.
 _DRONE_ID_PATHS: tuple[tuple[str, ...], ...] = (
-    # kismet.device.base.* prefix matches the convention every
-    # other top-level Kismet field uses (kismet.device.base.type,
-    # kismet.device.base.signal, kismet.device.base.advdata, …).
-    # Most plausible canonical shape for the Remote-ID payload.
-    ("kismet.device.base.remote_id", "serial_number"),
-    ("kismet.device.base.remote_id", "uas_id"),
-    # remoteid.device.basic_id — the structure name mirrors the
-    # ASTM F3411 message-type field ("Basic ID"); leaves named
-    # 'serial', 'serial_number', or 'uas_id' cover the broadcast
-    # variants (ANSI/CTA-2063-A Serial, CAA Registration, UAS
-    # UUID). Retained as fallbacks for older / alternate Kismet
-    # RID datasources that may not use the kismet.device.base.*
-    # prefix.
-    ("remoteid.device.basic_id", "serial"),
-    ("remoteid.device.basic_id", "serial_number"),
-    ("remoteid.device.basic_id", "uas_id"),
+    # VERIFIED against Kismet's source, 2026-08-02. The UAV phy is a
+    # decorator, not a device type: it attaches a "uav.device"
+    # component to a device already tracked by the Wi-Fi or BTLE phy.
+    #
+    #   phy_uav_drone.cc:128  register_field("uav.device", ...)
+    #   phy_uav_drone.h:323   __ImportField(uav_serialnumber, ...)
+    #                         -> serialises as "uav.serialnumber"
+    #
+    # The five paths this replaces (kismet.device.base.remote_id and
+    # remoteid.device.basic_id, with serial / serial_number / uas_id
+    # leaves) were documentation guesses. None of them exists in
+    # Kismet, so watchlist_drone_id_prefix could never fire.
+    ("uav.device", "uav.serialnumber"),
+    # Flattened fallback. Kismet's JSON serialiser emits nested tracker
+    # components as a sub-object under the component name, but some
+    # endpoints and older versions flatten the dotted key to the top
+    # level. Cheap to tolerate, and it costs one dict lookup on a miss.
+    ("uav.serialnumber",),
 )
 
 
@@ -484,6 +504,16 @@ def parse_kismet_device(
             kismet_type, raw_mac,
         )
         return None
+
+    # Kismet's UAV phy decorates rather than types: a Remote-ID drone
+    # arrives as "Wi-Fi Device" or "BTLE" carrying an extra
+    # "uav.device" component (phy_uav_drone.cc:111,128). Presence of
+    # that component IS the drone signal -- there is no base type to
+    # match on. Promoting here is what makes the 'remote_id'
+    # device_type reachable at all; migration 014 added it and the
+    # CHECK admits it, but until now nothing could produce one.
+    if isinstance(raw.get("uav.device"), dict) or "uav.serialnumber" in raw:
+        device_type = "remote_id"
 
     try:
         mac = normalize_mac(raw_mac)
