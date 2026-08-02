@@ -407,7 +407,7 @@ hardware-validated end to end from inside the daemon. See the CHANGELOG
 the matching strategy.** Company-id alone is too coarse, one id covers a
 whole vendor, so the bridge is built but must not be enabled against a raw
 company-id watchlist. The remaining work is split into the numbered
-enablement gates below (BLE-G1 … BLE-G5); BLE-G1 and BLE-G2 are blocking.
+enablement gates below (BLE-G1 … BLE-G8); BLE-G1 and BLE-G2 are blocking.
 The payload-format-signature work that makes company ids useful is tracked
 separately as the Find My / Apple Continuity decoder arc.
 - **Trigger**: gates BLE-G1 and BLE-G2 cleared, then flip `ble_bridge.enabled`.
@@ -529,6 +529,52 @@ was stopped for it, which is not a state the daemon can ship in.
  . The unit runs `User=lynceus` with `ProtectHome=true` and cannot read
   `/home` at all, so the home copy is dev-only and must not be used to reason
   about production behaviour.
+
+### BLE-G7: bleak absent from the interpreter
+`bleak` is an optional extra (`lynceus[ble]`), so a stock install does not have
+it. An enabled bridge in that state logs one warning at daemon start and then
+behaves exactly like a working bridge that has heard nothing. The only gate an
+operator reaches without misconfiguring anything.
+- **Trigger**: covered. `check_bleak_available()` reports it, and
+  `collect_bridge_warnings()` puts it first.
+- **Notes**: recorded here because the code cites "BLE-G7" and this file had no
+  such entry. Verified present and importable on the dev box with bleak 3.0.2,
+  including the modern `bleak.args.bluez` path.
+
+### BLE-G8: BlueZ does not publish AdvertisementMonitorManager1
+The failure mode that actually bit, and the one no other gate could see.
+bleak's passive scan needs `org.bluez.AdvertisementMonitorManager1`, which
+BlueZ publishes only when `bluetoothd` runs with experimental features on.
+Measured on the Linux dev box with **BlueZ 5.72 and kernel 7.0.0 — both
+comfortably above the minimums the bridge's own error text quotes** — with
+bleak installed, the adapter free and the config clean: all four other gates
+returned green and the bridge captured nothing, looping `BLE scan failed
+(passive scanning on Linux requires BlueZ >= 5.56 with --experimental
+enabled...)`. Root cause proven by D-Bus introspection, not inferred: the
+interface was absent while `Experimental` was commented out in
+`/etc/bluetooth/main.conf`.
+- **Trigger**: covered in code. `check_bluez_advertisement_monitor(adapter)`
+  reports it, and `collect_bridge_warnings()` orders it directly below G7.
+  **Still open on the rig**: whether the rig has experimental enabled is
+  unverified. Its 2026-08-01 capture succeeding with Kismet stopped suggests
+  yes, but that is an inference.
+- **Estimated**: done for detection. The remedy is config plus a restart:
+  set `Experimental = true` in `/etc/bluetooth/main.conf`, restart
+  `bluetooth`, confirm with
+  `busctl --system introspect org.bluez /org/bluez/<adapter> | grep
+  AdvertisementMonitor`.
+- **Notes**: this gate sits **upstream of BLE-G6**. Contention presumes the
+  bridge could otherwise open an adapter; without the monitor interface it
+  cannot, so check G8 before spending effort on G6. Detection is deliberately
+  one-directional and stays silent on every ambiguous outcome (not Linux, no
+  `busctl`, bluetoothd down, D-Bus refusal). It also requires positive proof
+  the object is a real adapter (`org.bluez.Adapter1` present), because
+  `busctl introspect` **exits 0 and prints only its header** for a path that
+  does not exist — without that check a typo'd adapter name would draw a
+  confident "enable experimental features" remedy.
+  Status on the dev box as of 2026-08-02: `Experimental = true` is now set and
+  both adapters publish the interface, so this box can finally test whether
+  the bridge captures anything.
 
 ### Migration 014 replay drops every devices column added after it
 `014_devices_remote_id.sql` is a full table rebuild with a hardcoded column
