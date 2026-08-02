@@ -3951,6 +3951,223 @@ class Database:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"poller_state.last_poll_ts is not an int: {raw!r}") from exc
 
+    def list_co_observations(
+        self,
+        mac: str,
+        *,
+        now_ts: int,
+        since_ts: int,
+        proximity_seconds: int = 300,
+        gap_seconds: int = 900,
+        limit: int = 25,
+        tz_offset_seconds: int = 0,
+    ) -> dict:
+        """Return nearby observations grouped by candidate and location.
+
+        A pair is included only when both logged sightings are at the same
+        location and their timestamps differ by at most
+        ``proximity_seconds``. ``delta_median`` is the lower median when the
+        number of pairs is even.
+        """
+        for name, value in (
+            ("now_ts", now_ts),
+            ("since_ts", since_ts),
+            ("proximity_seconds", proximity_seconds),
+            ("gap_seconds", gap_seconds),
+            ("limit", limit),
+            ("tz_offset_seconds", tz_offset_seconds),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"{name} must be int")
+        if since_ts > now_ts:
+            raise ValueError("since_ts must be <= now_ts")
+        if proximity_seconds < 0:
+            raise ValueError("proximity_seconds must be >= 0")
+        if gap_seconds < 1:
+            raise ValueError("gap_seconds must be >= 1")
+        if limit < 1 or limit > 200:
+            raise ValueError("limit must be in [1, 200]")
+
+        params = {
+            "mac": mac,
+            "now_ts": now_ts,
+            "since_ts": since_ts,
+            "proximity_seconds": proximity_seconds,
+            "gap_seconds": gap_seconds,
+            "limit": limit,
+            "tz_offset_seconds": tz_offset_seconds,
+        }
+        anchor_cte = """
+            WITH anchor_marked AS (
+                SELECT ts, location_id,
+                       CASE WHEN ts - LAG(ts) OVER (
+                                PARTITION BY location_id ORDER BY ts
+                            ) > :gap_seconds THEN 1 ELSE 0 END AS is_new
+                FROM sightings
+                WHERE mac = :mac AND ts >= :since_ts AND ts <= :now_ts
+            ),
+            anchor_numbered AS (
+                SELECT ts, location_id,
+                       SUM(is_new) OVER (
+                           PARTITION BY location_id ORDER BY ts
+                           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                       ) AS run_no
+                FROM anchor_marked
+            )
+        """
+        anchor_rows = self._conn.execute(
+            anchor_cte
+            + """
+            SELECT location_id, COUNT(*) AS run_count
+            FROM (
+                SELECT DISTINCT location_id, run_no FROM anchor_numbered
+            )
+            GROUP BY location_id
+            """,
+            params,
+        ).fetchall()
+        # location_id is an operator-chosen string, not a number -- the shipped
+        # default in config/lynceus.example.yaml is literally "default". Casting
+        # it to int raises ValueError on every stock install.
+        anchor_runs_by_location = {
+            str(row["location_id"]): int(row["run_count"]) for row in anchor_rows
+        }
+
+        rows = self._conn.execute(
+            anchor_cte
+            + """
+            , anchor_runs AS (
+                SELECT location_id, run_no, MIN(ts) AS start_ts, MAX(ts) AS end_ts
+                FROM anchor_numbered
+                GROUP BY location_id, run_no
+            ),
+            discovered_candidates AS (
+                SELECT DISTINCT c.mac
+                FROM anchor_runs ar
+                JOIN sightings c
+                  ON c.location_id = ar.location_id
+                 AND c.ts BETWEEN ar.start_ts - :proximity_seconds
+                              AND ar.end_ts + :proximity_seconds
+                WHERE c.mac != :mac
+                  AND c.ts >= :since_ts
+                  AND c.ts <= :now_ts
+            ),
+            candidate_marked AS (
+                SELECT s.mac, s.ts, s.location_id,
+                       CASE WHEN s.ts - LAG(s.ts) OVER (
+                                PARTITION BY s.mac, s.location_id ORDER BY s.ts
+                            ) > :gap_seconds THEN 1 ELSE 0 END AS is_new
+                FROM discovered_candidates dc
+                JOIN sightings s ON s.mac = dc.mac
+                WHERE s.ts >= :since_ts AND s.ts <= :now_ts
+            ),
+            candidate_numbered AS (
+                SELECT mac, ts, location_id,
+                       SUM(is_new) OVER (
+                           PARTITION BY mac, location_id ORDER BY ts
+                           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                       ) AS run_no
+                FROM candidate_marked
+            ),
+            candidate_run_totals AS (
+                SELECT mac, location_id, COUNT(*) AS candidate_total_runs
+                FROM (
+                    SELECT DISTINCT mac, location_id, run_no
+                    FROM candidate_numbered
+                )
+                GROUP BY mac, location_id
+            ),
+            paired AS (
+                SELECT c.mac, c.location_id, a.run_no AS anchor_run_no,
+                       c.run_no AS candidate_run_no, a.ts AS anchor_ts,
+                       ABS(c.ts - a.ts) AS delta_seconds
+                FROM anchor_numbered a
+                JOIN candidate_numbered c
+                  ON c.location_id = a.location_id
+                 AND c.ts BETWEEN a.ts - :proximity_seconds
+                              AND a.ts + :proximity_seconds
+            ),
+            numbered_pairs AS (
+                SELECT mac, location_id, anchor_run_no, candidate_run_no,
+                       anchor_ts, delta_seconds,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY mac, location_id ORDER BY delta_seconds
+                       ) AS delta_position,
+                       COUNT(*) OVER (
+                           PARTITION BY mac, location_id
+                       ) AS delta_count
+                FROM paired
+            ),
+            pair_totals AS (
+                SELECT mac, location_id,
+                       COUNT(DISTINCT anchor_run_no) AS shared_anchor_runs,
+                       COUNT(DISTINCT candidate_run_no) AS shared_candidate_runs,
+                       COUNT(DISTINCT date(anchor_ts + :tz_offset_seconds, 'unixepoch'))
+                           AS shared_days,
+                       MIN(delta_seconds) AS delta_min,
+                       MAX(CASE WHEN delta_position = (delta_count + 1) / 2
+                                THEN delta_seconds END) AS delta_median,
+                       MAX(delta_seconds) AS delta_max,
+                       MIN(anchor_ts) AS first_shared_ts,
+                       MAX(anchor_ts) AS last_shared_ts
+                FROM numbered_pairs
+                GROUP BY mac, location_id
+            ),
+            candidate_rows AS (
+                SELECT p.mac, p.location_id, p.shared_anchor_runs,
+                       p.shared_candidate_runs, t.candidate_total_runs,
+                       p.shared_days, p.delta_min, p.delta_median, p.delta_max,
+                       p.first_shared_ts, p.last_shared_ts
+                FROM pair_totals p
+                JOIN candidate_run_totals t
+                  ON t.mac = p.mac AND t.location_id = p.location_id
+            )
+            SELECT *, COUNT(*) OVER () AS total_candidates
+            FROM candidate_rows
+            ORDER BY shared_anchor_runs DESC, last_shared_ts DESC, mac ASC, location_id ASC
+            LIMIT :limit
+            """,
+            params,
+        ).fetchall()
+
+        total_candidates = int(rows[0]["total_candidates"]) if rows else 0
+        candidates = []
+        for row in rows:
+            location_id = str(row["location_id"])
+            candidate = {
+                "mac": str(row["mac"]),
+                "location_id": location_id,
+                "shared_anchor_runs": int(row["shared_anchor_runs"]),
+                "shared_candidate_runs": int(row["shared_candidate_runs"]),
+                "candidate_total_runs": int(row["candidate_total_runs"]),
+                "shared_days": int(row["shared_days"]),
+                "delta_min": int(row["delta_min"]),
+                "delta_median": int(row["delta_median"]),
+                "delta_max": int(row["delta_max"]),
+                "first_shared_ts": int(row["first_shared_ts"]),
+                "last_shared_ts": int(row["last_shared_ts"]),
+            }
+            anchor_total = anchor_runs_by_location.get(location_id)
+            if (
+                anchor_total is None
+                or candidate["shared_anchor_runs"] < 0
+                or candidate["shared_anchor_runs"] > anchor_total
+                or candidate["shared_candidate_runs"] < 0
+                or candidate["shared_candidate_runs"]
+                > candidate["candidate_total_runs"]
+            ):
+                raise ValueError("co-observation run counts violate an invariant")
+            candidates.append(candidate)
+
+        return {
+            "range": {"since_ts": since_ts, "now_ts": now_ts},
+            "proximity_seconds": proximity_seconds,
+            "gap_seconds": gap_seconds,
+            "anchor_runs_by_location": anchor_runs_by_location,
+            "total_candidates": total_candidates,
+            "candidates": candidates,
+        }
+
     def close(self) -> None:
         self._conn.close()
 
