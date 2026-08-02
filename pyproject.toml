@@ -47,6 +47,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Passive BLE bridge (config: ble_bridge.enabled, default false). Kept out of
+# the base dependencies because the bridge ships off and pulls a D-Bus/BlueZ
+# stack that a Kismet-only deployment never touches. Without this extra an
+# enabled bridge starts, logs one warning, and captures nothing -- which is
+# what lynceus.ble_bridge_checks.check_bleak_available exists to report.
+#
+# bleak needs BlueZ >= 5.55 for the passive AdvertisementMonitor path the
+# bridge scans with; that is a runtime requirement pip cannot express.
+# bridges/ble.py imports BlueZScannerArgs/OrPattern from the modern
+# `bleak.args.bluez` location and falls back to the legacy
+# `bleak.backends.bluezdbus.*` one, so both layouts work.
+ble = [
+    "bleak>=0.22,<4.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.12",

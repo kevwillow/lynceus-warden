@@ -1,12 +1,13 @@
-"""Pre-flight readiness checks for the passive BLE bridge — pure, stdlib-only.
+"""Pre-flight readiness checks for the passive BLE bridge — stdlib-only.
 
-Enabling the bridge has three known ways to produce an install that looks
-healthy and is not. All three are decidable from configuration alone, with no
+Enabling the bridge has four known ways to produce an install that looks
+healthy and is not. Three are decidable from configuration alone, with no
 adapter and no hardware, which is what lets the setup wizard warn an operator
 before they commit and lets the web UI explain a bridge that is switched on
-and contributing nothing.
+and contributing nothing. The fourth is decidable from the environment, and
+lives in its own function so ``check_bridge_readiness`` stays pure.
 
-The checks correspond to the enablement gates in ``BACKLOG.md``:
+The config checks correspond to the enablement gates in ``BACKLOG.md``:
 
 - ``adapter_contention`` (BLE-G6) — Kismet holds a datasource for the life of
   the daemon, so if it is configured on the bridge's adapter the bridge can
@@ -19,6 +20,13 @@ The checks correspond to the enablement gates in ``BACKLOG.md``:
 - ``raw_company_id_rule`` (BLE-G1) — a rule matching ``ble_manufacturer_id``
   fires on a whole vendor. The Continuity decoder does not rescue this: that
   rule matches company id, not device class.
+
+The fourth check, ``check_bleak_available`` (BLE-G7), is the one an operator
+hits by default rather than by misconfiguration: ``bleak`` is an optional
+extra, so a stock install does not have it and an enabled bridge logs a single
+warning at startup and then captures nothing for the rest of its life. It is
+kept out of ``check_bridge_readiness`` because that function is pure and
+answers from config alone; this one probes the interpreter.
 
 This module deliberately reports rather than decides. Every finding carries a
 remedy, and the caller chooses whether to warn, block, or ignore.
@@ -36,12 +44,23 @@ ignore is worse than one that is occasionally absent.
 
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 CHECK_ADAPTER_CONTENTION = "adapter_contention"
 CHECK_SOURCE_GATE = "source_gate"
 CHECK_RAW_COMPANY_ID_RULE = "raw_company_id_rule"
+CHECK_BLEAK_MISSING = "bleak_missing"
+
+# Import name of the BLE library the bridge scans with. The bridge imports it
+# lazily (bridges/ble.py) so the module stays importable off-rig; that same
+# tolerance is why a missing install surfaces as silence rather than a crash.
+_BLEAK_MODULE = "bleak"
+
+# The extra that installs it. Kept next to the module name so the remedy text
+# and pyproject's optional-dependencies table are edited together.
+_BLEAK_EXTRA = "ble"
 
 # The rule type that matches a bare Bluetooth SIG company identifier.
 _RAW_COMPANY_ID_RULE_TYPE = "watchlist_ble_manufacturer_id"
@@ -64,6 +83,53 @@ def bridge_source_name(adapter: str) -> str:
     operator has to write by hand.
     """
     return f"ble:{adapter}"
+
+
+def check_bleak_available() -> BridgeWarning | None:
+    """Report the bridge's scan library being absent from this interpreter.
+
+    ``bleak`` is an optional extra, so the default install does not have it.
+    An enabled bridge in that state logs one warning at daemon start and then
+    behaves exactly like a working bridge that has heard nothing — which is
+    the failure this module exists to make legible, and the only one of the
+    four that an operator gets without misconfiguring anything.
+
+    Uses ``find_spec`` rather than an import: the answer is wanted by the web
+    UI and the setup wizard, and neither should pull bleak's asyncio and
+    D-Bus machinery into its process just to ask a yes/no question.
+
+    Deliberately one-directional. A missing package is decisive, so it warns.
+    A present package is NOT a claim that the bridge will work — bleak also
+    needs BlueZ >= 5.55 and an adapter, neither of which is visible from
+    here — so the check stays silent rather than implying more than it knows,
+    matching this module's "nothing known is wrong" contract.
+    """
+    try:
+        found = importlib.util.find_spec(_BLEAK_MODULE) is not None
+    except (ImportError, ValueError):
+        # A broken or partially-removed install can raise instead of
+        # returning None. Unusable either way, so treat it as missing.
+        found = False
+    if found:
+        return None
+    return BridgeWarning(
+        code=CHECK_BLEAK_MISSING,
+        summary=(
+            f"The {_BLEAK_MODULE} library is not installed, so the bridge cannot "
+            "open a scan at all. It is an optional dependency and a default "
+            "install does not include it. An enabled bridge will log one "
+            "warning at startup and then capture nothing, looking identical "
+            "to a working bridge with nothing in range."
+        ),
+        remedy=(
+            f"Install the optional extra that provides it, then restart the daemon. "
+            f"For an install.sh deployment that means the venv pip directly, e.g. "
+            f"`~/.local/share/lynceus/.venv/bin/pip install 'lynceus[{_BLEAK_EXTRA}]'` "
+            f"(--user scope) or `/opt/lynceus/.venv/bin/pip install 'lynceus[{_BLEAK_EXTRA}]'` "
+            f"(--system). install.sh does not install it: the bridge ships off, so the "
+            f"dependency stays opt-in with it."
+        ),
+    )
 
 
 def check_bridge_readiness(
