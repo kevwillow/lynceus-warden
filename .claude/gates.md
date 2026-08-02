@@ -44,7 +44,7 @@ local one.
 | Gate | Result |
 | --- | --- |
 | `pytest -q` | 3048 passed, 3 skipped, 47 deselected, 27m09s |
-| `pytest -m diagnostic` | 46 passed, **1 failed** — pre-existing, see below |
+| `pytest -m diagnostic` | 47 passed, 0 failed, 4m54s (was 46 passed / **1 failed**, see below) |
 | `ruff check .` | clean |
 | `python -m build --wheel` | `lynceus-0.9.5-py3-none-any.whl` |
 | `ruff format --check .` | 94 files (22 `src/`, 70 `tests/`, 1 `scripts/`, 1 `docs/`) |
@@ -92,13 +92,30 @@ those 50.
 
 ⛔ **That warning has already come true. v0.9.5 shipped with a failing
 diagnostic test.** `tests/test_diag_home_ack_flow.py::test_diag_home_ack_flow`
-asserts every `hx-*` hit comes from `index.html`, but `4d135ac` extracted
-`_alert_row.html` as a partial and the `hx-*` attributes moved with it. The
-test was never updated, and because the default run deselects it, no release
-gate ever saw it. It is platform-independent — it fails on Windows too — and
-it is **not** caused by the Linux fixes: `b5f9127..ef1f566` touches no
-template or webui file. Fixing it means deciding whether the assertion should
-follow the partial or keep pinning `index.html`; that decision is open.
+asserted that every `hx-*` hit across the whole template directory came from
+`index.html`. Because the default run deselects it, no release gate ever saw
+it fail. Platform-independent (it failed on Windows too) and not caused by the
+Linux fixes: `b5f9127..ef1f566` touches no template or webui file.
+**Fixed now** by narrowing the assertion to the home surface it is actually a
+diagnostic of.
+
+Two corrections to how that was first written up, because both change the
+lesson:
+
+- **It was not `4d135ac`.** The `_alert_row.html` extraction was blamed, but
+  the assertion globs *every* `*.html` in the templates directory, partials
+  included. `_device_actions.html` gained `hx-post` at `7cb6667` (2026-05-30),
+  six days before `d886a18`/`4d135ac` (2026-06-05). The clause it violated
+  ("no other surface gained an htmx affordance") had been false for a week
+  before the commit that got the blame.
+- **It never passed in this repo.** The file entered git at `d829533`, the
+  commit that published the suite. It arrived already red. So this is not a
+  green test that drifted; it is an untracked local test that was published
+  without anyone running the marker it carries.
+
+The generalisable point is unchanged and is the reason this section exists:
+**a marker that excludes tests from the default run excludes them from every
+gate that matters.** Run `pytest -m diagnostic` before a push.
 
 **28 skips are expected on Windows** and are POSIX-only `install.sh`,
 file-mode, and symlink checks. On Linux that number should drop and the pass
