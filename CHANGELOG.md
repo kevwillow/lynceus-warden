@@ -6,6 +6,89 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+The BLE bridge shipped in 0.9.4 with a prompt asking whether you wanted it,
+and one way to answer yes and get nothing. `bleak` was never a dependency of
+anything, so no documented install path put it in the venv, and an enabled
+bridge logged a single warning at startup and then behaved exactly like a
+working bridge that had heard nothing. `/settings` made it worse by naming
+two causes, neither of them the real one. That is closed, and the rest of
+this entry is the surrounding drift it surfaced.
+
+### Added
+
+- **`bleak` is now an installable extra, and a missing install is reported
+  rather than inferred.** `pip install 'lynceus[ble]'` provides it, pinned
+  `>=0.22,<4.0`. The upper bound is deliberate: bleak 3.0 deprecated the
+  `adapter=` kwarg that `bridges/ble.py::_make_scanner` passes and moved
+  adapter selection onto `BlueZScannerArgs`, so 4.0 is where the current
+  call breaks. `install.sh` still does not install it, because the bridge
+  ships off and the extra pulls a D-Bus and BlueZ stack a Kismet-only
+  deployment never touches.
+
+  The new `check_bleak_available` probes the interpreter with `find_spec`,
+  so neither the web UI nor the wizard drags bleak's asyncio and D-Bus
+  machinery into its process to ask a yes/no question. It is deliberately
+  one-directional: a missing package is decisive and warns, a present one
+  says nothing, because bleak also needs BlueZ 5.55 and a free adapter and
+  neither is visible from there. `check_bridge_readiness` keeps its pure,
+  config-only contract; a new `collect_bridge_warnings` composes the
+  environment check with the three config gates and is what `/settings`,
+  `lynceus-setup`, and `lynceus-setup --web` all call. The environment
+  check leads, since with no scan library the other findings are academic.
+
+### Fixed
+
+- **The wizard's setup token no longer reaches the uvicorn access log.**
+  The token rides in the query string, which is how an operator gets it
+  into a browser, and uvicorn builds its access-log request line from the
+  full path including the query. Every wizard request therefore printed
+  `GET /?token=<secret>` to stdout, which is journald on a headless host
+  and a file under `sudo lynceus-setup --web | tee install.log`. Low
+  severity on its own, since the token is per-run and the server binds
+  loopback, but `cli/setup.py` already redacts the ntfy topic from the
+  wizard summary for exactly this reason. The dashboard keeps its access
+  log; nothing secret appears in its URLs.
+- **`/settings` no longer explains a dead bridge with the wrong causes.**
+  With bleak absent and the configuration otherwise clean, the readiness
+  result was empty and the panel said the likely causes were no Apple
+  device in range or an adapter unavailable at daemon start. The
+  environment check now fires first, so that branch cannot be reached
+  while a real explanation exists.
+- **A wholly-unmatched Argus import no longer reads as breakage.** Roughly
+  43% of the bundled corpus (17,952 of 41,508 rows) is intelligence with
+  no passive-RF expression: hostnames, cloud endpoints, certificate
+  hashes, firmware strings, regulatory codes. Those now log at DEBUG and
+  report as an expected split naming each type and count. The point is the
+  inverse case: an Argus release that adds a genuinely RF-observable type
+  Lynceus has not mapped raises a WARNING naming it, instead of vanishing
+  into the same bucket and quietly shrinking coverage.
+- **The BLE smoke runner's production guard no longer depends on one
+  developer's home directory**, and the non-loopback bind error no longer
+  cites v0.2 as the version with no auth layer.
+
+### Changed
+
+- **Em dashes are gone from every public-facing doc and from the wizard's
+  printed output.** 785 in the docs and 54 in the README, rewritten rather
+  than character-swapped, so bracketing pairs became commas or parentheses,
+  headings and `**Label: description.**` entries took colons, and clauses
+  that a dash was welding together became sentences. Nine printed strings
+  changed with them, and the docs that quote those strings moved in
+  lockstep. Two surfaces keep theirs because neither is prose: the
+  `bootstrap_kismet` capture prompt uses `<iface> - <descriptor>` as a
+  tested structural separator, and `notify.build_type_suffix` uses an em
+  dash as the placeholder that distinguishes an absent Argus category from
+  a literal category of `unknown`.
+- **README leads with what Lynceus does**, and three claims that overstated
+  were corrected. `make lint` runs `ruff check .` only and passes clean;
+  formatter drift moved to a separate `make format-check` that is expected
+  to fail until a dedicated reformatting pass, on the grounds that a
+  permanently red gate is one people stop reading.
+- **The configuration reference covers every field.** Six had drifted past
+  the docs, including both nested blocks (`capture` and `ble_bridge`),
+  which are the privacy-relevant ones. `docs/PROJECT_STATUS.md` stopped
+  claiming a version number, having fallen two minor releases behind twice.
+
 ## [0.9.4] - 2026-08-01
 
 The Bluetooth work from 0.9.3 met real hardware, and real hardware had
