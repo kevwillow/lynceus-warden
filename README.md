@@ -1,11 +1,11 @@
-# Lynceus — Warden
+# Lynceus Warden
 
 **Something near you is broadcasting. Lynceus tells you what.**
 
 A passive RF watchtower for the airspace you actually live in. It listens to
 the Wi-Fi and Bluetooth traffic already flying past your antenna, matches
-every device it hears against a curated database of surveillance hardware —
-license-plate readers, drones, gunshot-detection nodes, body cams, trackers —
+every device it hears against a curated database of surveillance hardware
+(license-plate readers, drones, gunshot-detection nodes, body cams, trackers),
 and pushes an alert to your phone when something interesting shows up.
 
 It never transmits. It never probes. It never associates. It just listens, and
@@ -30,8 +30,8 @@ it tells you the truth about what it heard.
 A small daemon plus a read-only web UI. The daemon polls a local
 [Kismet](https://www.kismetwireless.net/) instance for everything it has
 heard, persists sightings to SQLite, and runs each one through a rules engine
-backed by a watchlist of RF signatures. Matches become alerts — in the UI, and
-as push notifications via [ntfy](https://ntfy.sh/).
+backed by a watchlist of RF signatures. Matches become alerts, both in the UI
+and as push notifications via [ntfy](https://ntfy.sh/).
 
 The threat model is narrow and deliberate: **detect surveillance-relevant
 hardware in the operator's own environment.** Lynceus is not a network attack
@@ -42,10 +42,10 @@ tool, not a tracking tool, and not a substitute for paying attention.
 The bundled watchlist is a snapshot of [Argus](https://github.com/kevwillow/argus-db),
 the companion RF-signature database. **23,441 identifiers** land in your
 database from a 41,508-record export. Nearly all of the difference is
-intelligence Argus carries that cannot be recovered from passive RF at all —
-hostnames, firmware strings, certificate hashes, FCC codes — and the import
-report names each dropped type and its count, rather than filing 43% of your
-download under "unknown" and leaving you to wonder what broke.
+intelligence Argus carries that cannot be recovered from passive RF at all:
+hostnames, firmware strings, certificate hashes, FCC codes. The import report
+names each dropped type and its count, rather than filing 43% of your download
+under "unknown" and leaving you to wonder what broke.
 
 Of what lands, most rows are vendor-level identifiers without a confirmed
 device category. The categorised set is smaller and sharper:
@@ -65,7 +65,7 @@ device category. The categorised set is smaller and sharper:
 | `unknown` | 22,774 | Vendor-attributed identifiers, category not yet assigned |
 
 Every one of those rows traces back to a verifiable public source through
-Argus's audit trail. That is the whole point of the project — see
+Argus's audit trail. That is the whole point of the project. See
 [How this got built](#how-this-got-built).
 
 ### Non-negotiables
@@ -73,7 +73,7 @@ Argus's audit trail. That is the whole point of the project — see
 These are design commitments, not current limitations:
 
 - **Passive only.** Lynceus never transmits, probes, injects, or associates.
-  It reads what Kismet already heard. That applies to Argus too — detection
+  It reads what Kismet already heard. That applies to Argus too: detection
   only, no jamming, no spoofing, no interference.
 - **The read-only UI is a security boundary.** The web UI surfaces state and
   never mutates configuration. Every config change happens out-of-band via
@@ -81,7 +81,7 @@ These are design commitments, not current limitations:
 - **No telemetry.** Lynceus does not phone home. At runtime the only outbound
   connections are to the ntfy broker you configured and to GitHub, when you
   explicitly run a watchlist refresh. (Installation itself resolves Python
-  dependencies from PyPI through `pip`, like any Python project — the
+  dependencies from PyPI through `pip`, like any Python project. The
   installer fetches no Lynceus or Argus artifacts, and ships no `curl | bash`
   path.)
 - **Probe SSID capture is OFF by default.** A device's probe list is a partial
@@ -105,21 +105,21 @@ These are design commitments, not current limitations:
                                                       +---------+
 ```
 
-- **Poller** (`lynceus`) — polls the Kismet REST API on an interval, runs the
-  rules engine over each sighting, persists sightings and alerts.
-- **Rules engine** — watchlist matching across MAC, OUI, MAC range, BLE
+- **Poller** (`lynceus`) polls the Kismet REST API on an interval, runs the
+  rules engine over each sighting, and persists sightings and alerts.
+- **Rules engine.** Watchlist matching across MAC, OUI, MAC range, BLE
   service UUID, BLE manufacturer id, BLE local name, exact and substring SSID,
   and drone Remote-ID prefix. Plus allowlist suppression, first-sighting
   heuristics, watchful recurrence tracking, and per-alert / per-rule-type
   snooze gates.
-- **Database** — SQLite with 23 versioned migrations and XDG-aware path
+- **Database.** SQLite with 23 versioned migrations and XDG-aware path
   resolution. Every migration ships a paired `_down.sql`, and
   `lynceus-validate rollback --target-version N` walks the chain in reverse
   with interactive confirmation. One migration (010, pattern normalisation) is
   irreversible by design and is skipped with a logged warning. **Back up the
   database before rolling anything back.**
-- **Web UI** (`lynceus-ui`) — FastAPI + Jinja2, read-only, served by uvicorn.
-- **Notifier** — ntfy push, severity-mapped priority and tags.
+- **Web UI** (`lynceus-ui`). FastAPI + Jinja2, read-only, served by uvicorn.
+- **Notifier.** ntfy push, severity-mapped priority and tags.
 
 ## Features
 
@@ -131,7 +131,7 @@ These are design commitments, not current limitations:
   alongside a fires-breakdown, single and bulk acknowledge, keyboard
   shortcuts, and a streaming CSV export that mirrors whatever filter you have
   applied.
-- **Watchful snooze — for the device that shouldn't page you *yet*.** Some
+- **Watchful snooze, for the device that shouldn't page you *yet*.** Some
   MACs shouldn't alert on every sighting but absolutely should escalate if
   they keep turning up. `/watchful` tracks them, groups escalations into a
   weekly recurrence digest, and fires a priority-4 alert on the 4th sighting
@@ -139,7 +139,7 @@ These are design commitments, not current limitations:
   allowlist, reset, flag for investigation, or close as confirmed-safe.
   Unactioned entries auto-archive after 90 days.
 - **Watchlist exploration with full provenance.** Search and filter the whole
-  corpus at `/watchlist`; every row links to the Argus record behind it —
+  corpus at `/watchlist`; every row links to the Argus record behind it:
   vendor, source URL, source excerpt, FCC ID, geographic scope, first-seen and
   last-verified. Cross-links to the alerts it matched. CSV export included.
 - **Passive BLE bridge + Apple Continuity decoder** *(off by default)*.
@@ -148,12 +148,12 @@ These are design commitments, not current limitations:
   own adapter feeds them, and a decoder sorts Apple adverts into
   `find_my_separated`, `find_my`, `find_my_paired`, `airpods`, `nearby`, or
   `apple_unknown`. Payload bytes are read inside the scan callback and dropped
-  there — only the label survives, and a regression test fails the build if
+  there. Only the label survives, and a regression test fails the build if
   anyone starts buffering the raw bytes. Read
   [the enablement notes](docs/CONFIGURATION.md#ble_bridge--passive-ble-capture-bridge)
   before switching it on: it needs an adapter Kismet isn't holding, and it
-  needs the optional scan library, which a default install does not ship —
-  `pip install 'lynceus[ble]'`. The setup wizard and `/settings` both check
+  needs the optional scan library, which a default install does not ship
+  (`pip install 'lynceus[ble]'`). The setup wizard and `/settings` both check
   the four ways an enabled bridge silently does nothing, and print the fix.
 - **Ergonomic CLI tooling.** A wizard (`lynceus-setup`, with a browser-based
   `--web` flow for headless boxes), a Kismet bootstrapper, a config validator
@@ -164,7 +164,7 @@ These are design commitments, not current limitations:
   (`NoNewPrivileges`, `ProtectSystem=strict`, restricted namespaces), an
   installer that fetches no code or data of its own, an opt-in weekly
   watchlist refresh timer, and a read-only `/settings` page that tells you
-  what's actually running — capture state, Kismet and ntfy reachability, BLE
+  what's actually running: capture state, Kismet and ntfy reachability, BLE
   bridge status and what it has decoded, watchlist origin and freshness.
   Secrets redacted server-side.
 - **Dark mode that doesn't flash.** Persistent per-operator preference in
@@ -189,25 +189,25 @@ ceiling. Treat any product promising more than that with suspicion.
 The same honesty applies elsewhere: the BLE service-UUID and manufacturer-id
 matchers are built and tested, but they are **inert unless you enable the BLE
 bridge**, because Kismet's classic capture path never hands them any payload.
-And an enabled bridge is inert too until `bleak` is installed — it is an
+And an enabled bridge is inert too until `bleak` is installed. It is an
 optional extra, so a default install starts the bridge, logs one warning, and
 captures nothing. That is indistinguishable from a working bridge that has
 heard nothing, which is why `/settings` now says so outright instead of
 leaving you to guess at antennas.
-The drone Remote-ID matcher is likewise correct but unproven in the field —
+The drone Remote-ID matcher is likewise correct but unproven in the field:
 no drone has been captured yet to confirm which Kismet field carries the
 serial. Both are tracked openly in [BACKLOG.md](BACKLOG.md).
 
 ## Project status
 
 **v0.9.4.** Feature-complete for the 0.9.x line and hardware-verified
-on-device — the Bluetooth fixes in 0.9.3 and 0.9.4 came out of real rig
+on-device. The Bluetooth fixes in 0.9.3 and 0.9.4 came out of real rig
 captures, not out of reasoning about what should work.
 
 The test suite is maintained **outside this repository** and gates every
 release; `tests/` is gitignored, so `make test` does nothing on a fresh clone
 and no test claim here is independently verifiable by a reader. That trade is
-deliberate — the fixtures describe a real rig — and
+deliberate, because the fixtures describe a real rig, and
 [docs/TESTING.md](docs/TESTING.md) explains it. What you *can* verify from a
 clone is the code itself, `ruff check .`, and `python -m build`.
 
@@ -230,7 +230,7 @@ sudo ./install.sh --system
 > **Do NOT pipe `install.sh` through `curl | bash`.** Lynceus is a security
 > tool. An install method that doesn't let you read the script first directly
 > contradicts the project's threat model. If you want a one-liner, write your
-> own — none is shipped.
+> own. None is shipped.
 
 Lynceus uses a dedicated venv to comply with PEP 668 (the
 externally-managed-environment policy on Debian/Ubuntu/Kali), and exposes the
@@ -238,8 +238,8 @@ externally-managed-environment policy on Debian/Ubuntu/Kali), and exposes the
 `--user` installs to `~/.local/share/lynceus/.venv` with symlinks in
 `~/.local/bin/`; `--system` uses `/opt/lynceus/.venv` and `/usr/local/bin/`,
 creates a `lynceus` system user, lays down `/etc/lynceus`, `/var/lib/lynceus`
-and `/var/log/lynceus`, and installs the systemd units (without enabling them
-— that stays your call). `install.sh` never passes `--break-system-packages`;
+and `/var/log/lynceus`, and installs the systemd units (without enabling
+them, which stays your call). `install.sh` never passes `--break-system-packages`;
 the venv is the whole point.
 
 Run `./install.sh --help` for the full flag list. `--dry-run` works without
@@ -248,8 +248,8 @@ scope to `--uninstall`, or use the `./uninstall.sh` wrapper which auto-detects
 it. Add `--purge` to also delete config, database, and logs.
 
 **macOS / Windows.** `pip install -e .` from a clone. The Python tools all
-work; there is no service automation. Treat both as **development only** —
-production deployment is not supported.
+work; there is no service automation. Treat both as **development only**.
+Production deployment is not supported.
 
 ### Troubleshooting
 
@@ -257,7 +257,7 @@ production deployment is not supported.
   `sudo apt install python3-venv` (Debian/Ubuntu/Kali),
   `sudo dnf install python3-virtualenv` (Fedora/RHEL). Arch ships it.
 - **`lynceus-*` not found after install.** Confirm the install's bin directory
-  is on your `PATH` — `~/.local/bin` for `--user` (the installer prints a hint
+  is on your `PATH`: `~/.local/bin` for `--user` (the installer prints a hint
   when it isn't), `/usr/local/bin` for `--system`.
 
 ## Quick start
@@ -269,13 +269,13 @@ for the failure modes that actually show up. The short version:
 1. **Install Lynceus.** `./install.sh --user`.
 2. **Install and configure Kismet.** `sudo lynceus-bootstrap-kismet` detects
    monitor-capable Wi-Fi and Bluetooth interfaces, patches
-   `/etc/kismet/kismet_site.conf` (append-only — your edits survive), and adds
+   `/etc/kismet/kismet_site.conf` (append-only, so your edits survive), and adds
    you to the `kismet` group. On Debian/Ubuntu/Kali add `--install` to also
    add the official apt repo and install Kismet first. Idempotent; safe to
    re-run. Then log out and back in, start Kismet, open
    <http://localhost:2501>, set an admin password, and create a `readonly` API
    key named `lynceus`.
-3. **Configure Lynceus.** `lynceus-setup` — or `lynceus-setup --web` for a
+3. **Configure Lynceus.** `lynceus-setup`, or `lynceus-setup --web` for a
    browser wizard, which is friendlier over SSH and for anyone who'd rather
    not hand-edit YAML. Either flow probes Kismet and ntfy, auto-locates the
    API key from `~/.kismet/session.db` (no copy-paste in the common case), and
@@ -293,7 +293,7 @@ for the failure modes that actually show up. The short version:
 existing config (without that flag it refuses to clobber). Full field
 reference in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-Config lives at XDG-aware paths — `~/.config/lynceus/lynceus.yaml` for
+Config lives at XDG-aware paths: `~/.config/lynceus/lynceus.yaml` for
 `--user`, `/etc/lynceus/lynceus.yaml` for `--system`. Operator-local severity
 tuning lives alongside it in `severity_overrides.yaml`.
 
@@ -303,7 +303,7 @@ It's read-only by design; to change something, re-run the wizard.
 ## Bundled threat data
 
 A point-in-time Argus snapshot ships inside the wheel at
-`src/lynceus/data/default_watchlist.csv` — 41,508 records exported
+`src/lynceus/data/default_watchlist.csv`. That is 41,508 records exported
 2026-06-03, of which 23,441 are RF-matchable and land in your database.
 Lynceus is **not** redistributing the full Argus corpus.
 
@@ -319,12 +319,12 @@ artifact at `<data-dir>/argus-cache/<ref>__argus_export.csv` so each refresh
 leaves an audit trail. Pin a ref with `--ref v1.2.3`, point at a fork with
 `--repo OWNER/NAME`, or stay air-gapped with `--input <path>`. The importer is
 idempotent in both modes. It is the **only** Lynceus CLI that reaches the
-network during normal operation — `lynceus-bootstrap-kismet --install` also
+network during normal operation. `lynceus-bootstrap-kismet --install` also
 does, but only during first-time setup, and only to add the Kismet apt repo.
 **The daemon itself never makes an outbound call except to your ntfy broker.**
 
 **Auto-refresh (system installs, opt-in).** `install.sh --system` ships
-`lynceus-refresh.timer` but does not enable it — committing the host to a
+`lynceus-refresh.timer` but does not enable it. Committing the host to a
 recurring outbound call stays an explicit operator decision rather than
 something an install quietly turns on. Once enabled it refreshes weekly,
 comfortably inside the 30-day staleness threshold that drives the `/settings`
@@ -335,8 +335,8 @@ sudo systemctl enable --now lynceus-refresh.timer
 ```
 
 Failures land in `journalctl -u lynceus-refresh.service` and the next fire
-retries. The oneshot deliberately does not `Restart=` — a tight retry loop
-during an outage is worse than a missed window.
+retries. The oneshot deliberately does not `Restart=`, because a tight retry
+loop during an outage is worse than a missed window.
 
 ## Running Lynceus
 
@@ -377,7 +377,7 @@ browser auto-launch, clean Ctrl+C shutdown. Not for unattended use.
   capture itself.
 - **Secrets are redacted server-side.** The Kismet API token and the ntfy
   topic never reach rendered HTML. The ntfy topic is a shared secret on public
-  brokers — anyone holding it can both read your alerts and forge them.
+  brokers, so anyone holding it can both read your alerts and forge them.
 - **No outbound telemetry.** No analytics, no phone-home, no external
   reporting.
 - **Operator responsibility.** Passive Wi-Fi/Bluetooth observation is legal in
@@ -390,7 +390,7 @@ Security policy and reporting: [SECURITY.md](SECURITY.md).
 ## How this got built
 
 Lynceus-Warden and Argus-db are the result of many long days and longer nights
-across multiple machines — Windows boxes for scraping and most of the dev
+across multiple machines: Windows boxes for scraping and most of the dev
 work, Linux machines and a server for the database, orchestration, and agent
 work. The corpus grew from a 514-row baseline to over 41,000 active
 identifiers across many weeks. The framework that makes those identifiers
@@ -399,8 +399,8 @@ identifiers across many weeks. The framework that makes those identifiers
 ### Two things that weren't aggregated anywhere else
 
 **Vendor app decompilation.** I pulled Android APKs of setup and admin apps
-published by surveillance-equipment vendors — Flock Safety being one
-substantive example — and analysed the binaries for embedded identifier
+published by surveillance-equipment vendors (Flock Safety being one
+substantive example) and analysed the binaries for embedded identifier
 patterns: BLE service UUIDs, MAC prefixes, vendor-specific protocol fields,
 default device names. Vendor setup apps have to recognise their own hardware,
 so they ship with the identifiers needed to do it. This is legal reverse
@@ -408,13 +408,13 @@ engineering of publicly distributed software, and it surfaces information no
 vendor publishes voluntarily.
 
 **Researcher-repo aggregation.** Surveillance hardware has been studied by
-independent researchers for years — drone RID protocol work
+independent researchers for years: drone RID protocol work
 (alphafox02/DragonSync), cellular intercept detection (EFForg/rayhunter), BLE
 stalking-tracker research (seemoo-lab/AirGuard), FAA Remote ID mirrors. The
 data existed, scattered, and had never been pulled into one queryable database
 with provenance discipline. Argus aggregates it: every identifier traces back
 to the specific repo, commit, and file path, attributed under the original
-licences. Meta-research rather than primary discovery — but it makes a large
+licences. Meta-research rather than primary discovery, but it makes a large
 amount of distributed work actually usable.
 
 ### The discipline framework
@@ -424,7 +424,7 @@ makes the database verifiable.
 
 Every active identifier carries source attribution, confidence scoring,
 source-type classification, and a chain of corroboration. Hard rules prevent
-fabrication — every identifier must trace to a concrete public source. PII
+fabrication: every identifier must trace to a concrete public source. PII
 discipline keeps individual-attributed registrations held rather than
 promoted. Downstream consumers receive only high-confidence canonical data.
 Each amendment to the framework is documented with the case study that
@@ -444,7 +444,7 @@ load-bearing, not decorative.
 
 ## License & credits
 
-MIT — see [LICENSE](LICENSE). Built on
+MIT. See [LICENSE](LICENSE). Built on
 [Kismet](https://www.kismetwireless.net/) for radio capture and
 [ntfy](https://ntfy.sh/) for push delivery.
 
@@ -453,17 +453,17 @@ MIT — see [LICENSE](LICENSE). Built on
 ## Support the project
 
 Built as a hobby by one person, a couple of computers, and a couple of LLMs.
-It burned a lot of token budget and an enormous amount of personal time — and
+It burned a lot of token budget and an enormous amount of personal time, and
 it was worth it. If Lynceus saves you some time, or you just think it's cool:
 
-- **Star the repo** — free, and it helps people find the project.
-- **Open an issue or PR** — bug reports and feature ideas welcome.
-- **Send a few sats** — coffee and compute aren't free:
-  - **BTC** — `bc1qmtzjlc2cw2y45nea2jqf4deh946j8mq502zvsw`
-  - **BTC (Unstoppable Domain)** — `gurutech.blockchain`
-  - **LTC** — `ltc1qf32n038a90ulajlq6zz67r3n2myewpjlj2ej6w`
-  - **ETH** — `0x9bf3311c4721fe37f58913dc57c2bf1722dc8a0f`
-  - **BCH** — `bitcoincash:qr2l294kuve9cw48u7xek9nklhed066ycvjtj4ymq9`
-  - **SOL** — `CuraE8usMpSrAhpY2QiWaQGoBjyJzkSaUNP6kRgAzscU`
+- **Star the repo.** Free, and it helps people find the project.
+- **Open an issue or PR.** Bug reports and feature ideas welcome.
+- **Send a few sats.** Coffee and compute aren't free:
+  - **BTC**: `bc1qmtzjlc2cw2y45nea2jqf4deh946j8mq502zvsw`
+  - **BTC (Unstoppable Domain)**: `gurutech.blockchain`
+  - **LTC**: `ltc1qf32n038a90ulajlq6zz67r3n2myewpjlj2ej6w`
+  - **ETH**: `0x9bf3311c4721fe37f58913dc57c2bf1722dc8a0f`
+  - **BCH**: `bitcoincash:qr2l294kuve9cw48u7xek9nklhed066ycvjtj4ymq9`
+  - **SOL**: `CuraE8usMpSrAhpY2QiWaQGoBjyJzkSaUNP6kRgAzscU`
 
-**Contact** — kev@gurutechnology.services
+**Contact:** kev@gurutechnology.services
