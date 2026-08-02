@@ -170,12 +170,21 @@ def run_wizard_server(
     print("open this URL in your browser:")
     print(f"  http://{host}:{port}/?token={setup_token}")
 
+    # access_log stays OFF for the wizard specifically. The setup token rides
+    # in the query string (that is how the operator gets it into a browser),
+    # and uvicorn's access log writes the full request line including the
+    # query, so every request would print the token to stdout. On a headless
+    # host that is journald; under `sudo ... | tee install.log` it is a file.
+    # Same reasoning as redacting the ntfy topic from the CLI wizard summary
+    # in cli/setup.py: a per-run secret should not outlive the run in
+    # scrollback. The persistent dashboard (webui/server.py) keeps its access
+    # log, because nothing secret appears in its URLs.
     config = uvicorn.Config(
         app,
         host=host,
         port=port,
         log_level="info",
-        access_log=True,
+        access_log=False,
     )
     server = uvicorn.Server(config)
     # Expose the server so the /done handler in review.py can signal a
