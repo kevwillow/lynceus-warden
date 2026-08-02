@@ -28,7 +28,7 @@ from .. import __version__, paths
 # ``wiz.subprocess.Popen``, ``wiz.SetupError``, etc. via this module's
 # namespace; pulling the same names back here keeps every test seam
 # pointing at the same objects without editing 200 test imports.
-from ..ble_bridge_checks import check_bridge_readiness
+from ..ble_bridge_checks import collect_bridge_warnings
 from ..config import DEFAULT_KISMET_URL, BleBridgeConfig, CaptureConfig, Config
 from ..kismet import KismetClient
 from ..notify import NtfyNotifier
@@ -1120,7 +1120,7 @@ Lynceus default is OFF.
     # Rule types are not chosen until the enable-alerting flow further down,
     # so only the config-derivable gates can be evaluated here; the alerting
     # flow re-checks with the real rule set once it knows it.
-    bridge_warnings = check_bridge_readiness(
+    bridge_warnings = collect_bridge_warnings(
         adapter=bridge_adapter,
         kismet_sources=kismet_sources,
         enabled_rule_types=(),

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from lynceus.ble_bridge_checks import check_bridge_readiness
+from lynceus.ble_bridge_checks import collect_bridge_warnings
 from lynceus.cli.setup import (
     DEFAULT_NTFY_BROKER,
     DEFAULT_RSSI_THRESHOLD,
@@ -93,7 +93,7 @@ async def ble_names_get(request: Request) -> HTMLResponse:
     session = _session(request)
     # Rule types are chosen in a later step, so only the config-derivable
     # gates can be evaluated here — same limitation as the CLI wizard.
-    bridge_warnings = check_bridge_readiness(
+    bridge_warnings = collect_bridge_warnings(
         adapter=_DEFAULT_BLE_ADAPTER,
         kismet_sources=session.answers.get("kismet_sources"),
         enabled_rule_types=(),

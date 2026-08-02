@@ -32,7 +32,7 @@ from lynceus.allowlist import (
     load_allowlist_with_source,
     remove_ui_entry,
 )
-from lynceus.ble_bridge_checks import bridge_source_name, check_bridge_readiness
+from lynceus.ble_bridge_checks import bridge_source_name, collect_bridge_warnings
 from lynceus.config import Config
 from lynceus.db import (
     DEVICES_DEFAULT_DIR,
@@ -948,7 +948,7 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             "enabled": bool(config.ble_bridge.enabled),
             "adapter": config.ble_bridge.adapter,
             "source_name": bridge_source_name(config.ble_bridge.adapter),
-            "warnings": check_bridge_readiness(
+            "warnings": collect_bridge_warnings(
                 adapter=config.ble_bridge.adapter,
                 kismet_sources=config.kismet_sources,
                 enabled_rule_types=enabled_rule_types,

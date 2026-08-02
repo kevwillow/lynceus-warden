@@ -132,6 +132,32 @@ def check_bleak_available() -> BridgeWarning | None:
     )
 
 
+def collect_bridge_warnings(
+    *,
+    adapter: str,
+    kismet_sources: Iterable[str] | None,
+    enabled_rule_types: Iterable[str] | None,
+) -> tuple[BridgeWarning, ...]:
+    """Every readiness finding — environment first, then the config gates.
+
+    What operator-facing surfaces should call. ``check_bleak_available`` leads
+    because it is the most fundamental: with no scan library the adapter and
+    source-gate findings are academic, so an operator reading top-down fixes
+    the blocking problem first.
+
+    Kept as a separate composer rather than folded into
+    ``check_bridge_readiness`` so that function keeps its pure,
+    config-only contract for callers that want exactly that.
+    """
+    environment = check_bleak_available()
+    config_gates = check_bridge_readiness(
+        adapter=adapter,
+        kismet_sources=kismet_sources,
+        enabled_rule_types=enabled_rule_types,
+    )
+    return ((environment,) if environment else ()) + config_gates
+
+
 def check_bridge_readiness(
     *,
     adapter: str,
