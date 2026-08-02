@@ -13,6 +13,7 @@ import csv
 import datetime as _dt
 import logging
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,81 @@ IDENTIFIER_TYPE_MAP: dict[str, str] = {
     # ble_local_name precedent.
     "imei_tac": "imei_tac",
 }
+
+# Argus identifier types that are known NOT to be observable over passive
+# RF, and are therefore dropped by design rather than by oversight.
+#
+# Argus is a broader intelligence corpus than Lynceus's matcher surface:
+# it carries hostnames, cloud endpoints, certificate hashes, firmware
+# strings, and regulatory codes that identify surveillance equipment but
+# cannot be recovered from a Kismet sighting or a BLE advertisement. The
+# bundled snapshot is ~43% such rows (17,952 of 41,508 at
+# schema_version=31), so a bare "dropped 17952 unknown_type" line reads
+# as breakage when it is in fact the expected split.
+#
+# The point of naming them is the inverse case. An Argus release that
+# adds a genuinely RF-observable identifier type Lynceus has not mapped
+# would otherwise land in the same silent bucket and quietly shrink
+# detection coverage with no operator-visible signal. Types dropped here
+# log at DEBUG and are reported as expected; anything dropped that is
+# NOT listed here raises a WARNING naming the type, because that is the
+# case where a map entry is probably missing.
+#
+# Keep in sync with IDENTIFIER_TYPE_MAP: a type promoted to a real
+# matcher must be REMOVED from this set when it is added to the map.
+NON_RF_IDENTIFIER_TYPES: frozenset[str] = frozenset(
+    {
+        # Network / cloud identifiers — resolved over IP, not over the air.
+        "vendor_controlled_hostname",
+        "vendor_controlled_hostname_deprecated",
+        "network_endpoint",
+        "vendor_cloud_endpoint_url",
+        "network_discovery_protocol_pattern",
+        # Firmware and build provenance — recovered by teardown or by
+        # decompiling a vendor app, never broadcast.
+        "firmware_branded_string",
+        "firmware_build_string",
+        "firmware_sha256_hash",
+        "firmware_build_uuid",
+        "firmware_image_variant",
+        "gpt_partition_uuid",
+        "x509_cert_sha256_prefix",
+        # Regulatory / catalogue codes — paperwork, not emissions.
+        "fcc_grantee_code",
+        "equipment_class_code",
+        "product_family_codename",
+        "chipset_codename",
+        "qualcomm_chip_format_id",
+        "alpr_model",
+        "device_class_id",
+        "operator_profile",
+        "device_fingerprint",
+        # Windows registration artifacts — host-side, not RF.
+        "windows_installer_productcode_vendor_registered",
+        "windows_com_clsid_vendor_registered",
+        "vendor_document_uuid_cloud_reference",
+        # RF *parameters* rather than RF *identifiers*. These describe how
+        # a device transmits (band, channel, dwell) and would match far too
+        # broadly to be a detection; Lynceus matches identity, not physics.
+        "frequency_band",
+        "rf_channel",
+        "bandwidth_mhz",
+        "rf_burst_duration",
+        "rf_protocol_constant",
+        "ble_adv_interval",
+        "ble_payload_offset",
+        "ble_protocol_byte",
+        "ble_protocol_byte_table",
+        "ble_characteristic",
+        # Drone protocol structure / enums. Distinct from
+        # ``drone_id_prefix``, which IS mapped: these describe the message
+        # encoding, not the broadcast serial that identifies an airframe.
+        "asdstan_enum_value",
+        "asdstan_message_type",
+        "dji_protocol_struct_format",
+        "icao_24bit_address",
+    }
+)
 
 # Per-spec built-in severity defaults. Categories not listed default to "low".
 DEFAULT_CATEGORY_SEVERITIES: dict[str, str] = {
@@ -350,6 +426,12 @@ class ImportReport:
     dropped_severity_drop: int = 0
     dropped_geographic_filter: int = 0
     dropped_unknown_type: int = 0
+    # Per-Argus-identifier_type tally behind ``dropped_unknown_type``.
+    # The scalar counter alone cannot distinguish "43% of the corpus is
+    # non-RF intelligence, as expected" from "Argus shipped a new BLE
+    # type and we silently stopped matching it" -- see
+    # NON_RF_IDENTIFIER_TYPES. Keyed by the raw (lowercased) Argus type.
+    dropped_unknown_type_breakdown: Counter[str] = field(default_factory=Counter)
     dropped_low_confidence: int = 0
     # Argus emits some rows that the Lynceus canonicalizer collapses
     # to the same (pattern, pattern_type) natural key — e.g. the
@@ -393,7 +475,8 @@ class ImportReport:
             f"{prefix}Dropped (mac_range): {self.dropped_mac_range}",
             f"{prefix}Dropped (severity_drop): {self.dropped_severity_drop}",
             f"{prefix}Dropped (geographic_filter): {self.dropped_geographic_filter}",
-            f"{prefix}Dropped (unknown_type): {self.dropped_unknown_type}",
+            f"{prefix}Dropped (unknown_type): {self.dropped_unknown_type}"
+            f"{self._unknown_type_gloss()}",
             f"{prefix}Dropped (low_confidence): {self.dropped_low_confidence}",
             f"{prefix}Dropped (peer_collision): {self.dropped_peer_collision}",
             f"{prefix}Dropped (in_import_dup): {self.dropped_in_import_dup}",
@@ -433,6 +516,77 @@ class ImportReport:
             f"{self.normalization_failed} normalization_failed)"
         )
         return "\n".join(lines)
+
+    def _unknown_type_gloss(self) -> str:
+        """Inline explanation appended to the ``Dropped (unknown_type)`` line.
+
+        Named "unknown_type" the counter reads as a fault. Almost always
+        it is Argus's non-RF intelligence (hostnames, firmware strings,
+        FCC codes) being correctly declined, so say so on the same line
+        and name the top contributors. Unrecognized types are called out
+        explicitly — that is the case that warrants a look.
+        """
+        if not self.dropped_unknown_type_breakdown:
+            return ""
+        top = ", ".join(
+            f"{t} {n}" for t, n in self.dropped_unknown_type_breakdown.most_common(3)
+        )
+        # ASCII only: this line goes through print() to a Windows console
+        # on dev hosts, where a non-cp1252 glyph renders as a replacement
+        # character. The rest of render() is ASCII for the same reason.
+        gloss = f" (no Lynceus matcher; top: {top}"
+        unrecognized = self.unrecognized_dropped_types()
+        if unrecognized:
+            gloss += f"; UNRECOGNIZED: {', '.join(unrecognized)}"
+        return gloss + ")"
+
+    def unrecognized_dropped_types(self) -> list[str]:
+        """Dropped Argus types that are NOT known-non-RF, sorted by count.
+
+        These are the ones worth an operator's attention: an Argus
+        release that adds an RF-observable identifier type Lynceus has
+        no matcher for lands here. An empty list means every dropped
+        row was dropped for a documented, expected reason.
+        """
+        return [
+            t
+            for t, _ in self.dropped_unknown_type_breakdown.most_common()
+            if t not in NON_RF_IDENTIFIER_TYPES
+        ]
+
+    def log_unknown_type_summary(self) -> None:
+        """Emit the aggregate for rows dropped as ``unknown_type``.
+
+        One INFO line for the expected non-RF split, plus a WARNING
+        naming any type that is neither mapped nor known-non-RF —
+        the signal that a matcher may be missing. Call once per import,
+        after the classification pass.
+        """
+        if not self.dropped_unknown_type_breakdown:
+            return
+        summary = ", ".join(
+            f"{t}={n}" for t, n in self.dropped_unknown_type_breakdown.most_common()
+        )
+        logger.info(
+            "argus import: dropped %d rows with no Lynceus matcher "
+            "(not observable over passive RF): %s",
+            self.dropped_unknown_type,
+            summary,
+        )
+        unrecognized = self.unrecognized_dropped_types()
+        if unrecognized:
+            logger.warning(
+                "argus import: %d Argus identifier type(s) are neither mapped "
+                "nor recorded as non-RF: %s. If any of these ARE observable "
+                "over the air, Lynceus is silently not matching them — add a "
+                "matcher to IDENTIFIER_TYPE_MAP, or record them in "
+                "NON_RF_IDENTIFIER_TYPES to acknowledge the drop.",
+                len(unrecognized),
+                ", ".join(
+                    f"{t}={self.dropped_unknown_type_breakdown[t]}"
+                    for t in unrecognized
+                ),
+            )
 
     def wrote_any(self) -> bool:
         """True when at least one row produced a watchlist write or no-op
@@ -756,7 +910,22 @@ def _classify_row(
         argus_type = (row["identifier_type"] or "").strip().lower()
         if argus_type not in IDENTIFIER_TYPE_MAP:
             report.dropped_unknown_type += 1
-            logger.info(
+            report.dropped_unknown_type_breakdown[argus_type] += 1
+            # Log level splits on whether the type is ACCOUNTED FOR.
+            #
+            # A novel type still gets its per-row INFO line with the raw
+            # (case-preserved) CSV value, because that line is how an
+            # operator traces "why did my import shrink after an Argus
+            # push?" back to the source row with grep.
+            #
+            # A type we have already recorded as non-RF-observable does
+            # not: the bundled snapshot has 17,952 of those, and one INFO
+            # line each buried the peer_collision / in_import_dup lines
+            # that do need reading -- every week, under
+            # lynceus-refresh.timer. Those collapse into the single
+            # aggregate from log_unknown_type_summary().
+            log = logger.debug if argus_type in NON_RF_IDENTIFIER_TYPES else logger.info
+            log(
                 "argus import: skipping row argus_record_id=%s "
                 "identifier_type=%r reason=%s",
                 argus_id,
@@ -960,7 +1129,7 @@ def _select_winners(
     for c in candidates:
         by_argus.setdefault(c.argus_id, []).append(c)
     phase_a_winner_indices: set[int] = set()
-    for argus_id, members in by_argus.items():
+    for members in by_argus.values():
         if len(members) == 1:
             phase_a_winner_indices.add(members[0].csv_index)
             continue
@@ -1048,6 +1217,10 @@ def import_csv(
         c = _classify_row(csv_index, row, overrides, min_confidence, report)
         if c is not None:
             candidates.append(c)
+
+    # One aggregate line for the unknown_type drops, replacing the
+    # per-row INFO that used to run to five figures on the bundled CSV.
+    report.log_unknown_type_summary()
 
     # Pass 2 — pre-pass selection. Two phases of highest-severity-wins
     # tiebreak: first by ``argus_record_id`` (Bucket B), then by
