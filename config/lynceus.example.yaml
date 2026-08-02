@@ -1,6 +1,6 @@
 # Lynceus configuration sample.
 # Copy this file to lynceus.yaml and customize. All fields have sensible
-# defaults — only override what you actually need.
+# defaults, only override what you actually need.
 
 # --- Kismet source ---
 
@@ -12,7 +12,7 @@ kismet_url: http://127.0.0.1:2501
 kismet_api_key: null
 
 # Optional: path to a JSON fixture matching the Kismet device-list shape.
-# When set, Lynceus uses FakeKismetClient and never makes HTTP calls — useful
+# When set, Lynceus uses FakeKismetClient and never makes HTTP calls, useful
 # for offline development and tests. Leave commented out in production.
 # kismet_fixture_path: tests/fixtures/kismet_devices.json
 
@@ -60,7 +60,7 @@ alert_dedup_window_seconds: 3600
 
 # --- Notifications ---
 
-# ntfy notification settings (optional — leave unset to disable)
+# ntfy notification settings (optional, leave unset to disable)
 # ntfy_url: https://ntfy.sh         # Or your self-hosted instance
 # ntfy_topic: my-lynceus-alerts       # Required if ntfy_url is set
 # ntfy_auth_token: xxx              # Optional bearer token for protected topics
@@ -119,13 +119,13 @@ kismet_health_check_on_startup: true
 # Lynceus is a tool to *detect* surveillance, not to become surveillance.
 # These toggles control whether two pieces of broadcast metadata get
 # stored on the device row. Both columns are NULL when their toggle is
-# off, and the poller does not even read the underlying Kismet field —
+# off, and the poller does not even read the underlying Kismet field,
 # opt-out means the data never enters the lynceus process.
 capture:
   # Wi-Fi clients leak their probe-request SSID lists (e.g. SSIDs of
   # networks they have previously connected to). Capturing this list is
-  # useful for triage — you can spot a device probing a coffee-shop SSID
-  # in your living room — but it is also surveillance-grade telemetry
+  # useful for triage, you can spot a device probing a coffee-shop SSID
+  # in your living room, but it is also surveillance-grade telemetry
   # about other people's devices. Default OFF; set true only if you
   # accept the privacy posture.
   probe_ssids: false

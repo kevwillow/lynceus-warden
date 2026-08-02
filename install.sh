@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install.sh — Linux installer for Lynceus.
+# install.sh. Linux installer for Lynceus.
 #
 # Modes:
 #   ./install.sh [--user]                        (default when not root)
@@ -15,7 +15,7 @@
 #
 # This script is intentionally self-contained and does not fetch
 # anything from the network. Operators must `git clone` the repo first.
-# We do not ship a curl|bash one-liner — that contradicts the project's
+# We do not ship a curl|bash one-liner, that contradicts the project's
 # threat model.
 
 set -euo pipefail
@@ -91,10 +91,10 @@ Lynceus uses a dedicated Python venv to comply with PEP 668 (the
 externally-managed-environment policy on Debian/Ubuntu/Kali). Operators
 do not need to activate the venv manually; the symlinks make the
 lynceus-* commands appear on PATH transparently. install.sh never
-adds --break-system-packages — the venv is the whole point.
+adds --break-system-packages, the venv is the whole point.
 
 Lynceus is Linux-only for systemd integration. On macOS and Windows,
-run "pip install -e ." from a clone — the Python tools (lynceus,
+run "pip install -e ." from a clone, the Python tools (lynceus,
 lynceus-ui, lynceus-setup, lynceus-quickstart) all work, but service
 automation is unavailable.
 
@@ -183,7 +183,7 @@ fi
 
 # Refuse `sudo ./install.sh --user`. With EUID=0, $HOME resolves to
 # /root (sudo doesn't reset HOME by default on most distros), so the
-# install lands in /root/.local/share/lynceus/ — not the operator's
+# install lands in /root/.local/share/lynceus/, not the operator's
 # home, and not where any subsequent non-sudo `lynceus-*` invocation
 # would look. Silent re-routing is worse than refusal: the operator's
 # last touch surface (install) must NOT silently switch scopes.
@@ -241,7 +241,7 @@ require_systemctl() {
 
 preflight() {
     # python3 + python3-venv are install-only requirements. Uninstall
-    # must work on a box where Python has already been removed —
+    # must work on a box where Python has already been removed,
     # operators tearing down a host should not be blocked by a missing
     # interpreter.
     if [[ "$ACTION" == "install" ]]; then
@@ -274,7 +274,7 @@ create_or_update_venv() {
         run python3 -m venv "$venv"
     fi
     run "$venv/bin/pip" install --upgrade pip
-    # NEVER --break-system-packages here — installing into a venv is
+    # NEVER --break-system-packages here, installing into a venv is
     # exactly what PEP 668 expects, so the policy does not apply.
     if [[ "$editable" -eq 1 ]]; then
         run "$venv/bin/pip" install --upgrade -e "$SCRIPT_DIR"
@@ -452,7 +452,7 @@ install_system() {
     # /etc/lynceus is root-owned but lynceus-group readable so the
     # daemon (User=lynceus) can traverse the directory to reach
     # lynceus.yaml. Without this 0750 grant, file-level perms on
-    # lynceus.yaml don't matter — directory-traversal denies the
+    # lynceus.yaml don't matter. Directory-traversal denies the
     # daemon up front.
     run chown root:lynceus /etc/lynceus
     run chmod 0750 /etc/lynceus
@@ -464,7 +464,7 @@ install_system() {
     # the same posture install.sh applies to lynceus.service. Enabling
     # the timer is the only Lynceus surface that opts the host into a
     # recurring outbound network call (--from-github), so it stays an
-    # explicit operator decision — install.sh's offline invariant
+    # explicit operator decision. Install.sh's offline invariant
     # holds.
     run install -m 0644 "$SYSTEMD_SRC_DIR/lynceus-refresh.service" "$SYSTEMD_DEST_DIR/lynceus-refresh.service"
     run install -m 0644 "$SYSTEMD_SRC_DIR/lynceus-refresh.timer"   "$SYSTEMD_DEST_DIR/lynceus-refresh.timer"

@@ -39,7 +39,7 @@ tests/test_poller.py
 tests/test_setup_core.py
 tests/test_setup_web_kismet.py
 
-# Internal CC working notes — local-only, never published to the public repo
+# Internal CC working notes. Local-only, never published to the public repo
 /CLAUDE.md
 
 # Internal scratch: rig probes, throwaway spikes, local bundles. Never published.

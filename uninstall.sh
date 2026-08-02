@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# uninstall.sh — thin convenience wrapper around `install.sh --uninstall`.
+# uninstall.sh. Thin convenience wrapper around `install.sh --uninstall`.
 #
 # Operators look for an uninstall.sh next to install.sh; we ship one
 # so the discoverability gap doesn't push them into hand-rolled rm
-# commands. All real work lives in install.sh — this script just
+# commands. All real work lives in install.sh, this script just
 # auto-detects the install scope by looking for the venv marker
 # directories and execs install.sh with the right flags.
 #
-# Like install.sh, this is intentionally self-contained and OFFLINE —
+# Like install.sh, this is intentionally self-contained and OFFLINE,
 # no network access of any kind.
 
 set -euo pipefail

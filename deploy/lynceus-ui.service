@@ -2,7 +2,7 @@
 Description=Lynceus web UI (read-only dashboard)
 After=network-online.target lynceus.service
 Wants=network-online.target
-# lynceus.service is a soft dependency — UI can run independently if you want
+# lynceus.service is a soft dependency. UI can run independently if you want
 
 [Service]
 Type=simple

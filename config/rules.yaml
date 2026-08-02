@@ -5,7 +5,7 @@
 # watchlist_ble_manufacturer_id, watchlist_drone_id_prefix,
 # watchlist_ble_local_name, or new_non_randomized_device.
 rules:
-  # Hak5 WiFi Pineapple uses a recognizable OUI prefix — flag it on sight.
+  # Hak5 WiFi Pineapple uses a recognizable OUI prefix, flag it on sight.
   - name: hak5_pineapple_oui
     rule_type: watchlist_oui
     severity: high
@@ -24,7 +24,7 @@ rules:
     severity: med
     patterns: ["FreeAirportWiFi", "attwifi-rogue"]
 
-  # Catch any first-time-seen device that is NOT using a randomized MAC —
+  # Catch any first-time-seen device that is NOT using a randomized MAC,
   # i.e. a device that didn't bother hiding its real OUI.
   - name: new_device_alert
     rule_type: new_non_randomized_device
@@ -38,7 +38,7 @@ rules:
     enabled: false
 
   # watchlist_mac_range delegates matching to the watchlist DB. Patterns MUST
-  # be empty — the rule fires when an observed MAC falls inside any imported
+  # be empty, the rule fires when an observed MAC falls inside any imported
   # mac_range row's /28 or /36 prefix (populated by lynceus-import-argus).
   # Severity is sourced from the matched DB row, NOT from the `severity`
   # field below (which is ignored for this rule_type). For Argus-imported
@@ -50,16 +50,16 @@ rules:
   #
   # - name: argus_mac_range
   #   rule_type: watchlist_mac_range
-  #   severity: low  # ignored — actual severity comes from the matched row
+  #   severity: low  # ignored, actual severity comes from the matched row
   #   patterns: []
-  #   description: "Argus mac_range corpus — IEEE registry sub-allocations"
+  #   description: "Argus mac_range corpus, IEEE registry sub-allocations"
 
   # ---- DB-delegation entries for the equality-shaped watchlist types ----
   #
   # The four entries below extend the empty-patterns-delegates-to-DB
   # semantic from watchlist_mac_range to watchlist_mac, watchlist_oui,
   # watchlist_ssid, and ble_uuid. Each enables alert-firing for every
-  # matching row of that pattern_type currently in the watchlist DB —
+  # matching row of that pattern_type currently in the watchlist DB,
   # the 63 rows shipped via the bundled default_watchlist.csv plus
   # whatever lynceus-import-argus has populated. See the CHANGELOG
   # entry for 0.4.0-rc4 ("watchlist delegation extension") and the
@@ -69,8 +69,8 @@ rules:
   # the imported DB rows; the `severity` field below is IGNORED for
   # the delegation case (the emitted alert's severity comes from the
   # matched DB row's severity column, populated by the importer from
-  # device_category via DEFAULT_CATEGORY_SEVERITIES in import_argus.py
-  # — alpr / imsi_catcher / hacking_tool default to "high",
+  # device_category via DEFAULT_CATEGORY_SEVERITIES in import_argus.py:
+  # alpr / imsi_catcher / hacking_tool default to "high",
   # body_cam / drone / gunshot_detect / in_vehicle_router to "med",
   # and "unknown" / unspecified to "low"). Default is OFF; uncomment
   # to enable.
@@ -78,19 +78,19 @@ rules:
   # Backward compat: any pre-existing entry of these types with a
   # non-empty `patterns:` list keeps its original in-memory match
   # semantic (severity sourced from the rule). The empty-patterns
-  # idiom only activates the DB delegation path for new entries —
+  # idiom only activates the DB delegation path for new entries,
   # existing operator deployments see zero behavioral change unless
   # they deliberately uncomment one of the entries below.
   #
   # - name: argus_mac
   #   rule_type: watchlist_mac
-  #   severity: low  # ignored — actual severity comes from the matched row
+  #   severity: low  # ignored, actual severity comes from the matched row
   #   patterns: []
   #   description: "Argus + bundled exact-MAC watchlist"
   #
   # - name: argus_oui
   #   rule_type: watchlist_oui
-  #   severity: low  # ignored — actual severity comes from the matched row
+  #   severity: low  # ignored, actual severity comes from the matched row
   #   patterns: []
   #   description: "Argus + bundled OUI watchlist"
   #
@@ -104,13 +104,13 @@ rules:
   # Operators see one rule_type; the DB carries both shapes.
   - name: argus_ssid
     rule_type: watchlist_ssid
-    severity: low  # ignored — actual severity comes from the matched row
+    severity: low  # ignored, actual severity comes from the matched row
     patterns: []
     description: "Argus + bundled SSID watchlist (exact + substring)"
   #
   # - name: argus_ble_uuid
   #   rule_type: ble_uuid
-  #   severity: low  # ignored — actual severity comes from the matched row
+  #   severity: low  # ignored, actual severity comes from the matched row
   #   patterns: []
   #   description: "Argus + bundled BLE service-UUID watchlist"
 
@@ -134,13 +134,13 @@ rules:
   #
   # - name: argus_ble_manufacturer_id
   #   rule_type: watchlist_ble_manufacturer_id
-  #   severity: low  # ignored — actual severity comes from the matched row
+  #   severity: low  # ignored, actual severity comes from the matched row
   #   patterns: []
   #   description: "Argus BLE manufacturer-ID watchlist (Bluetooth SIG company IDs)"
   #
   # - name: argus_drone_id_prefix
   #   rule_type: watchlist_drone_id_prefix
-  #   severity: low  # ignored — actual severity comes from the matched row
+  #   severity: low  # ignored, actual severity comes from the matched row
   #   patterns: []
   #   description: "Argus drone Remote-ID prefix watchlist (ANSI/CTA-2063-A)"
 
@@ -152,17 +152,17 @@ rules:
   # (src/lynceus/ble_continuity.py), so patterns are required and the
   # severity here is the one that fires.
   #
-  # Requires the passive BLE bridge (ble_bridge.enabled) — the Kismet
+  # Requires the passive BLE bridge (ble_bridge.enabled), the Kismet
   # classic-HCI path surfaces no advertisement payload to decode, so this
   # rule is inert without it.
   #
   # Find My separation state is three-valued and decoded from the advert's
   # STRUCTURE, not a status bit (the earlier status-bit guess was retired by
-  # the 2026-08-01 rig capture — see ble_continuity.py):
+  # the 2026-08-01 rig capture, see ble_continuity.py):
   #
-  #   find_my_separated  long form, carries rotating key material — the
+  #   find_my_separated  long form, carries rotating key material, the
   #                      device is not near its owner. The signal you want.
-  #   find_my_paired     short form — near its owner. Every passer-by's own
+  #   find_my_paired     short form, near its owner. Every passer-by's own
   #                      tracker looks like this; matching it is a noise
   #                      generator, which is why it is not listed below.
   #   find_my            a Find My advert in neither observed form. Unknown
@@ -189,6 +189,6 @@ rules:
   #
   # - name: argus_ble_local_name
   #   rule_type: watchlist_ble_local_name
-  #   severity: low  # ignored — actual severity comes from the matched row
+  #   severity: low  # ignored, actual severity comes from the matched row
   #   patterns: []
   #   description: "Argus BLE local-name watchlist (Flock Safety device names)"

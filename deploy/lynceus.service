@@ -2,7 +2,7 @@
 Description=Lynceus personal RF security monitor
 After=network-online.target kismet.service
 Wants=network-online.target
-# Kismet is optional — lynceus can run with a fixture for testing
+# Kismet is optional, lynceus can run with a fixture for testing
 
 [Service]
 Type=simple

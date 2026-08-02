@@ -15,7 +15,7 @@ OnCalendar=weekly
 # next boot rather than waiting another full week.
 Persistent=true
 # Stagger deployments so we don't hammer GitHub's raw endpoint at the
-# same moment of every Monday — 30min is wide enough to spread real
+# same moment of every Monday, 30min is wide enough to spread real
 # usage while still landing each refresh well inside the same day.
 RandomizedDelaySec=30min
 

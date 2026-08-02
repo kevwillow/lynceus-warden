@@ -19,7 +19,7 @@ StandardError=journal
 # 10min is comfortably above the importer's combined GitHub API + raw
 # timeouts (15s + 30s) plus a generous floor for slow links. A failure
 # here is logged by systemd and the next scheduled OnCalendar fire
-# retries — no Restart= directive on purpose: tight retry loops on a
+# retries, no Restart= directive on purpose: tight retry loops on a
 # sustained outage are worse than the missed window.
 TimeoutStartSec=10min
 

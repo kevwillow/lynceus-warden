@@ -20,7 +20,7 @@ location_label: Development workstation
 # Tight loop for fast feedback. The validator rejects values below 5.
 poll_interval_seconds: 5
 
-# DEBUG keeps every dropped-source / RSSI-filtered observation in view —
+# DEBUG keeps every dropped-source / RSSI-filtered observation in view,
 # useful when you're testing filter behavior and want to see what was thrown
 # away rather than just what was kept.
 log_level: DEBUG
