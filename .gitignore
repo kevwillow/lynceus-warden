@@ -19,6 +19,12 @@ tests/diagnostic_output/
 .claude/launch.json
 scripts/smoke_wizard.py
 
+# Throwaway verification worktrees. .claude/gates.md tells you to create these
+# INSIDE the repo (`git worktree add .claude/worktrees/verify`), so without
+# this every gate run leaves an untracked directory that `git add -A` would
+# happily commit -- a whole second checkout, venv symlink and all.
+.claude/worktrees/
+
 # Tests: publish the suite, except the files that describe the operator's own
 # rig. The withheld ones embed the capture adapter's MAC (as the wlx<mac>
 # interface name and as the 00:c0:ca OUI) or the rig account name, which is
