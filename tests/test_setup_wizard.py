@@ -1889,7 +1889,7 @@ def test_wizard_uses_system_db_path_when_system_scope(monkeypatch, tmp_path):
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     monkeypatch.setattr(wiz, "_is_windows", lambda: False)
-    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    monkeypatch.setattr(wiz, "_is_macos", lambda: False)
     monkeypatch.setattr(wiz, "_euid", lambda: 0)  # pretend we're root for --system
     # Stub config + data + log dir mkdirs onto tmp_path so we don't try to
     # mkdir /etc/lynceus or /var/lib/lynceus on the test host. The config dir
@@ -1932,13 +1932,13 @@ def test_wizard_uses_system_db_path_when_system_scope(monkeypatch, tmp_path):
 
 
 def test_enumerate_bluetooth_adapters_returns_none_on_windows(monkeypatch):
-    monkeypatch.setattr(wiz.os, "name", "nt")
+    monkeypatch.setattr(wiz, "_is_windows", lambda: True)
     assert wiz.enumerate_bluetooth_adapters() is None
 
 
 def test_enumerate_bluetooth_adapters_returns_none_on_macos(monkeypatch):
-    monkeypatch.setattr(wiz.os, "name", "posix")
-    monkeypatch.setattr(wiz.sys, "platform", "darwin")
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_is_macos", lambda: True)
     assert wiz.enumerate_bluetooth_adapters() is None
 
 
@@ -1947,13 +1947,10 @@ def test_enumerate_bluetooth_adapters_returns_empty_when_dir_missing(monkeypatch
     (e.g. running tests on a Windows host with the stubs below, or a
     Linux kernel without the BT subsystem), the function returns an empty
     list — distinct from ``None`` which means "platform not supported"."""
-    monkeypatch.setattr(wiz.os, "name", "posix")
-    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    monkeypatch.setattr(wiz, "_is_windows", lambda: False)
+    monkeypatch.setattr(wiz, "_is_macos", lambda: False)
     # On a Windows host the path doesn't exist; on a Linux host without
     # bluez it also doesn't exist. Either way we expect [].
-    # os.path.isdir keeps this guard on a str path; Path("/sys/class/bluetooth")
-    # would instantiate a PosixPath under the os.name="posix" patch above and
-    # raise NotImplementedError on a 3.11 Windows host.
     if os.path.isdir("/sys/class/bluetooth"):
         pytest.skip("real /sys/class/bluetooth present; cannot exercise missing-dir branch")
     assert wiz.enumerate_bluetooth_adapters() == []
@@ -3362,7 +3359,7 @@ def _stub_perms(monkeypatch):
     chown_calls: list = []
     chmod_calls: list = []
     monkeypatch.setattr(wiz, "_is_windows", lambda: False)
-    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    monkeypatch.setattr(wiz, "_is_macos", lambda: False)
     monkeypatch.setattr(
         wiz.os,
         "chown",
@@ -3403,7 +3400,7 @@ def test_apply_system_perms_to_file_chowns_and_chmods_to_0640(_stub_perms, tmp_p
 
 def test_apply_system_perms_to_file_raises_setuperror_when_group_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(wiz, "_is_windows", lambda: False)
-    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    monkeypatch.setattr(wiz, "_is_macos", lambda: False)
     fake_grp = MagicMock()
     fake_grp.getgrnam.side_effect = KeyError("lynceus")
     import sys as _sys
@@ -3443,7 +3440,7 @@ def test_apply_system_perms_to_file_noop_on_windows(monkeypatch, tmp_path):
 
 def test_apply_system_perms_raises_setuperror_on_macos(monkeypatch, tmp_path):
     monkeypatch.setattr(wiz, "_is_windows", lambda: False)
-    monkeypatch.setattr(wiz.sys, "platform", "darwin")
+    monkeypatch.setattr(wiz, "_is_macos", lambda: True)
     target = tmp_path / "x.yaml"
     target.write_text("x\n")
     with pytest.raises(wiz.SetupError) as exc:
@@ -3482,7 +3479,7 @@ def _stub_system_wizard_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
     monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     monkeypatch.setattr(wiz, "_is_windows", lambda: False)
-    monkeypatch.setattr(wiz.sys, "platform", "linux")
+    monkeypatch.setattr(wiz, "_is_macos", lambda: False)
     monkeypatch.setattr(wiz, "_euid", lambda: 0)  # pretend we're root
     monkeypatch.setattr(paths_mod, "_platform", lambda: "linux")
     data_dir = tmp_path / "var" / "lib" / "lynceus"
