@@ -1,10 +1,38 @@
-# Testing — pre-0.5.0 audit
+# Testing
 
-A snapshot of the suite captured 2026-05-19, before tag 0.5.0. Sister
-doc to [PROJECT_STATUS.md](PROJECT_STATUS.md) — that one gives the
-top-line "N tests" headline for the README cross-link; this one is the
-release-readiness reference with the counts, the slow profile, and the
-caveats that gate the tag.
+## The suite is not in this repository
+
+`tests/` is gitignored and is not part of a clone. `make test` on a fresh
+checkout will not run anything, and nothing here can be independently
+verified by a reader. That is a deliberate trade, not an oversight.
+
+The suite carries fixtures and diagnostics shaped around a specific
+physical rig — adapter names, MAC addresses, capture artifacts, and
+watchlist entries reflecting a real deployment. Publishing it would
+publish that, which is a poor trade for a tool whose whole point is not
+handing an observer your RF environment. So the tests are maintained
+alongside the repo rather than inside it, and they gate every release.
+
+What this means in practice:
+
+- **Every behavioural change still ships with a test.** That is a hard
+  rule in this project; it just lands out-of-tree.
+- **Test-count and pass-rate claims in the docs are unverifiable from a
+  clone.** Take them as the maintainer's word, weigh them accordingly,
+  and read the source — which *is* published in full.
+- **Contributors** should describe the behaviour a change relies on in
+  the PR. Coverage gets added on the maintainer's side.
+- The parts a clone *can* check are the shipped artifact and the code
+  itself: `ruff check .` and `python -m build` both run from a clean
+  checkout.
+
+## Historical audit — pre-0.5.0
+
+Everything below is a snapshot of the suite captured **2026-05-19**,
+before tag 0.5.0. It is preserved for the shape of the suite — the slow
+profile, the marker conventions, the caveats that gate a tag — not for
+its numbers, which are long superseded. Sister doc to
+[PROJECT_STATUS.md](PROJECT_STATUS.md).
 
 Read-only audit. No test logic, fixture, or marker changes landed
 alongside this document.

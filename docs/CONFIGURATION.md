@@ -33,6 +33,31 @@ The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and r
 | `evidence_capture_enabled` | bool | `true` | Whether to capture an evidence snapshot when an alert fires. Each snapshot stores the full Kismet device record (subject to `capture.*` redaction) plus RSSI history; storage cost grows with alert volume and `evidence_retention_days`. Set `false` on storage-constrained Pis. | `false` |
 | `evidence_retention_days` | int | `90` | How long to keep evidence rows before the daily prune deletes them. Range `[1, 3650]`. Increase for transparency-reporting use cases; decrease to reduce on-disk exposure of operator-side data. | `30` |
 | `evidence_store_gps` | bool | `false` | Whether to store the OPERATOR's GPS fix in evidence rows. Kismet's geopoint is the receiver's location, not the observed device's, so enabling this builds a high-resolution operator-movement log retained per `evidence_retention_days`. Opt-in by default. See the README privacy section. | `true` |
+| `severity_overrides_path` | string \| null | `null` | Path to a `severity_overrides.yaml` file holding operator-local vendor overrides, device-category severity bumps, the confidence-downgrade threshold, and the Argus CSV schema-version accept-list. Read by `lynceus-import-argus --override-file`, so edits take effect at the next import. | `/etc/lynceus/severity_overrides.yaml` |
+| `watchlist_staleness_warn_days` | integer | `30` | Age at which `/settings` marks the imported watchlist stale. The bundled `lynceus-refresh.timer` runs weekly, comfortably inside this window, so the badge stays cold on a host that has enabled it. | `14` |
+
+### `capture` — Tier 1 passive metadata
+
+Nested block. Both toggles govern whether broadcast metadata is stored on the device row; when a toggle is off the poller does not read the underlying Kismet field at all, so opt-out means the data never enters the Lynceus process.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `capture.probe_ssids` | bool | `false` | Store the probe-request SSID list Wi-Fi clients broadcast — effectively a partial history of the networks a device has joined. **Off by default and deliberately so:** capturing it by default would point Lynceus at bystanders rather than at surveillance equipment. `lynceus-setup` prompts explicitly, and `/settings` renders a prominent recording warning when it is on. |
+| `capture.ble_friendly_names` | bool | `true` | Store the BLE GAP friendly name (e.g. `Tile_a1b2`). On by default: these are broadcast publicly and with intent, and they materially help triage. |
+
+### `ble_bridge` — passive BLE capture bridge
+
+Nested block, **off by default**. This is a capture path of its own, not a decoder running over Kismet's data: Kismet's classic Bluetooth datasource surfaces no advertisement payload, so the bridge opens its own passive `bleak` scan to feed the `ble_uuid`, `ble_manufacturer_id`, `ble_device_class`, and drone Remote-ID matchers.
+
+It therefore needs a Bluetooth adapter **Kismet is not already capturing on**. Read [the enablement notes in the README](../README.md) before turning it on — three configurations make an enabled bridge silently useless or noisy, and `lynceus-setup` checks all three.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `ble_bridge.enabled` | bool | `false` | Run the passive BLE scan in a background thread alongside the Kismet poll loop, with its own DB connection. Enabling changes no existing poll behaviour. |
+| `ble_bridge.adapter` | string | `hci1` | HCI adapter the bridge scans on. Must not be an adapter Kismet holds — Kismet claims an adapter for the lifetime of the daemon. |
+| `ble_bridge.flush_interval` | integer \| null | `null` | Bridge tick interval in seconds, independent of the Kismet poll loop. Minimum `1`. `null` falls back to `poll_interval_seconds`. |
+
+Observations from the bridge are stamped with a synthetic source of `ble:<adapter>` (e.g. `ble:hci1`). If `kismet_sources` is set, that exact string must appear in it, or the poller's source gate drops every observation the bridge produces.
 
 ### Cross-field validation
 

@@ -6,12 +6,16 @@ weekend?"
 
 ## Current version
 
-**0.7.0** — adds a browser-based `lynceus-setup --web` wizard
-alongside the CLI flow. This snapshot is otherwise frozen at the
-v0.4 cycle's shape; the [README](../README.md) feature list and
-the [CHANGELOG](../CHANGELOG.md) are the authoritative
-inventories of what's shipped end-to-end. A full rewrite of this
-status doc is on the docs backlog.
+See [`src/lynceus/__init__.py`](../src/lynceus/__init__.py) or
+`lynceus --version` for the version actually installed. This document
+is a **narrative snapshot, not a version-tracked inventory** — it has
+drifted behind the release cadence more than once, so the
+[CHANGELOG](../CHANGELOG.md) and the [README](../README.md) feature
+list are the authoritative record of what has shipped. A full rewrite
+of this doc is on the docs backlog.
+
+Everything below describes the project's shape rather than a specific
+tag. Where it names a version, read it as "as of that cycle".
 
 ## What's shipped
 
@@ -93,7 +97,9 @@ The headlines:
 
 ## Test coverage at a glance
 
-**2812 tests** across the suite as of v0.7.0, up from 2526 at v0.6.1, 2103 at v0.4.0-rc6, 888 at v0.3.0-rc1, and 437 at v0.2. Coverage spans the daemon, the UI (read-only dashboard + web setup wizard), the rules engine, the notifier, the database layer, the watchlist + Argus import path, the setup core + CLI + web frontends, install.sh, and packaging.
+Several thousand tests, growing with each cycle. Deliberately not pinned to an exact number here — the count went stale every release and a stale count is worse than none. Coverage spans the daemon, the UI (read-only dashboard + web setup wizard), the rules engine, the notifier, the database layer, the watchlist + Argus import path, the setup core + CLI + web frontends, install.sh, and packaging.
+
+**The suite is maintained outside this repository** and is not part of a clone — see [TESTING.md](TESTING.md) for what that means and why.
 
 The `slow` mark is a wheel-build round-trip. Skip with
 `pytest -v -m "not slow"` for fast iteration; run the full suite before
@@ -129,15 +135,20 @@ Things lynceus explicitly does not do today:
 
 ## Hardware tested vs untested
 
-- **Tested.** Full pipeline runs on Windows and Linux dev environments
-  using the `FakeKismetClient` against a JSON fixture. The 2812-test
+- **Tested in software.** Full pipeline runs on Windows and Linux dev
+  environments using the `FakeKismetClient` against a JSON fixture. The
   suite covers the daemon, the UI, the rules engine, the notifier, the
   database layer, the Argus import path, the setup core + CLI + web
   frontends, install.sh, and packaging.
-- **Untested at v0.7.0.** End-to-end run on a real Raspberry Pi
-  against a real Kismet capture from a real adapter (the shakedown is
-  still in progress on Kali). The v0.7.0 push is gated on completing
-  that smoke run.
+- **Tested on hardware.** The end-to-end run on real hardware against a
+  real Kismet capture is no longer outstanding — the 0.9.x cycle is
+  hardware-verified on-device, and the 0.9.3/0.9.4 Bluetooth fixes came
+  out of rig captures rather than reasoning. See the
+  [CHANGELOG](../CHANGELOG.md) for what each capture actually settled.
+- **Still hardware-blocked.** The drone Remote-ID field path is an
+  unverified guess until a live drone is captured, and the passive BLE
+  bridge remains off by default behind its enablement gates. Both are
+  tracked in [BACKLOG.md](../BACKLOG.md).
 
 ## Should you deploy this today?
 

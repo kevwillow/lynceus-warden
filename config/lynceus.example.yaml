@@ -48,6 +48,12 @@ log_level: INFO
 # here are exempted from alerting. When unset, nothing is allowlisted.
 # allowlist_path: config/allowlist.yaml
 
+# Path to operator-local severity tuning (vendor overrides, per-category
+# severity bumps, the confidence-downgrade threshold, and the Argus CSV
+# schema-version accept-list). Read by lynceus-import-argus --override-file,
+# so edits apply at the next import rather than at daemon restart.
+# severity_overrides_path: config/severity_overrides.yaml
+
 # Suppress repeated alerts for the same (rule, mac) within this many seconds.
 # Set to 0 to disable dedup (every hit becomes an alert).
 alert_dedup_window_seconds: 3600
@@ -127,3 +133,50 @@ capture:
   # (e.g. "Kev's AirPods", "Tile_a1b2"). This is broadcast with intent
   # and is more useful than harmful for triage. Default ON.
   ble_friendly_names: true
+
+# --- Passive BLE bridge (OFF by default) ---
+#
+# This is a CAPTURE PATH OF ITS OWN, not a decoder running over Kismet's
+# data. Kismet's classic Bluetooth datasource hands over no advertisement
+# payload, so service UUIDs, company ids and Remote-ID serials never reach
+# the matchers. The bridge opens its own passive bleak scan to feed them.
+#
+# Consequence: it needs a Bluetooth adapter Kismet is NOT already capturing
+# on. Kismet holds an adapter for the lifetime of its daemon. Three
+# configurations make an enabled bridge silently useless or noisy --
+# adapter contention, a kismet_sources list missing the bridge's own
+# "ble:<adapter>" provenance, and a raw company-id rule that alerts on a
+# whole vendor. `lynceus-setup` checks all three and prints the fix.
+#
+# See docs/CONFIGURATION.md before enabling.
+ble_bridge:
+  enabled: false
+  # HCI adapter to scan on. Must not be one Kismet is capturing on.
+  adapter: hci1
+  # Bridge tick interval in seconds, independent of poll_interval_seconds.
+  # Minimum 1. Leave unset to inherit poll_interval_seconds.
+  # flush_interval: 60
+
+# --- Alert-time evidence snapshots ---
+
+# Capture the full Kismet device record (subject to the capture.* toggles
+# above) plus RSSI history when an alert fires. Storage grows with alert
+# volume; set false on a storage-constrained Pi.
+evidence_capture_enabled: true
+
+# How long evidence rows survive before the daily prune deletes them.
+# Range [1, 3650].
+evidence_retention_days: 90
+
+# Store the OPERATOR's GPS fix on evidence rows. Kismet's geopoint is the
+# RECEIVER's location, not the observed device's, so enabling this builds a
+# high-resolution log of where you have been, retained for
+# evidence_retention_days. Independent of evidence_capture_enabled and
+# opt-in for that reason.
+evidence_store_gps: false
+
+# --- Watchlist freshness ---
+
+# Age (days) at which /settings flags the imported watchlist as stale. The
+# bundled lynceus-refresh.timer runs weekly, well inside this window.
+watchlist_staleness_warn_days: 30
