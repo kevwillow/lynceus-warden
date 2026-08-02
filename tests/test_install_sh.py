@@ -432,7 +432,11 @@ def test_install_sh_uninstall_dry_run_lists_symlinks_and_venv():
     removed and the console-script symlinks that would be unlinked."""
     if shutil.which("systemctl") is None:
         pytest.skip("systemctl not on PATH; --uninstall pre-flight would fail")
-    r = _run(["--uninstall", "--dry-run"])
+    # --system must be explicit. install.sh auto-resolves scope from euid
+    # (`id -u -eq 0` -> system, else user), so a non-root run would emit the
+    # user-scope plan (~/.local/bin) and never mention /opt/lynceus/.venv.
+    # Dry-run is exempt from the root requirement, so this works unprivileged.
+    r = _run(["--uninstall", "--system", "--dry-run"])
     assert r.returncode == 0, f"stderr:\n{r.stderr}\nstdout:\n{r.stdout}"
     out = r.stdout + r.stderr
     assert "/opt/lynceus/.venv" in out
@@ -954,7 +958,12 @@ def test_install_sh_system_dry_run_prints_new_hint_block():
     # System-scope branch fires: enable + start of daemon + UI units.
     assert "systemctl enable --now lynceus.service lynceus-ui.service" in out
     # lynceus-quickstart is a --user dev/demo helper; it must NOT
-    # appear as a Next-Step on the --system path.
-    assert "lynceus-quickstart" not in out
+    # appear as a Next-Step on the --system path. Scope the check to the
+    # Next-steps block: install.sh legitimately symlinks every console
+    # script into /usr/local/bin (quickstart included) earlier in the
+    # transcript regardless of scope, so scanning the whole output is a
+    # false positive. This never ran before — it is skipped off Linux.
+    next_steps = out.split("Next steps:", 1)[1]
+    assert "lynceus-quickstart" not in next_steps
     # Docs pointer surfaces.
     assert "docs/DEPLOYMENT.md" in out

@@ -580,6 +580,13 @@ def test_extract_daemon_error_none_when_unremarkable():
 
 
 def test_popen_kwargs_windows_has_no_preexec(monkeypatch):
+    # CREATE_NEW_PROCESS_GROUP is Windows-only, so on POSIX the production
+    # branch this test simulates raises AttributeError before it can return.
+    # Stub it rather than skipping: the assertion below (Windows gets a
+    # process group and never a preexec_fn) is worth keeping on every host.
+    monkeypatch.setattr(
+        quickstart.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False
+    )
     monkeypatch.setattr(quickstart.os, "name", "nt")
     kwargs = quickstart._popen_kwargs()
     assert "creationflags" in kwargs

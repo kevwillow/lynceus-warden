@@ -1891,8 +1891,11 @@ def test_wizard_uses_system_db_path_when_system_scope(monkeypatch, tmp_path):
     monkeypatch.setattr(wiz, "_is_windows", lambda: False)
     monkeypatch.setattr(wiz.sys, "platform", "linux")
     monkeypatch.setattr(wiz, "_euid", lambda: 0)  # pretend we're root for --system
-    # Stub data + log dir mkdirs onto tmp_path so we don't try to mkdir
-    # /var/lib/lynceus on the test host.
+    # Stub config + data + log dir mkdirs onto tmp_path so we don't try to
+    # mkdir /etc/lynceus or /var/lib/lynceus on the test host. The config dir
+    # is the one that bites on Linux: it is a real root-owned /etc/lynceus, so
+    # a non-root run raises PermissionError.
+    monkeypatch.setattr(paths, "default_config_dir", lambda scope: tmp_path / "etc")
     monkeypatch.setattr(paths, "default_data_dir", lambda scope: tmp_path / "data")
     monkeypatch.setattr(paths, "default_log_dir", lambda scope: tmp_path / "log")
     # System-mode now applies lynceus group ownership to the freshly
@@ -2482,7 +2485,9 @@ def test_run_wizard_prints_deferred_argus_import_hint(monkeypatch, tmp_path, cap
     )
 
 
-def test_run_wizard_system_scope_refresh_hint_uses_sudo_and_scope(monkeypatch, tmp_path, capsys):
+def test_run_wizard_system_scope_refresh_hint_uses_sudo_and_scope(
+    _stub_perms, monkeypatch, tmp_path, capsys
+):
     """System-scope wizard must surface the refresh hint with sudo +
     --scope system so operators copy a command that actually works
     against /var/lib/lynceus/lynceus.db, not their per-user XDG path."""
@@ -2507,6 +2512,10 @@ def test_run_wizard_system_scope_refresh_hint_uses_sudo_and_scope(monkeypatch, t
     # against the test sandbox — they assume a real lynceus group exists.
     monkeypatch.setattr(wiz, "_apply_system_perms_to_file", lambda *a, **kw: None)
     monkeypatch.setattr(wiz, "_apply_system_perms_to_dir", lambda *a, **kw: None)
+    # Pretend to be root. _euid() returns None on Windows (no os.geteuid), so
+    # the --system root gate was simply absent there; on Linux it returns the
+    # real uid and the wizard correctly refuses --system for a normal user.
+    monkeypatch.setattr(wiz, "_euid", lambda: 0)
     rc = wiz.run_wizard(
         _args(system=True, skip_probes=True),
         input_fn=_input_seq(_full_input_sequence()),
@@ -3479,11 +3488,20 @@ def _stub_system_wizard_paths(monkeypatch, tmp_path):
     data_dir = tmp_path / "var" / "lib" / "lynceus"
     log_dir = tmp_path / "var" / "log" / "lynceus"
     db_path = data_dir / "lynceus.db"
+    # The config DIRECTORY needs stubbing too, not just the yaml file target
+    # above: the system-scope chown pass resolves it via default_config_dir,
+    # which is a real, root-owned /etc/lynceus on Linux. Without this the
+    # tests raise PermissionError as a non-root user. They passed on Windows
+    # only because the global sys.platform patch made this return the
+    # drive-relative "/etc/lynceus", i.e. a writable C:\etc\lynceus.
+    config_dir = tmp_path / "etc" / "lynceus"
+    monkeypatch.setattr(paths_mod, "default_config_dir", lambda scope: config_dir)
     monkeypatch.setattr(paths_mod, "default_data_dir", lambda scope: data_dir)
     monkeypatch.setattr(paths_mod, "default_log_dir", lambda scope: log_dir)
     monkeypatch.setattr(paths_mod, "default_db_path", lambda scope: db_path)
     return {
         "target": target,
+        "config_dir": config_dir,
         "data_dir": data_dir,
         "log_dir": log_dir,
         "db_path": db_path,
