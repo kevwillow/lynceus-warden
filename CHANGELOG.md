@@ -1887,7 +1887,7 @@ off. Read the honest-status notes before you turn them on.
   Previously, hitting Ctrl-C mid-wizard surfaced an unhandled-
   exception traceback to stderr; Ctrl-D (or stdin closing) raised
   an `EOFError` traceback for the same reason. Both signals now
-  exit cleanly with `Wizard cancelled — no changes written.` to
+  exit cleanly with `Wizard cancelled, no changes written.` to
   stderr and exit code 130. No files are written on cancellation.
   A companion fix reconfigures `sys.stderr` to UTF-8 alongside the
   v0.6.3 stdout reconfigure, closing a latent Windows cp1252 crash
@@ -1916,7 +1916,7 @@ off. Read the honest-status notes before you turn them on.
   wizard's last hint line ("UI will be available at...") and then a
   shell prompt that appeared mixed with that line, with no clear
   "the wizard is done" signal. Indistinguishable from a hang. The
-  wizard now prints an explicit `Setup complete — exiting.` boundary
+  wizard now prints an explicit `Setup complete, exiting.` boundary
   (with a flushed stdout) as its final visible line so the
   end-of-flow handoff is unambiguous. As defensive insurance against
   a separate failure mode, the bundled-watchlist auto-import

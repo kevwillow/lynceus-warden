@@ -83,7 +83,7 @@ def _print_headless_access_guidance(url: str, host: str, port: int) -> None:
     if host in _LOOPBACK_HOSTS:
         print()
         print("This host has no usable browser, and the wizard binds to localhost")
-        print("by design — it is not reachable from another machine directly. To")
+        print("by design, so it is not reachable from another machine directly. To")
         print("reach it from your laptop, forward the port over SSH, then open the")
         print("URL above in your local browser:")
         print(f"    ssh -L {port}:127.0.0.1:{port} <user>@<this-host>")

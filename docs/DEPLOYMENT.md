@@ -205,7 +205,7 @@ The wizard:
 5. Auto-imports the bundled threat-data watchlist (~22.5k Argus
    rows). No manual import needed for the default coverage.
 
-**Expected:** the wizard ends with a `Setup complete — exiting.`
+**Expected:** the wizard ends with a `Setup complete, exiting.`
 line and writes `lynceus.yaml` to the canonical config dir
 (`~/.config/lynceus/lynceus.yaml` for user install,
 `/etc/lynceus/lynceus.yaml` for system install). The DB at the

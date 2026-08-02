@@ -859,7 +859,7 @@ def run_wizard(
     try:
         return _run_wizard_body(args, input_fn=input_fn, getpass_fn=getpass_fn)
     except (EOFError, KeyboardInterrupt):
-        print("\nWizard cancelled — no changes written.", file=sys.stderr)
+        print("\nWizard cancelled, no changes written.", file=sys.stderr)
         return 130
 
 
@@ -885,7 +885,7 @@ def _run_wizard_body(
         print(err, file=sys.stderr)
         return 2
 
-    print(f"Lynceus setup wizard — writing to {target}")
+    print(f"Lynceus setup wizard, writing to {target}")
     print()
 
     answers: dict = {}
@@ -936,9 +936,9 @@ get Kismet ready on Debian/Ubuntu/Kali:
         token, name, path, validated = located
         preview = _redact_kismet_api_key(token)
         if validated:
-            print(f"Found a key in {path} (verified against Kismet — it authenticates).")
+            print(f"Found a key in {path} (verified against Kismet, it authenticates).")
         else:
-            print(f"Found a key in {path} (could NOT verify — Kismet not reachable yet).")
+            print(f"Found a key in {path} (could NOT verify, Kismet not reachable yet).")
         if name:
             print(f"Preview: {preview}  (name: {name})")
         else:
@@ -1126,7 +1126,7 @@ Lynceus default is OFF.
         enabled_rule_types=(),
     )
     if bridge_warnings:
-        print(f"Before you decide — {len(bridge_warnings)} thing(s) would stop this working here:")
+        print(f"Before you decide, {len(bridge_warnings)} thing(s) would stop this working here:")
         print()
         for warning in bridge_warnings:
             print(f"  ! {warning.summary}")
@@ -1225,7 +1225,7 @@ and enter the topic exactly as written.
             print(f"Sending a test notification to {resolved} ...")
             ok, error = probe_ntfy(answers["ntfy_url"], answers["ntfy_topic"])
             if ok:
-                print("✓ ntfy publish accepted (HTTP 2xx) — the broker is reachable.")
+                print("✓ ntfy publish accepted (HTTP 2xx). The broker is reachable.")
                 print(
                     "  A 2xx only means the server accepted the message; it does NOT "
                     "confirm"
@@ -1492,7 +1492,7 @@ and enter the topic exactly as written.
     # main() left the buffering policy.
     print()
     print("─" * 60)
-    print(f"Setup complete — exiting. Config at {target}.")
+    print(f"Setup complete, exiting. Config at {target}.")
     print("─" * 60)
     sys.stdout.flush()
     return 0

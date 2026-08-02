@@ -627,7 +627,7 @@ def _validate_header(header: list[str]) -> None:
         issues.append(f"unexpected column(s): {extra}")
     if not missing and not extra:
         issues.append(f"columns out of order: got {header}, expected {EXPECTED_HEADER}")
-    raise ValueError("argus CSV header invalid — " + "; ".join(issues))
+    raise ValueError("argus CSV header invalid: " + "; ".join(issues))
 
 
 def parse_argus_meta(path: str) -> dict[str, str | int | None]:
