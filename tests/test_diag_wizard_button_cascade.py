@@ -46,7 +46,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import lynceus.setup.web.steps_kismet as steps_kismet
-from lynceus.setup.web.app import STEP_TITLES, create_wizard_app
+from lynceus.setup.web.app import create_wizard_app
 
 pytestmark = pytest.mark.diagnostic
 
@@ -158,9 +158,7 @@ def _seed_session(app) -> None:
 # media queries don't add specificity).
 
 
-_AT_RULE_NESTED_RE = re.compile(
-    r"@(media|supports)[^{]*\{(?P<body>.*?)\n\}", flags=re.DOTALL
-)
+_AT_RULE_NESTED_RE = re.compile(r"@(media|supports)[^{]*\{(?P<body>.*?)\n\}", flags=re.DOTALL)
 
 
 def _strip_comments(css: str) -> str:
@@ -413,7 +411,9 @@ def _specificity(selector: str) -> tuple[int, int, int]:
             elif (
                 tok.startswith(".")
                 or tok.startswith("[")
-                or (tok.startswith(":") and not tok.startswith("::") and not tok.startswith(":not("))
+                or (
+                    tok.startswith(":") and not tok.startswith("::") and not tok.startswith(":not(")
+                )
             ):
                 b += 1
             elif tok.startswith(":not("):
@@ -469,9 +469,7 @@ def _resolve_cascade(
             winners[prop] = {"value": "<unmatched>", "winner": None}
             continue
         # !important first, then specificity, then order.
-        candidates.sort(
-            key=lambda c: (c["important"], c["specificity"], c["order"])
-        )
+        candidates.sort(key=lambda c: (c["important"], c["specificity"], c["order"]))
         winner = candidates[-1]
         winners[prop] = {
             "value": winner["value"],
@@ -556,11 +554,20 @@ def test_diag_wizard_button_cascade(diag, monkeypatch):
     diag.section("stylesheet inventory")
     base_template = (
         Path(__file__).resolve().parent.parent
-        / "src" / "lynceus" / "setup" / "web" / "templates" / "_base.html"
+        / "src"
+        / "lynceus"
+        / "setup"
+        / "web"
+        / "templates"
+        / "_base.html"
     )
     pico_path = (
         Path(__file__).resolve().parent.parent
-        / "src" / "lynceus" / "webui" / "static" / "pico.min.css"
+        / "src"
+        / "lynceus"
+        / "webui"
+        / "static"
+        / "pico.min.css"
     )
     base_text = base_template.read_text(encoding="utf-8")
     pico_text = pico_path.read_text(encoding="utf-8")
@@ -605,10 +612,7 @@ def test_diag_wizard_button_cascade(diag, monkeypatch):
             decls = {k: v["value"] for k, v in r["declarations"].items() if k in _SIZING_PROPERTIES}
             if not decls:
                 continue
-            diag.observed(
-                f"  selector={sel!r} src={r['source']} "
-                f"sizing-declarations={decls}"
-            )
+            diag.observed(f"  selector={sel!r} src={r['source']} sizing-declarations={decls}")
 
     # -- Walk pages, extract buttons, resolve cascade, diff prev/next.
     diag.section("per-page cascade resolution")
@@ -629,16 +633,12 @@ def test_diag_wizard_button_cascade(diag, monkeypatch):
             buttons = _extract_footer_buttons(resp.text)
             diag.observed(f"--- {label} ({path}) ---  footer buttons={len(buttons)}")
             for b in buttons:
-                diag.observed(
-                    f"  element: <{b['tag']} {b['attrs']}>  raw={b['raw']!r}"
-                )
+                diag.observed(f"  element: <{b['tag']} {b['attrs']}>  raw={b['raw']!r}")
             if len(buttons) < 2:
                 diag.observed("  (need >= 2 buttons to diff -- skipping per-page diff)")
                 continue
 
-            resolved = [
-                _resolve_cascade(all_rules, b, _SIZING_PROPERTIES) for b in buttons
-            ]
+            resolved = [_resolve_cascade(all_rules, b, _SIZING_PROPERTIES) for b in buttons]
 
             # Diff every property across every pair (most pages have
             # exactly 2 buttons; step 3 may have 2 real <button>s).
@@ -649,21 +649,19 @@ def test_diag_wizard_button_cascade(diag, monkeypatch):
                     continue
                 divergences_seen.append(f"{label}: {prop} -> {values}")
                 diag.observed(f"    DIVERGENT {prop}:")
-                for i, (b, r) in enumerate(zip(buttons, resolved)):
+                for i, (b, r) in enumerate(zip(buttons, resolved, strict=False)):
                     diag.observed(
                         f"      [{i}] <{b['tag']} role={b['attrs'].get('role')!r}> "
                         f"= {r[prop]['value']!r}"
                     )
-                    diag.observed(
-                        f"          winner: {r[prop]['winner']}"
-                    )
+                    diag.observed(f"          winner: {r[prop]['winner']}")
                     for line in r[prop].get("candidates", []):
                         diag.observed(f"        {line}")
 
             # Also report any property the inline rule "should" have
             # pinned but didn't win (cascade-lost cases).
             for prop in ("min-width", "padding", "line-height", "box-sizing", "text-align"):
-                for i, (b, r) in enumerate(zip(buttons, resolved)):
+                for i, (b, r) in enumerate(zip(buttons, resolved, strict=False)):
                     winner = r[prop].get("winner") or ""
                     if "_base.html inline" in winner:
                         continue

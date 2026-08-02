@@ -425,7 +425,7 @@ def test_diag_has_action_null_mac_invocation(diag, tmp_path):
     # write NULL-mac rows include pre-migration-015 historical alerts and
     # certain new_non_randomized_device early failures.
     null_alert_id = _seed_alert(db, None)
-    diag.fixture(f"allowlist: 1 mac_range entry")
+    diag.fixture("allowlist: 1 mac_range entry")
     diag.fixture(f"seeded NULL-mac alert id={null_alert_id}")
 
     app = create_app(config, db)

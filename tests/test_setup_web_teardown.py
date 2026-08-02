@@ -125,7 +125,6 @@ def test_done_post_cancels_grace_timer():
         # Use TestClient inside the scenario only to fire the POST;
         # the actual cancel logic runs in the same event loop.
         # Easier: call the handler directly.
-        from starlette.requests import Request
         # Build a minimal Request scope manually is fiddly; use TestClient.
         with _client(app) as c:
             csrf = _csrf_get(c, "/apply-complete")

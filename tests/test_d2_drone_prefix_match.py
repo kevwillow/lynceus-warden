@@ -23,7 +23,6 @@ import pytest
 from lynceus.allowlist import Allowlist, AllowlistEntry
 from lynceus.db import Database
 from lynceus.kismet import DeviceObservation, _coerce_drone_id_prefix
-from lynceus.patterns import normalize_pattern
 from lynceus.rules import Rule, Ruleset, evaluate
 
 COMMARIS = "1787F03BM23030002222"

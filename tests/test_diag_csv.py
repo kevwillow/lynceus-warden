@@ -81,23 +81,23 @@ def test_diag_csv_alerts_nulls(diag, tmp_path):
     db = Database(config.db_path)
 
     # Row A: minimal alert -- many NULL columns by default.
-    a_min = _seed_alert(
+    _seed_alert(
         db, mac="aa:aa:aa:aa:aa:aa", ts=1_700_000_000,
         rule_name="bare", severity="low",
     )
     # Row B: NULL mac, NULL rule_type.
-    a_null_mac = _seed_alert(
+    _seed_alert(
         db, mac=None, ts=1_700_001_000,
         rule_name="no-mac", severity="med", rule_type=None,
     )
     # Row C: note set, note_updated_at NULL (allowed schema-wise).
-    a_note_no_ts = _seed_alert(
+    _seed_alert(
         db, mac="bb:bb:bb:bb:bb:bb", ts=1_700_002_000,
         rule_name="note-only", severity="high",
         note="operator note", note_updated_at=None,
     )
     # Row D: note + note_updated_at set.
-    a_note_full = _seed_alert(
+    _seed_alert(
         db, mac="cc:cc:cc:cc:cc:cc", ts=1_700_003_000,
         rule_name="note-full", severity="high",
         note="annotated", note_updated_at=1_700_003_500,

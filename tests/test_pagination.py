@@ -15,7 +15,6 @@ from lynceus.webui.pagination import (
     parse_pagination,
 )
 
-
 _ALLOWED = (25, 50, 100, 200)
 _DEFAULT = 50
 
@@ -24,13 +23,17 @@ _DEFAULT = 50
 
 
 def test_parse_pagination_happy_path():
-    page, per_page = parse_pagination("3", "100", allowed_per_page=_ALLOWED, default_per_page=_DEFAULT)
+    page, per_page = parse_pagination(
+        "3", "100", allowed_per_page=_ALLOWED, default_per_page=_DEFAULT
+    )
     assert page == 3
     assert per_page == 100
 
 
 def test_parse_pagination_defaults_when_missing():
-    page, per_page = parse_pagination(None, None, allowed_per_page=_ALLOWED, default_per_page=_DEFAULT)
+    page, per_page = parse_pagination(
+        None, None, allowed_per_page=_ALLOWED, default_per_page=_DEFAULT
+    )
     assert page == 1
     assert per_page == _DEFAULT
 
@@ -63,7 +66,9 @@ def test_parse_pagination_zero_page_clamps_to_one():
 
 
 def test_parse_pagination_non_integer_page_defaults_to_one():
-    page, _ = parse_pagination("not-a-number", "50", allowed_per_page=_ALLOWED, default_per_page=_DEFAULT)
+    page, _ = parse_pagination(
+        "not-a-number", "50", allowed_per_page=_ALLOWED, default_per_page=_DEFAULT
+    )
     assert page == 1
 
 

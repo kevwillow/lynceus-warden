@@ -1007,8 +1007,8 @@ def test_watchlist_csv_no_metadata_row_renders_empty_join_cells(tmp_path):
 
 @pytest.mark.webui
 def test_watchlist_csv_is_a_streaming_response(tmp_path):
-    from starlette.responses import StreamingResponse
     from starlette.requests import Request
+    from starlette.responses import StreamingResponse
 
     app, db = _make_app(tmp_path)
     try:

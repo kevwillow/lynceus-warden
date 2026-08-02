@@ -120,6 +120,7 @@ def _e2e_inputs(bridge_answer: str) -> list[str]:
 
 
 def _run_wizard_to_file(monkeypatch, tmp_path, bridge_answer: str):
+    from lynceus.cli import setup as cli
     from tests.test_setup_wizard import (
         _args,
         _getpass_seq,
@@ -127,7 +128,6 @@ def _run_wizard_to_file(monkeypatch, tmp_path, bridge_answer: str):
         _stub_bundled_import,
         _stub_path_resolution,
     )
-    from lynceus.cli import setup as cli
 
     _stub_path_resolution(monkeypatch, tmp_path)
     _stub_bundled_import(monkeypatch)

@@ -13,7 +13,6 @@ cross-platform.
 
 from __future__ import annotations
 
-import io
 import json
 import tarfile
 from pathlib import Path
@@ -22,7 +21,6 @@ import pytest
 
 from lynceus.cli import export_config as ec
 from lynceus.redact import REDACTED_PLACEHOLDER
-
 
 # --- shared fixture --------------------------------------------------------
 

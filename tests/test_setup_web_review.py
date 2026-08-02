@@ -17,7 +17,6 @@ Pins:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -249,8 +248,8 @@ def test_apply_post_valid_config_redirects_to_progress(monkeypatch):
     """Valid config → 303 → /apply-progress (where the SSE stream
     drives the live update). We mock apply_config to a noop so this
     test doesn't actually run the side-effect chain."""
-    from lynceus.setup.web import review as review_mod
     from lynceus.setup.models import ApplyReport
+    from lynceus.setup.web import review as review_mod
 
     monkeypatch.setattr(
         review_mod, "apply_config",

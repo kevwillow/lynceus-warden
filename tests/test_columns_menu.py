@@ -30,8 +30,18 @@ from lynceus.db import Database
 from lynceus.webui.app import create_app
 
 DEVICES_KEYS = [
-    "device", "mac", "device_type", "oui_vendor", "ble_name", "ble_device_class", "probes",
-    "is_randomized", "first_seen", "last_seen", "last_rssi", "last_ssid",
+    "device",
+    "mac",
+    "device_type",
+    "oui_vendor",
+    "ble_name",
+    "ble_device_class",
+    "probes",
+    "is_randomized",
+    "first_seen",
+    "last_seen",
+    "last_rssi",
+    "last_ssid",
     "sighting_count",
 ]
 
@@ -105,10 +115,10 @@ def test_raw_html_first_label_falls_back_to_key(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         env = app.state.templates.env
-        env.globals["_RAW"] = Markup(
-            '<input type="checkbox" id="select-all-noop" disabled>'
+        env.globals["_RAW"] = Markup('<input type="checkbox" id="select-all-noop" disabled>')
+        cols = (
+            "{% set cols = [{'label':_RAW,'key':'select'},{'label':'pattern','key':'pattern'}] %}"
         )
-        cols = "{% set cols = [{'label':_RAW,'key':'select'},{'label':'pattern','key':'pattern'}] %}"
         html = _render(env, cols, table_id="allow")
         # Isolate the menu panel and confirm its first label is the text "select",
         # not a nested <input> from the raw-HTML label.

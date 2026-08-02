@@ -26,7 +26,10 @@ from lynceus.db import Database
 pytestmark = pytest.mark.diagnostic
 
 
-META_LINE = "# meta: schema_version=21, exported_at=2026-05-17T15:53:27Z, record_count=4, confidence_threshold=0\n"
+META_LINE = (
+    "# meta: schema_version=21, exported_at=2026-05-17T15:53:27Z, "
+    "record_count=4, confidence_threshold=0\n"
+)
 
 
 def _row(**overrides) -> dict[str, str]:
@@ -82,10 +85,18 @@ def test_diag_import_argus_no_op_sql_trace(diag, tmp_path):
         [
             _row(argus_record_id="rec-mac-1", identifier="aa:bb:cc:11:22:33"),
             _row(argus_record_id="rec-mac-2", identifier="aa:bb:cc:11:22:44"),
-            _row(argus_record_id="rec-oui-1", identifier_type="oui",
-                 identifier="de:ad:be", manufacturer="OUIVendor"),
-            _row(argus_record_id="rec-ssid-1", identifier_type="ssid_exact",
-                 identifier="DiagSSID", manufacturer="SSIDVendor"),
+            _row(
+                argus_record_id="rec-oui-1",
+                identifier_type="oui",
+                identifier="de:ad:be",
+                manufacturer="OUIVendor",
+            ),
+            _row(
+                argus_record_id="rec-ssid-1",
+                identifier_type="ssid_exact",
+                identifier="DiagSSID",
+                manufacturer="SSIDVendor",
+            ),
         ],
     )
 
@@ -95,9 +106,18 @@ def test_diag_import_argus_no_op_sql_trace(diag, tmp_path):
 
     diag.exercise("import_csv() first run -- populates DB")
     r1 = import_csv(db, csv_path, OverrideConfig())
-    diag.observed(f"first run report: new={r1.imported_new} "
-                  f"updated={r1.updated} unchanged={r1.unchanged} "
-                  f"dropped={r1.dropped_severity_drop + r1.dropped_unknown_type + r1.dropped_geographic_filter + r1.dropped_mac_range + r1.dropped_low_confidence}")
+    _r1_dropped = (
+        r1.dropped_severity_drop
+        + r1.dropped_unknown_type
+        + r1.dropped_geographic_filter
+        + r1.dropped_mac_range
+        + r1.dropped_low_confidence
+    )
+    diag.observed(
+        f"first run report: new={r1.imported_new} "
+        f"updated={r1.updated} unchanged={r1.unchanged} "
+        f"dropped={_r1_dropped}"
+    )
 
     # Install SQL trace BEFORE the second run; capture only mutating
     # statements so noisy SELECT chatter doesn't dilute the dump.
@@ -115,10 +135,10 @@ def test_diag_import_argus_no_op_sql_trace(diag, tmp_path):
 
     diag.exercise("import_csv() second run -- SAME CSV, no field changes")
     r2 = import_csv(db, csv_path, OverrideConfig())
-    diag.observed(f"second run report: new={r2.imported_new} "
-                  f"updated={r2.updated} unchanged={r2.unchanged}")
-    diag.observed(f"second-run SELECT count (read-side traffic): "
-                  f"{selects['count']}")
+    diag.observed(
+        f"second run report: new={r2.imported_new} updated={r2.updated} unchanged={r2.unchanged}"
+    )
+    diag.observed(f"second-run SELECT count (read-side traffic): {selects['count']}")
     diag.observed(f"second-run mutating-statement count: {len(mutations)}")
     diag.observed("--- second-run mutating statements (target table + verb) ---")
     for stmt in mutations:
@@ -126,12 +146,14 @@ def test_diag_import_argus_no_op_sql_trace(diag, tmp_path):
         head = " ".join(stmt.split()[:6])
         diag.observed(f"  {verb}: {head}")
 
-    diag.notes("Expected on an honest no-op: new=0, updated=0, "
-               "unchanged=<total_rows>, mutating-statement count=1 "
-               "(just the import_runs row that records the import "
-               "happened). Any additional UPDATEs against "
-               "watchlist_metadata or watchlist are the import "
-               "thrashing the row needlessly.")
+    diag.notes(
+        "Expected on an honest no-op: new=0, updated=0, "
+        "unchanged=<total_rows>, mutating-statement count=1 "
+        "(just the import_runs row that records the import "
+        "happened). Any additional UPDATEs against "
+        "watchlist_metadata or watchlist are the import "
+        "thrashing the row needlessly."
+    )
     db.close()
 
 
@@ -147,8 +169,7 @@ def test_diag_import_argus_metadata_thrash(diag, tmp_path):
             _row(argus_record_id="rec-1"),
             _row(argus_record_id="rec-2", identifier="aa:bb:cc:dd:ee:01"),
             _row(argus_record_id="rec-3", identifier="aa:bb:cc:dd:ee:02"),
-            _row(argus_record_id="rec-4", identifier_type="oui",
-                 identifier="de:ad:be"),
+            _row(argus_record_id="rec-4", identifier_type="oui", identifier="de:ad:be"),
         ],
     )
     db = Database(str(tmp_path / "diag.db"))
@@ -186,14 +207,16 @@ def test_diag_import_argus_metadata_thrash(diag, tmp_path):
             bumped += 1
     diag.observed(f"rows with updated_at bumped despite no content change: {bumped}")
 
-    diag.notes("Synthetic fixture has no peer-collide or in-import-dup "
-               "rows, so neither the v0.6.0 import-side gates nor the "
-               "inner upsert_metadata short-circuit are exercised here "
-               "— a no-bump observation holds on the synthetic CSV both "
-               "before and after the rework, for different reasons. The "
-               "bundled-CSV equivalent (which carries 25 thrashed rows "
-               "before the rework and 0 after) is "
-               "test_diag_import_argus_bundled_csv_dedup_shapes below.")
+    diag.notes(
+        "Synthetic fixture has no peer-collide or in-import-dup "
+        "rows, so neither the v0.6.0 import-side gates nor the "
+        "inner upsert_metadata short-circuit are exercised here "
+        "— a no-bump observation holds on the synthetic CSV both "
+        "before and after the rework, for different reasons. The "
+        "bundled-CSV equivalent (which carries 25 thrashed rows "
+        "before the rework and 0 after) is "
+        "test_diag_import_argus_bundled_csv_dedup_shapes below."
+    )
     db.close()
 
 
@@ -205,53 +228,70 @@ def test_diag_import_argus_metadata_thrash(diag, tmp_path):
 def test_diag_import_argus_admit_vs_drop(diag, tmp_path):
     rows = [
         # Supported identifier_types per IDENTIFIER_TYPE_MAP (import_argus.py:61):
-        _row(argus_record_id="ok-mac", identifier_type="mac",
-             identifier="aa:bb:cc:11:22:33"),
-        _row(argus_record_id="ok-oui", identifier_type="oui",
-             identifier="de:ad:be"),
-        _row(argus_record_id="ok-ssid", identifier_type="ssid_exact",
-             identifier="ExactSSID"),
-        _row(argus_record_id="ok-ssidpat", identifier_type="ssid_pattern",
-             identifier="*-pattern"),
-        _row(argus_record_id="ok-ble", identifier_type="ble_uuid",
-             identifier="0000180a-0000-1000-8000-00805f9b34fb"),
-        _row(argus_record_id="ok-bleservice", identifier_type="ble_service",
-             identifier="0000180f-0000-1000-8000-00805f9b34fb"),
-        _row(argus_record_id="ok-blemfg", identifier_type="ble_manufacturer_id",
-             identifier="0x004c"),
-        _row(argus_record_id="ok-blecompany", identifier_type="ble_company_id",
-             identifier="0x09c8"),
-        _row(argus_record_id="ok-drone", identifier_type="drone_id_prefix",
-             identifier="DIAG-DRONE-PREFIX"),
-        _row(argus_record_id="ok-macrange", identifier_type="mac_range",
-             identifier="aa:bb:cc:1/28"),
+        _row(argus_record_id="ok-mac", identifier_type="mac", identifier="aa:bb:cc:11:22:33"),
+        _row(argus_record_id="ok-oui", identifier_type="oui", identifier="de:ad:be"),
+        _row(argus_record_id="ok-ssid", identifier_type="ssid_exact", identifier="ExactSSID"),
+        _row(argus_record_id="ok-ssidpat", identifier_type="ssid_pattern", identifier="*-pattern"),
+        _row(
+            argus_record_id="ok-ble",
+            identifier_type="ble_uuid",
+            identifier="0000180a-0000-1000-8000-00805f9b34fb",
+        ),
+        _row(
+            argus_record_id="ok-bleservice",
+            identifier_type="ble_service",
+            identifier="0000180f-0000-1000-8000-00805f9b34fb",
+        ),
+        _row(
+            argus_record_id="ok-blemfg", identifier_type="ble_manufacturer_id", identifier="0x004c"
+        ),
+        _row(
+            argus_record_id="ok-blecompany", identifier_type="ble_company_id", identifier="0x09c8"
+        ),
+        _row(
+            argus_record_id="ok-drone",
+            identifier_type="drone_id_prefix",
+            identifier="DIAG-DRONE-PREFIX",
+        ),
+        _row(
+            argus_record_id="ok-macrange", identifier_type="mac_range", identifier="aa:bb:cc:1/28"
+        ),
         # Unsupported types (should be dropped as unknown):
-        _row(argus_record_id="bad-typo", identifier_type="ssid",
-             identifier="LegacyTypeSSID"),
-        _row(argus_record_id="bad-empty", identifier_type="",
-             identifier="EmptyType"),
-        _row(argus_record_id="bad-unknown", identifier_type="not_a_type",
-             identifier="UnknownTypeIdent"),
+        _row(argus_record_id="bad-typo", identifier_type="ssid", identifier="LegacyTypeSSID"),
+        _row(argus_record_id="bad-empty", identifier_type="", identifier="EmptyType"),
+        _row(
+            argus_record_id="bad-unknown",
+            identifier_type="not_a_type",
+            identifier="UnknownTypeIdent",
+        ),
         # Severity drop (severity_overrides config could downgrade to 'drop',
         # but default config admits all -- so this is here as a baseline).
-        _row(argus_record_id="lowconf", identifier_type="mac",
-             identifier="aa:bb:cc:99:99:99", confidence="10"),
+        _row(
+            argus_record_id="lowconf",
+            identifier_type="mac",
+            identifier="aa:bb:cc:99:99:99",
+            confidence="10",
+        ),
         # Empty identifier:
-        _row(argus_record_id="bad-empty-ident", identifier_type="mac",
-             identifier=""),
+        _row(argus_record_id="bad-empty-ident", identifier_type="mac", identifier=""),
     ]
     csv_path = _write_csv(tmp_path / "diag.csv", rows)
     db = Database(str(tmp_path / "diag.db"))
 
-    diag.fixture(f"CSV total rows: {len(rows)} "
-                 f"(10 supported types + 3 unsupported + 1 low-confidence "
-                 f"baseline + 1 empty-identifier error)")
-    diag.exercise("import_csv() with default OverrideConfig "
-                  "(no geographic filter, no severity downgrade)")
+    diag.fixture(
+        f"CSV total rows: {len(rows)} "
+        f"(10 supported types + 3 unsupported + 1 low-confidence "
+        f"baseline + 1 empty-identifier error)"
+    )
+    diag.exercise(
+        "import_csv() with default OverrideConfig (no geographic filter, no severity downgrade)"
+    )
     report = import_csv(db, csv_path, OverrideConfig(), min_confidence=70)
-    diag.observed(f"report: total_rows={report.total_rows} "
-                  f"imported_new={report.imported_new} "
-                  f"updated={report.updated} unchanged={report.unchanged}")
+    diag.observed(
+        f"report: total_rows={report.total_rows} "
+        f"imported_new={report.imported_new} "
+        f"updated={report.updated} unchanged={report.unchanged}"
+    )
     diag.observed(f"  dropped_unknown_type={report.dropped_unknown_type}")
     diag.observed(f"  dropped_severity_drop={report.dropped_severity_drop}")
     diag.observed(f"  dropped_geographic_filter={report.dropped_geographic_filter}")
@@ -265,22 +305,21 @@ def test_diag_import_argus_admit_vs_drop(diag, tmp_path):
     wl_rows = db._conn.execute(
         "SELECT pattern_type, COUNT(*) FROM watchlist GROUP BY pattern_type"
     ).fetchall()
-    diag.observed(f"watchlist rows by pattern_type: "
-                  f"{[(r[0], r[1]) for r in wl_rows]}")
-    md_count = db._conn.execute(
-        "SELECT COUNT(*) FROM watchlist_metadata"
-    ).fetchone()[0]
+    diag.observed(f"watchlist rows by pattern_type: {[(r[0], r[1]) for r in wl_rows]}")
+    md_count = db._conn.execute("SELECT COUNT(*) FROM watchlist_metadata").fetchone()[0]
     diag.observed(f"watchlist_metadata row count: {md_count}")
 
-    diag.notes("Reviewer cross-check: imported_new + sum(dropped_*) + "
-               "normalization_failed + errors + updated + unchanged "
-               "SHOULD equal total_rows. Any shortfall indicates rows "
-               "silently disappearing. The v0.6.0 dedup rework added "
-               "two `dropped_*` counters (dropped_peer_collision and "
-               "dropped_in_import_dup) — both must be in the sum for "
-               "the invariant to hold. The ssid_exact vs ssid_pattern "
-               "split lands in watchlist as pattern_type 'ssid' (for "
-               "ssid_exact) and 'ssid_pattern'.")
+    diag.notes(
+        "Reviewer cross-check: imported_new + sum(dropped_*) + "
+        "normalization_failed + errors + updated + unchanged "
+        "SHOULD equal total_rows. Any shortfall indicates rows "
+        "silently disappearing. The v0.6.0 dedup rework added "
+        "two `dropped_*` counters (dropped_peer_collision and "
+        "dropped_in_import_dup) — both must be in the sum for "
+        "the invariant to hold. The ssid_exact vs ssid_pattern "
+        "split lands in watchlist as pattern_type 'ssid' (for "
+        "ssid_exact) and 'ssid_pattern'."
+    )
     db.close()
 
 
@@ -310,11 +349,13 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
     import importlib.resources
 
     from lynceus.cli.import_argus import (
-        IDENTIFIER_TYPE_MAP,
         _SEVERITY_RANK,
-        OverrideConfig as _OvCfg,
+        IDENTIFIER_TYPE_MAP,
         parse_argus_csv,
         resolve_severity,
+    )
+    from lynceus.cli.import_argus import (
+        OverrideConfig as _OvCfg,
     )
     from lynceus.patterns import (
         canonicalize_mac_range_pattern,
@@ -360,9 +401,7 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
                 best_idx = ci
         return best_idx
 
-    bundle_path = str(
-        importlib.resources.files("lynceus.data").joinpath("default_watchlist.csv")
-    )
+    bundle_path = str(importlib.resources.files("lynceus.data").joinpath("default_watchlist.csv"))
     diag.fixture(f"bundled Argus CSV: {bundle_path}")
 
     # ---- Independent CSV parse: derive ground-truth bucket inventory.
@@ -391,14 +430,8 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
                 canon = normalize_pattern(ptype, raw["identifier"])
         except Exception:
             continue
-        pattern_groups.setdefault((canon, ptype), []).append(
-            (csv_idx, raw["argus_record_id"], raw)
-        )
-    nk_collide_groups = {
-        k: v
-        for k, v in pattern_groups.items()
-        if len({a for _, a, _ in v}) > 1
-    }
+        pattern_groups.setdefault((canon, ptype), []).append((csv_idx, raw["argus_record_id"], raw))
+    nk_collide_groups = {k: v for k, v in pattern_groups.items() if len({a for _, a, _ in v}) > 1}
 
     diag.fixture(
         f"bucket B (in-import-dup): {len(dup_argus_ids)} distinct "
@@ -413,7 +446,7 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
 
     # Sample shape breakdown by canonical pattern_type
     by_ptype: dict[str, int] = collections.Counter()
-    for (_, ptype), members in nk_collide_groups.items():
+    for (_, ptype), _members in nk_collide_groups.items():
         by_ptype[ptype] += 1
     diag.fixture(f"bucket A breakdown by pattern_type: {dict(by_ptype)}")
 
@@ -455,7 +488,7 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
     # passive first-wins). Useful as the audit summary number in the
     # diag log even when winners happen to coincide with first-in-CSV.
     bucket_a_drift = 0
-    for (canon, ptype), members in nk_collide_groups.items():
+    for (_canon, _ptype), members in nk_collide_groups.items():
         sevs = {_resolved_sev(m[2]) for m in members} - {None}
         if len(sevs) > 1:
             bucket_a_drift += 1
@@ -486,16 +519,22 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
         f"errors={r1.errors}"
     )
     inv1 = (
-        r1.imported_new + r1.updated + r1.unchanged
-        + r1.dropped_unknown_type + r1.dropped_geographic_filter
-        + r1.dropped_severity_drop + r1.dropped_mac_range
-        + r1.dropped_low_confidence + r1.dropped_peer_collision
-        + r1.dropped_in_import_dup + r1.dropped_placeholder_oui
-        + r1.normalization_failed + r1.errors
+        r1.imported_new
+        + r1.updated
+        + r1.unchanged
+        + r1.dropped_unknown_type
+        + r1.dropped_geographic_filter
+        + r1.dropped_severity_drop
+        + r1.dropped_mac_range
+        + r1.dropped_low_confidence
+        + r1.dropped_peer_collision
+        + r1.dropped_in_import_dup
+        + r1.dropped_placeholder_oui
+        + r1.normalization_failed
+        + r1.errors
     )
     diag.observed(
-        f"r1 invariant sum={inv1} total_rows={r1.total_rows} "
-        f"match={inv1 == r1.total_rows}"
+        f"r1 invariant sum={inv1} total_rows={r1.total_rows} match={inv1 == r1.total_rows}"
     )
 
     # ---- Exercise: no-op re-import, trace mutating SQL.
@@ -517,20 +556,24 @@ def test_diag_import_argus_bundled_csv_dedup_shapes(diag, tmp_path):
         f"dropped_in_import_dup={r2.dropped_in_import_dup}"
     )
     inv2 = (
-        r2.imported_new + r2.updated + r2.unchanged
-        + r2.dropped_unknown_type + r2.dropped_geographic_filter
-        + r2.dropped_severity_drop + r2.dropped_mac_range
-        + r2.dropped_low_confidence + r2.dropped_peer_collision
-        + r2.dropped_in_import_dup + r2.dropped_placeholder_oui
-        + r2.normalization_failed + r2.errors
+        r2.imported_new
+        + r2.updated
+        + r2.unchanged
+        + r2.dropped_unknown_type
+        + r2.dropped_geographic_filter
+        + r2.dropped_severity_drop
+        + r2.dropped_mac_range
+        + r2.dropped_low_confidence
+        + r2.dropped_peer_collision
+        + r2.dropped_in_import_dup
+        + r2.dropped_placeholder_oui
+        + r2.normalization_failed
+        + r2.errors
     )
     diag.observed(
-        f"r2 invariant sum={inv2} total_rows={r2.total_rows} "
-        f"match={inv2 == r2.total_rows}"
+        f"r2 invariant sum={inv2} total_rows={r2.total_rows} match={inv2 == r2.total_rows}"
     )
-    diag.observed(
-        f"second-run mutating-statement count: {len(mutations)}"
-    )
+    diag.observed(f"second-run mutating-statement count: {len(mutations)}")
     verbs: dict[str, int] = collections.Counter()
     for s in mutations:
         head = " ".join(s.split()[:3])

@@ -41,9 +41,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import lynceus.webui
 from fastapi.testclient import TestClient
 
+import lynceus.webui
 from lynceus.config import CaptureConfig, Config
 from lynceus.db import Database
 from lynceus.webui.app import create_app

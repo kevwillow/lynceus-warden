@@ -34,7 +34,6 @@ import pytest
 
 from lynceus.db import Database
 
-
 # --- schema-shape helpers --------------------------------------------------
 
 

@@ -8,7 +8,6 @@ path so an unintended rename or removal fails loudly.
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
@@ -25,7 +24,6 @@ from lynceus.webui.app import (
     _check_watchlist,
     create_app,
 )
-
 
 # ---- fixtures --------------------------------------------------------------
 

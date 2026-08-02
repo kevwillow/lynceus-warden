@@ -12,14 +12,14 @@ from pathlib import Path
 
 import pytest
 
+import lynceus.poller as poller_mod
 from lynceus.allowlist import Allowlist, AllowlistEntry
 from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.kismet import DeviceObservation
 from lynceus.notify import RecordingNotifier
-from lynceus.rules import Rule, Ruleset
-import lynceus.poller as poller_mod
 from lynceus.poller import poll_once
+from lynceus.rules import Rule, Ruleset
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "kismet_devices.json"
 
@@ -76,7 +76,9 @@ def config(db_path):
 
 
 def _new_dev_ruleset():
-    return Ruleset(rules=[Rule(name="newdev", rule_type="new_non_randomized_device", severity="low")])
+    return Ruleset(
+        rules=[Rule(name="newdev", rule_type="new_non_randomized_device", severity="low")]
+    )
 
 
 # --- THE acceptance test: count retained across a post-persist raise ----------
@@ -88,21 +90,24 @@ def test_post_persist_raise_retains_count_and_continues(db, config, monkeypatch,
     accumulator exists for: the count must survive the raise and the loop must
     continue to the next observation."""
     o1 = _obs("aa:bb:cc:dd:ee:01", raw_record={"kismet": "record"})  # capture entered -> raises
-    o2 = _obs("aa:bb:cc:dd:ee:02", raw_record=None)                  # capture skipped -> clean
+    o2 = _obs("aa:bb:cc:dd:ee:02", raw_record=None)  # capture skipped -> clean
     monkeypatch.setattr(poller_mod, "capture_evidence", _boom)
     caplog.set_level(logging.WARNING)
 
     result = poll_once(
-        _ListClient([o1, o2]), db, config, 1700002000,
-        ruleset=_new_dev_ruleset(), notifier=RecordingNotifier(),
+        _ListClient([o1, o2]),
+        db,
+        config,
+        1700002000,
+        ruleset=_new_dev_ruleset(),
+        notifier=RecordingNotifier(),
     )
 
     # Would be 1 if o1's persist-point increment were lost on the raise.
     assert result == 2
     assert db._conn.execute("SELECT COUNT(*) FROM sightings").fetchone()[0] == 2
     assert any(
-        "Failed to persist observation" in r.getMessage()
-        and "aa:bb:cc:dd:ee:01" in r.getMessage()
+        "Failed to persist observation" in r.getMessage() and "aa:bb:cc:dd:ee:01" in r.getMessage()
         for r in caplog.records
     )
 
@@ -112,8 +117,12 @@ def test_post_persist_raise_single_obs_count_retained(db, config, monkeypatch):
     monkeypatch.setattr(poller_mod, "capture_evidence", _boom)
 
     result = poll_once(
-        _ListClient([o1]), db, config, 1700002000,
-        ruleset=_new_dev_ruleset(), notifier=RecordingNotifier(),
+        _ListClient([o1]),
+        db,
+        config,
+        1700002000,
+        ruleset=_new_dev_ruleset(),
+        notifier=RecordingNotifier(),
     )
 
     assert result == 1
@@ -141,13 +150,16 @@ def test_ensured_locations_dedup_and_count_aggregate(db, config, monkeypatch):
     source_locations = {"srcA": "loc2", "srcB": "loc2"}
 
     result = poll_once(
-        _ListClient(observations), db, config, 1700002000,
+        _ListClient(observations),
+        db,
+        config,
+        1700002000,
         source_locations=source_locations,
     )
 
-    assert result == 3                       # all three persisted/counted
-    assert calls[0] == "testloc"             # default location ensured at tick start
-    assert calls.count("loc2") == 1          # remapped location ensured ONCE across the batch
+    assert result == 3  # all three persisted/counted
+    assert calls[0] == "testloc"  # default location ensured at tick start
+    assert calls.count("loc2") == 1  # remapped location ensured ONCE across the batch
 
 
 # --- control-flow paths preserved (outer returns / inner continues) -----------
@@ -161,8 +173,13 @@ def test_allowlisted_suppresses_alert_but_counts(db, config):
     allow = Allowlist(entries=[AllowlistEntry(pattern="aa:bb:cc:dd:ee:01", pattern_type="mac")])
 
     result = poll_once(
-        _ListClient([o1, o2]), db, config, 1700002000,
-        ruleset=_new_dev_ruleset(), allowlist=allow, notifier=RecordingNotifier(),
+        _ListClient([o1, o2]),
+        db,
+        config,
+        1700002000,
+        ruleset=_new_dev_ruleset(),
+        allowlist=allow,
+        notifier=RecordingNotifier(),
     )
 
     assert result == 2  # allowlisted obs still admitted
@@ -198,8 +215,12 @@ def test_rule_type_snooze_suppresses_emit_but_counts(db, config):
     counter: dict[str, int] = {}
 
     result = poll_once(
-        _ListClient([_obs("aa:bb:cc:dd:ee:01")]), db, config, 1700002000,
-        ruleset=_new_dev_ruleset(), notifier=RecordingNotifier(),
+        _ListClient([_obs("aa:bb:cc:dd:ee:01")]),
+        db,
+        config,
+        1700002000,
+        ruleset=_new_dev_ruleset(),
+        notifier=RecordingNotifier(),
         rule_type_suppression_counter=counter,
     )
 
@@ -212,7 +233,9 @@ def test_dedup_suppresses_second_emit_but_counts(db, config):
     """Inner continue (dedup): a watchlist_mac rule fires on both ticks for the
     same mac; the second emit is deduped within the window, both obs counted."""
     mac = "aa:bb:cc:dd:ee:01"
-    rs = Ruleset(rules=[Rule(name="wm", rule_type="watchlist_mac", severity="high", patterns=[mac])])
+    rs = Ruleset(
+        rules=[Rule(name="wm", rule_type="watchlist_mac", severity="high", patterns=[mac])]
+    )
     notifier = RecordingNotifier()
 
     r1 = poll_once(_ListClient([_obs(mac)]), db, config, 1700002000, ruleset=rs, notifier=notifier)

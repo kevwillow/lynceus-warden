@@ -346,6 +346,7 @@ def test_ntfy_probe_get_dispatches_via_to_thread(monkeypatch):
     Spy on asyncio.to_thread (still call-through) and assert the
     probe_ntfy function is the one being dispatched.
     """
+
     def fake_probe_ntfy(url, topic):
         return (True, None)
 
@@ -533,7 +534,9 @@ def test_rssi_post_out_of_range_re_renders():
 
 
 @pytest.mark.webui
-@pytest.mark.parametrize("path", ["/step/5", "/step/6", "/step/7", "/step/8", "/step/9", "/step/10"])
+@pytest.mark.parametrize(
+    "path", ["/step/5", "/step/6", "/step/7", "/step/8", "/step/9", "/step/10"]
+)
 def test_capture_routes_require_token(path):
     app = _make_app()
     with _client(app) as c:

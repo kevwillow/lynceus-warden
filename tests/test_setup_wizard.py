@@ -1087,14 +1087,20 @@ def test_run_wizard_system_scope_prints_quickstart_scope_note(monkeypatch, tmp_p
     monkeypatch.setattr(lynceus_paths, "default_db_path", lambda scope: db_path)
     # Mock the apply chain (avoids real writes + a Windows-incompatible
     # chown); return the steps run_wizard reads back.
-    fake_report = ApplyReport(steps=(
-        ApplyStep(name="scaffold_severity_overrides", status="ok",
-                  message="scaffolded", detail={"scaffolded": True}),
-        ApplyStep(name="import_bundled_watchlist", status="skipped",
-                  message="no bundled watchlist"),
-        ApplyStep(name="chown_db_files", status="ok", message="chowned",
-                  detail={"files": []}),
-    ))
+    fake_report = ApplyReport(
+        steps=(
+            ApplyStep(
+                name="scaffold_severity_overrides",
+                status="ok",
+                message="scaffolded",
+                detail={"scaffolded": True},
+            ),
+            ApplyStep(
+                name="import_bundled_watchlist", status="skipped", message="no bundled watchlist"
+            ),
+            ApplyStep(name="chown_db_files", status="ok", message="chowned", detail={"files": []}),
+        )
+    )
     monkeypatch.setattr(wiz, "apply_config", lambda *a, **k: fake_report)
     # Alerting gate off: no rules written, no DB query.
     monkeypatch.setattr(wiz, "run_enable_alerting_flow", lambda *a, **k: (None, False))
@@ -1130,8 +1136,16 @@ def test_run_wizard_user_scope_omits_quickstart_scope_note(monkeypatch, tmp_path
     _stub_bundled_import(monkeypatch)
     monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: ["wlan0"])
     inputs = [
-        "http://10.0.0.5:2501", "1", "", "", "", "https://ntfy.sh",
-        "lynceus-feedface", "", "", "",
+        "http://10.0.0.5:2501",
+        "1",
+        "",
+        "",
+        "",
+        "https://ntfy.sh",
+        "lynceus-feedface",
+        "",
+        "",
+        "",
     ]
     rc = wiz.run_wizard(
         _args(skip_probes=True),  # user scope (default)
@@ -1146,9 +1160,7 @@ def test_run_wizard_user_scope_omits_quickstart_scope_note(monkeypatch, tmp_path
 # ---- Arc B verify_kismet_sources rendering through run_wizard --------------
 
 
-def test_run_wizard_prints_warning_when_kismet_source_names_mismatch(
-    monkeypatch, tmp_path, capsys
-):
+def test_run_wizard_prints_warning_when_kismet_source_names_mismatch(monkeypatch, tmp_path, capsys):
     """When apply_config emits a verify_kismet_sources step in warning
     status, the CLI wizard must surface the warning message verbatim
     to the operator. Pre-Touch-2 the CLI sink swallowed every step
@@ -1193,9 +1205,7 @@ def test_run_wizard_prints_warning_when_kismet_source_names_mismatch(
     assert out.rindex("WARNING:") < out.rindex("Setup complete, exiting.")
 
 
-def test_run_wizard_silent_when_kismet_source_cross_check_passes(
-    monkeypatch, tmp_path, capsys
-):
+def test_run_wizard_silent_when_kismet_source_cross_check_passes(monkeypatch, tmp_path, capsys):
     """Symmetric to the warning test: when every configured source
     name appears in Kismet's exposed list, the cross-check emits ok
     silently — the CLI does NOT print a "Kismet source names verified"
@@ -1215,9 +1225,7 @@ def test_run_wizard_silent_when_kismet_source_cross_check_passes(
                 {"name": "wlan1", "interface": "wlan1", "running": True},
             ]
 
-    monkeypatch.setattr(
-        setup_core, "_make_verify_kismet_client", lambda config: _MatchingClient()
-    )
+    monkeypatch.setattr(setup_core, "_make_verify_kismet_client", lambda config: _MatchingClient())
 
     rc = wiz.run_wizard(
         _args(skip_probes=True),
@@ -1267,9 +1275,7 @@ def test_main_system_without_root_refuses(monkeypatch, tmp_path, capsys):
 # worse than a refusal.
 
 
-def test_main_sudo_without_system_refuses_with_actionable_message(
-    monkeypatch, tmp_path, capsys
-):
+def test_main_sudo_without_system_refuses_with_actionable_message(monkeypatch, tmp_path, capsys):
     """The exact rc4 footgun: euid=0, --system not passed, --reconfigure
     set. The wizard must refuse (rc=2), name the misplacement path that
     would have been written, and show both correct invocations
@@ -1311,9 +1317,7 @@ def test_main_sudo_without_system_refuses_with_actionable_message(
     assert write_calls == []
 
 
-def test_main_sudo_without_system_refuses_even_with_explicit_user_flag(
-    monkeypatch, capsys
-):
+def test_main_sudo_without_system_refuses_even_with_explicit_user_flag(monkeypatch, capsys):
     """`sudo lynceus-setup --user` is the same trap as `sudo lynceus-setup`
     — args.system is still False, scope still resolves to user, the
     write still lands in /root/.config. The refusal must fire regardless
@@ -1452,9 +1456,7 @@ def test_run_wizard_keyboard_interrupt_clean_exit(monkeypatch, capsys):
     def _interrupt_input(prompt=""):
         raise KeyboardInterrupt()
 
-    rc = wiz.run_wizard(
-        _args(), input_fn=_interrupt_input, getpass_fn=_getpass_seq(["x"])
-    )
+    rc = wiz.run_wizard(_args(), input_fn=_interrupt_input, getpass_fn=_getpass_seq(["x"]))
     assert rc == 130
     err = capsys.readouterr().err
     assert "Wizard cancelled" in err
@@ -2054,7 +2056,9 @@ def test_enrich_adapter_from_sysfs_reads_full_usb_dongle(tmp_path):
     bus_dir.mkdir(parents=True)
     driver_dir = tmp_path / "sys" / "bus" / "usb" / "drivers" / "rt2800usb"
     driver_dir.mkdir(parents=True)
-    if not _try_make_symlink(dev / "subsystem", bus_dir) or not _try_make_symlink(dev / "driver", driver_dir):
+    if not _try_make_symlink(dev / "subsystem", bus_dir) or not _try_make_symlink(
+        dev / "driver", driver_dir
+    ):
         pytest.skip("symlinks unavailable on this platform (Windows without dev-mode/admin)")
 
     result = wiz._enrich_adapter_from_sysfs(dev)
@@ -2478,9 +2482,7 @@ def test_run_wizard_prints_deferred_argus_import_hint(monkeypatch, tmp_path, cap
     )
 
 
-def test_run_wizard_system_scope_refresh_hint_uses_sudo_and_scope(
-    monkeypatch, tmp_path, capsys
-):
+def test_run_wizard_system_scope_refresh_hint_uses_sudo_and_scope(monkeypatch, tmp_path, capsys):
     """System-scope wizard must surface the refresh hint with sudo +
     --scope system so operators copy a command that actually works
     against /var/lib/lynceus/lynceus.db, not their per-user XDG path."""
@@ -2493,7 +2495,9 @@ def test_run_wizard_system_scope_refresh_hint_uses_sudo_and_scope(
     # behind a platform-dependent crash.
     monkeypatch.setattr(wiz.paths, "default_data_dir", lambda scope: tmp_path / "data")
     monkeypatch.setattr(wiz.paths, "default_log_dir", lambda scope: tmp_path / "logs")
-    monkeypatch.setattr(wiz.paths, "default_db_path", lambda scope: tmp_path / "data" / "lynceus.db")
+    monkeypatch.setattr(
+        wiz.paths, "default_db_path", lambda scope: tmp_path / "data" / "lynceus.db"
+    )
     monkeypatch.setattr(
         wiz.paths,
         "default_allowlist_path",
@@ -4048,9 +4052,7 @@ def _alerting_full_inputs(*, gate, type_answers=None, overwrite=None):
     """
     base = _full_input_sequence()
     assert base[-1] == "", "expected _full_input_sequence to end with default gate input"
-    return base[:-1] + _alerting_inputs(
-        gate=gate, type_answers=type_answers, overwrite=overwrite
-    )
+    return base[:-1] + _alerting_inputs(gate=gate, type_answers=type_answers, overwrite=overwrite)
 
 
 # ---- count_watchlist_by_pattern_type --------------------------------------
@@ -4101,7 +4103,7 @@ def test_render_rules_yaml_all_disabled_has_only_commented_entries():
     # Header comment must explain the file purpose.
     assert "generated by lynceus-setup" in content
     # Every delegation rule appears, but all commented out.
-    for (name, _rt, _pt, _label, _desc) in wiz.DELEGATION_RULES:
+    for name, _rt, _pt, _label, _desc in wiz.DELEGATION_RULES:
         assert f"# - name: {name}" in content
         # No active variant of any rule.
         assert f"\n  - name: {name}" not in content
@@ -4158,9 +4160,7 @@ def test_render_rules_yaml_parses_through_real_ruleset_loader(tmp_path):
 # ---- run_wizard: enable-alerting flow integration -------------------------
 
 
-def test_enable_alerting_gate_n_writes_no_rules_yaml_and_no_rules_path(
-    monkeypatch, tmp_path
-):
+def test_enable_alerting_gate_n_writes_no_rules_yaml_and_no_rules_path(monkeypatch, tmp_path):
     """Touch 6 case: operator answers N at the top-level gate → no
     rules.yaml created, lynceus.yaml's rules_path remains unset, completes
     normally."""
@@ -4179,9 +4179,7 @@ def test_enable_alerting_gate_n_writes_no_rules_yaml_and_no_rules_path(
     assert data.get("rules_path") is None
 
 
-def test_enable_alerting_gate_y_but_no_db_data_skips_silently(
-    monkeypatch, tmp_path, capsys
-):
+def test_enable_alerting_gate_y_but_no_db_data_skips_silently(monkeypatch, tmp_path, capsys):
     """Touch 6 case: operator answers Y at gate but the watchlist DB is
     empty → every per-type prompt is skipped, no rules.yaml is written,
     rules_path stays unset, wizard ends with the informational line."""
@@ -4209,9 +4207,7 @@ def test_enable_alerting_gate_y_but_no_db_data_skips_silently(
     assert data.get("rules_path") is None
 
 
-def test_enable_alerting_gate_y_all_types_n_writes_no_rules_yaml(
-    monkeypatch, tmp_path, capsys
-):
+def test_enable_alerting_gate_y_all_types_n_writes_no_rules_yaml(monkeypatch, tmp_path, capsys):
     """Touch 6 case: gate Y + N to every per-type prompt → no rules.yaml
     written (no point writing an all-commented file), rules_path not set,
     completes normally with informational line."""
@@ -4232,9 +4228,7 @@ def test_enable_alerting_gate_y_all_types_n_writes_no_rules_yaml(
     )
     rc = wiz.run_wizard(
         _args(),
-        input_fn=_input_seq(
-            _alerting_full_inputs(gate="y", type_answers=["n"] * 5)
-        ),
+        input_fn=_input_seq(_alerting_full_inputs(gate="y", type_answers=["n"] * 5)),
         getpass_fn=_getpass_seq(["tok"]),
     )
     assert rc == 0
@@ -4245,9 +4239,7 @@ def test_enable_alerting_gate_y_all_types_n_writes_no_rules_yaml(
     assert data.get("rules_path") is None
 
 
-def test_enable_alerting_one_type_writes_rules_yaml_and_wires_rules_path(
-    monkeypatch, tmp_path
-):
+def test_enable_alerting_one_type_writes_rules_yaml_and_wires_rules_path(monkeypatch, tmp_path):
     """Touch 6 case: gate Y + Y to watchlist_mac_range only → rules.yaml
     written with that one entry active, rules_path set in lynceus.yaml."""
     target = _stub_path_resolution(monkeypatch, tmp_path)
@@ -4336,9 +4328,7 @@ def test_enable_alerting_all_types_writes_five_active_rules(monkeypatch, tmp_pat
     assert data["rules_path"] == str(rules_file)
 
 
-def test_enable_alerting_all_eight_types_writes_eight_active_rules(
-    monkeypatch, tmp_path
-):
+def test_enable_alerting_all_eight_types_writes_eight_active_rules(monkeypatch, tmp_path):
     """v0.6.1 case: all 8 delegation pattern_types present in the DB
     (rc5 set + ble_local_name from mig-020), operator answers Y at
     every prompt → rules.yaml carries all 8 delegation entries
@@ -4381,9 +4371,7 @@ def test_enable_alerting_all_eight_types_writes_eight_active_rules(
     assert data["rules_path"] == str(rules_file)
 
 
-def test_enable_alerting_only_new_rc5_types_writes_two_active_rules(
-    monkeypatch, tmp_path
-):
+def test_enable_alerting_only_new_rc5_types_writes_two_active_rules(monkeypatch, tmp_path):
     """rc5 user journey: operator with an Argus-loaded DB picks only the
     two new types (N to mac_range / mac / oui / ssid / ble_uuid, Y to
     ble_manufacturer_id and drone_id_prefix). The active rules.yaml
@@ -4452,9 +4440,7 @@ def test_delegation_rules_contains_v061_ble_local_name_entry():
     )
 
 
-def test_enable_alerting_only_ble_local_name_picks_writes_one_rule(
-    monkeypatch, tmp_path
-):
+def test_enable_alerting_only_ble_local_name_picks_writes_one_rule(monkeypatch, tmp_path):
     """v0.6.1 user journey: operator with a fresh-bootstrap DB
     (Flock Safety BLE names land via the bundled CSV's 3 v1.4.0
     ble_local_name rows) picks ONLY the new type. Active
@@ -4555,9 +4541,7 @@ def test_enable_alerting_zero_count_type_skips_prompt(monkeypatch, tmp_path):
     assert rule_types == {"watchlist_mac_range", "watchlist_oui", "ble_uuid"}
 
 
-def test_enable_alerting_existing_rules_yaml_overwrite_n_leaves_file(
-    monkeypatch, tmp_path, capsys
-):
+def test_enable_alerting_existing_rules_yaml_overwrite_n_leaves_file(monkeypatch, tmp_path, capsys):
     """Touch 6 case: rules.yaml already exists; operator answers N to the
     overwrite prompt → rules.yaml is untouched, but rules_path is still
     wired in lynceus.yaml (recovers the "manually copied, never wired"
@@ -4582,9 +4566,7 @@ def test_enable_alerting_existing_rules_yaml_overwrite_n_leaves_file(
     existing.write_text(original)
     rc = wiz.run_wizard(
         _args(),
-        input_fn=_input_seq(
-            _alerting_full_inputs(gate="y", type_answers=["y"], overwrite="n")
-        ),
+        input_fn=_input_seq(_alerting_full_inputs(gate="y", type_answers=["y"], overwrite="n")),
         getpass_fn=_getpass_seq(["tok"]),
     )
     assert rc == 0
@@ -4597,9 +4579,7 @@ def test_enable_alerting_existing_rules_yaml_overwrite_n_leaves_file(
     assert data["rules_path"] == str(existing)
 
 
-def test_enable_alerting_existing_rules_yaml_overwrite_y_replaces_file(
-    monkeypatch, tmp_path
-):
+def test_enable_alerting_existing_rules_yaml_overwrite_y_replaces_file(monkeypatch, tmp_path):
     """Touch 6 case: rules.yaml already exists; operator answers Y to the
     overwrite prompt → rules.yaml is replaced with the new selections."""
     target = _stub_path_resolution(monkeypatch, tmp_path)
@@ -4621,9 +4601,7 @@ def test_enable_alerting_existing_rules_yaml_overwrite_y_replaces_file(
     existing.write_text("# old content the operator is willing to clobber\nrules: []\n")
     rc = wiz.run_wizard(
         _args(),
-        input_fn=_input_seq(
-            _alerting_full_inputs(gate="y", type_answers=["y"], overwrite="y")
-        ),
+        input_fn=_input_seq(_alerting_full_inputs(gate="y", type_answers=["y"], overwrite="y")),
         getpass_fn=_getpass_seq(["tok"]),
     )
     assert rc == 0
@@ -4635,9 +4613,7 @@ def test_enable_alerting_existing_rules_yaml_overwrite_y_replaces_file(
     assert data["rules_path"] == str(existing)
 
 
-def test_enable_alerting_system_scope_chowns_rules_yaml(
-    _stub_perms, monkeypatch, tmp_path
-):
+def test_enable_alerting_system_scope_chowns_rules_yaml(_stub_perms, monkeypatch, tmp_path):
     """System scope: a freshly written rules.yaml inherits the same
     root:lynceus 0640 contract as lynceus.yaml. Same chown/chmod pair the
     config and severity-overrides files get."""
@@ -4700,9 +4676,7 @@ def test_enable_alerting_user_scope_writes_0600_rules_yaml(monkeypatch, tmp_path
     monkeypatch.setattr(wiz.os, "chown", lambda *a, **kw: chown_calls.append(a), raising=False)
     rc = wiz.run_wizard(
         _args(),
-        input_fn=_input_seq(
-            _alerting_full_inputs(gate="y", type_answers=["y"])
-        ),
+        input_fn=_input_seq(_alerting_full_inputs(gate="y", type_answers=["y"])),
         getpass_fn=_getpass_seq(["tok"]),
     )
     assert rc == 0
@@ -4713,9 +4687,7 @@ def test_enable_alerting_user_scope_writes_0600_rules_yaml(monkeypatch, tmp_path
         assert rules_file.stat().st_mode & 0o777 == 0o600
 
 
-def test_enable_alerting_does_not_overwrite_existing_rules_path_in_config(
-    monkeypatch, tmp_path
-):
+def test_enable_alerting_does_not_overwrite_existing_rules_path_in_config(monkeypatch, tmp_path):
     """If lynceus.yaml somehow already declares rules_path (operator
     hand-edit between renders, or future config-render change), the
     wizard must not append a duplicate key. The duplicate would break
@@ -4746,9 +4718,7 @@ def test_enable_alerting_does_not_overwrite_existing_rules_path_in_config(
     monkeypatch.setattr(wiz, "render_config_yaml", render_with_rules_path)
     rc = wiz.run_wizard(
         _args(),
-        input_fn=_input_seq(
-            _alerting_full_inputs(gate="y", type_answers=["y"])
-        ),
+        input_fn=_input_seq(_alerting_full_inputs(gate="y", type_answers=["y"])),
         getpass_fn=_getpass_seq(["tok"]),
     )
     assert rc == 0
@@ -4778,9 +4748,7 @@ def test_kismet_api_key_candidate_paths_user_scope(monkeypatch, tmp_path):
     assert paths == [tmp_path / "alice" / ".kismet" / "session.db"]
 
 
-def test_kismet_api_key_candidate_paths_system_scope_prefers_root(
-    monkeypatch, tmp_path
-):
+def test_kismet_api_key_candidate_paths_system_scope_prefers_root(monkeypatch, tmp_path):
     """Under --system, /root/.kismet/ is probed FIRST — a production Kismet
     runs as root under systemd, so its session DB lives in root's home.
     $SUDO_USER's home is only a fallback. (Reversed from the rc-era ordering
@@ -5090,9 +5058,7 @@ def test_run_wizard_autolocate_unreadable_file_falls_through_silently(
     assert err == ""
 
 
-def test_run_wizard_autolocate_redacted_preview_never_leaks_full_key(
-    monkeypatch, tmp_path, capsys
-):
+def test_run_wizard_autolocate_redacted_preview_never_leaks_full_key(monkeypatch, tmp_path, capsys):
     """End-to-end redaction contract: the full located key must not
     appear in stdout, stderr, or the wizard's summary block under any
     flow, including the accept-the-key path where the key is the one
@@ -5132,9 +5098,7 @@ def test_run_wizard_autolocate_redacted_preview_never_leaks_full_key(
     assert sentinel not in captured.err
 
 
-def test_run_wizard_autolocate_walks_multiple_candidates_until_hit(
-    monkeypatch, tmp_path
-):
+def test_run_wizard_autolocate_walks_multiple_candidates_until_hit(monkeypatch, tmp_path):
     """Candidate list is consulted in order; an absent or unreadable
     first entry doesn't short-circuit the second."""
     _stub_path_resolution(monkeypatch, tmp_path)
@@ -5145,9 +5109,7 @@ def test_run_wizard_autolocate_walks_multiple_candidates_until_hit(
         tmp_path / "alice" / ".kismet" / "session.db",
         [{"token": "SECONDCANDIDATEKEY99", "name": "lynceus", "role": "readonly"}],
     )
-    monkeypatch.setattr(
-        wiz, "_kismet_api_key_candidate_paths", lambda scope: [missing, hit]
-    )
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [missing, hit])
     # Kismet down → validation inconclusive → first readable candidate offered.
     monkeypatch.setattr(wiz, "_validate_kismet_api_key", lambda *a, **k: (False, None))
 
@@ -5211,9 +5173,7 @@ def test_locate_prefers_first_authenticating_candidate(monkeypatch, tmp_path):
     root's key validates even though $SUDO_USER's is also on disk."""
     root_db = _kv(tmp_path, "root", "ROOTKEYAUTHENTICATES1")
     sudo_db = _kv(tmp_path, "alice", "SUDOKEYREJECTED000001")
-    monkeypatch.setattr(
-        wiz, "_kismet_api_key_candidate_paths", lambda scope: [root_db, sudo_db]
-    )
+    monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [root_db, sudo_db])
 
     def fake_validate(url, token):
         return (True, 200) if token == "ROOTKEYAUTHENTICATES1" else (False, 401)
@@ -5225,9 +5185,7 @@ def test_locate_prefers_first_authenticating_candidate(monkeypatch, tmp_path):
     assert located[3] is True
 
 
-def test_locate_suppresses_offer_when_kismet_rejects_every_candidate(
-    monkeypatch, tmp_path
-):
+def test_locate_suppresses_offer_when_kismet_rejects_every_candidate(monkeypatch, tmp_path):
     """Regression for the Pi 401: Kismet is up (answers 401) but no on-disk
     key authenticates. The resolver must offer NOTHING rather than hand the
     operator a key it just proved is wrong."""
@@ -5280,9 +5238,7 @@ def test_locate_returns_none_when_no_candidates(monkeypatch):
     assert wiz._locate_kismet_api_key("system", "http://127.0.0.1:2501") is None
 
 
-def test_run_wizard_autolocate_suppressed_when_kismet_rejects_key(
-    monkeypatch, tmp_path, capsys
-):
+def test_run_wizard_autolocate_suppressed_when_kismet_rejects_key(monkeypatch, tmp_path, capsys):
     """End-to-end: an on-disk key that a reachable Kismet rejects (401) is
     NOT auto-offered; the wizard falls through to the manual paste path."""
     _stub_path_resolution(monkeypatch, tmp_path)

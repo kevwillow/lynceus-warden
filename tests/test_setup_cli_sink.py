@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from lynceus.cli import setup as wiz
 from lynceus.setup.models import STEP_NAMES, ApplyStep, ProgressSink
 

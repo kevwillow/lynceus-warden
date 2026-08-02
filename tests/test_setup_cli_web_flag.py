@@ -14,10 +14,6 @@ can inspect the kwargs it was handed.
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
 from lynceus.cli import setup as cli_setup
 from lynceus.setup.web import server as wizard_server
 

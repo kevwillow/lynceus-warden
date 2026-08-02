@@ -35,7 +35,6 @@ from pathlib import Path
 import pytest
 
 from lynceus.allowlist import (
-    Allowlist,
     AllowlistParseError,
     _load_allowlist_with_counts,
     _load_primary,

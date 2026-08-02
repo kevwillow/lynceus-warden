@@ -72,11 +72,14 @@ def test_complete_running_redirects_to_progress():
 
 @pytest.mark.webui
 def test_complete_ok_renders_success_summary():
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote",
-                  detail={"path": "/tmp/wiz.yaml"}),
-        ApplyStep(name="create_data_dir", status="ok", message="dir created"),
-    ))
+    report = ApplyReport(
+        steps=(
+            ApplyStep(
+                name="write_config", status="ok", message="wrote", detail={"path": "/tmp/wiz.yaml"}
+            ),
+            ApplyStep(name="create_data_dir", status="ok", message="dir created"),
+        )
+    )
     app = _make_app()
     _seed(app, state="completed", report=report)
     with _client(app) as c:
@@ -102,9 +105,7 @@ def test_complete_ok_user_scope_surfaces_quickstart_next_step():
     The completion page must surface daemon-start instructions
     inline, scope-adapted: --user gets lynceus-quickstart;
     --system gets sudo systemctl enable --now."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote"),
-    ))
+    report = ApplyReport(steps=(ApplyStep(name="write_config", status="ok", message="wrote"),))
     app = _make_app(scope="user")
     _seed(app, state="completed", report=report)
     with _client(app) as c:
@@ -129,9 +130,7 @@ def test_complete_ok_system_scope_surfaces_systemctl_next_step():
     installs get the systemctl enable+start line, not lynceus-
     quickstart (which is a dev/demo helper not appropriate as the
     sysadmin-pointed default for a system-install completion)."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote"),
-    ))
+    report = ApplyReport(steps=(ApplyStep(name="write_config", status="ok", message="wrote"),))
     app = _make_app(scope="system", target_path=Path("/etc/lynceus/lynceus.yaml"))
     _seed(app, state="completed", report=report)
     with _client(app) as c:
@@ -163,9 +162,7 @@ def test_complete_ok_surfaces_bootstrap_kismet_reminder():
     carries --skip-install — install is opt-in, so plain
     `sudo lynceus-bootstrap-kismet` is the config-only command; --install
     is mentioned only as the opt-in for hosts that still need Kismet.)"""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote"),
-    ))
+    report = ApplyReport(steps=(ApplyStep(name="write_config", status="ok", message="wrote"),))
     app = _make_app(scope="user")
     _seed(app, state="completed", report=report)
     with _client(app) as c:
@@ -181,6 +178,7 @@ def test_complete_ok_surfaces_bootstrap_kismet_reminder():
     # command name without context. HTML line-wraps split the phrase
     # so normalize whitespace before matching.
     import re
+
     body_flat = re.sub(r"\s+", " ", body)
     assert "required for lynceus to see any devices" in body_flat
     # The three things bootstrap-kismet does (so a future edit that
@@ -198,10 +196,9 @@ def test_complete_failed_omits_bootstrap_kismet_reminder():
     reminder bleeding across the failure branch alongside the
     lynceus-quickstart / systemctl copy that was already pinned to
     success-only."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="failed",
-                  message="Permission denied"),
-    ))
+    report = ApplyReport(
+        steps=(ApplyStep(name="write_config", status="failed", message="Permission denied"),)
+    )
     app = _make_app(scope="user")
     _seed(app, state="failed", report=report)
     with _client(app) as c:
@@ -226,15 +223,17 @@ def test_complete_renders_warning_step_with_warning_icon_and_message():
         "-- see docs/DEPLOYMENT.md) if you haven't yet, or check "
         "kismet_site.conf source names."
     )
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote"),
-        ApplyStep(
-            name="verify_kismet_sources",
-            status="warning",
-            message=warning_msg,
-            detail={"mismatched": ["wlan0", "wlan2"]},
-        ),
-    ))
+    report = ApplyReport(
+        steps=(
+            ApplyStep(name="write_config", status="ok", message="wrote"),
+            ApplyStep(
+                name="verify_kismet_sources",
+                status="warning",
+                message=warning_msg,
+                detail={"mismatched": ["wlan0", "wlan2"]},
+            ),
+        )
+    )
     app = _make_app(scope="user")
     _seed(app, state="completed", report=report)
     with _client(app) as c:
@@ -265,10 +264,9 @@ def test_complete_failed_omits_next_steps_block():
     daemon. The Re-run + Done buttons remain on failure (existing
     behavior); the new daemon-start copy must not bleed across the
     overall_ok branch."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="failed",
-                  message="Permission denied"),
-    ))
+    report = ApplyReport(
+        steps=(ApplyStep(name="write_config", status="failed", message="Permission denied"),)
+    )
     app = _make_app(scope="user")
     _seed(app, state="failed", report=report)
     with _client(app) as c:
@@ -284,13 +282,15 @@ def test_complete_failed_omits_next_steps_block():
 def test_complete_skipped_only_treated_as_ok():
     """A report with only ok/skipped steps and no failures is the
     same shape of success as all-ok. overall_status is 'ok'."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote"),
-        ApplyStep(name="import_bundled_watchlist", status="skipped",
-                  message="bundled absent"),
-        ApplyStep(name="chown_db_files", status="skipped",
-                  message="--user scope; not applicable"),
-    ))
+    report = ApplyReport(
+        steps=(
+            ApplyStep(name="write_config", status="ok", message="wrote"),
+            ApplyStep(name="import_bundled_watchlist", status="skipped", message="bundled absent"),
+            ApplyStep(
+                name="chown_db_files", status="skipped", message="--user scope; not applicable"
+            ),
+        )
+    )
     app = _make_app()
     _seed(app, state="completed", report=report)
     with _client(app) as c:
@@ -305,12 +305,22 @@ def test_complete_skipped_only_treated_as_ok():
 
 @pytest.mark.webui
 def test_complete_failed_surfaces_failed_step_with_traceback():
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote first"),
-        ApplyStep(name="scaffold_severity_overrides", status="failed",
-                  message="Permission denied",
-                  detail={"traceback": "Traceback (most recent call last):\n  File ...\nPermissionError: ..."}),
-    ))
+    report = ApplyReport(
+        steps=(
+            ApplyStep(name="write_config", status="ok", message="wrote first"),
+            ApplyStep(
+                name="scaffold_severity_overrides",
+                status="failed",
+                message="Permission denied",
+                detail={
+                    "traceback": (
+                        "Traceback (most recent call last):\n"
+                        "  File ...\nPermissionError: ..."
+                    )
+                },
+            ),
+        )
+    )
     app = _make_app()
     _seed(app, state="failed", report=report)
     with _client(app) as c:
@@ -334,11 +344,12 @@ def test_complete_failed_surfaces_failed_step_with_traceback():
 def test_complete_failed_renders_full_transcript_including_earlier_ok():
     """The transcript must show the ok steps that landed before the
     failure — the operator needs to see how far the apply got."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote"),
-        ApplyStep(name="apply_config", status="failed",
-                  message="RuntimeError: midway boom"),
-    ))
+    report = ApplyReport(
+        steps=(
+            ApplyStep(name="write_config", status="ok", message="wrote"),
+            ApplyStep(name="apply_config", status="failed", message="RuntimeError: midway boom"),
+        )
+    )
     app = _make_app()
     _seed(app, state="failed", report=report)
     with _client(app) as c:
@@ -356,9 +367,7 @@ def test_complete_failed_renders_full_transcript_including_earlier_ok():
 def test_complete_rerun_button_posts_to_apply():
     """Pin the form action so the Re-run button hits the same apply
     state machine as the initial Apply (Touch 1)."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="apply_config", status="failed", message="boom"),
-    ))
+    report = ApplyReport(steps=(ApplyStep(name="apply_config", status="failed", message="boom"),))
     app = _make_app()
     _seed(app, state="failed", report=report)
     with _client(app) as c:
@@ -379,9 +388,7 @@ def test_complete_failed_warns_about_hand_edit_overwrite():
     Pre-existing behavior, not a Phase 2 regression; the wizard
     surfaces the caveat so the operator can save their hand-edits
     elsewhere before clicking Re-run."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="apply_config", status="failed", message="boom"),
-    ))
+    report = ApplyReport(steps=(ApplyStep(name="apply_config", status="failed", message="boom"),))
     app = _make_app()
     _seed(app, state="failed", report=report)
     with _client(app) as c:
@@ -399,9 +406,7 @@ def test_complete_ok_omits_hand_edit_warning():
     """The hand-edit warning sits inside the Re-run section, which
     only renders on failed apply. The ok path doesn't offer Re-run,
     so the warning must not appear (would be confusing)."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote"),
-    ))
+    report = ApplyReport(steps=(ApplyStep(name="write_config", status="ok", message="wrote"),))
     app = _make_app()
     _seed(app, state="completed", report=report)
     with _client(app) as c:
@@ -420,9 +425,7 @@ def test_complete_page_carries_per_article_spacing():
     only, which smoke-tester reports called "cramped." Pin the
     per-article spacing rules so a future style cleanup can't silently
     drop them."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote"),
-    ))
+    report = ApplyReport(steps=(ApplyStep(name="write_config", status="ok", message="wrote"),))
     app = _make_app()
     _seed(app, state="completed", report=report)
     with _client(app) as c:
@@ -444,9 +447,7 @@ def test_complete_page_carries_per_article_spacing():
 def test_complete_done_button_posts_to_done():
     """The Done button targets /done (Touch 3 wires the actual
     server shutdown)."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote"),
-    ))
+    report = ApplyReport(steps=(ApplyStep(name="write_config", status="ok", message="wrote"),))
     app = _make_app()
     _seed(app, state="completed", report=report)
     with _client(app) as c:
@@ -465,9 +466,7 @@ def test_complete_rerun_form_disables_button_on_submit():
     cannot fire two POSTs before the server-side 409 guard lands.
     Defense in depth behind the apply_lock + apply_state check
     (Finding 1.1)."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="apply_config", status="failed", message="boom"),
-    ))
+    report = ApplyReport(steps=(ApplyStep(name="apply_config", status="failed", message="boom"),))
     app = _make_app()
     _seed(app, state="failed", report=report)
     with _client(app) as c:
@@ -496,9 +495,7 @@ def test_complete_done_form_disables_button_on_submit():
 
     Matches the pattern wired to the Apply form (review.html) and
     the Re-run form (apply_complete.html, above)."""
-    report = ApplyReport(steps=(
-        ApplyStep(name="write_config", status="ok", message="wrote"),
-    ))
+    report = ApplyReport(steps=(ApplyStep(name="write_config", status="ok", message="wrote"),))
     app = _make_app()
     _seed(app, state="completed", report=report)
     with _client(app) as c:

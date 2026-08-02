@@ -13,7 +13,6 @@ committed. Run with the pinned 3.11 venv.
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 from lynceus.config import Config

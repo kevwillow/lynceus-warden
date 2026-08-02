@@ -65,7 +65,6 @@ def test_step_count_is_unchanged():
 
 def _http():
     from lynceus.setup.web.app import create_wizard_app
-
     from tests.test_setup_web_capture import TARGET, TOKEN, _client, _csrf_get
 
     app = create_wizard_app(setup_token=TOKEN, scope="user", target_path=TARGET)

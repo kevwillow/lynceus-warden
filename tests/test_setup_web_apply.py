@@ -24,7 +24,6 @@ Pins:
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -685,7 +684,7 @@ def test_wizard_apply_matches_cli_apply_filesystem_state(tmp_path, monkeypatch):
     # point at the same scaffolded allowlist file so the rendered
     # allowlist_path: lines in lynceus.yaml match byte-for-byte.
     allowlist_path = tmp_path / "shared" / "allowlist.yaml"
-    from lynceus.config import Config, CaptureConfig
+    from lynceus.config import CaptureConfig, Config
     cli_config = Config(
         kismet_url="http://localhost:2501",
         kismet_api_key="ABCDEF0123456789XYZ",
@@ -1007,7 +1006,6 @@ def test_apply_post_concurrent_rejection_under_lock(tmp_path):
     """
     import threading
 
-    from lynceus.config import CaptureConfig, Config
 
     blocker = threading.Event()
     call_count = [0]

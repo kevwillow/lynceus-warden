@@ -13,10 +13,6 @@ the wizard frontend's form handler.
 
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 
 from lynceus.cli import setup as wiz
@@ -24,7 +20,6 @@ from lynceus.config import CaptureConfig, Config
 from lynceus.setup import core as setup_core
 from lynceus.setup.core import apply_config
 from lynceus.setup.models import ArgusChoice
-
 
 # ---- fixtures --------------------------------------------------------------
 

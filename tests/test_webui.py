@@ -436,30 +436,37 @@ def test_devices_list_renders_rssi_zero_as_em_dash(tmp_path):
         # rssi=-72 (real signal). All three render in the same table.
         db.upsert_device("aa:bb:cc:00:00:01", "wifi", "Zero", 0, now)
         db.insert_sighting(
-            mac="aa:bb:cc:00:00:01", ts=now,
-            rssi=0, ssid=None, location_id="default",
+            mac="aa:bb:cc:00:00:01",
+            ts=now,
+            rssi=0,
+            ssid=None,
+            location_id="default",
         )
         db.upsert_device("aa:bb:cc:00:00:02", "wifi", "Null", 0, now)
         # No sighting for device 2 -> last_rssi falls to None.
         db.upsert_device("aa:bb:cc:00:00:03", "wifi", "Real", 0, now)
         db.insert_sighting(
-            mac="aa:bb:cc:00:00:03", ts=now,
-            rssi=-72, ssid=None, location_id="default",
+            mac="aa:bb:cc:00:00:03",
+            ts=now,
+            rssi=-72,
+            ssid=None,
+            location_id="default",
         )
         with TestClient(app) as client:
             r = client.get("/devices")
         assert r.status_code == 200
+
         # Each device row is bracketed by its <a href="/devices/<mac>">
         # link, so we can slice the cell scoped to each MAC by walking
         # from that anchor to the next.
         def _row_for(mac: str) -> str:
-            anchor = f'/devices/{mac}'
+            anchor = f"/devices/{mac}"
             start = r.text.find(anchor)
             assert start != -1, f"no row for {mac}"
             # Next row begins at the next /devices/ anchor, or end of
             # text for the last row.
-            end = r.text.find('/devices/', start + len(anchor))
-            return r.text[start:end if end != -1 else len(r.text)]
+            end = r.text.find("/devices/", start + len(anchor))
+            return r.text[start : end if end != -1 else len(r.text)]
 
         zero_row = _row_for("aa:bb:cc:00:00:01")
         null_row = _row_for("aa:bb:cc:00:00:02")
@@ -471,9 +478,7 @@ def test_devices_list_renders_rssi_zero_as_em_dash(tmp_path):
         # for these rows, but a stray cell text >0< would betray the
         # bug. Asserting absence of "<td>0</td>" is the tightest
         # check Jinja-side rendering supports.
-        assert "<td>0</td>" not in zero_row, (
-            "rssi=0 must render as em-dash, not literal 0"
-        )
+        assert "<td>0</td>" not in zero_row, "rssi=0 must render as em-dash, not literal 0"
         # rssi=null also collapses (existing behavior preserved).
         assert "&mdash;" in null_row
         # rssi=-72 renders verbatim (no regression).
@@ -493,21 +498,27 @@ def test_index_recent_devices_renders_rssi_zero_as_em_dash(tmp_path):
         now = 1700000000
         db.upsert_device("aa:bb:cc:00:00:01", "wifi", "Zero", 0, now)
         db.insert_sighting(
-            mac="aa:bb:cc:00:00:01", ts=now,
-            rssi=0, ssid=None, location_id="default",
+            mac="aa:bb:cc:00:00:01",
+            ts=now,
+            rssi=0,
+            ssid=None,
+            location_id="default",
         )
         db.upsert_device("aa:bb:cc:00:00:02", "wifi", "Real", 0, now)
         db.insert_sighting(
-            mac="aa:bb:cc:00:00:02", ts=now,
-            rssi=-65, ssid=None, location_id="default",
+            mac="aa:bb:cc:00:00:02",
+            ts=now,
+            rssi=-65,
+            ssid=None,
+            location_id="default",
         )
         with TestClient(app) as client:
             r = client.get("/")
         assert r.status_code == 200
         # The two device rows live in the recent-devices card on /. Slice
         # on the /devices/<mac> anchors that bracket each row.
-        zero_anchor = '/devices/aa:bb:cc:00:00:01'
-        real_anchor = '/devices/aa:bb:cc:00:00:02'
+        zero_anchor = "/devices/aa:bb:cc:00:00:01"
+        real_anchor = "/devices/aa:bb:cc:00:00:02"
         assert zero_anchor in r.text
         assert real_anchor in r.text
         # The literal "-65" appears somewhere in r.text (the real row).
@@ -516,7 +527,7 @@ def test_index_recent_devices_renders_rssi_zero_as_em_dash(tmp_path):
         # as a standalone cell payload -- that would be the bug.
         start = r.text.find(zero_anchor)
         next_anchor = r.text.find(real_anchor, start)
-        zero_block = r.text[start:next_anchor if next_anchor != -1 else len(r.text)]
+        zero_block = r.text[start : next_anchor if next_anchor != -1 else len(r.text)]
         assert "<td>0</td>" not in zero_block
         assert "&mdash;" in zero_block
     finally:
@@ -536,10 +547,18 @@ def test_device_detail_renders_rssi_zero_as_em_dash(tmp_path):
         mac = "aa:bb:cc:dd:ee:ff"
         db.upsert_device(mac, "wifi", "Acme", 0, now)
         db.insert_sighting(
-            mac=mac, ts=now, rssi=0, ssid=None, location_id="default",
+            mac=mac,
+            ts=now,
+            rssi=0,
+            ssid=None,
+            location_id="default",
         )
         db.insert_sighting(
-            mac=mac, ts=now + 60, rssi=-80, ssid=None, location_id="default",
+            mac=mac,
+            ts=now + 60,
+            rssi=-80,
+            ssid=None,
+            location_id="default",
         )
         with TestClient(app) as client:
             r = client.get(f"/devices/{mac}")
@@ -1104,12 +1123,15 @@ def test_rules_list_default_window_is_7d_and_default_sort_preserves_yaml_order(t
     import time as _time
 
     now = int(_time.time())
-    db.add_alert(ts=now - 100, rule_name="aaaa_first_in_yaml", mac=None,
-                 message="x", severity="high")
-    db.add_alert(ts=now - 200, rule_name="bbbb_second_in_yaml", mac=None,
-                 message="x", severity="med")
-    db.add_alert(ts=now - 300, rule_name="bbbb_second_in_yaml", mac=None,
-                 message="x", severity="med")
+    db.add_alert(
+        ts=now - 100, rule_name="aaaa_first_in_yaml", mac=None, message="x", severity="high"
+    )
+    db.add_alert(
+        ts=now - 200, rule_name="bbbb_second_in_yaml", mac=None, message="x", severity="med"
+    )
+    db.add_alert(
+        ts=now - 300, rule_name="bbbb_second_in_yaml", mac=None, message="x", severity="med"
+    )
     app = create_app(config, db)
     try:
         with TestClient(app) as client:
@@ -1172,16 +1194,15 @@ def test_rules_list_since_window_narrows_counts(tmp_path):
             idx = r.text.find("r1")
             assert idx != -1
             # Search forward a reasonable window for the count.
-            segment = r.text[idx:idx + 600]
-            assert f"fires" in segment.lower()
+            segment = r.text[idx : idx + 600]
+            assert "fires" in segment.lower()
             # We expect the count immediately after "fires (...)".
             import re as _re
 
             m = _re.search(r"fires\s*\([^)]*\)\s*:\s*</strong>\s*(\d+)", segment)
             assert m is not None, f"could not parse fires count in:\n{segment[:300]}"
             assert m.group(1) == expected_count, (
-                f"expected count={expected_count}, got {m.group(1)} "
-                f"for url={r.request.url}"
+                f"expected count={expected_count}, got {m.group(1)} for url={r.request.url}"
             )
         # Window label appears in the column header.
         assert "all time" in r_all.text
@@ -1215,11 +1236,11 @@ def test_rules_list_sort_count_desc_orders_by_count(tmp_path):
     import time as _time
 
     now = int(_time.time())
-    db.add_alert(ts=now - 100, rule_name="low_volume", mac=None,
-                 message="x", severity="high")
+    db.add_alert(ts=now - 100, rule_name="low_volume", mac=None, message="x", severity="high")
     for i in range(5):
-        db.add_alert(ts=now - 100 - i, rule_name="high_volume", mac=None,
-                     message="x", severity="high")
+        db.add_alert(
+            ts=now - 100 - i, rule_name="high_volume", mac=None, message="x", severity="high"
+        )
     app = create_app(config, db)
     try:
         with TestClient(app) as client:
@@ -1255,8 +1276,9 @@ def test_rules_list_sort_count_asc_inverts(tmp_path):
 
     now = int(_time.time())
     for i in range(3):
-        db.add_alert(ts=now - i, rule_name="alpha_high_count", mac=None,
-                     message="x", severity="high")
+        db.add_alert(
+            ts=now - i, rule_name="alpha_high_count", mac=None, message="x", severity="high"
+        )
     app = create_app(config, db)
     try:
         with TestClient(app) as client:
@@ -1292,7 +1314,7 @@ def test_rules_list_never_fired_rule_shows_dash(tmp_path):
         assert "configured_but_silent" in r.text
         # Fires count is zero.
         idx = r.text.find("configured_but_silent")
-        segment = r.text[idx:idx + 600]
+        segment = r.text[idx : idx + 600]
         import re as _re
 
         m = _re.search(r"fires\s*\([^)]*\)\s*:\s*</strong>\s*(\d+)", segment)
@@ -1395,7 +1417,7 @@ def test_rules_list_empty_alerts_table_shows_zero_counts(tmp_path):
         for name in ("rule_a", "rule_b"):
             assert name in r.text
             idx = r.text.find(name)
-            segment = r.text[idx:idx + 600]
+            segment = r.text[idx : idx + 600]
             m = _re.search(r"fires\s*\([^)]*\)\s*:\s*</strong>\s*(\d+)", segment)
             assert m is not None
             assert m.group(1) == "0"
@@ -1562,9 +1584,7 @@ def test_allowlist_populated_does_not_render_editing_instructions(tmp_path):
     branch."""
     allowlist_yaml = tmp_path / "allowlist.yaml"
     allowlist_yaml.write_text(
-        "entries:\n"
-        "  - pattern: 'a4:83:e7:11:22:33'\n"
-        "    pattern_type: mac\n",
+        "entries:\n  - pattern: 'a4:83:e7:11:22:33'\n    pattern_type: mac\n",
         encoding="utf-8",
     )
     config = Config(db_path=str(tmp_path / "ui.db"), allowlist_path=str(allowlist_yaml))
@@ -1719,8 +1739,11 @@ def test_alerts_ack_and_watch_buttons_share_dimension_class(tmp_path):
     try:
         db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
         db.add_alert(
-            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:ff",
-            message="x", severity="low",
+            ts=100,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:ff",
+            message="x",
+            severity="low",
         )
         with TestClient(app) as client:
             r = client.get("/alerts")
@@ -1917,10 +1940,18 @@ def test_alerts_list_filter_datetime_overnight_window(tmp_path):
         ts_wed_0859 = _TS_APR15_MIDNIGHT_UTC + 8 * 3600 + 59 * 60
         # 2026-04-15 (Wed) 09:01 -- just after the end.
         ts_wed_0901 = _TS_APR15_MIDNIGHT_UTC + 9 * 3600 + 60
-        db.add_alert(ts=ts_tue_1359, rule_name="r", mac=None, message="tue-1359-excluded", severity="low")
-        db.add_alert(ts=ts_tue_1401, rule_name="r", mac=None, message="tue-1401-included", severity="low")
-        db.add_alert(ts=ts_wed_0859, rule_name="r", mac=None, message="wed-0859-included", severity="low")
-        db.add_alert(ts=ts_wed_0901, rule_name="r", mac=None, message="wed-0901-excluded", severity="low")
+        db.add_alert(
+            ts=ts_tue_1359, rule_name="r", mac=None, message="tue-1359-excluded", severity="low"
+        )
+        db.add_alert(
+            ts=ts_tue_1401, rule_name="r", mac=None, message="tue-1401-included", severity="low"
+        )
+        db.add_alert(
+            ts=ts_wed_0859, rule_name="r", mac=None, message="wed-0859-included", severity="low"
+        )
+        db.add_alert(
+            ts=ts_wed_0901, rule_name="r", mac=None, message="wed-0901-excluded", severity="low"
+        )
         with TestClient(app) as client:
             r = client.get("/alerts?since=2026-04-14T14:00&until=2026-04-15T09:00")
         assert r.status_code == 200
@@ -1960,8 +1991,9 @@ def test_alerts_list_filter_datetime_and_window_max_combine(tmp_path):
     tighter lower bound wins (max of the two ts thresholds) -- the
     behavior established for date-only since + window is preserved
     for datetime since + window."""
-    import time as _time
     import datetime as _datetime
+    import time as _time
+
     app, db = _make_app(tmp_path)
     try:
         # Anchor "now" via a row 30 minutes in the past. The 1h
@@ -1969,16 +2001,16 @@ def test_alerts_list_filter_datetime_and_window_max_combine(tmp_path):
         # since=now-2h admits anything from now-7200 onward. Both
         # combined => the 1h window's lower bound dominates.
         now = int(_time.time())
-        ts_recent = now - 30 * 60       # 30 min ago: inside both clauses.
-        ts_45m_ago = now - 45 * 60      # 45 min ago: inside both clauses.
-        ts_90m_ago = now - 90 * 60      # 90 min ago: inside since (-2h) but OUTSIDE window (1h).
+        ts_recent = now - 30 * 60  # 30 min ago: inside both clauses.
+        ts_45m_ago = now - 45 * 60  # 45 min ago: inside both clauses.
+        ts_90m_ago = now - 90 * 60  # 90 min ago: inside since (-2h) but OUTSIDE window (1h).
         db.add_alert(ts=ts_recent, rule_name="r", mac=None, message="recent-30m", severity="low")
         db.add_alert(ts=ts_45m_ago, rule_name="r", mac=None, message="recent-45m", severity="low")
         db.add_alert(ts=ts_90m_ago, rule_name="r", mac=None, message="ago-90m", severity="low")
         # since= = 2h ago, but window=1h is tighter -> 90m-ago row is excluded.
-        since_dt = _datetime.datetime.fromtimestamp(
-            now - 2 * 3600, tz=_datetime.UTC
-        ).strftime("%Y-%m-%dT%H:%M")
+        since_dt = _datetime.datetime.fromtimestamp(now - 2 * 3600, tz=_datetime.UTC).strftime(
+            "%Y-%m-%dT%H:%M"
+        )
         with TestClient(app) as client:
             r = client.get(f"/alerts?since={since_dt}&window=1h")
         assert r.status_code == 200
@@ -1997,10 +2029,10 @@ def test_alerts_list_filter_date_only_and_datetime_mix(tmp_path):
     exact minute (upper bound, no end-of-day promotion)."""
     app, db = _make_app(tmp_path)
     try:
-        ts_before = _TS_APR15_MIDNIGHT_UTC - 3600        # 2026-04-14 23:00 UTC
-        ts_at_start = _TS_APR15_MIDNIGHT_UTC + 60        # 2026-04-15 00:01 UTC
-        ts_in_window = _TS_APR15_MIDNIGHT_UTC + 8 * 3600 # 2026-04-15 08:00 UTC
-        ts_after = _TS_APR15_MIDNIGHT_UTC + 10 * 3600    # 2026-04-15 10:00 UTC
+        ts_before = _TS_APR15_MIDNIGHT_UTC - 3600  # 2026-04-14 23:00 UTC
+        ts_at_start = _TS_APR15_MIDNIGHT_UTC + 60  # 2026-04-15 00:01 UTC
+        ts_in_window = _TS_APR15_MIDNIGHT_UTC + 8 * 3600  # 2026-04-15 08:00 UTC
+        ts_after = _TS_APR15_MIDNIGHT_UTC + 10 * 3600  # 2026-04-15 10:00 UTC
         db.add_alert(ts=ts_before, rule_name="r", mac=None, message="before", severity="low")
         db.add_alert(ts=ts_at_start, rule_name="r", mac=None, message="at-start", severity="low")
         db.add_alert(ts=ts_in_window, rule_name="r", mac=None, message="in-window", severity="low")
@@ -2080,9 +2112,7 @@ def test_alerts_list_ack_all_visible_form_carries_datetime_filter_state(tmp_path
             severity="low",
         )
         with TestClient(app) as client:
-            r = client.get(
-                "/alerts?since=2026-04-15T14:00&until=2026-04-15T15:00"
-            )
+            r = client.get("/alerts?since=2026-04-15T14:00&until=2026-04-15T15:00")
         assert r.status_code == 200
         assert 'action="/alerts/ack-all-visible"' in r.text
         assert 'name="since" value="2026-04-15T14:00"' in r.text
@@ -2104,8 +2134,12 @@ def test_ack_all_visible_acks_filtered_datetime_subset(tmp_path):
         ts_after = _TS_APR15_MIDNIGHT_UTC + 16 * 3600
         in_id_1 = db.add_alert(ts=ts_in_1, rule_name="r", mac=None, message="in1", severity="low")
         in_id_2 = db.add_alert(ts=ts_in_2, rule_name="r", mac=None, message="in2", severity="low")
-        before_id = db.add_alert(ts=ts_before, rule_name="r", mac=None, message="before", severity="low")
-        after_id = db.add_alert(ts=ts_after, rule_name="r", mac=None, message="after", severity="low")
+        before_id = db.add_alert(
+            ts=ts_before, rule_name="r", mac=None, message="before", severity="low"
+        )
+        after_id = db.add_alert(
+            ts=ts_after, rule_name="r", mac=None, message="after", severity="low"
+        )
         with TestClient(app, follow_redirects=False) as client:
             token, _ = _csrf_setup(client)
             r = client.post(
@@ -2135,9 +2169,7 @@ def test_ack_all_visible_invalid_date_silently_falls_back(tmp_path):
     different filter set than the operator sees on the page."""
     app, db = _make_app(tmp_path)
     try:
-        aid = db.add_alert(
-            ts=100, rule_name="r", mac=None, message="m", severity="low"
-        )
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
         with TestClient(app, follow_redirects=False) as client:
             token, _ = _csrf_setup(client)
             r = client.post(
@@ -3397,14 +3429,8 @@ def test_device_label_filter_prefers_ble_name_over_friendly_name():
 @pytest.mark.webui
 def test_device_label_filter_falls_through_when_ble_name_none():
     """Missing/None ble_name falls through to friendly_name, then vendor."""
-    assert (
-        _render_device_label({"ble_name": None, "friendly_name": "Jane's iPad"})
-        == "Jane's iPad"
-    )
-    assert (
-        _render_device_label({"ble_name": None, "oui_vendor": "Apple"})
-        == "Apple"
-    )
+    assert _render_device_label({"ble_name": None, "friendly_name": "Jane's iPad"}) == "Jane's iPad"
+    assert _render_device_label({"ble_name": None, "oui_vendor": "Apple"}) == "Apple"
 
 
 @pytest.mark.webui
@@ -3436,7 +3462,9 @@ def test_probe_ssids_list_filter_safe_on_malformed():
 @pytest.mark.webui
 def test_device_label_filter_returns_dash_when_nothing_matches():
     """All-None / all-empty dict still returns the em-dash sentinel."""
-    assert _render_device_label({"ble_name": None, "friendly_name": None, "oui_vendor": None}) == "—"
+    assert (
+        _render_device_label({"ble_name": None, "friendly_name": None, "oui_vendor": None}) == "—"
+    )
     assert _render_device_label({"ble_name": "", "friendly_name": "", "oui_vendor": ""}) == "—"
 
 
@@ -3711,7 +3739,7 @@ def test_devices_list_has_device_and_vendor_columns(tmp_path):
         # tag, no sort <a>); Vendor IS sortable (oui_vendor), so it renders
         # the th-sort link. Same intent: Device plain, Vendor a sort link.
         assert '<th data-col-key="device">Device' in r.text  # plain, no <a>
-        assert ">Vendor</a>" in r.text      # Vendor is sortable (0.9.2)
+        assert ">Vendor</a>" in r.text  # Vendor is sortable (0.9.2)
     finally:
         db.close()
 
@@ -3727,8 +3755,7 @@ def test_devices_list_page_size_500_renders(tmp_path):
         with TestClient(app) as client:
             r = client.get("/devices?page_size=500")
         assert r.status_code == 200, (
-            f"page_size=500 must be accepted at the route; got "
-            f"{r.status_code} {r.text[:200]}"
+            f"page_size=500 must be accepted at the route; got {r.status_code} {r.text[:200]}"
         )
         # Dropdown declares 250 and 500 as selectable options.
         assert 'value="250"' in r.text
@@ -3808,10 +3835,7 @@ def test_devices_list_type_column_declares_nowrap(tmp_path):
         # the macro emits data-col-key as the first <th> attribute, then the
         # nowrap style, then aria-sort. Type is the only nowrap column, so
         # this open-tag substring uniquely identifies it.
-        assert (
-            '<th data-col-key="device_type" style="white-space: nowrap;" aria-sort='
-            in r.text
-        ), (
+        assert '<th data-col-key="device_type" style="white-space: nowrap;" aria-sort=' in r.text, (
             "Type <th> must carry inline white-space: nowrap so the column "
             "is robust to overrides of the global .table-scroll rule"
         )
@@ -4023,9 +4047,7 @@ def _seed_alert_with_mac(db, mac: str, *, ts: int = 100, severity: str = "med") 
     a non-null MAC requires the device to exist first.
     """
     db.upsert_device(mac, "wifi", None, 0, ts)
-    return db.add_alert(
-        ts=ts, rule_name="r", mac=mac, message="m", severity=severity
-    )
+    return db.add_alert(ts=ts, rule_name="r", mac=mac, message="m", severity=severity)
 
 
 # --- routes ----------------------------------------------------------------
@@ -4222,9 +4244,7 @@ def test_triage_routes_return_400_when_alert_has_no_mac(tmp_path, path_suffix):
         ("forever", None),
     ],
 )
-def test_snooze_duration_writes_correct_expires_at(
-    tmp_path, duration_key, expected_offset
-):
+def test_snooze_duration_writes_correct_expires_at(tmp_path, duration_key, expected_offset):
     """Each of the 5 operator-pickable durations resolves to the
     expected ``expires_at``. ``forever`` writes a NULL (omitted in
     yaml) — semantically a permanent allowlist entry, distinguished
@@ -4536,17 +4556,13 @@ def test_triage_snooze_end_to_end_through_poll_cycle(tmp_path):
         # Reload merges the new UI entry — same path the daemon takes
         # via mtime watch.
         allowlist = load_allowlist(config.allowlist_path)
-        snooze_entry = next(
-            e for e in allowlist.entries if e.pattern == target_mac
-        )
+        snooze_entry = next(e for e in allowlist.entries if e.pattern == target_mac)
         assert snooze_entry.expires_at is not None
         snooze_expiry = snooze_entry.expires_at
         # Use an unambiguously-before-expiry timestamp.
         before_expiry = snooze_expiry - 1
         fake_client = FakeKismetClient(str(fixture))
-        baseline_alerts = db._conn.execute(
-            "SELECT COUNT(*) FROM alerts"
-        ).fetchone()[0]
+        baseline_alerts = db._conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
         poll_once(
             fake_client,
             db,
@@ -4570,9 +4586,7 @@ def test_triage_snooze_end_to_end_through_poll_cycle(tmp_path):
             ruleset=rs,
             allowlist=allowlist,
         )
-        after_expiry_alerts = db._conn.execute(
-            "SELECT COUNT(*) FROM alerts"
-        ).fetchone()[0]
+        after_expiry_alerts = db._conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
         assert after_expiry_alerts > after_snooze  # alert fires
     finally:
         db.close()
@@ -5385,8 +5399,7 @@ def test_primary_source_survives_when_ui_has_same_pattern(tmp_path):
 
     primary = tmp_path / "allowlist.yaml"
     primary.write_text(
-        "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n"
-        "    note: primary copy\n",
+        "entries:\n  - pattern: aa:bb:cc:dd:ee:ff\n    pattern_type: mac\n    note: primary copy\n",
         encoding="utf-8",
     )
     config = Config(
@@ -5494,9 +5507,7 @@ def test_allowlist_cross_process_daemon_picks_up_new_entry(tmp_path, caplog):
     try:
         # 1) Daemon (poller) starts with no allowlist.
         poller_cfg = Config(
-            kismet_fixture_path=str(
-                Path(__file__).parent / "fixtures" / "kismet_devices.json"
-            ),
+            kismet_fixture_path=str(Path(__file__).parent / "fixtures" / "kismet_devices.json"),
             db_path=str(tmp_path / "lynceus.db"),
             location_id="testloc",
             location_label="Test Location",
@@ -5547,12 +5558,20 @@ def test_alerts_list_filter_rule_type(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         db.add_alert(
-            ts=100, rule_name="r", mac=None, message="mac-msg",
-            severity="low", rule_type="watchlist_mac",
+            ts=100,
+            rule_name="r",
+            mac=None,
+            message="mac-msg",
+            severity="low",
+            rule_type="watchlist_mac",
         )
         db.add_alert(
-            ts=101, rule_name="r", mac=None, message="oui-msg",
-            severity="low", rule_type="watchlist_oui",
+            ts=101,
+            rule_name="r",
+            mac=None,
+            message="oui-msg",
+            severity="low",
+            rule_type="watchlist_oui",
         )
         with TestClient(app) as client:
             r = client.get("/alerts?rule_type=watchlist_oui")
@@ -5571,8 +5590,12 @@ def test_alerts_list_invalid_rule_type_falls_back_silently(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         db.add_alert(
-            ts=100, rule_name="r", mac=None, message="mac-msg",
-            severity="low", rule_type="watchlist_mac",
+            ts=100,
+            rule_name="r",
+            mac=None,
+            message="mac-msg",
+            severity="low",
+            rule_type="watchlist_mac",
         )
         with TestClient(app) as client:
             r = client.get("/alerts?rule_type=bogus")
@@ -5589,12 +5612,18 @@ def test_alerts_list_filter_q_matches_mac(tmp_path):
         db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
         db.upsert_device("11:22:33:44:55:66", "wifi", "Acme", 0, 100)
         db.add_alert(
-            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:ff",
-            message="mac-alpha", severity="low",
+            ts=100,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:ff",
+            message="mac-alpha",
+            severity="low",
         )
         db.add_alert(
-            ts=101, rule_name="r", mac="11:22:33:44:55:66",
-            message="mac-beta", severity="low",
+            ts=101,
+            rule_name="r",
+            mac="11:22:33:44:55:66",
+            message="mac-beta",
+            severity="low",
         )
         with TestClient(app) as client:
             r = client.get("/alerts?q=aa:bb")
@@ -5610,12 +5639,18 @@ def test_alerts_list_filter_q_matches_ssid_via_message(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         db.add_alert(
-            ts=100, rule_name="r", mac=None,
-            message="SSID 'MySSID' on watchlist", severity="low",
+            ts=100,
+            rule_name="r",
+            mac=None,
+            message="SSID 'MySSID' on watchlist",
+            severity="low",
         )
         db.add_alert(
-            ts=101, rule_name="r", mac=None,
-            message="MAC aa:bb:cc on watchlist", severity="low",
+            ts=101,
+            rule_name="r",
+            mac=None,
+            message="MAC aa:bb:cc on watchlist",
+            severity="low",
         )
         with TestClient(app) as client:
             r = client.get("/alerts?q=myssid")
@@ -5641,6 +5676,7 @@ def test_alerts_list_filter_q_too_long_returns_400(tmp_path):
 def test_alerts_list_filter_window_relative_resolves_server_side(tmp_path, monkeypatch):
     # Fix a clock so "last 1h" has a deterministic bound.
     import time as _t
+
     fixed_now = 10_000_000
     monkeypatch.setattr(_t, "time", lambda: fixed_now)
 
@@ -5648,16 +5684,25 @@ def test_alerts_list_filter_window_relative_resolves_server_side(tmp_path, monke
     try:
         # 3 alerts: 5 min ago, 2 hours ago, 2 days ago.
         db.add_alert(
-            ts=fixed_now - 300, rule_name="r", mac=None,
-            message="recent-msg", severity="low",
+            ts=fixed_now - 300,
+            rule_name="r",
+            mac=None,
+            message="recent-msg",
+            severity="low",
         )
         db.add_alert(
-            ts=fixed_now - 7200, rule_name="r", mac=None,
-            message="older-msg", severity="low",
+            ts=fixed_now - 7200,
+            rule_name="r",
+            mac=None,
+            message="older-msg",
+            severity="low",
         )
         db.add_alert(
-            ts=fixed_now - 2 * 86400, rule_name="r", mac=None,
-            message="oldest-msg", severity="low",
+            ts=fixed_now - 2 * 86400,
+            rule_name="r",
+            mac=None,
+            message="oldest-msg",
+            severity="low",
         )
         with TestClient(app) as client:
             r = client.get("/alerts?window=1h")
@@ -5672,18 +5717,25 @@ def test_alerts_list_filter_window_relative_resolves_server_side(tmp_path, monke
 @pytest.mark.webui
 def test_alerts_list_filter_window_24h(tmp_path, monkeypatch):
     import time as _t
+
     fixed_now = 10_000_000
     monkeypatch.setattr(_t, "time", lambda: fixed_now)
 
     app, db = _make_app(tmp_path)
     try:
         db.add_alert(
-            ts=fixed_now - 3600, rule_name="r", mac=None,
-            message="hourago-msg", severity="low",
+            ts=fixed_now - 3600,
+            rule_name="r",
+            mac=None,
+            message="hourago-msg",
+            severity="low",
         )
         db.add_alert(
-            ts=fixed_now - 2 * 86400, rule_name="r", mac=None,
-            message="twodaysago-msg", severity="low",
+            ts=fixed_now - 2 * 86400,
+            rule_name="r",
+            mac=None,
+            message="twodaysago-msg",
+            severity="low",
         )
         with TestClient(app) as client:
             r = client.get("/alerts?window=24h")
@@ -5698,7 +5750,10 @@ def test_alerts_list_invalid_window_falls_back_silently(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         db.add_alert(
-            ts=100, rule_name="r", mac=None, message="m",
+            ts=100,
+            rule_name="r",
+            mac=None,
+            message="m",
             severity="low",
         )
         with TestClient(app) as client:
@@ -5719,8 +5774,11 @@ def test_alerts_list_pagination_four_pages_at_per_page_25(tmp_path):
         # 100 alerts, per_page=25 -> 4 pages.
         for i in range(100):
             db.add_alert(
-                ts=100 + i, rule_name="r", mac=None,
-                message=f"alert-{i:03d}", severity="low",
+                ts=100 + i,
+                rule_name="r",
+                mac=None,
+                message=f"alert-{i:03d}",
+                severity="low",
                 rule_type="watchlist_mac",
             )
         with TestClient(app) as client:
@@ -5751,8 +5809,11 @@ def test_alerts_list_pagination_page_above_total_clamps_to_last(tmp_path):
     try:
         for i in range(100):
             db.add_alert(
-                ts=100 + i, rule_name="r", mac=None,
-                message=f"a{i:03d}", severity="low",
+                ts=100 + i,
+                rule_name="r",
+                mac=None,
+                message=f"a{i:03d}",
+                severity="low",
             )
         with TestClient(app) as client:
             r = client.get("/alerts?page_size=25&page=999")
@@ -5782,14 +5843,16 @@ def test_alerts_list_pagination_invalid_per_page_falls_back_to_default(tmp_path)
     try:
         for i in range(60):
             db.add_alert(
-                ts=100 + i, rule_name="r", mac=None,
-                message=f"a{i}", severity="low",
+                ts=100 + i,
+                rule_name="r",
+                mac=None,
+                message=f"a{i}",
+                severity="low",
             )
         with TestClient(app) as client:
             r = client.get("/alerts?page_size=999")
         assert r.status_code == 200
         assert "per_page=50" in r.text
-
 
     finally:
         db.close()
@@ -5802,8 +5865,11 @@ def test_alerts_list_pagination_non_allowed_per_page_falls_back(tmp_path):
     try:
         for i in range(60):
             db.add_alert(
-                ts=100 + i, rule_name="r", mac=None,
-                message=f"a{i}", severity="low",
+                ts=100 + i,
+                rule_name="r",
+                mac=None,
+                message=f"a{i}",
+                severity="low",
             )
         with TestClient(app) as client:
             r = client.get("/alerts?page_size=37")
@@ -5834,14 +5900,20 @@ def test_alerts_list_filter_plus_pagination_combined(tmp_path):
     try:
         for i in range(40):
             db.add_alert(
-                ts=100 + i, rule_name="r", mac=None,
-                message=f"oui-{i}", severity="low",
+                ts=100 + i,
+                rule_name="r",
+                mac=None,
+                message=f"oui-{i}",
+                severity="low",
                 rule_type="watchlist_oui",
             )
         for i in range(10):
             db.add_alert(
-                ts=500 + i, rule_name="r", mac=None,
-                message=f"mac-{i}", severity="low",
+                ts=500 + i,
+                rule_name="r",
+                mac=None,
+                message=f"mac-{i}",
+                severity="low",
                 rule_type="watchlist_mac",
             )
         with TestClient(app) as client:
@@ -5862,14 +5934,15 @@ def test_alerts_list_pagination_next_link_preserves_filter_state(tmp_path):
     try:
         for i in range(60):
             db.add_alert(
-                ts=100 + i, rule_name="r", mac=None,
-                message=f"a{i:02d}", severity="high",
+                ts=100 + i,
+                rule_name="r",
+                mac=None,
+                message=f"a{i:02d}",
+                severity="high",
                 rule_type="watchlist_mac",
             )
         with TestClient(app) as client:
-            r = client.get(
-                "/alerts?rule_type=watchlist_mac&severity=high&page=1&page_size=25"
-            )
+            r = client.get("/alerts?rule_type=watchlist_mac&severity=high&page=1&page_size=25")
         assert r.status_code == 200
         # Next-page link must round-trip both filters.
         assert "page=2" in r.text
@@ -5903,13 +5976,15 @@ def test_alerts_list_ack_all_visible_form_carries_new_filter_state(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         db.add_alert(
-            ts=100, rule_name="r", mac=None, message="m",
-            severity="low", rule_type="watchlist_mac",
+            ts=100,
+            rule_name="r",
+            mac=None,
+            message="m",
+            severity="low",
+            rule_type="watchlist_mac",
         )
         with TestClient(app) as client:
-            r = client.get(
-                "/alerts?rule_type=watchlist_mac&q=foo&window=24h"
-            )
+            r = client.get("/alerts?rule_type=watchlist_mac&q=foo&window=24h")
         assert r.status_code == 200
         # Hidden inputs reflect the filter values.
         assert 'name="rule_type"' in r.text
@@ -5950,9 +6025,9 @@ def _make_app_with_many_ui_allowlist_entries(tmp_path, n: int):
     for i in range(n):
         # Distinct 1-byte tail so the patterns are unique. Mac
         # validator wants 6 lowercase hex octets joined by colons.
-        tail = f"{i & 0xff:02x}"
+        tail = f"{i & 0xFF:02x}"
         entry = AllowlistEntry(
-            pattern=f"aa:bb:cc:dd:{(i >> 8) & 0xff:02x}:{tail}",
+            pattern=f"aa:bb:cc:dd:{(i >> 8) & 0xFF:02x}:{tail}",
             pattern_type="mac",
             note=f"seed-{i:03d}",
             added_at=now_ts + i,
@@ -6050,9 +6125,7 @@ def test_allowlist_pagination_next_link_preserves_filter_state(tmp_path):
     app, db, _ui = _make_app_with_many_ui_allowlist_entries(tmp_path, 60)
     try:
         with TestClient(app) as client:
-            r = client.get(
-                "/allowlist?q=seed&status=active&page_size=25&page=1"
-            )
+            r = client.get("/allowlist?q=seed&status=active&page_size=25&page=1")
         assert r.status_code == 200
         # Next-page link round-trips q + status + page_size.
         assert "page=2" in r.text
@@ -6422,8 +6495,11 @@ def test_alerts_has_note_round_trips_in_pagination_links(tmp_path):
         # (purpose is to verify state preservation, not selection).
         for i in range(30):
             aid = db.add_alert(
-                ts=100 + i, rule_name="r", mac=None,
-                message=f"m{i}", severity="low",
+                ts=100 + i,
+                rule_name="r",
+                mac=None,
+                message=f"m{i}",
+                severity="low",
             )
             db.update_alert_note(aid, f"note-{i}", now_ts=999)
         with TestClient(app) as client:
@@ -6503,8 +6579,11 @@ def test_alerts_has_note_default_omits_param_from_pagination_url(tmp_path):
     try:
         for i in range(30):
             db.add_alert(
-                ts=100 + i, rule_name="r", mac=None,
-                message=f"m{i}", severity="low",
+                ts=100 + i,
+                rule_name="r",
+                mac=None,
+                message=f"m{i}",
+                severity="low",
             )
         with TestClient(app) as client:
             r = client.get("/alerts?page_size=25")
@@ -6514,7 +6593,7 @@ def test_alerts_has_note_default_omits_param_from_pagination_url(tmp_path):
         idx = r.text.find("page=2")
         assert idx != -1
         # Look in a 200-char window around the page=2 link.
-        link_window = r.text[max(0, idx - 200): idx + 200]
+        link_window = r.text[max(0, idx - 200) : idx + 200]
         assert "has_note" not in link_window
     finally:
         db.close()
@@ -6550,7 +6629,11 @@ def _seed_alert_with_device(db, mac, message, *, ts=100, severity="low"):
     explicitly must upsert the device first."""
     db.upsert_device(mac, "wifi", "Acme", 0, ts)
     return db.add_alert(
-        ts=ts, rule_name="r", mac=mac, message=message, severity=severity,
+        ts=ts,
+        rule_name="r",
+        mac=mac,
+        message=message,
+        severity=severity,
     )
 
 
@@ -6634,12 +6717,15 @@ def test_alerts_has_action_with_action_narrows_to_snoozed_rows(tmp_path):
     try:
         ui_path = derive_ui_path(primary)
         now_ts = int(_time.time())
-        add_ui_entry(ui_path, AllowlistEntry(
-            pattern="aa:bb:cc:dd:ee:01",
-            pattern_type="mac",
-            expires_at=now_ts + 86400,
-            added_at=now_ts,
-        ))
+        add_ui_entry(
+            ui_path,
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:01",
+                pattern_type="mac",
+                expires_at=now_ts + 86400,
+                added_at=now_ts,
+            ),
+        )
         _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-snoozed", ts=100)
         _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh", ts=101)
         with TestClient(app) as client:
@@ -6664,12 +6750,15 @@ def test_alerts_has_action_expired_snooze_does_not_trigger(tmp_path):
     try:
         ui_path = derive_ui_path(primary)
         now_ts = int(_time.time())
-        add_ui_entry(ui_path, AllowlistEntry(
-            pattern="aa:bb:cc:dd:ee:01",
-            pattern_type="mac",
-            expires_at=now_ts - 3600,
-            added_at=now_ts - 7200,
-        ))
+        add_ui_entry(
+            ui_path,
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:01",
+                pattern_type="mac",
+                expires_at=now_ts - 3600,
+                added_at=now_ts - 7200,
+            ),
+        )
         _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-once-snoozed", ts=100)
         with TestClient(app) as client:
             r = client.get("/alerts?has_action=with_action")
@@ -6728,12 +6817,15 @@ def test_alerts_has_action_without_action_excludes_all_three_signals(tmp_path):
         _write_allowlist_primary(primary, macs=["aa:aa:aa:aa:aa:aa"])
         ui_path = derive_ui_path(primary)
         now_ts = int(_time.time())
-        add_ui_entry(ui_path, AllowlistEntry(
-            pattern="bb:bb:bb:bb:bb:bb",
-            pattern_type="mac",
-            expires_at=now_ts + 86400,
-            added_at=now_ts,
-        ))
+        add_ui_entry(
+            ui_path,
+            AllowlistEntry(
+                pattern="bb:bb:bb:bb:bb:bb",
+                pattern_type="mac",
+                expires_at=now_ts + 86400,
+                added_at=now_ts,
+            ),
+        )
         _seed_alert_with_device(db, "aa:aa:aa:aa:aa:aa", "msg-permanent", ts=100)
         _seed_alert_with_device(db, "bb:bb:bb:bb:bb:bb", "msg-snoozed", ts=101)
         _seed_alert_with_device(db, "cc:cc:cc:cc:cc:cc", "msg-watched", ts=102)
@@ -6775,18 +6867,19 @@ def test_alerts_has_action_combines_with_has_note(tmp_path):
     the headline composability the brief calls out."""
     app, db, primary = _make_app_with_allowlist(tmp_path)
     try:
-        _write_allowlist_primary(primary, macs=[
-            "aa:bb:cc:dd:ee:01",
-            "aa:bb:cc:dd:ee:02",
-        ])
+        _write_allowlist_primary(
+            primary,
+            macs=[
+                "aa:bb:cc:dd:ee:01",
+                "aa:bb:cc:dd:ee:02",
+            ],
+        )
         a1 = _seed_alert_with_device(db, "aa:bb:cc:dd:ee:01", "msg-actioned-noted", ts=100)
         _seed_alert_with_device(db, "aa:bb:cc:dd:ee:02", "msg-actioned-unnoted", ts=101)
         _seed_alert_with_device(db, "22:33:44:55:66:77", "msg-fresh-unnoted", ts=102)
         db.update_alert_note(a1, "FP", now_ts=999)
         with TestClient(app) as client:
-            r = client.get(
-                "/alerts?has_action=with_action&has_note=without_note"
-            )
+            r = client.get("/alerts?has_action=with_action&has_note=without_note")
         assert r.status_code == 200
         assert "msg-actioned-unnoted" in r.text
         assert "msg-actioned-noted" not in r.text
@@ -6803,7 +6896,10 @@ def test_alerts_has_action_round_trips_in_pagination_links(tmp_path):
     try:
         for i in range(30):
             _seed_alert_with_device(
-                db, f"aa:bb:cc:dd:00:{i:02x}", f"m{i}", ts=100 + i,
+                db,
+                f"aa:bb:cc:dd:00:{i:02x}",
+                f"m{i}",
+                ts=100 + i,
             )
             _insert_watchful_row(db, f"aa:bb:cc:dd:00:{i:02x}")
         with TestClient(app) as client:
@@ -6935,12 +7031,15 @@ def test_alerts_has_action_with_action_narrows_to_mac_range_snoozed_rows(tmp_pat
     try:
         ui_path = derive_ui_path(primary)
         now_ts = int(_time.time())
-        add_ui_entry(ui_path, AllowlistEntry(
-            pattern="aa:bb:cc:d/28",
-            pattern_type="mac_range",
-            expires_at=now_ts + 86400,
-            added_at=now_ts,
-        ))
+        add_ui_entry(
+            ui_path,
+            AllowlistEntry(
+                pattern="aa:bb:cc:d/28",
+                pattern_type="mac_range",
+                expires_at=now_ts + 86400,
+                added_at=now_ts,
+            ),
+        )
         _seed_alert_with_device(db, "aa:bb:cc:d3:00:01", "msg-snoozed-range", ts=100)
         _seed_alert_with_device(db, "11:22:33:44:55:66", "msg-other", ts=101)
         with TestClient(app) as client:
@@ -7038,8 +7137,11 @@ def test_alerts_has_action_with_action_handles_null_mac_when_mac_range_active(tm
         # NULL-mac alert: can't carry any mac-keyed action signal, must
         # NOT appear under with_action -- and must not crash the query.
         db.add_alert(
-            ts=101, rule_name="r", mac=None,
-            message="msg-null-mac", severity="low",
+            ts=101,
+            rule_name="r",
+            mac=None,
+            message="msg-null-mac",
+            severity="low",
         )
         with TestClient(app) as client:
             r = client.get("/alerts?has_action=with_action")
@@ -7177,9 +7279,7 @@ def test_rules_list_status_filter_snoozed_only(tmp_path):
     the render."""
     app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
     now = int(__import__("time").time())
-    db.add_rule_type_snooze(
-        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
-    )
+    db.add_rule_type_snooze(rule_type="watchlist_mac", expires_at=now + 3600, added_at=now)
     try:
         with TestClient(app) as client:
             r = client.get("/rules?status=snoozed")
@@ -7196,9 +7296,7 @@ def test_rules_list_status_filter_active_only(tmp_path):
     has no active snooze appear."""
     app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
     now = int(__import__("time").time())
-    db.add_rule_type_snooze(
-        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
-    )
+    db.add_rule_type_snooze(rule_type="watchlist_mac", expires_at=now + 3600, added_at=now)
     try:
         with TestClient(app) as client:
             r = client.get("/rules?status=active")
@@ -7241,9 +7339,7 @@ def test_snooze_post_inserts_row_and_redirects(tmp_path):
         assert r.status_code == 303
         assert "success=snooze_added" in r.headers["location"]
         assert "rule_type=watchlist_mac" in r.headers["location"]
-        row = db._conn.execute(
-            "SELECT rule_type, note FROM rule_type_snoozes"
-        ).fetchone()
+        row = db._conn.execute("SELECT rule_type, note FROM rule_type_snoozes").fetchone()
         assert row["rule_type"] == "watchlist_mac"
         assert row["note"] == "investigating"
     finally:
@@ -7254,9 +7350,7 @@ def test_snooze_post_inserts_row_and_redirects(tmp_path):
 def test_unsnooze_post_deletes_row_and_redirects(tmp_path):
     app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
     now = int(__import__("time").time())
-    db.add_rule_type_snooze(
-        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
-    )
+    db.add_rule_type_snooze(rule_type="watchlist_mac", expires_at=now + 3600, added_at=now)
     try:
         with TestClient(app, follow_redirects=False) as client:
             token, _ = _csrf_setup(client)
@@ -7288,9 +7382,7 @@ def test_snooze_post_invalid_duration_returns_400(tmp_path):
                 data={CSRF_FORM_FIELD: token, "duration_seconds": 999},
             )
         assert r.status_code == 400
-        row_count = db._conn.execute(
-            "SELECT COUNT(*) FROM rule_type_snoozes"
-        ).fetchone()[0]
+        row_count = db._conn.execute("SELECT COUNT(*) FROM rule_type_snoozes").fetchone()[0]
         assert row_count == 0
     finally:
         db.close()
@@ -7324,9 +7416,7 @@ def test_snooze_post_without_csrf_returns_403(tmp_path):
                 data={"duration_seconds": 3600},
             )
         assert r.status_code == 403
-        row_count = db._conn.execute(
-            "SELECT COUNT(*) FROM rule_type_snoozes"
-        ).fetchone()[0]
+        row_count = db._conn.execute("SELECT COUNT(*) FROM rule_type_snoozes").fetchone()[0]
         assert row_count == 0
     finally:
         db.close()
@@ -7336,9 +7426,7 @@ def test_snooze_post_without_csrf_returns_403(tmp_path):
 def test_unsnooze_post_without_csrf_returns_403(tmp_path):
     app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
     now = int(__import__("time").time())
-    db.add_rule_type_snooze(
-        rule_type="watchlist_mac", expires_at=now + 3600, added_at=now
-    )
+    db.add_rule_type_snooze(rule_type="watchlist_mac", expires_at=now + 3600, added_at=now)
     try:
         with TestClient(app, follow_redirects=False) as client:
             client.cookies.clear()
@@ -7413,9 +7501,7 @@ def test_rules_list_flash_banner_on_success(tmp_path):
     app, db = _make_app_with_rules(tmp_path, _TWO_RULES_YAML)
     try:
         with TestClient(app) as client:
-            r = client.get(
-                "/rules?success=snooze_added&rule_type=watchlist_mac"
-            )
+            r = client.get("/rules?success=snooze_added&rule_type=watchlist_mac")
         assert r.status_code == 200
         assert "flash-success" in r.text or "Snooze added" in r.text
         assert "watchlist_mac" in r.text
@@ -7482,6 +7568,7 @@ def test_alerts_csv_returns_200_with_content_type_and_disposition(tmp_path):
 @pytest.mark.webui
 def test_alerts_csv_filename_is_iso_utc_timestamped(tmp_path):
     import re
+
     app, db = _make_app(tmp_path)
     try:
         with TestClient(app) as client:
@@ -7573,11 +7660,19 @@ def test_alerts_csv_respects_rule_type_filter(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         db.add_alert(
-            ts=100, rule_name="r1", mac=None, message="a", severity="low",
+            ts=100,
+            rule_name="r1",
+            mac=None,
+            message="a",
+            severity="low",
             rule_type="watchlist_mac",
         )
         db.add_alert(
-            ts=200, rule_name="r2", mac=None, message="b", severity="low",
+            ts=200,
+            rule_name="r2",
+            mac=None,
+            message="b",
+            severity="low",
             rule_type="watchlist_ssid",
         )
         with TestClient(app) as client:
@@ -7645,8 +7740,12 @@ def test_alerts_csv_includes_matched_watchlist_join(tmp_path):
             },
         )
         db.add_alert(
-            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="m",
-            severity="high", matched_watchlist_id=wid,
+            ts=100,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:01",
+            message="m",
+            severity="high",
+            matched_watchlist_id=wid,
         )
         with TestClient(app) as client:
             r = client.get("/alerts.csv")
@@ -7673,7 +7772,11 @@ def test_alerts_csv_includes_device_join_columns(tmp_path):
     try:
         db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "AcmeCo", 0, 100)
         db.add_alert(
-            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="m", severity="low",
+            ts=100,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:01",
+            message="m",
+            severity="low",
         )
         with TestClient(app) as client:
             r = client.get("/alerts.csv")
@@ -7694,10 +7797,7 @@ def test_alerts_csv_action_taken_true_for_allowlisted_mac(tmp_path):
     # action_taken is the same regardless of filter posture.
     allowlist_path = tmp_path / "allowlist.yaml"
     allowlist_path.write_text(
-        "entries:\n"
-        "  - pattern: 'aa:bb:cc:dd:ee:01'\n"
-        "    pattern_type: mac\n"
-        "    note: test\n",
+        "entries:\n  - pattern: 'aa:bb:cc:dd:ee:01'\n    pattern_type: mac\n    note: test\n",
         encoding="utf-8",
     )
     config = Config(
@@ -7710,10 +7810,18 @@ def test_alerts_csv_action_taken_true_for_allowlisted_mac(tmp_path):
         db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
         db.upsert_device("aa:bb:cc:dd:ee:99", "wifi", "Acme", 0, 100)
         db.add_alert(
-            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="actioned", severity="low",
+            ts=100,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:01",
+            message="actioned",
+            severity="low",
         )
         db.add_alert(
-            ts=200, rule_name="r", mac="aa:bb:cc:dd:ee:99", message="not-actioned", severity="low",
+            ts=200,
+            rule_name="r",
+            mac="aa:bb:cc:dd:ee:99",
+            message="not-actioned",
+            severity="low",
         )
         with TestClient(app) as client:
             r = client.get("/alerts.csv")
@@ -7732,8 +7840,12 @@ def test_alerts_csv_action_taken_true_for_watchful_tracked_mac(tmp_path):
     try:
         db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 100)
         db.upsert_device("aa:bb:cc:dd:ee:99", "wifi", "Acme", 0, 100)
-        db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="tracked", severity="low")
-        db.add_alert(ts=200, rule_name="r", mac="aa:bb:cc:dd:ee:99", message="untracked", severity="low")
+        db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:01", message="tracked", severity="low"
+        )
+        db.add_alert(
+            ts=200, rule_name="r", mac="aa:bb:cc:dd:ee:99", message="untracked", severity="low"
+        )
         # Insert a non-archived watchful_recurrence row by hand.
         with db._conn:
             db._conn.execute(
@@ -7756,6 +7868,7 @@ def test_alerts_csv_is_a_streaming_response(tmp_path):
     # Belt-and-braces: confirm we did NOT regress to a buffered
     # Response (which would defeat the constant-memory invariant).
     from starlette.responses import StreamingResponse
+
     from lynceus.webui.app import create_app
 
     config = Config(db_path=str(tmp_path / "ui.db"))
@@ -7782,9 +7895,16 @@ def test_alerts_csv_is_a_streaming_response(tmp_path):
         req = Request(scope=scope)
         resp = route.endpoint(
             request=req,
-            severity=None, acknowledged=None, since=None, until=None,
-            search=None, rule_type=None, q=None, window=None,
-            has_note=None, has_action=None,
+            severity=None,
+            acknowledged=None,
+            since=None,
+            until=None,
+            search=None,
+            rule_type=None,
+            q=None,
+            window=None,
+            has_note=None,
+            has_action=None,
         )
         assert isinstance(resp, StreamingResponse)
     finally:
@@ -7896,20 +8016,36 @@ def test_rules_list_per_rule_type_rolls_up_multiple_rule_names(tmp_path):
     # Two fires under mac_rule_a, one under mac_rule_b -> watchlist_mac
     # bucket count == 3. One fire under ssid_rule -> watchlist_ssid == 1.
     db.add_alert(
-        ts=now - 100, rule_name="mac_rule_a", mac=None, message="x",
-        severity="high", rule_type="watchlist_mac",
+        ts=now - 100,
+        rule_name="mac_rule_a",
+        mac=None,
+        message="x",
+        severity="high",
+        rule_type="watchlist_mac",
     )
     db.add_alert(
-        ts=now - 200, rule_name="mac_rule_a", mac=None, message="x",
-        severity="high", rule_type="watchlist_mac",
+        ts=now - 200,
+        rule_name="mac_rule_a",
+        mac=None,
+        message="x",
+        severity="high",
+        rule_type="watchlist_mac",
     )
     db.add_alert(
-        ts=now - 300, rule_name="mac_rule_b", mac=None, message="x",
-        severity="high", rule_type="watchlist_mac",
+        ts=now - 300,
+        rule_name="mac_rule_b",
+        mac=None,
+        message="x",
+        severity="high",
+        rule_type="watchlist_mac",
     )
     db.add_alert(
-        ts=now - 400, rule_name="ssid_rule", mac=None, message="x",
-        severity="med", rule_type="watchlist_ssid",
+        ts=now - 400,
+        rule_name="ssid_rule",
+        mac=None,
+        message="x",
+        severity="med",
+        rule_type="watchlist_ssid",
     )
     try:
         with TestClient(app) as client:
@@ -7958,16 +8094,28 @@ def test_rules_list_per_rule_type_respects_since_window(tmp_path):
     now = int(_time.time())
     # Two fires inside 1h, one outside.
     db.add_alert(
-        ts=now - 30, rule_name="known_bad_mac", mac=None, message="x",
-        severity="high", rule_type="watchlist_mac",
+        ts=now - 30,
+        rule_name="known_bad_mac",
+        mac=None,
+        message="x",
+        severity="high",
+        rule_type="watchlist_mac",
     )
     db.add_alert(
-        ts=now - 60, rule_name="known_bad_mac", mac=None, message="x",
-        severity="high", rule_type="watchlist_mac",
+        ts=now - 60,
+        rule_name="known_bad_mac",
+        mac=None,
+        message="x",
+        severity="high",
+        rule_type="watchlist_mac",
     )
     db.add_alert(
-        ts=now - 7200, rule_name="known_bad_mac", mac=None, message="x",
-        severity="high", rule_type="watchlist_mac",
+        ts=now - 7200,
+        rule_name="known_bad_mac",
+        mac=None,
+        message="x",
+        severity="high",
+        rule_type="watchlist_mac",
     )
     try:
         with TestClient(app) as client:
@@ -8008,9 +8156,7 @@ def test_rules_list_per_rule_type_empty_alerts_shows_zero(tmp_path):
         assert r.status_code == 200
         import re as _re
 
-        section_block = r.text[
-            r.text.find("fires by rule_type") : r.text.find("<h3>rules</h3>")
-        ]
+        section_block = r.text[r.text.find("fires by rule_type") : r.text.find("<h3>rules</h3>")]
         for rt in ("watchlist_mac", "watchlist_ssid"):
             m = _re.search(
                 rf"<code>{rt}</code>\s*&middot;\s*"
@@ -8042,9 +8188,7 @@ def test_rules_list_per_rule_type_shows_snooze_badge(tmp_path):
         with TestClient(app) as client:
             r = client.get("/rules")
         assert r.status_code == 200
-        section_block = r.text[
-            r.text.find("fires by rule_type") : r.text.find("<h3>rules</h3>")
-        ]
+        section_block = r.text[r.text.find("fires by rule_type") : r.text.find("<h3>rules</h3>")]
         # Snoozed type: badge + unsnooze action present inside the
         # summary block (not just on the per-rule_name article below).
         assert "badge-snoozed" in section_block
@@ -8115,6 +8259,7 @@ def test_index_last_poll_card_renders_tick_counts(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         import time as _t
+
         now = int(_t.time())
         _seed_tick_state(
             db,
@@ -8171,6 +8316,7 @@ def test_index_last_poll_card_all_zero_drops_omits_breakdown(tmp_path):
     app, db = _make_app(tmp_path)
     try:
         import time as _t
+
         now = int(_t.time())
         _seed_tick_state(
             db,
@@ -8236,6 +8382,7 @@ def test_healthz_html_shows_stale_badge_when_tick_old(tmp_path):
     with the relative-time stamp so 'stale' is unambiguous about
     what's stale."""
     import time as _t
+
     app, db = _make_app(tmp_path)
     try:
         # Default poll_interval=60 -> threshold 120s. Seed completed
@@ -8283,6 +8430,7 @@ def test_index_last_poll_card_source_allowlist_only_shows_one_label(
     app, db = _make_app(tmp_path)
     try:
         import time as _t
+
         now = int(_t.time())
         _seed_tick_state(
             db,

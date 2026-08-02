@@ -64,13 +64,21 @@ _DOCUMENTED_KISMET_TYPES: list[tuple[str, str, str]] = [
     ("Bluetooth Link Manager", "Bluetooth Classic", "NOT IN _TYPE_MAP -- silently dropped"),
     # --- Bluetooth Low Energy (phy_btle) ---
     ("BTLE", "Bluetooth LE (phy_btle)", "mapped to 'ble'"),
-    ("BTLE Device", "Bluetooth LE (phy_btle)", "NOT IN _TYPE_MAP -- silently dropped (some Kismet builds)"),
+    (
+        "BTLE Device",
+        "Bluetooth LE (phy_btle)",
+        "NOT IN _TYPE_MAP -- silently dropped (some Kismet builds)",
+    ),
     # --- Remote-ID (phy_rtl433 / phy_uav_remote_id) ---
     # UNVERIFIED -- the strings Kismet's UAV Remote-ID plugin emits
     # vary by build. The diagnostic lists both _TYPE_MAP's current
     # guesses; the kismet.py comment block at lines 29-44 acknowledges
     # the uncertainty.
-    ("Remote ID", "UAV Remote-ID (phy_uav_remote_id)", "mapped to 'remote_id' [GUESS -- unverified]"),
+    (
+        "Remote ID",
+        "UAV Remote-ID (phy_uav_remote_id)",
+        "mapped to 'remote_id' [GUESS -- unverified]",
+    ),
     ("Remote ID Drone", "UAV Remote-ID", "mapped to 'remote_id' [GUESS -- unverified]"),
     # --- Other phys we don't model today ---
     ("RTL433", "RTL-SDR 433MHz (phy_rtl433)", "NOT IN _TYPE_MAP -- silently dropped"),
@@ -88,10 +96,9 @@ def test_diag_parser_type_map_coverage(diag):
         f"src/lynceus/kismet.py _TYPE_MAP "
         f"(parser at kismet.py:{inspect.getsourcelines(kismet.parse_kismet_device)[1]})"
     )
-    diag.fixture(
-        f"_TYPE_MAP origin line: kismet.py:"
-        f"{Path(inspect.getsourcefile(kismet)).read_text(encoding='utf-8').splitlines().index([l for l in Path(inspect.getsourcefile(kismet)).read_text(encoding='utf-8').splitlines() if '_TYPE_MAP:' in l][0]) + 1}"
-    )
+    _kismet_lines = Path(inspect.getsourcefile(kismet)).read_text(encoding="utf-8").splitlines()
+    _type_map_line = next(i for i, line in enumerate(_kismet_lines, 1) if "_TYPE_MAP:" in line)
+    diag.fixture(f"_TYPE_MAP origin line: kismet.py:{_type_map_line}")
     diag.fixture(
         "scope: cross-reference _TYPE_MAP keys against documented "
         "Kismet kismet.device.base.type emissions; identify the gap; "
@@ -111,13 +118,8 @@ def test_diag_parser_type_map_coverage(diag):
     # ever changes.
     device_type_field = DeviceObservation.model_fields["device_type"]
     literal_values = get_args(device_type_field.annotation)
-    diag.observed(
-        f"DeviceObservation.device_type values: {list(literal_values)}"
-    )
-    diag.observed(
-        f"_TYPE_MAP codomain: "
-        f"{sorted(set(_TYPE_MAP.values()))}"
-    )
+    diag.observed(f"DeviceObservation.device_type values: {list(literal_values)}")
+    diag.observed(f"_TYPE_MAP codomain: {sorted(set(_TYPE_MAP.values()))}")
     if set(_TYPE_MAP.values()) != set(literal_values):
         diag.observed(
             "MISMATCH: codomain doesn't cover every device-type literal "
@@ -126,39 +128,28 @@ def test_diag_parser_type_map_coverage(diag):
             "doesn't admit. Worth investigating separately."
         )
     else:
-        diag.observed(
-            "codomain matches schema literals exactly -- no enum / map "
-            "drift."
-        )
+        diag.observed("codomain matches schema literals exactly -- no enum / map drift.")
 
     diag.section("documented Kismet kismet.device.base.type values")
     diag.observed(
-        f"Source: Kismet phy plugin set (2022-01R1 through 2024-12). "
-        f"Type strings are stable across this range; the Kismet "
-        f"REST API docs and phy_*/phy_*.cc enumerate them."
+        "Source: Kismet phy plugin set (2022-01R1 through 2024-12). "
+        "Type strings are stable across this range; the Kismet "
+        "REST API docs and phy_*/phy_*.cc enumerate them."
     )
-    diag.observed(
-        f"{len(_DOCUMENTED_KISMET_TYPES)} documented type strings:"
-    )
+    diag.observed(f"{len(_DOCUMENTED_KISMET_TYPES)} documented type strings:")
     for type_str, radio, handling in _DOCUMENTED_KISMET_TYPES:
         in_map = type_str in _TYPE_MAP
         marker = "[MAPPED]" if in_map else "[DROPPED]"
-        diag.observed(
-            f"  {marker} {type_str!r}  ({radio})  -- {handling}"
-        )
+        diag.observed(f"  {marker} {type_str!r}  ({radio})  -- {handling}")
 
     diag.section("coverage gap analysis")
     documented_set = {t for t, _, _ in _DOCUMENTED_KISMET_TYPES}
     mapped_documented = documented_set & set(_TYPE_MAP)
     dropped_documented = documented_set - set(_TYPE_MAP)
     map_only = set(_TYPE_MAP) - documented_set
+    diag.observed(f"documented types in _TYPE_MAP (= admitted): {sorted(mapped_documented)}")
     diag.observed(
-        f"documented types in _TYPE_MAP (= admitted): "
-        f"{sorted(mapped_documented)}"
-    )
-    diag.observed(
-        f"documented types NOT in _TYPE_MAP (= silently dropped): "
-        f"{sorted(dropped_documented)}"
+        f"documented types NOT in _TYPE_MAP (= silently dropped): {sorted(dropped_documented)}"
     )
     diag.observed(
         f"in _TYPE_MAP but NOT in this diagnostic's documented list "
@@ -190,8 +181,7 @@ def test_diag_parser_type_map_coverage(diag):
         "Remote-ID record drops"
     )
     diag.observed(
-        "  2. 'Bluetooth Link Manager' (some Kismet builds surface "
-        "the LMP layer as its own type)"
+        "  2. 'Bluetooth Link Manager' (some Kismet builds surface the LMP layer as its own type)"
     )
     diag.observed(
         "  3. 'Wi-Fi WDS' / 'Wi-Fi Adhoc' (rare but present in some "
@@ -204,42 +194,21 @@ def test_diag_parser_type_map_coverage(diag):
     )
 
     diag.section("proposed minimum-change observability path")
-    diag.observed(
-        "PROPOSAL (do NOT implement in this arc; draft for the follow-"
-        "up fix prompt):"
-    )
+    diag.observed("PROPOSAL (do NOT implement in this arc; draft for the follow-up fix prompt):")
     diag.observed(
         "  Single-line addition to parse_kismet_device at the existing "
         "drop site (kismet.py:432-434):"
     )
+    diag.observed("    device_type = _TYPE_MAP.get(kismet_type)")
+    diag.observed("    if device_type is None:")
+    diag.observed("  +     logger.debug(")
+    diag.observed("  +         'dropping kismet device, unrecognized type: type=%r mac=%r',")
+    diag.observed("  +         kismet_type, raw_mac,")
+    diag.observed("  +     )")
+    diag.observed("        return None")
+    diag.observed("Operator then runs:")
     diag.observed(
-        "    device_type = _TYPE_MAP.get(kismet_type)"
-    )
-    diag.observed(
-        "    if device_type is None:"
-    )
-    diag.observed(
-        "  +     logger.debug("
-    )
-    diag.observed(
-        "  +         'dropping kismet device, unrecognized type: "
-        "type=%r mac=%r',"
-    )
-    diag.observed(
-        "  +         kismet_type, raw_mac,"
-    )
-    diag.observed(
-        "  +     )"
-    )
-    diag.observed(
-        "        return None"
-    )
-    diag.observed(
-        "Operator then runs:"
-    )
-    diag.observed(
-        "  journalctl -u lynceus -p debug "
-        "| grep 'unrecognized type' | sort | uniq -c | sort -rn"
+        "  journalctl -u lynceus -p debug | grep 'unrecognized type' | sort | uniq -c | sort -rn"
     )
     diag.observed(
         "and gets a frequency table of the actual type strings their "
