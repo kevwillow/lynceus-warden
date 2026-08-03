@@ -8,6 +8,7 @@ sensitive values (Kismet API token, full ntfy topic) at full fidelity.
 
 from __future__ import annotations
 
+import re
 from unittest.mock import patch
 
 import pytest
@@ -708,12 +709,70 @@ def test_watchlist_data_card_zero_total_no_imports_shows_legacy_hint(
             r = client.get("/settings")
         assert r.status_code == 200
         text = r.text
-        # Existing hint copy survives.
+        # Existing hint copy survives. The seeder form gained the required
+        # --db, so anchor on the program name and the --yaml flag separately
+        # rather than on a literal that pins flag order — and note that the
+        # runnability of the form is guarded by
+        # test_settings_seeder_command_carries_required_db_flag, not here.
         assert "lynceus-import-argus --input" in text
-        assert "lynceus-seed-watchlist --yaml" in text
+        assert "lynceus-seed-watchlist --db" in text
+        assert "--yaml" in text
         # The dropped-all-rows copy must NOT appear here.
         assert "0 records admitted" not in text
         assert "dropped every row" not in text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize("populated", [False, True], ids=["empty", "populated"])
+def test_settings_seeder_command_carries_required_db_flag(
+    tmp_path, monkeypatch, populated
+):
+    """Every seeder form /settings prints must be runnable as printed.
+
+    ``--db`` is ``required=True`` on lynceus-seed-watchlist
+    (cli/seed_watchlist.py), so a printed form without it exits 2 at argparse
+    before doing anything at all.
+
+    This guard is parametrized over both watchlist states because the data
+    card prints the "To add data" line from two different branches, and the
+    first fix caught only one of them: the empty-watchlist branch was
+    corrected while the populated branch — the one every install with rows
+    actually renders — kept printing the form that cannot run. A guard
+    covering a single state would have passed over exactly that.
+    """
+    _stub_kismet_reachable(monkeypatch)
+    app, db = _make_app(tmp_path)
+    try:
+        if populated:
+            _add_watchlist(db, "aa:bb:cc:dd:ee:01")
+        with TestClient(app) as client:
+            r = client.get("/settings")
+        assert r.status_code == 200
+        text = r.text
+
+        # Anchor on the rendered command, not on flag order: everything from
+        # the program name up to the closing tag of its <code> block.
+        forms = re.findall(r"lynceus-seed-watchlist[^<]*", text)
+        assert forms, (
+            "/settings printed no lynceus-seed-watchlist form at all — the "
+            "operator's signpost to the seeder is gone, or this extractor is "
+            "stale."
+        )
+        for form in forms:
+            if "--" not in form:
+                # A bare mention of the program name is prose, not a command.
+                continue
+            assert "--db" in form, (
+                f"/settings printed a seeder command with no --db: {form!r}. "
+                "--db is required=True, so this exits 2 at argparse."
+            )
+            assert str(tmp_path / "settings.db") in form, (
+                f"seeder command does not name the configured database: {form!r}. "
+                "The path must be interpolated from system.db_path so the line "
+                "is copy-pasteable."
+            )
     finally:
         db.close()
 
