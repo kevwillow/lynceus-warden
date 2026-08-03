@@ -30,7 +30,7 @@
      paging preserves both. has_prev/has_next reduce to page > 1 and
      page < total_pages, which hold for either idiom. #}
 
-{% macro data_table(columns, endpoint, filter_qs, sort, dir, table_id=none, resize=false, hide=false) %}
+{% macro data_table(columns, endpoint, filter_qs, sort, dir, table_id=none, resize=false, hide=false, aria_label=none) %}
   {# Per-feature opt-in (v0.9.2). ``table_id`` names the table (its
      localStorage key + data-table-id value); ``resize`` and ``hide`` opt it
      into, respectively, the client-side column resize/reorder grips and the
@@ -85,7 +85,7 @@
   </div>
   {% endif %}
   <div class="table-scroll">
-    <table{% if _enhanced %} data-table-id="{{ table_id }}"{% endif %}>
+    <table{% if _enhanced %} data-table-id="{{ table_id }}"{% endif %}{% if aria_label %} aria-label="{{ aria_label }}"{% endif %}>
       {% if _enhanced %}
       <colgroup>{% for col in columns %}<col data-col-key="{{ col.key }}">{% endfor %}</colgroup>
       {% endif %}

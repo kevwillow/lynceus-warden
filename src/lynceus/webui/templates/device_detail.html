@@ -23,9 +23,9 @@
   <h3>recent sightings</h3>
   {% if sightings %}
     <div class="table-scroll">
-      <table>
+      <table aria-label="recent sightings for this device">
         <thead>
-          <tr><th>timestamp</th><th>rssi</th><th>ssid</th><th>location</th></tr>
+          <tr><th scope="col">timestamp</th><th scope="col">rssi</th><th scope="col">ssid</th><th scope="col">location</th></tr>
         </thead>
         <tbody>
           {% for s in sightings %}
