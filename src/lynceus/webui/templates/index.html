@@ -17,18 +17,30 @@
       <strong>Kismet status:</strong>
       {% if kismet_status %}
         {% if kismet_status.reachable %}
-          <span class="status-pill status-pill-ok" aria-label="reachable">reachable</span>
+          <span class="status-pill status-pill-ok">reachable</span>
+          {# The "reachable · version · checked" line is named in the direction
+             doc as something that stays. The version/checked/error LABELS are
+             part of it: an unlabelled <code> beside a pill is not self-
+             describing. An earlier pass dropped all three. #}
           {% if kismet_status.version %}
-            &middot; <code>{{ kismet_status.version }}</code>
+            &middot; <strong>version:</strong> <code>{{ kismet_status.version }}</code>
           {% endif %}
         {% else %}
-          <span class="status-pill status-pill-error" aria-label="unreachable">unreachable</span>
+          <span class="status-pill status-pill-error">unreachable</span>
           {% if kismet_status.error %}
-            &middot; <code>{{ kismet_status.error }}</code>
+            {# Truncated in the template, not by CSS. Raw, this is a ~300-char
+               urllib3 traceback that rendered as a ~110px block dominating the
+               status line — it pushed the alerts below the fold precisely when
+               something WAS wrong. CSS clamping was tried first and interacted
+               badly with the flex row (measured: it fixed 1280 and broke 360,
+               then vice versa). A hard character cap is predictable at every
+               width. Full string stays on hover via title=. #}
+            &middot; <strong>error:</strong>
+            <code class="status-error" title="{{ kismet_status.error }}">{{ kismet_status.error | truncate(60, true, "…") }}</code>
           {% endif %}
         {% endif %}
         {% if kismet_status.checked_at %}
-          &middot; <small>checked</small>
+          &middot; <strong>checked:</strong>
           <time datetime="{{ kismet_status.checked_at | unix_to_iso }}">{{ kismet_status.checked_at | unix_to_iso }}</time>
         {% endif %}
       {% else %}
@@ -71,9 +83,18 @@
 
     {# --- watchlist freshness ---------------------------------- #}
     <span class="status-item">
-      <strong>watchlist:</strong>
+      {# "Watchlist:" is capitalised deliberately: tests/test_webui_home_freshness.py
+         asserts this exact literal across four states (fresh, stale, not-loaded,
+         and the pre-migration-012 fall-through). Lowercasing it to match the
+         other status labels silently broke all four. #}
+      <strong>Watchlist:</strong>
+      {# Every status item gets a state word, not just Kismet: the direction doc
+         asks the status line for a "green/amber/red word + the fact". Before
+         this, a healthy watchlist showed a record count and no state at all,
+         and .status-pill-warn was defined in CSS but never used by anything. #}
       {% if not watchlist_freshness.has_import %}
-        not loaded (<a href="/settings#watchlist-freshness">configure</a>)
+        <span class="status-pill status-pill-warn">not loaded</span>
+        (<a href="/settings#watchlist-freshness">configure</a>)
       {% else %}
         {% if watchlist_freshness.record_count is not none %}
           {{ "{:,}".format(watchlist_freshness.record_count) }} records
@@ -88,7 +109,12 @@
           </time>
         {% endif %}
         {% if watchlist_freshness.is_stale %}
+          {# badge-status-error, not a status-pill: it is the class /settings
+             uses for the same signal, and test_webui_home_freshness.py asserts
+             this exact class name for the stale state. #}
           &middot; <span class="badge-status-error">stale</span>
+        {% else %}
+          &middot; <span class="status-pill status-pill-ok">fresh</span>
         {% endif %}
         &middot; <a href="/settings#watchlist-freshness">details</a>
       {% endif %}
@@ -114,8 +140,10 @@
     <h3 id="home-unacked-heading">recent unacknowledged alerts</h3>
     {% if recent_alerts %}
       <div class="table-scroll">
-        <table class="alerts-table" aria-label="recent unacknowledged alerts requiring operator action">
-          <caption class="visually-hidden">Recent unacknowledged alerts, newest first. Each row carries its severity, source rule, device and the operator action.</caption>
+        {# Named by aria-label alone. It previously carried BOTH this and a
+           .visually-hidden <caption>; the aria-label silently wins, leaving the
+           caption as dead weight no one ever hears. #}
+        <table class="alerts-table" aria-label="recent unacknowledged alerts, newest first, with severity, rule, device and operator action">
           <thead>
             <tr>
               <th scope="col">Time</th>
@@ -135,7 +163,10 @@
                         title="{{ a.ts | unix_to_iso }}">{{ a.ts | unix_to_iso }}</time>
                 </td>
                 <td>
-                  <span class="badge-{{ a.severity }} sev-label" aria-label="severity {{ a.severity }}">{{ a.severity }}</span>
+                  {# No aria-label: it does nothing on a bare <span>, and the
+                     scoped column header already announces this cell as
+                     "Severity". The visible word is the accessible name. #}
+                  <span class="badge-{{ a.severity }} sev-label">{{ a.severity }}</span>
                 </td>
                 <td><a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a></td>
                 <td>{{ a.device | device_label }}</td>
@@ -174,7 +205,12 @@
   <section class="block block-activity" aria-labelledby="home-activity-heading">
     <h3 id="home-activity-heading">activity</h3>
 
-    <div class="stat-grid" aria-label="alert counts by severity over 24h, 7d, 30d">
+    {# role="group" is load-bearing: aria-label on a bare <div> is not exposed
+       as an accessible name. See internal/audit-2026-08-02/ACCESSIBLE-NAMES.md
+       rule 4. This matrix would be better as a real <table> with row and column
+       headers; that is a known remaining improvement, not done here because it
+       needs CSS this change does not own. #}
+    <div class="stat-grid" role="group" aria-label="alert counts by severity over 24h, 7d, 30d">
       <span></span>
       <span class="stat-row-label">24h</span>
       <span class="stat-row-label">7d</span>
@@ -196,7 +232,7 @@
       <span>{{ sev_30d.high }}</span>
     </div>
 
-    <div class="tile-row" aria-label="unique devices seen over 24h, 7d, 30d">
+    <div class="tile-row" role="group" aria-label="unique devices seen over 24h, 7d, 30d">
       <div class="tile">
         <div class="tile-num">{{ device_seen.day }}</div>
         <div class="tile-label">last 24h</div>
@@ -236,14 +272,14 @@
         <table aria-label="recently seen devices">
           <thead>
             <tr>
-              <th>Device</th>
-              <th>MAC</th>
-              <th>Type</th>
-              <th>Vendor</th>
-              <th>BLE name</th>
-              <th>Last seen</th>
-              <th>Last RSSI</th>
-              <th>Sightings</th>
+              <th scope="col">Device</th>
+              <th scope="col">MAC</th>
+              <th scope="col">Type</th>
+              <th scope="col">Vendor</th>
+              <th scope="col">BLE name</th>
+              <th scope="col">Last seen</th>
+              <th scope="col">Last RSSI</th>
+              <th scope="col">Sightings</th>
             </tr>
           </thead>
           <tbody>
@@ -252,8 +288,11 @@
                 <td>{{ d | device_label }}</td>
                 <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
                 <td>{{ d.device_type }}</td>
-                <td>{{ d.oui_vendor or "&mdash;" | safe }}</td>
-                <td>{{ d.ble_name or "&mdash;" | safe }}</td>
+                {# Literal em dash, not "&mdash;"|safe: the entity form changes
+                   the rendered bytes for no visible gain, and any test that
+                   greps for the character stops matching. #}
+                <td>{{ d.oui_vendor or "—" }}</td>
+                <td>{{ d.ble_name or "—" }}</td>
                 <td><time datetime="{{ d.last_seen | unix_to_iso }}">{{ d.last_seen | unix_to_iso }}</time></td>
                 <td>{% if d.last_rssi is none or d.last_rssi == 0 %}&mdash;{% else %}{{ d.last_rssi }}{% endif %}</td>
                 <td>{{ d.sighting_count }}</td>

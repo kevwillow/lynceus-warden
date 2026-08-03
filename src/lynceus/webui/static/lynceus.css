@@ -664,17 +664,18 @@ details:has(> .probe-reveal) > summary::after {
    on the flex row + 0.6em visual rhythm via the dividers inside each
    .status-item. The whole row is <section> with aria-label="system
    status" so screen-reader users get the same one-line summary. */
+/* A ROW, not a card. An earlier pass gave this a perimeter border, a card
+   background, a radius and internal padding, which is a card by every visual
+   definition — the one thing the direction doc names as the thing to replace.
+   A single rule under the row delimits it; nothing boxes it. */
 .status-line {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
     gap: 0.4em 1.2em;
-    padding: 0.5em 0.6em;
+    padding: 0.35em 0 0.5em;
     margin: 0.25em 0 0.6em;
-    border: 1px solid var(--lyn-topnav-border);
-    border-left: 3px solid var(--pico-primary, currentColor);
-    border-radius: 4px;
-    background: var(--pico-card-background-color, transparent);
+    border-bottom: 1px solid var(--lyn-topnav-border);
     font-size: 0.92em;
     line-height: 1.5;
 }
@@ -684,6 +685,20 @@ details:has(> .probe-reveal) > summary::after {
        blow the row wide */
     font-size: 0.9em;
     word-break: break-all;
+}
+/* An unreachable Kismet returns a full urllib3 traceback string. Rendered raw
+   it is a ~110px block that dominates the status line and pushes the alerts
+   below the fold — i.e. it wrecks the density target precisely when something
+   IS wrong and the operator most needs to see the alerts. Measured at 1280x900:
+   the alerts block bottom sat at 969px with the traceback, 900px is the target.
+   Clamp it to one line; the full string stays available via title=. */
+   The character cap lives in index.html (a `truncate` filter), not here: CSS
+   clamping this inside the flex row fixed one viewport and broke the other,
+   both measured. All this rule does is let the already-short string wrap
+   rather than widen the page. */
+.status-line .status-error {
+    max-width: 100%;
+    word-break: break-word;
 }
 /* Meta-style item (overall alert/device count) is the right-most; de-emphasize
    so the live state items (Kismet / last poll / watchlist) read first. */
@@ -715,6 +730,19 @@ details:has(> .probe-reveal) > summary::after {
    <h3> in each provides the visual break, no card border needed. */
 .block { margin: 1em 0; }
 .block > h3 { margin: 0.2em 0 0.5em; font-size: 1em; }
+/* "The largest, loudest block on the page. This is the work." An earlier pass
+   gave .block-alerts exactly the same heading size and spacing as activity,
+   trend and recently-seen-devices, so the markup claimed a hierarchy the CSS
+   did not create. The unacked block now outranks its siblings visually. */
+.block-alerts > h3 {
+    font-size: 1.15em;
+    margin-top: 0.1em;
+}
+.block-alerts { margin-bottom: 1.6em; }
+/* Zero unacked alerts stays calm — "if there are zero, say so plainly and
+   calmly" — so the loud treatment applies to the heading, never to the
+   empty state. */
+.block-alerts .empty-state { font-size: 1em; }
 .block .empty-state { margin: 0.3em 0 0.6em; color: var(--pico-muted-color, inherit); }
 
 /* Severity-carries-the-row. Two cues, never colour alone (a11y floor):
@@ -740,15 +768,20 @@ details:has(> .probe-reveal) > summary::after {
 /* Alert outranks its own Acknowledge button. The button used to be the
    brightest thing on the row; demote it to a low-emphasis outline so
    the eye lands on the alert (the work), not the action (secondary).
-   Applies to the home page's inline ack form. min-height: 44px keeps
-   the tap-target floor on phone. */
+   Applies to the home page's inline ack form.
+   ⚠️ min-height is 44px because the responsive floor requires 44x44 tap
+   targets. An earlier pass set 32px under a comment claiming a 44px floor —
+   the comment was right and the value was wrong. Demoting a control's
+   emphasis must not shrink it below the tap-target minimum; those are
+   independent requirements. */
 .ack-button-inline[data-action="ack"] {
     width: auto;
     padding: 0.25em 0.7em;
     font-size: 0.85em;
     line-height: 1.4;
     box-sizing: border-box;
-    min-height: 32px;
+    min-height: 44px;
+    min-width: 44px;
     background: transparent;
     color: var(--pico-muted-color, inherit);
     border: 1px solid var(--lyn-topnav-border);
@@ -836,24 +869,19 @@ textarea:focus-visible,
     border-radius: 2px;
 }
 
-/* MAC link contrast (a11y floor: "the current MAC links are mid-blue
-   on near-black and are the worst offender"). The default Pico link
-   colour is a saturated mid-blue that drops below 4.5:1 on the dark
-   theme's near-black background. Force a brighter, higher-contrast
-   tone that retains hue (so it still reads as a link) and bolds it
-   so the link stands apart from surrounding code. */
-a[href^="/devices/"][href*=":"] {
-    color: #4ea8ff;
-    font-weight: 500;
-}
-[data-theme="dark"] a[href^="/devices/"][href*=":"] {
-    color: #7ec3ff;
-}
-@media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) a[href^="/devices/"][href*=":"] {
-        color: #7ec3ff;
-    }
-}
+/* MAC link contrast: deliberately NOT overridden. ui-direction.md calls
+   the MAC links "mid-blue on near-black and the worst offender", but
+   measured against this build's actual colours that is false — they
+   inherit Pico's --pico-primary, which passes AA in both themes:
+
+     light  #0172ad on #fff              5.23:1  PASS
+     dark   #01aaff on rgb(19,22.5,30.5) 7.05:1  PASS
+
+   An earlier pass "fixed" this by forcing #4ea8ff for all themes with a
+   #7ec3ff dark override. That lifted dark mode to 9.58:1 and dropped
+   LIGHT mode to 2.51:1 — a real AA failure introduced in the name of
+   accessibility, on the strength of an unverified premise. Reverted.
+   If this is ever revisited, measure both themes before changing it. */
 
 /* Density target (UI-DIRECTION.md §"Density"). Cut the air out of the
    dashboard without sacrificing legibility. Pico's defaults add 1rem
@@ -889,11 +917,24 @@ main > h2 { margin: 0.4em 0 0.6em; font-size: 1.4em; }
     .topnav { gap: 0.3em; font-size: 0.92em; flex-wrap: wrap; }
     .topnav a + a { padding-left: 0.4em; }
 }
-/* Hard guarantee: no element gets to push the page wider than the
-   viewport. table-scroll, code, long URLs, all clipped/scrollable
-   rather than inflating the body. */
-body { overflow-x: hidden; }
+/* No page-level horizontal scroll — by letting content fit, not by hiding
+   the overflow.
+   ⛔ Do NOT add `body { overflow-x: hidden }` here. An earlier pass did,
+   calling it a "hard guarantee". It is the opposite: it CLIPS anything that
+   overflows, so content becomes unreachable rather than reachable-by-scroll,
+   and it makes "no horizontal page scroll" trivially true whether or not
+   the layout actually fits — defeating the only check that would catch it.
+   It also silently breaks position:sticky on descendants.
+   The real guarantees are below: flex/grid children may shrink, and long
+   unbreakable tokens wrap. Tables scroll locally via .table-scroll, which
+   already declares width:100% + overflow-x:auto at the top of this file. */
 main.container-fluid { min-width: 0; }
-/* Re-enable horizontal scroll on the *table* wrapper (we just hid the
-   body-level scroll above; this is a localised scroll inside a card). */
-.table-scroll { overflow-x: auto; }
+/* A flex item's default min-width:auto refuses to shrink below its content,
+   which is what actually pushes a page wider than its viewport. */
+.status-line .status-item,
+.topnav > * { min-width: 0; }
+/* Long unbreakable tokens — MACs, Kismet version strings, error text, URLs —
+   wrap instead of inflating their container. */
+.status-line .status-item,
+.tile-label,
+.empty-state { overflow-wrap: break-word; }
