@@ -72,7 +72,7 @@
            {'label': 'Devices', 'key': 'device_count'},
            {'label': 'Network & devices that probed it', 'key': 'network'},
          ] %}
-      {% call data_table(probes_ssid_columns, '/probes', '', '', '', table_id='probes-ssid', resize=true) %}
+      {% call data_table(probes_ssid_columns, '/probes', '', '', '', table_id='probes-ssid', resize=true, aria_label='networks probed for by devices matching the current filter, with the devices that probed for each network') %}
             {% for g in ssid_groups %}
               <tr>
                 <td>{{ g.device_count }}</td>
@@ -111,7 +111,7 @@
            {'label': 'Last seen', 'key': 'last_seen'},
            {'label': 'Networks probed', 'key': 'networks'},
          ] %}
-      {% call data_table(probes_device_columns, '/probes', '', '', '', table_id='probes-device', resize=true) %}
+      {% call data_table(probes_device_columns, '/probes', '', '', '', table_id='probes-device', resize=true, aria_label='devices with probe history matching the current filter, grouped by device') %}
             {% for d in device_rows %}
               {% set ssids = d.probe_ssids | probe_ssids_list %}
               <tr>

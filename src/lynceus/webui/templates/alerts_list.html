@@ -151,19 +151,19 @@
     </form>
 
     <div class="table-scroll">
-        <table>
+        <table aria-label="alerts matching the current filters">
           <thead>
             <tr>
-              <th><input type="checkbox" id="select-all-noop" disabled title="select rows individually"></th>
-              <th>Timestamp</th>
-              <th>Severity</th>
-              <th>Rule</th>
+              <th scope="col"><input type="checkbox" id="select-all-noop" disabled aria-label="select rows individually" title="select rows individually"></th>
+              <th scope="col">Timestamp</th>
+              <th scope="col">Severity</th>
+              <th scope="col">Rule</th>
               <th>Device</th>
-              <th>MAC</th>
+              <th scope="col">MAC</th>
               <th>Category</th>
-              <th>Message</th>
-              <th>Status</th>
-              <th class="alert-action-cell">action</th>
+              <th scope="col">Message</th>
+              <th scope="col">Status</th>
+              <th scope="col" class="alert-action-cell">action</th>
             </tr>
           </thead>
           <tbody>

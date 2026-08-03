@@ -109,7 +109,7 @@
              {'label': 'expires', 'key': 'expires'},
              {'label': 'added', 'key': 'added'},
            ] %}
-        {% call data_table(allowlist_columns, '/allowlist', '', '', '', table_id='allowlist', resize=true, hide=true) %}
+        {% call data_table(allowlist_columns, '/allowlist', '', '', '', table_id='allowlist', resize=true, hide=true, aria_label='allowlist entries matching the current filters') %}
               {% for e in entries %}
                 <tr>
                   <td>

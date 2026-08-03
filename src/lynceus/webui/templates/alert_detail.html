@@ -209,9 +209,9 @@
     <header><strong>action history</strong></header>
     {% if actions %}
       <div class="table-scroll">
-        <table>
+        <table aria-label="action history for this alert">
           <thead>
-            <tr><th>Timestamp</th><th>action</th><th>actor</th><th>note</th></tr>
+            <tr><th scope="col">Timestamp</th><th scope="col">action</th><th scope="col">actor</th><th scope="col">note</th></tr>
           </thead>
           <tbody>
             {% for act in actions %}

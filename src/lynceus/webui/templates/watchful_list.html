@@ -72,7 +72,7 @@
          {'label': 'source', 'key': 'source'},
          {'label': 'actions', 'key': 'actions'},
        ] %}
-    {% call data_table(watchful_columns, '/watchful', '', '', '', table_id='watchful', resize=true, hide=true) %}
+    {% call data_table(watchful_columns, '/watchful', '', '', '', table_id='watchful', resize=true, hide=true, aria_label='watchful entries matching the current filters') %}
           {% for row in decorated %}
             {% set e = row.entry %}
             {% set state_label = row.state_label %}
@@ -88,10 +88,10 @@
                   <span class="badge-watchful-tracking">tracking</span>
                 {% endif %}
                 {% if e.flagged_for_investigation %}
-                  <span class="badge-watchful-flagged" title="flagged for investigation">&#x1F50D;</span>
+                  <span class="badge-watchful-flagged" title="flagged for investigation" aria-label="flagged for investigation">&#x1F50D;</span>
                 {% endif %}
                 {% if e.confirmed_safe %}
-                  <span class="badge-watchful-safe" title="confirmed not suspicious">&check;</span>
+                  <span class="badge-watchful-safe" title="confirmed not suspicious" aria-label="confirmed not suspicious">&check;</span>
                 {% endif %}
                 {% if e.reset_count > 0 %}
                   <small class="dim" title="operator-driven escalation resets">(reset &times;{{ e.reset_count }})</small>
