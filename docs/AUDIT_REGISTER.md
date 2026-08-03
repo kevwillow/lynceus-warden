@@ -256,6 +256,32 @@ Fixed by tolerating attributes and stripping inner markup, and — the part that
 asserting the extractor found something. A diagnostic that cannot fail is not a diagnostic. It now
 reports 8 headers on the home page and 13 on `/devices`.
 
+### ⚠️ Recurrence — a third blinded extractor, found by finally running the marker
+
+`pytest -m diagnostic` had not been run at any point during the session that wrote the two fixes
+above. Run at `3bdafba` it came back **46 passed, 1 failed** against a baseline of 47.
+
+`tests/test_diag_home_ack_flow.py` extracted the home page's alert card with
+`<article>\s*<header><strong>recent unacknowledged alerts</strong>`, and the dashboard restructure
+moved that card to `<section class="block block-alerts">` with an `<h3>` heading. Nothing about the
+ack control the diagnostic exists to observe changed — only its container. The extractor returned
+the string `"(block not found)"`, and the run failed several assertions later on
+`assert "hx-post" in block`, which reads as an htmx regression and is not one.
+
+Two things this makes concrete, both already written down and neither obeyed:
+
+1. **`.claude/gates.md` says a marker that excludes tests from the default run excludes them from
+   every gate that matters.** `addopts` carries `-m 'not diagnostic'`, so 47 tests sat outside every
+   gate for the whole session — including the one the same file records v0.9.5 as having shipped red.
+2. **Anchoring on container markup is what keeps failing.** The repair anchors on the operator-facing
+   heading text at any level, walks out to whichever `<section>`/`<article>` encloses it, and raises
+   at the point of extraction instead of returning a sentinel that fails somewhere less informative.
+
+Proven by four A/B/A mutations: removing the card's `hx-post` and renaming its heading each flip the
+test pass → fail → pass; moving the container back to `<article>` (opener and closer together) and
+demoting the heading to `<h2>` each leave it passing. Catching the defect and permitting the
+variation are separate claims and both were measured.
+
 ⭐ **This is the cross-cutting lesson again, in a new place.** The register already records "the test
 suite is the accomplice" for mocked boundaries. This is the same failure with no mock in sight: a
 test that greps rendered HTML goes blind the moment the markup improves, and reports success.
