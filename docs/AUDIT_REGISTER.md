@@ -4,7 +4,7 @@ Findings from the gap audit: **what a surface claims** vs **what the code does**
 the control plane working while the payload never lands — the handler returns 200, the row is
 written, the UI turns green, and the thing that was supposed to change never changes.
 
-**Taken at**: `3704737`, 2026-08-02; waves 3–4 added at `4f62b2b`. **All ~16 surfaces covered.**
+**Taken at**: `3704737`, 2026-08-02; waves 3–4 added at `5a64d8b`. **All ~16 surfaces covered.**
 
 **Suite baseline at `3704737`, repo root**: `3060 passed, 1 failed, 1 skipped, 47 deselected` in
 15m46s. The one failure was the Argus import drift, **since fixed** — at `962dab6` the suite is
@@ -209,7 +209,7 @@ system-scope installs are supported, which is not an auditor's call.
 
 ### ⚠️ Correction — the first fix caught one of the two sites
 
-Recorded after the full suite failed at `d112a53`.
+Recorded after the full suite failed at `a2d35db`.
 
 The remediation interpolated `system.db_path` at `settings.html:219` and stopped there. The data
 card prints its "To add data" line from **two** branches, and the second — now `settings.html:229`,
@@ -259,7 +259,7 @@ reports 8 headers on the home page and 13 on `/devices`.
 ### ⚠️ Recurrence — a third blinded extractor, found by finally running the marker
 
 `pytest -m diagnostic` had not been run at any point during the session that wrote the two fixes
-above. Run at `3bdafba` it came back **46 passed, 1 failed** against a baseline of 47.
+above. Run at `e1ceadc` it came back **46 passed, 1 failed** against a baseline of 47.
 
 `tests/test_diag_home_ack_flow.py` extracted the home page's alert card with
 `<article>\s*<header><strong>recent unacknowledged alerts</strong>`, and the dashboard restructure
