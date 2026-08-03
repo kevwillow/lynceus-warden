@@ -51,7 +51,22 @@
   </nav>
 
   {% if not probe_capture_enabled %}
-    <p><small class="dim">probe-SSID capture is disabled, so this view is empty; enabling it has a privacy tradeoff.</small></p>
+    {# ⛔ Do NOT collapse these branches back into one unconditional "this view
+       is empty" line. Capture being OFF does not empty the view: turning the
+       setting off stops NEW probe values being written (poller.py:229-237) but
+       nothing purges the existing devices.probe_ssids column. So the old
+       single-branch notice asserted emptiness on a page that was, at that
+       moment, rendering retained MACs and retained SSIDs — telling the
+       operator their probe history was gone while displaying it. #}
+    {% if total_count %}
+      <p><small class="dim">
+        probe-SSID capture is disabled, so nothing new is being recorded &mdash;
+        but the history below was captured while it was on and is still stored.
+        Re-enabling capture has a privacy tradeoff.
+      </small></p>
+    {% else %}
+      <p><small class="dim">probe-SSID capture is disabled, so this view is empty; enabling it has a privacy tradeoff.</small></p>
+    {% endif %}
   {% endif %}
 
   <p><small>{% if group == 'ssid' %}{{ total_count }} network(s){% else %}{{ total_count }} device(s){% endif %} total &middot; page {{ page }} of {{ total_pages }}</small></p>

@@ -210,8 +210,13 @@
         </small></p>
       {% else %}
         <p><small>
+          {# --db is REQUIRED on lynceus-seed-watchlist (cli/seed_watchlist.py
+             declares it required=True), so the form previously printed here
+             exited 2 before doing anything. It is spelled out with the real
+             path so the line is copy-pasteable. lynceus-import-argus genuinely
+             defaults --db from the install scope, so it does not need one. #}
           To add data, run <code>lynceus-import-argus --input &lt;path&gt;</code> or
-          <code>lynceus-seed-watchlist --yaml &lt;path&gt;</code>.
+          <code>lynceus-seed-watchlist --db {{ system.db_path }} --yaml &lt;path&gt;</code>.
         </small></p>
       {% endif %}
     {% else %}
