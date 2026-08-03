@@ -45,7 +45,7 @@
                           hx-headers='{"X-Lyn-Alerts-Row": "1"}'>
                       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
                       <input type="text" name="note" maxlength="80" placeholder="note (optional)" aria-label="note (optional)" class="ack-row-note">
-                      <button type="submit" class="ack-button-inline">unack</button>
+                      <button type="submit" class="ack-button-inline" data-action="unack">unack</button>
                     </form>
                   {% else %}
                     <form method="post" action="/alerts/{{ a.id }}/ack" class="inline-form"
@@ -55,7 +55,7 @@
                           hx-headers='{"X-Lyn-Alerts-Row": "1"}'>
                       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
                       <input type="text" name="note" maxlength="80" placeholder="note (optional)" aria-label="note (optional)" class="ack-row-note">
-                      <button type="submit" class="ack-button-inline">Acknowledge</button>
+                      <button type="submit" class="ack-button-inline" data-action="ack">Acknowledge</button>
                     </form>
                   {% endif %}
                   {% if a.mac %}

@@ -1108,6 +1108,68 @@ def test_alerts_per_day_validates_range(db):
         db.alerts_per_day(days=366, now_ts=1000000)
 
 
+def test_alerts_per_day_by_severity_splits_and_totals(db):
+    now_ts = 1777809600
+    two_days_ago = now_ts - 2 * 86400
+    db.add_alert(ts=now_ts, rule_name="r", mac=None, message="x", severity="high")
+    db.add_alert(ts=now_ts, rule_name="r", mac=None, message="x", severity="low")
+    db.add_alert(ts=now_ts, rule_name="r", mac=None, message="x", severity="low")
+    db.add_alert(ts=two_days_ago, rule_name="r", mac=None, message="x", severity="med")
+
+    rows = db.alerts_per_day_by_severity(days=5, now_ts=now_ts)
+    assert len(rows) == 5
+    by_date = {r["date"]: r for r in rows}
+
+    today = rows[-1]
+    assert (today["low"], today["med"], today["high"]) == (2, 0, 1)
+    assert today["count"] == 3
+
+    older = [r for r in rows if r["med"] == 1]
+    assert len(older) == 1
+    assert older[0]["count"] == 1
+
+    # Every day in the range is present, zeros included, so the caller can
+    # render a fixed-width axis without checking for gaps.
+    assert len(by_date) == 5
+    assert sum(r["count"] for r in rows) == 4
+
+    # The split must reconcile with the total on every single day, or the
+    # chart silently disagrees with the alert list it sits above.
+    for r in rows:
+        assert r["low"] + r["med"] + r["high"] <= r["count"]
+
+    # And it must agree with the count-only query it mirrors.
+    plain = {r["date"]: r["count"] for r in db.alerts_per_day(days=5, now_ts=now_ts)}
+    assert {r["date"]: r["count"] for r in rows} == plain
+
+
+def test_alerts_severity_check_constraint_is_what_makes_the_split_exhaustive(db):
+    """The stacked chart's totals reconcile because the SCHEMA forbids a
+    fourth severity, not because the query is careful.
+
+    `alerts.severity` carries CHECK(severity IN ('low','med','high'))
+    (001_initial.sql:30). Pinning that here means the day this constraint is
+    relaxed, this test fails and points at the chart that silently starts
+    under-reporting rather than the migration that did it.
+    """
+    now_ts = 1777809600
+    with pytest.raises(sqlite3.IntegrityError):
+        db._conn.execute(
+            "INSERT INTO alerts(ts, rule_name, mac, message, severity, acknowledged) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (now_ts, "r", None, "x", "critical"),
+        )
+
+
+def test_alerts_per_day_by_severity_validates_range(db):
+    with pytest.raises(ValueError):
+        db.alerts_per_day_by_severity(days=0, now_ts=1000000)
+    with pytest.raises(ValueError):
+        db.alerts_per_day_by_severity(days=366, now_ts=1000000)
+    with pytest.raises(ValueError):
+        db.alerts_per_day_by_severity(days=30, now_ts=True)
+
+
 def test_list_alerts_with_since_until(db):
     db.add_alert(ts=100, rule_name="r", mac=None, message="m1", severity="low")
     db.add_alert(ts=200, rule_name="r", mac=None, message="m2", severity="low")

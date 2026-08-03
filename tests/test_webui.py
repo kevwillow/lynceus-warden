@@ -1692,27 +1692,64 @@ def test_index_renders_severity_grid_with_three_windows(tmp_path):
 
 
 @pytest.mark.webui
-def test_index_renders_sparkline_with_30_bars(tmp_path):
+def test_index_renders_trend_chart_with_30_columns(tmp_path):
+    """One column per day, and an axis that says what the heights mean.
+
+    Replaces the sparkline assertions. Same contract — 30 days, one bar
+    each — plus the part the sparkline could not satisfy: the bars are
+    scaled to the busiest day, so without a stated maximum a tall bar is
+    unreadable. The maximum is asserted here because it is the thing that
+    turns a shape into a number.
+    """
     app, db = _make_app(tmp_path)
     try:
+        import time as _t
+
+        now = int(_t.time())
+        db.add_alert(ts=now, rule_name="r", mac=None, message="x", severity="high")
+        db.add_alert(ts=now, rule_name="r", mac=None, message="x", severity="low")
         with TestClient(app) as client:
             r = client.get("/")
         assert r.status_code == 200
-        assert 'class="sparkline"' in r.text
-        assert r.text.count("sparkline-bar") == 30
+        assert 'class="alerts-chart"' in r.text
+        assert r.text.count("alerts-chart-col") == 30
+        # Severity is carried by the stack, not by one flat colour.
+        # ⚠️ Match the SEGMENT class, not the bare "seg-high": the legend
+        # carries `chart-swatch seg-high` too, so a bare substring check
+        # passes with every coloured segment deleted from the bars. Proven —
+        # that mutation survived this assertion until it was tightened.
+        assert 'class="alerts-chart-seg seg-high"' in r.text
+        assert 'class="alerts-chart-seg seg-low"' in r.text
+        # The y-axis states the real maximum, so the scaling is legible.
+        # ⚠️ Assert the axis CONTAINS the number, not merely that the element
+        # exists — "busiest day 2" comes from the figure's aria-label, so
+        # emptying the axis labels passed both of those checks. Proven: that
+        # mutation survived until this read the axis contents.
+        yaxis = r.text.split('class="alerts-chart-yaxis"')[1].split("</div>")[0]
+        assert ">2<" in yaxis, f"y-axis does not state the maximum: {yaxis!r}"
+        assert "busiest day 2" in r.text
     finally:
         db.close()
 
 
 @pytest.mark.webui
-def test_index_sparkline_handles_zero_max_without_div_by_zero(tmp_path):
+def test_index_trend_chart_handles_zero_alerts_without_div_by_zero(tmp_path):
+    """No alerts at all must not divide by zero.
+
+    Two divisions in the template are by a denominator that is zero on an
+    empty install: max_count for the bar height, and this day's total for
+    each severity segment. Both are guarded; this pins that they stay so,
+    because the empty database is the state every new install starts in.
+    """
     app, db = _make_app(tmp_path)
     try:
         with TestClient(app) as client:
             r = client.get("/")
         assert r.status_code == 200
-        # Page renders successfully even with no alerts (max_count=0).
-        assert "sparkline-bar" in r.text
+        assert r.text.count("alerts-chart-col") == 30
+        assert "busiest day 0" in r.text
+        # No alerts means no coloured segments at all, not zero-height ones.
+        assert "seg-high" not in r.text.split('class="alerts-chart-legend"')[0]
     finally:
         db.close()
 
@@ -3336,7 +3373,10 @@ def test_index_renders_alerts_per_day_section(tmp_path):
             r = client.get("/")
         assert r.status_code == 200
         assert "alerts per day" in r.text
-        assert 'class="sparkline"' in r.text
+        # Was 'class="sparkline"'. The section is still the 30-day trend; the
+        # flat single-colour sparkline it used to hold is now a stacked,
+        # axis-labelled chart, and the class moved with it.
+        assert 'class="alerts-chart"' in r.text
     finally:
         db.close()
 
@@ -3954,9 +3994,16 @@ def test_table_scroll_css_class_defined():
         / "lynceus.css"
     )
     content = css_path.read_text(encoding="utf-8")
-    idx = content.find(".table-scroll")
+    # ⚠️ Anchor on the RULE, not on the first occurrence of the class name.
+    # `.find(".table-scroll")` matches any longer selector sharing the prefix
+    # (".table-scroll th.alert-action-cell") and any mention inside a comment,
+    # so it silently starts reading 500 characters of the wrong rule. It did
+    # exactly that the moment a second .table-scroll-prefixed rule was added
+    # earlier in the file.
+    idx = content.find("\n.table-scroll {")
     assert idx != -1, "lynceus.css is missing the .table-scroll rule"
-    assert "overflow-x: auto" in content[idx : idx + 500]
+    block = content[idx : content.find("}", idx)]
+    assert "overflow-x: auto" in block
 
 
 @pytest.mark.webui
@@ -8535,3 +8582,156 @@ def test_agpl_source_offer_renders_on_every_html_route(tmp_path):
         )
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Home navigation tiles + /alerts action column geometry.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_home_nav_tiles_link_every_section_with_counts(tmp_path):
+    """Tiles are wayfinding that answers "is anything wrong there?".
+
+    The count belongs INSIDE the link text, not beside it: a tile whose
+    accessible name is just "alerts" tells a screen-reader user nothing the
+    topnav did not already say.
+    """
+    app, db = _make_app(tmp_path)
+    try:
+        db.add_alert(ts=100, rule_name="r", mac=None, message="x", severity="high")
+        db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
+        with TestClient(app) as client:
+            r = client.get("/")
+        assert r.status_code == 200
+        tiles = r.text.split('class="nav-tiles"')[1].split("</nav>")[0]
+        for href in ("/alerts", "/devices", "/watchful", "/probes", "/watchlist", "/rules"):
+            assert f'href="{href}"' in tiles, f"no tile links to {href}"
+        # The counts are rendered, not just the labels.
+        assert "nav-tile-value" in tiles
+        assert tiles.count("nav-tile-value") == 6
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_home_rules_tile_distinguishes_unset_from_unreadable(tmp_path):
+    """Three states, and collapsing any pair of them misleads.
+
+    "No ruleset configured" is normal on a fresh install and must not wear
+    the alarming treatment that "a ruleset is configured and will not load"
+    earns — that one means the operator believes rules are running when none
+    are. Rendering unreadable as 0 would hide it entirely.
+    """
+    # (1) unset — no rules_path at all.
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            tiles = client.get("/").text.split('class="nav-tiles"')[1].split("</nav>")[0]
+        assert "no ruleset configured" in tiles
+        assert "nav-tile-alert" not in tiles.split("/rules")[1]
+    finally:
+        db.close()
+
+    # (2) unreadable — a path is set and it does not parse.
+    bad = tmp_path / "broken-rules.yaml"
+    bad.write_text("this: is: not: valid: yaml: [")
+    config = Config(db_path=str(tmp_path / "ui2.db"), rules_path=str(bad))
+    db2 = Database(config.db_path)
+    app2 = create_app(config, db2)
+    try:
+        with TestClient(app2) as client:
+            r = client.get("/")
+        assert r.status_code == 200, "a broken ruleset must not take the home page down"
+        tiles = r.text.split('class="nav-tiles"')[1].split("</nav>")[0]
+        assert "ruleset will not load" in tiles
+        assert "nav-tile-alert" in tiles
+    finally:
+        db2.close()
+
+
+@pytest.mark.webui
+def test_alerts_action_buttons_are_one_fixed_size_in_every_state(tmp_path):
+    """The button must not resize when it is clicked.
+
+    Acknowledging a row swaps the label to "unack"; with content-driven
+    widths that shrank the control under the cursor (measured: Acknowledge
+    124px, Watch 68px, both 30px tall). State is now carried by data-action,
+    which selects a COLOUR, while the size rule is shared and fixed.
+
+    The 44px floor is the project's own tap-target requirement, already
+    applied to the home ack button and never to these.
+    """
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
+        aid = db.add_alert(
+            ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:ff", message="x", severity="low"
+        )
+        with TestClient(app) as client:
+            unacked = client.get("/alerts").text
+            css = client.get("/static/lynceus.css").text
+            db.acknowledge_alert(aid, actor="test", ts=200)
+            acked = client.get("/alerts").text
+
+        # Both states use the SAME sizing class; only data-action differs.
+        assert 'class="ack-button-inline" data-action="ack"' in unacked
+        assert 'class="ack-button-inline" data-action="unack"' in acked
+        assert 'class="watch-button-inline"' in unacked
+
+        # One rule sizes all three, and it fixes both axes.
+        rule = css.split(".alert-action-controls .ack-button-inline,")[1].split("}")[0]
+        assert ".watch-button-inline" in rule
+        assert "min-width" in rule
+        assert "min-height: 44px" in rule
+        # width:auto is what stops Pico stretching each button to its own form.
+        assert "width: auto" in rule
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_action_column_is_pinned_on_both_alert_tables(tmp_path):
+    """The buttons are the point of the row; they must not sit behind a
+    horizontal scroll nobody performs.
+
+    Both alert tables are wider than a 1400px viewport (measured: 2120px in a
+    1360px wrapper before the column budget, 1739px after), so the action
+    column is pinned to the right edge instead.
+    """
+    app, db = _make_app(tmp_path)
+    try:
+        db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
+        db.add_alert(ts=100, rule_name="r", mac="aa:bb:cc:dd:ee:ff", message="x", severity="low")
+        with TestClient(app) as client:
+            home = client.get("/").text
+            alerts = client.get("/alerts").text
+            css = client.get("/static/lynceus.css").text
+
+        # Both tables mark the column with the shared hook...
+        assert home.count("alert-action-cell") >= 2, "home table's action column unmarked"
+        assert alerts.count("alert-action-cell") >= 2, "/alerts action column unmarked"
+        # ...and the hook is what the sticky rule targets.
+        sticky = css.split(".table-scroll th.alert-action-cell,")[1].split("}")[0]
+        assert "position: sticky" in sticky
+        assert "right: 0" in sticky
+    finally:
+        db.close()
+
+
+def test_vendored_pico_defines_no_grid_so_we_must():
+    """/alerts marks its filter fieldset `class="grid"` and the vendored
+    classless Pico defines no such class, so nine controls stacked full-width
+    and pushed the first alert ~450px down the page.
+
+    This pins BOTH halves of that fact, because the fix is only correct while
+    both hold: Pico still does not define it, and we still do.
+    """
+    static = Path(__file__).resolve().parent.parent / "src" / "lynceus" / "webui" / "static"
+    pico = (static / "pico.min.css").read_text(encoding="utf-8")
+    ours = (static / "lynceus.css").read_text(encoding="utf-8")
+    assert ".grid{" not in pico, (
+        "the vendored Pico now defines .grid — check ours does not fight it"
+    )
+    assert "form fieldset.grid {" in ours
+    assert "grid-template-columns" in ours.split("form fieldset.grid {")[1].split("}")[0]
