@@ -155,12 +155,124 @@ persistence and the no-flash claim.
 ⚠️ Wave 1 refuted three of four CORE-BROKEN claims on verification, so a delegate reporting *clean*
 deserves the same scepticism as one reporting *broken*. Spot-check before relying on this section.
 
+## Wave 3 — the two unread reports, now verified
+
+`/settings` and the ntfy notifier had sat unread since wave 1. Both are now read and checked.
+
+**ntfy notifier: CLEAN.** No CORE-BROKEN finding, and nothing on inspection.
+
+**`/settings`: one confirmed, one refuted.** See Finding 4 below for the confirmed one.
+
+Refuted — *"reconfigure records intent but does not activate it."* The report argued that because the
+apply pipeline never restarts the daemon, the three cards pointing at `lynceus-setup --reconfigure`
+promise something untrue. The promise, verbatim, is *"To change, run `lynceus-setup
+--reconfigure`."* (`settings.html:49`, `:84`, `:172`) — it commits to how you change a setting and
+says nothing about when it takes effect, and running it genuinely does change the setting. It is also
+not *silently* wrong: `settings_view` builds its context from `app.state.config`
+(`webui/app.py:3824`), the same startup config the daemon holds, so page and daemon agree and the
+operator sees their change has not appeared. What remains is a guidance gap, not a broken feature —
+the BLE and severity cards say "restart" and these three do not.
+
+⚠️ That makes **four of five** CORE-BROKEN claims on this project refuted, every one for the same
+reason. The rate is now high enough that a CORE-BROKEN label should be read as "unverified lead".
+
+The watchlist report's second claim — provenance cross-links not universal, `webui/app.py:3766` and
+`watchlist_detail.html:97` — remains unverified and lower severity.
+
+---
+
+## 🔴 Finding 4 — `/settings` prints a seeder command that cannot run
+
+`/settings` tells the operator, verbatim:
+
+> To add data, run `lynceus-import-argus --input <path>` or `lynceus-seed-watchlist --yaml <path>`.
+
+(`settings.html:213-214`.) But `--db` is declared `required=True` (`cli/seed_watchlist.py:245`), so
+the second command exits before doing anything:
+
+```
+$ lynceus-seed-watchlist --yaml /tmp/nonexistent.yaml
+usage: lynceus-seed-watchlist [-h] --db DB [--threat-ouis] [--ble-uuids] [--yaml YAML]
+                              [--log-level {DEBUG,INFO,WARNING,ERROR}]
+lynceus-seed-watchlist: error: the following arguments are required: --db
+exit=2
+```
+
+**Visibly wrong, not silently** — the operator gets a usage error. Cheap to fix: print the `--db`.
+
+The sibling command is fine: `lynceus-import-argus --input <path>` clears argparse and fails only on
+a missing file, so `--db` genuinely defaults there. The report's wider claim that page commands
+should carry `--scope system` is a **NEEDS-DECISION**, not a defect — it depends on whether
+system-scope installs are supported, which is not an auditor's call.
+
+---
+
+## 🟡 Finding 5 — two diagnostics were silently observing nothing
+
+`_extract_th_td` matched `<table>` and `<th>` with no allowance for attributes
+(`tests/test_diag_dashboard_home_rich_info.py:87`, `:91`), and
+`tests/test_diag_dashboard_devices_query.py:178` matched `<th>([^<]+)</th>`. Measured before the fix:
+
+```
+'recently seen devices'   headers=[] rows=0
+'recent unacknowledged alerts'  headers=[] rows=0
+bare '<table>' present in RENDERED html: False
+```
+
+Both tests **passed** throughout. Two causes, and only one is this session's:
+
+- `/devices` has been unextractable **since v0.9.2**, when `_table_macro.html` began rendering
+  sortable headers as `<th aria-sort=…><a class="th-sort">Label</a></th>`. A plain-text cell body
+  cannot match that. Pre-existing, unrelated to accessibility work.
+- The home page joined it when the a11y pass added `aria-label` to every `<table>`.
+
+Fixed by tolerating attributes and stripping inner markup, and — the part that matters — by
+asserting the extractor found something. A diagnostic that cannot fail is not a diagnostic. It now
+reports 8 headers on the home page and 13 on `/devices`.
+
+⭐ **This is the cross-cutting lesson again, in a new place.** The register already records "the test
+suite is the accomplice" for mocked boundaries. This is the same failure with no mock in sight: a
+test that greps rendered HTML goes blind the moment the markup improves, and reports success.
+
+---
+
+## 🟡 Finding 6 — adding `scope` would have disarmed two regression guards
+
+`tests/test_webui.py` asserted `"<th>Probes</th>" not in recent_section` and `"<th>Last SSID</th>"
+not in recent_section`, each under a docstring saying the test "breaks deliberately" if that column
+is added. Both literals stop matching once the header carries an attribute — so satisfying the a11y
+floor's `scope` requirement would have left two guards permanently vacuous, and a future
+`<th scope="col">Probes</th>` would have landed unnoticed.
+
+Re-anchored to `">Probes</th>"` / `">Last SSID</th>"`, which is attribute-proof and strictly
+stronger. **Proven, not assumed:** both columns were planted *with* `scope="col"` present; both
+guards failed; both passed again on revert.
+
+Four more places pinned a bare `<th>` and were re-anchored or repaired at the same time:
+`test_ui_alert_metadata.py:871`, `test_webui.py:3533`, and the two extractors in Finding 5.
+
+---
+
+## 🟡 Finding 7 — two premises in `internal/audit-2026-08-02/ui-direction.md` are false
+
+The doc drove a full dashboard rebuild, so its errors propagated into the build.
+
+| Claim | Measured |
+|---|---|
+| "the current MAC links are mid-blue on near-black and are the worst offender" (`ui-direction.md:58`) | They inherit Pico's `--pico-primary` and pass AA in **both** themes: light `#0172ad` on `#fff` = **5.23:1**; dark `#01aaff` on `rgb(19,22.5,30.5)` = **7.05:1**. `.mac-cell` sets only `font-family` (`lynceus.css:105`). |
+| "a strict CSP applies and the tool ships offline" (`ui-direction.md:42`) | **No CSP header is sent.** Nothing in `src/lynceus/webui/`, `deploy/` or `systemd/` sets one; the served response carries none. The offline/no-CDN discipline is real and worth keeping — its stated justification is not. |
+
+The contrast claim did damage: acting on it, the build forced `#4ea8ff` for all themes with a
+`#7ec3ff` dark override, lifting dark to 9.58:1 and dropping **light to 2.51:1** — a genuine AA
+failure introduced in the name of accessibility. Reverted to Pico's defaults.
+
+⚠️ Note for anyone who later adds a CSP: `base.html:13-15` runs an **inline** `<script>` to set the
+theme before first paint. A strict CSP without a nonce or hash blocks it and reintroduces the
+light-mode flash the inline script exists to prevent.
+
 ## Not yet audited
 
-`/settings` and the ntfy notifier were swept but their reports are not yet verified. The watchlist
-report's second claim — that provenance cross-links are not universal, `webui/app.py:3766` and
-`watchlist_detail.html:97` — is unverified and lower severity. Untouched: devices and probes
-surfaces, the `lynceus-setup` wizard, and the Argus import path.
+Untouched: the devices and probes surfaces, the `lynceus-setup` wizard, and the Argus import path.
 
 ## Method note
 

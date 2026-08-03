@@ -80,15 +80,33 @@ def _extract_th_td(html: str, section_marker: str) -> tuple[list[str], list[list
     appears AFTER the given marker substring in `html`. Returns
     (headers, rows-of-cells). Used to slice 'recently seen devices'
     out of the home page (multiple tables on the page) and the
-    devices list out of /devices."""
+    devices list out of /devices.
+
+    ⚠️ The tag patterns MUST tolerate attributes. They were once ``<table>``
+    and ``<th>`` with no attribute allowance, and the accessibility pass that
+    added ``aria-label`` to every table and ``scope="col"`` to every header
+    silently reduced this helper to ``([], [])`` — the diagnostic kept passing
+    while observing nothing at all, which is the worst failure mode a
+    diagnostic has. ``_require`` below is what stops that recurring: an
+    extractor that finds nothing on a page that demonstrably has a table is
+    a stale-regex bug, not an empty page."""
     idx = html.find(section_marker)
     if idx < 0:
         return [], []
-    table_m = re.search(r"<table>(.*?)</table>", html[idx:], flags=re.DOTALL)
+    table_m = re.search(r"<table[^>]*>(.*?)</table>", html[idx:], flags=re.DOTALL)
     if not table_m:
         return [], []
     table = table_m.group(1)
-    headers = re.findall(r"<th>([^<]*)</th>", table)
+    # Header cells are not always plain text: _table_macro.html renders
+    # sortable columns as <th aria-sort=...><a class="th-sort">Label</a></th>.
+    # A "[^<]*" body therefore matched nothing on /devices and had been doing
+    # so silently since sortable headers landed in v0.9.2 — predating, and
+    # independent of, the accessibility work. Capture the cell's inner markup
+    # and strip tags so both plain and sortable headers yield their label.
+    headers = [
+        re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", cell)).strip()
+        for cell in re.findall(r"<th[^>]*>(.*?)</th>", table, flags=re.DOTALL)
+    ]
     rows: list[list[str]] = []
     tbody_m = re.search(r"<tbody>(.*?)</tbody>", table, flags=re.DOTALL)
     if tbody_m:
@@ -162,6 +180,14 @@ def test_diag_dashboard_home_rich_info(diag, tmp_path):
     diag.observed(f"GET / status: {home_resp.status_code}")
     headers, rows = _extract_th_td(home_resp.text, "recently seen devices")
     diag.observed(f"<th> headers under 'recently seen devices': {headers}")
+    # A diagnostic that observes nothing is indistinguishable from a healthy
+    # one, so fail loudly instead. This fired for real: aria-label on <table>
+    # made the extractor blind and the diag still reported success.
+    assert headers, (
+        "extractor found no <th> under 'recently seen devices' — the page does "
+        "render that table, so this is a stale regex in _extract_th_td, not an "
+        "empty page. Check the tag patterns still tolerate attributes."
+    )
     diag.observed(f"row count: {len(rows)}")
     for i, cells in enumerate(rows):
         diag.observed(f"  row[{i}] = {cells}")
@@ -210,6 +236,10 @@ def test_diag_dashboard_home_rich_info(diag, tmp_path):
     diag.observed(f"GET /devices status: {dev_resp.status_code}")
     dev_headers, dev_rows = _extract_th_td(dev_resp.text, "<h2>devices</h2>")
     diag.observed(f"<th> headers on /devices: {dev_headers}")
+    assert dev_headers, (
+        "extractor found no <th> on /devices — stale regex in _extract_th_td, "
+        "not an empty page. See the note in that helper's docstring."
+    )
     diag.observed(f"row count: {len(dev_rows)}")
     for i, cells in enumerate(dev_rows):
         diag.observed(f"  row[{i}] = {cells}")

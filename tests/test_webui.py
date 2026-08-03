@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -3530,7 +3531,7 @@ def test_alerts_list_has_device_column_with_vendor_fallback(tmp_path):
             r = client.get("/alerts")
         assert r.status_code == 200
         assert "TestVendor" in r.text
-        assert "<th>Device</th>" in r.text
+        assert ">Device</th>" in r.text  # attribute-proof: header carries scope="col"
     finally:
         db.close()
 
@@ -3601,7 +3602,10 @@ def test_devices_list_renders_probe_ssids_comma_joined(tmp_path):
         # ORDER BY, so it stays a plain (non-sort) header -- the label
         # follows the <th> open tag directly, with no <a>. Same intent:
         # the Probes column header is present.
-        assert '<th data-col-key="probes">Probes' in r.text
+        # Attribute-order-tolerant: the a11y floor added scope="col" ahead of
+        # data-col-key. ">Probes" still sits immediately after the open tag, so
+        # this keeps the original strength — a plain header, no <a> wrapper.
+        assert re.search(r'<th[^>]*data-col-key="probes"[^>]*>Probes', r.text)
         assert "HomeNet, OfficeWiFi" in r.text
     finally:
         db.close()
@@ -3752,7 +3756,9 @@ def test_devices_list_has_device_and_vendor_columns(tmp_path):
         # stays a PLAIN header (label directly after the keyed <th> open
         # tag, no sort <a>); Vendor IS sortable (oui_vendor), so it renders
         # the th-sort link. Same intent: Device plain, Vendor a sort link.
-        assert '<th data-col-key="device">Device' in r.text  # plain, no <a>
+        # plain, no <a>: ">Device" must follow the open tag directly.
+        # Attribute-order-tolerant so scope="col" does not break it.
+        assert re.search(r'<th[^>]*data-col-key="device"[^>]*>Device', r.text)
         assert ">Vendor</a>" in r.text  # Vendor is sortable (0.9.2)
     finally:
         db.close()
@@ -3845,11 +3851,14 @@ def test_devices_list_type_column_declares_nowrap(tmp_path):
         with TestClient(app) as client:
             r = client.get("/devices")
         assert r.status_code == 200
-        # Header still carries inline nowrap (now also a sort link). 0.9.2:
-        # the macro emits data-col-key as the first <th> attribute, then the
-        # nowrap style, then aria-sort. Type is the only nowrap column, so
-        # this open-tag substring uniquely identifies it.
-        assert '<th data-col-key="device_type" style="white-space: nowrap;" aria-sort=' in r.text, (
+        # Header still carries inline nowrap (now also a sort link). Matched by
+        # regex rather than a fixed attribute sequence: the order is arbitrary
+        # macro-internal detail, and pinning it meant the a11y floor's
+        # scope="col" broke this guard without weakening what it protects.
+        # Type is the only nowrap column, so data-col-key + the style is unique.
+        assert re.search(
+            r'<th[^>]*data-col-key="device_type"[^>]*style="white-space: nowrap;"', r.text
+        ), (
             "Type <th> must carry inline white-space: nowrap so the column "
             "is robust to overrides of the global .table-scroll rule"
         )
