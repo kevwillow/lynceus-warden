@@ -59,7 +59,31 @@ test defects that Windows could not structurally expose, fixed in `9b2636c`;
 A drop below 3508 (local) or 3048 (Linux clone) is a regression. A **rise** in
 skips is usually one too — but not always, and the exceptions are below.
 
-### Current number to beat — repo root, 2026-08-02, at `f345dbd`
+### ⛔ Cite SHAs that are on `main`, not the branch SHA you measured at
+
+Every PR here lands with `gh pr merge --rebase`, which **rewrites every commit
+SHA**. So a doc written on a branch that cites its own commits is dangling the
+moment it merges, and a reader who tries to check the measurement gets
+`unknown revision`. This has already happened to this file and to
+`docs/AUDIT_REGISTER.md`: nine citations across the two, of which six were
+repointed once the mapping was provable.
+
+Measure at the branch SHA, then **repoint the citation to the merged SHA before
+or immediately after the merge** — the merged commit has the same subject, and
+`git log origin/main --format='%h %s' | grep -F "<subject>"` finds it.
+
+🪤 **Check the tree, not just the subject, before repointing.** A rebase onto a
+main that has moved produces a commit with the same subject and a *different
+tree*, and silently re-pointing a measurement at a different tree is worse than
+leaving it dangling. Only substitute when
+`git rev-parse <old>^{tree}` equals `git rev-parse <new>^{tree}`.
+
+⚠️ Three citations below are deliberately left dangling for that reason:
+`9b2636c`, `eca081a` and `ef1f566` are pre-merge branch SHAs whose on-main
+counterparts (`989d41b`, `fd20111`, `3a10f56`) carry different trees. The
+numbers recorded against them were measured on the branch, not on what landed.
+
+### Current number to beat — repo root, 2026-08-02, at `44ccf02`
 
 `feat/ui-integration`, run from `/home/kev/lynceus-warden` with `.venv/bin` on
 `PATH`. **This is the number to compare against, not the `eca081a` one below**,
@@ -80,9 +104,9 @@ real BT adapter is present. Both figures were measured under a load average of
 ⚠️ **Both of the gates that had not been run when the branch was written came
 back red**, and neither was reachable from a targeted test selection:
 
-- `pytest -q` at `d112a53` → 1 failed. A `/settings` fix had been applied to one
+- `pytest -q` at `a2d35db` → 1 failed. A `/settings` fix had been applied to one
   of the two template branches that print the same command.
-- `pytest -m diagnostic` at `3bdafba` → 46 passed, 1 failed. The dashboard
+- `pytest -m diagnostic` at `e1ceadc` → 46 passed, 1 failed. The dashboard
   restructure blinded `test_diag_home_ack_flow`'s extractor.
 
 That is the second time the diagnostic marker has hidden a red test in this
