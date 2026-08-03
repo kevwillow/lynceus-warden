@@ -95,6 +95,7 @@ def test_record_advert_stores_label_not_bytes(bridge):
         rssi=-60,
         manufacturer_data={0x004C: _tlv(0x12, b"\x00")},
         service_uuids=(),
+        service_data=None,
     )
     entry = bridge._buffer["aa:bb:cc:dd:ee:ff"]
     assert entry.device_class == CLASS_FIND_MY
@@ -107,6 +108,7 @@ def test_record_advert_none_for_non_apple(bridge):
         rssi=-60,
         manufacturer_data={0x0075: b"\x01\x02"},
         service_uuids=(),
+        service_data=None,
     )
     assert bridge._buffer["aa:bb:cc:dd:ee:11"].device_class is None
 
@@ -119,6 +121,7 @@ def test_rebuffered_advert_updates_class(bridge):
             rssi=-60,
             manufacturer_data={0x004C: payload},
             service_uuids=(),
+            service_data=None,
         )
     assert bridge._buffer["aa:bb:cc:dd:ee:22"].device_class == CLASS_AIRPODS
 
@@ -129,6 +132,7 @@ def test_build_observation_carries_class(bridge):
         rssi=-60,
         manufacturer_data={0x004C: _tlv(0x07, b"\x01")},
         service_uuids=(),
+        service_data=None,
     )
     mac = "aa:bb:cc:dd:ee:33"
     obs = bridge._build_observation(mac, bridge._buffer[mac])
