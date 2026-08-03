@@ -116,8 +116,12 @@
     <script defer src="/static/lynceus.js"></script>
   </head>
   <body>
-    <main class="container-fluid">
-      <nav><strong>lynceus</strong> <small>v{{ version }}</small> &mdash; read-only dashboard</nav>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <main id="main-content" class="container-fluid" tabindex="-1">
+      <header class="site-header">
+        <span><strong>lynceus</strong> <small>v{{ version }}</small></span>
+        <span class="dim">&mdash; read-only dashboard</span>
+      </header>
       {% block content %}{% endblock %}
     </main>
   </body>
