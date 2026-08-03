@@ -8473,3 +8473,65 @@ def test_index_last_poll_card_source_allowlist_only_shows_one_label(
         assert "unrecognized device type" not in card
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# AGPL-3.0 §13 source offer.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_agpl_source_offer_renders_on_every_html_route(tmp_path):
+    """§13 obliges every network-reachable page to offer the source.
+
+    ⚠️ Routes are enumerated from the app, never listed here. A hardcoded list
+    stops covering a route the moment someone adds one, and it does so
+    silently — which is how this project has already lost three guards to
+    markup and route drift. The obligation attaches to whatever is actually
+    reachable, so the test has to ask the app what that is.
+
+    The assertion is anchored on the source URL and the licence identifier,
+    not on the footer's markup or CSS class, so restyling the footer does not
+    break it but deleting the offer does.
+    """
+    from lynceus.webui.app import SOURCE_URL
+
+    app, db = _make_app(tmp_path)
+    try:
+        paths = sorted(
+            {
+                r.path
+                for r in app.routes
+                if "GET" in getattr(r, "methods", set())
+                and "{" not in r.path
+                and not r.path.startswith("/static")
+                and r.path not in ("/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect")
+            }
+        )
+        checked = []
+        with TestClient(app) as client:
+            for path in paths:
+                resp = client.get(path)
+                if resp.status_code != 200:
+                    continue
+                if "text/html" not in resp.headers.get("content-type", ""):
+                    continue
+                checked.append(path)
+                assert SOURCE_URL in resp.text, (
+                    f"{path} renders no link to the corresponding source. "
+                    "AGPL-3.0 §13 requires one on every page a network user "
+                    "can reach."
+                )
+                assert "AGPL-3.0-or-later" in resp.text, (
+                    f"{path} does not name the licence it is offered under."
+                )
+
+        # A filter that excluded everything would make the loop above vacuous
+        # and green. Every non-partial template in this project extends
+        # base.html, so the real number is well into double figures.
+        assert len(checked) >= 8, (
+            f"only checked {len(checked)} HTML routes ({checked}) — the route "
+            "filter is excluding pages it should be covering."
+        )
+    finally:
+        db.close()

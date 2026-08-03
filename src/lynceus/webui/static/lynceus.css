@@ -658,6 +658,19 @@ details:has(> .probe-reveal) > summary::after {
     flex-wrap: wrap;
 }
 
+/* AGPL-3.0 §13 source offer. Quiet, but present on every page — it is a
+   licence obligation, not decoration, so it does not get display:none at any
+   breakpoint. flex-wrap keeps it from widening the page at 360px, which the
+   dashboard work measured as the narrow target. */
+.site-footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+    padding: 1.2em 0 0.6em;
+    margin-top: 1.5em;
+    border-top: 1px solid var(--pico-muted-border-color);
+}
+
 /* Status line (UI-DIRECTION.md §"Hierarchy" item 1). One row, not a card.
    flex-wrap lets the items drop to a second line on narrow viewports
    without forcing the page wider than the viewport. gap is set to 1em

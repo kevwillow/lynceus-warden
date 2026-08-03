@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Relicensed from MIT to AGPL-3.0-or-later, with a commercial licence
+  available.** The intent is unchanged from what the project has always been:
+  use it, run it, modify it, sell it. What the new licence adds is
+  reciprocity — everyone you pass it to gets the same freedoms and the same
+  source. AGPL rather than plain GPL because §13 extends that obligation to
+  people who only ever reach the software *over a network*, and a daemon whose
+  primary interface is a web UI is exactly the case GPL leaves open.
+
+  If you want to build Lynceus into something closed, that is what
+  [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) is for.
+
+  **This is not retroactive, and that matters.** Every release up to and
+  including 0.9.5 was published under MIT, and those rights are irrevocable for
+  those versions. Anyone who took the code under MIT keeps it. AGPL binds from
+  this commit forward. Dual licensing is only possible at all because the
+  repository has a single copyright holder; `.mailmap` is now tracked so that
+  `git log --format='%aN <%aE>' | sort -u` returns one line in a clone and not
+  just on the author's machine.
+
+  The dependency closure was scanned before committing to this: all 23 runtime
+  packages are MIT, BSD-3-Clause, Apache-2.0, MPL-2.0 or PSF-2.0. **No GPL-2.0-
+  only dependency exists**, which is the one licence that would have been
+  incompatible. The vendored Pico CSS keeps its own MIT licence.
+
+### Added
+
+- **Every web UI page now carries the AGPL §13 source offer** — version,
+  licence identifier, and a link to the corresponding source, in the footer.
+
+  It is rendered from Jinja environment globals rather than from each route's
+  context dictionary, and that is a deliberate choice rather than a
+  convenience: the site header's version number comes from per-route context,
+  so a handler that forgets the key renders an empty string. For a version
+  number that is cosmetic. For a licence obligation it is a compliance failure
+  that nothing would report. The guard enumerates routes from the app itself
+  instead of a hardcoded list — currently 10 HTML routes, all covered — because
+  a list stops covering a new route silently, which is a failure mode this
+  project has now hit three times.
+
+  ⚠️ If you modify Lynceus and let anyone else reach your instance, §13 makes
+  *your* modified source the thing that has to be offered. Point
+  `SOURCE_URL` in `webui/app.py` at wherever you publish it.
+
 ## [0.9.5] - 2026-08-02
 
 The BLE bridge shipped in 0.9.4 with a prompt asking whether you wanted it,
