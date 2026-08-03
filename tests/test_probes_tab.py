@@ -6,16 +6,36 @@ column: it rolls devices.probe_ssids up two ways. "device" grouping
 inverts to which devices probed each network (unnested with json_each).
 
 This is the most PII-sensitive surface in the app, so the hard rule is
-collapsed-by-default: in BOTH groupings the SSID strings live inside a
-closed native <details> (no `open`) -- the operator opts into exposure
-with the reveal control. These tests assert the collapse markup is
-present and never force-expanded, that the grouping toggle and search
-filter compose, that pagination preserves group+q URL-encoded, that the
-empty/disabled state renders, that SSIDs are XSS-escaped, and that the
-ssid grouping never fans out into an N+1.
+collapsed-by-default -- but what is collapsed differs per grouping, and
+this docstring used to get its own file's rule backwards.
 
-tests/ is gitignored; this file is local-only validation, never
-committed. Run with the pinned 3.11 venv.
+⛔ It is the device-to-network PAIRING that is always behind the reveal,
+not the SSID string itself:
+
+- device grouping: the SSID names are collapsed. The summary shows only
+  a count ("reveal 3 network(s)"). Asserted by
+  ``test_route_device_grouping_collapsed_by_default``, which requires
+  "HomeNet" to be inside <details> and NOT outside it.
+- ssid grouping: the network NAME is a visible row header, and the
+  DEVICE IDENTITIES are collapsed, because there the identifying
+  concentration is which devices wanted that network. Asserted by
+  ``test_route_ssid_grouping_name_visible_devices_collapsed``, which
+  requires "HomeNet" NOT to be inside <details>.
+
+The previous wording claimed "in BOTH groupings the SSID strings live
+inside a closed <details>", which the second of those tests directly
+contradicts, and README.md carried the same overstatement. An auditor
+read the README version and reported the ssid grouping as a broken
+privacy promise; the code and its tests were right and the prose was
+wrong. Fixed in both places -- do not reintroduce it.
+
+These tests also assert the collapse markup is never force-expanded,
+that the grouping toggle and search filter compose, that pagination
+preserves group+q URL-encoded, that the empty/disabled state renders,
+that SSIDs are XSS-escaped, and that the ssid grouping never fans out
+into an N+1.
+
+Run with the pinned 3.11 venv.
 """
 
 from __future__ import annotations
@@ -426,3 +446,47 @@ def test_route_ssid_grouping_no_n_plus_1(tmp_path):
         )
     finally:
         db.close()
+
+
+def test_disabled_notice_does_not_claim_empty_while_showing_retained_history(tmp_path):
+    """Capture OFF does not empty this view.
+
+    Turning probe capture off stops NEW values being written
+    (poller.py:229-237) but nothing purges the existing
+    ``devices.probe_ssids`` column. The notice used to be gated only on
+    ``not probe_capture_enabled``, never on row count, so the page asserted
+    "this view is empty" while rendering retained MACs and retained SSIDs --
+    telling the operator their probe history was gone while displaying it.
+    """
+    db_path = tmp_path / "probes.db"
+    with Database(str(db_path)) as db:
+        db.upsert_device("aa:aa:aa:aa:aa:aa", "wifi", "Acme", 0, NOW)
+        db.merge_device_probe_ssids("aa:aa:aa:aa:aa:aa", ["RetainedNet"])
+        # capture disabled, but history from when it was on remains
+        cfg = Config(db_path=str(db_path), capture=CaptureConfig(probe_ssids=False))
+        app = create_app(cfg, db)
+        with TestClient(app) as client:
+            r = client.get("/probes")
+    assert r.status_code == 200
+    html = r.text
+    assert "capture is disabled" in html, "the disabled notice must still appear"
+    # The retained row really is on the page...
+    assert "aa:aa:aa:aa:aa:aa" in html
+    assert "1 device(s) total" in html
+    # ...so the page must NOT also claim to be empty.
+    assert "this view is empty" not in html, (
+        "the page claims to be empty while rendering retained probe history"
+    )
+    assert "nothing new is being recorded" in html
+
+
+def test_disabled_notice_still_says_empty_when_there_is_no_history(tmp_path):
+    """The genuinely-empty case keeps its original, accurate wording."""
+    db_path = tmp_path / "probes-empty.db"
+    with Database(str(db_path)) as db:
+        cfg = Config(db_path=str(db_path), capture=CaptureConfig(probe_ssids=False))
+        app = create_app(cfg, db)
+        with TestClient(app) as client:
+            r = client.get("/probes")
+    assert r.status_code == 200
+    assert "this view is empty" in r.text

@@ -4,16 +4,18 @@ Findings from the gap audit: **what a surface claims** vs **what the code does**
 the control plane working while the payload never lands — the handler returns 200, the row is
 written, the UI turns green, and the thing that was supposed to change never changes.
 
-**Taken at**: `3704737`, 2026-08-02. Waves 1–2; 13 of ~16 surfaces covered.
+**Taken at**: `3704737`, 2026-08-02; waves 3–4 added at `4f62b2b`. **All ~16 surfaces covered.**
 
 **Suite baseline at `3704737`, repo root**: `3060 passed, 1 failed, 1 skipped, 47 deselected` in
 15m46s. The one failure was the Argus import drift, **since fixed** — at `962dab6` the suite is
 `3064 passed, 1 skipped, 0 failed`, green for the first time. Both halves of that drift were on
 Lynceus's side, not Argus's: see the commit for the nullable-confidence and accept-list reasoning.
 
-Every entry below was confirmed at its file:line by re-reading the code, not accepted from the
-auditor that reported it. **Three of the four reported CORE-BROKEN findings did not survive that
-check** — see *Refuted* below, and read it before re-reporting any of them.
+Every entry below was confirmed at its file:line by re-reading the code, and from wave 3 onward by
+reproducing it, not accepted from the auditor that reported it. **Six of the eleven reported
+CORE-BROKEN findings did not survive that check** — see *Refuted* and *Rejected* below, and read
+both before re-reporting any of them. The failure is always the same shape: a promise read more
+broadly than it was written.
 
 ---
 
@@ -270,9 +272,133 @@ failure introduced in the name of accessibility. Reverted to Pico's defaults.
 theme before first paint. A strict CSP without a nonce or hash blocks it and reintroduces the
 light-mode flash the inline script exists to prevent.
 
-## Not yet audited
+---
 
-Untouched: the devices and probes surfaces, the `lynceus-setup` wizard, and the Argus import path.
+## Wave 4 — the last four surfaces. The sweep is complete.
+
+Devices, probes, `lynceus-setup` and the Argus import path, all audited, all findings
+independently reproduced by me before being recorded. **Two real code bugs, four prose defects, two
+claims rejected.**
+
+### 🔴 Finding 8 — `lynceus-setup --web` silently overwrites an existing config
+
+Two promises say it must not:
+
+> "Overwrite an existing config file. Without this flag the wizard refuses." (`cli/setup.py:1525`)
+
+> "Every other flag (`--user`, `--system`, `--reconfigure`, `--skip-probes`, `--output`) works
+> identically." (`docs/DEPLOYMENT.md:191`)
+
+`main():1612` dispatches `--web` **before** `run_wizard()`, and both guards live inside
+`_run_wizard_body` — each had exactly one call site (`:877`, `:882`). `run_wizard_server` has no
+existence check, and `apply_config` calls `write_config(target_path, content)` unconditionally
+(`setup/core.py:1218`). `_run_web_wizard`'s own docstring claims it "resolves scope and target path
+the same way the CLI flow does", so this contradicted its stated intent.
+
+The terminal path, for contrast, is correct:
+
+```
+$ lynceus-setup --output $T/lynceus.yaml     # no --reconfigure
+Config already exists at /tmp/…/lynceus.yaml. Use --reconfigure to overwrite, or edit it manually.
+exit=2                                        # file byte-identical afterwards
+```
+
+**Silently wrong, and destructive**: the browser wizard served the whole flow, took every answer,
+then clobbered a hand-edited config. `--web --system` without sudo had the same root cause, failing
+at write time instead of refusing up front.
+
+**Fixed** — both preflights now run in `_run_web_wizard`, same helpers, same messages, same exit
+code, so the two flows cannot drift again. Guarded by
+`test_web_refuses_existing_config_without_reconfigure`, whose load-bearing assertion is that
+`run_wizard_server` is **never reached**. Proven by deleting the fix: that test fails, the other 14
+pass; restored, all 15 pass.
+
+### 🔴 Finding 9 — `/probes` claimed "this view is empty" while displaying retained history
+
+The notice at `probes_list.html:53` was gated only on `not probe_capture_enabled`, never on row
+count. Turning capture off stops new writes (`poller.py:229-237`) but nothing purges
+`devices.probe_ssids`. Measured:
+
+```
+capture enabled        : False
+'view is empty' claim  : True
+retained MAC on page   : True
+retained SSID on page  : True
+```
+
+So the page told the operator their probe history was gone **while rendering it** — the wrong
+direction for a privacy signal. **Fixed**: the notice now distinguishes "nothing new is being
+recorded, the history below is still stored" from the genuinely-empty case. Guarded both ways and
+proven by restoring the old single branch.
+
+### 🟡 Finding 10 — three operator-facing strings contradicted a locked decision
+
+`_device_actions.html:57`, `_alert_row.html:74` and visible page copy at `watchful_list.html:9` all
+promised a **low-priority** watchful alert. `poller._emit_watchful_escalation` writes
+`severity="high"` and sends `priority_override=4`, and its docstring records that as deliberate:
+*"The severity / priority decoupling is intentional per the scare-factor mitigation locked
+decision… It is NOT a default-mapping oversight."*
+
+So the behaviour is right and the copy was wrong, in three places — the auditor found one. **Fixed**
+to "high-severity", guarded by a negative assertion across all three files plus a companion test
+pinning the poller's actual severity, so the pair cannot drift apart silently.
+
+### 🟡 Finding 11 — README and a test docstring both overstated the `/probes` collapse rule
+
+README said `/probes` *"keeps every SSID collapsed behind a click"*. It does not, deliberately.
+Measured:
+
+```
+group=ssid    ssid_before_<details>=True    ← name visible by design
+group=device  ssid_before_<details>=False   ← name collapsed, summary is "reveal 2 network(s)"
+```
+
+The real model is that the **device-to-network pairing** is always behind the reveal, and each
+grouping exposes only one side. `probes_list.html:59-64` documents this, and
+`test_route_ssid_grouping_name_visible_devices_collapsed` **asserts** it (`"HomeNet" not in
+details`). `test_probes_tab.py`'s own module docstring claimed the opposite of its own test.
+
+⭐ **This is the most instructive finding of the sweep.** The auditor read the README, reported the
+ssid grouping as a broken privacy promise, and proposed moving the SSID inside `<details>` — which
+would have overridden a documented decision and left the network-grouped view a column of "reveal N
+devices" rows with no network names. **The prose was wrong, in two places, and the code was right.**
+Both corrected.
+
+### Rejected — do not re-report without new evidence
+
+| Reported as | Why it does not hold |
+|---|---|
+| **CONFIRMED-BROKEN**: `--min-confidence` accepts values outside 0–100 | The help reads "hard-skip rows with confidence < N (0-100)" — the parenthetical documents the confidence *scale*, not an input contract, and nothing promises rejection. `/settings:203-209` already carries dedicated copy for "the import filters … dropped every row". Worth hardening (see below); not a broken promise. |
+| **CONFIRMED-BROKEN**: the web landing page promises a bundled import although the default is Skip | `review.html:94-96` shows "Skip — no watchlist load (existing data preserved)" before the operator commits, and the apply dispatcher emits a skipped step. Landing copy is an overview of the pipeline, not a per-run guarantee. 🟡 wording at most. |
+
+⇒ **Six of eleven CORE-BROKEN claims across all four waves have now been refuted or downgraded**,
+every one from reading a promise more broadly than written. The label reads as a verdict when the
+evidence supports only a lead. **Rename it in the audit spec before wave 5.**
+
+### Verified working, with evidence — do not re-audit
+
+- **Probe capture defaults and gating.** `probe_ssids=False` at runtime; `kismet.py:599` gates
+  extraction; `poller.py:229-237` gates persistence; the evidence path redacts nested
+  `probed_ssid_map` values (`evidence.py:100-128`).
+- **Argus import numbers match the README exactly.** 41,508 rows → 23,441 imported, 17,952
+  `unknown_type`, 19 `peer_collision`, 92 `in_import_dup`, 4 `normalization_failed`.
+- **Importer idempotence**, by two real runs into one DB: `23441 0 0 0` then `0 0 23441 0`.
+- **Schema-version tolerance**: `_check_argus_schema_version('999', …)` warns and continues.
+- **Device list/detail projections and the silence/allowlist path**, including that the poller
+  reloads the UI allowlist before every tick and matches before alert evaluation.
+- **Finding 0 is closed.** The watchlist-MAC delegation now fires on the shipped ruleset:
+  `RULE_HITS=[('argus_mac', 'watchlist_mac', 'high', 'aa:bb:cc:dd:ee:ff')]`.
+
+## Still open
+
+- `--min-confidence` takes no range validation. Not a broken promise, but the unattended
+  `lynceus-refresh.timer` path makes it an operational trap: a typo'd threshold imports nothing and
+  still exits 0. Cheap to harden at parse time. **Kev's call — behaviour change, not a fix.**
+- Three cards (`settings.html:49`, `:84`, `:172`) say "To change, run `lynceus-setup --reconfigure`"
+  without the "then restart" that the BLE and severity cards state. Guidance gap, see Wave 3.
+- `sightings` is never pruned. Unchanged across four handoffs.
+- The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,
+  `watchlist_detail.html:97`) remains unverified and lower severity.
 
 ## Method note
 

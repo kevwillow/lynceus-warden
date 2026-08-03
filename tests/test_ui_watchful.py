@@ -1213,3 +1213,49 @@ def test_topnav_active_state_on_watchful_detail_page(tmp_path):
         assert 'href="/watchful" class="active"' in r.text
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Watchful escalation copy vs the escalation the code actually emits.
+#
+# poller._emit_watchful_escalation writes severity="high" and sends with
+# priority_override=4, and its docstring records that as a locked decision:
+# "It is NOT a default-mapping oversight." Three operator-facing strings said
+# "low-priority" instead, which is the opposite of what arrives — an operator
+# opted in expecting something quiet and got a high-severity alert plus an
+# elevated ntfy push. Guarding the wording, not the behaviour.
+# ---------------------------------------------------------------------------
+
+_WATCHFUL_COPY_FILES = (
+    "_device_actions.html",
+    "_alert_row.html",
+    "watchful_list.html",
+)
+
+
+def test_watchful_copy_does_not_promise_a_low_priority_alert():
+    from pathlib import Path
+
+    import lynceus.webui as _webui
+
+    templates = Path(_webui.__file__).parent / "templates"
+    for name in _WATCHFUL_COPY_FILES:
+        text = (templates / name).read_text(encoding="utf-8")
+        assert "low-priority" not in text, (
+            f"{name} promises a low-priority watchful alert, but "
+            "poller._emit_watchful_escalation deliberately emits severity='high' "
+            "with ntfy priority_override=4. Fix the copy, not the poller — the "
+            "severity/priority split is a locked decision, see that docstring."
+        )
+
+
+def test_watchful_escalation_really_is_high_severity():
+    """Pins the behaviour the copy above describes, so the two cannot drift
+    apart again without one of these two tests failing."""
+    import inspect
+
+    from lynceus import poller as _poller
+
+    src = inspect.getsource(_poller._emit_watchful_escalation)
+    assert 'severity="high"' in src
+    assert "priority_override=4" in src

@@ -231,8 +231,13 @@ These are design commitments, not current limitations:
   list is a partial history of where a person has been and switching this on
   captures it from everyone in range, not just from whoever you are worried
   about. `/settings` shows a recording warning whenever it is on. `/probes`
-  keeps every SSID collapsed behind a click, so the page does not put other
-  people's history on screen just because you opened it.
+  keeps the device-to-network *pairing* behind a click in both of its
+  groupings, so opening the page never puts that pairing on screen. Grouped by
+  device (the default) it shows only how many networks each device probed for
+  — "reveal 2 network(s)" — with the names inside the closed reveal. Grouped by
+  network it names the networks but keeps the devices that probed for each one
+  inside the reveal, because there the identifying concentration is *which*
+  devices wanted that network.
 - **Passive BLE bridge + Apple Continuity decoder** *(off by default)*.
   Kismet's classic Bluetooth path surfaces no advertisement payload, which
   left the BLE matchers with nothing to chew on. A passive `bleak` scan on its

@@ -33,6 +33,15 @@ def _patch_server(monkeypatch):
     # Defang the sudo refusal so tests work regardless of the test
     # host's euid; the dispatch under test happens AFTER the euid check.
     monkeypatch.setattr(cli_setup, "_euid", lambda: 1000)
+    # Defang both preflights. These tests are about DISPATCH — which kwargs
+    # reach run_wizard_server — and they invoke the default config path, so
+    # without this they would fail on any machine that actually has a
+    # ~/.config/lynceus/lynceus.yaml, and the scope check would additionally
+    # diverge by platform. The preflights' real behaviour on the --web path is
+    # pinned separately below, in the refuses/allows pair, which does NOT patch
+    # them.
+    monkeypatch.setattr(cli_setup, "preflight_existing", lambda *a, **k: None)
+    monkeypatch.setattr(cli_setup, "preflight_scope", lambda *a, **k: None)
     return captured
 
 
@@ -146,3 +155,79 @@ def test_port_and_bind_default_to_none_in_parser():
     assert args.web is False
     assert args.port is None
     assert args.bind is None
+
+
+# ---------------------------------------------------------------------------
+# The preflights on the --web path.
+#
+# main() dispatches --web before run_wizard(), and both preflight_existing and
+# preflight_scope live inside _run_wizard_body, which --web never enters. So
+# for one release the browser wizard would serve the whole flow and then
+# overwrite an existing config unconditionally, while --reconfigure's help says
+# "Without this flag the wizard refuses" and docs/DEPLOYMENT.md says every flag
+# "works identically" under --web.
+#
+# These two do NOT use _patch_server's preflight defanging: they patch only the
+# server, so the real preflight runs. The load-bearing assertion is that the
+# server is never reached — refusing after binding a port and collecting the
+# operator's answers would be no use.
+# ---------------------------------------------------------------------------
+
+
+def _patch_server_only(monkeypatch):
+    """Like _patch_server but leaves both preflights real."""
+    captured: dict = {}
+
+    def fake_run_wizard_server(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        "lynceus.setup.web.server.run_wizard_server",
+        fake_run_wizard_server,
+    )
+    monkeypatch.setattr(cli_setup, "_euid", lambda: 1000)
+    return captured
+
+
+def test_web_refuses_existing_config_without_reconfigure(monkeypatch, tmp_path, capsys):
+    captured = _patch_server_only(monkeypatch)
+    target = tmp_path / "lynceus.yaml"
+    original = "kismet:\n  url: http://hand-edited-do-not-clobber\n"
+    target.write_text(original, encoding="utf-8")
+
+    rc = cli_setup.main(["--web", "--output", str(target)])
+
+    assert rc == 2, "--web must refuse an existing config, as the CLI flow does"
+    assert not captured, (
+        "the wizard server must not start when the config exists: refusing only "
+        "after the operator has filled in the whole flow is not refusing"
+    )
+    err = capsys.readouterr().err
+    assert "already exists" in err
+    assert "--reconfigure" in err
+    assert target.read_text(encoding="utf-8") == original, "config was modified"
+
+
+def test_web_allows_existing_config_with_reconfigure(monkeypatch, tmp_path):
+    captured = _patch_server_only(monkeypatch)
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("kismet:\n  url: http://replace-me\n", encoding="utf-8")
+
+    rc = cli_setup.main(["--web", "--reconfigure", "--output", str(target)])
+
+    assert rc == 0
+    assert captured, "--reconfigure must let the wizard start"
+    assert captured["reconfigure"] is True
+    assert captured["target_path"] == target
+
+
+def test_web_starts_when_no_config_exists_yet(monkeypatch, tmp_path):
+    """The common first-run case must not be caught by the new gate."""
+    captured = _patch_server_only(monkeypatch)
+    target = tmp_path / "does-not-exist-yet" / "lynceus.yaml"
+
+    rc = cli_setup.main(["--web", "--output", str(target)])
+
+    assert rc == 0
+    assert captured["target_path"] == target

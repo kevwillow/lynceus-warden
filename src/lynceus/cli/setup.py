@@ -1631,6 +1631,32 @@ def _run_web_wizard(args: argparse.Namespace) -> int:
 
     scope = determine_scope(args)
     target_path = resolve_config_path(scope, args.output)
+
+    # ⛔ Both preflights are load-bearing, and both were missing.
+    #
+    # main() dispatches --web here BEFORE run_wizard(), so this function is the
+    # only place on the browser path where they can run: preflight_existing and
+    # preflight_scope live in _run_wizard_body, which --web never enters.
+    # Without them the wizard served the whole flow, collected every answer, and
+    # then apply_config called write_config() unconditionally (setup/core.py) —
+    # silently destroying a hand-edited config that the terminal wizard refuses
+    # to touch, while --reconfigure's own help promises "Without this flag the
+    # wizard refuses" and docs/DEPLOYMENT.md says every flag "works identically"
+    # under --web. The scope check was missing the same way, so --web --system
+    # without sudo filled in the entire wizard before failing at write time.
+    #
+    # Same helpers, same messages, same exit code as the terminal path, so the
+    # two flows cannot drift again.
+    err = preflight_existing(target_path, args.reconfigure)
+    if err:
+        print(err, file=sys.stderr)
+        return 2
+
+    err = preflight_scope(scope, target_path)
+    if err:
+        print(err, file=sys.stderr)
+        return 2
+
     host = args.bind if args.bind is not None else DEFAULT_WIZARD_BIND
     port = args.port if args.port is not None else DEFAULT_WIZARD_PORT
     return run_wizard_server(

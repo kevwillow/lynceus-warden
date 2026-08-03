@@ -54,7 +54,7 @@
       <form method="post" action="/devices/{{ mac }}/watch"
             hx-post="/devices/{{ mac }}/watch"
             hx-target="#device-actions" hx-swap="outerHTML"
-            onsubmit="return confirm('Watch {{ mac }}? It will be tracked and raise a low-priority alert on repeated sightings.');">
+            onsubmit="return confirm('Watch {{ mac }}? It will be tracked and raise a high-severity alert on repeated sightings.');">
         <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
         <label>suppress repeats for
           <select name="snooze_duration" class="device-action-select" title="how long to suppress repeat alerts; tracking continues regardless">
