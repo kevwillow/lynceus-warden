@@ -175,8 +175,20 @@ def test_diag_dashboard_devices_query(diag, tmp_path):
     # What does the template actually surface? Extract the table
     # header + one data row.
     body = resp.text
-    headers = re.findall(r"<th>([^<]+)</th>", body)
+    # ⚠️ Must tolerate attributes on <th>: the bare "<th>" form went blind the
+    # moment the a11y pass added scope="col", and this diagnostic then reported
+    # an empty header list while still passing.
+    # Inner markup, then strip tags: sortable headers wrap their label in an
+    # <a class="th-sort">, so a plain-text body matched nothing here and had
+    # since v0.9.2, silently.
+    headers = [
+        re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", cell)).strip()
+        for cell in re.findall(r"<th[^>]*>(.*?)</th>", body, flags=re.DOTALL)
+    ]
     diag.observed(f"rendered <th> header cells: {headers}")
+    assert headers, (
+        "extractor found no <th> on /devices — stale regex, not an empty page."
+    )
     # Each row is <tr>...<td>cells</td>...</tr>; grab cells from the
     # first data row inside <tbody>.
     tbody_m = re.search(r"<tbody>(.*?)</tbody>", body, flags=re.DOTALL)

@@ -868,7 +868,7 @@ def test_alerts_list_has_category_column_header(tmp_path):
         with TestClient(app) as client:
             r = client.get("/alerts")
         assert r.status_code == 200
-        assert "<th>Category</th>" in r.text
+        assert ">Category</th>" in r.text  # attribute-proof: header carries scope="col"
     finally:
         db.close()
 

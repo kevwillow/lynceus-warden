@@ -95,11 +95,11 @@
             {% if col.sort %}
               {% set is_active = (col.sort == sort) %}
               {% set next_dir = (('asc' if dir == 'desc' else 'desc') if is_active else 'asc') %}
-              <th{% if _enhanced %} data-col-key="{{ col.key }}"{% endif %}{% if col.nowrap %} style="white-space: nowrap;"{% endif %} aria-sort="{{ ('ascending' if dir == 'asc' else 'descending') if is_active else 'none' }}">
+              <th scope="col"{% if _enhanced %} data-col-key="{{ col.key }}"{% endif %}{% if col.nowrap %} style="white-space: nowrap;"{% endif %} aria-sort="{{ ('ascending' if dir == 'asc' else 'descending') if is_active else 'none' }}">
                 <a class="th-sort{% if is_active %} th-sort-active{% endif %}" href="{{ endpoint }}?{{ filter_qs }}&sort={{ col.sort }}&dir={{ next_dir }}">{{ col.label }}{% if is_active %} <span class="th-sort-ind" aria-hidden="true">{% if dir == 'asc' %}&#9650;{% else %}&#9660;{% endif %}</span>{% endif %}</a>{% if resize %}<span class="col-resizer" aria-hidden="true"></span>{% endif %}
               </th>
             {% else %}
-              <th{% if _enhanced %} data-col-key="{{ col.key }}"{% endif %}{% if col.nowrap %} style="white-space: nowrap;"{% endif %}>{{ col.label }}{% if resize %}<span class="col-resizer" aria-hidden="true"></span>{% endif %}</th>
+              <th scope="col"{% if _enhanced %} data-col-key="{{ col.key }}"{% endif %}{% if col.nowrap %} style="white-space: nowrap;"{% endif %}>{{ col.label }}{% if resize %}<span class="col-resizer" aria-hidden="true"></span>{% endif %}</th>
             {% endif %}
           {% endfor %}
         </tr>
