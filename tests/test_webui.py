@@ -3648,8 +3648,11 @@ def test_index_recent_devices_includes_vendor_and_ble_name(tmp_path):
         recent_idx = r.text.find("recently seen devices")
         assert recent_idx != -1
         recent_section = r.text[recent_idx:]
-        assert "<th>Vendor</th>" in recent_section
-        assert "<th>BLE name</th>" in recent_section
+        # Matched on ">Label</th>" rather than "<th>Label</th>" so the
+        # assertion survives attributes on the header cell (the a11y floor
+        # requires scope="col"). Equally strict: still pins a real <th>.
+        assert ">Vendor</th>" in recent_section
+        assert ">BLE name</th>" in recent_section
         assert "AcmeChips" in recent_section
         assert "Acme Speaker" in recent_section
     finally:
@@ -3671,7 +3674,11 @@ def test_index_recent_devices_does_not_show_probes_column(tmp_path):
         recent_idx = r.text.find("recently seen devices")
         assert recent_idx != -1
         recent_section = r.text[recent_idx:]
-        assert "<th>Probes</th>" not in recent_section
+        # ⚠️ Deliberately NOT "<th>Probes</th>": that literal stops matching the
+        # moment the header carries an attribute, so adding scope="col" would
+        # have silently disarmed this guard and a Probes column could land
+        # unnoticed. ">Probes</th>" is attribute-proof.
+        assert ">Probes</th>" not in recent_section
     finally:
         db.close()
 
@@ -3719,8 +3726,11 @@ def test_index_recent_devices_shows_last_rssi_but_not_last_ssid(tmp_path):
         recent_idx = r.text.find("recently seen devices")
         assert recent_idx != -1
         recent_section = r.text[recent_idx:]
-        assert "<th>Last RSSI</th>" in recent_section
-        assert "<th>Last SSID</th>" not in recent_section
+        assert ">Last RSSI</th>" in recent_section
+        # ⚠️ Deliberately NOT "<th>Last SSID</th>": see the Probes guard above.
+        # The literal form stops matching once the header carries an attribute,
+        # which would make this "breaks deliberately" guard vacuous.
+        assert ">Last SSID</th>" not in recent_section
         assert ">-55<" in recent_section
     finally:
         db.close()
