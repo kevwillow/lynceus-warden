@@ -67,6 +67,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Lynceus now receives ASTM F3411 Remote ID over BLE, not just DJI's
+  DroneID.** Kismet's UAV phy decodes DJI's proprietary format, which was 51 of
+  427 drone rows in the reference capture — 12%. The other 88% broadcast the
+  open standard and were invisible. A drone's serial now arrives through the
+  BLE bridge and matches the existing `watchlist_drone_id_prefix` rules.
+
+  Two things were in the way, and the second was not the obvious one. The
+  bridge never read `service_data`, which is where Remote ID rides. But fixing
+  that alone would have changed nothing, because the frame never arrived: the
+  passive scan matches adverts against a BlueZ pattern set, and a Remote ID
+  advert is a *single* service-data element filling all 31 bytes of the legacy
+  payload — no Flags element, no manufacturer data, so it matched nothing and
+  BlueZ dropped it before the bridge ever saw it.
+
+  Adding the pattern took the set to eight, and eight is one too many. That
+  ceiling was measured rather than assumed, over matched 20-second windows:
+  seven patterns captured 14 devices / 81 frames, eight captured **nothing at
+  all** — and eight captured nothing even with no Remote ID pattern involved,
+  which is what proves the limit is the *count* and not the new pattern. So one
+  Flags value (`0x00`) was traded for it and the set stays at seven. What that
+  trade costs was undetectable over those windows, which is not the same as
+  zero.
+
+  The wire format is verified against two independent sides of the reference
+  implementation rather than written from memory. The decoder keeps the
+  bridge's existing promise: it reads the advertisement payload, returns the
+  derived serial, and retains nothing.
+
+  ⚠️ **This has not yet been tested against a real drone.** Every test uses
+  fixtures built from the specification, and the Wi-Fi half of the standard is
+  not implemented.
+
 - **Every web UI page now carries the AGPL §13 source offer** — version,
   licence identifier, and a link to the corresponding source, in the footer.
 
@@ -83,6 +115,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ⚠️ If you modify Lynceus and let anyone else reach your instance, §13 makes
   *your* modified source the thing that has to be offered. Point
   `SOURCE_URL` in `webui/app.py` at wherever you publish it.
+
+### Fixed
+
+- **A clean BLE shutdown no longer reports itself as a crash.** On bleak 3.x —
+  which is what a fresh `pip install 'lynceus[ble]'` gets you — stopping the
+  scanner raises a D-Bus error on the *normal* path, because BlueZ has already
+  discarded the scan monitor by the time it is asked to. The bridge treated
+  that as a scan failure, logged "BLE scan failed; restarting in 5s", and
+  slept. Every ordinary shutdown looked like a fault, and a genuine error
+  occurring in the same cycle would have been hidden behind the fake one. Only
+  that one specific error is now tolerated; every other teardown failure still
+  surfaces.
 
 ## [0.9.5] - 2026-08-02
 
