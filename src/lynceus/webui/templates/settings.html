@@ -221,8 +221,12 @@
       {% endif %}
     {% else %}
       <p><small>
+        {# Same required --db as the empty-watchlist branch above. This is the
+           branch an install WITH rows renders, so it is the form most
+           operators see; the first pass at this fix corrected only the
+           branch above and left this one exiting 2. #}
         To add data, run <code>lynceus-import-argus --input &lt;path&gt;</code> or
-        <code>lynceus-seed-watchlist --yaml &lt;path&gt;</code>.
+        <code>lynceus-seed-watchlist --db {{ system.db_path }} --yaml &lt;path&gt;</code>.
       </small></p>
     {% endif %}
   </article>

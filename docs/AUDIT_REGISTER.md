@@ -207,6 +207,30 @@ a missing file, so `--db` genuinely defaults there. The report's wider claim tha
 should carry `--scope system` is a **NEEDS-DECISION**, not a defect — it depends on whether
 system-scope installs are supported, which is not an auditor's call.
 
+### ⚠️ Correction — the first fix caught one of the two sites
+
+Recorded after the full suite failed at `d112a53`.
+
+The remediation interpolated `system.db_path` at `settings.html:219` and stopped there. The data
+card prints its "To add data" line from **two** branches, and the second — now `settings.html:229`,
+the branch rendered whenever the watchlist has rows — kept the un-runnable form. The fix therefore
+corrected the fresh-install case and left the case every populated install actually shows.
+
+The auditor quoted one line number because it read the template once, and this register repeated the
+single citation without checking. ⇒ **Grep for every occurrence of a string before calling a prose
+fix complete.**
+
+It surfaced only because
+`tests/test_ui_settings.py::test_watchlist_data_card_zero_total_no_imports_shows_legacy_hint` pinned
+the pre-fix literal and failed in the full run. The wave-4 DoD ran three targeted files and did not
+include `test_ui_settings.py` — the file that the same session's own handoff (§3.2) names as
+required for any UI change, after a narrow DoD had already hidden four failures once.
+
+Now guarded by `test_settings_seeder_command_carries_required_db_flag`, parametrized over both
+watchlist states, matching on the rendered command rather than a flag-order literal, and proven by
+three A/B/A mutations: dropping `--db` from either branch, and hardcoding the path instead of
+interpolating `system.db_path`, each flips the named parametrization pass → fail → pass.
+
 ---
 
 ## 🟡 Finding 5 — two diagnostics were silently observing nothing
