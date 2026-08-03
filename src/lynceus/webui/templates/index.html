@@ -129,6 +129,18 @@
   </section>
 
   {# -----------------------------------------------------------------
+     1b. Section tiles. Navigation that answers "is anything wrong
+     over there?" before you click, which the text topnav cannot do.
+
+     Placed BELOW the status line and ABOVE the alerts block on
+     purpose: the status line is whether the system is working, the
+     alerts block is the work. Tiles are wayfinding, which ranks
+     between the two and must not displace item 2 from the fold —
+     measured at 1280x900 after adding them.
+     ----------------------------------------------------------------- #}
+  {% include "_nav_tiles.html" %}
+
+  {# -----------------------------------------------------------------
      2. Unacknowledged alerts (UI-DIRECTION.md §"Hierarchy" item 2).
      The largest, loudest block on the page. This is the work.
      Severity is carried by BOTH a left border on the row AND the
@@ -152,7 +164,10 @@
               <th scope="col">Device</th>
               <th scope="col">MAC</th>
               <th scope="col">Message</th>
-              <th scope="col">Status</th>
+              {# .alert-action-cell is the shared hook that pins this column to
+                 the right edge while the rest of a too-wide table scrolls. The
+                 /alerts table uses the same class for the same reason. #}
+              <th scope="col" class="alert-action-cell">Status</th>
             </tr>
           </thead>
           <tbody>
@@ -174,7 +189,7 @@
                   {%- if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif -%}
                 </td>
                 <td><span class="truncate">{{ a.message }}</span></td>
-                <td>
+                <td class="alert-action-cell">
                   <form method="post" action="/alerts/{{ a.id }}/ack" class="inline-form"
                         hx-post="/alerts/{{ a.id }}/ack"
                         hx-target="#alert-row-{{ a.id }}"
@@ -250,12 +265,17 @@
 
   {# -----------------------------------------------------------------
      4. Trend (UI-DIRECTION.md §"Hierarchy" item 4). Least important:
-     it is context, not action. Single sparkline, 30 bars, sr-only
-     text alternative.
+     it is context, not action. 30 bars, stacked by severity, axis
+     labelled, sr-only text alternative.
+
+     The single-colour sparkline this replaces showed a height and
+     nothing else — no axis, no dates, no severity — so "a busy day"
+     and "a bad day" drew the identical bar. _sparkline.html is kept
+     for the other surfaces that still include it.
      ----------------------------------------------------------------- #}
   <section class="block block-trend" aria-labelledby="home-trend-heading">
     <h3 id="home-trend-heading">alerts per day (last 30 days)</h3>
-    {% include "_sparkline.html" %}
+    {% include "_alerts_chart.html" %}
   </section>
 
   {# -----------------------------------------------------------------

@@ -1,0 +1,64 @@
+{# 30-day alert trend, stacked by severity.
+
+   Replaces the flat single-colour sparkline, which showed a height and
+   nothing else: no axis, no dates, no severity, so a tall bar and a busy
+   day were indistinguishable from a tall bar and one high-severity hit.
+
+   a11y floor (ui-direction.md): "Any chart or sparkline carries a text
+   alternative stating the same numbers." That is the visually-hidden <p>
+   at the foot, which states every non-zero day. The bars carry title=
+   for hover, but title is NOT an accessible name here and is not relied
+   on — role="img" plus aria-label names the figure, and the <p> carries
+   the data.
+
+   ⚠️ Bars are sized as a percentage of the busiest day, so this shows
+   SHAPE, not absolute volume. The y-axis labels state the real maximum
+   so the shape cannot be mistaken for a count. #}
+{% set max_count = (per_day_sev | map(attribute='count') | max) or 0 %}
+<figure class="alerts-chart" role="img"
+        aria-label="alerts per day for the last {{ per_day_sev|length }} days, stacked by severity; busiest day {{ max_count }}">
+  <div class="alerts-chart-plot">
+    <div class="alerts-chart-yaxis" aria-hidden="true">
+      <span>{{ max_count }}</span>
+      <span>{{ max_count // 2 }}</span>
+      <span>0</span>
+    </div>
+    <div class="alerts-chart-bars">
+      {% for d in per_day_sev %}
+        {% set pct = ((d.count * 100) // max_count) if max_count > 0 else 0 %}
+        <div class="alerts-chart-col"
+             title="{{ d.date }}: {{ d.count }} alert(s) — {{ d.high }} high, {{ d.med }} med, {{ d.low }} low">
+          <div class="alerts-chart-stack" style="height: {{ pct }}%;">
+            {# Order matters: high sits on top, where the eye lands. Each
+               segment is a share OF THIS DAY's bar, so the three always
+               sum to 100% of a bar that is itself scaled to max_count. #}
+            {% if d.count > 0 %}
+              <div class="alerts-chart-seg seg-high" style="height: {{ (d.high * 100) // d.count }}%;"></div>
+              <div class="alerts-chart-seg seg-med" style="height: {{ (d.med * 100) // d.count }}%;"></div>
+              <div class="alerts-chart-seg seg-low" style="height: {{ (d.low * 100) // d.count }}%;"></div>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+  <figcaption class="alerts-chart-foot">
+    <span class="alerts-chart-xaxis" aria-hidden="true">
+      <span>{{ per_day_sev|length }}d ago</span>
+      <span>today</span>
+    </span>
+    <span class="alerts-chart-legend">
+      <span class="chart-key"><i class="chart-swatch seg-high" aria-hidden="true"></i>high</span>
+      <span class="chart-key"><i class="chart-swatch seg-med" aria-hidden="true"></i>med</span>
+      <span class="chart-key"><i class="chart-swatch seg-low" aria-hidden="true"></i>low</span>
+    </span>
+  </figcaption>
+</figure>
+<p class="visually-hidden">
+  Alerts per day, last {{ per_day_sev|length }} days, by severity.
+  {%- set ns = namespace(any=false) -%}
+  {%- for d in per_day_sev if d.count > 0 -%}
+    {%- set ns.any = true %} {{ d.date }}: {{ d.count }} total, {{ d.high }} high, {{ d.med }} med, {{ d.low }} low;
+  {%- endfor -%}
+  {%- if not ns.any %} No alerts in this window.{% endif %}
+</p>

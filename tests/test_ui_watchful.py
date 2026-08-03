@@ -605,7 +605,11 @@ def test_watchful_actions_column_uses_flex_alignment(tmp_path):
         assert css.status_code == 200
         body = css.text
         # Flex container + center-alignment is the alignment fix.
-        block_start = body.find(".watchful-actions")
+        # ⚠️ Anchored on the rule, not the bare class name: the name also
+        # appears inside a comment further up the file, so the unanchored
+        # find() read a block of prose instead of the declaration and passed
+        # or failed according to what happened to sit nearby.
+        block_start = body.find("\n.watchful-actions {")
         assert block_start != -1, ".watchful-actions rule missing"
         block_end = body.find("}", block_start)
         block = body[block_start:block_end]

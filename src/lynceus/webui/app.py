@@ -1545,27 +1545,76 @@ def create_app(config: Config, db: Database) -> FastAPI:
         kismet_status = _get_kismet_status(app, now)
         recent_alerts = db.list_alerts(limit=10, acknowledged=False)
         _enrich_alerts_with_devices(db, recent_alerts)
+        health = db.healthcheck()
+        device_seen = db.device_seen_counts(now_ts=now_int)
+        sev_30d = db.alert_severity_counts(since_ts=now_int - 30 * 86400)
+        watchlist_freshness = _watchlist_freshness_summary(
+            db,
+            app.state.config.watchlist_staleness_warn_days,
+            now_ts=now_int,
+        )
+
+        # The rules tile needs a count of enabled rules, which means reading the
+        # ruleset file. Same try/except shape as the /healthz panel above: a
+        # rules file that does not parse must not take the home page down with
+        # it.
+        #
+        # ⚠️ Three outcomes, not two, and collapsing any pair of them misleads:
+        #   int   -> that many enabled rules
+        #   None + rules_state "unset"      -> no rules_path configured. Normal
+        #                                      on a fresh install; NOT alarming.
+        #   None + rules_state "unreadable" -> a path is set and it did not
+        #                                      load. That IS alarming, because
+        #                                      the operator believes rules are
+        #                                      running and none are.
+        # Rendering "unset" as "unreadable" cries wolf on every default config;
+        # rendering "unreadable" as 0 hides a broken detection pipeline.
+        enabled_rules: int | None = None
+        rules_state = "unset"
+        if app.state.config.rules_path:
+            try:
+                enabled_rules = sum(
+                    1
+                    for r in rules_mod.load_ruleset(app.state.config.rules_path).rules
+                    if r.enabled
+                )
+                rules_state = "ok"
+            except Exception:
+                enabled_rules = None
+                rules_state = "unreadable"
+
+        tiles = {
+            "unacked": health.get("unacked_alert_count", 0),
+            "high_30d": sev_30d.get("high", 0),
+            "devices": health.get("device_count", 0),
+            "devices_24h": device_seen.get("day", 0),
+            "watchful": db.count_watchful_recurrence(),
+            "probe_devices": db.count_probe_devices(),
+            "watchlist_records": watchlist_freshness.get("record_count") or 0,
+            "rules": enabled_rules,
+            "rules_state": rules_state,
+        }
         return app.state.templates.TemplateResponse(
             request=request,
             name="index.html",
             context={
                 "version": __version__,
                 "active": "home",
-                "health": db.healthcheck(),
+                # ⚠️ These four are the hoisted locals, NOT fresh calls. The
+                # tiles above need the same figures, and re-querying here would
+                # double this page's query count for identical answers.
+                "health": health,
+                "sev_30d": sev_30d,
+                "device_seen": device_seen,
+                "watchlist_freshness": watchlist_freshness,
                 "sev_24h": db.alert_severity_counts(since_ts=now_int - 86400),
                 "sev_7d": db.alert_severity_counts(since_ts=now_int - 7 * 86400),
-                "sev_30d": db.alert_severity_counts(since_ts=now_int - 30 * 86400),
-                "per_day": db.alerts_per_day(days=30, now_ts=now_int),
+                "per_day_sev": db.alerts_per_day_by_severity(days=30, now_ts=now_int),
                 "recent_alerts": recent_alerts,
                 "recent_devices": db.list_devices(limit=25),
-                "device_seen": db.device_seen_counts(now_ts=now_int),
                 "last_poll": db.latest_poll_ts(),
                 "last_tick": _read_last_tick_stats(db),
-                "watchlist_freshness": _watchlist_freshness_summary(
-                    db,
-                    app.state.config.watchlist_staleness_warn_days,
-                    now_ts=now_int,
-                ),
+                "tiles": tiles,
                 "now_ts": now_int,
                 "kismet_status": kismet_status,
             },

@@ -3912,6 +3912,69 @@ class Database:
             result.append({"date": key, "count": counts.get(key, 0)})
         return result
 
+    def alerts_per_day_by_severity(self, *, days: int = 30, now_ts: int) -> list[dict]:
+        """Per-day alert counts split by severity, for the home trend chart.
+
+        Same contract as :meth:`alerts_per_day` — same validation, same
+        inclusive window, and every day in the range is present even when it
+        has no alerts, so the caller can render a fixed-width axis without
+        worrying about gaps. ``count`` is the row total and is what
+        :meth:`alerts_per_day` would report for that day.
+
+        The three buckets are exhaustive *because the schema says so*:
+        ``alerts.severity`` carries ``CHECK(severity IN ('low','med','high'))``
+        (001_initial.sql:30), so ``low + med + high == count`` on every row and
+        the stacked bars always reconcile with the total.
+
+        The membership test below is therefore not defensive against today's
+        data — it cannot fire. It is there so that relaxing that CHECK in some
+        future migration degrades to "counted in the total, not coloured in the
+        chart" rather than raising a KeyError on the home page. Folding an
+        unknown severity into ``low`` would misreport it; dropping it from
+        ``count`` would make the chart disagree with the list beneath it.
+        """
+        if not isinstance(days, int) or isinstance(days, bool):
+            raise ValueError("days must be int")
+        if days < 1 or days > 365:
+            raise ValueError("days must be in [1, 365]")
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be int")
+
+        rows = self._conn.execute(
+            "SELECT date(ts, 'unixepoch') AS day, severity, COUNT(*) AS c "
+            "FROM alerts WHERE ts >= ? AND ts <= ? GROUP BY day, severity",
+            (now_ts - (days - 1) * 86400, now_ts + 86400),
+        ).fetchall()
+
+        by_day: dict[str, dict[str, int]] = {}
+        for row in rows:
+            day = row["day"]
+            if not day:
+                continue
+            bucket = by_day.setdefault(day, {"low": 0, "med": 0, "high": 0, "count": 0})
+            count = int(row["c"])
+            bucket["count"] += count
+            if row["severity"] in ("low", "med", "high"):
+                bucket[row["severity"]] += count
+
+        import datetime as _dt
+
+        end_day = _dt.datetime.fromtimestamp(now_ts, tz=_dt.UTC).date()
+        result: list[dict] = []
+        for i in range(days - 1, -1, -1):
+            key = (end_day - _dt.timedelta(days=i)).isoformat()
+            bucket = by_day.get(key)
+            result.append(
+                {
+                    "date": key,
+                    "low": bucket["low"] if bucket else 0,
+                    "med": bucket["med"] if bucket else 0,
+                    "high": bucket["high"] if bucket else 0,
+                    "count": bucket["count"] if bucket else 0,
+                }
+            )
+        return result
+
     def device_seen_counts(self, *, now_ts: int) -> dict:
         """Return distinct-device counts in three rolling windows ending at now_ts.
 

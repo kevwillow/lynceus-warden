@@ -1,0 +1,50 @@
+{# Home-page navigation tiles: where do I go, and is anything wrong there?
+
+   Each tile is a single <a>, so the whole tile is one tap target rather
+   than a card containing a small link — that is what makes it usable on a
+   phone, and it keeps the accessible name to one string per destination.
+
+   ⚠️ The count is inside the link text on purpose. A tile whose accessible
+   name is just "alerts" tells a screen-reader user nothing the nav bar did
+   not already say; "alerts, 42 unacknowledged, 3 high" is the whole point
+   of the tile existing.
+
+   A `state` of warn/alert colours the tile's rule. Colour is never the only
+   carrier: the state word is in the text too, per the a11y floor. #}
+{% macro tile(href, label, value, note, state) %}
+  <a class="nav-tile{% if state %} nav-tile-{{ state }}{% endif %}" href="{{ href }}">
+    <span class="nav-tile-label">{{ label }}</span>
+    <span class="nav-tile-value">{{ value }}</span>
+    <span class="nav-tile-note">{{ note }}</span>
+  </a>
+{% endmacro %}
+
+<nav class="nav-tiles" aria-label="sections">
+  {{ tile('/alerts', 'alerts', tiles.unacked,
+          (tiles.high_30d ~ ' high in 30d') if tiles.high_30d else 'none unacknowledged',
+          'alert' if tiles.high_30d else ('warn' if tiles.unacked else '')) }}
+
+  {{ tile('/devices', 'devices', tiles.devices,
+          tiles.devices_24h ~ ' seen in 24h', '') }}
+
+  {{ tile('/watchful', 'watchful', tiles.watchful,
+          'tracked MACs', 'warn' if tiles.watchful else '') }}
+
+  {{ tile('/probes', 'probes', tiles.probe_devices,
+          'devices with probe history', '') }}
+
+  {{ tile('/watchlist', 'watchlist', tiles.watchlist_records,
+          watchlist_freshness.status if watchlist_freshness.has_import else 'not loaded',
+          'warn' if (not watchlist_freshness.has_import or watchlist_freshness.status != 'fresh') else '') }}
+
+  {# Three states, not two. "no rules_path configured" is normal on a fresh
+     install and must not render as the alarming red that "a path is set and
+     it will not load" earns — that one means the operator thinks rules are
+     running when none are. #}
+  {{ tile('/rules', 'rules',
+          tiles.rules if tiles.rules is not none else '—',
+          {'ok': 'enabled',
+           'unset': 'no ruleset configured',
+           'unreadable': 'ruleset will not load'}[tiles.rules_state],
+          'alert' if tiles.rules_state == 'unreadable' else '') }}
+</nav>

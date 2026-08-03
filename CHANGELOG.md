@@ -8,6 +8,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The alert action buttons no longer resize when you use them.** Acknowledge,
+  unack and Watch were sized by their own labels — measured at 124px, and 68px
+  for Watch — so acknowledging a row swapped the label to "unack" and the
+  button shrank under the cursor. All three now occupy one fixed rectangle
+  (150×44) in every state, and the state is carried by colour: solid for the
+  action that is available, muted outline for the undo. 44px because that is
+  the tap-target floor this project already applies to the home page's ack
+  button and had never applied here — these were 30px tall.
+
+- **The action column is pinned, so the buttons are always on screen.** Both
+  alert tables are wider than a 1400px viewport (the /alerts table measured
+  2120px inside a 1360px wrapper), and the action column sat past the right
+  edge behind a horizontal scroll. It is now sticky. The column budget was cut
+  as well — 2120px to 1739px — by capping the columns that were spending
+  width on nothing: the checkbox column alone took 75px to hold a 13px control.
+
+- **The /alerts filter form stopped eating the page.** It marks itself
+  `class="grid"`, and the vendored Pico is the *classless* edition which
+  defines no such class — the identical trap already documented for
+  `.container-fluid`. Eleven filter controls therefore stacked full-width and
+  pushed the first alert roughly 450px down the page. The stylesheet now
+  supplies the grid the template always asked for, and the page is 5863px tall
+  instead of 8341px.
+
+- **The homepage got navigation tiles and a chart worth reading.** Six tiles
+  carry live counts and link to each section, so "is anything wrong over
+  there?" is answerable without clicking. The alerts-per-day strip — one flat
+  colour, no axis, no dates, so a busy day and a bad day drew the same bar — is
+  now stacked by severity with a labelled axis and a legend, backed by a new
+  `alerts_per_day_by_severity` query. The screenshots in `docs/images/` were
+  regenerated: all five were taken at v0.9.4, before the dashboard restructure,
+  and showed a homepage that no longer existed.
+
 - **Relicensed from MIT to AGPL-3.0-or-later, with a commercial licence
   available.** The intent is unchanged from what the project has always been:
   use it, run it, modify it, sell it. What the new licence adds is

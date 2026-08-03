@@ -5,8 +5,9 @@
  * article, borders, code, dialogs) via its own
  * @media (prefers-color-scheme: dark) block. This file only adds dark
  * variants for the lynceus-custom surface — the severity / confidence /
- * status badges, the topnav border, the sparkline bar fill, the
- * severity-tinted alert rows, and the table-scroll fade gradient.
+ * status badges, the topnav border, the navigation tiles, the trend
+ * chart, the severity-tinted alert rows, and the table-scroll fade
+ * gradient.
  *
  * Three layers control which palette applies:
  *   1. :root              — light defaults.
@@ -28,7 +29,6 @@
   --lyn-badge-neutral-bg:  #dde;
   --lyn-badge-neutral-fg:  #224;
   --lyn-topnav-border:     #ddd;
-  --lyn-sparkline-bar:     #888;
   --lyn-row-sev-low:       rgba(120, 130, 200, 0.05);
   --lyn-row-sev-med:       rgba(255, 180, 90, 0.07);
   --lyn-row-sev-high:      rgba(220, 70, 70, 0.08);
@@ -46,7 +46,6 @@
     --lyn-badge-neutral-bg:  #232838;
     --lyn-badge-neutral-fg:  #b8c0d8;
     --lyn-topnav-border:     #2a2f38;
-    --lyn-sparkline-bar:     #8a93a4;
     --lyn-row-sev-low:       rgba(120, 130, 200, 0.10);
     --lyn-row-sev-med:       rgba(255, 180, 90, 0.10);
     --lyn-row-sev-high:      rgba(220, 70, 70, 0.13);
@@ -64,7 +63,6 @@
   --lyn-badge-neutral-bg:  #232838;
   --lyn-badge-neutral-fg:  #b8c0d8;
   --lyn-topnav-border:     #2a2f38;
-  --lyn-sparkline-bar:     #8a93a4;
   --lyn-row-sev-low:       rgba(120, 130, 200, 0.10);
   --lyn-row-sev-med:       rgba(255, 180, 90, 0.10);
   --lyn-row-sev-high:      rgba(220, 70, 70, 0.13);
@@ -87,6 +85,42 @@ body > main.container-fluid {
     max-width: none;
     padding-right: var(--pico-block-spacing-horizontal);
     padding-left: var(--pico-block-spacing-horizontal);
+}
+
+/* ⛔ Same trap as .container-fluid immediately above, and it had the same
+   cause for longer: the vendored Pico is the CLASSLESS edition and defines
+   no `.grid` either. `grep -o "\.grid{" pico.min.css` returns nothing.
+
+   /alerts marks its filter fieldset `class="grid"` and has always got
+   nothing for it, so nine full-width controls stacked vertically and pushed
+   the first alert roughly 450px down the page — on the page whose entire job
+   is showing alerts. The template's intent was a grid from the start; this
+   supplies it rather than redesigning anything.
+
+   auto-fit + minmax means the column count follows the viewport with no
+   breakpoints: six-ish across on a desktop, one on a phone. align-items:end
+   keeps the controls on a common baseline when one label wraps to two lines
+   and its neighbours do not. */
+form fieldset.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 0.3em 1em;
+    align-items: end;
+    margin-bottom: 0.6em;
+}
+form fieldset.grid > label { margin-bottom: 0; font-size: 0.9em; }
+/* Pico gives form controls a ~3rem height, which is right for a signup form
+   and wrong for eleven filters above a triage table: the grid alone still
+   left ~600px of chrome before the first alert. These are secondary controls
+   above the content that matters, so they get a secondary size. Still well
+   clear of the 44px tap-target floor at 0.9em. */
+form fieldset.grid select,
+form fieldset.grid input {
+    margin-bottom: 0;
+    height: auto;
+    padding-top: 0.35em;
+    padding-bottom: 0.35em;
+    --pico-form-element-spacing-vertical: 0.35em;
 }
 
 .badge-low   { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
@@ -141,8 +175,106 @@ body > main.container-fluid {
 }
 .theme-toggle:hover { border-color: currentColor; }
 
-.sparkline       { display: flex; align-items: flex-end; gap: 1px; height: 40px; width: 100%; }
-.sparkline-bar   { background: var(--lyn-sparkline-bar); flex: 1 1 0; min-width: 2px; min-height: 1px; }
+/* Home trend chart. Replaces the flat .sparkline, which was deleted with
+   its template: one colour, no axis, no dates, so a busy day and a bad day
+   drew the same bar.
+
+   The plot is [y-axis labels | bars]; each bar is a stack whose segments are
+   shares of THAT day, inside a column scaled to the busiest day. Heights are
+   inline styles because they are data, not design — the percentages come from
+   the query, and there is no stylesheet that could know them. */
+.alerts-chart { margin: 0; width: 100%; }
+.alerts-chart-plot { display: flex; align-items: stretch; gap: 0.5em; height: 92px; }
+.alerts-chart-yaxis {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: flex-end;
+    font-size: 0.7em;
+    line-height: 1;
+    color: var(--pico-muted-color);
+    min-width: 2.2em;
+    padding-bottom: 1px;
+}
+.alerts-chart-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
+    border-bottom: 1px solid var(--pico-muted-border-color);
+    border-left: 1px solid var(--pico-muted-border-color);
+    padding-left: 2px;
+}
+.alerts-chart-col { flex: 1 1 0; min-width: 2px; height: 100%; display: flex; align-items: flex-end; }
+/* A day with zero alerts still gets a visible baseline tick, so an empty day
+   reads as "measured, nothing happened" rather than as missing data. */
+.alerts-chart-stack {
+    width: 100%;
+    min-height: 2px;
+    background: var(--pico-muted-border-color);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    border-radius: 1px 1px 0 0;
+    overflow: hidden;
+}
+.alerts-chart-seg { width: 100%; }
+.alerts-chart-seg.seg-high { background: var(--lyn-badge-negative-fg); }
+.alerts-chart-seg.seg-med  { background: var(--lyn-badge-warning-fg); }
+.alerts-chart-seg.seg-low  { background: var(--lyn-badge-neutral-fg); }
+.alerts-chart-foot {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.5em 1em;
+    font-size: 0.75em;
+    color: var(--pico-muted-color);
+    padding: 0.35em 0 0 2.7em;
+}
+.alerts-chart-xaxis { display: flex; justify-content: space-between; flex: 1 1 12em; }
+.alerts-chart-legend { display: flex; gap: 0.8em; flex-wrap: wrap; }
+.chart-key { display: inline-flex; align-items: center; gap: 0.3em; }
+.chart-swatch { width: 0.7em; height: 0.7em; border-radius: 2px; display: inline-block; }
+.chart-swatch.seg-high { background: var(--lyn-badge-negative-fg); }
+.chart-swatch.seg-med  { background: var(--lyn-badge-warning-fg); }
+.chart-swatch.seg-low  { background: var(--lyn-badge-neutral-fg); }
+
+/* Home navigation tiles. Each tile is one <a>, so the whole rectangle is the
+   tap target rather than the label inside it. auto-fit lets six tiles sit on
+   one row on a desktop and reflow to two columns on a phone without a
+   breakpoint, and the 44px floor is the same tap-target requirement the ack
+   buttons carry. */
+.nav-tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+    gap: 0.5em;
+    margin: 0.4em 0 1.2em;
+}
+.nav-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1em;
+    min-height: 44px;
+    padding: 0.55em 0.7em;
+    border: 1px solid var(--pico-muted-border-color);
+    border-left: 3px solid var(--pico-muted-border-color);
+    border-radius: 5px;
+    text-decoration: none;
+    color: inherit;
+    background: var(--pico-card-background-color, transparent);
+}
+.nav-tile:hover, .nav-tile:focus-visible {
+    border-color: var(--pico-primary);
+    text-decoration: none;
+}
+.nav-tile-label { font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--pico-muted-color); }
+.nav-tile-value { font-size: 1.5em; font-weight: 600; line-height: 1.1; }
+.nav-tile-note  { font-size: 0.72em; color: var(--pico-muted-color); }
+/* State is a left rule, never the only signal — the note text says the same
+   thing in words, which is what the a11y floor requires. */
+.nav-tile-warn  { border-left-color: var(--lyn-badge-warning-fg); }
+.nav-tile-alert { border-left-color: var(--lyn-badge-negative-fg); }
 .stat-grid       { display: grid; grid-template-columns: 60px repeat(3, 1fr); gap: 0.5em 1em; align-items: center; }
 .stat-grid .stat-row-label { font-weight: 600; }
 /* Inline action buttons on /alerts and the home page recent-alerts
@@ -192,18 +324,112 @@ form.watch-form    { display: inline; margin-left: 0.4em; }
    belt-and-suspenders fallback so a future wider control wraps rather than
    re-spilling the cell to its old ~23rem width. Mirrors the .watchful-actions
    flex pattern below. v0.9.2 issue C. */
+/* Two rows, two columns, and nothing reflows with content.
+
+   ⚠️ This was a wrap-when-it-must flex row. Once the buttons took a fixed
+   150px and a 44px tap-target height, the four controls each claimed their
+   own line and every alert row became four lines tall on a triage page whose
+   whole value is density. An explicit grid pins the layout instead of letting
+   it emerge: each <form> is one row of [field | button], so the two buttons
+   line up in a column at identical size and the row is two lines whatever the
+   labels say. */
 .alert-action-controls {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
+    flex-direction: column;
+    gap: 0.25em;
     max-width: 22rem;
     white-space: normal;
 }
-.alert-action-controls > form { flex: 0 1 auto; }
-.alert-action-controls .ack-row-note { width: 10ch; }
+.alert-action-controls > form {
+    display: grid;
+    grid-template-columns: 1fr 7.5rem;
+    gap: 0.35em;
+    align-items: center;
+    margin: 0;
+}
+.alert-action-controls .ack-row-note { width: 100%; }
+
+/* ⛔ One size for all three action buttons, and it must not depend on the
+   label. These were `width: auto`, so each button sized to its own text:
+   "Acknowledge" measured 124px and "Watch" 68px, and acknowledging a row
+   swapped the label to "unack" and shrank the button under the cursor — the
+   control moved because of what you did to it. Every row's buttons now
+   occupy the same rectangle whatever state the row is in, and STATE IS
+   CARRIED BY COLOUR, not by size.
+
+   min-width fits the longest label ("Acknowledge"). min-height is 44px for
+   the same tap-target floor the home ack button already carries — these were
+   30px, which was below it, and the floor was never applied here. */
 .alert-action-controls .ack-button-inline,
-.alert-action-controls .watch-button-inline { width: auto; }
+.alert-action-controls .watch-button-inline {
+    /* ⚠️ `width: auto` is load-bearing and predates this rule. Pico sizes a
+       <button> in a form to width:100%, so without it each button stretches to
+       its own form's width and the three end up different again — measured at
+       132px vs 150px the moment it was dropped. auto + min-width is what makes
+       them identical. */
+    width: auto;
+    min-width: 7.5rem;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    font-family: inherit;
+}
+/* Action available: the row is unacknowledged and wants a decision. Solid. */
+.alert-action-controls .ack-button-inline[data-action="ack"] {
+    background: var(--pico-primary-background);
+    color: var(--pico-primary-inverse);
+    border-color: var(--pico-primary-background);
+}
+/* Already acted on: undo is available but it is not the work. Muted outline,
+   same rectangle. The label still reads "unack", so the state is never
+   carried by colour alone. */
+.alert-action-controls .ack-button-inline[data-action="unack"] {
+    background: transparent;
+    color: var(--pico-muted-color);
+    border-color: var(--lyn-topnav-border);
+}
+.alert-action-controls .ack-button-inline[data-action="unack"]:hover,
+.alert-action-controls .ack-button-inline[data-action="unack"]:focus-visible {
+    color: var(--pico-color);
+    border-color: currentColor;
+}
+/* Watch is a different verb from ack/unack, so it reads as an outline in the
+   accent colour rather than as a third state of the same control. */
+.alert-action-controls .watch-button-inline {
+    background: transparent;
+    color: var(--pico-primary);
+    border-color: var(--pico-primary-background);
+}
+.alert-action-controls .watch-button-inline:hover,
+.alert-action-controls .watch-button-inline:focus-visible {
+    background: var(--pico-primary-background);
+    color: var(--pico-primary-inverse);
+}
 .alert-action-controls .watch-snooze-select { width: auto; }
+
+/* Keep the action column reachable. Both alert tables are wider than a
+   1400px viewport, so the buttons — the entire point of the row — sat off
+   the right edge behind a horizontal scroll nobody performs. Pinning the
+   column keeps them on screen at any width.
+
+   ⚠️ The pinned cell takes an opaque background, so it does NOT carry the
+   row's severity tint. That is acceptable only because severity is already
+   carried twice over on the visible part of the row: the 4px left border and
+   the badge word. If the tint ever becomes the sole severity cue, this rule
+   has to change with it. */
+.table-scroll th.alert-action-cell,
+.table-scroll td.alert-action-cell {
+    position: sticky;
+    right: 0;
+    z-index: 1;
+    background: var(--pico-background-color);
+    box-shadow: -8px 0 8px -8px var(--lyn-scroll-edge-shadow);
+}
 /* Compact every control to the buttons' height and reclaim width budget. The
    07a462d width overrides made the row one line but never touched HEIGHT or the
    1rem margin-bottom Pico puts on inputs/selects/buttons -- and Pico forces an
@@ -781,13 +1007,19 @@ details:has(> .probe-reveal) > summary::after {
 /* Alert outranks its own Acknowledge button. The button used to be the
    brightest thing on the row; demote it to a low-emphasis outline so
    the eye lands on the alert (the work), not the action (secondary).
-   Applies to the home page's inline ack form.
+
+   ⚠️ Scoped to .alerts-table, which is the HOME page's table. /alerts now
+   carries data-action="ack" too, and an unscoped selector here reached it at
+   equal specificity but later in the file, silently overriding the /alerts
+   sizing rule and pinning that button to min-width:44px while its Watch
+   sibling took 150px. That is exactly the mismatch this pass exists to fix,
+   so the rule that caused it is scoped to the surface it was written for.
    ⚠️ min-height is 44px because the responsive floor requires 44x44 tap
    targets. An earlier pass set 32px under a comment claiming a 44px floor —
    the comment was right and the value was wrong. Demoting a control's
    emphasis must not shrink it below the tap-target minimum; those are
    independent requirements. */
-.ack-button-inline[data-action="ack"] {
+.alerts-table .ack-button-inline[data-action="ack"] {
     width: auto;
     padding: 0.25em 0.7em;
     font-size: 0.85em;
@@ -802,8 +1034,8 @@ details:has(> .probe-reveal) > summary::after {
     cursor: pointer;
     font-family: inherit;
 }
-.ack-button-inline[data-action="ack"]:hover,
-.ack-button-inline[data-action="ack"]:focus-visible {
+.alerts-table .ack-button-inline[data-action="ack"]:hover,
+.alerts-table .ack-button-inline[data-action="ack"]:focus-visible {
     color: var(--pico-color, inherit);
     border-color: currentColor;
     background: transparent;
@@ -951,3 +1183,56 @@ main.container-fluid { min-width: 0; }
 .status-line .status-item,
 .tile-label,
 .empty-state { overflow-wrap: break-word; }
+
+/* /alerts column budget. Measured before touching it: the table rendered
+   2120px inside a 1360px wrapper, so 760px sat behind a horizontal scroll,
+   and which columns you got for free was an accident of content width. The
+   checkbox column alone took 75px to hold a 13px control; Rule and Device
+   took 515px between them for values like "new_device_alert" and "Apple".
+
+   These caps buy back the wasted fixed width so the operator-relevant
+   columns — time, severity, rule, device, MAC, message — are the ones on
+   screen, with the action column pinned to the right by the sticky rule
+   above. The table still scrolls, because ten columns of real data genuinely
+   do not fit; the point is that nothing you need to triage a row is behind
+   that scroll.
+
+   ⚠️ Scoped to .alerts-table-full (the /alerts table). The home page's
+   .alerts-table has its own narrower column set and must not inherit these. */
+.alerts-table-full th:first-child,
+.alerts-table-full td:first-child { width: 2.2rem; padding-right: 0; }
+.alerts-table-full th:nth-child(2),
+.alerts-table-full td:nth-child(2) { width: 7rem; }
+.alerts-table-full th:nth-child(3),
+.alerts-table-full td:nth-child(3) { width: 4.5rem; }
+/* ⚠️ max-width alone does NOT clip a table cell — the content simply
+   overflows into its neighbour, which is how "new_device_alert" ended up
+   printed across the Device column. Capping a column means capping it AND
+   telling it what to do with the excess. */
+.alerts-table-full th:nth-child(4),
+.alerts-table-full td:nth-child(4),
+.alerts-table-full th:nth-child(5),
+.alerts-table-full td:nth-child(5) {
+    max-width: 9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* <code> is inline, so the ellipsis has to be applied to it, not only to the
+   cell that contains it. */
+.alerts-table-full td:nth-child(4) > code {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+}
+.alerts-table-full th:nth-child(7),
+.alerts-table-full td:nth-child(7) { width: 5rem; }
+.alerts-table-full th:nth-child(9),
+.alerts-table-full td:nth-child(9) { width: 3.5rem; }
+/* The message is the one column worth giving the remaining room to, but it
+   must not be allowed to set the table's minimum width — that is what pushed
+   the actions off screen. Truncation keeps it to one line; the full text is
+   on the alert's own page. */
+.alerts-table-full .truncate { max-width: 22ch; }
