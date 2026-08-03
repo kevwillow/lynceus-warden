@@ -144,6 +144,22 @@ def _canonical_db_paths() -> tuple[str, ...]:
 # Backoff before restarting the scan after a bleak/BlueZ failure.
 _RESTART_BACKOFF_SECONDS = 5.0
 
+# BlueZ has already discarded the AdvertisementMonitor by the time bleak asks it
+# to unregister. Measured on bleak 3.0.2 / BlueZ 5.72, 2026-08-03: this fires on
+# the NORMAL teardown path, on every scan stop.
+_MONITOR_GONE_DBUS_ERROR = "org.bluez.Error.DoesNotExist"
+
+
+def _is_monitor_already_gone(exc: BaseException) -> bool:
+    """Is this the benign stop() race, as opposed to a real teardown failure?
+
+    Matches bleak's ``BleakDBusError.dbus_error`` — the D-Bus error NAME —
+    rather than searching the message text. A substring match on the rendered
+    message would also swallow an exception that merely quoted the name,
+    including one raised by our own code.
+    """
+    return getattr(exc, "dbus_error", None) == _MONITOR_GONE_DBUS_ERROR
+
 
 def _derive_is_randomized(mac: str) -> bool:
     """Spike-grade randomized-address guess from the address MSBs.
@@ -412,9 +428,34 @@ class BleBridge:
             adapter=self.adapter,
         )
 
+    async def _stop_scanner(self, scanner) -> None:
+        """Stop the scanner, tolerating BlueZ's teardown race and nothing else.
+
+        ⛔ Deliberately NOT a blanket ``except Exception``. A stop() that fails
+        for any other reason is a real fault and must reach the caller's restart
+        path — swallowing it would hide a broken teardown behind a bridge that
+        looks healthy. See tests/test_ble_bridge_scan_teardown.py, which pins
+        both directions.
+        """
+        try:
+            await scanner.stop()
+        except Exception as exc:
+            if not _is_monitor_already_gone(exc):
+                raise
+            logger.debug(
+                "BLE scanner stop raised %s; BlueZ had already dropped the "
+                "monitor, which is the normal teardown path on bleak 3.x",
+                exc,
+            )
+
     async def _scan_until_stop(self, stop: asyncio.Event) -> None:  # pragma: no cover - rig-only
         scanner = self._make_scanner()
-        async with scanner:
+        # NOT `async with scanner:` — its __aexit__ calls stop() unguarded, and
+        # on bleak 3.x that raises on every clean teardown, straight into the
+        # caller's restart-with-backoff handler. A normal shutdown then logs
+        # "BLE scan failed" and sleeps 5s for a failure that did not happen.
+        await scanner.start()
+        try:
             logger.info(
                 "BLE passive scan started on %s (flush every %ss)",
                 self.adapter,
@@ -427,6 +468,8 @@ class BleBridge:
                     self._flush(int(time.time()))  # tick flush
                 else:
                     break  # stop signalled
+        finally:
+            await self._stop_scanner(scanner)
 
     def stop(self) -> None:
         """Request shutdown (thread-safe).
