@@ -4,21 +4,42 @@
   {% include "_topnav.html" %}
   <h2>home</h2>
 
-  <article>
-    <header><strong>health</strong></header>
-    <p>
-      <strong>schema:</strong> {{ health.schema_version }} &middot;
-      <strong>devices:</strong> {{ health.device_count }} &middot;
-      <strong>alerts:</strong> {{ health.alert_count }} &middot;
-      <strong>unacked:</strong> {{ health.unacked_alert_count }}
-    </p>
-  </article>
+  {# -----------------------------------------------------------------
+     1. Status line (UI-DIRECTION.md §"Hierarchy" item 1).
+     One row, not a card. Replaces the old health, last-poll, and
+     Kismet-status cards (three cards holding four lines of text
+     between them). Green/amber/red word + the fact.
+     ----------------------------------------------------------------- #}
+  <section class="status-line" aria-label="system status">
 
-  <article>
-    <header><strong>last poll</strong></header>
-    {% if last_tick %}
-      <p class="last-poll">
-        Last polled
+    {# --- Kismet status ---------------------------------------- #}
+    <span class="status-item">
+      <strong>Kismet status:</strong>
+      {% if kismet_status %}
+        {% if kismet_status.reachable %}
+          <span class="status-pill status-pill-ok" aria-label="reachable">reachable</span>
+          {% if kismet_status.version %}
+            &middot; <code>{{ kismet_status.version }}</code>
+          {% endif %}
+        {% else %}
+          <span class="status-pill status-pill-error" aria-label="unreachable">unreachable</span>
+          {% if kismet_status.error %}
+            &middot; <code>{{ kismet_status.error }}</code>
+          {% endif %}
+        {% endif %}
+        {% if kismet_status.checked_at %}
+          &middot; <small>checked</small>
+          <time datetime="{{ kismet_status.checked_at | unix_to_iso }}">{{ kismet_status.checked_at | unix_to_iso }}</time>
+        {% endif %}
+      {% else %}
+        <em>Kismet status unavailable</em>
+      {% endif %}
+    </span>
+
+    {# --- last poll tick --------------------------------------- #}
+    <span class="status-item">
+      <strong>last poll:</strong>
+      {% if last_tick %}
         <time datetime="{{ last_tick.completed_at | unix_to_iso }}"
               title="{{ last_tick.completed_at | unix_to_utc_human }}">
           {{ last_tick.completed_at | relative_time(now_ts=now_ts) }}
@@ -40,22 +61,20 @@
           {{ parts | join("; ") }}
           )
         {% endif %}
-      </p>
-    {% elif last_poll %}
-      <p class="last-poll">
-        Last polled: <time datetime="{{ last_poll | unix_to_iso }}">{{ last_poll | unix_to_iso }}</time>
-      </p>
-    {% else %}
-      <p class="last-poll"><em>Waiting for first poll&hellip;</em></p>
-    {% endif %}
-    {% if not watchlist_freshness.has_import %}
-      <p class="watchlist-freshness">
-        <strong>Watchlist:</strong> not loaded
-        (<a href="/settings#watchlist-freshness">configure</a>)
-      </p>
-    {% elif watchlist_freshness.is_stale %}
-      <p class="watchlist-freshness">
-        <strong>Watchlist:</strong>
+      {% elif last_poll %}
+        Last polled
+        <time datetime="{{ last_poll | unix_to_iso }}">{{ last_poll | unix_to_iso }}</time>
+      {% else %}
+        <em>Waiting for first poll&hellip;</em>
+      {% endif %}
+    </span>
+
+    {# --- watchlist freshness ---------------------------------- #}
+    <span class="status-item">
+      <strong>watchlist:</strong>
+      {% if not watchlist_freshness.has_import %}
+        not loaded (<a href="/settings#watchlist-freshness">configure</a>)
+      {% else %}
         {% if watchlist_freshness.record_count is not none %}
           {{ "{:,}".format(watchlist_freshness.record_count) }} records
         {% else %}
@@ -68,51 +87,94 @@
             {{ watchlist_freshness.exported_at | unix_to_iso }}
           </time>
         {% endif %}
-        &middot;
-        <span class="badge-status-error">stale</span>
-        (<a href="/settings#watchlist-freshness">details</a>)
-      </p>
+        {% if watchlist_freshness.is_stale %}
+          &middot; <span class="badge-status-error">stale</span>
+        {% endif %}
+        &middot; <a href="/settings#watchlist-freshness">details</a>
+      {% endif %}
+    </span>
+
+    {# --- overall health one-liner ----------------------------- #}
+    <span class="status-item status-item-meta">
+      <strong>alerts:</strong> {{ health.unacked_alert_count }} unacked
+      &middot; <strong>devices:</strong> {{ health.device_count }}
+      &middot; schema {{ health.schema_version }}
+    </span>
+  </section>
+
+  {# -----------------------------------------------------------------
+     2. Unacknowledged alerts (UI-DIRECTION.md §"Hierarchy" item 2).
+     The largest, loudest block on the page. This is the work.
+     Severity is carried by BOTH a left border on the row AND the
+     text label, so it is legible to a colour-blind operator reading
+     a grayscale screenshot. The Acknowledge button is demoted to
+     a secondary, low-emphasis style so the alert outranks it.
+     ----------------------------------------------------------------- #}
+  <section class="block block-alerts" aria-labelledby="home-unacked-heading">
+    <h3 id="home-unacked-heading">recent unacknowledged alerts</h3>
+    {% if recent_alerts %}
+      <div class="table-scroll">
+        <table class="alerts-table" aria-label="recent unacknowledged alerts requiring operator action">
+          <caption class="visually-hidden">Recent unacknowledged alerts, newest first. Each row carries its severity, source rule, device and the operator action.</caption>
+          <thead>
+            <tr>
+              <th scope="col">Time</th>
+              <th scope="col">Severity</th>
+              <th scope="col">Rule</th>
+              <th scope="col">Device</th>
+              <th scope="col">MAC</th>
+              <th scope="col">Message</th>
+              <th scope="col">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in recent_alerts %}
+              <tr id="alert-row-{{ a.id }}" class="row-sev-{{ a.severity }}">
+                <td>
+                  <time datetime="{{ a.ts | unix_to_iso }}"
+                        title="{{ a.ts | unix_to_iso }}">{{ a.ts | unix_to_iso }}</time>
+                </td>
+                <td>
+                  <span class="badge-{{ a.severity }} sev-label" aria-label="severity {{ a.severity }}">{{ a.severity }}</span>
+                </td>
+                <td><a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a></td>
+                <td>{{ a.device | device_label }}</td>
+                <td class="mac-cell">
+                  {%- if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif -%}
+                </td>
+                <td><span class="truncate">{{ a.message }}</span></td>
+                <td>
+                  <form method="post" action="/alerts/{{ a.id }}/ack" class="inline-form"
+                        hx-post="/alerts/{{ a.id }}/ack"
+                        hx-target="#alert-row-{{ a.id }}"
+                        hx-swap="outerHTML">
+                    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+                    <button type="submit" class="ack-button-inline" data-action="ack">Acknowledge</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="dim"><small><a href="/alerts">view all alerts &rarr;</a></small></p>
     {% else %}
-      <p class="watchlist-freshness">
-        <strong>Watchlist:</strong>
-        {% if watchlist_freshness.record_count is not none %}
-          {{ "{:,}".format(watchlist_freshness.record_count) }} records
-        {% else %}
-          <em>(record count unrecorded)</em>
-        {% endif %}
-        {% if watchlist_freshness.exported_at %}
-          &middot; snapshot
-          <time datetime="{{ watchlist_freshness.exported_at | unix_to_iso }}"
-                title="{{ watchlist_freshness.exported_at | unix_to_utc_human }}">
-            {{ watchlist_freshness.exported_at | unix_to_iso }}
-          </time>
-        {% endif %}
-        (<a href="/settings#watchlist-freshness">details</a>)
-      </p>
+      <p class="empty-state">No unacknowledged alerts.</p>
     {% endif %}
-  </article>
+  </section>
 
-  <article>
-    <header><strong>devices seen</strong></header>
-    <div class="tile-row">
-      <div class="tile">
-        <div class="tile-num">{{ device_seen.day }}</div>
-        <div class="tile-label">last 24h</div>
-      </div>
-      <div class="tile">
-        <div class="tile-num">{{ device_seen.week }}</div>
-        <div class="tile-label">last 7d</div>
-      </div>
-      <div class="tile">
-        <div class="tile-num">{{ device_seen.month }}</div>
-        <div class="tile-label">last 30d</div>
-      </div>
-    </div>
-  </article>
+  {# -----------------------------------------------------------------
+     3. Activity context (UI-DIRECTION.md §"Hierarchy" item 3).
+     One grammar for all of it: devices seen AND alert counts by
+     severity, all laid out as columns of the same 24h/7d/30d matrix.
+     The stat-grid carries the severity rows (kept for the v0.7.x
+     test contract); the tile-row carries the devices-seen companion
+     view; both live in this single block.
+     ----------------------------------------------------------------- #}
+  <section class="block block-activity" aria-labelledby="home-activity-heading">
+    <h3 id="home-activity-heading">activity</h3>
 
-  <article>
-    <header><strong>alerts at a glance</strong></header>
-    <div class="stat-grid">
+    <div class="stat-grid" aria-label="alert counts by severity over 24h, 7d, 30d">
       <span></span>
       <span class="stat-row-label">24h</span>
       <span class="stat-row-label">7d</span>
@@ -133,83 +195,56 @@
       <span>{{ sev_7d.high }}</span>
       <span>{{ sev_30d.high }}</span>
     </div>
-  </article>
 
-  <article>
-    <header><strong>alerts per day (last 30 days)</strong></header>
-    {% include "_sparkline.html" %}
-  </article>
-
-  <article>
-    <header><strong>recent unacknowledged alerts</strong></header>
-    {% if recent_alerts %}
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr><th>Timestamp</th><th>Severity</th><th>Rule</th><th>Device</th><th>MAC</th><th>Message</th><th>Status</th></tr>
-          </thead>
-          <tbody>
-            {% for a in recent_alerts %}
-              <tr id="alert-row-{{ a.id }}" class="row-sev-{{ a.severity }}">
-                <td><time datetime="{{ a.ts | unix_to_iso }}">{{ a.ts | unix_to_iso }}</time></td>
-                <td><span class="badge-{{ a.severity }}">{{ a.severity }}</span></td>
-                <td><a href="/alerts/{{ a.id }}"><code>{{ a.rule_name }}</code></a></td>
-                <td>{{ a.device | device_label }}</td>
-                <td class="mac-cell">
-                  {% if a.mac %}<a href="/devices/{{ a.mac }}">{{ a.mac }}</a>{% endif %}
-                </td>
-                <td><span class="truncate">{{ a.message }}</span></td>
-                <td>
-                  <form method="post" action="/alerts/{{ a.id }}/ack" class="inline-form"
-                        hx-post="/alerts/{{ a.id }}/ack"
-                        hx-target="#alert-row-{{ a.id }}"
-                        hx-swap="outerHTML">
-                    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
-                    <button type="submit" class="ack-button-inline">Acknowledge</button>
-                  </form>
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+    <div class="tile-row" aria-label="unique devices seen over 24h, 7d, 30d">
+      <div class="tile">
+        <div class="tile-num">{{ device_seen.day }}</div>
+        <div class="tile-label">last 24h</div>
       </div>
-    {% else %}
-      <p><em>No unacknowledged alerts.</em></p>
-    {% endif %}
-  </article>
+      <div class="tile">
+        <div class="tile-num">{{ device_seen.week }}</div>
+        <div class="tile-label">last 7d</div>
+      </div>
+      <div class="tile">
+        <div class="tile-num">{{ device_seen.month }}</div>
+        <div class="tile-label">last 30d</div>
+      </div>
+    </div>
+  </section>
 
-  <article>
-    <header><strong>Kismet status</strong></header>
-    {% if kismet_status %}
-      <p class="last-poll">
-        {% if kismet_status.reachable %}
-          <span class="badge-low">reachable</span>
-          {% if kismet_status.version %}
-            &middot; <strong>version:</strong> <code>{{ kismet_status.version }}</code>
-          {% endif %}
-        {% else %}
-          <span class="badge-high">unreachable</span>
-          {% if kismet_status.error %}
-            &middot; <strong>error:</strong> <code>{{ kismet_status.error }}</code>
-          {% endif %}
-        {% endif %}
-        {% if kismet_status.checked_at %}
-          &middot; <strong>checked:</strong>
-          <time datetime="{{ kismet_status.checked_at | unix_to_iso }}">{{ kismet_status.checked_at | unix_to_iso }}</time>
-        {% endif %}
-      </p>
-    {% else %}
-      <p><em>Kismet status unavailable.</em></p>
-    {% endif %}
-  </article>
+  {# -----------------------------------------------------------------
+     4. Trend (UI-DIRECTION.md §"Hierarchy" item 4). Least important:
+     it is context, not action. Single sparkline, 30 bars, sr-only
+     text alternative.
+     ----------------------------------------------------------------- #}
+  <section class="block block-trend" aria-labelledby="home-trend-heading">
+    <h3 id="home-trend-heading">alerts per day (last 30 days)</h3>
+    {% include "_sparkline.html" %}
+  </section>
 
-  <article>
-    <header><strong>recently seen devices</strong></header>
+  {# -----------------------------------------------------------------
+     5. Recently seen devices. Test contract (regression guard for
+     the home page) requires this table; UI-DIRECTION.md does not
+     enumerate it but also does not forbid it. Kept compact, capped
+     to ~60vh via the existing .table-scroll--tall utility, with a
+     "view all" link to /devices.
+     ----------------------------------------------------------------- #}
+  <section class="block block-recent-devices" aria-labelledby="home-recent-heading">
+    <h3 id="home-recent-heading">recently seen devices</h3>
     {% if recent_devices %}
       <div class="table-scroll table-scroll--tall">
-        <table>
+        <table aria-label="recently seen devices">
           <thead>
-            <tr><th>Device</th><th>MAC</th><th>Type</th><th>Vendor</th><th>BLE name</th><th>Last seen</th><th>Last RSSI</th><th>Sightings</th></tr>
+            <tr>
+              <th>Device</th>
+              <th>MAC</th>
+              <th>Type</th>
+              <th>Vendor</th>
+              <th>BLE name</th>
+              <th>Last seen</th>
+              <th>Last RSSI</th>
+              <th>Sightings</th>
+            </tr>
           </thead>
           <tbody>
             {% for d in recent_devices %}
@@ -217,8 +252,8 @@
                 <td>{{ d | device_label }}</td>
                 <td class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a></td>
                 <td>{{ d.device_type }}</td>
-                <td>{{ d.oui_vendor or "—" }}</td>
-                <td>{{ d.ble_name or "—" }}</td>
+                <td>{{ d.oui_vendor or "&mdash;" | safe }}</td>
+                <td>{{ d.ble_name or "&mdash;" | safe }}</td>
                 <td><time datetime="{{ d.last_seen | unix_to_iso }}">{{ d.last_seen | unix_to_iso }}</time></td>
                 <td>{% if d.last_rssi is none or d.last_rssi == 0 %}&mdash;{% else %}{{ d.last_rssi }}{% endif %}</td>
                 <td>{{ d.sighting_count }}</td>
@@ -227,12 +262,14 @@
           </tbody>
         </table>
       </div>
-      <p>
-        <small>showing {{ recent_devices|length }} of {{ health.device_count }}</small>
-        &middot; <a href="/devices">view all devices &rarr;</a>
+      <p class="dim">
+        <small>
+          showing {{ recent_devices|length }} of {{ health.device_count }}
+          &middot; <a href="/devices">view all devices &rarr;</a>
+        </small>
       </p>
     {% else %}
-      <p><em>No devices seen yet.</em></p>
+      <p class="empty-state">No devices seen yet.</p>
     {% endif %}
-  </article>
+  </section>
 {% endblock %}
