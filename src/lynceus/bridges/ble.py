@@ -32,6 +32,7 @@ from .. import paths
 from ..allowlist import Allowlist
 from ..ble_bridge_checks import bridge_source_name
 from ..ble_continuity import classify_manufacturer_data
+from ..ble_odid import decode_service_data
 from ..config import load_config
 from ..db import Database
 from ..kismet import DeviceObservation, normalize_mac, normalize_uuid
@@ -61,7 +62,15 @@ except Exception as _exc:  # pragma: no cover - rig-only path
 # and drops the monitor above ~7 patterns; the Flags working set is the Flags AD
 # type (0x01) with each of these single content bytes.
 _FLAGS_AD_TYPE = 0x01
-_FLAGS_CONTENT_BYTES = (0x06, 0x1A, 0x02, 0x04, 0x05, 0x00)
+# 0x00 was dropped from this tuple to make room for the ODID pattern below.
+# The measurement that justified it is in _or_pattern_specs.
+_FLAGS_CONTENT_BYTES = (0x06, 0x1A, 0x02, 0x04, 0x05)
+
+# Service Data - 16-bit UUID. ASTM F3411 Remote ID rides here and nowhere else:
+# 0xFFFA little-endian (ASTM International) followed by AD application code
+# 0x0D (Open Drone ID). See ble_odid for the full wire layout and provenance.
+_SERVICE_DATA_AD_TYPE = 0x16
+_ODID_PATTERN_CONTENT = b"\xfa\xff\x0d"
 
 # Apple manufacturer-specific data (AD type 0xFF), company id 0x004C in wire
 # order. Apple Continuity adverts are non-connectable and carry NO Flags AD
@@ -79,11 +88,34 @@ def _or_pattern_specs() -> tuple[tuple[int, int, bytes], ...]:
     Without it the monitor never fires for Continuity and ble_continuity decodes
     nothing — the bridge runs clean and logs no error while capturing zero.
 
-    Apple leads the tuple because BlueZ drops the monitor above ~7 patterns and
-    this sits exactly at 7; if the set ever has to be trimmed, trim from Flags.
+    The ODID pattern is REQUIRED for the same class of reason: an ASTM F3411
+    legacy advert is ONE service-data element filling all 31 bytes of the legacy
+    payload, so it carries no Flags element and no manufacturer data and matches
+    nothing else here. Without it the whole ble_odid decoder is dead code.
+
+    ⛔ SEVEN IS A HARD CEILING, and it is the COUNT that matters, not which
+    patterns. Measured on-rig 2026-08-03 on hci1 over matched 20s windows
+    (internal/tools/measure_ble_patterns.py), four arms:
+
+        A shipped                7 patterns, no ODID   14 devices / 81 frames
+        B shipped + ODID         8 patterns, ODID       0 devices /  0 frames
+        C ODID swapped for 0x00  7 patterns, ODID      15 devices / 80 frames
+        D extra Flags 0x07       8 patterns, no ODID    0 devices /  0 frames
+
+    D is the decisive arm: eight patterns collapse to zero with no ODID
+    involved, so BlueZ has no objection to a service-data pattern — it objects
+    to the eighth entry. C is this configuration and cost nothing measurable.
+    Flags 0x00 was the byte traded away; over those windows its removal was not
+    detectable, though 40s of one room is not proof it never matters.
+
+    Apple still leads the tuple, and ODID trails it, because that is the exact
+    ordering arm C measured. Adding an eighth pattern gives you a bridge that
+    captures NOTHING and logs no error.
     """
-    return ((0, _MFR_DATA_AD_TYPE, _APPLE_COMPANY_BYTES),) + tuple(
-        (0, _FLAGS_AD_TYPE, bytes([b])) for b in _FLAGS_CONTENT_BYTES
+    return (
+        ((0, _MFR_DATA_AD_TYPE, _APPLE_COMPANY_BYTES),)
+        + tuple((0, _FLAGS_AD_TYPE, bytes([b])) for b in _FLAGS_CONTENT_BYTES)
+        + ((0, _SERVICE_DATA_AD_TYPE, _ODID_PATTERN_CONTENT),)
     )
 
 
@@ -139,6 +171,9 @@ class _BufferEntry:
     service_uuids: tuple[str, ...]
     # Derived Continuity label only — never raw payload bytes.
     device_class: str | None = None
+    # Derived Remote-ID serial only, on the same terms: the ODID service-data
+    # payload is decoded in ble_odid and dropped there. Never the raw bytes.
+    drone_id_prefix: str | None = None
 
 
 class BleBridge:
@@ -204,6 +239,7 @@ class BleBridge:
         rssi: int | None,
         manufacturer_data,
         service_uuids,
+        service_data,
     ) -> None:
         """Fold one advertisement into the per-MAC buffer (latest wins)."""
         try:
@@ -218,6 +254,11 @@ class BleBridge:
         # Raw payload bytes are read HERE and nowhere else, and only the
         # derived label is kept — see ble_continuity's module docstring.
         device_class = classify_manufacturer_data(manufacturer_data)
+        # Same contract for Open Drone ID: the service-data payload is decoded
+        # into a serial and the bytes are dropped inside ble_odid. ODID arrives
+        # in service data, not manufacturer data, which is why this field has
+        # to be plumbed at all — see ble_odid's module docstring.
+        drone_id_prefix = decode_service_data(service_data)
         existing = self._buffer.get(mac)
         if existing is None:
             self._buffer[mac] = _BufferEntry(
@@ -227,6 +268,7 @@ class BleBridge:
                 manufacturer_ids=manufacturer_ids,
                 service_uuids=uuids,
                 device_class=device_class,
+                drone_id_prefix=drone_id_prefix,
             )
         else:
             # Keep the latest advert's fields; preserve the window's first_seen.
@@ -235,6 +277,13 @@ class BleBridge:
             existing.manufacturer_ids = manufacturer_ids
             existing.service_uuids = uuids
             existing.device_class = device_class
+            # STICKY, unlike every other field here. An ODID transmitter
+            # rotates Basic ID / Location / System / Operator ID, and only the
+            # Basic ID carries the serial — so most adverts in a window decode
+            # to None. Clearing on those would blank nearly every drone before
+            # the flush. A newly decoded serial still replaces the old one.
+            if drone_id_prefix is not None:
+                existing.drone_id_prefix = drone_id_prefix
 
     @staticmethod
     def _select_manufacturer_id(manufacturer_ids) -> str | None:
@@ -279,6 +328,7 @@ class BleBridge:
             ble_service_uuids=self._normalize_uuids(entry.service_uuids),
             seen_by_sources=(bridge_source_name(self.adapter),),
             ble_device_class=entry.device_class,
+            drone_id_prefix=entry.drone_id_prefix,
         )
 
     def _flush(self, now_ts: int) -> int:
@@ -344,6 +394,11 @@ class BleBridge:
             rssi=getattr(advertisement_data, "rssi", None),
             manufacturer_data=getattr(advertisement_data, "manufacturer_data", None) or {},
             service_uuids=tuple(getattr(advertisement_data, "service_uuids", None) or ()),
+            # ODID rides in service data. Omitting this field was the reason
+            # the payload never entered the program at all (measured
+            # 2026-08-03); _record_advert takes it as a required argument so a
+            # future caller cannot quietly drop it again.
+            service_data=getattr(advertisement_data, "service_data", None),
         )
 
     def _make_scanner(self):  # pragma: no cover - rig-only path

@@ -19,6 +19,7 @@ from lynceus.bridges.ble import (
     _APPLE_COMPANY_BYTES,
     _FLAGS_AD_TYPE,
     _MFR_DATA_AD_TYPE,
+    _SERVICE_DATA_AD_TYPE,
     _or_pattern_specs,
 )
 
@@ -35,15 +36,48 @@ def test_apple_company_bytes_are_little_endian_004c():
 
 
 def test_flags_patterns_are_retained():
-    """The Apple pattern is additive — non-Apple BLE capture must not regress."""
+    """Five Flags values remain; 0x00 was traded for the ODID pattern.
+
+    See test_odid_service_data_pattern_is_present for the measurement that
+    justified the trade.
+    """
     specs = _or_pattern_specs()
     flags = [s for s in specs if s[1] == _FLAGS_AD_TYPE]
-    assert len(flags) == 6
-    assert {s[2] for s in flags} == {b"\x06", b"\x1a", b"\x02", b"\x04", b"\x05", b"\x00"}
+    assert len(flags) == 5
+    assert {s[2] for s in flags} == {b"\x06", b"\x1a", b"\x02", b"\x04", b"\x05"}
+
+
+def test_odid_service_data_pattern_is_present():
+    """Without this the Remote-ID receiver never sees a single advert.
+
+    An ASTM F3411 legacy advert is ONE service-data element filling all 31
+    bytes of the legacy payload (transmitter-linux/bluetooth.c:171 sets
+    Advertising_Data_Length = 0x1F), so it carries no Flags element and no
+    manufacturer data and matches none of the other patterns. Content is
+    0xFFFA little-endian plus the Open Drone ID AD application code 0x0D.
+    """
+    specs = _or_pattern_specs()
+    assert (0, _SERVICE_DATA_AD_TYPE, b"\xfa\xff\x0d") in specs
 
 
 def test_pattern_count_within_bluez_limit():
-    """BlueZ silently drops the monitor above ~7 patterns — we sit exactly at 7."""
+    """BlueZ drops the monitor above 7 patterns — MEASURED, not inferred.
+
+    On-rig 2026-08-03, hci1, four arms over matched 20s windows
+    (internal/tools/measure_ble_patterns.py), radio verified powered before
+    and after every round:
+
+        A shipped                7 patterns, no ODID   14 devices / 81 frames
+        B shipped + ODID         8 patterns, ODID       0 devices /  0 frames
+        C ODID swapped for 0x00  7 patterns, ODID      15 devices / 80 frames
+        D extra Flags 0x07       8 patterns, no ODID    0 devices /  0 frames
+
+    D is the arm that matters: 8 patterns collapse to zero with no ODID
+    involved at all, so the ceiling is the COUNT and not the service-data
+    pattern. C is the shipped configuration and cost nothing measurable
+    against A. ⛔ Raising this number without re-measuring gives you a bridge
+    that captures NOTHING and logs no error.
+    """
     assert len(_or_pattern_specs()) <= 7
 
 
