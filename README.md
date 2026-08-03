@@ -35,7 +35,7 @@ and pushes an alert to your phone when something interesting shows up.
 It never transmits. It never probes. It never associates. It just listens, and
 it tells you the truth about what it heard.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Status: v0.9.5](https://img.shields.io/badge/Status-v0.9.5-blue.svg)](#project-status)
 [![Counter-Surveillance](https://img.shields.io/badge/Counter--Surveillance-passive%20only-1f6feb.svg)](#privacy--threat-model)
@@ -543,9 +543,22 @@ load-bearing, not decorative.
 
 ## License & credits
 
-MIT. See [LICENSE](LICENSE). Built on
-[Kismet](https://www.kismetwireless.net/) for radio capture and
-[ntfy](https://ntfy.sh/) for push delivery.
+**AGPL-3.0-or-later.** See [LICENSE](LICENSE). Copyright © 2026 Kev Wilson.
+
+Use it, run it, modify it, sell it. The condition is that everyone you give it
+to — including anyone who only ever reaches it over a network, which is what
+AGPL §13 adds over plain GPL — gets the same freedom and the same source. If
+you want to build it into something closed, that is what the
+[commercial licence](COMMERCIAL-LICENSE.md) is for.
+
+Releases up to and including **v0.9.5 remain MIT** and nothing revokes that:
+if you took the code under MIT, you keep those rights to those versions
+forever. AGPL binds from this commit onward.
+
+Built on [Kismet](https://www.kismetwireless.net/) for radio capture and
+[ntfy](https://ntfy.sh/) for push delivery. The vendored
+[Pico CSS](src/lynceus/webui/static/pico.min.css) stays under its own MIT
+licence, which AGPL-3.0 is compatible with.
 
 ---
 

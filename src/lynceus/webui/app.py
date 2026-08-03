@@ -76,6 +76,14 @@ PACKAGE = "lynceus.webui"
 
 KISMET_STATUS_CACHE_TTL = 30
 
+# Where the corresponding source of this program can be obtained, as AGPL-3.0
+# §13 requires for anyone who interacts with it over a network. It is the
+# upstream repository, which is the honest answer for an unmodified install.
+# ⚠️ If you MODIFY Lynceus and let anyone else reach your instance, §13 makes
+# YOUR modified source the thing that has to be offered here. Point this at
+# wherever you publish it.
+SOURCE_URL = "https://github.com/kevwillow/lynceus-warden"
+
 
 def _resolve_templates_dir() -> Path:
     try:
@@ -1400,6 +1408,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
     app.state.config = config
     app.state.templates = Jinja2Templates(directory=str(_resolve_templates_dir()))
     app.state.templates.env.globals["csrf_token"] = lambda request: get_csrf_token(request)
+    # AGPL-3.0 §13: anyone interacting with this over a network must be able to
+    # obtain the corresponding source of the version they are talking to. These
+    # are env globals rather than per-route context deliberately — the site
+    # header's {{ version }} comes from each route's context dict, so a route
+    # that forgets the key renders an empty string. That is a cosmetic bug for a
+    # version number and a licence-compliance one for the source offer, so the
+    # footer must not be able to fail the same way.
+    app.state.templates.env.globals["lynceus_version"] = __version__
+    app.state.templates.env.globals["lynceus_source_url"] = SOURCE_URL
+    app.state.templates.env.globals["lynceus_license"] = "AGPL-3.0-or-later"
     app.state.templates.env.filters["unix_to_iso"] = unix_to_iso
     app.state.templates.env.filters["unix_to_utc_human"] = unix_to_utc_human
     app.state.templates.env.filters["device_label"] = _device_label

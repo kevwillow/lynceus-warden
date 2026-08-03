@@ -124,5 +124,15 @@
       </header>
       {% block content %}{% endblock %}
     </main>
+    {# AGPL-3.0 §13 source offer. Rendered from env globals, not from each
+       route's context, so a handler that forgets a key cannot silently drop
+       it — see the note beside env.globals in webui/app.py. #}
+    <footer class="site-footer">
+      <small class="dim">
+        lynceus v{{ lynceus_version }} &middot;
+        {{ lynceus_license }} &middot;
+        <a href="{{ lynceus_source_url }}" rel="noopener">source code</a>
+      </small>
+    </footer>
   </body>
 </html>
