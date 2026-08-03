@@ -59,7 +59,36 @@ test defects that Windows could not structurally expose, fixed in `9b2636c`;
 A drop below 3508 (local) or 3048 (Linux clone) is a regression. A **rise** in
 skips is usually one too — but not always, and the exceptions are below.
 
-### Measured again from the repo root, 2026-08-02, at `eca081a`
+### Current number to beat — repo root, 2026-08-02, at `f345dbd`
+
+`feat/ui-integration`, run from `/home/kev/lynceus-warden` with `.venv/bin` on
+`PATH`. **This is the number to compare against, not the `eca081a` one below**,
+which records an `import_argus` failure that `962dab6` has since fixed.
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` | **3083 passed, 1 skipped**, 47 deselected, 0 failed, 19m04s |
+| `pytest -m diagnostic` | **47 passed**, 0 failed, 3m33s |
+| `ruff check .` | clean |
+| `python -m build --wheel` | `lynceus-0.9.5-py3-none-any.whl` |
+| `ruff format --check .` | 93 files — red by design, unchanged across the branch |
+
+The single skip is the good one: `test_setup_wizard.py:1955` skips *because* a
+real BT adapter is present. Both figures were measured under a load average of
+~15 on 12 cores, so treat the wall-clock times as an upper bound.
+
+⚠️ **Both of the gates that had not been run when the branch was written came
+back red**, and neither was reachable from a targeted test selection:
+
+- `pytest -q` at `d112a53` → 1 failed. A `/settings` fix had been applied to one
+  of the two template branches that print the same command.
+- `pytest -m diagnostic` at `3bdafba` → 46 passed, 1 failed. The dashboard
+  restructure blinded `test_diag_home_ack_flow`'s extractor.
+
+That is the second time the diagnostic marker has hidden a red test in this
+repo. Run **both** gates before believing a branch, every time.
+
+### Measured from the repo root earlier the same day, at `eca081a`
 
 Same host and interpreter, but run from `/home/kev/lynceus-warden` itself with
 `.venv/bin` on `PATH`, rather than from a throwaway worktree:
