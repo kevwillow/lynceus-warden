@@ -61,6 +61,56 @@ _STATIC = (
 )
 
 
+_UNACKED_HEADING = "recent unacknowledged alerts"
+
+
+def _home_unacked_block(index_html: str) -> str:
+    """Return the markup of the home page's unacknowledged-alerts card.
+
+    ⚠️ Anchor on the operator-facing heading TEXT, never on the container
+    markup. The original form of this extractor pinned
+    ``<article>\\s*<header><strong>recent unacknowledged alerts</strong>``,
+    and the dashboard restructure — which moved the card to
+    ``<section class="block block-alerts">`` with an ``<h3>`` heading, and
+    changed nothing about the ack control this diagnostic exists to observe —
+    reduced it to a sentinel string. It failed loudly only because a later
+    assertion happened to look inside the result.
+
+    So: find the heading wherever it is and at whatever level, walk back to
+    the container that opens it and forward to that container's close, and
+    raise here rather than returning a placeholder that fails somewhere less
+    informative.
+    """
+    heading = re.search(
+        rf"<h[1-6][^>]*>\s*{re.escape(_UNACKED_HEADING)}\s*</h[1-6]>",
+        index_html,
+        flags=re.IGNORECASE,
+    )
+    if heading is None:
+        raise AssertionError(
+            f"no heading matching {_UNACKED_HEADING!r} in index.html. Either "
+            "the home page no longer surfaces unacknowledged alerts under that "
+            "name — in which case this diagnostic needs re-scoping, not a "
+            "wider regex — or the heading is no longer an <h1>-<h6>."
+        )
+    starts = [
+        index_html.rfind(f"<{tag}", 0, heading.start()) for tag in ("section", "article")
+    ]
+    start = max(starts)
+    if start < 0:
+        raise AssertionError(
+            "found the unacknowledged-alerts heading but no enclosing <section> "
+            "or <article> before it; the card's container tag has changed."
+        )
+    opener = "section" if index_html.startswith("<section", start) else "article"
+    close = index_html.find(f"</{opener}>", heading.end())
+    if close < 0:
+        raise AssertionError(
+            "found the unacknowledged-alerts container but not its closing tag."
+        )
+    return index_html[start:close]
+
+
 def _csrf_token(client) -> str:
     """Mirror tests/test_webui.py::_csrf_setup -- a safe-method GET sets
     the double-submit cookie; the same value goes in the _csrf form field."""
@@ -197,13 +247,7 @@ def test_diag_home_ack_flow(diag, tmp_path):
     # =================================================================
     diag.section("ITEM 2 -- index.html ack control wiring")
     index_html = (_TEMPLATES / "index.html").read_text(encoding="utf-8")
-    block_m = re.search(
-        r"<article>\s*<header><strong>recent unacknowledged alerts</strong>"
-        r".*?</article>",
-        index_html,
-        flags=re.DOTALL,
-    )
-    block = block_m.group(0) if block_m else "(block not found)"
+    block = _home_unacked_block(index_html)
     diag.observed("--- index.html 'recent unacknowledged alerts' block (verbatim) ---")
     for line in block.splitlines():
         diag.observed(f"  {line}")
