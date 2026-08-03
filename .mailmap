@@ -1,0 +1,22 @@
+# Canonical identity for every commit in this repository.
+#
+# All five author strings below are the same person. Recorded here rather
+# than rewritten into the commits because a history rewrite would change
+# every SHA on a pushed main -- 689 commits as of 2026-08-02 -- invalidating
+# every SHA cited in docs/AUDIT_REGISTER.md, CHANGELOG.md and the merged PRs.
+#
+# git log/shortlog/blame and GitHub all honour this file, so authorship
+# reads as one identity everywhere it matters -- including for the
+# sole-copyright basis of the commercial licence offer.
+#
+# Verify with:  git log --format='%aN <%aE>' | sort -u
+# (one line out; %an/%ae ignore this file and will show all five)
+#
+# The COMMITTER of a rebase-merged commit is GitHub <noreply@github.com>,
+# which this file does not map and should not: committer is who applied the
+# patch, not who wrote it, and the copyright claim rests on authorship.
+Kev Wilson <195248243+kevwillow@users.noreply.github.com> <kevwilsona@proton.me>
+Kev Wilson <195248243+kevwillow@users.noreply.github.com> Zencache <195248243+kevwillow@users.noreply.github.com>
+Kev Wilson <195248243+kevwillow@users.noreply.github.com> Zencache <kevwilsona@proton.me>
+Kev Wilson <195248243+kevwillow@users.noreply.github.com> CascadeForge <cascadeforge@paperclip.ai>
+Kev Wilson <195248243+kevwillow@users.noreply.github.com> Kev Wilson <kevwilsona@proton.me>
