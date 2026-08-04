@@ -8735,3 +8735,159 @@ def test_vendored_pico_defines_no_grid_so_we_must():
     )
     assert "form fieldset.grid {" in ours
     assert "grid-template-columns" in ours.split("form fieldset.grid {")[1].split("}")[0]
+
+
+# ---------------------------------------------------------------------------
+# Co-observation explorer route (design v3, Decision 6).
+#
+# The capability is off by default. These tests pin the two properties that are
+# security properties rather than preferences: the route must not be reachable
+# while the capability is off, and while off it must be INDISTINGUISHABLE from a
+# device that does not exist -- otherwise the toggle is itself a probe oracle
+# that confirms which MACs the operator has seen.
+# ---------------------------------------------------------------------------
+
+_CO_ANCHOR = "aa:bb:cc:dd:ee:01"
+_CO_NEIGHBOUR = "aa:bb:cc:dd:ee:02"
+_CO_NOW = 1_700_000_000
+
+
+def _make_co_app(tmp_path, *, enabled: bool, seed_devices: bool = True):
+    config = Config(
+        db_path=str(tmp_path / "co.db"),
+        co_observation={"enabled": enabled},
+    )
+    db = Database(config.db_path)
+    if seed_devices:
+        for mac in (_CO_ANCHOR, _CO_NEIGHBOUR):
+            db.upsert_device(mac, "wifi", "Acme", 0, _CO_NOW)
+        db._conn.executemany(
+            "INSERT OR IGNORE INTO locations(id, label) VALUES (?, ?)",
+            [("default", "default")],
+        )
+        db._conn.executemany(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, 'default')",
+            [
+                (_CO_ANCHOR, _CO_NOW - 3_000),
+                (_CO_ANCHOR, _CO_NOW - 1_000),
+                (_CO_NEIGHBOUR, _CO_NOW - 2_990),
+                (_CO_NEIGHBOUR, _CO_NOW - 990),
+            ],
+        )
+        db._conn.commit()
+    return create_app(config, db), db
+
+
+@pytest.fixture
+def co_clock(monkeypatch):
+    """Inject the clock. Carried fix v1 24: fixtures pinned to a constant while
+    the route reads real time.time() would put every seeded sighting outside the
+    window, so the panel would render empty and every assertion would pass for
+    the wrong reason."""
+    monkeypatch.setattr("lynceus.webui.app.time.time", lambda: float(_CO_NOW))
+
+
+@pytest.mark.webui
+def test_co_observations_route_is_not_swallowed_by_the_device_catch_all(tmp_path, co_clock):
+    """⭐ /devices/{mac:path} matches slashes, so it will happily swallow
+    '<mac>/co-observations' as a MAC unless this route is registered first.
+    The failure is silent: a 200 rendering the wrong page."""
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        assert r.status_code == 200
+        assert "co-observation" in r.text.lower()
+        # device_detail's own heading must NOT be what came back.
+        assert "Malformed MAC" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_disabled_is_byte_identical_to_a_missing_device(tmp_path, co_clock):
+    """⭐ The toggle must not be a probe oracle.
+
+    Capability OFF against a device that EXISTS must be indistinguishable from
+    capability ON against a device that does not. If these differ in status or
+    body, an attacker learns which MACs the operator has seen by toggling
+    nothing at all.
+    """
+    app_off, db_off = _make_co_app(tmp_path / "off", enabled=False, seed_devices=True)
+    app_on, db_on = _make_co_app(tmp_path / "on", enabled=True, seed_devices=False)
+    try:
+        with TestClient(app_off) as c_off:
+            r_off = c_off.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        with TestClient(app_on) as c_on:
+            r_on = c_on.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        assert r_off.status_code == r_on.status_code == 404
+        assert r_off.text == r_on.text
+    finally:
+        db_off.close()
+        db_on.close()
+
+
+@pytest.mark.webui
+def test_co_observations_enabled_renders_the_neighbour(tmp_path, co_clock):
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        assert r.status_code == 200
+        assert _CO_NEIGHBOUR in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_renders_the_range_and_w_in_use(tmp_path, co_clock):
+    """The range and W silently control every result, so they are part of the
+    rendered output, not just the request."""
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations?w=60")
+        assert r.status_code == 200
+        assert "60" in r.text
+        assert "30" in r.text  # window_days default, displayed
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_rejects_a_malformed_mac(tmp_path, co_clock):
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices/not-a-mac/co-observations")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_rejects_an_out_of_range_w(tmp_path, co_clock):
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            base = f"/devices/{_CO_ANCHOR}/co-observations"
+            assert client.get(f"{base}?w=-1").status_code == 400
+            assert client.get(f"{base}?w=99999999").status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_audit_logs_every_query(tmp_path, co_clock, caplog):
+    """Decision 6: every query is audit-logged, so enumeration leaves a trail
+    even though the panel itself is read-only."""
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with caplog.at_level("INFO", logger="lynceus.webui.app"):
+            with TestClient(app) as client:
+                client.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        joined = " ".join(r.message for r in caplog.records)
+        assert "co-observation" in joined.lower()
+        assert _CO_ANCHOR in joined
+    finally:
+        db.close()
