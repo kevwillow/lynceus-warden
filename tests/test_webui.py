@@ -8998,3 +8998,27 @@ def test_drill_down_refuses_a_mac_that_is_not_a_candidate(tmp_path, co_clock):
         assert "Co-observed sightings:" not in r.text
     finally:
         db.close()
+
+
+@pytest.mark.webui
+def test_disabled_is_indistinguishable_even_for_an_invalid_request(tmp_path, co_clock):
+    """⭐ The oracle closes only if EVERY path agrees, not the happy one.
+
+    Validating w after the capability check makes ?w=-1 answer 400 while
+    enabled and 404 while disabled, which reveals the toggle's state to anyone
+    who sends one bad parameter. The earlier test compared valid requests only
+    and could never have seen it.
+    """
+    app_on, db_on = _make_co_app(tmp_path / "on", enabled=True)
+    app_off, db_off = _make_co_app(tmp_path / "off", enabled=False)
+    try:
+        for bad in ("-1", "99999999"):
+            with TestClient(app_on) as c:
+                on = c.get(f"/devices/{_CO_ANCHOR}/co-observations?w={bad}")
+            with TestClient(app_off) as c:
+                off = c.get(f"/devices/{_CO_ANCHOR}/co-observations?w={bad}")
+            assert on.status_code == off.status_code, f"w={bad} leaks the toggle state"
+            assert on.text == off.text, f"w={bad} leaks the toggle state in the body"
+    finally:
+        db_on.close()
+        db_off.close()

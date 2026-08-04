@@ -3266,13 +3266,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 status_code=404,
             )
 
-        if not cfg.enabled:
-            logger.info(
-                "co-observation panel requested while the capability is disabled: mac=%s",
-                normalized,
-            )
-            return _absent()
-
+        # ⭐ Parameter validation runs BEFORE the capability check, and the
+        # order is load-bearing. Validating after it made ?w=-1 answer 400
+        # while enabled and 404 while disabled, so one bad parameter revealed
+        # the toggle's state -- the toggle becoming the very oracle Decision 6
+        # forbids. The oracle closes only if EVERY path agrees, not the happy
+        # one. Pinned by
+        # test_disabled_is_indistinguishable_even_for_an_invalid_request.
         proximity = cfg.proximity_seconds if w is None else w
         if not (0 <= proximity <= 86400):
             return app.state.templates.TemplateResponse(
@@ -3285,6 +3285,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 },
                 status_code=400,
             )
+
+        if not cfg.enabled:
+            logger.info(
+                "co-observation panel requested while the capability is disabled: mac=%s",
+                normalized,
+            )
+            return _absent()
 
         if db.get_device_with_sightings(normalized) is None:
             return _absent()
