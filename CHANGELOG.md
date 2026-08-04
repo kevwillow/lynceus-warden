@@ -67,6 +67,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A co-observation explorer, so you can see which devices keep turning up
+  when you do.** `/devices/<mac>/co-observations` shows the other devices
+  logged close in time to one device, at the same location. The query behind
+  it has existed since 0.9.5 and **nothing called it** — the feature was
+  complete in the database and invisible to an operator.
+
+  **It makes no statistical claim, and that is the feature.** There is no
+  score, no confidence band, no ranking of suspicion. Sensor uptime is not
+  recorded anywhere in the schema, so absence of data cannot be told apart
+  from a quiet device or a device that was not there, and no number would be
+  defensible. The panel reports counts you read; it does not reach a verdict.
+  An earlier scored design was withdrawn after it was measured returning
+  maximum confidence for the always-present neighbour it existed to demote —
+  that design now ships as a tombstone under `docs/superpowers/specs/` so the
+  reasoning is not lost.
+
+  Both run denominators are shown, because they are not the same number: five
+  candidate runs inside one anchor run are not five events. The range and the
+  proximity window are rendered, not merely requested, since `sightings` has
+  no retention policy by default and an unstated horizon would silently
+  control every result. Truncation is stated outright. Clicking a pair reveals
+  **the actual logged sighting rows and the real Δt between them**, so a count
+  can be audited rather than trusted — and that list says plainly that its
+  rows are sighting pairs, not encounters.
+
+  ⛔ **Off by default, and that is a security control rather than a
+  preference.** Iterating the route across every MAC reconstructs an
+  association graph. While the capability is off the route answers exactly as
+  it does for a device that does not exist, so the toggle cannot be used to
+  confirm which MACs you have seen. Every query is audit-logged. Enable with
+  `co_observation.enabled: true`.
+
+- **`sightings` can now be pruned, after never having a retention policy.**
+  At a 60-second poll interval one continuously-present device adds roughly
+  1,440 rows a day, so the table grew without bound and eventually filled a
+  Pi. Set `sightings_retention_days` to bound it.
+
+  ⛔ **Unset by default, meaning nothing is ever deleted** — exactly what
+  every existing install already does. Deleting observation history is
+  irreversible, and an upgrade that silently discarded your evidence would be
+  a data-loss bug shipped as a feature. Alerts are never touched; they are
+  your record of what was decided and outlive the observations behind them.
+
+  Two things worth knowing if you turn it on. `devices.sighting_count` is an
+  incrementing counter rather than a row count, so pruning cannot decrement
+  it — `/devices/<mac>` therefore states outright that older sightings were
+  deleted, instead of letting "showing N of M" imply they are still
+  retrievable. And retention may not be shorter than
+  `co_observation.window_days` while that panel is on, because the panel would
+  then claim a period the database no longer covers; that is rejected when the
+  config loads.
+
 - **Lynceus now receives ASTM F3411 Remote ID over BLE, not just DJI's
   DroneID.** Kismet's UAV phy decodes DJI's proprietary format, which was 51 of
   427 drone rows in the reference capture — 12%. The other 88% broadcast the
