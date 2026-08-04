@@ -98,6 +98,28 @@
         <code>{{ mac }}</code> and <code>{{ detail_mac }}</code>
         at {{ detail_loc }}
       </header>
+      {# ⭐ The row count here is NOT the run count above, and saying so is the
+         whole point. One run can hold many sighting pairs -- every anchor
+         sighting against every candidate sighting inside W -- so counting
+         these rows as encounters is exactly the pseudo-replication the run
+         counts exist to prevent. Measured: an 8-shared-run pair rendered 32
+         rows here with nothing explaining the difference. #}
+      <p>
+        <strong>{{ pairs|length }}</strong> sighting pair{{ '' if pairs|length == 1 else 's' }}
+        {% if detail_row %}
+          across <strong>{{ detail_row.shared_anchor_runs }}</strong> shared anchor runs
+          and <strong>{{ detail_row.shared_candidate_runs }}</strong> shared candidate runs.
+        {% endif %}
+        <small>
+          One run usually contains several pairs, so this list is longer than
+          those counts. <strong>Rows here are not encounters</strong> &mdash; the
+          run counts above are the ones to read as events.
+        </small>
+      </p>
+      {% if pairs_truncated %}
+        <p><mark>Showing the first {{ pairs_limit }} pairs only; there are more.
+        Tighten W to see the closest ones.</mark></p>
+      {% endif %}
       <table>
         <caption>
           The actual logged rows behind this pair's counts, within

@@ -84,6 +84,12 @@ _CO_COVERAGE_SHARE = 0.25
 # information the operator should have, so the panel offers the ladder rather
 # than a single configured value.
 _CO_W_PRESETS = (60, 300, 900)
+# Drill-down cap. One observation run can hold many sighting pairs (every
+# anchor sighting against every candidate sighting inside W), so this list is
+# n*m and grows far faster than the run counts above it. Capped, and the cap is
+# always reported -- silent truncation here would contradict the main table,
+# which states its own truncation outright.
+_CO_PAIRS_LIMIT = 100
 
 PACKAGE = "lynceus.webui"
 
@@ -3344,14 +3350,21 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # for a candidate that is actually on this page.
         pairs = []
         detail_mac = None
+        detail_row = None
         if detail and loc:
             try:
                 detail_mac = kismet.normalize_mac(detail)
             except ValueError:
                 detail_mac = None
-            if detail_mac and any(
-                c["mac"] == detail_mac and c["location_id"] == loc for c in candidates
-            ):
+            detail_row = next(
+                (
+                    c
+                    for c in candidates
+                    if c["mac"] == detail_mac and c["location_id"] == loc
+                ),
+                None,
+            )
+            if detail_mac and detail_row is not None:
                 pairs = db.list_co_observation_pairs(
                     normalized,
                     detail_mac,
@@ -3359,6 +3372,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     now_ts=now_ts,
                     since_ts=since_ts,
                     proximity_seconds=proximity,
+                    limit=_CO_PAIRS_LIMIT,
                 )
             else:
                 detail_mac = None
@@ -3373,6 +3387,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "detail_mac": detail_mac,
                 "detail_loc": loc,
                 "pairs": pairs,
+                "detail_row": detail_row,
+                "pairs_truncated": len(pairs) >= _CO_PAIRS_LIMIT,
+                "pairs_limit": _CO_PAIRS_LIMIT,
                 "candidates": [c for c in candidates if not c["high_coverage"]],
                 "high_coverage": [c for c in candidates if c["high_coverage"]],
                 "total_candidates": result["total_candidates"],

@@ -9022,3 +9022,57 @@ def test_disabled_is_indistinguishable_even_for_an_invalid_request(tmp_path, co_
     finally:
         db_on.close()
         db_off.close()
+
+
+@pytest.mark.webui
+def test_drill_down_says_pairs_are_not_encounters(tmp_path, co_clock):
+    """⭐ Found by looking at the rendered page, not by a failing test.
+
+    A pair with 1 shared run rendered several sighting-pair rows with nothing
+    relating the two numbers. Counting those rows as encounters is exactly the
+    pseudo-replication the run counts exist to prevent, so the page must state
+    the relationship rather than leave the operator to infer it.
+    """
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get(
+                f"/devices/{_CO_ANCHOR}/co-observations?detail={_CO_NEIGHBOUR}&loc=default"
+            )
+        assert r.status_code == 200
+        assert "sighting pair" in r.text
+        assert "not encounters" in r.text
+        assert "shared anchor runs" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_drill_down_truncation_is_visible(tmp_path, co_clock):
+    """The main table states its truncation outright; this list must too.
+
+    It is n*m -- every anchor sighting against every candidate sighting inside
+    W -- so it hits the cap far sooner than the run counts suggest.
+    """
+    config = Config(db_path=str(tmp_path / "co.db"), co_observation={"enabled": True})
+    db = Database(config.db_path)
+    try:
+        for mac in (_CO_ANCHOR, _CO_NEIGHBOUR):
+            db.upsert_device(mac, "wifi", "Acme", 0, _CO_NOW)
+        db._conn.execute("INSERT OR IGNORE INTO locations(id, label) VALUES ('default','d')")
+        # 15 x 15 sightings inside one W window = 225 pairs, over the 100 cap.
+        rows = [(_CO_ANCHOR, _CO_NOW - 3_000 + i) for i in range(15)]
+        rows += [(_CO_NEIGHBOUR, _CO_NOW - 3_000 + i) for i in range(15)]
+        db._conn.executemany(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, 'default')", rows
+        )
+        db._conn.commit()
+        app = create_app(config, db)
+        with TestClient(app) as client:
+            r = client.get(
+                f"/devices/{_CO_ANCHOR}/co-observations?detail={_CO_NEIGHBOUR}&loc=default"
+            )
+        assert r.status_code == 200
+        assert "there are more" in r.text
+    finally:
+        db.close()
