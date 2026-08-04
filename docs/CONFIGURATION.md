@@ -59,6 +59,24 @@ It therefore needs a Bluetooth adapter **Kismet is not already capturing on**. R
 
 Observations from the bridge are stamped with a synthetic source of `ble:<adapter>` (e.g. `ble:hci1`). If `kismet_sources` is set, that exact string must appear in it, or the poller's source gate drops every observation the bridge produces.
 
+### `co_observation`: co-observation explorer
+
+Nested block, **off by default**. A read-only panel showing which other devices keep turning up at the same time as a given device. It adds no capture path, raises no alerts, and changes no schema.
+
+**It makes no statistical claim, deliberately.** There is no labelled corpus, no ground truth, and — decisively — sensor uptime is not recorded anywhere, so absence of data cannot be distinguished from absence of a device. The panel reports counts the operator reads; it does not score, rank by suspicion, or label a relationship. An earlier scored design was withdrawn after it was measured returning maximum confidence for the always-present neighbour it existed to demote.
+
+⚠️ `enabled` is a **security control, not a preference**. Iterating the route across every MAC reconstructs an association graph, and a stolen operator session can request thousands of endpoints even though each page shows 25. A capability that is off cannot be enumerated at all. Leave it off unless you need it.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `co_observation.enabled` | bool | `false` | Expose the co-observation panel and its route. Off by default; while off the route is indistinguishable from a device that does not exist, so the toggle is not itself a probe oracle. |
+| `co_observation.window_days` | integer | `30` | How far back the query looks. Range `1`–`3650`. `sightings` is never pruned, so an unstated horizon would silently control every result. |
+| `co_observation.proximity_seconds` | integer | `300` | *W*: two sightings at one location within this many seconds of each other are co-observed. Range `0`–`86400`; `0` means the same second. The UI offers 1/5/15-minute presets and always shows the value in use. |
+| `co_observation.gap_seconds` | integer | `900` | How long a device must be unseen before its next sighting starts a new observation run. Range `1`–`86400`. The default tolerates a missed poll tick at a 60s interval without splitting one stay into two. |
+| `co_observation.max_candidates` | integer | `25` | Candidates returned per request. Range `1`–`200`. Truncation is always shown ("showing 25 of 137"), never silent. |
+
+Run boundaries are **inferred from observations**, never arrival and departure: an anchor continuously present but logged intermittently during sensor trouble becomes many runs, not many visits.
+
 ### Cross-field validation
 
 - If `kismet_fixture_path` is set together with a non-default `kismet_url`, lynceus logs a warning and the fixture wins.

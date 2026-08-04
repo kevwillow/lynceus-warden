@@ -52,6 +52,75 @@ class CaptureConfig(BaseModel):
     ble_friendly_names: bool = True
 
 
+class CoObservationConfig(BaseModel):
+    """Read-only co-observation explorer (additive; OFF by default).
+
+    Shows the operator which other devices keep turning up at the same time as
+    a given one. It makes no statistical claim: sensor uptime is not recorded
+    anywhere in the schema, so absence of data cannot be distinguished from
+    absence of a device, and no score would be defensible. See
+    docs/superpowers/specs/2026-08-02-co-observation-explorer-design.md.
+
+    ⭐ ``enabled`` is a capability toggle and a security control, not a
+    preference. Iterating the route across every MAC reconstructs an
+    association graph, and a stolen operator session can request thousands of
+    endpoints even though each page shows 25. A capability that is not enabled
+    cannot be enumerated at all, which is the only control here that changes
+    the exposure rather than merely pacing it. It also means a panel whose
+    output is "devices that keep appearing near a person" cannot be reached by
+    accident.
+
+    ``window_days`` bounds the scan because ``sightings`` has no retention
+    policy and is never pruned. ``proximity_seconds`` is W, the co-observation
+    threshold: two sightings at one location within W of each other. The UI
+    offers 1/5/15-minute presets and always displays the value in use, because
+    a relationship that dissolves as W tightens is information the operator
+    should have. ``gap_seconds`` is how long a device must be unseen before its
+    next sighting starts a new observation run; the default tolerates a missed
+    poll tick at the default 60s interval without splitting one stay in two.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    window_days: int = 30
+    proximity_seconds: int = 300
+    gap_seconds: int = 900
+    max_candidates: int = 25
+
+    @field_validator("window_days")
+    @classmethod
+    def _validate_window_days(cls, v: int) -> int:
+        if not (1 <= v <= 3650):
+            raise ValueError("window_days must be in [1, 3650]")
+        return v
+
+    @field_validator("proximity_seconds")
+    @classmethod
+    def _validate_proximity_seconds(cls, v: int) -> int:
+        # 0 is legitimate: it means "logged at the same second", the tightest
+        # possible reading. Database.list_co_observations accepts >= 0 too.
+        if not (0 <= v <= 86400):
+            raise ValueError("proximity_seconds must be in [0, 86400]")
+        return v
+
+    @field_validator("gap_seconds")
+    @classmethod
+    def _validate_gap_seconds(cls, v: int) -> int:
+        if not (1 <= v <= 86400):
+            raise ValueError("gap_seconds must be in [1, 86400]")
+        return v
+
+    @field_validator("max_candidates")
+    @classmethod
+    def _validate_max_candidates(cls, v: int) -> int:
+        # Ceiling matches Database.list_co_observations' own limit bound, so a
+        # value the config accepts cannot raise at query time.
+        if not (1 <= v <= 200):
+            raise ValueError("max_candidates must be in [1, 200]")
+        return v
+
+
 class BleBridgeConfig(BaseModel):
     """Passive BLE capture bridge (additive; OFF by default).
 
@@ -114,6 +183,7 @@ class Config(BaseModel):
     kismet_health_check_on_startup: bool = True
     capture: CaptureConfig = CaptureConfig()
     ble_bridge: BleBridgeConfig = BleBridgeConfig()
+    co_observation: CoObservationConfig = CoObservationConfig()
     evidence_capture_enabled: bool = True
     evidence_retention_days: int = 90
     # Watchlist staleness threshold for the startup log line + the

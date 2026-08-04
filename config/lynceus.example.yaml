@@ -166,6 +166,33 @@ ble_bridge:
   # Minimum 1. Leave unset to inherit poll_interval_seconds.
   # flush_interval: 60
 
+# --- Co-observation explorer ---
+
+# Read-only panel: which other devices keep turning up at the same time as
+# this one. Adds no capture path, raises no alerts, changes no schema.
+#
+# It makes no statistical claim. Sensor uptime is not recorded anywhere, so
+# absence of data cannot be told apart from absence of a device, and no score
+# would be defensible. The panel shows counts, not judgements.
+#
+# `enabled` is a SECURITY control, not a preference: iterating the route
+# across every MAC reconstructs an association graph, and a stolen session can
+# request thousands of endpoints even though each page shows 25. A capability
+# that is off cannot be enumerated. Leave it off unless you need it.
+#
+# See docs/CONFIGURATION.md before enabling.
+co_observation:
+  enabled: false
+  # How far back to look. sightings is never pruned, so this bounds the scan.
+  window_days: 30
+  # W: two sightings at one location within this many seconds are
+  # "co-observed". The UI offers 1/5/15-minute presets.
+  proximity_seconds: 300
+  # Unseen for longer than this starts a new observation run.
+  gap_seconds: 900
+  # Candidates per request. Truncation is shown, never silent.
+  max_candidates: 25
+
 # --- Alert-time evidence snapshots ---
 
 # Capture the full Kismet device record (subject to the capture.* toggles

@@ -4,7 +4,10 @@
 was measured to return `10.000 / strong` for the always-present neighbour it existed to demote.
 v2 was red-teamed before implementation; this is v2 with those eleven findings applied.
 
-**Status**: proposed, not implemented. **Depends on**: nothing new. No schema change.
+**Status**: partially implemented. `Database.list_co_observations` (the three-stage anchored query)
+and `Database.shared_probe_ssids` (corpus-rarity corroboration) exist and are gated; the capability
+toggle, the route and the panel are not built yet, so **the feature is unreachable by an operator**.
+**Depends on**: nothing new. No schema change.
 
 ## Requirement
 
@@ -65,7 +68,7 @@ implementable, which v2's window-to-visit mapping was not (finding 8).
 | `shared_anchor_runs` / `anchor_total_runs` | anchor runs containing a co-observed sighting, and the denominator |
 | `shared_candidate_runs` / `candidate_total_runs` | same, candidate side, and its denominator |
 | `shared_days` | distinct **local** calendar days with a co-observation |
-| `candidate_coverage` | candidate's observed runs ÷ all runs logged at that location in range |
+| ~~`candidate_coverage`~~ | ⭐ **withdrawn in v3.1, see Decision 4** — the specified denominator is corpus-linear. Derived in the panel from `shared_candidate_runs / candidate_total_runs`, which is already returned |
 | `delta_min` / `delta_median` / `delta_max` | seconds between co-observed sightings |
 | `first_shared_ts` / `last_shared_ts` | the earliest and latest co-observed **anchor** sighting |
 
@@ -92,8 +95,34 @@ everything" is a causal claim the data does not support: a router detectable in 
 runs is 95% **observable**, not 95% present, and a phone physically present the whole time may be
 detectable in 8 (v2 finding 1). The section reports observation coverage and says only that.
 
-The denominator is **per-location distinct runs within the selected range** — a global denominator
-would break the per-location promise everywhere else.
+⭐ **Amended in v3.1 — the specified denominator was measured incompatible with Decision 5, and is
+withdrawn.** v3 defined it as *per-location distinct runs within the selected range*. Computing that
+requires gap-splitting **every MAC at the location**, which is the corpus-wide segmentation Decision 5
+exists to forbid. Measured with the same `set_progress_handler` instrument that guards the shipped
+query, at 5 and 45 in-window devices:
+
+| corpus | shipped query | + v3 coverage denominator |
+|---|---|---|
+| 5 devices | 11 VM steps | 560 |
+| 45 devices (9×) | **11** | **5,014** |
+| scaling | **1.00×** | **8.95×** |
+
+The shipped query is corpus-independent; the denominator scales linearly with the corpus and alone
+costs ~456× the whole query. It fails `test_work_does_not_scale_with_in_window_corpus_size` (5,025
+against a 1,713 limit), and at this spec's own stated scale — 2,000 devices over 90 days — it is the
+same unbounded scan that killed v1. **Every denominator meaning "share of everything logged at this
+location" is inherently corpus-linear**, so this is not a tuning problem and no cheaper formulation
+of the same quantity exists without precomputation, which "no schema change" rules out.
+
+**Replaced by `shared_candidate_runs / candidate_total_runs`.** Both fields are already returned and
+already bounded, so the substitute costs nothing and preserves corpus-independence. It also does
+Decision 4's actual job more directly: a device logged in 500 runs of which 3 coincide with the
+anchor is demoted immediately and visibly, and the operator can still check the claim by counting
+rows. The ratio is a property of the candidate's own observation record, not of the relationship.
+
+⚠️ It is **not** a coverage *fraction of the location*, and must never be labelled as one. It reports
+what share of this device's own logged runs were shared, which is a different and weaker statement
+than v3 intended. The section keeps the name "high observation coverage" and states its denominator.
 
 This is deliberately not v1's `ambient` flag, which was `lift < 1.5`: a claim about the *relationship*
 derived from the broken statistic. Coverage is a claim about the candidate alone, verifiable by
