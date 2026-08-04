@@ -8891,3 +8891,40 @@ def test_co_observations_audit_logs_every_query(tmp_path, co_clock, caplog):
         assert _CO_ANCHOR in joined
     finally:
         db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_files_an_always_logged_device_under_high_coverage(tmp_path, co_clock):
+    """⭐ The v3.1 substitute for the withdrawn candidate_coverage.
+
+    The always-there gadget is logged constantly and coincides with the anchor
+    almost never. It must be separated out rather than sitting at the top of
+    the main table, which is exactly what the withdrawn v1 lift statistic did
+    when it scored such a device 10.000/strong.
+    """
+    config = Config(db_path=str(tmp_path / "co.db"), co_observation={"enabled": True})
+    db = Database(config.db_path)
+    try:
+        for mac in (_CO_ANCHOR, _CO_NEIGHBOUR):
+            db.upsert_device(mac, "wifi", "Acme", 0, _CO_NOW)
+        db._conn.execute("INSERT OR IGNORE INTO locations(id, label) VALUES ('default','d')")
+        rows = [(_CO_ANCHOR, _CO_NOW - 3_000), (_CO_NEIGHBOUR, _CO_NOW - 2_995)]
+        # 30 further runs, each well beyond gap_seconds from the last and far
+        # from the anchor, so the device is plainly around a lot and shares
+        # almost none of it.
+        rows += [(_CO_NEIGHBOUR, _CO_NOW - 100_000 - i * 2_000) for i in range(30)]
+        db._conn.executemany(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, 'default')", rows
+        )
+        db._conn.commit()
+        app = create_app(config, db)
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        assert r.status_code == 200
+        assert "High observation coverage" in r.text
+        # And the panel must say what the share is a share OF, because it is
+        # not a fraction of the location and reading it as one is the whole
+        # error v3.1 exists to avoid.
+        assert "own logged runs" in r.text
+    finally:
+        db.close()
