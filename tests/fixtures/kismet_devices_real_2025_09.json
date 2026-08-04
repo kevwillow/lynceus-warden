@@ -1,0 +1,188 @@
+[
+  {
+    "dot11.device": {},
+    "kismet.device.base.first_time": 1167891285,
+    "kismet.device.base.last_time": 1167891326,
+    "kismet.device.base.macaddr": "00:0C:41:82:B2:55",
+    "kismet.device.base.manuf": "Cisco-Linksys, LLC",
+    "kismet.device.base.name": "Coherer",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.first_time": 1167891285,
+        "kismet.common.seenby.last_time": 1167891305,
+        "kismet.common.seenby.num_packets": 708,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "wpalab",
+          "kismet.datasource.uuid": "4E1D07C3-0000-0000-0000-00001F4804AC"
+        },
+        "kismet.common.seenby.uuid": "4E1D07C3-0000-0000-0000-00001F4804AC"
+      }
+    ],
+    "kismet.device.base.signal": {
+      "kismet.common.signal.carrierset": 5,
+      "kismet.common.signal.encodingset": 3,
+      "kismet.common.signal.last_noise": 0,
+      "kismet.common.signal.last_signal": 0,
+      "kismet.common.signal.max_noise": 0,
+      "kismet.common.signal.max_signal": 0,
+      "kismet.common.signal.maxseenrate": 540,
+      "kismet.common.signal.min_noise": 0,
+      "kismet.common.signal.min_signal": 0,
+      "kismet.common.signal.type": "none"
+    },
+    "kismet.device.base.type": "Wi-Fi AP"
+  },
+  {
+    "dot11.device": {
+      "dot11.device.probed_ssid_map": [
+        {
+          "dot11.probedssid.bssid": "00:00:00:00:00:00",
+          "dot11.probedssid.crypt_bitfield": 0,
+          "dot11.probedssid.crypt_set": 0,
+          "dot11.probedssid.crypt_string": "Open",
+          "dot11.probedssid.first_time": 1167891320,
+          "dot11.probedssid.last_time": 1167891320,
+          "dot11.probedssid.ssid": "",
+          "dot11.probedssid.ssidlen": 0,
+          "dot11.probedssid.wpa_mfp_required": 0,
+          "dot11.probedssid.wpa_mfp_supported": 0
+        },
+        {
+          "dot11.probedssid.bssid": "00:00:00:00:00:00",
+          "dot11.probedssid.crypt_bitfield": 0,
+          "dot11.probedssid.crypt_set": 0,
+          "dot11.probedssid.crypt_string": "Open",
+          "dot11.probedssid.first_time": 1167891291,
+          "dot11.probedssid.last_time": 1167891291,
+          "dot11.probedssid.ssid": "Coherer",
+          "dot11.probedssid.ssidlen": 7,
+          "dot11.probedssid.wpa_mfp_required": 0,
+          "dot11.probedssid.wpa_mfp_supported": 0
+        }
+      ]
+    },
+    "kismet.device.base.first_time": 1167891291,
+    "kismet.device.base.last_time": 1167891322,
+    "kismet.device.base.macaddr": "00:0D:93:82:36:3A",
+    "kismet.device.base.manuf": "Apple, Inc.",
+    "kismet.device.base.name": "",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.first_time": 1167891291,
+        "kismet.common.seenby.last_time": 1167891303,
+        "kismet.common.seenby.num_packets": 294,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "wpalab",
+          "kismet.datasource.uuid": "4E1D07C3-0000-0000-0000-00001F4804AC"
+        },
+        "kismet.common.seenby.uuid": "4E1D07C3-0000-0000-0000-00001F4804AC"
+      }
+    ],
+    "kismet.device.base.signal": {
+      "kismet.common.signal.carrierset": 5,
+      "kismet.common.signal.encodingset": 3,
+      "kismet.common.signal.last_noise": 0,
+      "kismet.common.signal.last_signal": 0,
+      "kismet.common.signal.max_noise": 0,
+      "kismet.common.signal.max_signal": 0,
+      "kismet.common.signal.maxseenrate": 540,
+      "kismet.common.signal.min_noise": 0,
+      "kismet.common.signal.min_signal": 0,
+      "kismet.common.signal.type": "none"
+    },
+    "kismet.device.base.type": "Wi-Fi Ad-Hoc"
+  },
+  {
+    "dot11.device": {},
+    "kismet.device.base.first_time": 1167891294,
+    "kismet.device.base.last_time": 1167891322,
+    "kismet.device.base.macaddr": "00:0C:41:82:B2:53",
+    "kismet.device.base.manuf": "Cisco-Linksys, LLC",
+    "kismet.device.base.name": "",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.first_time": 1167891294,
+        "kismet.common.seenby.last_time": 1167891312,
+        "kismet.common.seenby.num_packets": 144,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "wpalab",
+          "kismet.datasource.uuid": "4E1D07C3-0000-0000-0000-00001F4804AC"
+        },
+        "kismet.common.seenby.uuid": "4E1D07C3-0000-0000-0000-00001F4804AC"
+      }
+    ],
+    "kismet.device.base.signal": {
+      "kismet.common.signal.carrierset": 0,
+      "kismet.common.signal.encodingset": 0,
+      "kismet.common.signal.last_noise": 0,
+      "kismet.common.signal.last_signal": 0,
+      "kismet.common.signal.max_noise": 0,
+      "kismet.common.signal.max_signal": 0,
+      "kismet.common.signal.maxseenrate": 0,
+      "kismet.common.signal.min_noise": 0,
+      "kismet.common.signal.min_signal": 0,
+      "kismet.common.signal.type": "none"
+    },
+    "kismet.device.base.type": "Wi-Fi Bridged"
+  },
+  {
+    "dot11.device": {
+      "dot11.device.probed_ssid_map": [
+        {
+          "dot11.probedssid.bssid": "00:00:00:00:00:00",
+          "dot11.probedssid.crypt_bitfield": 0,
+          "dot11.probedssid.crypt_set": 0,
+          "dot11.probedssid.crypt_string": "Open",
+          "dot11.probedssid.first_time": 1167891302,
+          "dot11.probedssid.last_time": 1167891321,
+          "dot11.probedssid.ssid": "linksys",
+          "dot11.probedssid.ssidlen": 7,
+          "dot11.probedssid.wpa_mfp_required": 0,
+          "dot11.probedssid.wpa_mfp_supported": 0
+        },
+        {
+          "dot11.probedssid.bssid": "00:00:00:00:00:00",
+          "dot11.probedssid.crypt_bitfield": 0,
+          "dot11.probedssid.crypt_set": 0,
+          "dot11.probedssid.crypt_string": "Open",
+          "dot11.probedssid.first_time": 1167891305,
+          "dot11.probedssid.last_time": 1167891305,
+          "dot11.probedssid.ssid": "",
+          "dot11.probedssid.ssidlen": 0,
+          "dot11.probedssid.wpa_mfp_required": 0,
+          "dot11.probedssid.wpa_mfp_supported": 0
+        }
+      ]
+    },
+    "kismet.device.base.first_time": 1167891302,
+    "kismet.device.base.last_time": 1167891321,
+    "kismet.device.base.macaddr": "00:0F:66:16:94:73",
+    "kismet.device.base.manuf": "Cisco-Linksys, LLC",
+    "kismet.device.base.name": "",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.first_time": 1167891302,
+        "kismet.common.seenby.last_time": 1167891302,
+        "kismet.common.seenby.num_packets": 5,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "wpalab",
+          "kismet.datasource.uuid": "4E1D07C3-0000-0000-0000-00001F4804AC"
+        },
+        "kismet.common.seenby.uuid": "4E1D07C3-0000-0000-0000-00001F4804AC"
+      }
+    ],
+    "kismet.device.base.signal": {
+      "kismet.common.signal.carrierset": 1,
+      "kismet.common.signal.encodingset": 1,
+      "kismet.common.signal.last_noise": 0,
+      "kismet.common.signal.last_signal": 0,
+      "kismet.common.signal.max_noise": 0,
+      "kismet.common.signal.max_signal": 0,
+      "kismet.common.signal.maxseenrate": 10,
+      "kismet.common.signal.min_noise": 0,
+      "kismet.common.signal.min_signal": 0,
+      "kismet.common.signal.type": "none"
+    },
+    "kismet.device.base.type": "Wi-Fi Client"
+  }
+]
