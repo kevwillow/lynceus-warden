@@ -3223,7 +3223,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
     # a silent failure with no error anywhere. Pinned by
     # test_co_observations_route_is_not_swallowed_by_the_device_catch_all.
     @app.get("/devices/{mac:path}/co-observations", response_class=HTMLResponse)
-    def device_co_observations(request: Request, mac: str, w: int | None = Query(None)):
+    def device_co_observations(
+        request: Request,
+        mac: str,
+        w: int | None = Query(None),
+        detail: str | None = Query(None),
+        loc: str | None = Query(None),
+    ):
         """Which other devices keep turning up at the same time as this one.
 
         Read-only, and it makes no statistical claim: sensor uptime is not
@@ -3326,6 +3332,30 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 }
             )
 
+        # Drill-down: the real sighting rows behind one candidate's count, so
+        # the number is auditable rather than taken on trust. Only reachable
+        # for a candidate that is actually on this page.
+        pairs = []
+        detail_mac = None
+        if detail and loc:
+            try:
+                detail_mac = kismet.normalize_mac(detail)
+            except ValueError:
+                detail_mac = None
+            if detail_mac and any(
+                c["mac"] == detail_mac and c["location_id"] == loc for c in candidates
+            ):
+                pairs = db.list_co_observation_pairs(
+                    normalized,
+                    detail_mac,
+                    location_id=loc,
+                    now_ts=now_ts,
+                    since_ts=since_ts,
+                    proximity_seconds=proximity,
+                )
+            else:
+                detail_mac = None
+
         return app.state.templates.TemplateResponse(
             request=request,
             name="co_observations.html",
@@ -3333,6 +3363,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "version": __version__,
                 "active": "devices",
                 "mac": normalized,
+                "detail_mac": detail_mac,
+                "detail_loc": loc,
+                "pairs": pairs,
                 "candidates": [c for c in candidates if not c["high_coverage"]],
                 "high_coverage": [c for c in candidates if c["high_coverage"]],
                 "total_candidates": result["total_candidates"],
@@ -3378,6 +3411,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "active": "devices",
             "device": result["device"],
             "sightings": result["sightings"],
+            # Gated so the link cannot advertise a route that would 404, and
+            # cannot hint that the capability exists at all.
+            "co_observation_enabled": config.co_observation.enabled,
         }
         context.update(_device_actions_context(normalized, int(time.time())))
         return app.state.templates.TemplateResponse(

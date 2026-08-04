@@ -8928,3 +8928,73 @@ def test_co_observations_files_an_always_logged_device_under_high_coverage(tmp_p
         assert "own logged runs" in r.text
     finally:
         db.close()
+
+
+@pytest.mark.webui
+def test_device_page_links_to_co_observations_only_when_enabled(tmp_path, co_clock):
+    """The panel was unreachable except by typing the URL. It is linked now --
+    but only when the capability is on, so the link cannot advertise a feature
+    that would 404, and cannot hint that the capability exists."""
+    app_on, db_on = _make_co_app(tmp_path / "on", enabled=True)
+    app_off, db_off = _make_co_app(tmp_path / "off", enabled=False)
+    try:
+        with TestClient(app_on) as c:
+            on = c.get(f"/devices/{_CO_ANCHOR}")
+        with TestClient(app_off) as c:
+            off = c.get(f"/devices/{_CO_ANCHOR}")
+        assert on.status_code == off.status_code == 200
+        assert "co-observations" in on.text
+        assert "co-observations" not in off.text
+    finally:
+        db_on.close()
+        db_off.close()
+
+
+@pytest.mark.webui
+def test_co_observations_drill_down_shows_the_real_sighting_rows(tmp_path, co_clock):
+    """⭐ The count must be auditable against the rows it came from.
+
+    Only possible because v3 compares real timestamps instead of bucketing
+    time: every pair is two logged sightings with a true delta.
+    """
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get(
+                f"/devices/{_CO_ANCHOR}/co-observations?detail={_CO_NEIGHBOUR}&loc=default"
+            )
+        assert r.status_code == 200
+        # The seeded pair is 10s apart; both real timestamps must be shown.
+        assert str(_CO_NOW - 3_000) in r.text
+        assert str(_CO_NOW - 2_990) in r.text
+        assert "10" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_drill_down_refuses_a_mac_that_is_not_a_candidate(tmp_path, co_clock):
+    """The drill-down serves only pairs already on the page.
+
+    Without this the parameter is an arbitrary two-MAC proximity oracle: an
+    operator session could ask "were these two ever logged together" for any
+    pair, which is a broader question than the panel is meant to answer and
+    exactly the enumeration Decision 6 exists to bound.
+    """
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        stranger = "aa:bb:cc:dd:ee:99"
+        db.upsert_device(stranger, "wifi", "Acme", 0, _CO_NOW)
+        # Logged at the same location but far outside any anchor proximity, so
+        # it is a real device that is NOT a candidate on this page.
+        db._conn.execute(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, 'default')",
+            (stranger, _CO_NOW - 500_000),
+        )
+        db._conn.commit()
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations?detail={stranger}&loc=default")
+        assert r.status_code == 200
+        assert "Co-observed sightings:" not in r.text
+    finally:
+        db.close()

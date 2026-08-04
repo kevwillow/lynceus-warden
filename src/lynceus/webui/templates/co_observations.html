@@ -64,7 +64,10 @@
           <td>{{ c.shared_anchor_runs }} / {{ c.anchor_total_runs }}</td>
           <td>{{ c.shared_candidate_runs }} / {{ c.candidate_total_runs }}</td>
           <td>{{ c.shared_days }}</td>
-          <td>{{ c.delta_min }}s / {{ c.delta_median }}s / {{ c.delta_max }}s</td>
+          <td>
+            {{ c.delta_min }}s / {{ c.delta_median }}s / {{ c.delta_max }}s
+            <a href="/devices/{{ mac }}/co-observations?w={{ proximity_seconds }}&amp;detail={{ c.mac }}&amp;loc={{ c.location_id }}">show rows</a>
+          </td>
           <td>
             {% if c.shared_ssids %}
               {% for s in c.shared_ssids %}
@@ -84,6 +87,44 @@
       {% endfor %}
     </tbody>
   </table>
+
+  {% if detail_mac %}
+    {# The rows behind the count. Every line is two REAL logged sightings with
+       a true delta -- nothing interpolated, floored or bucketed -- so the
+       operator can audit the number instead of trusting it. #}
+    <article>
+      <header>
+        <strong>Co-observed sightings:</strong>
+        <code>{{ mac }}</code> and <code>{{ detail_mac }}</code>
+        at {{ detail_loc }}
+      </header>
+      <table>
+        <caption>
+          The actual logged rows behind this pair's counts, within
+          W = {{ proximity_seconds }}s.
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Anchor sighting (unix ts)</th>
+            <th scope="col">Candidate sighting (unix ts)</th>
+            <th scope="col">&Delta;t</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in pairs %}
+            <tr>
+              <td><code>{{ p.anchor_ts }}</code></td>
+              <td><code>{{ p.candidate_ts }}</code></td>
+              <td>{{ p.delta_seconds }}s</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="3">No co-observed sightings for this pair.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p><a href="/devices/{{ mac }}/co-observations?w={{ proximity_seconds }}">&larr; back to all candidates</a></p>
+    </article>
+  {% endif %}
 
   {% if high_coverage %}
     <article>

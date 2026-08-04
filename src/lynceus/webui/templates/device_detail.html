@@ -45,4 +45,13 @@
   {% else %}
     <p><em>No sightings recorded.</em></p>
   {% endif %}
+
+  {# Only when the capability is on. A link rendered while it is off would
+     advertise a route that 404s, and would hint that the capability exists. #}
+  {% if co_observation_enabled %}
+    <p>
+      <a href="/devices/{{ device.mac }}/co-observations">co-observations &rarr;</a>
+      <small>which other devices keep turning up at the same time as this one</small>
+    </p>
+  {% endif %}
 {% endblock %}

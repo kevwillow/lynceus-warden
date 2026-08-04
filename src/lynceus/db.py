@@ -4310,6 +4310,82 @@ class Database:
         ).fetchall()
         return [{"ssid": str(r["ssid"]), "corpus_devices": int(r["corpus_devices"])} for r in rows]
 
+    def list_co_observation_pairs(
+        self,
+        mac: str,
+        candidate_mac: str,
+        *,
+        location_id: str,
+        now_ts: int,
+        since_ts: int,
+        proximity_seconds: int = 300,
+        limit: int = 100,
+    ) -> list[dict]:
+        """The actual sighting rows behind a co-observation count.
+
+        Every row returned is **two real logged sightings** and the true delta
+        between them. Nothing is interpolated, floored or bucketed, which is
+        what makes the proximity criterion auditable: the operator can check a
+        count against the rows it came from rather than taking it on trust.
+        This is the drill-down the design asks for, and it is only possible
+        because v3 compares real timestamps instead of bucketing time.
+
+        Per location and never pooled, matching
+        ``list_co_observations``. A candidate at another site is not near the
+        anchor whatever the clock says.
+        """
+        for name, value in (
+            ("now_ts", now_ts),
+            ("since_ts", since_ts),
+            ("proximity_seconds", proximity_seconds),
+            ("limit", limit),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"{name} must be int")
+        if since_ts > now_ts:
+            raise ValueError("since_ts must be <= now_ts")
+        if proximity_seconds < 0:
+            raise ValueError("proximity_seconds must be >= 0")
+        if limit < 1 or limit > 500:
+            raise ValueError("limit must be in [1, 500]")
+
+        rows = self._conn.execute(
+            """
+            SELECT a.ts AS anchor_ts,
+                   c.ts AS candidate_ts,
+                   ABS(c.ts - a.ts) AS delta_seconds
+            FROM sightings a
+            JOIN sightings c
+              ON c.location_id = a.location_id
+             AND c.ts BETWEEN a.ts - :proximity_seconds
+                          AND a.ts + :proximity_seconds
+            WHERE a.mac = :mac
+              AND c.mac = :candidate_mac
+              AND a.location_id = :location_id
+              AND a.ts >= :since_ts AND a.ts <= :now_ts
+              AND c.ts >= :since_ts AND c.ts <= :now_ts
+            ORDER BY a.ts ASC, c.ts ASC
+            LIMIT :limit
+            """,
+            {
+                "mac": mac,
+                "candidate_mac": candidate_mac,
+                "location_id": location_id,
+                "now_ts": now_ts,
+                "since_ts": since_ts,
+                "proximity_seconds": proximity_seconds,
+                "limit": limit,
+            },
+        ).fetchall()
+        return [
+            {
+                "anchor_ts": int(r["anchor_ts"]),
+                "candidate_ts": int(r["candidate_ts"]),
+                "delta_seconds": int(r["delta_seconds"]),
+            }
+            for r in rows
+        ]
+
     def close(self) -> None:
         self._conn.close()
 

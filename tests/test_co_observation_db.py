@@ -374,3 +374,72 @@ def test_shared_probe_ssids_honours_limit(db):
 def test_shared_probe_ssids_rejects_out_of_range_limit(db, bad):
     with pytest.raises(ValueError):
         db.shared_probe_ssids("aa:1", "bb:1", limit=bad)
+
+
+# --- the drill-down: the real rows behind a count ------------------------
+#
+# Every co-observation is a pair of REAL logged sightings with a real delta.
+# Nothing is interpolated, floored or bucketed, which is what makes the
+# proximity criterion auditable: the operator can check the count against the
+# rows it came from.
+
+
+def pairs(db, anchor, candidate, **kwargs):
+    return db.list_co_observation_pairs(
+        anchor,
+        candidate,
+        location_id=kwargs.pop("location_id", "1"),
+        now_ts=kwargs.pop("now_ts", 10_000),
+        since_ts=kwargs.pop("since_ts", 0),
+        **kwargs,
+    )
+
+
+def test_pairs_returns_real_rows_with_true_deltas(db):
+    seed(db, "aa:1", [(100, 1), (300, 1)])
+    seed(db, "bb:1", [(110, 1), (280, 1)])
+
+    assert pairs(db, "aa:1", "bb:1", proximity_seconds=50) == [
+        {"anchor_ts": 100, "candidate_ts": 110, "delta_seconds": 10},
+        {"anchor_ts": 300, "candidate_ts": 280, "delta_seconds": 20},
+    ]
+
+
+def test_pairs_excludes_anything_beyond_w(db):
+    """The boundary is inclusive at exactly W and excludes W+1, so the count
+    the panel shows and the rows behind it cannot disagree."""
+    seed(db, "aa:1", [(100, 1)])
+    seed(db, "bb:1", [(150, 1), (151, 1)])
+
+    got = pairs(db, "aa:1", "bb:1", proximity_seconds=50)
+    assert [p["candidate_ts"] for p in got] == [150]
+
+
+def test_pairs_never_crosses_locations(db):
+    """Co-observation is per location and never pooled. A candidate at another
+    site is not near the anchor, whatever the clock says."""
+    seed(db, "aa:1", [(100, 1)])
+    seed(db, "bb:1", [(105, 2)])
+
+    assert pairs(db, "aa:1", "bb:1", proximity_seconds=50, location_id="1") == []
+
+
+def test_pairs_respects_the_range(db):
+    seed(db, "aa:1", [(100, 1), (9_000, 1)])
+    seed(db, "bb:1", [(105, 1), (9_005, 1)])
+
+    got = pairs(db, "aa:1", "bb:1", proximity_seconds=50, since_ts=1_000)
+    assert [p["anchor_ts"] for p in got] == [9_000]
+
+
+def test_pairs_honours_limit(db):
+    seed(db, "aa:1", [(100 + i * 10, 1) for i in range(10)])
+    seed(db, "bb:1", [(100 + i * 10, 1) for i in range(10)])
+
+    assert len(pairs(db, "aa:1", "bb:1", proximity_seconds=5, limit=3)) == 3
+
+
+@pytest.mark.parametrize("bad", [0, -1, 501, True, 1.5, "10"])
+def test_pairs_rejects_out_of_range_limit(db, bad):
+    with pytest.raises(ValueError):
+        pairs(db, "aa:1", "bb:1", limit=bad)
