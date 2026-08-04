@@ -166,6 +166,22 @@ ble_bridge:
   # Minimum 1. Leave unset to inherit poll_interval_seconds.
   # flush_interval: 60
 
+# --- Observation history retention ---
+
+# Delete sightings older than this many days.
+#
+# DESTRUCTIVE AND IRREVERSIBLE. Left unset (null) nothing is ever pruned,
+# which is what every Lynceus install has always done -- an upgrade must not
+# silently discard your observation history.
+#
+# Why you might set it: at a 60s poll interval one continuously-present device
+# adds ~1,440 rows a day, so this table grows without bound and eventually
+# fills a Pi. Alerts are never touched; they outlive the sightings behind them.
+#
+# Must be >= co_observation.window_days when that panel is enabled, or the
+# panel would claim a period the database no longer covers.
+# sightings_retention_days: 90
+
 # --- Co-observation explorer ---
 
 # Read-only panel: which other devices keep turning up at the same time as

@@ -30,6 +30,7 @@ from .notify import (
     build_notifier,
     build_type_suffix,
 )
+from .retention import maybe_prune_sightings
 from .rules import (
     Ruleset,
     RuntimeSeverityOverride,
@@ -676,6 +677,14 @@ def poll_once(
         maybe_prune_evidence(db, config.evidence_retention_days, now_ts=now_ts)
     except Exception as e:
         logger.warning("Evidence prune failed: %s", e)
+    # Same daily cadence for sightings, and a no-op unless the operator has
+    # opted in -- sightings_retention_days defaults to None, meaning never
+    # prune, which is what every install has always done. Wrapped defensively
+    # for the same reason: a prune failure must not stop the poll loop.
+    try:
+        maybe_prune_sightings(db, config.sightings_retention_days, now_ts=now_ts)
+    except Exception as e:
+        logger.warning("Sightings prune failed: %s", e)
     return processed[0]
 
 

@@ -42,6 +42,14 @@
     {% if device.sighting_count and sightings|length < device.sighting_count %}
       <p><small>showing {{ sightings|length }} of {{ device.sighting_count }}</small></p>
     {% endif %}
+    {# Once retention is on, "showing N of M" would imply the rest are still
+       retrievable when they have been deleted. The count is real history; the
+       rows behind it are gone, and only this line says so. #}
+    {% if sightings_retention_days %}
+      <p><small>Sightings older than <strong>{{ sightings_retention_days }}</strong> days
+      have been deleted by the retention policy and cannot be recovered. Counts above
+      cover the whole history; the rows listed here do not.</small></p>
+    {% endif %}
   {% else %}
     <p><em>No sightings recorded.</em></p>
   {% endif %}

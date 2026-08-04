@@ -77,12 +77,28 @@ Nested block, **off by default**. A read-only panel showing which other devices 
 
 Run boundaries are **inferred from observations**, never arrival and departure: an anchor continuously present but logged intermittently during sensor trouble becomes many runs, not many visits.
 
+### `sightings_retention_days`: observation history retention
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sightings_retention_days` | integer \| null | `null` | Delete sightings older than this many days. Range `1`–`3650`. **`null` means never prune**, which is what every Lynceus install has always done. |
+
+⛔ **This deletes evidence, and the deletion is irreversible.** It is off by default deliberately: an upgrade must never silently discard an operator's observation history. Nothing is pruned until you set it.
+
+Why you might: at a 60-second poll interval one continuously-present device contributes roughly 1,440 rows a day, so `sightings` grows without bound and eventually fills a Pi. That unbounded growth is also why `co_observation.window_days` exists — the query has to supply a horizon the schema does not.
+
+The prune runs from the poll loop at most once per 24 hours, and logs what it deleted at INFO so a run leaves a trail in `journalctl`. The cutoff is exclusive: a row exactly at the boundary is kept. Only `sightings` is touched — alerts are your record of what was decided and outlive the observations behind them, and devices keep their identity after their rows age out.
+
+⚠️ Once set, `/devices/<mac>` states that older sightings were deleted. Without that line the existing "showing N of M" count would imply the rest are still retrievable.
+
 ### Cross-field validation
 
 - If `kismet_fixture_path` is set together with a non-default `kismet_url`, lynceus logs a warning and the fixture wins.
 - `ntfy_url` and `ntfy_topic` must be set as a pair. Setting only one fails validation.
 - Setting `ui_bind_host` to anything other than `127.0.0.1` / `localhost` requires `ui_allow_remote: true`. Lynceus has no built-in auth; this gate forces an explicit acknowledgement before exposing the UI off-host.
 - Unknown top-level keys cause a load-time error (`extra='forbid'`).
+- `sightings_retention_days` must be `>=` `co_observation.window_days` whenever the co-observation panel is enabled. Pruning below the window would leave the panel rendering "the last N days" over a table that no longer covers them: every count would be truthful about the rows it found and wrong about the period it claims, with nothing on screen saying so. Rejected at load rather than warned about, because once rendered the wrong number is indistinguishable from the right one.
+
 
 ## Worked examples
 

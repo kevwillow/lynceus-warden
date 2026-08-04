@@ -657,3 +657,61 @@ def test_co_observation_max_candidates_matches_the_db_limit_ceiling():
 def test_co_observation_rejects_unknown_keys():
     with pytest.raises(ValidationError):
         config_mod.CoObservationConfig(proximity_second=300)
+
+
+# ---------------------------------------------------------------------------
+# sightings retention.
+#
+# sightings has never had a retention policy and grows without bound, which is
+# why co_observation.window_days exists at all. Pruning is DESTRUCTIVE and
+# irreversible, so it is off by default: an upgrade must never silently delete
+# an operator's observation history.
+# ---------------------------------------------------------------------------
+
+
+def test_sightings_retention_is_off_by_default():
+    """⭐ None means never prune, which is the behaviour every existing install
+    already has. A default that deleted data on upgrade would be a data-loss
+    bug shipped as a feature."""
+    assert config_mod.Config(db_path="/tmp/x.db").sightings_retention_days is None
+
+
+@pytest.mark.parametrize("bad", [0, -1, 3651])
+def test_sightings_retention_rejects_out_of_range(bad):
+    with pytest.raises(ValidationError):
+        config_mod.Config(db_path="/tmp/x.db", sightings_retention_days=bad)
+
+
+def test_sightings_retention_may_not_undercut_the_co_observation_window():
+    """⭐ Cross-field, and the failure is silent without it.
+
+    Pruning to 7 days while the co-observation panel asks for 30 leaves the
+    panel rendering "the last 30 days" over a table that only holds 7. Every
+    count would be truthful about the rows and wrong about the window, and
+    nothing on screen would say so.
+    """
+    with pytest.raises(ValidationError):
+        config_mod.Config(
+            db_path="/tmp/x.db",
+            sightings_retention_days=7,
+            co_observation={"enabled": True, "window_days": 30},
+        )
+
+
+def test_sightings_retention_shorter_than_window_is_fine_while_panel_is_off():
+    """The constraint exists to protect the panel's claim. No panel, no claim."""
+    cfg = config_mod.Config(
+        db_path="/tmp/x.db",
+        sightings_retention_days=7,
+        co_observation={"enabled": False, "window_days": 30},
+    )
+    assert cfg.sightings_retention_days == 7
+
+
+def test_sightings_retention_equal_to_the_window_is_allowed():
+    cfg = config_mod.Config(
+        db_path="/tmp/x.db",
+        sightings_retention_days=30,
+        co_observation={"enabled": True, "window_days": 30},
+    )
+    assert cfg.sightings_retention_days == 30

@@ -186,6 +186,12 @@ class Config(BaseModel):
     co_observation: CoObservationConfig = CoObservationConfig()
     evidence_capture_enabled: bool = True
     evidence_retention_days: int = 90
+    # ⛔ None means NEVER prune, which is what every install has always done.
+    # Deleting observation history is destructive and irreversible, so it is
+    # opt-in: an upgrade must not silently discard an operator's evidence.
+    # Setting it bounds a table that otherwise grows without limit, which is
+    # the reason co_observation.window_days exists.
+    sightings_retention_days: int | None = None
     # Watchlist staleness threshold for the startup log line + the
     # /settings freshness card. An imported Argus corpus older than
     # this many days flips the startup line from INFO to WARNING
@@ -236,6 +242,41 @@ class Config(BaseModel):
         if v < 0:
             raise ValueError("alert_dedup_window_seconds must be >= 0")
         return v
+
+    @field_validator("sightings_retention_days")
+    @classmethod
+    def _validate_sightings_retention_days(cls, v: int | None) -> int | None:
+        if v is not None and not (1 <= v <= 3650):
+            raise ValueError("sightings_retention_days must be in [1, 3650] or null")
+        return v
+
+    @model_validator(mode="after")
+    def _validate_retention_covers_co_observation(self) -> Config:
+        """Pruning must not silently undercut the co-observation window.
+
+        The panel renders "the last N days" and every denominator with it. If
+        sightings are pruned to fewer days than that, each count stays truthful
+        about the rows it found and becomes wrong about the period it claims to
+        cover, and nothing on screen would say so. Rejected at load rather than
+        warned about, because the wrong number is indistinguishable from the
+        right one once it is rendered.
+
+        Only enforced while the panel is enabled: the constraint exists to
+        protect that claim, and with no panel there is no claim.
+        """
+        if (
+            self.sightings_retention_days is not None
+            and self.co_observation.enabled
+            and self.sightings_retention_days < self.co_observation.window_days
+        ):
+            raise ValueError(
+                "sightings_retention_days "
+                f"({self.sightings_retention_days}) must be >= "
+                f"co_observation.window_days ({self.co_observation.window_days}); "
+                "pruning below the window makes the panel claim a period the "
+                "database no longer covers"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_ntfy_pair(self) -> Config:

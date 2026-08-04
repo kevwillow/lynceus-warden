@@ -9076,3 +9076,37 @@ def test_drill_down_truncation_is_visible(tmp_path, co_clock):
         assert "there are more" in r.text
     finally:
         db.close()
+
+
+@pytest.mark.webui
+def test_device_page_declares_deleted_sightings_only_when_retention_is_on(tmp_path):
+    """⭐ "showing N of M" implies the rest are retrievable. Once retention has
+    deleted them that is false, and only this line says so. Absent by default,
+    because by default nothing has been deleted."""
+    on_cfg = Config(db_path=str(tmp_path / "on.db"), sightings_retention_days=30)
+    off_cfg = Config(db_path=str(tmp_path / "off.db"))
+    apps = []
+    try:
+        for cfg in (on_cfg, off_cfg):
+            db = Database(cfg.db_path)
+            db.ensure_location("default", "d")
+            db.upsert_device(
+                mac=_CO_ANCHOR,
+                device_type="wifi",
+                oui_vendor="Acme",
+                is_randomized=0,
+                now_ts=_CO_NOW,
+            )
+            db.insert_sighting(
+                mac=_CO_ANCHOR, ts=_CO_NOW, rssi=-50, ssid="n", location_id="default"
+            )
+            apps.append((create_app(cfg, db), db))
+        with TestClient(apps[0][0]) as c:
+            on = c.get(f"/devices/{_CO_ANCHOR}")
+        with TestClient(apps[1][0]) as c:
+            off = c.get(f"/devices/{_CO_ANCHOR}")
+        assert "cannot be recovered" in on.text
+        assert "cannot be recovered" not in off.text
+    finally:
+        for _, db in apps:
+            db.close()

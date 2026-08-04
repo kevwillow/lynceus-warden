@@ -3438,6 +3438,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
             # Gated so the link cannot advertise a route that would 404, and
             # cannot hint that the capability exists at all.
             "co_observation_enabled": config.co_observation.enabled,
+            # None while retention is off, which is the default. Present only so
+            # the page can state that older rows were deleted, rather than let
+            # "showing N of M" imply the rest are still retrievable.
+            "sightings_retention_days": config.sightings_retention_days,
         }
         context.update(_device_actions_context(normalized, int(time.time())))
         return app.state.templates.TemplateResponse(
