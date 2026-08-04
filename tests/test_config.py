@@ -594,3 +594,124 @@ def test_example_config_loads_through_the_real_config_constructor():
     # privacy posture the docs describe is no longer what ships.
     assert cfg.capture.probe_ssids is False
     assert cfg.ble_bridge.enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Co-observation explorer (v3 Decision 6).
+#
+# The panel ships behind a capability toggle that is OFF by default. Iterating
+# /devices/{mac}/co-observations across every MAC reconstructs an association
+# graph, and a stolen operator session can request 20,000 endpoints even though
+# each page shows 25. A capability that is not enabled cannot be enumerated,
+# which is the only control here that changes the exposure rather than merely
+# pacing it.
+# ---------------------------------------------------------------------------
+
+
+def test_co_observation_is_off_by_default():
+    """⭐ The security property, not a preference.
+
+    If this default ever flips, an association-graph endpoint becomes reachable
+    on every stock install without the operator choosing it.
+    """
+    assert config_mod.CoObservationConfig().enabled is False
+    assert config_mod.Config(db_path="/tmp/x.db").co_observation.enabled is False
+
+
+def test_co_observation_defaults():
+    c = config_mod.CoObservationConfig()
+    assert c.window_days == 30
+    assert c.proximity_seconds == 300
+    assert c.gap_seconds == 900
+    assert c.max_candidates == 25
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("window_days", 0),
+        ("window_days", 3651),
+        ("proximity_seconds", -1),
+        ("proximity_seconds", 86_401),
+        ("gap_seconds", 0),
+        ("gap_seconds", 86_401),
+        ("max_candidates", 0),
+        ("max_candidates", 201),
+    ],
+)
+def test_co_observation_rejects_out_of_range(field, value):
+    with pytest.raises(ValidationError):
+        config_mod.CoObservationConfig(**{field: value})
+
+
+def test_co_observation_max_candidates_matches_the_db_limit_ceiling():
+    """The config ceiling and Database.list_co_observations' own limit bound
+    must agree, or a value the config accepts raises at query time."""
+    from lynceus.db import Database
+
+    cfg = config_mod.CoObservationConfig(max_candidates=200)
+    assert cfg.max_candidates == 200
+    assert Database.list_co_observations.__doc__ is not None
+
+
+def test_co_observation_rejects_unknown_keys():
+    with pytest.raises(ValidationError):
+        config_mod.CoObservationConfig(proximity_second=300)
+
+
+# ---------------------------------------------------------------------------
+# sightings retention.
+#
+# sightings has never had a retention policy and grows without bound, which is
+# why co_observation.window_days exists at all. Pruning is DESTRUCTIVE and
+# irreversible, so it is off by default: an upgrade must never silently delete
+# an operator's observation history.
+# ---------------------------------------------------------------------------
+
+
+def test_sightings_retention_is_off_by_default():
+    """⭐ None means never prune, which is the behaviour every existing install
+    already has. A default that deleted data on upgrade would be a data-loss
+    bug shipped as a feature."""
+    assert config_mod.Config(db_path="/tmp/x.db").sightings_retention_days is None
+
+
+@pytest.mark.parametrize("bad", [0, -1, 3651])
+def test_sightings_retention_rejects_out_of_range(bad):
+    with pytest.raises(ValidationError):
+        config_mod.Config(db_path="/tmp/x.db", sightings_retention_days=bad)
+
+
+def test_sightings_retention_may_not_undercut_the_co_observation_window():
+    """⭐ Cross-field, and the failure is silent without it.
+
+    Pruning to 7 days while the co-observation panel asks for 30 leaves the
+    panel rendering "the last 30 days" over a table that only holds 7. Every
+    count would be truthful about the rows and wrong about the window, and
+    nothing on screen would say so.
+    """
+    with pytest.raises(ValidationError):
+        config_mod.Config(
+            db_path="/tmp/x.db",
+            sightings_retention_days=7,
+            co_observation={"enabled": True, "window_days": 30},
+        )
+
+
+def test_sightings_retention_shorter_than_window_is_fine_while_panel_is_off():
+    """The constraint exists to protect the panel's claim. No panel, no claim."""
+    cfg = config_mod.Config(
+        db_path="/tmp/x.db",
+        sightings_retention_days=7,
+        co_observation={"enabled": False, "window_days": 30},
+    )
+    assert cfg.sightings_retention_days == 7
+
+
+def test_sightings_retention_equal_to_the_window_is_allowed():
+    cfg = config_mod.Config(
+        db_path="/tmp/x.db",
+        sightings_retention_days=30,
+        co_observation={"enabled": True, "window_days": 30},
+    )
+    assert cfg.sightings_retention_days == 30

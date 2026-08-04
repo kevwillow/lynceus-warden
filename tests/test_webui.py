@@ -8735,3 +8735,378 @@ def test_vendored_pico_defines_no_grid_so_we_must():
     )
     assert "form fieldset.grid {" in ours
     assert "grid-template-columns" in ours.split("form fieldset.grid {")[1].split("}")[0]
+
+
+# ---------------------------------------------------------------------------
+# Co-observation explorer route (design v3, Decision 6).
+#
+# The capability is off by default. These tests pin the two properties that are
+# security properties rather than preferences: the route must not be reachable
+# while the capability is off, and while off it must be INDISTINGUISHABLE from a
+# device that does not exist -- otherwise the toggle is itself a probe oracle
+# that confirms which MACs the operator has seen.
+# ---------------------------------------------------------------------------
+
+_CO_ANCHOR = "aa:bb:cc:dd:ee:01"
+_CO_NEIGHBOUR = "aa:bb:cc:dd:ee:02"
+_CO_NOW = 1_700_000_000
+
+
+def _make_co_app(tmp_path, *, enabled: bool, seed_devices: bool = True):
+    config = Config(
+        db_path=str(tmp_path / "co.db"),
+        co_observation={"enabled": enabled},
+    )
+    db = Database(config.db_path)
+    if seed_devices:
+        for mac in (_CO_ANCHOR, _CO_NEIGHBOUR):
+            db.upsert_device(mac, "wifi", "Acme", 0, _CO_NOW)
+        db._conn.executemany(
+            "INSERT OR IGNORE INTO locations(id, label) VALUES (?, ?)",
+            [("default", "default")],
+        )
+        db._conn.executemany(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, 'default')",
+            [
+                (_CO_ANCHOR, _CO_NOW - 3_000),
+                (_CO_ANCHOR, _CO_NOW - 1_000),
+                (_CO_NEIGHBOUR, _CO_NOW - 2_990),
+                (_CO_NEIGHBOUR, _CO_NOW - 990),
+            ],
+        )
+        db._conn.commit()
+    return create_app(config, db), db
+
+
+@pytest.fixture
+def co_clock(monkeypatch):
+    """Inject the clock. Carried fix v1 24: fixtures pinned to a constant while
+    the route reads real time.time() would put every seeded sighting outside the
+    window, so the panel would render empty and every assertion would pass for
+    the wrong reason."""
+    monkeypatch.setattr("lynceus.webui.app.time.time", lambda: float(_CO_NOW))
+
+
+@pytest.mark.webui
+def test_co_observations_route_is_not_swallowed_by_the_device_catch_all(tmp_path, co_clock):
+    """⭐ /devices/{mac:path} matches slashes, so it will happily swallow
+    '<mac>/co-observations' as a MAC unless this route is registered first.
+    The failure is silent: a 200 rendering the wrong page."""
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        assert r.status_code == 200
+        assert "co-observation" in r.text.lower()
+        # device_detail's own heading must NOT be what came back.
+        assert "Malformed MAC" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_disabled_is_byte_identical_to_a_missing_device(tmp_path, co_clock):
+    """⭐ The toggle must not be a probe oracle.
+
+    Capability OFF against a device that EXISTS must be indistinguishable from
+    capability ON against a device that does not. If these differ in status or
+    body, an attacker learns which MACs the operator has seen by toggling
+    nothing at all.
+    """
+    app_off, db_off = _make_co_app(tmp_path / "off", enabled=False, seed_devices=True)
+    app_on, db_on = _make_co_app(tmp_path / "on", enabled=True, seed_devices=False)
+    try:
+        with TestClient(app_off) as c_off:
+            r_off = c_off.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        with TestClient(app_on) as c_on:
+            r_on = c_on.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        assert r_off.status_code == r_on.status_code == 404
+        assert r_off.text == r_on.text
+    finally:
+        db_off.close()
+        db_on.close()
+
+
+@pytest.mark.webui
+def test_co_observations_enabled_renders_the_neighbour(tmp_path, co_clock):
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        assert r.status_code == 200
+        assert _CO_NEIGHBOUR in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_renders_the_range_and_w_in_use(tmp_path, co_clock):
+    """The range and W silently control every result, so they are part of the
+    rendered output, not just the request."""
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations?w=60")
+        assert r.status_code == 200
+        assert "60" in r.text
+        assert "30" in r.text  # window_days default, displayed
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_rejects_a_malformed_mac(tmp_path, co_clock):
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get("/devices/not-a-mac/co-observations")
+        assert r.status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_rejects_an_out_of_range_w(tmp_path, co_clock):
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            base = f"/devices/{_CO_ANCHOR}/co-observations"
+            assert client.get(f"{base}?w=-1").status_code == 400
+            assert client.get(f"{base}?w=99999999").status_code == 400
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_audit_logs_every_query(tmp_path, co_clock, caplog):
+    """Decision 6: every query is audit-logged, so enumeration leaves a trail
+    even though the panel itself is read-only."""
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with caplog.at_level("INFO", logger="lynceus.webui.app"):
+            with TestClient(app) as client:
+                client.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        joined = " ".join(r.message for r in caplog.records)
+        assert "co-observation" in joined.lower()
+        assert _CO_ANCHOR in joined
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_files_an_always_logged_device_under_high_coverage(tmp_path, co_clock):
+    """⭐ The v3.1 substitute for the withdrawn candidate_coverage.
+
+    The always-there gadget is logged constantly and coincides with the anchor
+    almost never. It must be separated out rather than sitting at the top of
+    the main table, which is exactly what the withdrawn v1 lift statistic did
+    when it scored such a device 10.000/strong.
+    """
+    config = Config(db_path=str(tmp_path / "co.db"), co_observation={"enabled": True})
+    db = Database(config.db_path)
+    try:
+        for mac in (_CO_ANCHOR, _CO_NEIGHBOUR):
+            db.upsert_device(mac, "wifi", "Acme", 0, _CO_NOW)
+        db._conn.execute("INSERT OR IGNORE INTO locations(id, label) VALUES ('default','d')")
+        rows = [(_CO_ANCHOR, _CO_NOW - 3_000), (_CO_NEIGHBOUR, _CO_NOW - 2_995)]
+        # 30 further runs, each well beyond gap_seconds from the last and far
+        # from the anchor, so the device is plainly around a lot and shares
+        # almost none of it.
+        rows += [(_CO_NEIGHBOUR, _CO_NOW - 100_000 - i * 2_000) for i in range(30)]
+        db._conn.executemany(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, 'default')", rows
+        )
+        db._conn.commit()
+        app = create_app(config, db)
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        assert r.status_code == 200
+        assert "High observation coverage" in r.text
+        # And the panel must say what the share is a share OF, because it is
+        # not a fraction of the location and reading it as one is the whole
+        # error v3.1 exists to avoid.
+        assert "own logged runs" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_device_page_links_to_co_observations_only_when_enabled(tmp_path, co_clock):
+    """The panel was unreachable except by typing the URL. It is linked now --
+    but only when the capability is on, so the link cannot advertise a feature
+    that would 404, and cannot hint that the capability exists."""
+    app_on, db_on = _make_co_app(tmp_path / "on", enabled=True)
+    app_off, db_off = _make_co_app(tmp_path / "off", enabled=False)
+    try:
+        with TestClient(app_on) as c:
+            on = c.get(f"/devices/{_CO_ANCHOR}")
+        with TestClient(app_off) as c:
+            off = c.get(f"/devices/{_CO_ANCHOR}")
+        assert on.status_code == off.status_code == 200
+        assert "co-observations" in on.text
+        assert "co-observations" not in off.text
+    finally:
+        db_on.close()
+        db_off.close()
+
+
+@pytest.mark.webui
+def test_co_observations_drill_down_shows_the_real_sighting_rows(tmp_path, co_clock):
+    """⭐ The count must be auditable against the rows it came from.
+
+    Only possible because v3 compares real timestamps instead of bucketing
+    time: every pair is two logged sightings with a true delta.
+    """
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get(
+                f"/devices/{_CO_ANCHOR}/co-observations?detail={_CO_NEIGHBOUR}&loc=default"
+            )
+        assert r.status_code == 200
+        # The seeded pair is 10s apart; both real timestamps must be shown.
+        assert str(_CO_NOW - 3_000) in r.text
+        assert str(_CO_NOW - 2_990) in r.text
+        assert "10" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_drill_down_refuses_a_mac_that_is_not_a_candidate(tmp_path, co_clock):
+    """The drill-down serves only pairs already on the page.
+
+    Without this the parameter is an arbitrary two-MAC proximity oracle: an
+    operator session could ask "were these two ever logged together" for any
+    pair, which is a broader question than the panel is meant to answer and
+    exactly the enumeration Decision 6 exists to bound.
+    """
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        stranger = "aa:bb:cc:dd:ee:99"
+        db.upsert_device(stranger, "wifi", "Acme", 0, _CO_NOW)
+        # Logged at the same location but far outside any anchor proximity, so
+        # it is a real device that is NOT a candidate on this page.
+        db._conn.execute(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, 'default')",
+            (stranger, _CO_NOW - 500_000),
+        )
+        db._conn.commit()
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations?detail={stranger}&loc=default")
+        assert r.status_code == 200
+        assert "Co-observed sightings:" not in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_disabled_is_indistinguishable_even_for_an_invalid_request(tmp_path, co_clock):
+    """⭐ The oracle closes only if EVERY path agrees, not the happy one.
+
+    Validating w after the capability check makes ?w=-1 answer 400 while
+    enabled and 404 while disabled, which reveals the toggle's state to anyone
+    who sends one bad parameter. The earlier test compared valid requests only
+    and could never have seen it.
+    """
+    app_on, db_on = _make_co_app(tmp_path / "on", enabled=True)
+    app_off, db_off = _make_co_app(tmp_path / "off", enabled=False)
+    try:
+        for bad in ("-1", "99999999"):
+            with TestClient(app_on) as c:
+                on = c.get(f"/devices/{_CO_ANCHOR}/co-observations?w={bad}")
+            with TestClient(app_off) as c:
+                off = c.get(f"/devices/{_CO_ANCHOR}/co-observations?w={bad}")
+            assert on.status_code == off.status_code, f"w={bad} leaks the toggle state"
+            assert on.text == off.text, f"w={bad} leaks the toggle state in the body"
+    finally:
+        db_on.close()
+        db_off.close()
+
+
+@pytest.mark.webui
+def test_drill_down_says_pairs_are_not_encounters(tmp_path, co_clock):
+    """⭐ Found by looking at the rendered page, not by a failing test.
+
+    A pair with 1 shared run rendered several sighting-pair rows with nothing
+    relating the two numbers. Counting those rows as encounters is exactly the
+    pseudo-replication the run counts exist to prevent, so the page must state
+    the relationship rather than leave the operator to infer it.
+    """
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with TestClient(app) as client:
+            r = client.get(
+                f"/devices/{_CO_ANCHOR}/co-observations?detail={_CO_NEIGHBOUR}&loc=default"
+            )
+        assert r.status_code == 200
+        assert "sighting pair" in r.text
+        assert "not encounters" in r.text
+        assert "shared anchor runs" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_drill_down_truncation_is_visible(tmp_path, co_clock):
+    """The main table states its truncation outright; this list must too.
+
+    It is n*m -- every anchor sighting against every candidate sighting inside
+    W -- so it hits the cap far sooner than the run counts suggest.
+    """
+    config = Config(db_path=str(tmp_path / "co.db"), co_observation={"enabled": True})
+    db = Database(config.db_path)
+    try:
+        for mac in (_CO_ANCHOR, _CO_NEIGHBOUR):
+            db.upsert_device(mac, "wifi", "Acme", 0, _CO_NOW)
+        db._conn.execute("INSERT OR IGNORE INTO locations(id, label) VALUES ('default','d')")
+        # 15 x 15 sightings inside one W window = 225 pairs, over the 100 cap.
+        rows = [(_CO_ANCHOR, _CO_NOW - 3_000 + i) for i in range(15)]
+        rows += [(_CO_NEIGHBOUR, _CO_NOW - 3_000 + i) for i in range(15)]
+        db._conn.executemany(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, 'default')", rows
+        )
+        db._conn.commit()
+        app = create_app(config, db)
+        with TestClient(app) as client:
+            r = client.get(
+                f"/devices/{_CO_ANCHOR}/co-observations?detail={_CO_NEIGHBOUR}&loc=default"
+            )
+        assert r.status_code == 200
+        assert "there are more" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_device_page_declares_deleted_sightings_only_when_retention_is_on(tmp_path):
+    """⭐ "showing N of M" implies the rest are retrievable. Once retention has
+    deleted them that is false, and only this line says so. Absent by default,
+    because by default nothing has been deleted."""
+    on_cfg = Config(db_path=str(tmp_path / "on.db"), sightings_retention_days=30)
+    off_cfg = Config(db_path=str(tmp_path / "off.db"))
+    apps = []
+    try:
+        for cfg in (on_cfg, off_cfg):
+            db = Database(cfg.db_path)
+            db.ensure_location("default", "d")
+            db.upsert_device(
+                mac=_CO_ANCHOR,
+                device_type="wifi",
+                oui_vendor="Acme",
+                is_randomized=0,
+                now_ts=_CO_NOW,
+            )
+            db.insert_sighting(
+                mac=_CO_ANCHOR, ts=_CO_NOW, rssi=-50, ssid="n", location_id="default"
+            )
+            apps.append((create_app(cfg, db), db))
+        with TestClient(apps[0][0]) as c:
+            on = c.get(f"/devices/{_CO_ANCHOR}")
+        with TestClient(apps[1][0]) as c:
+            off = c.get(f"/devices/{_CO_ANCHOR}")
+        assert "cannot be recovered" in on.text
+        assert "cannot be recovered" not in off.text
+    finally:
+        for _, db in apps:
+            db.close()

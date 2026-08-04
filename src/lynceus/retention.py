@@ -1,0 +1,112 @@
+"""Retention for the ``sightings`` table.
+
+``sightings`` has never had a retention policy. At a 60-second poll interval a
+single continuously-present device contributes ~1,440 rows a day, so the table
+grows without bound and eventually fills a Pi. It is also the reason
+``co_observation.window_days`` exists: an unbounded table needs the query to
+supply the horizon the schema does not.
+
+⛔ **This deletes evidence, and the deletion is irreversible.** It is therefore
+off by default (``sightings_retention_days: null``), which is exactly what
+every existing install already does. An upgrade must never silently discard an
+operator's observation history.
+
+Mirrors ``evidence.prune_old_evidence`` / ``maybe_prune_evidence`` deliberately,
+including the once-a-day rate limit recorded in ``poller_state``, so there is
+one retention idiom in this codebase rather than two.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+
+from lynceus.db import Database
+
+logger = logging.getLogger(__name__)
+
+STATE_KEY_LAST_SIGHTINGS_PRUNE = "last_sightings_prune"
+
+
+def _validate_retention(retention_days: int | None) -> None:
+    if retention_days is None:
+        return
+    if not isinstance(retention_days, int) or isinstance(retention_days, bool):
+        raise ValueError("retention_days must be int or None")
+    if retention_days < 1:
+        raise ValueError("retention_days must be >= 1")
+
+
+def prune_old_sightings(
+    db: Database,
+    retention_days: int | None,
+    *,
+    now_ts: int | None = None,
+) -> tuple[int, int | None]:
+    """Delete sightings older than ``retention_days``.
+
+    Returns ``(rows_deleted, oldest_remaining_ts)``; the second element is None
+    when no sightings remain. ``retention_days=None`` is a no-op returning
+    ``(0, ...)``, because "no policy" is a valid and default configuration
+    rather than an error.
+
+    ⚠️ The cutoff is **exclusive**: a row exactly at ``now - retention_days``
+    is KEPT. Off by one here quietly deletes an extra day of evidence on every
+    run, and nothing downstream would report it.
+
+    Touches ``sightings`` only. Alerts are the operator's record of what was
+    decided and must outlive the observations behind them; devices carry
+    identity that stays meaningful after its rows age out.
+    """
+    _validate_retention(retention_days)
+    if now_ts is None:
+        now_ts = int(time.time())
+    if retention_days is None:
+        oldest_row = db._conn.execute("SELECT MIN(ts) FROM sightings").fetchone()
+        oldest = int(oldest_row[0]) if oldest_row and oldest_row[0] is not None else None
+        return 0, oldest
+
+    cutoff = now_ts - retention_days * 86_400
+    with db._conn:
+        cur = db._conn.execute("DELETE FROM sightings WHERE ts < ?", (cutoff,))
+        deleted = cur.rowcount
+        oldest_row = db._conn.execute("SELECT MIN(ts) FROM sightings").fetchone()
+    oldest = int(oldest_row[0]) if oldest_row and oldest_row[0] is not None else None
+    logger.info(
+        "Pruned %d sightings older than %d days (oldest remaining: %s)",
+        deleted,
+        retention_days,
+        oldest,
+    )
+    return deleted, oldest
+
+
+def maybe_prune_sightings(
+    db: Database,
+    retention_days: int | None,
+    *,
+    now_ts: int | None = None,
+    interval_seconds: int = 86_400,
+) -> bool:
+    """Run :func:`prune_old_sightings` at most once per ``interval_seconds``.
+
+    Returns True only when a prune actually executed. A ``retention_days`` of
+    None returns False without recording a run, so enabling retention later
+    prunes immediately instead of waiting out an interval it never served.
+    """
+    _validate_retention(retention_days)
+    if retention_days is None:
+        return False
+    if now_ts is None:
+        now_ts = int(time.time())
+    last_raw = db.get_state(STATE_KEY_LAST_SIGHTINGS_PRUNE)
+    if last_raw is not None:
+        try:
+            last = int(last_raw)
+        except (TypeError, ValueError):
+            last = 0
+        if now_ts - last < interval_seconds:
+            return False
+    prune_old_sightings(db, retention_days, now_ts=now_ts)
+    db.set_state(STATE_KEY_LAST_SIGHTINGS_PRUNE, str(now_ts))
+    return True

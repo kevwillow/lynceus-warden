@@ -72,6 +72,25 @@ _SNOOZE_DEFAULT_KEY: str = "24h"
 
 logger = logging.getLogger(__name__)
 
+# Co-observation explorer, design v3 Decision 4 as amended in v3.1. A candidate
+# is filed under "high observation coverage" when it has been logged enough to
+# judge AND only a small share of its own runs coincided with the anchor -- the
+# always-there gadget that co-occurs with everything. Both are properties of the
+# candidate's own observation record, countable from rows, and neither is a
+# claim about the relationship.
+_CO_COVERAGE_MIN_RUNS = 20
+_CO_COVERAGE_SHARE = 0.25
+# W presets in seconds. A relationship that dissolves as W tightens is
+# information the operator should have, so the panel offers the ladder rather
+# than a single configured value.
+_CO_W_PRESETS = (60, 300, 900)
+# Drill-down cap. One observation run can hold many sighting pairs (every
+# anchor sighting against every candidate sighting inside W), so this list is
+# n*m and grows far faster than the run counts above it. Capped, and the cap is
+# always reported -- silent truncation here would contradict the main table,
+# which states its own truncation outright.
+_CO_PAIRS_LIMIT = 100
+
 PACKAGE = "lynceus.webui"
 
 KISMET_STATUS_CACHE_TTL = 30
@@ -3204,6 +3223,186 @@ def create_app(config: Config, db: Database) -> FastAPI:
             )
         return RedirectResponse(f"/devices/{mac}", status_code=303)
 
+    # ⭐ MUST stay registered BEFORE GET /devices/{mac:path}. That route's
+    # ``:path`` converter matches slashes, so it would otherwise win this URL
+    # with mac="<mac>/co-observations" and render the device page with a 200 --
+    # a silent failure with no error anywhere. Pinned by
+    # test_co_observations_route_is_not_swallowed_by_the_device_catch_all.
+    @app.get("/devices/{mac:path}/co-observations", response_class=HTMLResponse)
+    def device_co_observations(
+        request: Request,
+        mac: str,
+        w: int | None = Query(None),
+        detail: str | None = Query(None),
+        loc: str | None = Query(None),
+    ):
+        """Which other devices keep turning up at the same time as this one.
+
+        Read-only, and it makes no statistical claim: sensor uptime is not
+        recorded, so absence of data cannot be told apart from absence of a
+        device. Counts only, no score and no ranking of suspicion.
+        """
+        cfg = config.co_observation
+        try:
+            normalized = kismet.normalize_mac(mac)
+        except ValueError:
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "devices",
+                    "message": f"Malformed MAC address: {mac!r}.",
+                },
+                status_code=400,
+            )
+
+        def _absent():
+            """The single response used for BOTH 'capability off' and 'no such
+            device', so the toggle cannot be used as a probe oracle that
+            confirms which MACs the operator has seen."""
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "devices",
+                    "message": f"Device {normalized} not found.",
+                },
+                status_code=404,
+            )
+
+        # ⭐ Parameter validation runs BEFORE the capability check, and the
+        # order is load-bearing. Validating after it made ?w=-1 answer 400
+        # while enabled and 404 while disabled, so one bad parameter revealed
+        # the toggle's state -- the toggle becoming the very oracle Decision 6
+        # forbids. The oracle closes only if EVERY path agrees, not the happy
+        # one. Pinned by
+        # test_disabled_is_indistinguishable_even_for_an_invalid_request.
+        proximity = cfg.proximity_seconds if w is None else w
+        if not (0 <= proximity <= 86400):
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "devices",
+                    "message": "Proximity window must be between 0 and 86400 seconds.",
+                },
+                status_code=400,
+            )
+
+        if not cfg.enabled:
+            logger.info(
+                "co-observation panel requested while the capability is disabled: mac=%s",
+                normalized,
+            )
+            return _absent()
+
+        if db.get_device_with_sightings(normalized) is None:
+            return _absent()
+
+        now_ts = int(time.time())
+        since_ts = now_ts - cfg.window_days * 86_400
+        # Decision 6: every query is audit-logged, so enumeration leaves a
+        # trail even though the panel itself only reads.
+        logger.info(
+            "co-observation query: mac=%s window_days=%d proximity_seconds=%d",
+            normalized,
+            cfg.window_days,
+            proximity,
+        )
+        result = db.list_co_observations(
+            normalized,
+            now_ts=now_ts,
+            since_ts=since_ts,
+            proximity_seconds=proximity,
+            gap_seconds=cfg.gap_seconds,
+            limit=cfg.max_candidates,
+        )
+
+        candidates = []
+        for row in result["candidates"]:
+            total = row["candidate_total_runs"]
+            # Decision 4 as amended in v3.1. NOT a fraction of the location:
+            # it is the share of this candidate's OWN logged runs that were
+            # shared. A device logged in 500 runs of which 3 coincide reads
+            # 0.6% and is demoted on sight.
+            shared_share = (row["shared_candidate_runs"] / total) if total else None
+            candidates.append(
+                {
+                    **row,
+                    "anchor_total_runs": result["anchor_runs_by_location"].get(
+                        row["location_id"], 0
+                    ),
+                    "shared_share": shared_share,
+                    "high_coverage": (
+                        shared_share is not None
+                        and total >= _CO_COVERAGE_MIN_RUNS
+                        and shared_share <= _CO_COVERAGE_SHARE
+                    ),
+                    "shared_ssids": db.shared_probe_ssids(normalized, row["mac"]),
+                }
+            )
+
+        # Drill-down: the real sighting rows behind one candidate's count, so
+        # the number is auditable rather than taken on trust. Only reachable
+        # for a candidate that is actually on this page.
+        pairs = []
+        detail_mac = None
+        detail_row = None
+        if detail and loc:
+            try:
+                detail_mac = kismet.normalize_mac(detail)
+            except ValueError:
+                detail_mac = None
+            detail_row = next(
+                (
+                    c
+                    for c in candidates
+                    if c["mac"] == detail_mac and c["location_id"] == loc
+                ),
+                None,
+            )
+            if detail_mac and detail_row is not None:
+                pairs = db.list_co_observation_pairs(
+                    normalized,
+                    detail_mac,
+                    location_id=loc,
+                    now_ts=now_ts,
+                    since_ts=since_ts,
+                    proximity_seconds=proximity,
+                    limit=_CO_PAIRS_LIMIT,
+                )
+            else:
+                detail_mac = None
+
+        return app.state.templates.TemplateResponse(
+            request=request,
+            name="co_observations.html",
+            context={
+                "version": __version__,
+                "active": "devices",
+                "mac": normalized,
+                "detail_mac": detail_mac,
+                "detail_loc": loc,
+                "pairs": pairs,
+                "detail_row": detail_row,
+                "pairs_truncated": len(pairs) >= _CO_PAIRS_LIMIT,
+                "pairs_limit": _CO_PAIRS_LIMIT,
+                "candidates": [c for c in candidates if not c["high_coverage"]],
+                "high_coverage": [c for c in candidates if c["high_coverage"]],
+                "total_candidates": result["total_candidates"],
+                "shown": len(candidates),
+                "proximity_seconds": proximity,
+                "gap_seconds": cfg.gap_seconds,
+                "window_days": cfg.window_days,
+                "since_ts": since_ts,
+                "now_ts": now_ts,
+                "w_presets": _CO_W_PRESETS,
+            },
+        )
+
     @app.get("/devices/{mac:path}", response_class=HTMLResponse)
     def device_detail(request: Request, mac: str):
         try:
@@ -3236,6 +3435,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "active": "devices",
             "device": result["device"],
             "sightings": result["sightings"],
+            # Gated so the link cannot advertise a route that would 404, and
+            # cannot hint that the capability exists at all.
+            "co_observation_enabled": config.co_observation.enabled,
+            # None while retention is off, which is the default. Present only so
+            # the page can state that older rows were deleted, rather than let
+            # "showing N of M" imply the rest are still retrievable.
+            "sightings_retention_days": config.sightings_retention_days,
         }
         context.update(_device_actions_context(normalized, int(time.time())))
         return app.state.templates.TemplateResponse(

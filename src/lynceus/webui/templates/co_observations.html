@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}co-observations &mdash; lynceus{% endblock %}
+{% block content %}
+  {% include "_topnav.html" %}
+
+  <h2>Co-observation explorer</h2>
+  <p>Devices logged close in time to <a href="/devices/{{ mac }}"><code>{{ mac }}</code></a>,
+     at the same location.</p>
+
+  {# The range and W silently control every result, so they are rendered, not
+     just requested. sightings is never pruned: without a stated horizon a
+     device with 300 shared runs from January outranks one with 20 from this
+     week, and nothing on screen would say so. #}
+  <article>
+    <header><strong>What this query asked</strong></header>
+    <ul>
+      <li>Range: the last <strong>{{ window_days }}</strong> days
+          (<code>{{ since_ts }}</code> to <code>{{ now_ts }}</code>)</li>
+      <li>Co-observed within <strong>W = {{ proximity_seconds }}</strong> seconds,
+          at one location</li>
+      <li>Observation runs split after <strong>{{ gap_seconds }}</strong> seconds unseen</li>
+    </ul>
+    <p>
+      Try a tighter W:
+      {% for preset in w_presets %}
+        <a href="/devices/{{ mac }}/co-observations?w={{ preset }}"
+           {% if preset == proximity_seconds %}aria-current="true"{% endif %}>{{ preset }}s</a>{% if not loop.last %} &middot; {% endif %}
+      {% endfor %}
+      &mdash; a relationship that dissolves as W tightens is worth knowing about.
+    </p>
+  </article>
+
+  {# Truncation is never silent. v1 cut at LIMIT 25 by raw volume with nothing
+     telling the operator the interesting device was never retrieved. #}
+  <p>
+    Showing <strong>{{ shown }}</strong> of <strong>{{ total_candidates }}</strong> devices.
+    {% if total_candidates > shown %}
+      <mark>The rest were not retrieved. Tighten W or shorten the range rather
+      than reading this list as complete.</mark>
+    {% endif %}
+  </p>
+
+  <table>
+    <caption>Sorted by shared observation runs. Sort is navigation, not suspicion.</caption>
+    <thead>
+      <tr>
+        <th scope="col">Device</th>
+        <th scope="col">Location</th>
+        <th scope="col">Shared anchor runs</th>
+        <th scope="col">Shared candidate runs</th>
+        <th scope="col">Shared days</th>
+        <th scope="col">&Delta;t min / median / max</th>
+        <th scope="col">Shared probe SSIDs</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in candidates %}
+        <tr>
+          <td><a href="/devices/{{ c.mac }}"><code>{{ c.mac }}</code></a></td>
+          <td>{{ c.location_id }}</td>
+          {# Every denominator is shown. Both sides are given because they are
+             not the same number: five candidate runs inside one anchor run are
+             not five events, and showing only one side hides that. #}
+          <td>{{ c.shared_anchor_runs }} / {{ c.anchor_total_runs }}</td>
+          <td>{{ c.shared_candidate_runs }} / {{ c.candidate_total_runs }}</td>
+          <td>{{ c.shared_days }}</td>
+          <td>
+            {{ c.delta_min }}s / {{ c.delta_median }}s / {{ c.delta_max }}s
+            <a href="/devices/{{ mac }}/co-observations?w={{ proximity_seconds }}&amp;detail={{ c.mac }}&amp;loc={{ c.location_id }}">show rows</a>
+          </td>
+          <td>
+            {% if c.shared_ssids %}
+              {% for s in c.shared_ssids %}
+                {# corpus_devices is always shown beside the SSID: sharing
+                   "attwifi" means nothing, sharing an odd name does not. It
+                   promotes nothing -- there is no band to promote. #}
+                <code>{{ s.ssid }}</code>
+                <small>({{ s.corpus_devices }} devices in capture)</small>{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            {% else %}
+              <small>&mdash;</small>
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7">No co-observed devices in this range at this W.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if detail_mac %}
+    {# The rows behind the count. Every line is two REAL logged sightings with
+       a true delta -- nothing interpolated, floored or bucketed -- so the
+       operator can audit the number instead of trusting it. #}
+    <article>
+      <header>
+        <strong>Co-observed sightings:</strong>
+        <code>{{ mac }}</code> and <code>{{ detail_mac }}</code>
+        at {{ detail_loc }}
+      </header>
+      {# ⭐ The row count here is NOT the run count above, and saying so is the
+         whole point. One run can hold many sighting pairs -- every anchor
+         sighting against every candidate sighting inside W -- so counting
+         these rows as encounters is exactly the pseudo-replication the run
+         counts exist to prevent. Measured: an 8-shared-run pair rendered 32
+         rows here with nothing explaining the difference. #}
+      <p>
+        <strong>{{ pairs|length }}</strong> sighting pair{{ '' if pairs|length == 1 else 's' }}
+        {% if detail_row %}
+          across <strong>{{ detail_row.shared_anchor_runs }}</strong> shared anchor runs
+          and <strong>{{ detail_row.shared_candidate_runs }}</strong> shared candidate runs.
+        {% endif %}
+        <small>
+          One run usually contains several pairs, so this list is longer than
+          those counts. <strong>Rows here are not encounters</strong> &mdash; the
+          run counts above are the ones to read as events.
+        </small>
+      </p>
+      {% if pairs_truncated %}
+        <p><mark>Showing the first {{ pairs_limit }} pairs only; there are more.
+        Tighten W to see the closest ones.</mark></p>
+      {% endif %}
+      <table>
+        <caption>
+          The actual logged rows behind this pair's counts, within
+          W = {{ proximity_seconds }}s.
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Anchor sighting (unix ts)</th>
+            <th scope="col">Candidate sighting (unix ts)</th>
+            <th scope="col">&Delta;t</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in pairs %}
+            <tr>
+              <td><code>{{ p.anchor_ts }}</code></td>
+              <td><code>{{ p.candidate_ts }}</code></td>
+              <td>{{ p.delta_seconds }}s</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="3">No co-observed sightings for this pair.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p><a href="/devices/{{ mac }}/co-observations?w={{ proximity_seconds }}">&larr; back to all candidates</a></p>
+    </article>
+  {% endif %}
+
+  {% if high_coverage %}
+    <article>
+      <header><strong>High observation coverage</strong></header>
+      <p>
+        These devices were logged often but only a small share of their own runs
+        coincided with this one. They are separated, not hidden.
+      </p>
+      <p>
+        <small>
+          This is a share of <em>each device's own logged runs</em>, not a share
+          of everything at the location. It says a device is frequently
+          <strong>observable</strong> here &mdash; not that it is present, and
+          not that it is unrelated. A phone physically present the whole time
+          may be detectable in very few runs.
+        </small>
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Device</th>
+            <th scope="col">Location</th>
+            <th scope="col">Shared / total candidate runs</th>
+            <th scope="col">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in high_coverage %}
+            <tr>
+              <td><a href="/devices/{{ c.mac }}"><code>{{ c.mac }}</code></a></td>
+              <td>{{ c.location_id }}</td>
+              <td>{{ c.shared_candidate_runs }} / {{ c.candidate_total_runs }}</td>
+              <td>{{ "%.1f"|format(c.shared_share * 100) }}%</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+  {% endif %}
+
+  {# Caveats render in the panel, not only in the docs. The operator reading a
+     list of devices that keep appearing near a person is exactly who needs
+     them, and they will not go and read a design document. #}
+  <article>
+    <header><strong>How to read this</strong></header>
+    <ul>
+      <li><strong>There is no score, and that is deliberate.</strong> Sensor
+          uptime is not recorded, so missing data cannot distinguish downtime,
+          a quiet device, and a device that was not there. No confidence
+          number would be defensible.</li>
+      <li>&ldquo;Co-observed&rdquo; means both were logged within
+          {{ proximity_seconds }}s of each other at one location. Nothing more.</li>
+      <li>Run boundaries are <strong>inferred from observations</strong>, never
+          arrival and departure. Intermittent logging inflates run counts.</li>
+      <li>Randomized MACs cannot reliably be merged into one device, so one
+          phone may appear as many rows, or vanish between runs.</li>
+      <li><strong>A MAC is not a person.</strong> Mesh nodes, access-point
+          radios and hotspots co-occur naturally and constantly.</li>
+      <li>Probe SSIDs are unverified metadata a device broadcast. They
+          corroborate; they rank nothing.</li>
+    </ul>
+  </article>
+
+  <p><a href="/devices/{{ mac }}">&larr; back to device</a></p>
+{% endblock %}

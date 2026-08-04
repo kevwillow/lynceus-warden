@@ -353,6 +353,27 @@ DEVICES_DEFAULT_SORT = "last_seen"
 DEVICES_DEFAULT_DIR = "desc"
 
 
+def _probe_ssids_array_guard(alias: str) -> str:
+    """Row guard for a ``json_each`` unnest of ``<alias>.probe_ssids``.
+
+    ``json_valid()`` alone is NOT sufficient and the difference is not
+    theoretical: the payload ``"attwifi"`` is valid JSON, and ``json_each``
+    unnests a bare string into one scalar row, so a single hand-edited device
+    would contribute a phantom SSID and inflate every corpus count that
+    mentions it. Requiring ``json_type(...) = 'array'`` as well is what makes a
+    malformed or non-array row skip silently instead of throwing.
+
+    Takes the table alias because the corpus-rarity subquery has to unnest a
+    second ``devices`` reference alongside the first.
+    """
+    return (
+        f"{alias}.probe_ssids IS NOT NULL AND {alias}.probe_ssids != '' "
+        f"AND {alias}.probe_ssids != '[]' "
+        f"AND json_valid({alias}.probe_ssids) "
+        f"AND json_type({alias}.probe_ssids) = 'array'"
+    )
+
+
 class Database:
     def __init__(self, path: str) -> None:
         # sqlite3.connect with a nested non-existent path fails with the
@@ -4230,6 +4251,140 @@ class Database:
             "total_candidates": total_candidates,
             "candidates": candidates,
         }
+
+    def shared_probe_ssids(self, mac_a: str, mac_b: str, *, limit: int = 10) -> list[dict]:
+        """Probe SSIDs both devices asked for, rarest in the corpus first.
+
+        Corroborating metadata for the co-observation panel, and nothing more.
+        It **promotes nothing** -- v3 has no band, score or ranking left to
+        promote -- so this returns evidence the operator reads, in an order
+        that is navigation rather than suspicion.
+
+        ``corpus_devices`` is how many distinct devices in the whole capture
+        have ever probed that SSID, and it is the entire point: two devices
+        sharing ``attwifi`` (tens of thousands of devices) means nothing, two
+        sharing an odd name is close to conclusive. v1 treated those two cases
+        identically. It must always be displayed next to the SSID.
+
+        Probe capture is off by default, so ``[]`` is the ordinary result and
+        not an error. Malformed rows skip rather than throw -- see
+        ``_probe_ssids_array_guard`` -- and non-string array elements are
+        dropped, because a number is not a network name.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            raise ValueError("limit must be int")
+        if limit < 1 or limit > 200:
+            raise ValueError("limit must be in [1, 200]")
+
+        def _ssids_of(alias: str, param: str) -> str:
+            # ``j.type`` -- json_each's own element-type column -- drops
+            # non-string elements: a valid array can still hold numbers or
+            # nulls, and those are not network names. It has to be j.type and
+            # NOT json_type(j.value): j.value is the already-decoded SQL value,
+            # so json_type() would try to re-parse the SSID text as JSON and
+            # throw "malformed JSON" on every ordinary name. Measured.
+            return (
+                f"SELECT DISTINCT j.value AS ssid "
+                f"FROM devices {alias}, json_each({alias}.probe_ssids) j "
+                f"WHERE {alias}.mac = :{param} "
+                f"AND {_probe_ssids_array_guard(alias)} "
+                f"AND j.type = 'text'"
+            )
+
+        rows = self._conn.execute(
+            f"""
+            WITH a AS ({_ssids_of("da", "a")}),
+                 b AS ({_ssids_of("db", "b")}),
+                 shared AS (SELECT ssid FROM a INTERSECT SELECT ssid FROM b)
+            SELECT s.ssid AS ssid,
+                   (SELECT COUNT(DISTINCT d2.mac)
+                      FROM devices d2, json_each(d2.probe_ssids) j2
+                     WHERE j2.value = s.ssid
+                       AND {_probe_ssids_array_guard("d2")}
+                       AND j2.type = 'text') AS corpus_devices
+            FROM shared s
+            ORDER BY corpus_devices ASC, s.ssid ASC
+            LIMIT :limit
+            """,
+            {"a": mac_a, "b": mac_b, "limit": limit},
+        ).fetchall()
+        return [{"ssid": str(r["ssid"]), "corpus_devices": int(r["corpus_devices"])} for r in rows]
+
+    def list_co_observation_pairs(
+        self,
+        mac: str,
+        candidate_mac: str,
+        *,
+        location_id: str,
+        now_ts: int,
+        since_ts: int,
+        proximity_seconds: int = 300,
+        limit: int = 100,
+    ) -> list[dict]:
+        """The actual sighting rows behind a co-observation count.
+
+        Every row returned is **two real logged sightings** and the true delta
+        between them. Nothing is interpolated, floored or bucketed, which is
+        what makes the proximity criterion auditable: the operator can check a
+        count against the rows it came from rather than taking it on trust.
+        This is the drill-down the design asks for, and it is only possible
+        because v3 compares real timestamps instead of bucketing time.
+
+        Per location and never pooled, matching
+        ``list_co_observations``. A candidate at another site is not near the
+        anchor whatever the clock says.
+        """
+        for name, value in (
+            ("now_ts", now_ts),
+            ("since_ts", since_ts),
+            ("proximity_seconds", proximity_seconds),
+            ("limit", limit),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"{name} must be int")
+        if since_ts > now_ts:
+            raise ValueError("since_ts must be <= now_ts")
+        if proximity_seconds < 0:
+            raise ValueError("proximity_seconds must be >= 0")
+        if limit < 1 or limit > 500:
+            raise ValueError("limit must be in [1, 500]")
+
+        rows = self._conn.execute(
+            """
+            SELECT a.ts AS anchor_ts,
+                   c.ts AS candidate_ts,
+                   ABS(c.ts - a.ts) AS delta_seconds
+            FROM sightings a
+            JOIN sightings c
+              ON c.location_id = a.location_id
+             AND c.ts BETWEEN a.ts - :proximity_seconds
+                          AND a.ts + :proximity_seconds
+            WHERE a.mac = :mac
+              AND c.mac = :candidate_mac
+              AND a.location_id = :location_id
+              AND a.ts >= :since_ts AND a.ts <= :now_ts
+              AND c.ts >= :since_ts AND c.ts <= :now_ts
+            ORDER BY a.ts ASC, c.ts ASC
+            LIMIT :limit
+            """,
+            {
+                "mac": mac,
+                "candidate_mac": candidate_mac,
+                "location_id": location_id,
+                "now_ts": now_ts,
+                "since_ts": since_ts,
+                "proximity_seconds": proximity_seconds,
+                "limit": limit,
+            },
+        ).fetchall()
+        return [
+            {
+                "anchor_ts": int(r["anchor_ts"]),
+                "candidate_ts": int(r["candidate_ts"]),
+                "delta_seconds": int(r["delta_seconds"]),
+            }
+            for r in rows
+        ]
 
     def close(self) -> None:
         self._conn.close()

@@ -59,12 +59,46 @@ It therefore needs a Bluetooth adapter **Kismet is not already capturing on**. R
 
 Observations from the bridge are stamped with a synthetic source of `ble:<adapter>` (e.g. `ble:hci1`). If `kismet_sources` is set, that exact string must appear in it, or the poller's source gate drops every observation the bridge produces.
 
+### `co_observation`: co-observation explorer
+
+Nested block, **off by default**. A read-only panel showing which other devices keep turning up at the same time as a given device. It adds no capture path, raises no alerts, and changes no schema.
+
+**It makes no statistical claim, deliberately.** There is no labelled corpus, no ground truth, and — decisively — sensor uptime is not recorded anywhere, so absence of data cannot be distinguished from absence of a device. The panel reports counts the operator reads; it does not score, rank by suspicion, or label a relationship. An earlier scored design was withdrawn after it was measured returning maximum confidence for the always-present neighbour it existed to demote.
+
+⚠️ `enabled` is a **security control, not a preference**. Iterating the route across every MAC reconstructs an association graph, and a stolen operator session can request thousands of endpoints even though each page shows 25. A capability that is off cannot be enumerated at all. Leave it off unless you need it.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `co_observation.enabled` | bool | `false` | Expose the co-observation panel and its route. Off by default; while off the route is indistinguishable from a device that does not exist, so the toggle is not itself a probe oracle. |
+| `co_observation.window_days` | integer | `30` | How far back the query looks. Range `1`–`3650`. `sightings` is never pruned, so an unstated horizon would silently control every result. |
+| `co_observation.proximity_seconds` | integer | `300` | *W*: two sightings at one location within this many seconds of each other are co-observed. Range `0`–`86400`; `0` means the same second. The UI offers 1/5/15-minute presets and always shows the value in use. |
+| `co_observation.gap_seconds` | integer | `900` | How long a device must be unseen before its next sighting starts a new observation run. Range `1`–`86400`. The default tolerates a missed poll tick at a 60s interval without splitting one stay into two. |
+| `co_observation.max_candidates` | integer | `25` | Candidates returned per request. Range `1`–`200`. Truncation is always shown ("showing 25 of 137"), never silent. |
+
+Run boundaries are **inferred from observations**, never arrival and departure: an anchor continuously present but logged intermittently during sensor trouble becomes many runs, not many visits.
+
+### `sightings_retention_days`: observation history retention
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sightings_retention_days` | integer \| null | `null` | Delete sightings older than this many days. Range `1`–`3650`. **`null` means never prune**, which is what every Lynceus install has always done. |
+
+⛔ **This deletes evidence, and the deletion is irreversible.** It is off by default deliberately: an upgrade must never silently discard an operator's observation history. Nothing is pruned until you set it.
+
+Why you might: at a 60-second poll interval one continuously-present device contributes roughly 1,440 rows a day, so `sightings` grows without bound and eventually fills a Pi. That unbounded growth is also why `co_observation.window_days` exists — the query has to supply a horizon the schema does not.
+
+The prune runs from the poll loop at most once per 24 hours, and logs what it deleted at INFO so a run leaves a trail in `journalctl`. The cutoff is exclusive: a row exactly at the boundary is kept. Only `sightings` is touched — alerts are your record of what was decided and outlive the observations behind them, and devices keep their identity after their rows age out.
+
+⚠️ Once set, `/devices/<mac>` states that older sightings were deleted. Without that line the existing "showing N of M" count would imply the rest are still retrievable.
+
 ### Cross-field validation
 
 - If `kismet_fixture_path` is set together with a non-default `kismet_url`, lynceus logs a warning and the fixture wins.
 - `ntfy_url` and `ntfy_topic` must be set as a pair. Setting only one fails validation.
 - Setting `ui_bind_host` to anything other than `127.0.0.1` / `localhost` requires `ui_allow_remote: true`. Lynceus has no built-in auth; this gate forces an explicit acknowledgement before exposing the UI off-host.
 - Unknown top-level keys cause a load-time error (`extra='forbid'`).
+- `sightings_retention_days` must be `>=` `co_observation.window_days` whenever the co-observation panel is enabled. Pruning below the window would leave the panel rendering "the last N days" over a table that no longer covers them: every count would be truthful about the rows it found and wrong about the period it claims, with nothing on screen saying so. Rejected at load rather than warned about, because once rendered the wrong number is indistinguishable from the right one.
+
 
 ## Worked examples
 
