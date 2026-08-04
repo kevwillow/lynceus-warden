@@ -259,3 +259,118 @@ def test_work_does_not_scale_with_in_window_corpus_size(db):
 
     # Bounded work: 9x the corpus must not cost anywhere near 9x the steps.
     assert large < small * 3, f"work scaled with corpus: {small} -> {large} VM steps"
+
+
+# --- shared probe SSIDs -------------------------------------------------
+#
+# Corroborating metadata for the co-observation panel. It promotes nothing --
+# v3 has no band left to promote -- so these tests pin the returned shape and
+# the corpus-rarity denominator, never a ranking of suspicion.
+
+
+def probed(db, mac, payload):
+    """Seed a device row carrying a raw probe_ssids payload.
+
+    Takes the payload as raw text, not a list, so the malformed-row cases can
+    write exactly the bytes a hand-edited or truncated row would carry.
+    """
+    db._conn.execute(
+        "INSERT OR REPLACE INTO devices(mac, device_type, first_seen, last_seen, "
+        "sighting_count, is_randomized, probe_ssids) VALUES (?, 'wifi', 0, 0, 0, 0, ?)",
+        (mac, payload),
+    )
+
+
+def test_shared_probe_ssids_returns_only_the_intersection(db):
+    probed(db, "aa:1", '["home-net", "cafe", "attwifi"]')
+    probed(db, "bb:1", '["cafe", "attwifi", "office"]')
+
+    # Both are shared by exactly these two devices, so corpus rarity ties and
+    # the documented ssid ASC tie-break decides -- which keeps the order total,
+    # so the panel cannot reshuffle equal-rarity rows between refreshes.
+    assert [r["ssid"] for r in db.shared_probe_ssids("aa:1", "bb:1")] == ["attwifi", "cafe"]
+
+
+def test_shared_probe_ssids_orders_rarest_in_corpus_first(db):
+    # attwifi is everywhere; kev-hotspot is shared by exactly the two devices.
+    probed(db, "aa:1", '["attwifi", "kev-hotspot"]')
+    probed(db, "bb:1", '["attwifi", "kev-hotspot"]')
+    for n in range(8):
+        probed(db, f"cc:{n}", '["attwifi"]')
+
+    rows = db.shared_probe_ssids("aa:1", "bb:1")
+    assert [(r["ssid"], r["corpus_devices"]) for r in rows] == [
+        ("kev-hotspot", 2),
+        ("attwifi", 10),
+    ]
+
+
+def test_shared_probe_ssids_counts_distinct_devices_not_rows(db):
+    # The same SSID twice in one device's array is still one device.
+    probed(db, "aa:1", '["dup", "dup"]')
+    probed(db, "bb:1", '["dup"]')
+
+    assert db.shared_probe_ssids("aa:1", "bb:1") == [{"ssid": "dup", "corpus_devices": 2}]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not json at all",
+        "",
+        None,
+        # ⭐ Both of these are VALID JSON, so json_valid() admits them and only
+        # json_type(...) = 'array' rejects them. Each carries the shared SSID
+        # itself, so if the array guard is dropped json_each unnests it as a
+        # real value and corpus_devices silently reads 3 instead of 2. An
+        # earlier version of this test used non-colliding names and therefore
+        # passed with the guard removed -- it proved nothing. Measured.
+        '"shared"',  # bare string: one scalar row
+        '{"ssid": "shared"}',  # object: one member row
+    ],
+)
+def test_shared_probe_ssids_skips_malformed_rows_without_throwing(db, payload):
+    """A malformed row must skip silently, never 500 the panel, and never count.
+
+    Two obligations, and the second is the one that bites: the row must not
+    throw, AND it must not contribute to corpus_devices -- which is the number
+    the operator reads to decide whether a shared SSID means anything.
+    """
+    probed(db, "aa:1", '["shared"]')
+    probed(db, "bb:1", '["shared"]')
+    probed(db, "zz:1", payload)
+
+    assert db.shared_probe_ssids("aa:1", "bb:1") == [{"ssid": "shared", "corpus_devices": 2}]
+
+
+def test_shared_probe_ssids_skips_non_string_elements(db):
+    """Carried fix v1 18 / v2 9: non-string elements are skipped.
+
+    A valid array can still contain numbers or nulls. Those are not network
+    names and must not appear as SSIDs nor count toward corpus_devices.
+    """
+    probed(db, "aa:1", '[1, null, "real-net", 2.5]')
+    probed(db, "bb:1", '[1, "real-net", null]')
+
+    assert db.shared_probe_ssids("aa:1", "bb:1") == [{"ssid": "real-net", "corpus_devices": 2}]
+
+
+def test_shared_probe_ssids_empty_when_probe_capture_is_off(db):
+    """Probe capture is off by default, so [] is the common case, not an error."""
+    probed(db, "aa:1", None)
+    probed(db, "bb:1", None)
+
+    assert db.shared_probe_ssids("aa:1", "bb:1") == []
+
+
+def test_shared_probe_ssids_honours_limit(db):
+    probed(db, "aa:1", '["a", "b", "c", "d"]')
+    probed(db, "bb:1", '["a", "b", "c", "d"]')
+
+    assert len(db.shared_probe_ssids("aa:1", "bb:1", limit=2)) == 2
+
+
+@pytest.mark.parametrize("bad", [0, -1, 201, True, 1.5, "10"])
+def test_shared_probe_ssids_rejects_out_of_range_limit(db, bad):
+    with pytest.raises(ValueError):
+        db.shared_probe_ssids("aa:1", "bb:1", limit=bad)
