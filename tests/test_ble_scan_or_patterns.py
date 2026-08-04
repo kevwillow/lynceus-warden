@@ -1,6 +1,10 @@
 """Regression guard for the BlueZ AdvertisementMonitor pattern set.
 
-tests/ is gitignored — these are NEVER committed (see project memory).
+⚠️ This file IS tracked. An earlier version of this line claimed "tests/ is
+gitignored — these are NEVER committed", which was false: only the eleven files
+named in .gitignore are excluded, and this is not one of them. Corrected rather
+than left, because a reader who believes it writes rig-identifying detail into a
+file that ships.
 
 Guards the 2026-08-01 rig finding: Apple Continuity adverts are
 non-connectable and carry NO Flags AD element, so a monitor keyed only on
@@ -19,6 +23,7 @@ from lynceus.bridges.ble import (
     _APPLE_COMPANY_BYTES,
     _FLAGS_AD_TYPE,
     _MFR_DATA_AD_TYPE,
+    _ODID_PATTERN_CONTENT,
     _SERVICE_DATA_AD_TYPE,
     _or_pattern_specs,
 )
@@ -92,3 +97,49 @@ def test_specs_are_start_adtype_content_triples():
         assert start == 0
         assert isinstance(ad_type, int)
         assert isinstance(content, bytes) and content
+
+
+def test_odid_pattern_content_is_derived_from_the_decoder_constants():
+    """⭐ The pattern and the decoder must not be able to drift apart.
+
+    ``bridges/ble.py`` hardcodes the match bytes ``fa ff 0d`` while
+    ``ble_odid`` independently declares ODID_SERVICE_UUID and
+    ODID_AD_APPLICATION_CODE. Nothing tied them, so correcting one and not the
+    other leaves BlueZ matching adverts the decoder rejects, or the decoder
+    waiting on adverts BlueZ never matches. Both are silent: the bridge runs,
+    logs nothing, and captures zero, which is indistinguishable from "no drones
+    nearby" -- the exact failure that hid 88% of drones in the first place.
+
+    Rebuilds the pattern from the decoder's own constants and requires the
+    shipped bytes to equal it.
+    """
+    from lynceus.ble_odid import ODID_AD_APPLICATION_CODE, ODID_SERVICE_UUID
+
+    # "0000fffa-0000-1000-8000-00805f9b34fb" -> 0xFFFA, the 16-bit assignment.
+    uuid16 = int(ODID_SERVICE_UUID[4:8], 16)
+    # BLE advertises 16-bit UUIDs little-endian on the wire, then the AD
+    # application code within the ASTM space.
+    expected = uuid16.to_bytes(2, "little") + bytes([ODID_AD_APPLICATION_CODE])
+
+    assert _ODID_PATTERN_CONTENT == expected, (
+        f"pattern {_ODID_PATTERN_CONTENT!r} no longer matches the decoder's "
+        f"UUID/AD-code constants (expected {expected!r})"
+    )
+    assert (0, _SERVICE_DATA_AD_TYPE, expected) in _or_pattern_specs()
+
+
+def test_odid_pattern_offset_matches_the_flags_patterns_that_are_known_to_work():
+    """start_position 0 means the first byte of the AD element's DATA.
+
+    Not asserted from the BlueZ docs but from this rig: the Flags patterns are
+    ``(0, 0x01, b"\\x06")`` and they demonstrably match real devices here
+    (14 devices / 81 frames, measured 2026-08-03). A Flags element on the wire
+    is ``02 01 06`` -- length, type, data -- so if position 0 counted the length
+    or the type byte, that pattern could not match anything and the measurement
+    would have been zero.
+
+    The ODID pattern therefore expects the service-data element's data to begin
+    ``FA FF 0D``, which is exactly the documented layout ``1E 16 | FA FF 0D``.
+    All patterns share the offset, so they stand or fall together.
+    """
+    assert {spec[0] for spec in _or_pattern_specs()} == {0}
