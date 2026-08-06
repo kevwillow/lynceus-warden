@@ -17,6 +17,7 @@ from lynceus.cli.import_argus import (
     EXPECTED_HEADER,
     IDENTIFIER_TYPE_MAP,
     OverrideConfig,
+    _confidence_percent,
     import_csv,
     load_override_config,
     main,
@@ -4065,3 +4066,49 @@ def test_bundled_snapshot_has_no_unrecognized_dropped_types(tmp_path, db):
         pytest.skip("bundled watchlist not present in this tree")
     report = import_csv(db, str(bundled), OverrideConfig(), dry_run=True)
     assert report.unrecognized_dropped_types() == []
+
+
+# --- --min-confidence range validation (audit register "Still open") ----
+#
+# The help says 0-100 but type=int enforced nothing, so the unattended
+# lynceus-refresh.timer turned a typo into a silent trap: --min-confidence 1000
+# skips every row (all confidences are below it) and still exits 0. Now the
+# range is enforced at parse time. (_confidence_percent and main come from the
+# top-of-file import block.)
+argus_main = main
+
+
+@pytest.mark.parametrize("good", ["0", "1", "50", "99", "100"])
+def test_min_confidence_accepts_the_documented_range(good):
+    assert _confidence_percent(good) == int(good)
+
+
+@pytest.mark.parametrize("bad", ["-1", "101", "1000", "abc", "", "50.5"])
+def test_min_confidence_rejects_out_of_range_or_non_int(bad):
+    import argparse
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        _confidence_percent(bad)
+
+
+def test_min_confidence_out_of_range_fails_the_cli_at_parse_time():
+    """The trap this closes: a typo must stop the run loudly, not import nothing
+    and exit 0. argparse exits 2 on a bad type."""
+    with pytest.raises(SystemExit) as exc:
+        argus_main(["--min-confidence", "1000"])
+    assert exc.value.code == 2
+
+
+def test_min_confidence_valid_value_is_not_rejected_by_the_type(capsys):
+    """A valid threshold must get PAST the type validator.
+
+    With no --input/--from-github the run still exits, but for THAT reason. The
+    usage line always lists [--min-confidence N], so "0-100" (the range
+    validator's own message) is the string that would appear only on a type
+    error; its absence proves 80 was accepted.
+    """
+    with pytest.raises(SystemExit):
+        argus_main(["--min-confidence", "80"])
+    err = capsys.readouterr().err.lower()
+    assert "0-100" not in err, err
+    assert "required" in err and ("input" in err or "from-github" in err), err
