@@ -421,11 +421,15 @@ class BleBridge:
         if _BLEAK_IMPORT_ERROR is not None:
             raise RuntimeError(f"bleak is not importable here: {_BLEAK_IMPORT_ERROR}")
         or_patterns = [OrPattern(*spec) for spec in _or_pattern_specs()]
+        # adapter goes INSIDE BlueZScannerArgs, not as a top-level BleakScanner
+        # kwarg: the top-level form is deprecated in bleak 3.x and removed in
+        # 4.x (which pyproject's <4.0 pin only defers). BlueZScannerArgs carries
+        # an ``adapter`` field for exactly this. Verified against bleak 3.0.2 —
+        # the old form emits a DeprecationWarning, this form does not.
         return BleakScanner(
             detection_callback=self._detection_callback,
             scanning_mode="passive",  # passive-only invariant — never active
-            bluez=BlueZScannerArgs(or_patterns=or_patterns),
-            adapter=self.adapter,
+            bluez=BlueZScannerArgs(or_patterns=or_patterns, adapter=self.adapter),
         )
 
     async def _stop_scanner(self, scanner) -> None:

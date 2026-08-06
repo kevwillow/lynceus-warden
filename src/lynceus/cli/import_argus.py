@@ -1509,6 +1509,25 @@ def fetch_argus_export(repo: str, ref: str | None, cache_dir: Path) -> tuple[Pat
     return dest, resolved
 
 
+def _confidence_percent(value: str) -> int:
+    """argparse type for --min-confidence: an int in [0, 100].
+
+    Without this, ``type=int`` accepts anything, and the unattended
+    ``lynceus-refresh.timer`` turns a typo into a silent trap: ``1000`` skips
+    every row (all confidences are below it) and the import still exits 0, so a
+    scheduled refresh quietly imports nothing and nobody is told. A negative
+    value is the mirror image — it disables the filter the operator meant to
+    apply. Failing at parse time makes the mistake loud instead.
+    """
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an integer 0-100, got {value!r}") from None
+    if not (0 <= n <= 100):
+        raise argparse.ArgumentTypeError(f"must be in 0-100, got {n}")
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lynceus-import-argus")
     parser.add_argument(
@@ -1586,7 +1605,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--min-confidence",
-        type=int,
+        type=_confidence_percent,
         default=None,
         metavar="N",
         help=(

@@ -17,6 +17,18 @@ CORE-BROKEN findings did not survive that check** — see *Refuted* and *Rejecte
 both before re-reporting any of them. The failure is always the same shape: a promise read more
 broadly than it was written.
 
+## Label policy — `CORE-BROKEN` is retired (wave 5+)
+
+Auditors reported gaps as **CORE-BROKEN** / **CONFIRMED-BROKEN**, labels that read as verdicts. Six
+of eleven did not survive reproduction — a rate high enough that the label was claiming more than the
+evidence carried.
+
+⛔ **From wave 5 on, do not use CORE-BROKEN.** Report a suspected gap as a **LEAD**: a claim to be
+reproduced, not a verdict. A LEAD is promoted to a **Finding** only once it is reproduced at its
+file:line, the way every confirmed finding below was — and a lead that fails reproduction is recorded
+under *Refuted*, not quietly dropped. The historical `CORE-BROKEN`/`CONFIRMED-BROKEN` labels in the
+tables below are left verbatim as a record of what was reported; read each with its disposition.
+
 ---
 
 ## 🔴 Finding 0 — adding a device to the watchlist from the UI does nothing
@@ -423,7 +435,7 @@ Both corrected.
 
 ⇒ **Six of eleven CORE-BROKEN claims across all four waves have now been refuted or downgraded**,
 every one from reading a promise more broadly than written. The label reads as a verdict when the
-evidence supports only a lead. **Rename it in the audit spec before wave 5.**
+evidence supports only a lead. ✅ **Retired — see "Label policy" at the top; wave 5+ reports a LEAD.**
 
 ### Verified working, with evidence — do not re-audit
 
@@ -441,14 +453,18 @@ evidence supports only a lead. **Rename it in the audit spec before wave 5.**
 
 ## Still open
 
-- `--min-confidence` takes no range validation. Not a broken promise, but the unattended
-  `lynceus-refresh.timer` path makes it an operational trap: a typo'd threshold imports nothing and
-  still exits 0. Cheap to harden at parse time. **Kev's call — behaviour change, not a fix.**
-- Three cards (`settings.html:49`, `:84`, `:172`) say "To change, run `lynceus-setup --reconfigure`"
-  without the "then restart" that the BLE and severity cards state. Guidance gap, see Wave 3.
-- `sightings` is never pruned. Unchanged across four handoffs.
 - The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,
   `watchlist_detail.html:97`) remains unverified and lower severity.
+
+## Closed since the audit
+
+- ✅ **`--min-confidence` range validation** — enforced at parse time (`_confidence_percent`, values
+  outside 0–100 fail with exit 2), so a typo can no longer import nothing and exit 0. Was the
+  behaviour change flagged "Kev's call"; done deliberately as the operational-trap fix it described.
+- ✅ **The three `/settings` cards now say "then restart the daemon"**, matching the BLE and severity
+  cards (`settings.html`).
+- ✅ **`sightings` retention** — landed in PR #11 (`sightings_retention_days`, off by default). The
+  "unchanged across four handoffs" note is retired.
 
 ## Method note
 
