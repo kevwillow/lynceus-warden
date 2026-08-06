@@ -874,3 +874,27 @@ def test_watchlist_data_card_zero_total_import_no_record_count_still_signals(
         assert "out of" not in text or "out of None" not in text
     finally:
         db.close()
+
+
+@pytest.mark.webui
+def test_every_reconfigure_card_tells_the_operator_to_restart(tmp_path):
+    """Guidance-gap regression guard (audit register, Wave 3).
+
+    Three cards said 'run lynceus-setup --reconfigure' without the 'then restart
+    the daemon' the BLE and severity cards state. These settings are read at
+    daemon startup, so reconfiguring without a restart changes nothing -- the
+    control-plane-green/payload-never-lands shape this repo audits for. Pins that
+    no --reconfigure card ships that half-instruction again.
+    """
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            html = client.get("/settings").text
+    finally:
+        db.close()
+    for m in re.finditer(r"lynceus-setup --reconfigure(.*?)</p>", html, re.S):
+        assert "restart" in m.group(1).lower(), (
+            "a --reconfigure card omits the restart instruction: " + m.group(0)[:120]
+        )
+    # Guard against the regex matching nothing and passing vacuously.
+    assert "lynceus-setup --reconfigure" in html
