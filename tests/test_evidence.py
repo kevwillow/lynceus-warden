@@ -869,9 +869,7 @@ def _backdate(db, row_id, days):
 
 
 def _evidence_ids(db):
-    return [
-        r["id"] for r in db._conn.execute("SELECT id FROM evidence_snapshots ORDER BY id")
-    ]
+    return [r["id"] for r in db._conn.execute("SELECT id FROM evidence_snapshots ORDER BY id")]
 
 
 def test_poll_once_prunes_evidence_past_the_configured_retention(db, alert_id, tmp_path):
