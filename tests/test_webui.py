@@ -9007,10 +9007,11 @@ def test_co_observations_does_not_promote_a_weaker_association_over_a_stronger_o
     """
     sparse = "aa:bb:cc:dd:ee:11"  # 1 of its own 19 runs shared -- 5.3%
     dense = "aa:bb:cc:dd:ee:22"  # 5 of its own 20 runs shared -- 25.0%
+    thin_strong = "aa:bb:cc:dd:ee:33"  # 2 of its own 2 runs shared -- 100%
     config = Config(db_path=str(tmp_path / "co.db"), co_observation={"enabled": True})
     db = Database(config.db_path)
     try:
-        for mac in (_CO_ANCHOR, sparse, dense):
+        for mac in (_CO_ANCHOR, sparse, dense, thin_strong):
             db.upsert_device(mac, "wifi", "Acme", 0, _CO_NOW)
         db._conn.execute("INSERT OR IGNORE INTO locations(id, label) VALUES ('default','d')")
         rows = []
@@ -9023,6 +9024,11 @@ def test_co_observations_does_not_promote_a_weaker_association_over_a_stronger_o
         # dense: five runs coincide with the anchor, 15 do not.
         rows += [(dense, _CO_NOW - 200_000 - i * 2_000 + 5) for i in range(5)]
         rows += [(dense, _CO_NOW - 700_000 - i * 3_000) for i in range(15)]
+        # thin_strong: only two runs on record, and BOTH coincide with the
+        # anchor. A short record is not a reason to set aside a large overlap,
+        # so this one must stay a primary candidate -- the set-aside groups are
+        # about "is this device usually elsewhere?", not about evidence volume.
+        rows += [(thin_strong, _CO_NOW - 200_000 - i * 2_000 + 5) for i in range(2)]
         db._conn.executemany(
             "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, 'default')", rows
         )
@@ -9047,6 +9053,11 @@ def test_co_observations_does_not_promote_a_weaker_association_over_a_stronger_o
         assert sparse not in primary, (
             f"the weaker association ({sparse}, 1/19 = 5.3%) is a primary candidate while "
             f"the stronger one ({dense}, 5/20 = 25.0%) is set aside -- the cliff runs backwards"
+        )
+        assert thin_strong in primary, (
+            f"{thin_strong} shares 2 of its own 2 runs (100%) and must stay a primary "
+            f"candidate: a thin record is only a reason to withhold judgement when the "
+            f"share is low, never a reason to set aside a large overlap"
         )
         # And the thin-record device must be set aside as unclassifiable, not
         # filed under the confident "logged often, rarely with you" heading.

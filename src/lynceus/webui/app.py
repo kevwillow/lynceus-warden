@@ -3422,8 +3422,14 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 # used to be covered only by the generic query line above, so
                 # the log could not tell a browse from a targeted
                 # cross-reference, nor name the second device.
+                # %r on the location for the same reason as the malformed-MAC
+                # line above: it originates outside this code, and a bare %s
+                # would let a newline in it forge audit lines. It is narrower
+                # here -- loc has to match a location_id already in the
+                # database to reach this branch -- but an audit log is exactly
+                # the wrong place to rely on that.
                 logger.info(
-                    "co-observation drill-down: mac=%s candidate=%s location=%s pairs=%d",
+                    "co-observation drill-down: mac=%s candidate=%s location=%r pairs=%d",
                     normalized,
                     detail_mac,
                     loc,
