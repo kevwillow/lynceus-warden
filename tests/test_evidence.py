@@ -828,3 +828,92 @@ def test_capture_failure_debug_mode_logs_full_traceback(db, alert_id, caplog):
 
     debug_records = [r for r in caplog.records if r.levelname == "DEBUG"]
     assert any(r.exc_info is not None for r in debug_records)
+
+
+# ------------------------------ prune wiring --------------------------------
+#
+# ⭐ A prune function nothing calls is the failure mode this codebase keeps
+# meeting: complete, unit-tested, and unreachable. maybe_prune_evidence was
+# exactly that shape -- its own wiring into poll_once had no test at all, which
+# tests/test_sightings_retention.py noted in a comment while pinning the
+# sightings twin and leaving this one open.
+#
+# These are a TAKE-EFFECT PAIR on purpose. One test that only proves rows get
+# deleted would pass just as happily against code that always prunes and
+# ignores the setting entirely; one that only proves rows survive would pass
+# against code that never prunes at all. Two settings, one input, opposite
+# outcomes -- no fixed behaviour satisfies both.
+
+
+def _poll_once_with(db, tmp_path, **config_kwargs):
+    from lynceus.config import Config
+    from lynceus.kismet import FakeKismetClient
+    from lynceus.poller import poll_once
+
+    fixture = tmp_path / "empty.json"
+    fixture.write_text("[]", encoding="utf-8")
+    config = Config(
+        db_path=str(tmp_path / "unused.db"),
+        kismet_fixture_path=str(fixture),
+        **config_kwargs,
+    )
+    poll_once(FakeKismetClient(str(fixture)), db, config, now_ts=1700000000)
+
+
+def _backdate(db, row_id, days):
+    with db._conn:
+        db._conn.execute(
+            "UPDATE evidence_snapshots SET captured_at = ? WHERE id = ?",
+            (1700000000 - days * 86400, row_id),
+        )
+
+
+def _evidence_ids(db):
+    return [
+        r["id"] for r in db._conn.execute("SELECT id FROM evidence_snapshots ORDER BY id")
+    ]
+
+
+def test_poll_once_prunes_evidence_past_the_configured_retention(db, alert_id, tmp_path):
+    """The tick must actually reach the prune, not merely be able to."""
+    fresh = capture_evidence(db, alert_id, MAC, _kismet_record(), now_ts=1700000000)
+    stale = capture_evidence(db, alert_id, MAC, _kismet_record(), now_ts=1700000000)
+    _backdate(db, stale, 100)
+
+    _poll_once_with(db, tmp_path, evidence_retention_days=10)
+
+    assert _evidence_ids(db) == [fresh], "poll_once did not reach the evidence prune"
+
+
+def test_poll_once_keeps_evidence_inside_the_configured_retention(db, alert_id, tmp_path):
+    """The other half of the pair: the SAME 100-day-old row must survive when
+    the operator's retention window is wide enough to cover it. A prune that
+    ignored the setting and always deleted would pass the test above and fail
+    this one."""
+    fresh = capture_evidence(db, alert_id, MAC, _kismet_record(), now_ts=1700000000)
+    stale = capture_evidence(db, alert_id, MAC, _kismet_record(), now_ts=1700000000)
+    _backdate(db, stale, 100)
+
+    _poll_once_with(db, tmp_path, evidence_retention_days=3650)
+
+    assert _evidence_ids(db) == [fresh, stale], "poll_once pruned inside the retention window"
+
+
+def test_poll_once_evidence_prune_respects_the_daily_throttle(db, alert_id, tmp_path):
+    """maybe_prune_evidence is throttled to once per ~24h via poller_state, and
+    the throttle is what makes it cheap to call from every tick. If poll_once
+    bypassed it -- calling prune_old_evidence directly, say -- every tick would
+    scan the table and this would go unnoticed, because the rows would look
+    exactly the same either way."""
+    from lynceus.evidence import STATE_KEY_LAST_EVIDENCE_PRUNE
+
+    stale = capture_evidence(db, alert_id, MAC, _kismet_record(), now_ts=1700000000)
+    _backdate(db, stale, 100)
+    # Record a prune from one hour ago, so the throttle is still closed.
+    db.set_state(STATE_KEY_LAST_EVIDENCE_PRUNE, str(1700000000 - 3600))
+
+    _poll_once_with(db, tmp_path, evidence_retention_days=10)
+
+    assert _evidence_ids(db) == [stale], (
+        "poll_once pruned despite a prune one hour ago; the daily throttle is bypassed"
+    )
