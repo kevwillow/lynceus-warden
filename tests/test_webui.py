@@ -8984,6 +8984,82 @@ def test_co_observations_files_an_always_logged_device_under_high_coverage(tmp_p
 
 
 @pytest.mark.webui
+def test_co_observations_does_not_promote_a_weaker_association_over_a_stronger_one(
+    tmp_path, co_clock
+):
+    """⭐ Red team 2026-08-06, finding 4. The demotion rule was
+
+        total >= _CO_COVERAGE_MIN_RUNS (20)  AND  share <= _CO_COVERAGE_SHARE (0.25)
+
+    so the run-count gate created a cliff that ran the wrong way. A device
+    sharing 1 of its own 19 runs (5.3%) could never be demoted and was
+    presented as a primary candidate, while a device sharing 5 of its own 20
+    (25%) -- a five times stronger association -- was demoted as explained
+    away. The weaker association looked more suspicious.
+
+    Any candidate under 20 runs was unclassifiable, but the page rendered
+    unclassifiable identically to 'not explained away'. On a panel read by a
+    frightened person that is the difference between "we cannot say" and "this
+    one stands out", and it was silently making the second claim.
+
+    A device with too little history must not appear above one whose own
+    record shows a stronger overlap.
+    """
+    sparse = "aa:bb:cc:dd:ee:11"  # 1 of its own 19 runs shared -- 5.3%
+    dense = "aa:bb:cc:dd:ee:22"  # 5 of its own 20 runs shared -- 25.0%
+    config = Config(db_path=str(tmp_path / "co.db"), co_observation={"enabled": True})
+    db = Database(config.db_path)
+    try:
+        for mac in (_CO_ANCHOR, sparse, dense):
+            db.upsert_device(mac, "wifi", "Acme", 0, _CO_NOW)
+        db._conn.execute("INSERT OR IGNORE INTO locations(id, label) VALUES ('default','d')")
+        rows = []
+        # The anchor has a long run of its own.
+        for i in range(6):
+            rows.append((_CO_ANCHOR, _CO_NOW - 200_000 - i * 2_000))
+        # sparse: one run coincides with the anchor, 18 do not.
+        rows.append((sparse, _CO_NOW - 200_000 + 5))
+        rows += [(sparse, _CO_NOW - 500_000 - i * 3_000) for i in range(18)]
+        # dense: five runs coincide with the anchor, 15 do not.
+        rows += [(dense, _CO_NOW - 200_000 - i * 2_000 + 5) for i in range(5)]
+        rows += [(dense, _CO_NOW - 700_000 - i * 3_000) for i in range(15)]
+        db._conn.executemany(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, 'default')", rows
+        )
+        db._conn.commit()
+        app = create_app(config, db)
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{_CO_ANCHOR}/co-observations")
+        assert r.status_code == 200
+        # The primary table is whatever precedes the FIRST set-aside heading --
+        # there is more than one now, so partitioning on the demotion heading
+        # alone would count the set-aside groups as primary.
+        boundaries = [
+            r.text.index(h)
+            for h in ("Too few runs to say", "High observation coverage")
+            if h in r.text
+        ]
+        assert boundaries, "no set-aside section rendered at all"
+        primary = r.text[: min(boundaries)]
+        assert dense not in primary, (
+            f"the stronger association ({dense}, 5/20 = 25.0%) should not be a primary candidate"
+        )
+        assert sparse not in primary, (
+            f"the weaker association ({sparse}, 1/19 = 5.3%) is a primary candidate while "
+            f"the stronger one ({dense}, 5/20 = 25.0%) is set aside -- the cliff runs backwards"
+        )
+        # And the thin-record device must be set aside as unclassifiable, not
+        # filed under the confident "logged often, rarely with you" heading.
+        _, _, after_thin = r.text.partition("Too few runs to say")
+        assert sparse in after_thin.partition("High observation coverage")[0], (
+            f"{sparse} has only 19 runs and cannot be classified, but was not "
+            f"listed under the unclassifiable heading"
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
 def test_co_observations_drill_down_link_survives_a_location_named_with_an_ampersand(
     tmp_path, co_clock
 ):

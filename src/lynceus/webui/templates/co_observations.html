@@ -158,6 +158,46 @@
     </article>
   {% endif %}
 
+  {% if too_few_runs %}
+    <article>
+      <header><strong>Too few runs to say</strong></header>
+      <p>
+        Only a small share of these devices' own runs coincided with this one,
+        but each has been logged fewer than {{ coverage_min_runs }} times &mdash;
+        too little of a record to tell "usually somewhere else" from "barely
+        seen at all".
+      </p>
+      <p>
+        <small>
+          They are listed here rather than above because a thin record is not
+          evidence of a relationship. <strong>This is not a weaker version of
+          the list above</strong>: it is the set the panel cannot classify
+          either way.
+        </small>
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Device</th>
+            <th scope="col">Location</th>
+            <th scope="col">Shared / total candidate runs</th>
+            <th scope="col">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in too_few_runs %}
+            <tr>
+              <td><a href="/devices/{{ c.mac }}"><code>{{ c.mac }}</code></a></td>
+              <td>{{ c.location_id }}</td>
+              <td>{{ c.shared_candidate_runs }} / {{ c.candidate_total_runs }}</td>
+              <td>{{ "%.1f"|format(c.shared_share * 100) }}%</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+  {% endif %}
+
   {% if high_coverage %}
     <article>
       <header><strong>High observation coverage</strong></header>
