@@ -59,8 +59,19 @@ test defects that Windows could not structurally expose, fixed in `9b2636c`;
 A drop below 3508 (local) or 3048 (Linux clone) is a regression. A **rise** in
 skips is usually one too — but not always, and the exceptions are below.
 
-⭐ **Current Linux number, measured 2026-08-06 at `b0eb601`: 3244 passed, 1
-skipped, 47 deselected, 0 failed, ~16m30s.** That is the number to beat here.
+⭐ **Current Linux number, measured 2026-08-07 at `d5c27e2`: 3249 passed, 1
+skipped, 47 deselected, 0 failed, ~17m30s.** That is the number to beat here.
+Verified twice — on the branch and again post-merge in a throwaway worktree,
+identical both times.
+
+⚠️ **Runtime varies with what else the box is doing, a lot.** The same suite
+measured 16m12s and 17m24s on different runs, and crawled at roughly a third of
+that while two qemu VMs and a 300-round SQLite fuzz were competing for the
+disk — `wchan` showed `jbd2_log_wait_commit`, i.e. blocked on the ext4 journal,
+with `/proc/pressure/io` reporting ~11% full stall. **Do not read a slow run as
+a hang, and do not start heavy I/O of your own alongside a gate.** Check
+`grep full /proc/pressure/io` and the process state (`D` = blocked on I/O)
+before diagnosing.
 
 ⚠️ **The local/clone split above no longer holds, and the 484-test gap is
 history.** All 116 files under `tests/` are tracked now, and a `git worktree`
