@@ -170,6 +170,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The co-observation audit log records the misses, not only the hits.**
+  Decision 6 rejected rate limiting and kept the audit log as the *only*
+  enumeration control. With the capability enabled, a request for a MAC that is
+  not in the database returned 404 and logged nothing at all: the audit line sat
+  next to the query it described, one branch after the existence check returned.
+  Enumeration is overwhelmingly misses, since the attacker is guessing MACs, so
+  a sweep of 20,000 MACs holding 50 real devices left 50 lines indistinguishable
+  from ordinary browsing and 19,950 silent probes. The control chosen to make
+  enumeration visible was blind to it.
+
+  The inversion was the tell: with the capability *off* every request was
+  logged, so the trail was complete when there was nothing to steal and full of
+  holes when there was. Every branch now logs, and the drill-down — which
+  returns the exact times two devices were logged together — is recorded
+  separately with its target named, instead of hiding behind the generic query
+  line.
+
+  ⚠️ This does not reopen the probe oracle. The added lines are server-side
+  only; every response is byte-identical to before, re-verified across the full
+  toggle × MAC-state × parameter-validity matrix.
+
+- **A location named with an ampersand no longer breaks the co-observation
+  drill-down.** `location_id` was interpolated into the drill-down link
+  protected only by Jinja autoescaping, which escapes HTML metacharacters and
+  not URL ones. A site called `Home & Office` rendered `loc=Home &amp; Office`,
+  so the browser sent `loc=Home` plus a stray parameter, the exact-match gate
+  failed, and the drill-down silently rendered nothing — 200, no error, evidence
+  section simply absent. The panel exists so a count can be checked against the
+  rows behind it rather than taken on trust, and for any site with an ampersand
+  in its name it had quietly stopped being checkable.
+
+  With a crafted location it was worse than a broken link: Starlette keeps the
+  last value of a scalar query parameter, so one candidate's link could resolve
+  to a different one and the page would show the wrong pair under the right
+  heading. Location IDs are operator configuration rather than captured data, so
+  the crafted form needs config access; the accidental form needs only an
+  ampersand in a place name.
+
+- **The co-observation coverage split no longer promotes the weaker
+  association.** The rule was a single condition — at least 20 runs *and* a
+  shared share of 25% or less — so the run-count gate produced a cliff that ran
+  backwards. A device sharing 1 of its own 19 runs (5.3%) was shown as a primary
+  candidate, while one sharing 5 of its own 20 (25%), a five times stronger
+  overlap by the panel's own measure, was set aside as explained away. Nothing
+  under 20 runs could be set aside however weak its association.
+
+  The cause was two buckets for three states: "too few runs to classify" was
+  rendered identically to "not explained away". There is now a third group,
+  **Too few runs to say**, which states plainly that it is not a weaker version
+  of the main table but the set the panel cannot place either way. The 20-run
+  threshold is kept rather than tuned — it is the right caution, it was simply
+  being used to make a claim it cannot support. A thin record with a *high*
+  share deliberately stays a primary candidate: a short record is a reason to
+  withhold judgement about a small share, never a reason to set aside a large
+  overlap.
+
+  ⚠️ The thresholds themselves (20 runs, 25%) are still validated only against
+  seeded data, never a real capture.
+
 - **A clean BLE shutdown no longer reports itself as a crash.** On bleak 3.x —
   which is what a fresh `pip install 'lynceus[ble]'` gets you — stopping the
   scanner raises a D-Bus error on the *normal* path, because BlueZ has already

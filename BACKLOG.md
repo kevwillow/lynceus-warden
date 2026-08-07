@@ -250,6 +250,62 @@ persists until reload.
   is already fragile; adding filter-aware swap logic on top risks tangled
   debugging. Sequence after styling is stable.
 
+## Co-observation red team, 2026-08-06 — unfixed items
+
+Findings from adversarially attacking the co-observation explorer. The four confirmed defects were
+fixed in the same wave; these are what was found and deliberately not fixed then. Full register with
+every measurement: PR that landed the fixes.
+
+### `shared_probe_ssids` is corpus-linear (highest of these)
+Measured with sqlite `set_progress_handler` VM steps: **27x corpus -> 26.5x cost**, and **8.85x for
+9x corpus** — the v1 `candidate_coverage` column was *rejected* for measuring 8.95x, so the same
+disease shipped through a different function. The route calls it once per candidate
+(`webui/app.py`, inside the candidate loop), so one page view re-scans the whole corpus up to
+`max_candidates` (25) times.
+
+⚠️ **Bounded at 0 VM steps in the default configuration** — probe capture is off by default, the
+`shared` CTE is then empty and the correlated subquery never runs. This only bites operators who
+turn probe capture on, which is why it was left out of the fix wave.
+
+The corpus-wide count is inherent to the question ("how many devices in the capture ever probed this
+SSID?"); the **25x multiplier is not**. Computing the SSID->count aggregate once per request and
+reusing it across candidates removes the multiplier without changing a single displayed number.
+Needs the corpus-cost guard `list_co_observations` already has
+(`tests/test_co_observation_db.py`, the `large < small * 3` assertion) or it comes back a third time.
+
+⛔ This finding has had **no second reader**: the codex lane was refused by the provider's safety
+filter and the M3 lane produced nothing. It rests on one measurement.
+
+### No Content-Security-Policy header
+Measured: only `CSRFMiddleware` is installed; no CSP on any response. Escaping is the sole XSS
+barrier, so one overlooked raw render anywhere executes. Several internal docs **falsely claim a
+strict CSP applies** — that wording should be corrected whether or not a CSP lands.
+
+⚠️ `base.html` runs an inline `<script>` for the pre-paint theme. A strict CSP without a nonce or
+hash blocks it and reintroduces the light-mode flash.
+
+### No `Cache-Control` on the co-observation 404
+`_absent()` sets no cache directives. Largely mitigated in practice because every response carries
+`Set-Cookie` (CSRF), which stops shared caches storing it — but it is incidental, not intended.
+
+### The audit line is written before the query it describes
+`webui/app.py` logs "co-observation query: ..." immediately *before* `list_co_observations` runs, so
+a subsequent failure still leaves a log line that reads as a completed access. Low severity, but it
+undercuts a log now being relied on as the enumeration control.
+
+### Coverage thresholds are still uncalibrated
+`_CO_COVERAGE_MIN_RUNS = 20` and `_CO_COVERAGE_SHARE = 0.25` were reasoned, then validated only
+against seeded data. The 2026-08-06 wave fixed the *cliff* those constants created but deliberately
+did not tune the numbers themselves. Kev's field capture could settle them.
+
+### "No ranking of suspicion" vs what the layout communicates
+The panel promises counts only, no ranking. Verified facts: the default sort is
+`shared_anchor_runs DESC` and `LIMIT` is applied **after** it, so position controls not just
+prominence but **inclusion** ("Showing 25 of N"); the set-aside groups are a classification; shared
+SSIDs are ordered rarest-first; the demoted group has no drill-down affordance. Whether that
+amounts to a suspicion ranking expressed through layout is a **product judgement**, not a code
+defect — recorded so it is argued once, deliberately, rather than rediscovered.
+
 ## Followups for technical debt
 
 ### CSRF token rotation on session boundaries

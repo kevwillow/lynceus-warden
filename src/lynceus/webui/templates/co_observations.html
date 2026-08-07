@@ -66,7 +66,17 @@
           <td>{{ c.shared_days }}</td>
           <td>
             {{ c.delta_min }}s / {{ c.delta_median }}s / {{ c.delta_max }}s
-            <a href="/devices/{{ mac }}/co-observations?w={{ proximity_seconds }}&amp;detail={{ c.mac }}&amp;loc={{ c.location_id }}">show rows</a>
+            {# ⭐ |urlencode on location_id, not just autoescaping. Jinja escapes HTML
+               metacharacters, NOT URL ones, so a site legitimately called
+               "Home & Office" rendered loc=Home &amp; Office; the browser then sent
+               loc=Home plus a stray parameter, the exact-match gate failed, and the
+               drill-down silently rendered nothing -- 200, no error. With a crafted
+               location the injected parameters win outright, because Starlette keeps
+               the LAST value of a scalar query parameter, so this link could resolve
+               to a different candidate and show the wrong pair under the right
+               heading. Pinned by
+               test_co_observations_drill_down_link_survives_a_location_named_with_an_ampersand. #}
+            <a href="/devices/{{ mac }}/co-observations?w={{ proximity_seconds }}&amp;detail={{ c.mac|urlencode }}&amp;loc={{ c.location_id|urlencode }}">show rows</a>
           </td>
           <td>
             {% if c.shared_ssids %}
@@ -145,6 +155,49 @@
         </tbody>
       </table>
       <p><a href="/devices/{{ mac }}/co-observations?w={{ proximity_seconds }}">&larr; back to all candidates</a></p>
+    </article>
+  {% endif %}
+
+  {% if too_few_runs %}
+    <article>
+      <header><strong>Too few runs to say</strong></header>
+      <p>
+        Only a small share of these devices' own runs coincided with this one,
+        but each has been logged fewer than {{ coverage_min_runs }} times &mdash;
+        too little of a record to tell "usually somewhere else" from "barely
+        seen at all".
+      </p>
+      <p>
+        <small>
+          They are listed here rather than above because a thin record is not
+          evidence of a relationship. <strong>This is not a weaker version of
+          the list above</strong>: these are the devices whose small share
+          <em>looks</em> like the group below, but whose record is too short to
+          support saying so. A device seen just as rarely but sharing most of
+          its runs with this one stays in the main table, because a small
+          record is not a reason to set aside a large overlap.
+        </small>
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Device</th>
+            <th scope="col">Location</th>
+            <th scope="col">Shared / total candidate runs</th>
+            <th scope="col">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in too_few_runs %}
+            <tr>
+              <td><a href="/devices/{{ c.mac }}"><code>{{ c.mac }}</code></a></td>
+              <td>{{ c.location_id }}</td>
+              <td>{{ c.shared_candidate_runs }} / {{ c.candidate_total_runs }}</td>
+              <td>{{ "%.1f"|format(c.shared_share * 100) }}%</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </article>
   {% endif %}
 

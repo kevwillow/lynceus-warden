@@ -3246,6 +3246,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
         try:
             normalized = kismet.normalize_mac(mac)
         except ValueError:
+            # %r, not %s: this is raw un-normalised request input, and a bare
+            # %s would let a newline forge extra lines in the audit log.
+            logger.info("co-observation request with a malformed mac: %r", mac)
             return app.state.templates.TemplateResponse(
                 request=request,
                 name="not_found.html",
@@ -3281,6 +3284,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # test_disabled_is_indistinguishable_even_for_an_invalid_request.
         proximity = cfg.proximity_seconds if w is None else w
         if not (0 <= proximity <= 86400):
+            # Logged on both sides of the capability check, like every other
+            # branch, so the trail is complete without becoming an oracle: the
+            # RESPONSE is unchanged and still identical whether the capability
+            # is on or off. Only the server-side record differs.
+            logger.info(
+                "co-observation request with an out-of-range window: mac=%s w=%r",
+                normalized,
+                w,
+            )
             return app.state.templates.TemplateResponse(
                 request=request,
                 name="not_found.html",
@@ -3300,6 +3312,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return _absent()
 
         if db.get_device_with_sightings(normalized) is None:
+            # ⭐ A miss is logged too, and the placement is the whole point.
+            # This line used to be absent, so a MAC that is not in the database
+            # left no trace anywhere. Enumeration is overwhelmingly misses --
+            # an attacker guesses MACs -- so the audit log, which Decision 6
+            # chose INSTEAD of rate limiting precisely to make enumeration
+            # visible, recorded only the hits and hid the scan that found them.
+            # Pinned by test_co_observations_audit_logs_the_misses_not_only_the_hits.
+            logger.info(
+                "co-observation query for an unknown device: mac=%s",
+                normalized,
+            )
             return _absent()
 
         now_ts = int(time.time())
@@ -3336,9 +3359,29 @@ def create_app(config: Config, db: Database) -> FastAPI:
                         row["location_id"], 0
                     ),
                     "shared_share": shared_share,
+                    # ⭐ Three outcomes, not two. The rule used to be a single
+                    # AND -- enough runs AND a low share -- so the run-count
+                    # gate produced a cliff that ran the wrong way: a device
+                    # sharing 1 of its own 19 runs (5.3%) could never be
+                    # demoted and was shown as a primary candidate, while one
+                    # sharing 5 of 20 (25%), a five times stronger overlap, was
+                    # demoted as explained away. Unclassifiable rendered
+                    # identically to "not explained away", which on this panel
+                    # is the difference between "we cannot say" and "this one
+                    # stands out". Pinned by
+                    # test_co_observations_does_not_promote_a_weaker_association
+                    # _over_a_stronger_one.
+                    "mostly_elsewhere": (
+                        shared_share is not None and shared_share <= _CO_COVERAGE_SHARE
+                    ),
                     "high_coverage": (
                         shared_share is not None
                         and total >= _CO_COVERAGE_MIN_RUNS
+                        and shared_share <= _CO_COVERAGE_SHARE
+                    ),
+                    "too_few_runs_to_classify": (
+                        shared_share is not None
+                        and total < _CO_COVERAGE_MIN_RUNS
                         and shared_share <= _CO_COVERAGE_SHARE
                     ),
                     "shared_ssids": db.shared_probe_ssids(normalized, row["mac"]),
@@ -3374,6 +3417,24 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     proximity_seconds=proximity,
                     limit=_CO_PAIRS_LIMIT,
                 )
+                # The drill-down is the most sensitive read here -- it returns
+                # the exact times two devices were logged together -- and it
+                # used to be covered only by the generic query line above, so
+                # the log could not tell a browse from a targeted
+                # cross-reference, nor name the second device.
+                # %r on the location for the same reason as the malformed-MAC
+                # line above: it originates outside this code, and a bare %s
+                # would let a newline in it forge audit lines. It is narrower
+                # here -- loc has to match a location_id already in the
+                # database to reach this branch -- but an audit log is exactly
+                # the wrong place to rely on that.
+                logger.info(
+                    "co-observation drill-down: mac=%s candidate=%s location=%r pairs=%d",
+                    normalized,
+                    detail_mac,
+                    loc,
+                    len(pairs),
+                )
             else:
                 detail_mac = None
 
@@ -3390,8 +3451,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "detail_row": detail_row,
                 "pairs_truncated": len(pairs) >= _CO_PAIRS_LIMIT,
                 "pairs_limit": _CO_PAIRS_LIMIT,
-                "candidates": [c for c in candidates if not c["high_coverage"]],
+                "candidates": [c for c in candidates if not c["mostly_elsewhere"]],
                 "high_coverage": [c for c in candidates if c["high_coverage"]],
+                "too_few_runs": [c for c in candidates if c["too_few_runs_to_classify"]],
+                "coverage_min_runs": _CO_COVERAGE_MIN_RUNS,
                 "total_candidates": result["total_candidates"],
                 "shown": len(candidates),
                 "proximity_seconds": proximity,
