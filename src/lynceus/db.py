@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import NamedTuple
@@ -4276,39 +4277,118 @@ class Database:
         if limit < 1 or limit > 200:
             raise ValueError("limit must be in [1, 200]")
 
-        def _ssids_of(alias: str, param: str) -> str:
-            # ``j.type`` -- json_each's own element-type column -- drops
-            # non-string elements: a valid array can still hold numbers or
-            # nulls, and those are not network names. It has to be j.type and
-            # NOT json_type(j.value): j.value is the already-decoded SQL value,
-            # so json_type() would try to re-parse the SSID text as JSON and
-            # throw "malformed JSON" on every ordinary name. Measured.
-            return (
-                f"SELECT DISTINCT j.value AS ssid "
-                f"FROM devices {alias}, json_each({alias}.probe_ssids) j "
-                f"WHERE {alias}.mac = :{param} "
-                f"AND {_probe_ssids_array_guard(alias)} "
-                f"AND j.type = 'text'"
-            )
+        return self.shared_probe_ssids_many(mac_a, [mac_b], limit=limit).get(mac_b, [])
 
+    def shared_probe_ssids_many(
+        self, mac_a: str, mac_bs: Sequence[str], *, limit: int = 10
+    ) -> dict[str, list[dict]]:
+        """``shared_probe_ssids`` for many candidates, at one corpus scan.
+
+        ⭐ Why this exists, measured. The per-candidate form ran a CORRELATED
+        subquery that counted ``COUNT(DISTINCT d2.mac)`` across the whole
+        ``devices`` table, expanding ``probe_ssids`` with ``json_each``, and no
+        index can find a JSON array element by value -- so each call visited the
+        entire corpus. Progress-handler ticks for ONE call, growing only the
+        count of unrelated devices: 100 -> 208, 300 -> 616, 900 -> 1840,
+        2700 -> 5512. A dead-straight 2.04 ticks per added device, i.e. 27x
+        corpus for 26.5x cost.
+
+        That is the same shape as the ``candidate_coverage`` column the v3.1
+        amendment REJECTED for measuring 8.95x at 9x corpus; this one measured
+        8.85x and shipped, because the guard its sibling got
+        (``test_co_observation_db.py``, the corpus-cost assertion on
+        ``list_co_observations``) was never extended here. The page then called
+        it once per candidate, up to ``max_candidates`` (25), so one render
+        re-scanned the whole capture 25 times over.
+
+        The corpus scan itself is irreducible while SSIDs live in a JSON array:
+        exact rarity is a question about the whole capture. Removing it for good
+        needs a normalised, indexed ``(ssid, mac)`` table. What this removes is
+        the CANDIDATE MULTIPLIER -- one corpus expansion per page instead of 25
+        -- and it changes no number the page displays.
+
+        Returns ``{candidate_mac: [{"ssid", "corpus_devices"}, ...]}``,each candidate
+        capped at ``limit`` and ordered rarest-first exactly as before. Every
+        requested MAC is present, mapping to ``[]`` when nothing is shared.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            raise ValueError("limit must be int")
+        if limit < 1 or limit > 200:
+            raise ValueError("limit must be in [1, 200]")
+
+        # dict.fromkeys de-duplicates while preserving order. A repeated MAC is
+        # safe to collapse: the same device necessarily has the same evidence.
+        wanted = list(dict.fromkeys(mac_bs))
+        result: dict[str, list[dict]] = {mac: [] for mac in wanted}
+        if not wanted:
+            return result
+
+        # ``j.type`` -- json_each's own element-type column -- drops non-string
+        # elements: a valid array can still hold numbers or nulls, and those are
+        # not network names. It has to be j.type and NOT json_type(j.value):
+        # j.value is the already-decoded SQL value, so json_type() would try to
+        # re-parse the SSID text as JSON and throw "malformed JSON" on every
+        # ordinary name. Measured.
         rows = self._conn.execute(
             f"""
-            WITH a AS ({_ssids_of("da", "a")}),
-                 b AS ({_ssids_of("db", "b")}),
-                 shared AS (SELECT ssid FROM a INTERSECT SELECT ssid FROM b)
-            SELECT s.ssid AS ssid,
-                   (SELECT COUNT(DISTINCT d2.mac)
-                      FROM devices d2, json_each(d2.probe_ssids) j2
-                     WHERE j2.value = s.ssid
-                       AND {_probe_ssids_array_guard("d2")}
-                       AND j2.type = 'text') AS corpus_devices
-            FROM shared s
-            ORDER BY corpus_devices ASC, s.ssid ASC
-            LIMIT :limit
+            WITH candidate_macs AS (
+                SELECT DISTINCT value AS mac
+                FROM json_each(:candidates)
+                WHERE type = 'text'
+            ),
+            anchor_ssids AS (
+                SELECT DISTINCT j.value AS ssid
+                FROM devices d, json_each(d.probe_ssids) j
+                WHERE d.mac = :anchor
+                  AND {_probe_ssids_array_guard("d")}
+                  AND j.type = 'text'
+            ),
+            shared AS (
+                SELECT DISTINCT d.mac AS mac, j.value AS ssid
+                FROM candidate_macs c
+                JOIN devices d ON d.mac = c.mac,
+                     json_each(d.probe_ssids) j
+                WHERE {_probe_ssids_array_guard("d")}
+                  AND j.type = 'text'
+                  AND j.value IN (SELECT ssid FROM anchor_ssids)
+            ),
+            -- The corpus is expanded ONCE here, for the shared SSIDs only,
+            -- instead of once per candidate inside a correlated subquery.
+            corpus_counts AS (
+                SELECT j.value AS ssid, COUNT(DISTINCT d.mac) AS corpus_devices
+                FROM devices d, json_each(d.probe_ssids) j
+                WHERE {_probe_ssids_array_guard("d")}
+                  AND j.type = 'text'
+                  AND j.value IN (SELECT DISTINCT ssid FROM shared)
+                GROUP BY j.value
+            ),
+            ranked AS (
+                SELECT sh.mac AS mac,
+                       sh.ssid AS ssid,
+                       cc.corpus_devices AS corpus_devices,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY sh.mac
+                           ORDER BY cc.corpus_devices ASC, sh.ssid ASC
+                       ) AS rn
+                FROM shared sh
+                JOIN corpus_counts cc ON cc.ssid = sh.ssid
+            )
+            -- PARTITION BY + rn, never a global LIMIT: a single LIMIT over the
+            -- whole result would silently decide which CANDIDATES get evidence
+            -- rather than capping each candidate's list.
+            SELECT mac, ssid, corpus_devices
+            FROM ranked
+            WHERE rn <= :limit
+            ORDER BY mac ASC, rn ASC
             """,
-            {"a": mac_a, "b": mac_b, "limit": limit},
+            {"anchor": mac_a, "candidates": json.dumps(wanted), "limit": limit},
         ).fetchall()
-        return [{"ssid": str(r["ssid"]), "corpus_devices": int(r["corpus_devices"])} for r in rows]
+
+        for r in rows:
+            result[str(r["mac"])].append(
+                {"ssid": str(r["ssid"]), "corpus_devices": int(r["corpus_devices"])}
+            )
+        return result
 
     def list_co_observation_pairs(
         self,

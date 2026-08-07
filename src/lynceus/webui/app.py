@@ -3344,6 +3344,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
             limit=cfg.max_candidates,
         )
 
+        # ⭐ One batched call for every candidate, NOT one per candidate inside
+        # the loop below. The per-candidate form ran a correlated subquery that
+        # expanded the whole devices table each time -- measured dead-linear in
+        # corpus size -- so a full page re-scanned the entire capture up to
+        # max_candidates (25) times over. Same numbers, one scan.
+        # Pinned by test_shared_probe_ssids_corpus_scan_is_not_multiplied_by_candidate_count
+        # and, at this layer, by test_co_observations_page_batches_the_probe_ssid_lookup.
+        shared_ssids_by_mac = db.shared_probe_ssids_many(
+            normalized, [row["mac"] for row in result["candidates"]]
+        )
+
         candidates = []
         for row in result["candidates"]:
             total = row["candidate_total_runs"]
@@ -3384,7 +3395,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                         and total < _CO_COVERAGE_MIN_RUNS
                         and shared_share <= _CO_COVERAGE_SHARE
                     ),
-                    "shared_ssids": db.shared_probe_ssids(normalized, row["mac"]),
+                    "shared_ssids": shared_ssids_by_mac.get(row["mac"], []),
                 }
             )
 

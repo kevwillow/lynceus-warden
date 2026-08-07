@@ -253,28 +253,9 @@ persists until reload.
 ## Co-observation red team, 2026-08-06 — unfixed items
 
 Findings from adversarially attacking the co-observation explorer. The four confirmed defects were
-fixed in the same wave; these are what was found and deliberately not fixed then. Full register with
-every measurement: PR that landed the fixes.
-
-### `shared_probe_ssids` is corpus-linear (highest of these)
-Measured with sqlite `set_progress_handler` VM steps: **27x corpus -> 26.5x cost**, and **8.85x for
-9x corpus** — the v1 `candidate_coverage` column was *rejected* for measuring 8.95x, so the same
-disease shipped through a different function. The route calls it once per candidate
-(`webui/app.py`, inside the candidate loop), so one page view re-scans the whole corpus up to
-`max_candidates` (25) times.
-
-⚠️ **Bounded at 0 VM steps in the default configuration** — probe capture is off by default, the
-`shared` CTE is then empty and the correlated subquery never runs. This only bites operators who
-turn probe capture on, which is why it was left out of the fix wave.
-
-The corpus-wide count is inherent to the question ("how many devices in the capture ever probed this
-SSID?"); the **25x multiplier is not**. Computing the SSID->count aggregate once per request and
-reusing it across candidates removes the multiplier without changing a single displayed number.
-Needs the corpus-cost guard `list_co_observations` already has
-(`tests/test_co_observation_db.py`, the `large < small * 3` assertion) or it comes back a third time.
-
-⛔ This finding has had **no second reader**: the codex lane was refused by the provider's safety
-filter and the M3 lane produced nothing. It rests on one measurement.
+fixed in PR #16, and `shared_probe_ssids`'s corpus-linear cost — the one item listed here that was a
+defect rather than a judgement — was fixed straight after and is no longer on this list. What
+remains is hardening and one product question. Full register with every measurement is in those PRs.
 
 ### No Content-Security-Policy header
 Measured: only `CSRFMiddleware` is installed; no CSP on any response. Escaping is the sole XSS

@@ -8984,6 +8984,63 @@ def test_co_observations_files_an_always_logged_device_under_high_coverage(tmp_p
 
 
 @pytest.mark.webui
+def test_co_observations_page_batches_the_probe_ssid_lookup(tmp_path, co_clock):
+    """⭐ The page must ask for shared probe SSIDs ONCE for all candidates.
+
+    The per-candidate form ran a correlated subquery expanding the whole devices
+    table, so a full page re-scanned the entire capture up to max_candidates
+    times. The database-layer cost guard proves the batch query does not
+    multiply its corpus scan by the candidate count -- but it cannot see someone
+    moving the call back inside the route's loop, which reintroduces exactly the
+    same defect one layer up. This watches the call count at the seam.
+    """
+    config = Config(db_path=str(tmp_path / "co.db"), co_observation={"enabled": True})
+    db = Database(config.db_path)
+    try:
+        macs = [f"aa:bb:cc:dd:ee:{i:02x}" for i in range(1, 6)]
+        anchor = macs[0]
+        for mac in macs:
+            db.upsert_device(mac, "wifi", "Acme", 0, _CO_NOW)
+        db._conn.execute("INSERT OR IGNORE INTO locations(id, label) VALUES ('default','d')")
+        rows = []
+        for i, mac in enumerate(macs):
+            rows += [(mac, _CO_NOW - 3_000 + i, "default"), (mac, _CO_NOW - 1_000 + i, "default")]
+        db._conn.executemany(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, ?)", rows
+        )
+        db._conn.commit()
+
+        calls = {"many": 0, "single": 0}
+        real_many = db.shared_probe_ssids_many
+        real_single = db.shared_probe_ssids
+
+        def counting_many(*a, **k):
+            calls["many"] += 1
+            return real_many(*a, **k)
+
+        def counting_single(*a, **k):
+            calls["single"] += 1
+            return real_single(*a, **k)
+
+        db.shared_probe_ssids_many = counting_many
+        db.shared_probe_ssids = counting_single
+
+        app = create_app(config, db)
+        with TestClient(app) as client:
+            r = client.get(f"/devices/{anchor}/co-observations")
+        assert r.status_code == 200
+        # Four candidates render; the lookup still happens exactly once.
+        assert calls["many"] == 1, (
+            f"expected one batched probe-SSID lookup, got {calls['many']}"
+        )
+        assert calls["single"] == 0, (
+            f"the per-candidate query is back in the page path ({calls['single']} calls)"
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
 def test_co_observations_does_not_promote_a_weaker_association_over_a_stronger_one(
     tmp_path, co_clock
 ):
