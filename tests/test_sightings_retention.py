@@ -111,8 +111,9 @@ def test_prune_does_not_touch_other_tables(db):
 # --- wiring ------------------------------------------------------------
 #
 # A prune function nothing calls is the failure mode this codebase keeps
-# meeting: complete, tested, and unreachable. Note that maybe_prune_evidence's
-# own wiring into poll_once has no test at all, which is how that happens.
+# meeting: complete, tested, and unreachable. maybe_prune_evidence had exactly
+# that gap -- this comment used to record it as open -- and it is now closed by
+# the take-effect pair plus throttle test at the foot of tests/test_evidence.py.
 
 
 def test_poll_once_prunes_sightings_when_retention_is_configured(db, tmp_path):
