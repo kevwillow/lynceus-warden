@@ -3246,6 +3246,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
         try:
             normalized = kismet.normalize_mac(mac)
         except ValueError:
+            # %r, not %s: this is raw un-normalised request input, and a bare
+            # %s would let a newline forge extra lines in the audit log.
+            logger.info("co-observation request with a malformed mac: %r", mac)
             return app.state.templates.TemplateResponse(
                 request=request,
                 name="not_found.html",
@@ -3281,6 +3284,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # test_disabled_is_indistinguishable_even_for_an_invalid_request.
         proximity = cfg.proximity_seconds if w is None else w
         if not (0 <= proximity <= 86400):
+            # Logged on both sides of the capability check, like every other
+            # branch, so the trail is complete without becoming an oracle: the
+            # RESPONSE is unchanged and still identical whether the capability
+            # is on or off. Only the server-side record differs.
+            logger.info(
+                "co-observation request with an out-of-range window: mac=%s w=%r",
+                normalized,
+                w,
+            )
             return app.state.templates.TemplateResponse(
                 request=request,
                 name="not_found.html",
@@ -3300,6 +3312,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return _absent()
 
         if db.get_device_with_sightings(normalized) is None:
+            # ⭐ A miss is logged too, and the placement is the whole point.
+            # This line used to be absent, so a MAC that is not in the database
+            # left no trace anywhere. Enumeration is overwhelmingly misses --
+            # an attacker guesses MACs -- so the audit log, which Decision 6
+            # chose INSTEAD of rate limiting precisely to make enumeration
+            # visible, recorded only the hits and hid the scan that found them.
+            # Pinned by test_co_observations_audit_logs_the_misses_not_only_the_hits.
+            logger.info(
+                "co-observation query for an unknown device: mac=%s",
+                normalized,
+            )
             return _absent()
 
         now_ts = int(time.time())
@@ -3373,6 +3396,18 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     since_ts=since_ts,
                     proximity_seconds=proximity,
                     limit=_CO_PAIRS_LIMIT,
+                )
+                # The drill-down is the most sensitive read here -- it returns
+                # the exact times two devices were logged together -- and it
+                # used to be covered only by the generic query line above, so
+                # the log could not tell a browse from a targeted
+                # cross-reference, nor name the second device.
+                logger.info(
+                    "co-observation drill-down: mac=%s candidate=%s location=%s pairs=%d",
+                    normalized,
+                    detail_mac,
+                    loc,
+                    len(pairs),
                 )
             else:
                 detail_mac = None

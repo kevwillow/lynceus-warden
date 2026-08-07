@@ -6,6 +6,7 @@ import io
 import re
 from contextlib import redirect_stdout
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 import yaml
@@ -8894,6 +8895,58 @@ def test_co_observations_audit_logs_every_query(tmp_path, co_clock, caplog):
 
 
 @pytest.mark.webui
+def test_co_observations_audit_logs_the_misses_not_only_the_hits(tmp_path, co_clock, caplog):
+    """⭐ Red team 2026-08-06, finding 1. The audit log was the ONLY enumeration
+    control Decision 6 kept, having explicitly rejected rate limiting -- and it
+    recorded nothing at all for a MAC that is not in the database.
+
+    Enumeration is overwhelmingly misses: you are guessing MAC addresses. So a
+    scan of 20,000 MACs holding 50 real devices left 50 lines indistinguishable
+    from ordinary browsing, and 19,950 silent probes. The one control chosen to
+    make enumeration visible was blind to enumeration.
+
+    The cause was placement, not intent: the audit line sat next to the query it
+    described, one branch AFTER the existence check returned.
+    """
+    app, db = _make_co_app(tmp_path, enabled=True)
+    absent = "aa:bb:cc:dd:ee:99"
+    try:
+        with caplog.at_level("INFO", logger="lynceus.webui.app"):
+            with TestClient(app) as client:
+                r = client.get(f"/devices/{absent}/co-observations")
+        assert r.status_code == 404
+        joined = " ".join(rec.message for rec in caplog.records)
+        assert absent in joined, f"a miss left no audit trail at all: {joined!r}"
+        assert "co-observation" in joined.lower()
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_audit_logs_the_drill_down_target(tmp_path, co_clock, caplog):
+    """The drill-down is the most sensitive read in the feature -- it returns the
+    exact timestamps two devices were logged together -- and it was recorded
+    with the same generic line as an ordinary page view. An investigator reading
+    the log after a stolen session could not tell a browse from a targeted
+    cross-reference, nor which second device was named."""
+    app, db = _make_co_app(tmp_path, enabled=True)
+    try:
+        with caplog.at_level("INFO", logger="lynceus.webui.app"):
+            with TestClient(app) as client:
+                r = client.get(
+                    f"/devices/{_CO_ANCHOR}/co-observations"
+                    f"?detail={_CO_NEIGHBOUR}&loc=default"
+                )
+        assert r.status_code == 200
+        joined = " ".join(rec.message for rec in caplog.records)
+        assert _CO_NEIGHBOUR in joined, (
+            f"the drill-down target was not recorded anywhere: {joined!r}"
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
 def test_co_observations_files_an_always_logged_device_under_high_coverage(tmp_path, co_clock):
     """⭐ The v3.1 substitute for the withdrawn candidate_coverage.
 
@@ -8926,6 +8979,73 @@ def test_co_observations_files_an_always_logged_device_under_high_coverage(tmp_p
         # not a fraction of the location and reading it as one is the whole
         # error v3.1 exists to avoid.
         assert "own logged runs" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_co_observations_drill_down_link_survives_a_location_named_with_an_ampersand(
+    tmp_path, co_clock
+):
+    """⭐ Red team 2026-08-06, finding 2. ``location_id`` was interpolated into
+    the drill-down href with Jinja's autoescaping, which escapes HTML and NOT
+    URL metacharacters. A site legitimately called "Home & Office" therefore
+    rendered ``loc=Home &amp; Office``; the browser sent ``loc=Home`` plus a
+    stray parameter, the exact-match gate failed, and the drill-down silently
+    rendered nothing at all -- 200, no error, evidence section simply absent.
+
+    The feature exists so a count can be checked against the rows behind it
+    rather than taken on trust. For any site whose name contains an ampersand
+    it silently stopped being checkable.
+
+    Worse, with a crafted location the extra parameters take over: Starlette
+    keeps the LAST value of a scalar query parameter, so the link for one
+    candidate could resolve to a different one and the page would show the
+    wrong pair under the right heading.
+    """
+    evil = "Home & Office"
+    config = Config(db_path=str(tmp_path / "co.db"), co_observation={"enabled": True})
+    db = Database(config.db_path)
+    try:
+        for mac in (_CO_ANCHOR, _CO_NEIGHBOUR):
+            db.upsert_device(mac, "wifi", "Acme", 0, _CO_NOW)
+        db._conn.execute("INSERT OR IGNORE INTO locations(id, label) VALUES (?, ?)", (evil, evil))
+        db._conn.executemany(
+            "INSERT INTO sightings(mac, ts, location_id) VALUES (?, ?, ?)",
+            [
+                (_CO_ANCHOR, _CO_NOW - 3_000, evil),
+                (_CO_NEIGHBOUR, _CO_NOW - 2_995, evil),
+                (_CO_ANCHOR, _CO_NOW - 1_000, evil),
+                (_CO_NEIGHBOUR, _CO_NOW - 995, evil),
+            ],
+        )
+        db._conn.commit()
+        app = create_app(config, db)
+        with TestClient(app) as client:
+            page = client.get(f"/devices/{_CO_ANCHOR}/co-observations")
+            assert page.status_code == 200
+            hrefs = re.findall(r'href="([^"]*detail=[^"]*)"', page.text)
+            # The MAC may itself be percent-encoded in the link, so match on the
+            # encoded form too rather than assuming the raw one survives.
+            encoded_neighbour = quote(_CO_NEIGHBOUR, safe="")
+            target = next(
+                (h for h in hrefs if _CO_NEIGHBOUR in h or encoded_neighbour in h), None
+            )
+            assert target is not None, (
+                f"the candidate row rendered no drill-down link; hrefs={hrefs!r}"
+            )
+            # The raw '&' must not reach the query string as a separator.
+            after_loc = target.split("loc=", 1)[1]
+            assert "&amp;" not in after_loc and "&" not in after_loc, (
+                f"location_id leaked an unencoded separator into the link: {target!r}"
+            )
+            # Follow it exactly as a browser would.
+            r = client.get(target.replace("&amp;", "&"))
+        assert r.status_code == 200
+        assert "Co-observed sightings" in r.text, (
+            "following the drill-down link rendered no evidence section at all"
+        )
+        assert _CO_NEIGHBOUR in r.text
     finally:
         db.close()
 
