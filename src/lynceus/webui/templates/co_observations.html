@@ -66,7 +66,17 @@
           <td>{{ c.shared_days }}</td>
           <td>
             {{ c.delta_min }}s / {{ c.delta_median }}s / {{ c.delta_max }}s
-            <a href="/devices/{{ mac }}/co-observations?w={{ proximity_seconds }}&amp;detail={{ c.mac }}&amp;loc={{ c.location_id }}">show rows</a>
+            {# ⭐ |urlencode on location_id, not just autoescaping. Jinja escapes HTML
+               metacharacters, NOT URL ones, so a site legitimately called
+               "Home & Office" rendered loc=Home &amp; Office; the browser then sent
+               loc=Home plus a stray parameter, the exact-match gate failed, and the
+               drill-down silently rendered nothing -- 200, no error. With a crafted
+               location the injected parameters win outright, because Starlette keeps
+               the LAST value of a scalar query parameter, so this link could resolve
+               to a different candidate and show the wrong pair under the right
+               heading. Pinned by
+               test_co_observations_drill_down_link_survives_a_location_named_with_an_ampersand. #}
+            <a href="/devices/{{ mac }}/co-observations?w={{ proximity_seconds }}&amp;detail={{ c.mac|urlencode }}&amp;loc={{ c.location_id|urlencode }}">show rows</a>
           </td>
           <td>
             {% if c.shared_ssids %}
