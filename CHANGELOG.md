@@ -170,6 +170,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **One co-observation page no longer re-scans the whole capture 25 times.**
+  `shared_probe_ssids` counted, for each shared network name, how many devices
+  in the entire capture had ever probed it — a correlated subquery expanding
+  `probe_ssids` with `json_each`, and no index can find a JSON array element by
+  value, so every call visited the whole corpus. The page then called it once
+  per candidate, up to 25 per render.
+
+  Measured with SQLite's progress handler, growing only the count of unrelated
+  devices: 100 → 208 ticks, 300 → 616, 900 → 1840, 2700 → 5512. A dead-straight
+  2.04 ticks per added device. That is the same shape as the
+  `candidate_coverage` column the v3.1 amendment *rejected* for measuring 8.95×
+  at 9× corpus; this one measured 8.85× and shipped, because the corpus-cost
+  guard its sibling query got was never extended to it.
+
+  The corpus scan itself is irreducible while SSIDs live in a JSON array —
+  exact rarity is a question about the whole capture. What is gone is the
+  per-candidate multiplier: one scan per page instead of 25. A page render with
+  25 candidates against an 8,000-device capture drops from 240,763 progress
+  ticks to 8,826, a **27× reduction**, and the displayed numbers are unchanged —
+  the new query is checked row-for-row against the implementation it replaced,
+  including the malformed-payload, non-array, non-string-element and
+  no-shared-names cases.
+
+  ⚠️ In the default configuration this cost never arose: probe capture is off,
+  so the query returned immediately. It only affected operators who had turned
+  probe capture on.
+
 - **The co-observation audit log records the misses, not only the hits.**
   Decision 6 rejected rate limiting and kept the audit log as the *only*
   enumeration control. With the capability enabled, a request for a MAC that is

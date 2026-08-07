@@ -443,3 +443,151 @@ def test_pairs_honours_limit(db):
 def test_pairs_rejects_out_of_range_limit(db, bad):
     with pytest.raises(ValueError):
         pairs(db, "aa:1", "bb:1", limit=bad)
+
+
+# --- shared probe SSIDs: batched across candidates -----------------------
+#
+# The per-candidate form ran a correlated subquery that expanded the whole
+# devices table once per candidate. These pin the batch replacement against the
+# behaviour it replaced, and against the cost curve that motivated it.
+
+
+def _legacy_shared_probe_ssids(db, mac_a, mac_b, *, limit=10):
+    """The pre-batch implementation, kept verbatim as a reference oracle.
+
+    A rewrite of a query this fiddly is only trustworthy if it is compared
+    against the thing it replaced on the same data, rather than against a
+    hand-written expectation that can be talked into agreeing with whatever the
+    new code happens to do.
+    """
+    from lynceus.db import _probe_ssids_array_guard
+
+    def _ssids_of(alias, param):
+        return (
+            f"SELECT DISTINCT j.value AS ssid "
+            f"FROM devices {alias}, json_each({alias}.probe_ssids) j "
+            f"WHERE {alias}.mac = :{param} "
+            f"AND {_probe_ssids_array_guard(alias)} "
+            f"AND j.type = 'text'"
+        )
+
+    rows = db._conn.execute(
+        f"""
+        WITH a AS ({_ssids_of("da", "a")}),
+             b AS ({_ssids_of("db", "b")}),
+             shared AS (SELECT ssid FROM a INTERSECT SELECT ssid FROM b)
+        SELECT s.ssid AS ssid,
+               (SELECT COUNT(DISTINCT d2.mac)
+                  FROM devices d2, json_each(d2.probe_ssids) j2
+                 WHERE j2.value = s.ssid
+                   AND {_probe_ssids_array_guard("d2")}
+                   AND j2.type = 'text') AS corpus_devices
+        FROM shared s
+        ORDER BY corpus_devices ASC, s.ssid ASC
+        LIMIT :limit
+        """,
+        {"a": mac_a, "b": mac_b, "limit": limit},
+    ).fetchall()
+    return [{"ssid": str(r["ssid"]), "corpus_devices": int(r["corpus_devices"])} for r in rows]
+
+
+def test_shared_probe_ssids_many_matches_the_implementation_it_replaced(db):
+    """⭐ Differential test against the old query, including its edge cases.
+
+    Malformed and non-array payloads, non-string elements, duplicates within one
+    array, an absent device, and a device with no shared names are all present
+    on purpose: those are the cases a rewrite silently changes.
+    """
+    probed(db, "aa:1", '["coffee", "airport-wifi", "odd-name", "odd-name"]')
+    probed(db, "bb:1", '["coffee", "airport-wifi", "odd-name"]')
+    probed(db, "bb:2", '["airport-wifi"]')
+    probed(db, "bb:3", '["nothing-in-common"]')
+    probed(db, "bb:4", '"attwifi"')  # valid JSON, NOT an array -- must skip
+    probed(db, "bb:5", "not json at all")  # malformed -- must skip
+    probed(db, "bb:6", '["coffee", 42, null]')  # non-string elements dropped
+    probed(db, "bb:7", "[]")
+    probed(db, "bb:8", None)
+    # Corpus noise so corpus_devices is not trivially 1.
+    for i in range(12):
+        probed(db, f"cc:{i}", '["coffee", "airport-wifi"]')
+
+    candidates = ["bb:1", "bb:2", "bb:3", "bb:4", "bb:5", "bb:6", "bb:7", "bb:8", "bb:missing"]
+    batched = db.shared_probe_ssids_many("aa:1", candidates)
+
+    assert set(batched) == set(candidates), "every requested MAC must be present in the mapping"
+    for mac in candidates:
+        assert batched[mac] == _legacy_shared_probe_ssids(db, "aa:1", mac), (
+            f"batch result diverged from the replaced implementation for {mac}"
+        )
+    # And it really is finding evidence, so the comparison is not [] == [].
+    assert batched["bb:1"], "fixture produced no shared SSIDs; the test proves nothing"
+    assert batched["bb:3"] == []
+    assert batched["bb:4"] == [], "a non-array payload must not contribute a phantom SSID"
+
+
+def test_shared_probe_ssids_many_caps_each_candidate_not_the_page(db):
+    """A global LIMIT would decide which CANDIDATES get evidence rather than
+    capping each one's list. With 3 candidates and limit=2 that is the
+    difference between 2 rows total and 2 rows each."""
+    names = '["n1", "n2", "n3", "n4"]'
+    probed(db, "aa:1", names)
+    for mac in ("bb:1", "bb:2", "bb:3"):
+        probed(db, mac, names)
+    out = db.shared_probe_ssids_many("aa:1", ["bb:1", "bb:2", "bb:3"], limit=2)
+    assert [len(v) for v in out.values()] == [2, 2, 2]
+
+
+def test_shared_probe_ssids_many_is_empty_and_silent_for_no_candidates(db):
+    probed(db, "aa:1", '["coffee"]')
+    assert db.shared_probe_ssids_many("aa:1", []) == {}
+
+
+def test_shared_probe_ssids_corpus_scan_is_not_multiplied_by_candidate_count(db):
+    """⭐ The guard `shared_probe_ssids` never had, and the reason its sibling's
+    assertion cannot simply be copied.
+
+    A CORRECT implementation still scans the corpus once -- exact rarity is a
+    question about the whole capture -- so 9x the corpus legitimately costs
+    close to 9x, and `large < small * 3` would fail on correct code. The
+    invariant that actually distinguishes the fix from the defect is:
+
+        growing the CANDIDATE count must not multiply the marginal cost of
+        growing the corpus.
+
+    Subtracting the two corpus sizes cancels the fixed per-candidate work and
+    leaves the corpus slope. One scan per candidate makes the 25-candidate slope
+    ~25x the 1-candidate slope; one scan per page keeps them comparable.
+    """
+    names = '["shared-a", "shared-b"]'
+    probed(db, "aa:1", names)
+    for i in range(25):
+        probed(db, f"bb:{i}", names)
+
+    def steps(candidate_count, noise_devices, noise_offset):
+        for i in range(noise_devices):
+            probed(db, f"noise:{noise_offset}:{i}", names)
+        db._conn.commit()
+        counter = [0]
+
+        def on_progress():
+            counter[0] += 1
+            return 0
+
+        db._conn.set_progress_handler(on_progress, 100)
+        try:
+            db.shared_probe_ssids_many("aa:1", [f"bb:{i}" for i in range(candidate_count)])
+        finally:
+            db._conn.set_progress_handler(None, 0)
+        return counter[0]
+
+    one_small = steps(1, 5, 0)
+    one_large = steps(1, 45, 1)
+    many_small = steps(25, 0, 2)
+    many_large = steps(25, 40, 3)
+
+    one_slope = one_large - one_small
+    many_slope = many_large - many_small
+    assert many_slope < max(one_slope, 1) * 5, (
+        "the corpus scan is multiplied by the candidate count: corpus slope went "
+        f"{one_slope} (1 candidate) -> {many_slope} (25 candidates)"
+    )

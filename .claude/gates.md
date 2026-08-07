@@ -59,6 +59,37 @@ test defects that Windows could not structurally expose, fixed in `9b2636c`;
 A drop below 3508 (local) or 3048 (Linux clone) is a regression. A **rise** in
 skips is usually one too — but not always, and the exceptions are below.
 
+⭐ **Current Linux number, measured 2026-08-06 at `b0eb601`: 3244 passed, 1
+skipped, 47 deselected, 0 failed, ~16m30s.** That is the number to beat here.
+
+⚠️ **The local/clone split above no longer holds, and the 484-test gap is
+history.** All 116 files under `tests/` are tracked now, and a `git worktree`
+of `main` produced *exactly* the same 3244 as the working checkout — measured,
+after predicting it would come out lower and being wrong. Do not expect a
+worktree or clone to run fewer tests; if it does, something is genuinely
+missing rather than withheld.
+
+⛔ **Put `.venv/bin` on `PATH` before running the suite.** Without it
+`tests/test_packaging.py` skips itself with "python not on PATH" and the skip
+count reads **2** — which looks exactly like the lost-Argus-gate failure warned
+about below, but is a different cause entirely. **Skip 1 is correct; always
+check WHICH test skipped before concluding anything.**
+
+⛔ **Long test runs get killed if they are a tracked background task.** Measured
+2026-08-06: the same 16-minute run completed once, then was killed twice at 3
+and 7 minutes with no test output, no OOM record, and 9 GB free. Detach it so
+nothing tracked can reach it:
+
+```bash
+setsid nohup env PATH=".../.venv/bin:$PATH" LYNCEUS_ARGUS_CSV=... \
+  bash -c 'python -m pytest -q > gate.log 2>&1; echo EXIT=$? > gate.done' \
+  >/dev/null 2>&1 < /dev/null &
+disown
+```
+
+then wait on `gate.done` with a *disposable* loop. The waiter may be killed —
+it was, three times — but the detached run survives and its result is on disk.
+
 ### ⛔ Cite SHAs that are on `main`, not the branch SHA you measured at
 
 Every PR here lands with `gh pr merge --rebase`, which **rewrites every commit
