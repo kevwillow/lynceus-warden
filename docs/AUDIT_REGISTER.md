@@ -883,10 +883,215 @@ failure isolation.
 **The withheld files are disproportionately the ones covering the capture path**, so a contributor
 running the public suite gets the least coverage exactly where the product's value is.
 
+## Wave 7 — the CodeQL queue, triaged, 2026-08-14
+
+Taken at `199bf79`. **The first wave sourced from an automated tool rather than from reading.**
+`security-and-quality` had run for the first time and left a backlog: **48 security-severity alerts**
+(26 high, 22 medium) plus ~880 `note`-level ones that are noise.
+
+**Result: 10 real, 38 refuted** (Finding 24 was promoted and then withdrawn on verification). The distribution is the finding. CodeQL's value here was *not* its
+verdicts — it was **wrong about most of what it flagged, and right about the two that mattered for a
+reason it did not state**. Both real permission defects were reported as "world/group readable",
+which is not the defect; the defect in each case is *what happens to a file that already exists*.
+
+⇒ **An alert location is a lead, not a finding.** Every entry below was reproduced at its
+`file:line` before promotion, per the register's standing rule. Triage was split across two
+concurrent sessions and the delegate packets' verdicts were **overruled twice** — once in each
+direction.
+
+### 🔴 Finding 21 — rewriting the config keeps a permissive mode on the file holding the API key
+
+`setup/core.py:211`. `_atomic_write` opens with `os.open(path, O_WRONLY|O_CREAT|O_TRUNC, mode)`.
+**The mode argument applies only at creation**; POSIX ignores it when the file already exists, and
+`os.open` reuses the same inode. So a `lynceus.yaml` that is already world-readable **stays
+world-readable** and is then rewritten with the Kismet API key and the ntfy topic inside it.
+
+```
+ARM 1 fresh file    -> 0600            (the only case the existing tests cover)
+ARM 2 pre-existing  -> before=0644 after=0644   (0600 was requested)
+      world-readable = True    secrets in file = True
+```
+
+The docstring at `core.py:195-203` states the opposite in as many words — *"the file never exists on
+disk with permissions broader than requested"*. That promise holds for a new file and is false for
+every rewrite, which is the common case: `--reconfigure` rewrites.
+
+🪤 **This was triaged as a false positive first, by me, and the docstring is why.** I read the
+promise, confirmed `_atomic_write` was genuinely wired in at `core.py:524/533/566/1434` and
+`cli/setup.py:786` rather than dead code, and concluded the hardening was real. It *is* real — for
+the first call. **Confirming a guard is wired in says nothing about its second invocation.**
+Found by session `e4288bb5` (packets W1-C and W1-D independently), reproduced independently here.
+
+✅ **Fixed in PR #28** — `os.fchmod` on the **open descriptor**, before any content is written.
+⛔ **It must stay `fchmod`-on-descriptor and must NOT be "simplified" to `os.chmod(path, mode)`.**
+Two reasons: `O_TRUNC` has already emptied the file at that point, so the secret never exists on
+disk under the broader bits; and a path-based `chmod` between the `open` and the `chmod` is
+defeatable by a symlink swap, which an fd-based one is not.
+⛔ **Not** the fix in Finding 22, which is its opposite. Both docstrings now carry that warning.
+
+### 🔴 Finding 22 — a Kismet re-run silently widens an operator's own hardening
+
+`cli/bootstrap_kismet.py:863`. `_atomic_write_bytes` writes a tmpfile, `chmod`s it, and
+`os.replace`s it over the target — so the surviving inode is a **new** file carrying the *requested*
+mode, discarding whatever the target had. Every rewrite resets the file to the `0o644` default.
+
+`patch_kismet_site_conf` promises in its own docstring that operator customisations are *"preserved
+verbatim"*. It preserves the **content** and drops the **permissions**. Kismet honours
+`httpd_password=` in `kismet_site.conf`, so an operator who correctly hardened that file had it
+widened by an unrelated `--add-source` run:
+
+```
+BEFORE: mode=0600  contains_secret=True
+AFTER : mode=0644  contains_secret=True
+```
+
+⭐ **The two atomic writers need OPPOSITE fixes, and copy-pasting between them reintroduces the
+other bug.** Finding 21's writer reuses the old inode → it must **enforce** the requested mode.
+This one substitutes a new inode → it must **preserve** the old one.
+
+🪤 **The delegate packet called this alert a false positive and was overruled by measurement.** Its
+reasoning — the generated `kismet_site.conf` holds no *Lynceus* secret — was sound as far as it went,
+and it even noted the exact mechanism before dismissing it: *"The patcher also preserves arbitrary
+pre-existing content and resets the replacement to 0644."* The `httpd_password=` case settles it.
+
+⚠️ **`cli/bootstrap_kismet.py` had no behavioural test of any kind** — 1,589 lines, zero references
+to `patch_kismet_site_conf`, `_atomic_write_bytes` or `_atomic_write_text` anywhere under `tests/`.
+That is how it survived. ✅ **Fixed in PR #25** (`8609fc9`), with the file's first tests. Both shapes
+planted: no-preservation fails 4, hardcoded-`0o600` fails 5 — the second arm exists because that
+"fix" would break the apt keyring and `sources.list`, which must stay world-readable.
+
+### 🟡 Finding 23 — five URL guards could not fail on the defect they guard
+
+`test_webui_evidence.py:104,141,400` and `test_ui_settings.py:185,310`, all checking a URL by
+substring. A hostname is a right-anchored, dot-delimited hierarchy, so each was satisfiable by
+appending a sub-domain. Repointing the alert-detail map link at
+`https://www.openstreetmap.org.attacker.invalid/?mlat=...` left **all 17 tests in the evidence file
+green**.
+
+⭐ **Including the one whose entire job is the anchor's security attributes.**
+`test_alert_detail_osm_link_opens_in_new_tab` located the anchor with a *prefix* search,
+`body.find('href="https://www.openstreetmap.org')`, which the look-alike host also satisfies — so it
+read `target`/`rel` off **the attacker's anchor** and reported the hijacked link as safe.
+
+This is the same class as the `<script` vs `<SCRIPT>` hole CodeQL found in the CSP guards: a
+completeness check blind in exactly the shape it exists to close. ✅ **Fixed in PR #26** — host
+compared by equality on the parsed netloc, the validated anchor returned to the caller so attribute
+checks cannot drift onto another element. Three shapes planted; previously-0 failures became 3, 2
+and 1.
+
+### ⬜ Finding 24 — WITHDRAWN on verification: the SSE traceback is behind a token gate
+
+`setup/web/review.py:436-454, 879`. Promoted on the strength of the alert's location, with an
+explicit unchased caveat — *"the setup routes appear token-scoped … but enforcement lives outside
+the allowed files and could not be verified."* **Verified afterwards, and it inverts the finding:**
+
+| Check | Result |
+|---|---|
+| Token gate exists? | `SetupTokenMiddleware` (`setup/web/auth.py:28`), `compare_digest` at `:70` |
+| **Installed, or merely defined?** | **Installed** — `app.add_middleware(SetupTokenMiddleware, …)`, `setup/web/app.py:169` |
+| Gates the SSE/apply route? | **Yes** — `TOKEN_EXEMPT_PATHS = ("/healthz", "/static")` only |
+| Default bind | `127.0.0.1`; all-interfaces is supported, and the token still gates |
+
+The traceback reaches **only a holder of the setup token** — the operator running first-run setup,
+who already controls the whole configuration including the Kismet key and ntfy topic in flight. Four
+tests pin it as intended. **A diagnostic feature, not a disclosure.**
+
+⛔ **If anyone revisits this, do not "fix" it by deleting the traceback.** A wizard that says "Apply
+failed" with no way to find out why, on a first-run flow possibly running as root, costs an operator
+more than the traceback does. The useful version is "keep it, behind an explicit *show details*
+toggle".
+
+⭐ **Contrast with Finding 25, which is a difference in kind:** `/healthz.json` had **no**
+authentication at all — loopback was the only control and `ui_allow_remote` removes it. That is why
+25 was fixed and this one was withdrawn.
+
+### 🟡 Finding 25 — a raw DB driver error is returned in an unauthenticated 503
+
+`webui/app.py:1270` → `:1546-1552`. The `# noqa: BLE001 — surface the actual driver error` is
+deliberate, but `/healthz.json` is unauthenticated and remote-reachable once `ui_allow_remote` is
+set. Interacts with the standing no-auth finding. Recorded, not fixed. Found by session `e4288bb5`.
+
+### Refuted — do not re-report these without new evidence
+
+- **All 10 `py/clear-text-logging-sensitive-data` alerts.** `cli/setup.py:938-944` prints
+  `_redact_kismet_api_key(token)`, which returns `***` under 12 chars and `first4...last4`
+  otherwise — the raw token never reaches a `print`. The five `kismet.py` sites log **MAC addresses
+  and datasource UUIDs**, which are this product's domain data, stored by design in the database at
+  equal protection. `scripts/rebump_dev_fixture.py:123` is a dev-fixture dry-run table.
+- **13 `py/log-injection` + 6 `py/url-redirection` in `webui/app.py`** — typed `int` path params
+  logged with `%d`, MACs gated through `normalize_mac`, `%r` escaping CR/LF, and origin-relative
+  `Location` headers with an allowlisted `rule_type`.
+- **`py/stack-trace-exposure` at `app.py:1568`** — unreachable via a correlated early return at
+  `:1546` that CodeQL did not model.
+- **`py/overly-permissive-file` ×3 in `setup/core.py` at `:238`/`:277`** — `0640`/`0750` are the
+  deliberate `root:lynceus` ownership split, *tighter* than the umask default. (`:211` is Finding
+  21 and is real — same file, different line, opposite verdict.)
+- **`py/overly-permissive-file` ×4 under `tests/`** — `0o777` is the **default parameter of a spy
+  function** capturing which mode the real code requested; the tests then assert the real value
+  (`0o600`/`0o640`) immediately after.
+- **`py/jinja2/autoescape-false` at `test_webui.py:3414`** — a bare `Environment()` used only to
+  test filter *selection*. `_device_label` returns a plain `str`, never `Markup`, and production
+  renders through `Jinja2Templates` (`app.py:1437`), which enables autoescape.
+- **`py/clear-text-storage-sensitive-data` at `core.py:209`** — ⚠️ **not refuted; reclassified as a
+  Windows-only design item.** On POSIX the control is the `0600` mode, and that control is exactly
+  what Finding 21's fix restores. But the alert sits on the **Windows branch** (`path.write_text`),
+  where there are no mode bits at all and access is governed by the parent directory's inherited
+  DACL — which this code never constrains. So "cleartext by design" is true on POSIX and overstated
+  on Windows. **Not a patch: it needs DPAPI or an explicit DACL.** Tracked, not fixed.
+- **`test_redact.py:264`** — flagged weak by a delegate; **left unpromoted because no one could
+  construct a defect that slips past it** while its sibling `assert "user:pass" not in redacted`
+  holds. Unproven is not the same as refuted, and it is recorded as unproven.
+
+### ⛔ Correction — a claim in both 2026-08-14 handoffs is false
+
+Both `HANDOFF_2026-08-14_HARDENING_AND_CI.md` (§5.2) and `HANDOFF_2026-08-14_ORCHESTRATION_PLAN.md`
+(§2) assert, with a ⭐, that *"the two biggest high-severity buckets independently corroborate Wave 5
+leads … the DEBUG ntfy-topic leak (`notify.py:172-174`)"*.
+
+**CodeQL has zero `clear-text-logging` alerts in `notify.py`** — its only alert there is one
+`py/ineffectual-statement` at `:36`. Every logger call that **interpolates the URL** uses
+`safe_url = redact_topic_in_url(url)` (`:172`, `:180`). ⭐ **The leak is not an interpolated URL at
+all**: `:174` passes no URL and leaks the raw topic through the urllib3 traceback that
+`exc_info=True` renders. (Saying "every logger call is redacted" would be false and would make this
+finding look self-contradictory — there are four calls and two pass no URL.) The
+`overly-permissive-file` half of the claim is sound; the clear-text-logging half corroborates
+nothing.
+
+The underlying lead is nevertheless **real as behaviour and deliberate as design**. Measured:
+
+```
+[WARNING] raw topic in log? -> False   detail='ConnectionError (http://127.0.0.1:9/my-s•••23)'
+[DEBUG  ] raw topic in log? -> True    via the urllib3 traceback, not the logger.debug message
+```
+
+`notify.py:121-125` predicts exactly this in a comment and calls it an intentional tradeoff. ⇒ It is
+**a decision for the maintainer about whether that tradeoff is right**, not a defect to quietly
+patch, and it must not be re-reported as a new CodeQL finding.
+
+⚠️ **Four claims in this wave were wrong the same way, in both directions**, which is why it gets a
+rule rather than four separate notes:
+
+| Claim | Direction of the error |
+|---|---|
+| Handoff: "clear-text-logging corroborates the `notify.py` leak" | overstated — CodeQL flagged nothing there |
+| My triage: "`setup/core.py` is already hardened" | understated — I read the docstring, not the rewrite path |
+| Packet W1-C: "`bootstrap_kismet:863` is a false positive" | understated — it named the mechanism and dismissed it |
+| Finding 24: "SSE traceback is a disclosure" | overstated — the route is behind an installed token gate |
+
+⭐ **An alert tells you where a value FLOWS. It never tells you who can REACH it.** Check the gate
+before grading the finding. This cuts both ways: an unwired guard overstates safety, and an
+unchecked gate overstates severity. Confirming a helper is wired in says nothing about its *second*
+invocation, and confirming a value reaches a sink says nothing about *who* can stand at that sink.
+
 ## Still open
 
 - The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,
   `watchlist_detail.html:97`) remains unverified and lower severity.
+- 🟡 **Finding 25** — fixed in PR #30. **Finding 24 withdrawn**, see above.
+- **The ntfy DEBUG topic leak** — a maintainer decision, not a defect. See the correction above.
+- **`py/clear-text-storage-sensitive-data` on the Windows branch** — needs DPAPI or an explicit
+  DACL. Not a patch; a Windows-only design item.
+- ✅ **Finding 21 is fixed** (PR #28) and **Finding 22** (PR #25) and **Finding 23** (PR #26).
 
 ## Closed since the audit
 
@@ -904,3 +1109,30 @@ Do not run gates from a throwaway worktree. A worktree relocates `Path(__file__)
 and **silently disables** the cross-repo Argus test — it skips rather than fails, so the suite looks
 better than the repo root's baseline. Measured this session: worktree reported 0 Argus failures
 where the repo root reports 1. See `.claude/gates.md`.
+
+⭐ **A second, worse worktree trap, measured 2026-08-14.** The development venv has `lynceus`
+installed **editable, pointing at the primary checkout**. Running `pytest` from a worktree therefore
+imports the *primary checkout's* `src/`, not the worktree's — so the run grades a different tree than
+the one you are editing, and says nothing about it:
+
+```
+cd /home/kev/lw-s1 && python -c "import lynceus; print(lynceus.__file__)"
+  -> /home/kev/lynceus-warden/src/lynceus     # the WRONG tree, silently
+PYTHONPATH=/home/kev/lw-s1/src  ... same command
+  -> /home/kev/lw-s1/src/lynceus              # correct
+```
+
+Export `PYTHONPATH=<worktree>/src` before gating in one. 🪤 It produced a **false negative inside
+this wave's own verification**: a reproduction script that hardcoded the primary checkout's path
+reported the just-merged Finding 22 fix as still broken, because the primary checkout's `main` was
+several commits behind. ⇒ **Assert which tree you imported before believing any worktree result.**
+
+⭐ **This repo's CodeQL check reports a MOVED alert as a NEW one.** Measured on PR #28: the check
+went red with *"3 new alerts including 3 high severity"*, one of which was
+`py/clear-text-storage-sensitive-data` on an expression that is **byte-identical to the one already
+open on `main`** — it had merely shifted from `core.py:209` to `:226` because a docstring above it
+grew. Verified with `git show origin/main:src/lynceus/setup/core.py | sed -n '209p'` against the
+branch's `:226`. ⇒ **Any PR that edits a docstring above a flagged line goes red for free. Diff the
+flagged expression against `main` before treating a CodeQL alert as introduced.** The alert
+re-anchors itself on merge. ⛔ Do not "fix" this by dismissing alerts or by rewriting a literal into
+something the analyser cannot resolve — that games the tool and hides a tracked design item.
