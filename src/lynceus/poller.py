@@ -596,6 +596,240 @@ def process_observation(
             )
 
 
+def _compose_heartbeat(db: Database, config: Config, *, now_ts: int) -> tuple[bool, str]:
+    """Build the heartbeat's (healthy, message) from MEASURED state.
+
+    ⛔ The one invariant that matters: **this must never claim health it has
+    not verified.** A heartbeat that says "all good" while ingest is dead is
+    strictly worse than no heartbeat at all -- it converts an operator's vague
+    unease into false confidence, on the one channel they rely on to be told
+    that something is near them. Every clause below is derived from a value
+    read out of the database on this tick; none of them defaults to healthy.
+
+    🪤 "No devices seen" is deliberately NOT unhealthy. A quiet RF environment
+    is the normal case for this tool and flagging it would train the operator
+    to ignore the warning that matters. The signals that separate "nothing is
+    out there" from "we stopped looking" are the tick clock and the persist
+    watermark, so those -- not the device count -- decide `healthy`.
+    """
+    problems: list[str] = []
+
+    # 1. Is the daemon actually completing poll ticks? Same 2x-interval
+    #    convention as the /healthz.json poll check, so the two surfaces
+    #    cannot disagree about what "stale" means.
+    last_tick_raw = db.get_state(STATE_KEY_LAST_TICK_COMPLETED_AT)
+    if last_tick_raw is None:
+        problems.append("no poll tick has ever completed")
+    else:
+        age = now_ts - int(last_tick_raw)
+        if age > 2 * config.poll_interval_seconds:
+            problems.append(
+                f"no poll tick for {age}s (expected every {config.poll_interval_seconds}s)"
+            )
+
+    # 2. Are observations actually reaching the database? A watermark held at
+    #    the bound means persists are failing and capture data is being lost --
+    #    the "silent pipeline death" case, where the process is alive, ingest
+    #    has stopped, and today the only symptom is one ERROR line in a log
+    #    nobody is tailing.
+    holds = int(db.get_state(STATE_KEY_WATERMARK_HOLDS) or 0)
+    if holds >= POLL_WATERMARK_MAX_HOLDS:
+        problems.append(
+            f"observations are failing to persist (watermark held {holds}x, "
+            f"capture data is being lost)"
+        )
+    elif holds > 0:
+        problems.append(f"{holds} observation(s) failed to persist since the last tick")
+
+    # 3. Undelivered alerts mean the operator has already missed something.
+    undelivered = db.count_undelivered_alerts()
+    if undelivered:
+        problems.append(f"{undelivered} alert(s) written but never delivered")
+
+    healthy = not problems
+
+    since_ts = now_ts - config.heartbeat_interval_hours * 3600
+    seen = db.count_sightings_since(since_ts)
+    window = f"{config.heartbeat_interval_hours}h"
+    last_alert_ts = db.latest_alert_ts()
+    if last_alert_ts is None:
+        last_alert = "no alerts yet"
+    else:
+        hours = max(0, (now_ts - int(last_alert_ts)) // 3600)
+        last_alert = f"last alert {hours}h ago"
+
+    if healthy:
+        return True, (
+            f"Still watching. {seen} device sighting(s) in the last {window}, {last_alert}."
+        )
+    return False, (
+        "NOT FULLY WATCHING — lynceus is running but: "
+        + "; ".join(problems)
+        + f". ({seen} sighting(s) in the last {window}, {last_alert}.)"
+    )
+
+
+def maybe_emit_heartbeat(
+    db: Database,
+    config: Config,
+    notifier: Notifier | None,
+    *,
+    now_ts: int,
+) -> bool:
+    """Send the periodic proof-of-life if one is due, or retry an undelivered one.
+
+    Returns True if a heartbeat was delivered on this call.
+
+    ⭐ The interval clock runs from **delivery**, not from composition, and the
+    retry rides the same three-state gate as alerts (024). A heartbeat built on
+    the fire-and-forget path would inherit exactly the defect PR #19 fixed --
+    and here it would be worse than it was for alerts, because a *missing*
+    heartbeat is read as "the daemon is dead". An operator would go looking at
+    hardware when the real fault was one transient ntfy blip.
+
+    Called from ``poll_once`` on every tick; a no-op except once per interval,
+    so it is cheap.
+    """
+    if not config.heartbeat_enabled or notifier is None:
+        return False
+
+    latest = db.latest_heartbeat()
+
+    # An undelivered heartbeat with attempts left is retried before any new one
+    # is composed -- the operator is owed the message that was already written,
+    # and composing a second would leave the first stranded as undelivered
+    # forever while saying the same thing.
+    if latest is not None and latest.get("notified_at") is None:
+        if int(latest.get("notify_attempts") or 0) >= NOTIFY_MAX_ATTEMPTS:
+            # Attempts spent. Leave it undelivered so /settings still counts it,
+            # and fall through to the interval check: if the next window has
+            # come round, a fresh attempt with fresh state is more useful than
+            # re-sending a stale one.
+            logger.warning(
+                "heartbeat %s undelivered after %d attempts; the operator has NOT "
+                "been told the daemon is alive",
+                latest["id"],
+                NOTIFY_MAX_ATTEMPTS,
+            )
+        else:
+            return _send_heartbeat(
+                db, notifier, latest["id"], bool(latest["healthy"]),
+                latest["message"], now_ts=now_ts, retry=True,
+            )
+
+    last_delivered = db.latest_delivered_heartbeat_ts()
+    interval = config.heartbeat_interval_hours * 3600
+
+    # What the interval is measured from. Delivery is the honest reference --
+    # a heartbeat nobody received has proved nothing -- but it cannot be the
+    # ONLY one.
+    #
+    # 🪤 Caught by `test_retries_are_bounded`: with delivery as the sole
+    # reference, a topic that is down when the very first heartbeat is composed
+    # leaves `last_delivered` permanently None. Every subsequent tick then sees
+    # "never delivered, interval trivially elapsed", composes a BRAND NEW row
+    # and burns another four attempts -- a row and four blocking HTTP timeouts
+    # per poll tick, forever. The bounded-retry logic above is defeated by
+    # simply making a new thing to retry.
+    reference = last_delivered
+    if reference is None and latest is not None:
+        reference = int(latest["ts"])
+
+    if reference is not None:
+        elapsed = now_ts - reference
+        # 🪤 `elapsed < interval` alone would stall the switch for the WHOLE
+        # excursion if the wall clock jumped backward -- the dead-man's switch
+        # going quiet is precisely the failure it exists to remove, and the
+        # operator would read the silence as "the daemon is dead". Session 3
+        # measured the same shape in retention.py:118 / evidence.py:324, where
+        # a future anchor stalled pruning for 366 days.
+        #
+        # ⭐ Note the direction differs by subsystem, and that is the point:
+        # an untrustworthy clock means "do NOT prune" for retention (fail
+        # toward keeping data) but "DO send" here (fail toward noise). A
+        # dead-man's switch must fail toward sending; a spurious heartbeat
+        # costs one notification, a suppressed one costs the whole guarantee.
+        if 0 <= elapsed < interval:
+            return False
+    # Never delivered one: send promptly rather than waiting a full interval.
+    # This is the operator's confirmation that the switch is actually armed --
+    # deferring it means a misconfigured ntfy topic is discovered a day later,
+    # or never. A restart loop cannot spam the topic, because delivery stamps
+    # `notified_at` and the interval gate above then applies across restarts.
+
+    healthy, message = _compose_heartbeat(db, config, now_ts=now_ts)
+    try:
+        heartbeat_id = db.insert_heartbeat(ts=now_ts, healthy=healthy, message=message)
+    except Exception as e:
+        logger.warning("Failed to record heartbeat (not sending): %s", e)
+        return False
+    return _send_heartbeat(
+        db, notifier, heartbeat_id, healthy, message, now_ts=now_ts, retry=False
+    )
+
+
+def _send_heartbeat(
+    db: Database,
+    notifier: Notifier,
+    heartbeat_id: int,
+    healthy: bool,
+    message: str,
+    *,
+    now_ts: int,
+    retry: bool,
+) -> bool:
+    """Attempt delivery of one heartbeat row, tracking the attempt either way.
+
+    The attempt is counted BEFORE the send for the same reason as alerts: a
+    hung or unkillable notifier must still burn one, or the bound is not a
+    bound.
+    """
+    try:
+        attempts = db.record_heartbeat_notify_attempt(heartbeat_id)
+    except Exception as e:
+        logger.warning(
+            "Failed to record heartbeat attempt for %s (sending anyway): %s",
+            heartbeat_id, e,
+        )
+        attempts = 0
+    try:
+        ok = notifier.send(
+            # An unhealthy heartbeat is a real problem report, not an FYI, so
+            # it does NOT ride the low-priority path the healthy one uses.
+            severity="med" if not healthy else "low",
+            title="lynceus: still watching" if healthy else "lynceus: NOT fully watching",
+            message=message,
+        )
+    except Exception as e:
+        logger.warning(
+            "Notifier raised sending heartbeat %s (attempt %d/%d): %s",
+            heartbeat_id, attempts, NOTIFY_MAX_ATTEMPTS, e,
+        )
+        return False
+    if ok:
+        try:
+            db.mark_heartbeat_notified(heartbeat_id, now_ts=now_ts)
+        except Exception as e:
+            logger.warning(
+                "Delivered heartbeat %s but failed to stamp it (it may be re-sent "
+                "once): %s",
+                heartbeat_id, e,
+            )
+        logger.info(
+            "heartbeat %s delivered (%s)%s",
+            heartbeat_id,
+            "healthy" if healthy else "UNHEALTHY",
+            " [retry]" if retry else "",
+        )
+        return True
+    logger.warning(
+        "Notifier returned False for heartbeat %s (attempt %d/%d)%s",
+        heartbeat_id, attempts, NOTIFY_MAX_ATTEMPTS,
+        "" if attempts < NOTIFY_MAX_ATTEMPTS else " -- giving up, heartbeat UNDELIVERED",
+    )
+    return False
+
+
 def poll_once(
     client: KismetClient,
     db: Database,
@@ -887,6 +1121,19 @@ def poll_once(
         maybe_prune_evidence(db, config.evidence_retention_days, now_ts=now_ts)
     except Exception as e:
         logger.warning("Evidence prune failed: %s", e)
+    # The dead-man's switch. Placed AFTER the tick counters and the watermark
+    # bookkeeping above are written, so it reads this tick's state rather than
+    # the previous one -- a heartbeat composed from stale state could report
+    # health that had already stopped being true. No-op except once per
+    # heartbeat_interval_hours, and disabled by default.
+    #
+    # Wrapped defensively for the same reason as the prunes: this exists to
+    # report that the pipeline is broken, so it must never be the thing that
+    # breaks it.
+    try:
+        maybe_emit_heartbeat(db, config, notifier, now_ts=now_ts)
+    except Exception as e:
+        logger.warning("Heartbeat emit failed: %s", e)
     # Same daily cadence for sightings, and a no-op unless the operator has
     # opted in -- sightings_retention_days defaults to None, meaning never
     # prune, which is what every install has always done. Wrapped defensively

@@ -1334,6 +1334,100 @@ class Database:
             ).fetchone()
         return int(row["notify_attempts"]) if row else 0
 
+    # --- Heartbeat (migration 025) -----------------------------------------
+    #
+    # Deliberately mirrors the four alert-delivery methods above. The heartbeat
+    # exists to make silence falsifiable, so it must not be built on the
+    # fire-and-forget path whose failure mode is silence.
+
+    def insert_heartbeat(self, *, ts: int, healthy: bool, message: str) -> int:
+        """Record a composed heartbeat, undelivered. Returns its id."""
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO heartbeats(ts, healthy, message, notify_attempts) "
+                "VALUES (?, ?, ?, 0)",
+                (int(ts), 1 if healthy else 0, message),
+            )
+        return int(cur.lastrowid)
+
+    def latest_heartbeat(self) -> dict | None:
+        """The most recent heartbeat row, delivered or not.
+
+        Both scheduling decisions read this one row: whether a retry is owed
+        (``notified_at IS NULL`` with attempts left) and whether the next
+        interval has elapsed.
+        """
+        row = self._conn.execute(
+            "SELECT id, ts, healthy, message, notified_at, notify_attempts "
+            "FROM heartbeats ORDER BY ts DESC, id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def record_heartbeat_notify_attempt(self, heartbeat_id: int) -> int:
+        """Increment and return this heartbeat's delivery-attempt counter.
+
+        ⚠️ UPDATE-then-SELECT, not ``UPDATE ... RETURNING`` -- same reason as
+        ``record_alert_notify_attempt``: RETURNING needs SQLite >= 3.35 and
+        Debian bullseye (a stated target for the Pi deployment) ships 3.34.
+        """
+        with self._conn:
+            self._conn.execute(
+                "UPDATE heartbeats SET notify_attempts = notify_attempts + 1 WHERE id = ?",
+                (int(heartbeat_id),),
+            )
+            row = self._conn.execute(
+                "SELECT notify_attempts FROM heartbeats WHERE id = ?",
+                (int(heartbeat_id),),
+            ).fetchone()
+        return int(row["notify_attempts"]) if row else 0
+
+    def mark_heartbeat_notified(self, heartbeat_id: int, *, now_ts: int) -> None:
+        """Record that the operator actually received ``heartbeat_id``.
+
+        Until this runs, the row is undelivered and the next tick retries it.
+        The interval clock runs from DELIVERY, not from composition -- a
+        heartbeat nobody received has not proved anything.
+        """
+        with self._conn:
+            self._conn.execute(
+                "UPDATE heartbeats SET notified_at = ? WHERE id = ?",
+                (int(now_ts), int(heartbeat_id)),
+            )
+
+    def count_undelivered_heartbeats(self) -> int:
+        """Heartbeats composed but never delivered, for /settings.
+
+        A non-zero count here is louder than the same count for alerts: it
+        means the channel the operator relies on for *everything* is broken.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM heartbeats WHERE notified_at IS NULL"
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def latest_delivered_heartbeat_ts(self) -> int | None:
+        """When the operator was last actually told the daemon was alive."""
+        row = self._conn.execute(
+            "SELECT MAX(notified_at) AS ts FROM heartbeats WHERE notified_at IS NOT NULL"
+        ).fetchone()
+        return int(row["ts"]) if row and row["ts"] is not None else None
+
+    def latest_alert_ts(self) -> int | None:
+        """Timestamp of the most recent alert, or None if there has never been
+        one. Used by the heartbeat's "last alert Nh ago" clause, which is how
+        an operator judges whether a quiet period is normal for their site."""
+        row = self._conn.execute("SELECT MAX(ts) AS ts FROM alerts").fetchone()
+        return int(row["ts"]) if row and row["ts"] is not None else None
+
+    def count_sightings_since(self, since_ts: int) -> int:
+        """Sightings recorded since ``since_ts`` -- the heartbeat's evidence
+        that ingest is actually working, rather than merely that the process
+        is running."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM sightings WHERE ts >= ?", (int(since_ts),)
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
     def count_undelivered_alerts(self, *, since_ts: int | None = None) -> int:
         """Alerts written but never successfully notified.
 
