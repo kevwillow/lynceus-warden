@@ -889,7 +889,7 @@ Taken at `199bf79`. **The first wave sourced from an automated tool rather than 
 `security-and-quality` had run for the first time and left a backlog: **48 security-severity alerts**
 (26 high, 22 medium) plus ~880 `note`-level ones that are noise.
 
-**Result: 11 real, 37 refuted.** The distribution is the finding. CodeQL's value here was *not* its
+**Result: 10 real, 38 refuted** (Finding 24 was promoted and then withdrawn on verification). The distribution is the finding. CodeQL's value here was *not* its
 verdicts — it was **wrong about most of what it flagged, and right about the two that mattered for a
 reason it did not state**. Both real permission defects were reported as "world/group readable",
 which is not the defect; the defect in each case is *what happens to a file that already exists*.
@@ -979,11 +979,31 @@ compared by equality on the parsed netloc, the validated anchor returned to the 
 checks cannot drift onto another element. Three shapes planted; previously-0 failures became 3, 2
 and 1.
 
-### 🟡 Finding 24 — a full traceback is streamed to the browser over SSE
+### ⬜ Finding 24 — WITHDRAWN on verification: the SSE traceback is behind a token gate
 
-`setup/web/review.py:436-454, 879`. ⚠️ **Four tests pin this as intended behaviour**
-(`test_setup_web_apply.py:305`, `test_setup_web_apply_complete.py:334`), so changing it is a
-**contract change, not a patch**. Recorded, not fixed. Found by session `e4288bb5`.
+`setup/web/review.py:436-454, 879`. Promoted on the strength of the alert's location, with an
+explicit unchased caveat — *"the setup routes appear token-scoped … but enforcement lives outside
+the allowed files and could not be verified."* **Verified afterwards, and it inverts the finding:**
+
+| Check | Result |
+|---|---|
+| Token gate exists? | `SetupTokenMiddleware` (`setup/web/auth.py:28`), `compare_digest` at `:70` |
+| **Installed, or merely defined?** | **Installed** — `app.add_middleware(SetupTokenMiddleware, …)`, `setup/web/app.py:169` |
+| Gates the SSE/apply route? | **Yes** — `TOKEN_EXEMPT_PATHS = ("/healthz", "/static")` only |
+| Default bind | `127.0.0.1`; all-interfaces is supported, and the token still gates |
+
+The traceback reaches **only a holder of the setup token** — the operator running first-run setup,
+who already controls the whole configuration including the Kismet key and ntfy topic in flight. Four
+tests pin it as intended. **A diagnostic feature, not a disclosure.**
+
+⛔ **If anyone revisits this, do not "fix" it by deleting the traceback.** A wizard that says "Apply
+failed" with no way to find out why, on a first-run flow possibly running as root, costs an operator
+more than the traceback does. The useful version is "keep it, behind an explicit *show details*
+toggle".
+
+⭐ **Contrast with Finding 25, which is a difference in kind:** `/healthz.json` had **no**
+authentication at all — loopback was the only control and `ui_allow_remote` removes it. That is why
+25 was fixed and this one was withdrawn.
 
 ### 🟡 Finding 25 — a raw DB driver error is returned in an unauthenticated 503
 
@@ -1048,15 +1068,26 @@ The underlying lead is nevertheless **real as behaviour and deliberate as design
 **a decision for the maintainer about whether that tradeoff is right**, not a defect to quietly
 patch, and it must not be re-reported as a new CodeQL finding.
 
-⚠️ Two handoff claims and one of my own triage verdicts were all wrong **the same way**: an alert's
-*location* was read as corroboration without the code being run. That is
-`prose-not-code-is-often-the-defect` operating on a handoff instead of a docstring.
+⚠️ **Four claims in this wave were wrong the same way, in both directions**, which is why it gets a
+rule rather than four separate notes:
+
+| Claim | Direction of the error |
+|---|---|
+| Handoff: "clear-text-logging corroborates the `notify.py` leak" | overstated — CodeQL flagged nothing there |
+| My triage: "`setup/core.py` is already hardened" | understated — I read the docstring, not the rewrite path |
+| Packet W1-C: "`bootstrap_kismet:863` is a false positive" | understated — it named the mechanism and dismissed it |
+| Finding 24: "SSE traceback is a disclosure" | overstated — the route is behind an installed token gate |
+
+⭐ **An alert tells you where a value FLOWS. It never tells you who can REACH it.** Check the gate
+before grading the finding. This cuts both ways: an unwired guard overstates safety, and an
+unchecked gate overstates severity. Confirming a helper is wired in says nothing about its *second*
+invocation, and confirming a value reaches a sink says nothing about *who* can stand at that sink.
 
 ## Still open
 
 - The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,
   `watchlist_detail.html:97`) remains unverified and lower severity.
-- 🟡 **Findings 24 and 25** — recorded, not fixed; 24 is a contract change pinned by four tests.
+- 🟡 **Finding 25** — fixed in PR #30. **Finding 24 withdrawn**, see above.
 - **The ntfy DEBUG topic leak** — a maintainer decision, not a defect. See the correction above.
 - **`py/clear-text-storage-sensitive-data` on the Windows branch** — needs DPAPI or an explicit
   DACL. Not a patch; a Windows-only design item.
