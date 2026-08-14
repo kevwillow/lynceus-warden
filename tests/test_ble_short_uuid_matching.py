@@ -138,3 +138,40 @@ def test_a_malformed_uuid_is_dropped_without_killing_the_observation(db):
     obs = _observe(["zzzz", SHORT_UUID])
     assert obs is not None, "one malformed UUID discarded the entire device"
     assert tuple(obs.ble_service_uuids or ()) == (CANONICAL,)
+
+
+# --- the two sides share a REPRESENTATION, not an admission grammar ---------
+
+
+@pytest.mark.parametrize("composite", ["fd5a / 0x0075", "fd5a / garbage", "fd5a /"])
+def test_observations_reject_argus_watchlist_commentary(composite):
+    """⛔ The observation path must NOT inherit the watchlist's slash rule.
+
+    `patterns._normalize_ble_uuid` strips Argus's documented `"fd5a / 0x0075"`
+    commentary — "16-bit UUID fd5a paired with company id 0x0075" — because
+    that is a real shape in Argus watchlist exports.
+
+    🪤 The first version of this fix pointed observations at that function
+    directly, so Kismet telemetry inherited the rule and composite or corrupt
+    values silently became rule-triggering UUIDs. Measured before the split:
+    all three of these canonicalized to the valid
+    `0000fd5a-0000-1000-8000-00805f9b34fb`.
+
+    Two sides that must MATCH need the same canonical representation. They must
+    not have the same admission grammar, and conflating those widened what the
+    radio path accepts.
+    """
+    with pytest.raises(ValueError):
+        normalize_uuid(composite)
+
+
+@pytest.mark.parametrize("composite", ["fd5a / 0x0075", "fd5a / 180d"])
+def test_the_watchlist_still_accepts_argus_commentary(composite):
+    """The presence assertion beside the rejection above.
+
+    Tightening the observation path must not break Argus ingestion — the
+    watchlist side still strips the commentary and lands on the same canonical
+    string an advertisement of `fd5a` produces.
+    """
+    assert normalize_pattern("ble_uuid", composite) == CANONICAL
+    assert normalize_uuid("fd5a") == normalize_pattern("ble_uuid", composite)

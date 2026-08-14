@@ -265,9 +265,9 @@ def normalize_uuid(s: str) -> str:
     logs. Full dashed UUIDs canonicalize to themselves, so existing behaviour
     for well-formed input is unchanged.
     """
-    from .patterns import normalize_pattern
+    from .patterns import canonicalize_ble_uuid
 
-    return normalize_pattern("ble_uuid", s)
+    return canonicalize_ble_uuid(s)
 
 
 def is_locally_administered(mac: str) -> bool:
