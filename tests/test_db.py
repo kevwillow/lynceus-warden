@@ -3034,14 +3034,30 @@ def test_migration_014_preserves_fk_from_alerts_to_devices(db):
 
 def test_migration_014_sql_replay_is_safe_rebuild(db_path):
     """Replaying 014's SQL directly via executescript (bypassing the
-    runner's version-tracking short-circuit) is a safe full rebuild:
-    every row carried in the staging-table INSERT survives, no
-    column projection drops data, the CHECK constraint is the
-    extended one. This guards the narrow recovery path for a DB
-    where 014's row in schema_migrations is missing but the table
-    has already been rebuilt (interrupted runner, crash mid-script).
-    The broader migration-runner atomicity work (L-MIG-1/7) stays
-    deferred."""
+    runner's version-tracking short-circuit) carries every ROW through
+    the staging-table INSERT and leaves the extended CHECK constraint
+    intact. This guards the narrow recovery path for a DB where 014's
+    row in schema_migrations is missing but the table has already been
+    rebuilt (interrupted runner, crash mid-script). The broader
+    migration-runner atomicity work (L-MIG-1/7) stays deferred.
+
+    ⛔ It is NOT a safe rebuild in general, and this docstring used to
+    claim it was. "No column projection drops data" was false when
+    written, and is measured false below: 014 rebuilds `devices` from a
+    HARDCODED column list, so a replay drops every column added after
+    it. On a fully-migrated DB that is `ble_device_class` (migration
+    023) — and with it the Apple Continuity classification of every
+    device row.
+
+    The assertions below pin that as a KNOWN DEFECT, not a desired
+    property — see BACKLOG.md, "Migration 014 replay drops every
+    devices column added after it". Pinning it means that the day
+    someone makes the rebuild column list dynamic, this test fails and
+    brings them here, rather than the drop quietly remaining nobody's
+    business. A comment alone had already failed at that job: the
+    previous one named `ble_name` as a casualty, and `ble_name` is in
+    014's own INSERT list and survives.
+    """
     db = Database(db_path)
     try:
         db.upsert_device("aa:bb:cc:dd:ee:01", "wifi", "Acme", 0, 1000)
@@ -3058,15 +3074,32 @@ def test_migration_014_sql_replay_is_safe_rebuild(db_path):
         }
         assert rows["aa:bb:cc:dd:ee:01"]["device_type"] == "wifi"
         assert rows["aa:bb:cc:dd:ee:02"]["device_type"] == "remote_id"
+        # ⛔ The measured column loss, pinned. See the docstring: this
+        # records a KNOWN DEFECT so that fixing it is loud.
+        replayed = {r[1] for r in db._conn.execute("PRAGMA table_info(devices)")}
+        # Presence assertion beside the absence one: without this, "the
+        # column is gone" is equally satisfied by a devices table that
+        # failed to rebuild at all, which is a different bug entirely.
+        assert {"mac", "device_type", "probe_ssids", "ble_name"} <= replayed, (
+            f"014's replay lost a column it explicitly carries: {sorted(replayed)}"
+        )
+        # `ble_name` is in 014's own INSERT list, so it survives — the
+        # earlier comment here claimed it did not. Only columns added
+        # AFTER 014 are dropped.
+        assert "ble_device_class" not in replayed, (
+            "ble_device_class survived a 014 replay — the hardcoded rebuild "
+            "column list has been made dynamic, which is the FIX for "
+            "BACKLOG.md 'Migration 014 replay drops every devices column "
+            "added after it'. Delete this assertion and update the docstring."
+        )
+
         # And the table still rejects unknown device_types — the
         # extended CHECK is intact after the replay.
         #
-        # Asserted via a raw INSERT, not upsert_device: replaying 014
-        # rebuilds devices with the 014-era column set, so every column
-        # added since (ble_name, ble_device_class) is absent afterwards.
-        # Going through upsert_device would fail on the missing column
-        # instead of the CHECK, testing the helper rather than the
-        # constraint this test is about.
+        # Asserted via a raw INSERT, not upsert_device: upsert_device
+        # writes ble_device_class, which the replay just dropped, so it
+        # would fail on the missing column instead of the CHECK —
+        # testing the helper rather than the constraint this is about.
         with pytest.raises(sqlite3.IntegrityError):
             db._conn.execute(
                 "INSERT INTO devices(mac, device_type, first_seen, last_seen, "
