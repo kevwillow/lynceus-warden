@@ -192,15 +192,32 @@ def _frontend_import_bundled_watchlist(
 
 
 def _atomic_write(path: Path, content: str, *, mode: int = 0o600) -> None:
-    """Write ``content`` to ``path`` with ``mode`` set at creation time.
+    """Write ``content`` to ``path``, leaving it at exactly ``mode``.
 
     Closes the S2 race: the legacy "write the file then chmod" two-step
     leaves a window in which the file exists with umask-derived bits
     (typically world-readable ``0o644``) before the chmod lands. Anyone
     reading the file in that interval sees the secret-bearing config
     in the clear. Setting the mode in the ``os.open`` flags eliminates
-    the window — the file never exists on disk with permissions broader
-    than requested.
+    that window for a file being CREATED.
+
+    ⛔ ``os.open``'s ``mode`` argument applies to creation ONLY. POSIX
+    ignores it when the path already exists, and ``O_TRUNC`` empties the
+    file without touching a single permission bit. So on the rewrite path
+    -- an operator reconfiguring, which is the common case -- a
+    pre-existing ``0o644`` ``lynceus.yaml`` survived untouched and was
+    refilled with the Kismet API key and ntfy topic in cleartext. The
+    ``os.fchmod`` below is what actually makes the mode true; it runs
+    against the open descriptor before any content is written, so the
+    secret is never on disk under the old, broader bits.
+
+    🪤 ``cli.bootstrap_kismet._atomic_write_bytes`` needs the OPPOSITE
+    fix and the two must not be conflated. That one writes a tmpfile and
+    ``os.replace``s it, producing a NEW inode whose mode would otherwise
+    reset an operator's hardening, so it *preserves* the existing mode.
+    This one reuses the SAME inode, so it must *enforce*. Pinned by
+    ``tests/test_setup_core_file_modes.py`` and
+    ``tests/test_bootstrap_kismet_file_modes.py`` respectively.
 
     On Windows the POSIX mode bits are meaningless, so we fall back to
     ``path.write_text`` to match the chmod-skip pattern used elsewhere.
@@ -210,6 +227,10 @@ def _atomic_write(path: Path, content: str, *, mode: int = 0o600) -> None:
         return
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # Enforce on the descriptor, not the path: fchmod cannot be raced
+        # by a symlink swap between the open and the chmod, and the file
+        # is still empty here because O_TRUNC has already run.
+        os.fchmod(fh.fileno(), mode)
         fh.write(content)
 
 
