@@ -7,7 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from lynceus.db import Database
-from lynceus.kismet import DeviceObservation
+from lynceus.kismet import DeviceObservation, normalize_uuid
+from lynceus.patterns import normalize_pattern
 from lynceus.rules import (
     Rule,
     RuleHit,
@@ -371,13 +372,45 @@ def test_ble_uuid_rule_normalizes_pattern_uppercase():
 
 
 def test_ble_uuid_rule_rejects_malformed_pattern():
-    with pytest.raises(ValidationError):
-        Rule(
-            name="bad",
-            rule_type="ble_uuid",
-            severity="high",
-            patterns=["fd5a"],
-        )
+    """⚠️ This used to assert that ``"fd5a"`` is malformed. It is not.
+
+    ``fd5a`` is a valid 16-bit Bluetooth SIG assigned UUID, and the watchlist
+    side has always accepted and expanded it. This test pinned the observation
+    side's stricter-and-wrong parsing as if it were intended, which is part of
+    why the mismatch survived: the defect had a green test asserting it.
+
+    Genuinely malformed input is still rejected — that is what this now checks.
+    See tests/test_ble_short_uuid_matching.py for the positive direction.
+    """
+    for bad in ("zzzz", "fd5", "0000fd5a-0000-1000-8000-00805f9b34"):
+        with pytest.raises(ValidationError):
+            Rule(
+                name="bad",
+                rule_type="ble_uuid",
+                severity="high",
+                patterns=[bad],
+            )
+
+
+def test_ble_uuid_rule_accepts_a_short_assigned_uuid():
+    """The presence assertion beside the rejection above.
+
+    A rule pattern of ``fd5a`` must be accepted AND canonicalized to the same
+    128-bit form the watchlist stores, or a rule and a watchlist row written
+    from the same operator input would not match the same device.
+    """
+    rule = Rule(
+        name="short",
+        rule_type="ble_uuid",
+        severity="high",
+        patterns=["fd5a"],
+    )
+    # Rule canonicalizes on construction, which is stronger than merely
+    # accepting the input: a rule and a watchlist row written from the same
+    # operator text are now guaranteed to hold the same string.
+    assert rule.patterns == ["0000fd5a-0000-1000-8000-00805f9b34fb"]
+    assert rule.patterns[0] == normalize_uuid("fd5a")
+    assert rule.patterns[0] == normalize_pattern("ble_uuid", "fd5a")
 
 
 def test_ble_uuid_rule_empty_patterns_accepted_delegation_mode():
