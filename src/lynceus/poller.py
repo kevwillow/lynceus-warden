@@ -63,6 +63,28 @@ STATE_KEY_LAST_POLL = "last_poll_ts"
 #: transient, so the watermark advances and the loss is logged at ERROR.
 POLL_WATERMARK_MAX_HOLDS = 3
 
+#: How far the wall clock may drift from elapsed monotonic time within one
+#: process before this tick's clock is treated as untrustworthy.
+#:
+#: 300s is far above any legitimate correction -- NTP slews rather than steps
+#: once running, and a step at boot happens before the anchor is taken -- and
+#: far below the smallest excursion that does damage (a retention window is
+#: measured in days). It does not need to be tight: the cost of a false
+#: positive is one skipped prune, and the prunes are already once-a-day no-ops.
+CLOCK_JUMP_TOLERANCE_SECONDS = 300
+
+#: Consecutive untrusted ticks before the daemon accepts the new clock as truth,
+#: re-anchors, and resumes pruning.
+#:
+#: 🪤 Same shape and same reasoning as POLL_WATERMARK_MAX_HOLDS, because BOTH
+#: extremes are broken. Holding forever protects capture data but loses the
+#: table to unbounded growth on a machine whose clock is permanently wrong --
+#: an RTC-less Pi that never reaches NTP is exactly this project's target. So
+#: the bound IS the design: refuse to prune while the jump is fresh, then log
+#: loudly, re-anchor, and let retention resume against the clock the machine
+#: actually has.
+CLOCK_JUMP_MAX_HOLDS = 3
+
 #: Consecutive ticks the watermark has been held. Reset on any clean tick.
 STATE_KEY_WATERMARK_HOLDS = "watermark_holds"
 
@@ -843,6 +865,7 @@ def poll_once(
     source_locations: dict[str, str] | None = None,
     severity_overrides: RuntimeSeverityOverride | None = None,
     rule_type_suppression_counter: dict[str, int] | None = None,
+    clock_trusted: bool = True,
 ) -> int:
     """Run one poll tick: fetch from Kismet, persist sightings, evaluate rules.
 
@@ -1117,10 +1140,29 @@ def poll_once(
     # helper is a no-op except once per ~24h, so this is cheap to call from
     # every poll tick. Wrapped defensively because a prune failure must not
     # crash the poll loop.
-    try:
-        maybe_prune_evidence(db, config.evidence_retention_days, now_ts=now_ts)
-    except Exception as e:
-        logger.warning("Evidence prune failed: %s", e)
+    #
+    # ⛔ Both prunes are gated on `clock_trusted`. A retention cutoff is
+    # `now_ts - retention_days * 86400`, so a wall clock that has jumped
+    # FORWARD deletes rows that are inside the window and does it silently.
+    # Measured by session 3 on 30 daily sightings with retention_days=30:
+    #
+    #     clock   deleted   should have deleted
+    #     +7d     6         0
+    #     +30d    29        0
+    #     +365d   30        0
+    #
+    # ⚠️ This cannot be fixed inside retention.py, and that is the whole reason
+    # the gate lives here. From inside that module "the clock jumped forward"
+    # and "the table holds only old rows" are the SAME observation, and the
+    # second is required behaviour -- test_sightings_retention.py::
+    # test_returns_none_oldest_when_table_is_emptied asserts a wholly-stale
+    # table is fully deleted. Any "elapsed since last prune" bound is computed
+    # from the same corrupt clock, so it is circular.
+    if clock_trusted:
+        try:
+            maybe_prune_evidence(db, config.evidence_retention_days, now_ts=now_ts)
+        except Exception as e:
+            logger.warning("Evidence prune failed: %s", e)
     # The dead-man's switch. Placed AFTER the tick counters and the watermark
     # bookkeeping above are written, so it reads this tick's state rather than
     # the previous one -- a heartbeat composed from stale state could report
@@ -1138,10 +1180,20 @@ def poll_once(
     # opted in -- sightings_retention_days defaults to None, meaning never
     # prune, which is what every install has always done. Wrapped defensively
     # for the same reason: a prune failure must not stop the poll loop.
-    try:
-        maybe_prune_sightings(db, config.sightings_retention_days, now_ts=now_ts)
-    except Exception as e:
-        logger.warning("Sightings prune failed: %s", e)
+    if clock_trusted:
+        try:
+            maybe_prune_sightings(db, config.sightings_retention_days, now_ts=now_ts)
+        except Exception as e:
+            logger.warning("Sightings prune failed: %s", e)
+    else:
+        # ERROR, not WARNING: skipping a prune trades unbounded table growth
+        # for not destroying capture data, which is the right trade but is not
+        # a state to sit in quietly. `Poller` bounds how long this can last --
+        # see CLOCK_JUMP_MAX_HOLDS.
+        logger.error(
+            "clock is untrusted this tick; SKIPPING both retention prunes "
+            "(evidence + sightings) to avoid deleting data inside the window"
+        )
     return processed[0]
 
 
@@ -1244,6 +1296,14 @@ class Poller:
         # (tests, embedded use) that build a Poller from a Config object with
         # no backing file.
         self.config_path = config_path
+        # ⭐ The clock anchor. You CANNOT detect a wall-clock jump using only
+        # the wall clock -- from inside any single reading, "the clock moved"
+        # and "time passed" are indistinguishable. Pairing it with a monotonic
+        # reading taken at the same instant makes a jump *during this process*
+        # unambiguous, while a restart after genuine downtime is correctly not
+        # flagged (a new process takes a new anchor).
+        self._clock_anchor: tuple[float, float] = (time.time(), time.monotonic())
+        self._clock_holds = 0
         self.db = Database(config.db_path)
         self.client = build_kismet_client(config)
         if config.kismet_health_check_on_startup:
@@ -1768,6 +1828,68 @@ class Poller:
         )
         self._kismet_down_alerted = True
 
+    def clock_is_trusted(self, now_ts: int) -> bool:
+        """Has the wall clock moved independently of elapsed real time?
+
+        Compares the wall clock against what it *should* read given how much
+        monotonic time has passed since the anchor. A divergence beyond
+        CLOCK_JUMP_TOLERANCE_SECONDS means the clock itself moved -- NTP
+        stepping, a manual set, an RTC-less board finally syncing -- rather
+        than time simply passing.
+
+        Returns False while a jump is fresh, so the caller can decline to do
+        anything the wall clock would get wrong. After CLOCK_JUMP_MAX_HOLDS
+        consecutive holds it re-anchors and returns True again: see that
+        constant for why an unbounded hold is the other broken extreme.
+
+        ⚠️ Mutates hold state, so call it exactly once per tick.
+        """
+        wall, mono = self._clock_anchor
+        expected = wall + (time.monotonic() - mono)
+        drift = abs(now_ts - expected)
+        if drift <= CLOCK_JUMP_TOLERANCE_SECONDS:
+            if self._clock_holds:
+                logger.info(
+                    "wall clock agrees with elapsed time again (drift %.1fs); "
+                    "resuming normal operation",
+                    drift,
+                )
+            self._clock_holds = 0
+            return True
+
+        self._clock_holds += 1
+        if self._clock_holds >= CLOCK_JUMP_MAX_HOLDS:
+            logger.error(
+                "wall clock has diverged from elapsed time by %.0fs for %d "
+                "consecutive ticks; ACCEPTING the new clock and re-anchoring. "
+                "Retention pruning resumes against it -- if this clock is wrong, "
+                "data inside the retention window may now be deleted.",
+                drift,
+                self._clock_holds,
+            )
+            # ⚠️ Re-anchor to `now_ts`, NOT to a fresh `time.time()`. `now_ts`
+            # is the reading the rest of this tick will actually use, and the
+            # anchor has to describe that same clock -- a second reading can
+            # differ, and then the very next tick measures drift against a
+            # value nothing else in the system saw. Caught by
+            # test_the_hold_is_bounded_and_then_re_anchors, which held the
+            # jumped clock steady and watched the drift reappear from nowhere.
+            self._clock_anchor = (float(now_ts), time.monotonic())
+            self._clock_holds = 0
+            return True
+
+        logger.error(
+            "wall clock jumped: reads %ds, expected ~%ds from elapsed time "
+            "(drift %.0fs). Holding %d/%d -- time-dependent housekeeping is "
+            "suspended this tick.",
+            now_ts,
+            int(expected),
+            drift,
+            self._clock_holds,
+            CLOCK_JUMP_MAX_HOLDS,
+        )
+        return False
+
     def run_forever(self) -> None:
         try:
             signal.signal(signal.SIGTERM, self._on_signal)
@@ -1800,11 +1922,14 @@ class Poller:
                 try:
                     self._maybe_reload_allowlist()
                     now_ts = int(time.time())
+                    # Exactly once per tick: it advances the hold counter.
+                    clock_trusted = self.clock_is_trusted(now_ts)
                     poll_once(
                         self.client,
                         self.db,
                         self.config,
                         now_ts,
+                        clock_trusted=clock_trusted,
                         ruleset=self.ruleset,
                         allowlist=self.allowlist,
                         notifier=self.notifier,
