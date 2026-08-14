@@ -1259,16 +1259,38 @@ def _read_last_tick_stats(db: Database) -> dict | None:
     }
 
 
+#: What an anonymous caller is told when the database check fails. Deliberately
+#: says nothing about *why* -- see ``_check_db``. Kept non-empty because the
+#: published shape contract promises a non-empty string on error.
+_DB_ERROR_PUBLIC_DETAIL = "database unavailable; see server log"
+
+
 def _check_db(db: Database) -> dict:
     """Return ``{"status": "ok", "detail": None}`` on a healthy connection,
-    or ``{"status": "error", "detail": "<exception>"}`` when the connection
-    is dead. The minimal ``SELECT 1`` round-trip is the fastest way to
-    confirm the SQLite file is open + the connection alive without paying
-    for any COUNT scans."""
+    or ``{"status": "error", "detail": <generic>}`` when the connection is
+    dead. The minimal ``SELECT 1`` round-trip is the fastest way to confirm
+    the SQLite file is open + the connection alive without paying for any
+    COUNT scans.
+
+    ⛔ The detail is deliberately NOT the driver's message. This dict is
+    returned verbatim in the ``/healthz.json`` 503, and that route has no
+    authentication -- loopback binding is the only control, and
+    ``ui_allow_remote: true`` removes it. SQLite error text routinely names
+    the database file path, and says more on a disk or schema failure, so
+    the previous ``str(exc)`` handed an unauthenticated caller a free read
+    of local filesystem layout.
+
+    The operator loses nothing: the real exception is logged at ERROR with a
+    traceback, which is where someone running the daemon would look anyway.
+    Pinned by ``tests/test_healthz_error_disclosure.py``, including a test
+    that the logging still happens -- generalising the response must not
+    become discarding the diagnosis.
+    """
     try:
         db._conn.execute("SELECT 1").fetchone()
-    except Exception as exc:  # noqa: BLE001 — surface the actual driver error
-        return {"status": "error", "detail": str(exc)}
+    except Exception:
+        logger.exception("/healthz.json database check failed")
+        return {"status": "error", "detail": _DB_ERROR_PUBLIC_DETAIL}
     return {"status": "ok", "detail": None}
 
 
