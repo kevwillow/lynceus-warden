@@ -62,6 +62,7 @@ import argparse
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -850,8 +851,25 @@ def _atomic_write_bytes(path: Path, content: bytes, *, mode: int = 0o644) -> Non
     """Write ``content`` atomically: tmpfile in same dir, fsync, replace.
     Prevents a partially-written file being read by Kismet if the
     daemon is already running with the file open.
+
+    ``mode`` applies to *creation only*. When ``path`` already exists its
+    current mode is carried over to the replacement, because tmpfile+replace
+    substitutes a brand-new inode: without this, every re-run would reset the
+    file to ``mode`` and silently undo an operator's own hardening. That is
+    not hypothetical for ``kismet_site.conf`` — Kismet honours
+    ``httpd_password=`` there, ``patch_kismet_site_conf`` preserves such
+    lines verbatim, and the default here is world-readable ``0o644``.
+    Measured before the fix: a ``0o600`` secret-bearing conf came back
+    ``0o644`` with the password still in it.
+
+    This is the same invariant ``Database`` already keeps for the db file
+    ("chmods on first creation, not on reopen").
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        pass
     fd, tmpname = tempfile.mkstemp(
         prefix=f".{path.name}.", dir=str(path.parent)
     )
