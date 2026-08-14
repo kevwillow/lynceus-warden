@@ -113,7 +113,20 @@
   </p>
 
   {% if alerts %}
-    <form method="post" action="/alerts/ack-all-visible">
+    {# ⛔ data-confirm, NOT onsubmit="return confirm(...)" -- a CSP nonce
+       authorises <script> ELEMENTS only and never inline on*= attributes, so
+       the latter is blocked outright and the form submits UNCONFIRMED. Same
+       reasoning as _device_actions.html; see static/lynceus.js:566.
+
+       Why these two forms need it when per-row `ack` does not: acknowledging
+       one alert is reversible with one click (`/alerts/{id}/unack`), but there
+       is NO bulk-unack route. Measured on a 40-alert backlog: one click here
+       acknowledged all 40, and undoing it required 40 separate POSTs. The
+       count is interpolated because "acknowledge all" reads very differently
+       at 3 than at 900, and acknowledging is how an alert leaves the
+       operator's own view. #}
+    <form method="post" action="/alerts/ack-all-visible"
+          data-confirm="Acknowledge all {{ total_count }} matching alert{{ '' if total_count == 1 else 's' }}? There is no bulk undo — reversing this means un-acknowledging each one individually.">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
       {% if severity %}<input type="hidden" name="severity" value="{{ severity }}">{% endif %}
       {% if acknowledged is sameas true %}<input type="hidden" name="acknowledged" value="true">{% endif %}
@@ -143,7 +156,11 @@
        the rest fragile. Here the per-row selection checkboxes associate with
        this form by id via the HTML form= attribute, so bulk select-and-ack
        still works while every per-row form below is a real, un-nested form. #}
-    <form id="bulk-ack-form" method="post" action="/alerts/bulk-ack">
+    {# The count cannot be interpolated here: the selection lives in checkboxes
+       associated by `form=` and is only known client-side at submit time. The
+       message therefore names the irreversibility rather than the magnitude. #}
+    <form id="bulk-ack-form" method="post" action="/alerts/bulk-ack"
+          data-confirm="Acknowledge the selected alerts? There is no bulk undo — reversing this means un-acknowledging each one individually.">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
       <p>
         <button type="submit">Acknowledge selected</button>
