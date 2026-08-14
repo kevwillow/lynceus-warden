@@ -356,3 +356,54 @@ def test_settings_warns_when_heartbeats_are_undelivered(tmp_path):
         )
     finally:
         d.close()
+
+
+# --- wiring into poll_once --------------------------------------------------
+#
+# ⛔ Every test above calls `maybe_emit_heartbeat` DIRECTLY. All of them would
+# still pass if the call site in `poll_once` were deleted -- the exact defect
+# PR #18 existed to fix for `maybe_prune_evidence`, whose own wiring had no test
+# at all while the function it called was thoroughly covered. A dead-man's
+# switch that is never called is worse than none, because its silence is
+# indistinguishable from the failure it is supposed to report.
+#
+# These are a TAKE-EFFECT PAIR on purpose. A test that only proves a heartbeat
+# IS sent would pass against code that ignores the setting and always sends; one
+# that only proves nothing is sent would pass against code that never sends. Two
+# settings, one input, opposite outcomes -- no fixed behaviour satisfies both.
+
+
+def _poll_once_with(tmp_path, notifier, **config_kwargs):
+    from lynceus.kismet import FakeKismetClient
+    from lynceus.poller import poll_once
+
+    fixture = tmp_path / "empty.json"
+    fixture.write_text("[]", encoding="utf-8")
+    cfg = Config(
+        db_path=str(tmp_path / "wiring.db"),
+        kismet_fixture_path=str(fixture),
+        **config_kwargs,
+    )
+    d = Database(cfg.db_path)
+    d.ensure_location("default", "Default")
+    try:
+        poll_once(FakeKismetClient(str(fixture)), d, cfg, NOW, notifier=notifier)
+        return d, cfg
+    finally:
+        d.close()
+
+
+def test_poll_once_actually_emits_the_heartbeat(tmp_path):
+    """The call site exists and fires. Delete it and this is the only test
+    in the file that notices."""
+    n = RecordingNotifier()
+    _poll_once_with(tmp_path, n, heartbeat_enabled=True)
+    assert len(n.sent) == 1, "poll_once did not emit a heartbeat"
+    assert "watching" in n.sent[0]["title"]
+
+
+def test_poll_once_emits_nothing_when_the_heartbeat_is_disabled(tmp_path):
+    """The other half of the pair: the setting is actually consulted."""
+    n = RecordingNotifier()
+    _poll_once_with(tmp_path, n, heartbeat_enabled=False)
+    assert n.sent == [], "poll_once sent a heartbeat while disabled"
