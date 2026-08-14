@@ -3319,22 +3319,43 @@ def test_topnav_present_on_every_page(tmp_path):
 
     from fastapi.testclient import TestClient
 
-    client = TestClient(app)
+    client = TestClient(app, follow_redirects=False)
 
-    pages = [
-        "/",
-        "/healthz",
-        "/alerts",
-        f"/alerts/{alert_id}",
-        "/devices",
-        "/devices/aa:bb:cc:dd:ee:ff",
-        "/rules",
-        "/allowlist",
-    ]
+    # ⛔ This was a hardcoded list of 8 paths under a name promising "every
+    # page". The app serves 18 GET routes; `/probes` was in neither this list
+    # nor test_webui_theme.py's, so it could ship with no navigation at all
+    # while both guards stayed green.
+    #
+    # ⭐ Deriving is CORRECT here: the corpus comes from the ROUTER and the
+    # expectation is "each renders the topnav" -- genuinely independent
+    # sources. (Contrast tests/test_db.py's migration-filename manifest, where
+    # deriving would compare the filesystem against itself and could never
+    # fail. The rule is not "derive manifests", it is that the two sides must
+    # read different things.)
+    #
+    # ⚠️ The derivation is duplicated in test_webui_theme.py rather than shared.
+    # Two DERIVATIONS from the same authoritative source cannot drift; two
+    # hardcoded MANIFESTS did exactly that, which is what produced this bug.
+    # Do not "tidy" these into a shared constant -- a constant is a manifest.
+    from tests.test_webui_theme import html_get_paths
 
-    for path in pages:
+    checked = []
+    from tests.test_webui_theme import _seed_detail_ids
+
+    for path in html_get_paths(
+        app, alert_id=alert_id, mac="aa:bb:cc:dd:ee:ff",
+        **_seed_detail_ids(db, alert_id),
+    ):
         resp = client.get(path)
-        assert resp.status_code == 200, f"{path} returned {resp.status_code}"
+        assert not (300 <= resp.status_code < 400), (
+            f"{path} redirected ({resp.status_code}); a redirect would "
+            f"otherwise be counted as this page having rendered"
+        )
+        if resp.status_code != 200:
+            continue
+        if "text/html" not in resp.headers.get("content-type", ""):
+            continue
+        checked.append(path)
         # Topnav distinctive markers — these come from _topnav.html only.
         # Use markers that are unlikely to appear in any page's content
         # by accident. All four must be present, anchored as href targets,
@@ -3344,6 +3365,17 @@ def test_topnav_present_on_every_page(tmp_path):
         assert 'href="/devices"' in resp.text, f"{path} missing /devices nav link"
         assert 'href="/rules"' in resp.text, f"{path} missing /rules nav link"
         assert 'href="/allowlist"' in resp.text, f"{path} missing /allowlist nav link"
+
+    # ⭐ Without a floor, a route filter that excluded everything would leave
+    # this loop vacuous and green -- the same failure the hardcoded list had.
+    assert len(checked) >= 14, (
+        f"only checked {len(checked)} HTML pages ({checked}); the route "
+        f"enumeration is excluding pages it should cover"
+    )
+    assert "/probes" in checked, (
+        "/probes was the page missing from BOTH hardcoded lists; it must stay "
+        "covered by the derived enumeration"
+    )
 
     db.close()
 
@@ -8560,6 +8592,17 @@ def test_agpl_source_offer_renders_on_every_html_route(tmp_path):
         with TestClient(app) as client:
             for path in paths:
                 resp = client.get(path)
+                # ⛔ A 5xx is never a legitimate reason to skip. Without this,
+                # a page that started erroring would be silently dropped from
+                # coverage -- and if any page were added in the same change the
+                # count floor below would still pass. That is the one way a
+                # page can vanish from this guard unnoticed.
+                # 404 stays skippable: /devices/{mac}/co-observations is
+                # feature-gated off by default and correctly 404s.
+                assert resp.status_code < 500, (
+                    f"{path} returned {resp.status_code}; a broken page must "
+                    f"fail this guard, not be skipped by it"
+                )
                 if resp.status_code != 200:
                     continue
                 if "text/html" not in resp.headers.get("content-type", ""):

@@ -1230,22 +1230,54 @@ def test_topnav_active_state_on_watchful_detail_page(tmp_path):
 # elevated ntfy push. Guarding the wording, not the behaviour.
 # ---------------------------------------------------------------------------
 
-_WATCHFUL_COPY_FILES = (
-    "_device_actions.html",
-    "_alert_row.html",
-    "watchful_list.html",
-)
+# ⛔ This was three hardcoded filenames under a name promising to cover the
+# watchful copy. Seven templates mention "watchful" — and the list was wrong in
+# BOTH directions: `_alert_row.html` was in it while containing no watchful copy
+# at all, and `_watchful_actions.html` and `watchful_detail.html`, the two that
+# carry the most, were absent. A promise could have been added to either without
+# this guard noticing.
+#
+# ⭐ Deriving is CORRECT here, as for the "every page" guards: the corpus comes
+# from the templates on disk and the expectation is "none of them promises a
+# low-priority alert" — independent sources. (Contrast the migration-filename
+# manifest in tests/test_db.py, where deriving would compare the filesystem
+# against itself.)
 
 
-def test_watchful_copy_does_not_promise_a_low_priority_alert():
+def _watchful_copy_files():
+    """Every template mentioning watchful, discovered rather than listed."""
     from pathlib import Path
 
     import lynceus.webui as _webui
 
     templates = Path(_webui.__file__).parent / "templates"
-    for name in _WATCHFUL_COPY_FILES:
-        text = (templates / name).read_text(encoding="utf-8")
-        assert "low-priority" not in text, (
+    # ⛔ Case-INsensitive, and rglob. "Watchful device" in a heading was enough
+    # to exclude a template from this guard entirely, and a template moved into
+    # a subdirectory would vanish from it silently.
+    return sorted(
+        p for p in templates.rglob("*.html")
+        if "watchful" in p.read_text(encoding="utf-8").lower()
+    )
+
+
+def test_watchful_copy_does_not_promise_a_low_priority_alert():
+    files = _watchful_copy_files()
+    # ⭐ A grep that matched nothing would make this loop vacuous and green —
+    # the same failure mode as the hardcoded list, arriving faster.
+    assert len(files) >= 5, (
+        f"only {len(files)} templates mention watchful ({[f.name for f in files]}); "
+        f"the discovery is excluding files it should cover"
+    )
+    # ⛔ One exact spelling was the whole check. "low priority", "Low-Priority"
+    # and a Unicode hyphen all express the same promise and all passed. Match
+    # the phrase, not one rendering of it.
+    import re as _re
+
+    promise = _re.compile(r"low[\s\u2010-\u2015_-]*priority", _re.IGNORECASE)
+    for path in files:
+        name = path.name
+        text = path.read_text(encoding="utf-8")
+        assert not promise.search(text), (
             f"{name} promises a low-priority watchful alert, but "
             "poller._emit_watchful_escalation deliberately emits severity='high' "
             "with ntfy priority_override=4. Fix the copy, not the poller — the "
