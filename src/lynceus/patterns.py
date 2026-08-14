@@ -111,12 +111,40 @@ def _normalize_ble_uuid(pattern: str) -> str:
     text = pattern.strip()
     if "/" in text:
         text = text.split("/", 1)[0].strip()
-    cleaned = text.lower()
+    return canonicalize_ble_uuid(text)
+
+
+def canonicalize_ble_uuid(text: str) -> str:
+    """Canonicalize a BLE service UUID token to full 128-bit form.
+
+    ⛔ **Admission grammar, deliberately stricter than ``_normalize_ble_uuid``.**
+    This is the shared canonicalizer: the watchlist side reaches it through
+    ``_normalize_ble_uuid`` (which first strips Argus's ``"fd5a / 0x0075"``
+    commentary), and the OBSERVATION side — ``kismet.normalize_uuid``, and so
+    also ``parse_kismet_device``, rules pattern normalization and the live BLE
+    bridge — calls it directly.
+
+    🪤 The two sides must produce the same canonical STRING; they must not
+    share the same admission grammar, and conflating those was a real defect.
+    Delegating observations straight to ``_normalize_ble_uuid`` made Kismet
+    telemetry inherit the slash rule, so ``"fd5a / garbage"`` — composite or
+    corrupt source data — silently became a valid, rule-triggering UUID.
+    Measured: every one of ``fd5a / 0x0075``, ``fd5a / garbage`` and ``fd5a /``
+    canonicalized to ``0000fd5a-0000-1000-8000-00805f9b34fb``. A ``/`` is
+    rejected here, so only the Argus ingestion path that documents it can
+    strip it.
+    """
+    if "/" in text:
+        raise ValueError(
+            f"invalid ble_uuid: {text!r} (a '/' is Argus watchlist commentary "
+            f"and is not admissible in an observed UUID)"
+        )
+    cleaned = text.strip().lower()
     for sep in (":", "-", ".", " "):
         cleaned = cleaned.replace(sep, "")
     if not cleaned or not _HEX_RE.match(cleaned):
         raise ValueError(
-            f"invalid ble_uuid: {pattern!r} "
+            f"invalid ble_uuid: {text!r} "
             f"(expected 4, 8, or 32 hex digits after stripping separators)"
         )
     # 16-bit and 32-bit Bluetooth SIG assigned UUIDs fold into the
@@ -132,7 +160,7 @@ def _normalize_ble_uuid(pattern: str) -> str:
             f"{cleaned[16:20]}-{cleaned[20:32]}"
         )
     raise ValueError(
-        f"invalid ble_uuid: {pattern!r} "
+        f"invalid ble_uuid: {text!r} "
         f"(expected 4, 8, or 32 hex digits after stripping separators, "
         f"got {len(cleaned)})"
     )
