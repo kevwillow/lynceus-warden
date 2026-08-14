@@ -234,10 +234,40 @@ def normalize_mac(mac: str) -> str:
 
 
 def normalize_uuid(s: str) -> str:
-    norm = s.strip().lower()
-    if not _UUID_RE.match(norm):
-        raise ValueError(f"invalid uuid: {s!r}")
-    return norm
+    """Canonicalize a BLE service UUID to full 128-bit form.
+
+    ⛔ Delegates to the SAME function the watchlist side uses
+    (``patterns.normalize_pattern("ble_uuid", …)``). Do not reimplement the
+    parsing here — the two sides matching is the entire point, and they can
+    only be guaranteed to agree by calling one function.
+
+    🪤 They did not agree, and the failure was total and silent. This used to
+    require the full dashed 128-bit form and raise for anything else, while the
+    watchlist side expanded 16- and 32-bit assigned UUIDs into the Bluetooth
+    base UUID per Core Spec §3.2.1. So an operator who watchlisted ``fd5a`` —
+    the form a real advertisement carries — stored
+    ``0000fd5a-0000-1000-8000-00805f9b34fb``, and every observation of that
+    device arrived as ``fd5a``, was rejected here, and was dropped by the
+    caller with a DEBUG line. Measured before the fix:
+
+        operator types      : 'fd5a'
+        stored in watchlist : '0000fd5a-0000-1000-8000-00805f9b34fb'
+        Kismet advertises   : ['fd5a']
+        parsed obs UUIDs    : ()
+        watchlist match     : NO
+
+    The watchlist entry could never fire. ⚠️ This is the chokepoint for three
+    paths — ``parse_kismet_device``, ``rules`` pattern normalization, and
+    ``bridges/ble.py``'s live radio capture — so the same miss applied to
+    directly-captured BLE adverts, not only Kismet-sourced ones.
+
+    Still raises ``ValueError`` for genuine garbage; the caller drops those and
+    logs. Full dashed UUIDs canonicalize to themselves, so existing behaviour
+    for well-formed input is unchanged.
+    """
+    from .patterns import normalize_pattern
+
+    return normalize_pattern("ble_uuid", s)
 
 
 def is_locally_administered(mac: str) -> bool:
