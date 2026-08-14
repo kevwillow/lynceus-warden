@@ -463,27 +463,74 @@ def test_wizard_footer_buttons_render_at_matched_size_across_all_pages():
         r'<(?:div|footer)\s+class="wizard-footer">(.*?)</(?:div|footer)>',
         re.DOTALL,
     )
-    button_shape = re.compile(r'<(a\b[^>]*role="button"[^>]*|button\b[^>]*)>', re.IGNORECASE)
+    # ⛔ This regex used to match ONLY the two good shapes -- `<a role="button">`
+    # and `<button>` -- and the assertion below then checked that each match
+    # started with "a " or "button". It was a TAUTOLOGY: the pattern could not
+    # produce a string that failed the assertion.
+    #
+    # Worse, it was INVERTED with respect to its own stated purpose. The comment
+    # claimed it catches "an <input type="submit">, a styled <span>, etc." --
+    # but those never matched the pattern, so they were invisible to it rather
+    # than caught by it. The one thing it was written to find was the one thing
+    # it could not see.
+    #
+    # ⇒ Match EVERY element opener in the footer, then assert each is one of the
+    # two shapes the sizing rule covers. The two sides of the assertion now have
+    # independent sources: the corpus is "whatever is in the footer", the
+    # expectation is "the shapes _base.html sizes".
+    any_element = re.compile(r"<\s*([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>")
+    #: Elements that carry no box of their own in this row. `br` is a break;
+    #: the rest are inline text inside a control's label, not siblings of it.
+    _NON_CONTROL = {"br", "span", "small", "strong", "em", "code", "svg", "path"}
+    #: 🪤 `<small>` regions are stripped ENTIRELY, contents included, before
+    #: scanning. `_base.html:107` renders the wizard-wide escape hatch as
+    #: `<small><a href="/cancel">Cancel wizard</a></small>` in its own
+    #: `.wizard-footer` — a deliberately subordinate TEXT link that carries no
+    #: `role="button"` precisely so the sizing rule does not match it.
+    #:
+    #: The first version of this guard skipped the `<small>` tag but still
+    #: scanned the `<a>` inside it, and flagged that link on /review. I was one
+    #: step from reporting an intentional affordance as a defect; reading the
+    #: template is what stopped it. Skipping a wrapper is not the same as
+    #: skipping what it wraps.
+    small_block = re.compile(r"<small\b[^>]*>.*?</small>", re.DOTALL | re.IGNORECASE)
     with TestClient(app) as client:
         for path in paths:
             resp = client.get(f"{path}?token={TOKEN}")
             assert resp.status_code == 200, f"{path} did not render"
-            for footer_body in footer_block.findall(resp.text):
-                for opener in button_shape.findall(footer_body):
-                    # Each match is either an <a role="button" ...>
-                    # (covered by the anchor selector) or a <button ...>
-                    # (covered by the button selector). Both selectors
-                    # are in the same _base.html rule with identical
-                    # box-model properties, so this element renders at
-                    # the matched size. The assertion is that the
-                    # element is one of these two shapes — anything
-                    # else (an <input type="submit">, a styled <span>,
-                    # etc.) would slip past the sizing rule.
-                    assert opener.lower().startswith("a ") or opener.lower().startswith("button"), (
-                        f"{path}: wizard-footer element {opener!r} is neither "
-                        f'<a role="button"> nor <button>; the _base.html sizing '
-                        f"rule won't match it, so it renders at its default size"
+            footers = footer_block.findall(resp.text)
+            assert footers, f"{path}: no .wizard-footer found — the guard scanned nothing"
+            # ⚠️ Counted per PAGE, not per footer. Every page carries two
+            # `.wizard-footer` blocks: the step's own button row, and
+            # `_base.html`'s wizard-wide footer holding only the subordinate
+            # Cancel text link. The latter legitimately has zero controls after
+            # the `<small>` strip, so a per-footer floor would fail on it —
+            # which it did, on the first run, before this was scoped.
+            page_controls = 0
+            for raw_footer in footers:
+                footer_body = small_block.sub(" ", raw_footer)
+                for tag, attrs in any_element.findall(footer_body):
+                    tag = tag.lower()
+                    if tag in _NON_CONTROL:
+                        continue
+                    page_controls += 1
+                    sizeable = tag == "button" or (
+                        tag == "a" and 'role="button"' in attrs.lower()
                     )
+                    assert sizeable, (
+                        f"{path}: wizard-footer contains <{tag}{attrs}> which is "
+                        f'neither <button> nor <a role="button">; the _base.html '
+                        f"sizing rule matches neither selector, so it renders at "
+                        f"its default size beside two pinned controls"
+                    )
+            # ⭐ A presence assertion beside the absence one. Without it, a page
+            # whose footers rendered EMPTY -- or a `footer_block` regex that
+            # stopped matching after a markup change -- would satisfy every
+            # assertion above by having nothing to check.
+            assert page_controls >= 1, (
+                f"{path}: .wizard-footer matched but the page contained no "
+                f"sized controls; the guard passed by scanning nothing"
+            )
 
 
 @pytest.mark.webui

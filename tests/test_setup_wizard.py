@@ -3331,14 +3331,39 @@ def test_setup_py_no_longer_uses_write_text_then_chmod_pattern():
     readable. After the S2 fix, the pattern must not exist anywhere
     in setup.py — every secrets-bearing write goes through
     ``_atomic_write``."""
-    setup_py = Path(wiz.__file__).read_text(encoding="utf-8")
-    # No top-level write_text on a yaml/conf path immediately followed
-    # by a chmod. Search for the most concrete witness: a chmod 0o600
-    # call. Pre-fix code had two; post-fix code has none.
-    assert "os.chmod(path, 0o600)" not in setup_py, (
-        "Found a chmod-after-write_text remnant; convert the call site to _atomic_write."
+    # ⛔ This used to assert two exact strings -- `os.chmod(path, 0o600)` and
+    # `chmod(path, 0o600)` -- while the docstring promised the pattern "must not
+    # exist ANYWHERE in setup.py". Prose said anywhere; code checked two
+    # spellings. `os.chmod(target, 0o600)` or `os.chmod(path, 0o640)` sailed
+    # through, and a new secret-write race with a different variable name would
+    # have been invisible.
+    #
+    # ⇒ Parse the module instead of grepping it. The race needs a chmod AFTER a
+    # write; banning the chmod outright removes the second half regardless of
+    # how anything is spelled or named. Verified true today: this module makes
+    # ZERO chmod/fchmod/write_text/open calls -- every secret-bearing write goes
+    # through `setup.core._atomic_write`, which sets the mode on the open
+    # descriptor before any content is written.
+    import ast
+
+    tree = ast.parse(Path(wiz.__file__).read_text(encoding="utf-8"))
+
+    def _called(node: ast.Call) -> str:
+        f = node.func
+        return f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    assert calls, "no calls parsed from setup.py — the guard scanned nothing"
+
+    banned = sorted({_called(n) for n in calls} & {"chmod", "fchmod", "write_text"})
+    assert banned == [], (
+        f"setup.py calls {banned}. Every secret-bearing write here must go "
+        f"through setup.core._atomic_write, which sets the mode on the open "
+        f"descriptor BEFORE writing -- a write_text-then-chmod pair leaves the "
+        f"config briefly world-readable with the Kismet API key already in it. "
+        f"If a non-secret write genuinely needs one of these, relax this guard "
+        f"deliberately and say why."
     )
-    assert "chmod(path, 0o600)" not in setup_py
 
 
 # ---- Bug 6: config + overrides chowned root:lynceus 0640 -----------------
