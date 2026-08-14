@@ -170,8 +170,26 @@ def test_migrations_dir_lists_both_files(db):
     # Forward (up) migration files only — _down.sql siblings are
     # filtered out by _iter_up_migration_files. Pin the exact list
     # so a renamed / missing forward file regresses loudly.
+    #
+    # ⛔ DO NOT "fix" the maintenance cost by deriving this list from a glob of
+    # the migrations directory. `_iter_up_migration_files` IS a sorted glob of
+    # that directory, so a derived expectation would compare the filesystem
+    # against itself: `sorted(glob) == sorted(glob)`, an assertion that can
+    # never fail again.
+    #
+    # ⭐ The literal is load-bearing precisely because it catches a RENAME,
+    # which no filesystem-derived expectation can — a rename moves both sides
+    # together. Other migration-count literals in this suite WERE correctly
+    # derived (test_validate.py, test_migration_rollback.py) because there the
+    # expectation is compared against the runner's DB state: genuinely
+    # independent sources. The rule is not "derive manifests", it is **the two
+    # sides of an assertion must have independent sources** — and only looking
+    # at what each side reads tells you which case you are in.
+    #
+    # Adding a migration therefore requires editing this list, deliberately.
+    # That is the feature; the failure message below is what makes it cheap.
     names = sorted(p.name for p in db._iter_up_migration_files())
-    assert names == [
+    _EXPECTED_MIGRATIONS = [
         "001_initial.sql",
         "002_poller_state.sql",
         "003_alert_actions.sql",
@@ -198,6 +216,14 @@ def test_migrations_dir_lists_both_files(db):
         "024_alerts_notified_at.sql",
         "025_heartbeats.sql",
     ]
+    assert names == _EXPECTED_MIGRATIONS, (
+        "the forward-migration manifest is out of date.\n"
+        f"  on disk but not listed: {sorted(set(names) - set(_EXPECTED_MIGRATIONS))}\n"
+        f"  listed but not on disk: {sorted(set(_EXPECTED_MIGRATIONS) - set(names))}\n"
+        "If you added a migration, add its filename to the list above. If a name "
+        "moved, that is what this test exists to catch — a derived list could "
+        "not, because it would change with the rename."
+    )
 
 
 def test_healthcheck_returns_expected_keys_and_types(db):
