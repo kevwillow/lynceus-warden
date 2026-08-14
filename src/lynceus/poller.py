@@ -1071,7 +1071,38 @@ def poll_once(
         holds = int(db.get_state(STATE_KEY_WATERMARK_HOLDS) or 0)
     except (TypeError, ValueError):
         holds = 0
-    if failed_last_seen and holds < POLL_WATERMARK_MAX_HOLDS:
+    watermark: int | None
+    if not clock_trusted:
+        # ⛔ The cursor half of the clock-jump class, and it is WORSE than the
+        # retention half that #35 gated. A skipped prune costs one day of
+        # deferred housekeeping. A watermark written from a jumped clock is
+        # PERSISTENT: `last_poll_ts` is read back next tick as
+        # `since=<the future>`, Kismet returns nothing, and the daemon is blind
+        # for the whole excursion -- 30 days of "no devices seen" that looks
+        # exactly like a quiet environment. Re-anchoring does not undo it,
+        # because the poisoned value is already in the database.
+        #
+        # So: leave the stored watermark exactly where it is. The cost is
+        # re-querying a window we may already have processed, which is an
+        # idempotent re-upsert of devices already stored -- the same trade the
+        # `- 1` below makes deliberately.
+        #
+        # ⚠️ This deliberately skips the WATERMARK_HOLDS bookkeeping too. That
+        # counter's budget belongs to PERSIST failures; letting a clock jump
+        # spend it would mean an operator with both problems at once silently
+        # loses the persist-retry protection that PR #24 exists to provide.
+        #
+        # Not unbounded: `Poller.clock_is_trusted` re-anchors after
+        # CLOCK_JUMP_MAX_HOLDS consecutive ticks, so this holds for at most
+        # that many ticks and then normal advance resumes.
+        watermark = None
+        logger.error(
+            "clock is untrusted this tick; NOT advancing the poll watermark "
+            "(leaving it at %s). Writing a watermark from a jumped clock would "
+            "ask Kismet for devices 'since the future' on every later tick.",
+            db.get_state(STATE_KEY_LAST_POLL),
+        )
+    elif failed_last_seen and holds < POLL_WATERMARK_MAX_HOLDS:
         # ``- 1`` so the retry window is inclusive of the failed device
         # regardless of whether Kismet's /devices/last-time boundary is
         # strictly-greater or greater-or-equal. That is not settled here, and
@@ -1102,7 +1133,8 @@ def poll_once(
             )
         if holds:
             db.set_state(STATE_KEY_WATERMARK_HOLDS, "0")
-    db.set_state(STATE_KEY_LAST_POLL, str(watermark))
+    if watermark is not None:
+        db.set_state(STATE_KEY_LAST_POLL, str(watermark))
     # Per-poll housekeeping for the rule_type_snoozes table: physically
     # delete rows whose expires_at has passed. Cheap (table is tiny;
     # indexed on expires_at) and defensive — the gate's
