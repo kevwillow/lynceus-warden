@@ -64,7 +64,10 @@ def bridge(tmp_path):
         db=db,
         config=config,
         ruleset=ruleset,
-        allowlist_provider=lambda: Allowlist(),
+        # `Allowlist` itself satisfies the Callable[[], Allowlist] contract and
+        # constructs a fresh empty one per call, exactly as the lambda did.
+        # Flagged by CodeQL (py/unnecessary-lambda) on this PR.
+        allowlist_provider=Allowlist,
         notifier=notifier,
         severity_overrides=None,
         location_id=config.location_id,
