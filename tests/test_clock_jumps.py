@@ -6,15 +6,28 @@ through ``poll_once`` into ``maybe_prune_sightings`` / ``maybe_prune_evidence``.
 Every existing retention test passes an explicit, well-behaved ``now_ts``, so
 nothing in the suite has ever exercised a clock that moves the wrong way.
 
-⚠️ These tests cover the *rate limiter* only. The cutoff arithmetic itself is
-still exposed to a forward clock excursion (a +30d jump with
-``retention_days=30`` deletes rows that are one day old). That is NOT fixable
-from inside this module: "the clock jumped forward" and "the table holds only
-old rows" are the same observation here, and
+These tests cover the persisted *rate-limiter anchor*. They are the companion
+to ``test_clock_jump_anchor.py``, which covers the other half, and the split
+matters because the two guards sit at different layers:
+
+- ``poller.clock_is_trusted`` (PR #35) refuses to prune while a jump is fresh.
+  It compares the wall clock against elapsed monotonic time, so it can only
+  see a jump that happens *during* a process.
+- These tests cover what survives that gate: the ``last_*_prune`` timestamp
+  persisted in ``poller_state``. A daemon that boots with an already-wrong
+  clock takes its anchor *from* that wrong clock -- PR #35's own note concedes
+  "a step at boot happens before the anchor is taken" -- prunes, and records a
+  timestamp that is in the future relative to true time. Once NTP corrects,
+  the clock is trusted again but the stored anchor is still ahead, and
+  ``now_ts - last`` is negative. Measured on main before this fix: pruning
+  stalled at +0d/+30d/+200d/+364d and did not resume until **+366d**.
+
+⚠️ Do NOT add a cutoff guard to ``retention.py`` itself. From inside that
+module "the clock jumped forward" and "the table holds only old rows" are the
+same observation, and
 ``test_sightings_retention.py::test_returns_none_oldest_when_table_is_emptied``
-requires the second one to delete everything. Distinguishing them needs a
-monotonic anchor taken at daemon start, which lives in ``poller.py``. See the
-handoff note rather than adding a guard here that breaks legitimate pruning.
+requires the second one to delete everything. That is why the forward-jump
+guard lives in the poller and not here.
 """
 
 import pytest
