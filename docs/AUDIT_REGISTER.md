@@ -1136,3 +1136,67 @@ branch's `:226`. ⇒ **Any PR that edits a docstring above a flagged line goes r
 flagged expression against `main` before treating a CodeQL alert as introduced.** The alert
 re-anchors itself on merge. ⛔ Do not "fix" this by dismissing alerts or by rewriting a literal into
 something the analyser cannot resolve — that games the tool and hides a tracked design item.
+
+---
+
+## Cross-cutting rules learned 2026-08-14 (Wave 7 fallout)
+
+These came out of building on top of Wave 7's fixes rather than from the triage itself. Each is
+**measured**, and each generalises past this repo.
+
+### ⭐ An untrustworthy clock fails in OPPOSITE directions per subsystem
+
+Session 3 measured a forward wall-clock excursion **deleting data inside the retention window**:
+`retention_days=30`, 30 daily sightings, clock +30d → **29 of 30 deleted**. `evidence.py` carries
+the same defect and is **on by default** (`evidence_retention_days: int = 90`, while sightings
+retention is opt-in) — +90d deleted **9 of 10** snapshots under ten days old. A *backward* excursion
+is the inverse: a future anchor stalls pruning for the whole excursion (no prune until +366d).
+
+The same `0 <= elapsed < interval` guard fixes the stall in both retention and the heartbeat — but
+**what "safe" means is opposite in the two places**:
+
+| Subsystem | Clock cannot be trusted → | Because |
+|---|---|---|
+| Retention / evidence pruning | **do NOT prune** | deleting capture data is unrecoverable |
+| Heartbeat / dead-man's switch | **DO send** | a spurious heartbeat costs one notification; a suppressed one costs the entire guarantee |
+
+⛔ **If anyone later unifies these behind one clock helper, that asymmetry must survive the
+refactor.** It is precisely the kind of distinction a tidy-up flattens into a single "is the clock
+sane?" predicate, and flattening it silently breaks whichever side it did not have in mind.
+
+⚠️ **Not fixable in the leaf modules, and that was proven rather than assumed.** In `retention.py`,
+"the clock jumped forward" and "the table holds only old rows" are the *same observation*, and
+`test_sightings_retention.py::test_returns_none_oldest_when_table_is_emptied` **requires** the second
+to delete everything. Any elapsed-based bound is computed from the same corrupt clock — circular.
+The wall clock enters at `poller.py:1555` and `:1654`; the leaf modules' `int(time.time())` defaults
+are **dead in production** because the poller always passes `now_ts` down. ⇒ The real fix is a
+`time.monotonic()` anchor taken at daemon start, serving retention, evidence and the heartbeat
+together. **Not yet done.**
+
+### ⭐ A template that asks for something undefined renders NOTHING, silently — three times now
+
+1. Wizard replacement listeners appended **after `{% endblock %}`** — Jinja discards anything outside
+   a block, so they rendered nothing while looking correct in source.
+2. A filter form marked `class="grid"` against the **classless** Pico build, which defines no such
+   class — eleven controls stacked full-width.
+3. The heartbeat's `/settings` card used a `ts_to_local` filter and a `badge-status-warn` class,
+   **neither of which exists**.
+
+⇒ **Three occurrences is a pattern, not bad luck.** Jinja resolves an unknown filter or an unknown
+CSS class to silence, never to an error, so the failure never reaches a log or a test that only
+checks for a 200. **Assert the rendered output contains the thing, not merely that the page
+rendered.** This is the presence-beside-absence rule applied to templates.
+
+### ⚠️ Adding a migration breaks hardcoded version lists in five separate places
+
+Migration 025 (heartbeats) broke `tests/test_validate.py:722`
+(`assert db.applied_versions() == list(range(1, 25))`) **after** its author had already found and
+updated the filename manifest, three rollback version literals and both config-documentation gates.
+CI caught it; nothing local did.
+
+⇒ **Before adding a migration, `grep` for the current HEAD version as a literal.** Better, derive
+the list: `tests/test_migration_replay.py` discovers `HEAD_VERSIONS` by an **independent glob**,
+deliberately not via `Database._iter_up_migration_files`, so a broken runner cannot grade itself —
+and so a new migration does not start a scavenger hunt. That census correctly classified 025 as
+`REPLAY_RAISES_OPERATIONAL` ("table heartbeats already exists") on the first migration added after
+it landed.
