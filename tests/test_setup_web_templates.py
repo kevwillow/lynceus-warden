@@ -502,8 +502,20 @@ def test_wizard_step_carries_consistent_button_pair(path):
         resp = client.get(f"{path}?token={TOKEN}")
     assert resp.status_code == 200, f"{path} did not render"
     body = resp.text
-    # Previous renders as an anchor styled as button with class="secondary"
-    # so Pico's lower-emphasis variant applies (Next remains the primary).
+    # Previous renders as an anchor styled as button with class="secondary".
+    #
+    # ⚠️ This asserts the MARKUP contract only -- that the class is present.
+    # It does NOT and cannot assert that the class does anything: for a long
+    # time it did not. The bundled Pico is the CLASSLESS build and defines no
+    # `.secondary`, so all 20 sites matched no rule and Previous rendered as a
+    # full-strength primary, pixel- and colour-identical to Next on every step.
+    # This test was green throughout, because a class name in the HTML and a
+    # rule in the CSS are different claims.
+    #
+    # The comment here used to say "so Pico's lower-emphasis variant applies",
+    # which was the false half. Whether the class RESOLVES is now checked by
+    # tests/test_wizard_classes_are_defined.py, which cross-references every
+    # class the templates use against the CSS the page actually loads.
     assert 'role="button"' in body
     assert 'class="secondary"' in body
     # Next/Apply/Review is a real submit button.

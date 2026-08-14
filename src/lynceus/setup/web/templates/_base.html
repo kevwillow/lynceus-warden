@@ -90,6 +90,41 @@
          smoke's worth of "buttons still aren't the same size" reports. */
       .wizard-footer a[role="button"],
       .wizard-footer button { box-sizing: border-box; min-width: 9em; width: auto; padding: 0.6em 1.5em; line-height: 1.25; text-align: center; margin-bottom: 0; display: inline-block; }
+      /* ⛔ `.secondary` and `.outline` are INERT in the bundled Pico. The
+         classless build ships no button-modifier classes, so all 20
+         `class="secondary"` sites and the one `.outline` matched nothing at
+         all — the same trap as `.container` and `.grid` before them, and the
+         third time this build's missing classes have silently done nothing.
+
+         Measured on the shipped CSS before this rule existed: Previous and
+         Next rendered pixel- and colour-identical, both full-strength primary
+         (`rgb(1,114,173)`, 180x51px) on all 13 wizard steps. A control arm
+         that appended Pico's full-build `.secondary` rule to a copy of the
+         stylesheet moved Previous to slate `rgb(82,95,122)`, proving the
+         measurement was sensitive rather than measuring nothing.
+
+         🪤 The v0.7.2 sizing rule above made this WORSE, not better. It
+         deliberately normalised the geometry axis so the pair stopped looking
+         uneven -- and geometry was the only axis still distinguishing them.
+         Two identical filled primaries, one of which walks the operator
+         backwards through a 13-step setup.
+
+         Specificity: 0,3,1 beats the 0,2,1 sizing rule above and Pico's own
+         `a[role=button]`, so it wins without !important. Variables carry
+         Pico's own secondary palette where the build defines them, with
+         explicit fallbacks because the classless build may not. */
+      .wizard-footer a[role="button"].secondary,
+      .wizard-footer button.secondary {
+        background: var(--pico-secondary-background, #525f7a);
+        border-color: var(--pico-secondary-border, #525f7a);
+        color: var(--pico-secondary-inverse, #fff);
+      }
+      .wizard-footer a[role="button"].outline,
+      .wizard-footer button.outline {
+        background: transparent;
+        border-color: var(--pico-primary, #0172ad);
+        color: var(--pico-primary, #0172ad);
+      }
       .wizard-error { color: var(--del-color); margin-bottom: 0.5em; }
     </style>
   </head>
