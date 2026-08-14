@@ -3319,7 +3319,7 @@ def test_topnav_present_on_every_page(tmp_path):
 
     from fastapi.testclient import TestClient
 
-    client = TestClient(app)
+    client = TestClient(app, follow_redirects=False)
 
     # ⛔ This was a hardcoded list of 8 paths under a name promising "every
     # page". The app serves 18 GET routes; `/probes` was in neither this list
@@ -3340,8 +3340,17 @@ def test_topnav_present_on_every_page(tmp_path):
     from tests.test_webui_theme import html_get_paths
 
     checked = []
-    for path in html_get_paths(app, alert_id=alert_id, mac="aa:bb:cc:dd:ee:ff"):
+    from tests.test_webui_theme import _seed_detail_ids
+
+    for path in html_get_paths(
+        app, alert_id=alert_id, mac="aa:bb:cc:dd:ee:ff",
+        **_seed_detail_ids(db, alert_id),
+    ):
         resp = client.get(path)
+        assert not (300 <= resp.status_code < 400), (
+            f"{path} redirected ({resp.status_code}); a redirect would "
+            f"otherwise be counted as this page having rendered"
+        )
         if resp.status_code != 200:
             continue
         if "text/html" not in resp.headers.get("content-type", ""):
@@ -3359,7 +3368,7 @@ def test_topnav_present_on_every_page(tmp_path):
 
     # ⭐ Without a floor, a route filter that excluded everything would leave
     # this loop vacuous and green -- the same failure the hardcoded list had.
-    assert len(checked) >= 12, (
+    assert len(checked) >= 14, (
         f"only checked {len(checked)} HTML pages ({checked}); the route "
         f"enumeration is excluding pages it should cover"
     )

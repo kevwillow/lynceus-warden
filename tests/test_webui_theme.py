@@ -60,6 +60,24 @@ def _seed_minimal(db, now_ts=1700000000):
     )
 
 
+def _seed_detail_ids(db, alert_id, now_ts=1700000000):
+    """Seed the DETAIL pages too, so they are exercised rather than skipped.
+
+    ⛔ `/watchful/{entry_id}` and `/watchlist/{watchlist_id}` were covered by
+    NOTHING: absent from both hardcoded "every page" lists, and silently
+    dropped by the derived enumeration because no id was seeded for them. The
+    unseeded-parameter assertion in `html_get_paths` is what surfaced them —
+    a guard that skips what it cannot construct hides exactly the pages nobody
+    remembered to list.
+    """
+    watchlist_id, _ = db.add_watchlist(
+        pattern="aa:bb:cc:dd:ee:ff", pattern_type="mac", severity="low",
+        description="seeded for detail-page coverage",
+    )
+    entry_id = db.create_watchful_from_alert(alert_id, None, now_ts)
+    return {"watchlist_id": watchlist_id, "entry_id": entry_id}
+
+
 # ⛔ This was a hand-maintained tuple of 11 paths, described as "every
 # operator-facing GET route". The app serves 18 GET routes. `/probes` was in
 # neither this list nor the topnav guard's, so it could ship with no theme
@@ -103,8 +121,18 @@ def html_get_paths(app, **subs):
             continue
         # `{mac:path}` -> `mac`; converters are not part of the name.
         names = [m.split(":")[0] for m in _re.findall(r"\{([^}]+)\}", path)]
-        if any(n not in subs or subs[n] is None for n in names):
-            continue
+        # ⛔ An unseeded parameter is an ERROR, not a reason to skip. Skipping
+        # means a newly added route is never requested, and the count floor
+        # cannot notice because it counts what WAS checked. Measured: adding
+        # `/reports/{report_id}` without seeding `report_id` left every
+        # assertion green while the new page went entirely untested.
+        unseeded = [n for n in names if n not in subs or subs[n] is None]
+        if unseeded:
+            raise AssertionError(
+                f"route {path} has no seeded value for {unseeded}. Add one to "
+                f"the caller's subs= so the page is actually exercised; do not "
+                f"let it drop silently out of coverage."
+            )
         for n in names:
             path = _re.sub(r"\{" + _re.escape(n) + r"(:[^}]+)?\}", str(subs[n]), path)
         paths.append(path)
@@ -133,8 +161,15 @@ def test_theme_bootstrap_script_present_in_head_on_every_page(tmp_path):
         mac = "aa:bb:cc:dd:ee:ff"
 
         checked = []
-        with TestClient(app) as client:
-            for path in html_get_paths(app, alert_id=alert_id, mac=mac):
+        # ⛔ follow_redirects=False. With following ON, `/probes` redirecting
+        # to `/` returns the HOME page's 200 HTML -- topnav and theme bootstrap
+        # included -- and the guard appends "/probes" to `checked`. Measured:
+        # both guards stay green while /probes stops rendering, and even the
+        # explicit `"/probes" in checked` canary passes.
+        with TestClient(app, follow_redirects=False) as client:
+            for path in html_get_paths(
+                app, alert_id=alert_id, mac=mac, **_seed_detail_ids(db, alert_id)
+            ):
                 resp = client.get(path)
                 # ⛔ A 5xx is never a legitimate reason to skip. Without this,
                 # a page that started erroring would be silently dropped from
@@ -146,6 +181,10 @@ def test_theme_bootstrap_script_present_in_head_on_every_page(tmp_path):
                 assert resp.status_code < 500, (
                     f"{path} returned {resp.status_code}; a broken page must "
                     f"fail this guard, not be skipped by it"
+                )
+                assert not (300 <= resp.status_code < 400), (
+                    f"{path} redirected ({resp.status_code}); a redirect would "
+                    f"otherwise be counted as this page having rendered"
                 )
                 if resp.status_code != 200:
                     continue
@@ -173,7 +212,7 @@ def test_theme_bootstrap_script_present_in_head_on_every_page(tmp_path):
                 )
         # ⭐ A filter that excluded everything would make the loop vacuous and
         # green -- the exact failure the old hardcoded list had, just faster.
-        assert len(checked) >= 12, (
+        assert len(checked) >= 14, (
             f"only checked {len(checked)} HTML pages ({checked}); the route "
             f"enumeration is excluding pages it should cover"
         )
@@ -199,8 +238,15 @@ def test_theme_toggle_button_present_on_every_page(tmp_path):
         mac = "aa:bb:cc:dd:ee:ff"
 
         checked = []
-        with TestClient(app) as client:
-            for path in html_get_paths(app, alert_id=alert_id, mac=mac):
+        # ⛔ follow_redirects=False. With following ON, `/probes` redirecting
+        # to `/` returns the HOME page's 200 HTML -- topnav and theme bootstrap
+        # included -- and the guard appends "/probes" to `checked`. Measured:
+        # both guards stay green while /probes stops rendering, and even the
+        # explicit `"/probes" in checked` canary passes.
+        with TestClient(app, follow_redirects=False) as client:
+            for path in html_get_paths(
+                app, alert_id=alert_id, mac=mac, **_seed_detail_ids(db, alert_id)
+            ):
                 resp = client.get(path)
                 # ⛔ A 5xx is never a legitimate reason to skip. Without this,
                 # a page that started erroring would be silently dropped from
@@ -213,6 +259,10 @@ def test_theme_toggle_button_present_on_every_page(tmp_path):
                     f"{path} returned {resp.status_code}; a broken page must "
                     f"fail this guard, not be skipped by it"
                 )
+                assert not (300 <= resp.status_code < 400), (
+                    f"{path} redirected ({resp.status_code}); a redirect would "
+                    f"otherwise be counted as this page having rendered"
+                )
                 if resp.status_code != 200:
                     continue
                 if "text/html" not in resp.headers.get("content-type", ""):
@@ -224,7 +274,7 @@ def test_theme_toggle_button_present_on_every_page(tmp_path):
                 assert 'class="theme-toggle"' in resp.text, (
                     f"{path}: .theme-toggle class on toggle button missing"
                 )
-        assert len(checked) >= 12, (
+        assert len(checked) >= 14, (
             f"only checked {len(checked)} HTML pages ({checked}); the route "
             f"enumeration is excluding pages it should cover"
         )
@@ -245,7 +295,12 @@ def test_bootstrap_and_toggle_share_storage_key(tmp_path):
     """
     app, db = _make_app(tmp_path)
     try:
-        with TestClient(app) as client:
+        # ⛔ follow_redirects=False. With following ON, `/probes` redirecting
+        # to `/` returns the HOME page's 200 HTML -- topnav and theme bootstrap
+        # included -- and the guard appends "/probes" to `checked`. Measured:
+        # both guards stay green while /probes stops rendering, and even the
+        # explicit `"/probes" in checked` canary passes.
+        with TestClient(app, follow_redirects=False) as client:
             page = client.get("/")
             js = client.get("/static/lynceus.js")
         assert page.status_code == 200
