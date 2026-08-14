@@ -304,9 +304,16 @@ on-device. The Bluetooth fixes in 0.9.3 and 0.9.4 came out of real rig
 captures, not out of reasoning about what should work.
 
 **The test suite ships, so you can check the claims on this page yourself.**
-`pytest -q` runs **3281 tests** on a clone (1 skipped, ~20 minutes), and
-`ruff check .` and `python -m build` both pass. CI runs all three on Python
-3.11 and 3.12 for every push and pull request.
+CI runs `pytest -q`, `ruff check .` and `python -m build` on Python 3.11 and
+3.12 for every push and pull request: **3294 passed, 1 skipped**, in about four
+minutes. That figure is quoted from CI rather than from a developer's machine
+so you can open the run and read it yourself.
+
+⚠️ Expect the *skip* to differ from ours, and check which test it is rather
+than the count. One test skips when `/sys/class/bluetooth` exists (it needs the
+directory absent) and another skips without a live Argus CSV — so a machine
+with Bluetooth and no CSV reports two skips, and CI reports one. `.claude/gates.md`
+records the traps that make a green run mean less than it looks like.
 
 Ten test files, plus one capture fixture, stay out of the repo because they
 embed the capture adapter's own MAC or the rig account name — which is what
