@@ -1078,6 +1078,20 @@ rule rather than four separate notes:
 | Packet W1-C: "`bootstrap_kismet:863` is a false positive" | understated — it named the mechanism and dismissed it |
 | Finding 24: "SSE traceback is a disclosure" | overstated — the route is behind an installed token gate |
 
+⭐ **A plant that does not plant produces a passing suite that reads as proof. Four ways, all seen
+here on 2026-08-14:**
+
+| Failure | What catches it |
+|---|---|
+| plant breaks the file → pytest errors at collection, prints nothing | `ast.parse` the file after planting |
+| plant's anchor never matches → nothing changes | assert the anchor EXISTS before replacing |
+| plant hits a comment or the wrong occurrence | assert the anchor is **unique**, not merely present |
+| restore leaves a stray file behind | verify the tree is CLEAN, not merely that tests went green |
+
+All four end in a green run. The third was found by planting `replace("return", ...)` into a block
+whose first literal `return` was inside the comment *"Kismet returns nothing"* — `ast.parse` passed,
+the tests passed, and it was one step from being reported as evidence a guard was weak.
+
 ⭐ **An alert tells you where a value FLOWS. It never tells you who can REACH it.** Check the gate
 before grading the finding. This cuts both ways: an unwired guard overstates safety, and an
 unchecked gate overstates severity. Confirming a helper is wired in says nothing about its *second*
@@ -1173,7 +1187,7 @@ are **dead in production** because the poller always passes `now_ts` down. ⇒ T
 `time.monotonic()` anchor taken at daemon start, serving retention, evidence and the heartbeat
 together. **Not yet done.**
 
-### ⭐ A template that asks for something undefined renders NOTHING, silently — three times now
+### ⭐ A template that asks for an undefined CSS class renders NOTHING, silently — and an undefined FILTER does not
 
 1. Wizard replacement listeners appended **after `{% endblock %}`** — Jinja discards anything outside
    a block, so they rendered nothing while looking correct in source.
@@ -1182,10 +1196,32 @@ together. **Not yet done.**
 3. The heartbeat's `/settings` card used a `ts_to_local` filter and a `badge-status-warn` class,
    **neither of which exists**.
 
-⇒ **Three occurrences is a pattern, not bad luck.** Jinja resolves an unknown filter or an unknown
-CSS class to silence, never to an error, so the failure never reaches a log or a test that only
-checks for a 200. **Assert the rendered output contains the thing, not merely that the page
-rendered.** This is the presence-beside-absence rule applied to templates.
+⛔ **CORRECTION — the sentence that stood here was wrong, and it was wrong in the direction that
+overstates the problem.** It read: *"Jinja resolves an unknown filter or an unknown CSS class to
+silence, never to an error."* **The filter half is false.** Measured against the real `/settings`
+route with `| ts_to_local` planted back into the template (anchor asserted unique, plant verified
+applied, tree verified clean after restore):
+
+| What is undefined | Visibility | What catches it |
+|---|---|---|
+| Jinja **filter** | **LOUD** — `TemplateAssertionError` at *compile* time → HTTP **500** | any test asserting a 200, or a status-code crawl |
+| **CSS class** / markup contract | **SILENT** — HTTP 200 with plausible-looking HTML | only a cross-check against the vendored `lynceus.css` |
+
+⚠️ **Both historical instances are the silent kind** — the post-`{% endblock %}` listeners and
+`class="grid"` against classless Pico are markup/CSS, not filters. So the class is *mostly* silent,
+and the one filter case was the single member of it that was never actually dangerous.
+
+⇒ **Three occurrences is still a pattern, but of the CSS/markup half only.** The rule stands with a
+narrower blast radius: **assert the rendered output contains the thing, not merely that the page
+rendered** — the presence-beside-absence rule applied to templates. A status-code crawl is
+sufficient for filters and **useless** for markup contracts.
+
+🪤 **How the wrong version got written, which is the more useful lesson:** two faults were found in
+the same grep — a missing filter and a missing CSS class, in the same card — and a single mechanism
+was inferred from finding them together. ⇒ **This is `an alert location is not a severity` at a
+different altitude: having the location of two faults says nothing about whether they share a
+cause.** Separate the symptoms before generalising from them. Corrected by the author of the
+original claim, who measured it rather than defending it.
 
 ### ⚠️ Adding a migration breaks hardcoded version lists in five separate places
 
