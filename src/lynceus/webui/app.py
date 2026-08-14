@@ -3312,7 +3312,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
         def _absent():
             """The single response used for BOTH 'capability off' and 'no such
             device', so the toggle cannot be used as a probe oracle that
-            confirms which MACs the operator has seen."""
+            confirms which MACs the operator has seen.
+
+            ``no-store`` because this response is a statement about WHICH MACs
+            the operator has seen -- the same fact the shared response above
+            exists to withhold. A cache that retained it would answer the
+            question later, to someone who never asked this server. In practice
+            every response also carries a CSRF ``Set-Cookie``, which stops
+            shared caches storing it, but that is incidental protection from an
+            unrelated mechanism: it would vanish the day CSRF cookies moved or
+            became conditional, silently, and nothing would notice.
+            """
             return app.state.templates.TemplateResponse(
                 request=request,
                 name="not_found.html",
@@ -3322,6 +3332,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     "message": f"Device {normalized} not found.",
                 },
                 status_code=404,
+                headers={"Cache-Control": "no-store"},
             )
 
         # ⭐ Parameter validation runs BEFORE the capability check, and the
@@ -3378,20 +3389,47 @@ def create_app(config: Config, db: Database) -> FastAPI:
         since_ts = now_ts - cfg.window_days * 86_400
         # Decision 6: every query is audit-logged, so enumeration leaves a
         # trail even though the panel itself only reads.
+        #
+        # ⭐ The line stays BEFORE the query, deliberately. It records an
+        # ATTEMPT, and for an enumeration control that is the load-bearing
+        # event: moving it after the query would mean a scan that provokes
+        # failures leaves no trail at all, handing an attacker a way to erase
+        # themselves from the one control Decision 6 kept after rejecting rate
+        # limiting. Red team 2026-08-06 finding 1 was this same mistake in the
+        # other direction -- the line sat one branch too late and recorded only
+        # the hits.
+        #
+        # What WAS wrong is that it read as a completed access: on a failure the
+        # log still said "co-observation query: mac=..." and nothing
+        # contradicted it. An investigator reading this log after a stolen
+        # session could not tell a served page from a query that blew up. So
+        # the attempt is now named as an attempt, and the outcome is recorded
+        # separately.
         logger.info(
-            "co-observation query: mac=%s window_days=%d proximity_seconds=%d",
+            "co-observation query ATTEMPT: mac=%s window_days=%d proximity_seconds=%d",
             normalized,
             cfg.window_days,
             proximity,
         )
-        result = db.list_co_observations(
-            normalized,
-            now_ts=now_ts,
-            since_ts=since_ts,
-            proximity_seconds=proximity,
-            gap_seconds=cfg.gap_seconds,
-            limit=cfg.max_candidates,
-        )
+        try:
+            result = db.list_co_observations(
+                normalized,
+                now_ts=now_ts,
+                since_ts=since_ts,
+                proximity_seconds=proximity,
+                gap_seconds=cfg.gap_seconds,
+                limit=cfg.max_candidates,
+            )
+        except Exception:
+            # Re-raised unchanged: this handler exists to make the audit trail
+            # honest, not to swallow the error or to change what the operator
+            # sees. Without it the ATTEMPT line above would be the last word
+            # and would read as a success.
+            logger.warning(
+                "co-observation query FAILED: mac=%s (no results were returned)",
+                normalized,
+            )
+            raise
 
         # ⭐ One batched call for every candidate, NOT one per candidate inside
         # the loop below. The per-candidate form ran a correlated subquery that
