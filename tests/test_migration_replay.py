@@ -1,5 +1,5 @@
-"""Migration replay atomicity: what a crash between a migration's DDL and its
-version stamp actually costs.
+"""Migration replay: what happens when a migration's DDL outlives its version
+stamp, and — separately — which routes can actually put the database there.
 
 WHY THIS FILE EXISTS
 --------------------
@@ -14,12 +14,35 @@ are NOT one transaction::
 runs the script in autocommit, so step 1 is **durable the instant it returns**.
 Step 2 opens a fresh implicit transaction that only step 3 commits. Anything
 that kills the process in between — SIGKILL, OOM, power loss, a yanked battery
-on a mobile deployment — leaves the schema changed and the version row missing.
+on a mobile deployment — leaves that migration's schema changed and its version
+row missing.
 
-At next start the runner sees the version as un-applied and replays the file
-against a database that already has the change. Only 5 of the 24 migrations
-survive that. The rest fail in three distinct ways, and this file pins all
-three because they need different responses from an operator:
+⚠️ **THE CRASH WINDOW IS ONE MIGRATION WIDE, AND THAT BOUNDS WHAT IT CAN DO.**
+``commit()`` is *inside* the per-migration loop (``db.py:479``), so a crash
+during migration N leaves the database stamped through N-1 with **N+1..HEAD not
+yet run at all**. The replay therefore happens against an N-1-era schema, not
+against a head one. An earlier draft of this file asserted otherwise, and three
+of its four conclusions followed from that error.
+
+So the two states must be kept apart:
+
+* **Crash state** — schema at N, stamps at N-1, nothing later applied.
+* **Schema-ahead-of-stamp at HEAD** — a fully migrated database with one
+  version row missing. A crash *cannot* produce this. ``rollback_to`` can:
+  two branches delete the ``schema_migrations`` row **without applying any
+  down migration** (``db.py`` ~525-545) — one when no ``_down.sql`` exists
+  ("so the rollback chain can continue"), one on an ``IRREVERSIBLE:`` marker.
+  Branch 2 is live today via ``010_normalize_watchlist_patterns_down.sql``;
+  branch 1 is currently unreachable but is one packaging slip away, and the
+  code's own comment calls that "a packaging bug".
+
+The tests below deliberately construct the second state by deleting a stamp
+row, because that is the state whose consequences are unknown. **Only category
+1 is reachable by a crash today.** Categories 2 and 3 are latent: real, and
+waiting for anything that unstamps a migration without reverting it.
+
+Of the 24 migrations, 5 replay cleanly. The rest fail in three distinct ways,
+pinned separately because they need different responses from an operator:
 
 1. ``sqlite3.OperationalError`` (14 migrations) — "duplicate column name" or
    "table ... already exists". ``Database.__init__`` raises, so the daemon
