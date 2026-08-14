@@ -96,11 +96,53 @@ def test_policy_is_present_on_a_token_rejection(client):
     )
 
 
+def _directives(policy: str) -> dict[str, list[str]]:
+    """Parse a CSP into ``{name: [sources]}`` — see the twin in test_webui_csp.
+
+    A directive is a space-separated source list, so substring checks cannot
+    distinguish ``object-src 'none'`` from ``object-src 'none' https://evil``.
+    """
+    out: dict[str, list[str]] = {}
+    for chunk in policy.split(";"):
+        parts = chunk.split()
+        if parts:
+            out[parts[0]] = parts[1:]
+    return out
+
+
 def test_script_src_is_strict(client):
     policy = _policy(_get(client, "/"))
-    assert "script-src 'self' 'nonce-" in policy
-    script_src = policy.split("script-src")[1].split(";")[0]
+    directives = _directives(policy)
+    script_src = directives.get("script-src", [])
+    assert script_src and script_src[0] == "'self'", f"script-src: {script_src}"
+    assert any(s.startswith("'nonce-") for s in script_src), (
+        f"script-src carries no nonce: {script_src}"
+    )
     assert "'unsafe-inline'" not in script_src, "the nonce is the whole point"
+    # Exactly self + one nonce, nothing appended. The substring form of this
+    # assertion passed with an attacker source on the end.
+    assert len(script_src) == 2, (
+        f"script-src must be exactly ['self', nonce], got {script_src}"
+    )
+
+
+def test_the_locked_down_directives_are_exactly_locked_down(client):
+    """Sibling of test_webui_csp's equality check — the wizard holds the
+    Kismet API key and the ntfy topic in flight, so its policy matters at
+    least as much as the dashboard's."""
+    directives = _directives(_policy(_get(client, "/")))
+    for name, expected in (
+        ("default-src", ["'self'"]),
+        ("object-src", ["'none'"]),
+        ("base-uri", ["'none'"]),
+        ("frame-ancestors", ["'none'"]),
+        ("form-action", ["'self'"]),
+    ):
+        assert name in directives, f"missing {name!r} entirely"
+        assert directives[name] == expected, (
+            f"{name} must be exactly {expected}, got {directives[name]}"
+        )
+    assert len(directives) >= 10, f"implausibly few directives: {sorted(directives)}"
 
 
 def test_nonce_differs_on_every_request(client):
