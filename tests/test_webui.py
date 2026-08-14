@@ -8583,6 +8583,17 @@ def test_agpl_source_offer_renders_on_every_html_route(tmp_path):
         with TestClient(app) as client:
             for path in paths:
                 resp = client.get(path)
+                # ⛔ A 5xx is never a legitimate reason to skip. Without this,
+                # a page that started erroring would be silently dropped from
+                # coverage -- and if any page were added in the same change the
+                # count floor below would still pass. That is the one way a
+                # page can vanish from this guard unnoticed.
+                # 404 stays skippable: /devices/{mac}/co-observations is
+                # feature-gated off by default and correctly 404s.
+                assert resp.status_code < 500, (
+                    f"{path} returned {resp.status_code}; a broken page must "
+                    f"fail this guard, not be skipped by it"
+                )
                 if resp.status_code != 200:
                     continue
                 if "text/html" not in resp.headers.get("content-type", ""):
