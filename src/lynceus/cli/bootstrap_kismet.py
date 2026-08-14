@@ -1293,6 +1293,49 @@ def _build_parser() -> argparse.ArgumentParser:
 # --- Orchestrator ----------------------------------------------------------
 
 
+#: sysfs class directories, as module attributes so a test can point them at a
+#: fixture. Deliberately NOT default parameters like ``detect_wifi_monitor_
+#: capable``'s: the check below runs deep inside ``_select_interfaces``, which
+#: is driven by an argparse Namespace, and threading a path through it for
+#: testability only would be worse than naming the two directories once.
+_SYS_CLASS_NET = Path("/sys/class/net")
+_SYS_CLASS_BLUETOOTH = Path("/sys/class/bluetooth")
+
+
+def _warn_if_interface_absent(iface: str, kind: str) -> bool:
+    """Warn when an operator-named capture interface is not on this system.
+
+    Returns True if it is present.
+
+    ⛔ A WARNING, never a refusal. ``--interface`` exists precisely to bypass
+    detection -- a remote capture rig, or an adapter that will be plugged in
+    later -- so blocking would break the workflow the flag was added for.
+
+    But leaving it silent is the worse failure for this tool specifically.
+    ``--interface wlan99`` wrote ``source=wlan99:type=linuxwifi`` and reported
+    success; Kismet then captures nothing and the operator believes their
+    sensor is watching. "Configured, capturing nothing" is indistinguishable
+    from "nothing is out there" -- the same ambiguity the heartbeat and the
+    Kismet-loss alert exist to remove, arriving here before either can help.
+    """
+    base = _SYS_CLASS_NET if kind == "wifi" else _SYS_CLASS_BLUETOOTH
+    try:
+        present = (base / iface).exists()
+    except OSError:
+        # Unreadable sysfs (container, hardened mount). Absence of evidence is
+        # not evidence of absence: staying quiet is right, because a warning we
+        # cannot substantiate is the noise that teaches operators to ignore it.
+        return True
+    if present:
+        return True
+    _print(
+        f"  ! {iface} is not present under {base} -- Kismet will capture "
+        f"nothing from it. That is expected if the adapter is not plugged in "
+        f"yet or lives on a remote rig; otherwise check the name."
+    )
+    return False
+
+
 def describe_interface(iface: str, kind: str) -> str:
     """Render a plain-text descriptor for ``iface`` of ``kind`` from sysfs.
 
@@ -1335,7 +1378,13 @@ def _select_interfaces(
     We log a note and continue.
     """
     if args.interface:
-        if args.interface_type == "wifi":
+        kind = "wifi" if args.interface_type == "wifi" else "bt"
+        # Each name is checked independently: one bad entry among several must
+        # not be masked by the good ones, and a good one must not be flagged
+        # because a sibling was wrong.
+        for iface in args.interface:
+            _warn_if_interface_absent(iface, kind)
+        if kind == "wifi":
             return list(args.interface), []
         return [], list(args.interface)
 
