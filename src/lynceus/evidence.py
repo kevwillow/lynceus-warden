@@ -315,7 +315,13 @@ def maybe_prune_evidence(
             last = int(last_raw)
         except (TypeError, ValueError):
             last = 0
-        if now_ts - last < interval_seconds:
+        elapsed = now_ts - last
+        # See the matching guard in retention.maybe_prune_sightings: a
+        # negative elapsed means the stored anchor sits in the FUTURE, and a
+        # bare ``elapsed < interval_seconds`` reads that as "too recent",
+        # stalling pruning for the whole length of the excursion. An
+        # impossible anchor is due, not recent.
+        if 0 <= elapsed < interval_seconds:
             return False
     prune_old_evidence(db, retention_days, now_ts=now_ts)
     db.set_state(STATE_KEY_LAST_EVIDENCE_PRUNE, str(now_ts))

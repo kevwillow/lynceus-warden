@@ -105,7 +105,17 @@ def maybe_prune_sightings(
             last = int(last_raw)
         except (TypeError, ValueError):
             last = 0
-        if now_ts - last < interval_seconds:
+        elapsed = now_ts - last
+        # ``elapsed < 0`` means the recorded anchor sits in the FUTURE, which
+        # no sane clock produces: it is what a prune that ran while the clock
+        # was wrong-and-ahead leaves behind. Treating that as "too recent"
+        # (which a bare ``elapsed < interval_seconds`` does, negatives being
+        # less than any positive interval) stalls pruning until real time
+        # overtakes the bad value -- measured at a full year of no pruning for
+        # a one-year excursion, on a table whose whole purpose is to stop an
+        # unbounded one filling a Pi. An impossible anchor is treated as due,
+        # so the run below re-records a sane value and the stall self-heals.
+        if 0 <= elapsed < interval_seconds:
             return False
     prune_old_sightings(db, retention_days, now_ts=now_ts)
     db.set_state(STATE_KEY_LAST_SIGHTINGS_PRUNE, str(now_ts))
