@@ -123,7 +123,7 @@ def test_rollback_to_zero_then_reapply(db_path):
     db = Database(db_path)
     forward_shape = _schema_shape(db)
     forward_versions = db.applied_versions()
-    assert forward_versions == list(range(1, 24))
+    assert forward_versions == list(range(1, 25))
 
     with caplog_warning("lynceus.db"):
         rolled = db.rollback_to(0)
@@ -182,12 +182,12 @@ def test_rollback_one_step_each(db_path):
         shapes_at[version] = _schema_shape(sentinel_db)
         applied_far = version
     sentinel_db.close()
-    assert applied_far == 23
+    assert applied_far == 24
 
     # Now run the real per-step rollback test on the primary db_path.
     db = Database(db_path)
     irreversible = {10}
-    for v in range(23, 0, -1):
+    for v in range(24, 0, -1):
         with caplog_warning("lynceus.db"):
             rolled = db.rollback_to(v - 1)
         assert rolled == [v], f"expected one-step rollback of {v}, got {rolled}"
@@ -210,7 +210,7 @@ def test_rollback_one_step_each(db_path):
 
 @pytest.mark.parametrize(
     "version",
-    [v for v in range(1, 24) if v != 10],  # 010 is IRREVERSIBLE
+    [v for v in range(1, 25) if v != 10],  # 010 is IRREVERSIBLE
 )
 def test_per_migration_up_down_up(db_path, version):
     """Drive each reversible migration through one up->down->up cycle and
@@ -347,9 +347,9 @@ def test_rollback_to_specific_target(db_path):
     assert expected_versions == list(range(1, 16))
 
     db = Database(db_path)
-    assert db.applied_versions() == list(range(1, 24))
+    assert db.applied_versions() == list(range(1, 25))
     rolled = db.rollback_to(15)
-    assert sorted(rolled) == [16, 17, 18, 19, 20, 21, 22, 23]
+    assert sorted(rolled) == [16, 17, 18, 19, 20, 21, 22, 23, 24]
     assert db.applied_versions() == expected_versions
     assert _schema_shape(db) == expected_shape
     db.close()

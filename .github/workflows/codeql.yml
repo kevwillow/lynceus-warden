@@ -1,0 +1,53 @@
+# CodeQL static analysis.
+#
+# Free on public repositories, and appropriate here for a reason beyond the
+# usual: this is a security tool that asks people to run it on their own
+# machine and trust what it tells them. "We scan our own code" is a claim a
+# visitor can verify from the badge, and the whole README rests on claims a
+# reader can check.
+#
+# It complements ruff rather than duplicating it: ruff is style and obvious
+# bugs, CodeQL is taint tracking -- operator-controlled input (a MAC, an SSID,
+# a location name, an Argus CSV row) reaching a sink like a SQL string, a
+# subprocess, or rendered markup. That is the exact shape of the XSS risk the
+# new CSP exists to bound.
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly-published query pattern is applied to existing code
+    # rather than only to whatever changes next.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          # security-and-quality is broader than the default security-extended:
+          # it adds maintainability queries. Findings surface in the Security
+          # tab; this job does not fail the build on them, because a first run
+          # on a 30k-line codebase will have opinions and a red gate nobody can
+          # clear is a gate people route around.
+          queries: security-and-quality
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"

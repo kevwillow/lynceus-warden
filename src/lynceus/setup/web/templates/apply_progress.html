@@ -22,7 +22,7 @@
       summary</a> if it has finished.
     </p>
   </article>
-  <script>
+  <script nonce="{{ request.state.csp_nonce }}">
     (function () {
       var streamUrl = {{ url_with_token('/apply-stream') | tojson }};
       var completeUrl = {{ url_with_token('/apply-complete') | tojson }};

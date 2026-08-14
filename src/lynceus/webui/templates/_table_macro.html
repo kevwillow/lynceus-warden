@@ -113,7 +113,7 @@
   {# Pre-paint: apply persisted order/widths synchronously, before the table
      paints, so a reload never flashes default->persisted (mirrors the theme
      bootstrap in base.html). #}
-  <script>window.__lynTableApply && window.__lynTableApply("{{ table_id }}");</script>
+  <script nonce="{{ request.state.csp_nonce }}">window.__lynTableApply && window.__lynTableApply("{{ table_id }}");</script>
   {% endif %}
 {% endmacro %}
 

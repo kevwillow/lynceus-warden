@@ -1,0 +1,84 @@
+# Lynceus CI.
+#
+# The README invites readers to check its claims by running the suite, and
+# until now nothing ran it automatically. Actions is free with unlimited
+# minutes on public repositories, which this is.
+#
+# ⚠️ The traps below are the ones .claude/gates.md records as having cost real
+# time locally. They are encoded here deliberately so they stop being tribal
+# knowledge that only survives in one person's head.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The suite is ~18 minutes. Superseding a run on the same ref wastes nothing
+# useful, so cancel the older one rather than queueing both.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor declared in pyproject (requires-python >=3.11) and
+        # is the one that matters: a 3.12-only syntax regression passes on a
+        # dev box running 3.12 and breaks every 3.11 user.
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # ⚠️ tests/test_packaging.py skips itself with "python not on PATH" when
+      # the interpreter is not reachable as bare `python`. setup-python does
+      # provide it, but assert rather than assume: locally this skip reads as
+      # a skip count of 2, which looks identical to the lost-Argus-gate
+      # failure below while being an entirely different cause.
+      - name: Assert the packaging test can run
+        run: |
+          command -v python || { echo "::error::python not on PATH; test_packaging will skip"; exit 1; }
+          python -c "import build" || { echo "::error::build module missing; test_packaging will skip"; exit 1; }
+
+      - name: Lint
+        run: ruff check .
+
+      # ⛔ Deliberately NOT gated on `ruff format --check`. It is red by design
+      # (see .claude/gates.md and the Makefile): reformatting the repo wholesale
+      # would bury real changes under whitespace. A permanently-red gate is a
+      # gate people stop reading. Reported here for visibility only.
+      - name: Formatter drift (informational, never fails the build)
+        continue-on-error: true
+        run: ruff format --check . || true
+
+      # ⚠️ The cross-repo Argus test reads $LYNCEUS_ARGUS_CSV, an export from a
+      # SIBLING repository that CI does not and should not have. It skips
+      # itself here, so CI's expected skip count is higher than a local run's.
+      # `-ra` (set in pyproject addopts) prints every skip reason, so check
+      # WHICH test skipped before concluding anything from a count.
+      - name: Tests
+        run: pytest -q
+
+      - name: Build wheel
+        run: |
+          python -m build --wheel
+          ls -la dist/

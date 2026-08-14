@@ -50,3 +50,7 @@ tests/test_setup_web_kismet.py
 
 # Internal scratch: rig probes, throwaway spikes, local bundles. Never published.
 /internal/
+
+# Agent tooling state (session/telemetry scratch). Machine-local, not project
+# content -- it varies per operator and per run and would be pure noise in a diff.
+/.claude-flow/

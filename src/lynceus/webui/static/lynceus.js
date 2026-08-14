@@ -562,4 +562,43 @@
   } else {
     init();
   }
+
+  // --- data-confirm ------------------------------------------------------
+  //
+  // ⛔ CSP-safe replacement for `onsubmit="return confirm(...)"`. A nonce
+  // authorises <script> ELEMENTS ONLY; it never covers inline on*= event
+  // attributes, which need 'unsafe-inline' or 'unsafe-hashes' -- both of
+  // which script-src deliberately omits. Measured in Chromium against the
+  // shipped policy: "Executing inline event handler violates the following
+  // Content Security Policy directive ... The action has been blocked."
+  //
+  // ⚠️ The failure was worse than "no dialog". `onsubmit="return confirm()"`
+  // cancels submission by RETURNING FALSE; a handler blocked outright never
+  // returns anything, so the form submitted immediately. That turned
+  // "Permanently silence this device" into a single unconfirmed click which
+  // suppresses that device's future alerts -- a destructive, security
+  // relevant action losing its only guard, silently.
+  //
+  // Capture phase is load-bearing, not stylistic: htmx binds its own submit
+  // handler (these forms carry hx-post), and only a capture-phase listener on
+  // document is guaranteed to run before it and be able to stop it. Plain
+  // non-htmx forms (alert_detail.html) go through the same path.
+  //
+  // Degradation is unchanged from before: with JS off neither the old
+  // onsubmit nor this fires, and the server-side 303 fallback still applies.
+  document.addEventListener(
+    "submit",
+    function (evt) {
+      var form = evt.target;
+      if (!form || typeof form.getAttribute !== "function") return;
+      var message = form.getAttribute("data-confirm");
+      if (!message) return;
+      if (!window.confirm(message)) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        evt.stopImmediatePropagation();
+      }
+    },
+    true
+  );
 })();

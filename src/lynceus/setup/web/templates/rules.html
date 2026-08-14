@@ -143,7 +143,6 @@
           <input
             type="checkbox"
             id="select-all-rule-types"
-            onchange="document.querySelectorAll('.rule-type-checkbox').forEach(function(cb){cb.checked = document.getElementById('select-all-rule-types').checked;});"
           >
           <strong>Select all rule types</strong>
           &mdash; toggles every checkbox below at once
@@ -172,4 +171,18 @@
       <button type="submit">Review &rarr;</button>
     </div>
   </form>
+
+{# ⛔ Was an inline onchange=. Blocked by the wizard's CSP (nonces do not
+   apply to on*= attributes), which would leave "Select all rule types" as a
+   checkbox that visibly ticks and does nothing to the list below it. #}
+<script nonce="{{ request.state.csp_nonce }}">
+  (function () {
+    var all = document.getElementById("select-all-rule-types");
+    if (!all) return;
+    all.addEventListener("change", function () {
+      var boxes = document.querySelectorAll(".rule-type-checkbox");
+      for (var i = 0; i < boxes.length; i++) boxes[i].checked = all.checked;
+    });
+  })();
+</script>
 {% endblock %}

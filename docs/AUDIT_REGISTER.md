@@ -324,7 +324,7 @@ The doc drove a full dashboard rebuild, so its errors propagated into the build.
 | Claim | Measured |
 |---|---|
 | "the current MAC links are mid-blue on near-black and are the worst offender" (`ui-direction.md:58`) | They inherit Pico's `--pico-primary` and pass AA in **both** themes: light `#0172ad` on `#fff` = **5.23:1**; dark `#01aaff` on `rgb(19,22.5,30.5)` = **7.05:1**. `.mac-cell` sets only `font-family` (`lynceus.css:105`). |
-| "a strict CSP applies and the tool ships offline" (`ui-direction.md:42`) | **No CSP header is sent.** Nothing in `src/lynceus/webui/`, `deploy/` or `systemd/` sets one; the served response carries none. The offline/no-CDN discipline is real and worth keeping — its stated justification is not. |
+| "a strict CSP applies and the tool ships offline" (`ui-direction.md:42`) | **Was false; now true.** No CSP header was sent — nothing in `src/lynceus/webui/`, `deploy/` or `systemd/` set one. ✅ **Closed 2026-08-07**: `webui/csp.py` sends a per-request nonce policy on every response. The claim was a premise the doc asserted rather than a control anyone had built, which is the point of the finding and why it stays recorded. The offline/no-CDN discipline was always real; its stated justification was not. |
 
 The contrast claim did damage: acting on it, the build forced `#4ea8ff` for all themes with a
 `#7ec3ff` dark override, lifting dark to 9.58:1 and dropping **light to 2.51:1** — a genuine AA
@@ -333,6 +333,19 @@ failure introduced in the name of accessibility. Reverted to Pico's defaults.
 ⚠️ Note for anyone who later adds a CSP: `base.html:13-15` runs an **inline** `<script>` to set the
 theme before first paint. A strict CSP without a nonce or hash blocks it and reintroduces the
 light-mode flash the inline script exists to prevent.
+
+✅ **Handled when the CSP landed (2026-08-07).** Every inline script carries a per-request nonce, and
+`test_webui_csp.py` fails if any inline `<script>` renders without the current one. Hashes were not
+viable: the `data_table` macro *generates* `__lynTableApply("<table id>")` per table, so its body
+differs per table and no static hash list could cover it.
+
+🪤 **The trap that nearly landed silently**, recorded because it would have been invisible in review:
+the macro is imported with `{% from "_table_macro.html" import data_table %}`, and a Jinja macro
+**cannot see the caller's context** unless the import says `with context`. Without it,
+`request.state.csp_nonce` renders as an EMPTY attribute inside the macro, the browser refuses that
+script, and nothing errors — the table-state pre-paint applier just stops running and the
+default→persisted column jump returns. All five import sites now say `with context`, and
+`test_the_table_macro_script_gets_the_nonce_through_the_import` is the tripwire.
 
 ---
 
@@ -448,8 +461,351 @@ evidence supports only a lead. ✅ **Retired — see "Label policy" at the top; 
 - **Schema-version tolerance**: `_check_argus_schema_version('999', …)` warns and continues.
 - **Device list/detail projections and the silence/allowlist path**, including that the poller
   reloads the UI allowlist before every tick and matches before alert evaluation.
-- **Finding 0 is closed.** The watchlist-MAC delegation now fires on the shipped ruleset:
-  `RULE_HITS=[('argus_mac', 'watchlist_mac', 'high', 'aa:bb:cc:dd:ee:ff')]`.
+- **Finding 0 is closed** *on a configured deployment*. The watchlist-MAC delegation fires on the
+  shipped ruleset: `RULE_HITS=[('argus_mac', 'watchlist_mac', 'high', 'aa:bb:cc:dd:ee:ff')]`.
+  ⚠️ **Amended 2026-08-13 — its symptom is still reachable by another route.** That closure holds
+  only where `rules_path` is wired. It is not wired on the default wizard path, so the button still
+  writes a row that nothing consults. See Finding 16.
+
+## Wave 5 — production-readiness pass, 2026-08-13
+
+Scope: is this shippable/shareable, not is it built. Taken at `d66d844` with the `feat/csp` work
+uncommitted in the tree. Three read-only delegate packets (`gpt-5.6-sol` ×2, `gpt-5.6-terra`)
+supplied leads; **every lead was re-verified here before promotion, and the delegates' own ranking
+was wrong twice** — a packet's #1 was weaker than a finding it listed further down, and one lead
+(#12 below) was reported as a mechanism and only became a Finding once reproduced.
+
+**Suite at the time of the pass, on the dirty `feat/csp` tree**: `5 failed, 3256 passed, 1 skipped,
+47 deselected` in 18m09s, Python 3.11.14. All five failures are the uncommitted CSP work (Finding
+13). ⚠️ The 18m09s is not comparable to the `.claude/gates.md` baseline — three delegate packets ran
+concurrently and starved the suite into `D` state at 6.6% CPU with `/proc/pressure/io` at ~7% full
+stall. `gates.md` warns about exactly this; heed it.
+
+### 🔴 Finding 12 — a transient ntfy failure permanently swallows the alert for the whole dedup window
+
+`poll_once` commits the alert row **before** attempting delivery, and the dedup gate keys on the
+existence of that row, not on whether anyone was told:
+
+- `poller.py:400-405` — dedup: `get_recent_alert_for_rule_and_mac(...) is not None` → `continue`
+- `poller.py:411-419` — `db.add_alert(...)` commits
+- `poller.py:449-456` — `notifier.send(...)`; a `False` return only logs a warning
+
+So a send that fails is never retried: the next poll finds the row it just wrote and skips the emit
+path entirely. At the default `alert_dedup_window_seconds: 3600` (`config.py:172`) one blip costs an
+hour of alerting for that device+rule.
+
+**Reproduced** with a notifier that fails poll 1 only, device in range for five 60s polls:
+
+```
+poll 1 (t+  0s) ntfy=DOWN : attempts=2  delivered=0
+poll 2 (t+ 60s) ntfy=UP   : attempts=2  delivered=0
+poll 3 (t+120s) ntfy=UP   : attempts=2  delivered=0
+poll 4 (t+180s) ntfy=UP   : attempts=2  delivered=0
+poll 5 (t+240s) ntfy=UP   : attempts=2  delivered=0
+HIGH watchlist alert ever delivered?  NO
+```
+
+This is the money path's last step failing on its most likely error. Kismet gets urllib3
+retry+backoff (`kismet.py:665-672`); ntfy gets nothing. The field deployment is mobile, so a data
+blip is *most* likely exactly when something worth detecting is in range.
+
+⭐ **Why it shipped, and the general lesson: there is no failing-notifier double in the suite.**
+`NullNotifier`, `RecordingNotifier` (`notify.py:39,51`) and `_CountingNullNotifier`
+(`test_integration.py:207`) all return `True` unconditionally. `test_notify.py` covers the unit-level
+`False` return, but nothing composes "send failed" with "next poll". **A test double that can only
+succeed cannot test a failure path**, and every integration test in the suite used one.
+
+✅ **Fixed 2026-08-13 (migration 024).** Dedup now keys on **delivery**, not on row existence.
+`alerts` gains `notified_at` (NULL = written but nobody told) and `notify_attempts`; the emit gate
+distinguishes three states, and collapsing any two reintroduces a defect:
+
+| State | Action | Why not otherwise |
+|---|---|---|
+| delivered in-window | suppress | the operator already knows |
+| undelivered, attempts remaining | **retry the existing row** | emitting a new row instead would fill `/alerts` with duplicates of one detection every time ntfy blipped |
+| undelivered, attempts spent | suppress the retry, leave `notified_at` NULL | still counted as undelivered on `/settings` rather than quietly forgotten |
+
+`NOTIFY_MAX_ATTEMPTS = 4` bounds it — each attempt costs a blocking HTTP timeout on the poll path,
+and ~4 minutes of tolerance matches `RUNTIME_KISMET_LOSS_THRESHOLD`'s. The attempt is counted
+**before** the send, so a hung or unkillable notifier still burns one; counted after, a wedged send
+would be retried forever and the bound would not be a bound. Evidence capture is skipped on a retry
+(it is keyed to the original alert id and already stored).
+
+**Re-measured, same scenario as the finding** — ntfy down for poll 1 only, device in range for five:
+
+```
+poll 1 (t+  0s) ntfy=DOWN : attempts=2  delivered=0
+poll 2 (t+ 60s) ntfy=UP   : attempts=3  delivered=1   ← delivered on the very next poll
+poll 3-5                  : attempts=3  delivered=1   ← and correctly deduplicated thereafter
+HIGH alert rows: 1 (no duplicates)
+```
+
+⚠️ **A one-shot rule cannot be retried, by construction.** `new_non_randomized_device` fires only on
+a device's *first* sighting, so if its notification fails there is no later poll on which the rule
+matches again. That row stays `notified_at = NULL` permanently and is reported in the undelivered
+count — which is the honest outcome, and the reason the count exists rather than a retry queue alone.
+
+⭐ **Backfill decision, recorded because it is irreversible:** pre-migration rows are stamped
+`notified_at = ts` (treated as delivered) rather than left NULL. Their true delivery state is
+unknowable and can never be recovered; leaving them NULL would have reported every alert the database
+has ever held as undelivered the moment an operator upgraded.
+
+**`/settings` now reports the undelivered count.** ntfy *reachability* is a liveness probe — it says
+the broker answered just now, not that anything ever arrived. A wrong topic or a stale auth token
+passes reachability and drops every notification, and the operator's only symptom is silence, which
+for this product is indistinguishable from "nothing is out there".
+
+New `tests/test_notify_delivery.py` supplies the missing failing-notifier double (`OutageNotifier`,
+parameterised over both `return False` and `raise`) and was validated by planting the original
+dedup-on-row-existence logic back: **4 of its 7 tests fail**, all pass on revert.
+
+⭐ **Adding a migration is a six-test change in this repo, and that is by design.** Migration 024
+broke five further tests plus one already fixed, every one of them a deliberate manifest pin:
+`test_migrations_dir_lists_both_files` (exact filename list), `test_rollback_one_step_each`,
+`test_rollback_to_zero_then_reapply`, `test_rollback_to_specific_target`,
+`test_validate.py::test_rollback_subcommand_to_zero` (all pinning `range(1, 24)` / max version 23),
+and `test_list_alerts_shape_through_migrations` (exact projection key set). Updating the
+`test_per_migration_up_down_up` parametrize bound is what first drove 024's **up→down→up roundtrip**,
+which is the check that actually proves the down migration works — it passes.
+
+⚠️ `notify_attempts` is deliberately **not** on `list_alerts`' public shape: it is retry bookkeeping
+for the poller, not something a caller should branch on. `notified_at` is, because the
+paged/unpaged distinction is exactly what Finding 12 turned on.
+
+⇒ **Grep for the tests that pin a manifest BEFORE adding to it.** The standing rule from wave 1 is
+"before changing markup, grep for tests pinning the old literal"; a migration list, a column
+projection and a filename list are the same thing in a different costume. It was learned twice this
+session — once on the wizard templates, once here — both times from a full-suite run rather than
+from looking first.
+
+### 🔴 Finding 13 — the CSP silently disables every confirmation dialog on destructive actions
+
+A CSP nonce authorises `<script>` **elements**. It does not authorise inline `on*=` event
+attributes — those need `'unsafe-inline'` or `'unsafe-hashes'`, which the policy correctly omits
+(`webui/csp.py:36-52`). There are **11** `onsubmit="return confirm(...)"` handlers:
+`alert_detail.html:125,139,144,162,176` and `_device_actions.html:31,57,82,89,106,121`.
+
+**Measured in headless Chromium** against the real `build_policy()` output:
+
+```
+NONCED_SCRIPT_RAN=true          ← the CSP work does what it intends
+MARKUP_HAS_ONSUBMIT_ATTR=true   ← markup looks correct on inspection
+"Executing inline event handler violates the following Content Security
+ Policy directive 'script-src 'self' 'nonce-…''. … The action has been blocked."
+HANDLER_IS_LIVE_FUNCTION=false  ← the confirm() never runs
+```
+
+⚠️ **The failure mode is worse than "no dialog".** `onsubmit="return confirm(…)"` cancels submission
+by returning false; when the handler is blocked outright it never returns anything, so **the form
+submits immediately**. "Permanently silence this device" becomes a single unconfirmed click that
+suppresses its future alerts — a destructive, security-relevant action losing its only guard.
+
+⭐ **`test_webui_csp.py` could not catch this**: it inspects `<script>` tags exclusively
+(`:115-127,130-151`). A guard that checks the mechanism you implemented will not notice the
+mechanism you forgot. The regression test has to forbid `on*=` and `javascript:` in rendered markup.
+
+✅ **Fixed 2026-08-13.** All 11 converted to `data-confirm="…"`, driven by one delegated
+**capture-phase** submit listener in `lynceus.js`. Capture phase is load-bearing rather than
+stylistic: these forms carry `hx-post`, htmx binds its own submit handler, and only a capture-phase
+listener on `document` is guaranteed to run first and be able to cancel it. `hx-confirm` was
+rejected as the fix because it would have covered only the six htmx forms in `_device_actions.html`
+and none of the five plain forms in `alert_detail.html`.
+
+**Verified in headless Chromium under the shipped policy**, not by reading:
+
+```
+FORM_FOUND=true  HAS_DATA_CONFIRM=true
+CONFIRM_CALLED: Permanently silence aa:bb:cc:dd:ee:02? F…
+SUBMIT_PROCEEDED_AFTER_DECLINE=false
+```
+
+🪤 **The first version of the regression test passed with the defect planted back in.** The forms
+carrying the confirms are gated — the silence section needs `allowlist_configured`, the watchful and
+alert-detail forms need an alert to exist — so a default-config fixture renders exactly **one** of
+the eleven, and the assertions were vacuously true. The fixture now configures an allowlist path and
+seeds an alert, asserts `seen >= 6` destructive forms before judging any of them, and was
+re-validated by planting **both** failure shapes: the inline handler restored (2 tests fail) and the
+confirm deleted outright with no replacement (1 test fails). ⇒ **Guarding against the defect is not
+the same as rendering the code that carries it.**
+
+### 🔴 Finding 13b — the same CSP work fails five tests, in two distinct ways
+
+- **3 × `jinja2.exceptions.UndefinedError: 'request' is undefined`** —
+  `test_columns_menu.py` (×2), `test_devices_column_layout.py`. `_table_macro.html:116` now reads
+  `request.state.csp_nonce`, so the macro can no longer be rendered standalone by a unit test.
+- **2 × "leaks the toggle state in the body"** — `test_webui.py:9285` and its sibling. The
+  per-request nonce breaks byte-identical comparison between a disabled capability and a missing
+  device.
+
+⚠️ **The second pair must not be "fixed" by weakening the assertion.** That guard came out of the
+co-observation red team and defends a real property. The property still holds — a random nonce
+carries no information about toggle state — so the *oracle* is what is now wrong, not the invariant.
+Normalise the nonce before comparing.
+
+✅ **Fixed 2026-08-13.** The three macro tests now mirror the production import idiom — `with
+context` plus a minimal request stub exposing `state.csp_nonce` — rather than being worked around
+with a template-side `if request is defined` fallback, which would have reintroduced the
+silent-empty-nonce failure the `with context` trap above describes. The two oracle tests compare
+through `_body_without_nonce()`, which masks **only the nonce that response advertised in its own
+header**, so any other divergence still fails. Re-validated by planting a one-character leak into
+the disabled path (`" "` appended to the 404 message when the capability is off): the guard fails,
+confirming that masking the nonce did not cost it its teeth.
+
+### 🟡 Finding 14 — the setup wizard gets no CSP at all
+
+`CSPMiddleware` is registered in `webui/app.py:1457` only. `setup/web/app.py:163-172` installs
+`CSRFMiddleware` and `SetupTokenMiddleware` and nothing else, while
+`setup/web/templates/_base.html:14,118` and `apply_progress.html:25` carry inline scripts. This is
+the **more** sensitive of the two apps: it holds the Kismet API key and ntfy topic in flight and may
+run as root. No concrete XSS sink was established there, so this is a risk amplifier rather than a
+proven exploit — but the asymmetry is not deliberate, it is an omission.
+
+✅ **Fixed 2026-08-13.** `CSPMiddleware` registered outermost in `setup/web/app.py` so the policy
+also covers the 403 `SetupTokenMiddleware` returns — the response an unauthenticated caller sees
+most. New `tests/test_setup_web_csp.py` mirrors the dashboard's guards, because the two apps are
+separate FastAPI instances with separate stacks and a guard on one proves nothing about the other,
+which is exactly how this gap arose.
+
+⭐ **Applying the CSP surfaced five more inline handlers that would each have failed silently**, none
+of which was in the original finding:
+
+| Site | What breaks under the policy |
+|---|---|
+| `review.html:139`, `apply_complete.html:169,175` | Double-submit guards. `/apply` becomes double-clickable — on the step that writes config and, in system scope, chowns files. |
+| `rssi.html:26` | The live readout stops tracking the slider; the operator drags it and reads a stale number. |
+| `rules.html:146` | "Select all rule types" ticks and does nothing to the list below it. |
+
+The double-submit guards needed an implementation, not just an attribute: the wizard deliberately
+does **not** load `lynceus.js` (it ships its own theme toggle for the same reason), so
+`data-disable-on-submit` would have been pure decoration. It is now wired in `_base.html`.
+⇒ **Adding a CSP is not a header change; it is an audit of every inline handler in the app.**
+
+🪤 **The fix for a silent-failure bug failed silently, in the same way.** The RSSI and select-all
+replacement listeners were first appended **after `{% endblock %}`** in their templates. Both files
+`{% extends "_base.html" %}`, and Jinja discards anything outside a block — so both scripts rendered
+**nothing**, on pages that looked correct in source review. The new
+`test_no_inline_event_handlers_on_any_wizard_step` passed throughout, because removing a handler and
+never replacing it satisfies an absence assertion perfectly. Only a **pre-existing** wizard test
+(`test_rules_page_carries_select_all_rule_types_checkbox`, which pins `querySelectorAll`) caught it —
+a test written years earlier to prevent exactly "one half of the pair goes missing", firing for a
+cause it could not have anticipated. ⇒ **Every absence assertion needs a presence assertion beside
+it**; `test_each_converted_handler_has_a_live_replacement` is that half, and was validated by
+re-planting the outside-the-block mistake.
+
+⚠️ **Four existing tests pinned the old inline markup and broke** —
+`test_setup_web_apply_complete.py` (×2), `test_setup_web_review.py`,
+`test_setup_web_severity_rules.py`. They asserted the *mechanism* (`onsubmit=`, `onchange=`) rather
+than the behaviour, so a legitimate CSP-driven migration read as a regression. Updated to pin both
+halves — the per-form attribute **and** the listener implementing it. The lesson is the standing one
+from wave 1: **before changing markup, grep for tests pinning the old literal.** It was not done
+here, and the full-suite run is what caught it.
+
+### 🔴 Finding 15 — two personal ntfy topics are published in an already-public repo
+
+`docs/CONFIGURATION.md:126` (`kev-lynceus-home`) and `:195` (`kev-lynceus-travel`). `gh repo view`
+reports the repository **PUBLIC**. An ntfy topic is a bidirectional shared secret: anyone who reads
+it can subscribe to the operator's surveillance alerts — deriving location and what is near them —
+and can publish forged alerts to their phone. The README already states that a topic is a secret,
+which makes this a documentation error rather than a design one. Rotation is the operator's action;
+the docs must carry obviously synthetic values.
+
+### 🟡 Finding 16 — accepting every wizard default yields a system that can never alert
+
+Argus-backed alerting is opt-in and `default=False` at both the top-level gate and per rule type
+(`cli/setup.py:727-736,745-752`). Decline it and no `rules.yaml` is written, `rules_path` is left
+unwired (`config.py:160`), and the daemon takes the empty branch at `poller.py:836-838`, logging
+*"no rules_path configured; ruleset is empty — no alerts will fire"*.
+
+**Reproduced**, two arms, one variable, against a planted watchlist row:
+
+```
+ARM A  accept wizard defaults    →  0 rule hits
+ARM B  shipped rules.yaml wired  →  1 rule hit  (argus_mac, high)
+```
+
+Capture still works and the UI populates, so the install looks healthy. The home page does surface
+the state — `_nav_tiles.html:42-49` renders "no ruleset configured" — but with **neutral** styling,
+while a merely-stale watchlist earns a `warn` (`:35-37`). The one condition that means *nothing can
+ever alert* is the only one not flagged. The reasoning in the comment there is sound as far as it
+goes (an unset path must not cry wolf like an unreadable one) but it draws the wrong conclusion:
+the answer is a third treatment, not the absence of one.
+
+✅ **Fixed 2026-08-13.** The tile now reads **"no ruleset — nothing will alert"** and carries
+`nav-tile-warn` — in words as well as colour, since colour is never the only carrier here. It stays
+`warn` rather than the `alert` red, which is reserved for a ruleset that is configured and will not
+load: unset is a legitimate fresh-install state, not a fault. The README quick start now names
+opting into Argus alerting as required for a first alert, and documents the SSH-tunnel step for
+`--web` on a headless box.
+
+🪤 **Fixing it exposed a vacuous assertion in the very test that covered it.**
+`test_home_rules_tile_distinguishes_unset_from_unreadable` asserted
+`"nav-tile-alert" not in tiles.split("/rules")[1]`. The tile renders as
+`<a class="nav-tile nav-tile-warn" href="/rules">`, so the **class precedes the href** and splitting
+on the href discards it: that assertion could never have detected the class it existed to forbid,
+and passed regardless of what the tile rendered. It only came to light because a *positive*
+assertion was added beside it and failed. Both now go through a `_tile_for()` helper that extracts
+the whole `<a>` element. ⇒ **A negative assertion over a substring you have not proved is in scope
+is not a guard.** Third instance of this shape in the register; see the wave-1 entry on negative
+assertions disarmed by an unrelated markup change.
+
+### 🟡 Finding 17 — documentation claims a reader would act on, that are false
+
+The README's credibility rests on "check the claims on this page yourself", which raises the cost of
+each of these:
+
+| Claim | Measured |
+|---|---|
+| `SECURITY.md:5,73` — "version **0.9.4**" | Shipped version is `0.9.5` (`pyproject.toml:7`). Stale on the security document specifically. |
+| `config/rules.yaml:85` — "enabled by default as of 0.9.6" | ⚠️ **Partly refuted on re-check.** `b6f1961` (the commit that enables it) is in **no tag**, so 0.9.6 is genuinely the release it lands in — the claim is forward-looking, not false. It still reads as a live fact in a config shipped with 0.9.5. Reworded to say so explicitly rather than deleted. ⇒ *Check `git tag --contains` before calling a version reference stale.* |
+| `README.md:368` step 1 `./install.sh --user` + `:385` step 4 `sudo systemctl enable --now …` | `--user` installs **no** systemd units (`install.sh:70`, `install_system()` at `:423` is the only writer). Following the documented short path yields "unit not found". |
+| `README.md:304-309` — "3024 tests on a clone … full local suite is 3508" | Actual is ~3256, and `.claude/gates.md` records the local/clone split as history. |
+| `README.md` — `--web` is "friendlier over SSH" | The wizard binds `127.0.0.1` (`cli/setup.py:1555-1560`); over SSH `localhost:8766` is the laptop, not the Pi. The required port-forwarding step is undocumented. |
+| `README.md:75-81` — "Probe history … **with the reveals expanded**", alt-text "**five devices** … two of them sharing a network named `Hendricks_Home`" | The committed `docs/images/probes-history.png` shows **three** devices with every reveal **collapsed** (`reveal 2 network(s) ›`). The prose and alt-text describe a screenshot that is not the one in the repo, and the `Hendricks_Home` correlation the paragraph exists to demonstrate is not visible in it. |
+
+### 🔴 Finding 18 — the threat model claimed a boundary the code stopped honouring
+
+`README.md:483-484` (Privacy / threat model) stated:
+
+> **Read-only UI is a security boundary.** Visibility supports operator awareness; mutability would
+> erode the boundary, so it isn't there.
+
+Measured: **23 `@app.post` routes** exist on the dashboard — ack, bulk-ack, note, snooze, allowlist,
+allowlist/remove, watchlist, watch, and the five watchful actions. Mutability *is* there; it was
+added deliberately, with CSRF and confirmation prompts, and the threat-model bullet was never
+updated to match. This is worse than ordinary drift because it is a **security** claim: a reader
+auditing Lynceus before trusting it is told there is no write surface to attack.
+
+The same section was silent on the fact that the UI has **no authentication of any kind** (see
+BACKLOG, "Web UI has no authentication"), so `ui_allow_remote: true` reads as an ordinary
+remote-access convenience rather than "publish an unauthenticated surveillance dashboard to the
+LAN". ✅ **Both corrected 2026-08-13**: the bullet now says what is and is not mutable and why, and
+a new bullet documents SSH port-forwarding as the supported remote path.
+
+⭐ **The general shape, and it is the third instance in this register:** the sentence was true when
+written. Prose does not fail loudly when the code moves underneath it, which is why *"if you change
+behaviour, change the sentence that describes it in the same commit"* is now in `CONTRIBUTING.md`.
+
+⭐ **`Hendricks_Home` is NOT a data leak** — checked by opening the image. It appears only in README
+prose and alt-text, never in a rendered screenshot, and the sample MACs are plainly synthetic
+(`00:13:37:de:ad:be`, `b8:27:eb:01:02:03`). Reported as a possible personal-network identifier by a
+delegate; **refuted here.** The real defect at that location is the screenshot drift above. Fixing it
+is a content decision — either re-take the screenshot with the reveals expanded, or rewrite the
+paragraph to describe the collapsed view that actually ships.
+
+### Leads recorded but not promoted — reproduce before acting
+
+Reported by delegates, code-verified but **not** reproduced at runtime here. Do not treat as
+Findings until they are:
+
+- Config rewrite preserves a permissive mode: `os.open(..., 0o600)` applies only on inode creation,
+  so an existing `0644` config stays world-readable through a reconfigure (`setup/core.py:194-213`).
+- `logger.debug(..., exc_info=True)` in the ntfy failure path can restore the raw topic that the
+  WARNING line deliberately redacts (`notify.py:172-174`).
+- Short-topic redaction reveals the whole value (`abc123` → `abc1•••23`) (`redact.py:22-33`).
+- Export redaction misses indented/quoted keys and block scalars while reporting the field redacted
+  (`redact.py:93-99,130-160`).
+- Fresh-DB `chmod` failure warns and continues; existing DBs are never checked or repaired
+  (`webui/server.py:41-53`).
 
 ## Still open
 

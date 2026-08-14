@@ -102,19 +102,34 @@ _COLS = (
 )
 
 
+class _NonceRequest:
+    """Minimal stand-in for the request the macro reads.
+
+    ⚠️ `with context` on the import is NOT optional and is not cosmetic: a
+    Jinja macro cannot see the caller's context without it, so
+    `request.state.csp_nonce` renders EMPTY, the browser refuses that script,
+    and nothing errors -- the table-state applier just stops running. Every
+    production import site says `with context` for this reason
+    (docs/AUDIT_REGISTER.md, Wave 5), so these renders mirror it rather than
+    working around it with a template-side fallback."""
+
+    class state:
+        csp_nonce = "testnonce"
+
+
 def _render_macro(env, *, table_id):
     # v0.9.2 per-feature flags: table_id alone no longer enables the layer;
     # the four converted tables pass resize=true, hide=true to keep the full
     # resize/reorder + hide-menu + reset layer this suite asserts.
     arg = f", table_id='{table_id}', resize=true, hide=true" if table_id else ""
     tpl = (
-        "{% from '_table_macro.html' import data_table %}"
+        "{% from '_table_macro.html' import data_table with context %}"
         + _COLS
         + "{% call data_table(cols, '/devices', 'page_size=50', 'a', 'asc'"
         + arg
         + ") %}<tr><td>cellA</td><td>cellB</td></tr>{% endcall %}"
     )
-    return env.from_string(tpl).render()
+    return env.from_string(tpl).render(request=_NonceRequest)
 
 
 # --- 1. macro opt-IN contract --------------------------------------------

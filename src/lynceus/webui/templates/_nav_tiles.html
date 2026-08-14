@@ -37,14 +37,28 @@
           watchlist_freshness.status if watchlist_freshness.has_import else 'not loaded',
           'warn' if (not watchlist_freshness.has_import or watchlist_freshness.status != 'fresh') else '') }}
 
-  {# Three states, not two. "no rules_path configured" is normal on a fresh
-     install and must not render as the alarming red that "a path is set and
-     it will not load" earns — that one means the operator thinks rules are
-     running when none are. #}
+  {# Three states, three treatments. "a path is set and it will not load" earns
+     the alarming red: the operator believes rules are running when none are.
+
+     ⚠️ "no rules_path configured" is NOT normal-and-fine, which is what this
+     tile used to imply by rendering it with no treatment at all. It is the
+     default outcome of accepting every setup-wizard default — Argus alerting
+     is opt-in and defaults to no — and it means the daemon starts, captures,
+     populates this dashboard, and CANNOT RAISE AN ALERT. Measured: a device
+     placed on the watchlist produced 0 rule hits in that state and 1 with the
+     shipped ruleset wired (docs/AUDIT_REGISTER.md, Wave 5, Finding 16).
+
+     It previously ranked BELOW a merely-stale watchlist, which gets 'warn'.
+     The condition that means nothing can ever alert now carries a warning of
+     its own, and says so in words as well as colour — colour is never the only
+     carrier here. It stays 'warn' rather than 'alert' because it is a state
+     the operator can be in legitimately on a fresh install; it is not a fault,
+     it is a system that is not finished. #}
   {{ tile('/rules', 'rules',
           tiles.rules if tiles.rules is not none else '—',
           {'ok': 'enabled',
-           'unset': 'no ruleset configured',
+           'unset': 'no ruleset — nothing will alert',
            'unreadable': 'ruleset will not load'}[tiles.rules_state],
-          'alert' if tiles.rules_state == 'unreadable' else '') }}
+          'alert' if tiles.rules_state == 'unreadable'
+            else ('warn' if tiles.rules_state == 'unset' else '')) }}
 </nav>

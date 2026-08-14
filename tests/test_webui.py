@@ -8615,22 +8615,55 @@ def test_home_nav_tiles_link_every_section_with_counts(tmp_path):
         db.close()
 
 
+def _tile_for(tiles_html: str, href: str) -> str:
+    """The whole <a> element for one nav tile, class attribute included.
+
+    🪤 Do NOT reach for ``tiles.split(href)[1]``. The tile renders as
+    ``<a class="nav-tile nav-tile-warn" href="/rules">``, so the CLASS comes
+    BEFORE the href and splitting on the href discards it. The original
+    version of this test asserted ``"nav-tile-alert" not in split(...)[1]``
+    and was therefore vacuous -- it could never have detected the class it
+    existed to forbid, and passed no matter what the tile rendered. Found
+    when a positive assertion was added beside it (Wave 5, Finding 16).
+    """
+    match = re.search(r'<a\b[^>]*href="' + re.escape(href) + r'"[^>]*>.*?</a>', tiles_html, re.S)
+    assert match, f"no nav tile found for {href!r}"
+    return match.group(0)
+
+
 @pytest.mark.webui
 def test_home_rules_tile_distinguishes_unset_from_unreadable(tmp_path):
-    """Three states, and collapsing any pair of them misleads.
+    """Three states, three treatments, and collapsing any pair misleads.
 
-    "No ruleset configured" is normal on a fresh install and must not wear
-    the alarming treatment that "a ruleset is configured and will not load"
-    earns — that one means the operator believes rules are running when none
-    are. Rendering unreadable as 0 would hide it entirely.
+    "A ruleset is configured and will not load" earns the alarming treatment:
+    the operator believes rules are running when none are. Rendering it as 0
+    would hide it entirely.
+
+    ⚠️ "No ruleset configured" is NOT the harmless third case this test
+    originally treated it as. It is the default outcome of accepting every
+    wizard default, and it means the daemon captures, populates the dashboard,
+    and can never raise an alert — measured at 0 rule hits for a watchlisted
+    device (Wave 5, Finding 16). It previously ranked below a merely-stale
+    watchlist, which gets 'warn'. It now carries 'warn' too, in words as well
+    as colour, but still not the red reserved for a broken ruleset.
     """
     # (1) unset — no rules_path at all.
     app, db = _make_app(tmp_path)
     try:
         with TestClient(app) as client:
             tiles = client.get("/").text.split('class="nav-tiles"')[1].split("</nav>")[0]
-        assert "no ruleset configured" in tiles
-        assert "nav-tile-alert" not in tiles.split("/rules")[1]
+        rules_tile = _tile_for(tiles, "/rules")
+        assert "nothing will alert" in tiles, (
+            "the empty-ruleset state must say what it MEANS, not merely that a "
+            "file is absent -- colour is never the only carrier"
+        )
+        assert "nav-tile-warn" in rules_tile, (
+            "an install that can never alert was rendered with no treatment at all"
+        )
+        assert "nav-tile-alert" not in rules_tile, (
+            "unset is a fresh-install state, not a fault; red is for a ruleset "
+            "that is configured and will not load"
+        )
     finally:
         db.close()
 
@@ -8646,7 +8679,7 @@ def test_home_rules_tile_distinguishes_unset_from_unreadable(tmp_path):
         assert r.status_code == 200, "a broken ruleset must not take the home page down"
         tiles = r.text.split('class="nav-tiles"')[1].split("</nav>")[0]
         assert "ruleset will not load" in tiles
-        assert "nav-tile-alert" in tiles
+        assert "nav-tile-alert" in _tile_for(tiles, "/rules")
     finally:
         db2.close()
 
@@ -8753,6 +8786,29 @@ _CO_NEIGHBOUR = "aa:bb:cc:dd:ee:02"
 _CO_NOW = 1_700_000_000
 
 
+def _body_without_nonce(response):
+    """Response body with this response's own CSP nonce masked out.
+
+    ⛔ NOT a licence to ignore differences, and it must never grow into one.
+    The property these comparisons defend is unchanged: a disabled capability
+    must be indistinguishable from a missing device. What changed is that a
+    per-request CSP nonce now appears in every response, so raw byte-equality
+    stopped being a valid ORACLE for that property -- it reports a difference
+    that is fresh randomness, not information about the toggle.
+
+    Only the exact nonce THIS response advertised in its own header is
+    masked. Any other divergence -- including any other random value -- still
+    fails the comparison, so the guard keeps its teeth. Weakening these
+    assertions instead (dropping the body check, comparing prefixes) would
+    have disarmed a control that came out of the co-observation red team.
+    """
+    policy = response.headers.get("content-security-policy", "")
+    match = re.search(r"'nonce-([A-Za-z0-9_-]+)'", policy)
+    if not match:
+        return response.text
+    return response.text.replace(match.group(1), "<NONCE>")
+
+
 def _make_co_app(tmp_path, *, enabled: bool, seed_devices: bool = True):
     config = Config(
         db_path=str(tmp_path / "co.db"),
@@ -8822,7 +8878,7 @@ def test_co_observations_disabled_is_byte_identical_to_a_missing_device(tmp_path
         with TestClient(app_on) as c_on:
             r_on = c_on.get(f"/devices/{_CO_ANCHOR}/co-observations")
         assert r_off.status_code == r_on.status_code == 404
-        assert r_off.text == r_on.text
+        assert _body_without_nonce(r_off) == _body_without_nonce(r_on)
     finally:
         db_off.close()
         db_on.close()
@@ -9282,7 +9338,9 @@ def test_disabled_is_indistinguishable_even_for_an_invalid_request(tmp_path, co_
             with TestClient(app_off) as c:
                 off = c.get(f"/devices/{_CO_ANCHOR}/co-observations?w={bad}")
             assert on.status_code == off.status_code, f"w={bad} leaks the toggle state"
-            assert on.text == off.text, f"w={bad} leaks the toggle state in the body"
+            assert _body_without_nonce(on) == _body_without_nonce(off), (
+                f"w={bad} leaks the toggle state in the body"
+            )
     finally:
         db_on.close()
         db_off.close()

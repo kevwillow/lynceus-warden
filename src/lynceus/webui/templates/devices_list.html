@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}devices &mdash; lynceus{% endblock %}
 {% block content %}
-  {% from "_table_macro.html" import data_table, pagination_footer %}
+  {% from "_table_macro.html" import data_table, pagination_footer with context %}
   {% include "_topnav.html" %}
   <h2>devices</h2>
 

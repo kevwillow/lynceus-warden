@@ -459,10 +459,21 @@ def test_rules_page_carries_select_all_rule_types_checkbox():
     # selector reaches for; missing class hooks would no-op the
     # toggle and silently regress the affordance.
     assert 'class="rule-type-checkbox"' in body
-    # And the inline JS that wires the two together (presence test
-    # only; behavior test of the toggle would need a JS runtime).
+    # And the JS that wires the two together (presence test only; a behavior
+    # test of the toggle would need a JS runtime).
+    #
+    # ⚠️ Was an inline `onchange=` on the checkbox. The wizard's CSP (Wave 5,
+    # Finding 14) refuses inline event attributes, which would have left this
+    # affordance visibly ticking and doing nothing to the list below it --
+    # exactly the "one half of the pair silently dropped" regression this test
+    # was written to prevent, arriving by a route it could not see. The
+    # handler now lives in a nonce'd <script> at the foot of rules.html.
     assert "rule-type-checkbox" in body
     assert "querySelectorAll" in body
+    assert 'getElementById("select-all-rule-types")' in body, (
+        "the listener that wires select-all to the per-type boxes is missing"
+    )
+    assert "onchange=" not in body, "inline onchange is blocked by the CSP"
 
 
 # ---- token enforcement ---------------------------------------------------

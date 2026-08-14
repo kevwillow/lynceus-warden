@@ -59,10 +59,30 @@ test defects that Windows could not structurally expose, fixed in `9b2636c`;
 A drop below 3508 (local) or 3048 (Linux clone) is a regression. A **rise** in
 skips is usually one too — but not always, and the exceptions are below.
 
-⭐ **Current Linux number, measured 2026-08-07 at `d5c27e2`: 3249 passed, 1
-skipped, 47 deselected, 0 failed, ~17m30s.** That is the number to beat here.
-Verified twice — on the branch and again post-merge in a throwaway worktree,
-identical both times.
+⭐ **Current Linux number, measured 2026-08-13 on `feat/csp` after the
+production-readiness remediation: 3281 passed, 1 skipped, 47 deselected, 0
+failed, 19m46s.** That is the number to beat here. The skip is
+`test_setup_wizard.py:1955` (real `/sys/class/bluetooth` present) — **skip
+count 1, and check WHICH test**, per the traps below.
+
+Previous: 3249 at `d5c27e2` (2026-08-07). The +32 is the CSP guards
+(`test_webui_csp.py`, `test_setup_web_csp.py`), the delivery-failure suite
+(`test_notify_delivery.py`), and migration 024's roundtrip parametrization.
+
+⚠️ **Do not run delegates or other heavy I/O alongside a gate.** Measured
+2026-08-13 while three `codex exec` packets ran concurrently: pytest sat in
+`D` state at 6.6% CPU with `/proc/pressure/io` at ~7% full stall and took
+18m09s against a quiet-box 19m04s — but got only 8% through in the first 4.5
+minutes, which reads exactly like a hang and is not one. A later run stalled
+at 8% for over 5 minutes with `jbd2/nvme0n1p2-8` (the ext4 journal) blocked in
+`D`, caused by other sessions on the same disk. **Check `grep full
+/proc/pressure/io` and the process state before diagnosing a slow run.**
+
+⚠️ **Editing source mid-run invalidates the run.** Python caches imported
+modules, so a `src/` edit after collection is NOT picked up: the suite keeps
+testing what was on disk at start and reports green for code you no longer
+have. If you must edit, kill the run and relaunch — cheap early, and the only
+honest option once it matters.
 
 ⚠️ **Runtime varies with what else the box is doing, a lot.** The same suite
 measured 16m12s and 17m24s on different runs, and crawled at roughly a third of

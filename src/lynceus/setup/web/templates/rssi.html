@@ -23,7 +23,7 @@
       min="-120"
       max="0"
       step="1"
-      oninput="document.getElementById('min_rssi_readout').textContent = this.value + ' dBm';"
+      id="min_rssi_slider"
     >
     <div style="display: flex; justify-content: space-between; gap: 1em;">
       <small>&larr; Catches more (including weak / distant devices) &mdash; more permissive: more alerts, more false positives</small>
@@ -35,4 +35,20 @@
       <button type="submit">Next &rarr;</button>
     </div>
   </form>
+
+{# ⛔ Was an inline oninput=. A CSP nonce covers <script> ELEMENTS only, never
+   on*= attributes, so that handler is refused outright under the wizard's
+   policy and the readout silently stops tracking the slider -- the operator
+   drags it and sees a stale number. Same class as the eleven confirm dialogs
+   in the dashboard (docs/AUDIT_REGISTER.md, Wave 5, Finding 13). #}
+<script nonce="{{ request.state.csp_nonce }}">
+  (function () {
+    var slider = document.getElementById("min_rssi_slider");
+    var readout = document.getElementById("min_rssi_readout");
+    if (!slider || !readout) return;
+    slider.addEventListener("input", function () {
+      readout.textContent = slider.value + " dBm";
+    });
+  })();
+</script>
 {% endblock %}

@@ -6,10 +6,17 @@
    watch_duration_options, watch_default_duration, now_ts.
 
    Each action is a deliberate operator mutation on the otherwise
-   read-only dashboard: every form carries the _csrf field, an onsubmit
-   confirm (no accidental one-click mutation), and the ack-flow htmx
-   contract (hx-post -> #device-actions partial swap; method/action 303
-   fallback for no-JS). add-to-rules is deferred to its own arc:
+   read-only dashboard: every form carries the _csrf field, a
+   `data-confirm` message (no accidental one-click mutation), and the
+   ack-flow htmx contract (hx-post -> #device-actions partial swap;
+   method/action 303 fallback for no-JS).
+
+   ⛔ `data-confirm`, NOT `onsubmit="return confirm(...)"`. A CSP nonce
+   covers <script> elements only, never inline on*= attributes, so the
+   old form was blocked outright once the CSP landed -- and a blocked
+   onsubmit never returns false, meaning the form submitted with NO
+   confirmation at all. The delegated capture-phase listener in
+   lynceus.js implements it; see the comment there. add-to-rules is deferred to its own arc:
    rules.yaml is operator config and there is no incremental write
    surface, so adding a rule from the dashboard would breach the
    read-only boundary.
@@ -28,7 +35,7 @@
       <form method="post" action="/devices/{{ mac }}/watchlist"
             hx-post="/devices/{{ mac }}/watchlist"
             hx-target="#device-actions" hx-swap="outerHTML"
-            onsubmit="return confirm('Add {{ mac }} to the watchlist? It will raise alerts on every future sighting.');">
+            data-confirm="Add {{ mac }} to the watchlist? It will raise alerts on every future sighting.">
         <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
         <label>severity
           <select name="severity" class="device-action-select">
@@ -54,7 +61,7 @@
       <form method="post" action="/devices/{{ mac }}/watch"
             hx-post="/devices/{{ mac }}/watch"
             hx-target="#device-actions" hx-swap="outerHTML"
-            onsubmit="return confirm('Watch {{ mac }}? It will be tracked and raise a high-severity alert on repeated sightings.');">
+            data-confirm="Watch {{ mac }}? It will be tracked and raise a high-severity alert on repeated sightings.">
         <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
         <label>suppress repeats for
           <select name="snooze_duration" class="device-action-select" title="how long to suppress repeat alerts; tracking continues regardless">
@@ -79,14 +86,14 @@
         <form method="post" action="/devices/{{ mac }}/allowlist"
               hx-post="/devices/{{ mac }}/allowlist"
               hx-target="#device-actions" hx-swap="outerHTML"
-              onsubmit="return confirm('Permanently silence {{ mac }}? Future alerts for this device will be suppressed.');">
+              data-confirm="Permanently silence {{ mac }}? Future alerts for this device will be suppressed.">
           <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
           <button type="submit" class="device-action-btn">Silence permanently</button>
         </form>
         <form method="post" action="/devices/{{ mac }}/snooze"
               hx-post="/devices/{{ mac }}/snooze"
               hx-target="#device-actions" hx-swap="outerHTML"
-              onsubmit="return confirm('Silence alerts for {{ mac }}?');">
+              data-confirm="Silence alerts for {{ mac }}?">
           <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
           <label>for
             <select name="snooze_duration" class="device-action-select" title="how long to suppress alerts for this MAC">
@@ -103,7 +110,7 @@
           <form method="post" action="/devices/{{ mac }}/allowlist/remove"
                 hx-post="/devices/{{ mac }}/allowlist/remove"
                 hx-target="#device-actions" hx-swap="outerHTML"
-                onsubmit="return confirm('Stop silencing {{ mac }}?');">
+                data-confirm="Stop silencing {{ mac }}?">
             <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
             <button type="submit" class="outline device-action-btn">Stop silencing</button>
           </form>
@@ -118,7 +125,7 @@
           <form method="post" action="/devices/{{ mac }}/allowlist/remove"
                 hx-post="/devices/{{ mac }}/allowlist/remove"
                 hx-target="#device-actions" hx-swap="outerHTML"
-                onsubmit="return confirm('Cancel the silence for {{ mac }}?');">
+                data-confirm="Cancel the silence for {{ mac }}?">
             <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
             <button type="submit" class="outline device-action-btn">Cancel silence</button>
           </form>

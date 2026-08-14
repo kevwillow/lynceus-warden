@@ -74,11 +74,17 @@ def test_review_apply_form_disables_button_on_submit():
     with _client(app) as c:
         resp = c.get(f"/review?token={TOKEN}")
     body = resp.text
-    # Form carries an onsubmit that disables the submit button.
-    # Pin the substring rather than exact attribute formatting so
-    # quoting changes don't break the test.
-    assert "onsubmit=" in body
-    assert "disabled = true" in body or "disabled=true" in body
+    # ⚠️ Was an inline `onsubmit=`. The wizard's CSP (Wave 5, Finding 14)
+    # refuses inline event attributes outright -- a nonce covers <script>
+    # ELEMENTS only -- so the guard moved to `data-disable-on-submit` plus a
+    # delegated listener in _base.html. Both halves are pinned: the attribute
+    # alone would be decoration, since the wizard does not load lynceus.js.
+    assert "data-disable-on-submit" in body
+    assert 'form.getAttribute("data-disable-on-submit")' in body, (
+        "the delegated listener that implements data-disable-on-submit is missing"
+    )
+    assert "disabled = true" in body
+    assert "onsubmit=" not in body, "inline onsubmit is blocked by the CSP"
 
 
 @pytest.mark.webui

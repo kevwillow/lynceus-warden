@@ -44,6 +44,7 @@ from lynceus.db import (
 )
 from lynceus.patterns import mac_in_mac_range
 from lynceus.redact import redact_ntfy_topic
+from lynceus.webui.csp import CSPMiddleware
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.pagination import build_pagination, parse_pagination
 
@@ -994,6 +995,14 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             "url": config.ntfy_url or "",
             "topic_display": ntfy_topic_display,
             "configured": bool(config.ntfy_url and config.ntfy_topic),
+            # ⭐ Alerts written but never successfully delivered (migration
+            # 024). Reachability alone is a LIVENESS probe -- it says the
+            # broker answered just now, not that anything ever arrived. A
+            # wrong topic or a stale auth token passes reachability and drops
+            # every notification, and the operator's only symptom is silence,
+            # which is indistinguishable from "nothing is out there". This
+            # number is the difference between those two.
+            "undelivered": db.count_undelivered_alerts(),
         },
         "watchlist_stats": _watchlist_origin_breakdown(db),
         "watchlist_freshness": _watchlist_freshness_card(
@@ -1451,6 +1460,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     cookie_secure = bool(config.ui_allow_remote)
     app.add_middleware(CSRFMiddleware, cookie_secure=cookie_secure)
+    # ⭐ Added AFTER CSRFMiddleware, which means it runs OUTSIDE it: Starlette
+    # applies middleware in reverse registration order, so the CSP wrapper sees
+    # every response including the 403 CSRFMiddleware itself returns. Register
+    # it first and a rejected request would come back with no policy at all.
+    # Pinned by test_csp_header_is_present_even_on_a_csrf_rejection.
+    app.add_middleware(CSPMiddleware)
 
     @app.exception_handler(HTTPException)
     async def _http_exception_handler(request: Request, exc: HTTPException):

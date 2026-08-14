@@ -67,6 +67,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A Content-Security-Policy, with a per-request nonce.** The UI had none —
+  measured; only `CSRFMiddleware` was installed — while several internal
+  documents asserted that "a strict CSP applies". Escaping was the only barrier
+  between an operator-controlled MAC, SSID or location name and script
+  execution. A nonce rather than hashes because the `data_table` macro
+  *generates* an inline script per table, so no static hash list could cover
+  it. `style-src` still allows inline: nine `style=` attributes remain and
+  nonces do not apply to style *attributes*, so the compromise is confined to
+  styles while `script-src` stays strict.
+
+  ⚠️ **Adding a CSP is not a header change; it is an audit of every inline
+  handler in the app**, and this one found sixteen. The dashboard had eleven
+  `onsubmit="return confirm(...)"` guards on destructive actions. A nonce
+  authorises `<script>` *elements*, never `on*=` attributes — verified in
+  headless Chromium: *"Executing inline event handler violates the following
+  Content Security Policy directive… The action has been blocked."* And the
+  failure was worse than losing the dialog: `onsubmit` cancels a submit by
+  *returning false*, so a handler blocked outright never returns and **the form
+  submits immediately**. "Permanently silence this device" would have become a
+  single unconfirmed click that suppresses its future alerts.
+
+  All eleven now use `data-confirm` with one delegated capture-phase listener —
+  capture phase because these forms carry `hx-post` and htmx binds its own
+  submit handler. The setup wizard, which had **no CSP at all** despite holding
+  the Kismet key and ntfy topic in flight and sometimes running as root, gets
+  the same policy; applying it surfaced five more inline handlers there,
+  including the double-submit guards on `/apply`.
+
+- **Continuous integration.** `pytest`, `ruff check` and `python -m build` now
+  run on every push and pull request across Python 3.11 and 3.12. The README
+  invites readers to check its claims by running the suite, and until now
+  nothing ran it automatically. The traps recorded in `.claude/gates.md` are
+  encoded in the workflow rather than left as tribal knowledge — in particular
+  that `ruff format --check` is red by design and is reported without gating,
+  and that the packaging test skips itself silently when `python` is not on
+  `PATH`.
+
+- **`CONTRIBUTING.md`.** What the project wants (passive detection only; claims
+  that survive checking; silence must never be ambiguous), how to run the
+  gates, and the two testing habits that matter more here than volume: plant
+  the defect before trusting a guard, and remember that a double which can only
+  succeed cannot test a failure path.
+
 - **A co-observation explorer, so you can see which devices keep turning up
   when you do.** `/devices/<mac>/co-observations` shows the other devices
   logged close in time to one device, at the same location. The query behind
@@ -169,6 +212,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SOURCE_URL` in `webui/app.py` at wherever you publish it.
 
 ### Fixed
+
+- **A transient ntfy failure no longer swallows the alert for a full hour.**
+  The alert row was committed *before* delivery was attempted, and the dedup
+  gate keyed on that row existing. So a send that failed logged a warning and
+  was never retried: the next poll found the row it had just written and
+  skipped the emit path entirely. At the default `alert_dedup_window_seconds`
+  of 3600, **one blip cost an hour of alerting for that device and rule.**
+
+  Measured with a notifier failing a single poll while the device stayed in
+  range for five: two send attempts, **zero delivered**, no further attempt.
+  This is the product's reason to exist failing on its most likely error — the
+  deployment is mobile, so a data blip is *most* likely exactly when something
+  worth detecting is nearby.
+
+  Dedup now keys on **delivery**. Migration 024 adds `notified_at` (NULL means
+  written but nobody told) and `notify_attempts`. Three states, and collapsing
+  any two reintroduces a defect: delivered in-window suppresses; undelivered
+  with attempts left **retries the existing row** — emitting a new one would
+  fill `/alerts` with duplicates of one detection every time ntfy hiccuped;
+  undelivered with attempts spent stops retrying but stays `NULL`, so it is
+  still counted rather than quietly forgotten. Bounded at four attempts,
+  counted *before* each send so a wedged notifier cannot retry forever.
+
+  Re-measured on the same scenario: delivered on the very next poll, one alert
+  row, correctly deduplicated thereafter.
+
+  ⚠️ A one-shot rule cannot be retried by construction —
+  `new_non_randomized_device` only fires on a device's first sighting, so a
+  failed send there has no later poll to retry on. That row stays undelivered
+  and is reported as such, which is why the count exists and not just a retry.
+
+  **`/settings` now shows undelivered alerts.** Reachability is a *liveness*
+  probe: it says the broker answered just now, not that anything arrived. A
+  wrong topic or a stale auth token passes reachability and drops every
+  notification, and the operator's only symptom is silence — which for this
+  tool is indistinguishable from "nothing is out there".
+
+  Why it survived a green suite: **every notifier double in the repo returned
+  `True` unconditionally.** A double that cannot fail cannot test a failure
+  path. `tests/test_notify_delivery.py` adds one that can.
+
+- **The dashboard tells you when it cannot alert at all.** Argus-backed
+  alerting is opt-in and defaults to *no*, and declining it writes no
+  `rules.yaml` — so accepting every setup default produces a daemon that
+  captures, populates the dashboard, and can never raise an alert. Measured
+  two ways against a device placed on the watchlist: **0 rule hits** on the
+  default path, **1** with the shipped ruleset wired.
+
+  The home page did surface it, as an unstyled tile reading "no ruleset
+  configured" — ranked *below* a merely-stale watchlist, which gets a warning.
+  The one condition meaning nothing can ever alert was the only one not
+  flagged. It now reads **"no ruleset — nothing will alert"** and carries the
+  warning treatment, in words as well as colour. It stays short of the red
+  reserved for a ruleset that is configured and will not load: an unset path
+  is a legitimate fresh-install state, not a fault.
+
+- **The filter button sat 20px above every other control, on all six list
+  pages.** Pico gives a bare `<button>` a 20px bottom margin, and the grid
+  aligns *margin* boxes, so the button floated exactly its own margin above the
+  inputs beside it. It had also kept Pico's full ~3rem height while its
+  neighbours were deliberately reduced — so fixing only the margin would have
+  bottom-aligned a button standing 16px proud instead. Both corrected;
+  measured `bottomSpread=0, topSpread=0` across `/alerts`, `/allowlist`,
+  `/devices`, `/probes`, `/watchful`, `/watchlist` and `/rules`.
 
 - **One co-observation page no longer re-scans the whole capture 25 times.**
   `shared_probe_ssids` counted, for each shared network name, how many devices

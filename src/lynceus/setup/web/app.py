@@ -21,6 +21,7 @@ from fastapi.templating import Jinja2Templates
 from lynceus import __version__
 from lynceus.setup.web.auth import SetupTokenMiddleware
 from lynceus.setup.web.session import SessionStore
+from lynceus.webui.csp import CSPMiddleware
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 
 # Paths exempt from setup-token gating. ``/healthz`` is a liveness
@@ -170,6 +171,13 @@ def create_wizard_app(
         setup_token=setup_token,
         exempt_paths=TOKEN_EXEMPT_PATHS,
     )
+    # ⭐ OUTERMOST, so every response carries the policy -- including the 403s
+    # SetupTokenMiddleware itself returns. This app shipped with NO CSP while
+    # the dashboard had one, which was an omission rather than a decision: the
+    # wizard is the MORE sensitive of the two, because it holds the Kismet API
+    # key and the ntfy topic in flight and may be running as root.
+    # Pinned by tests/test_setup_web_csp.py.
+    app.add_middleware(CSPMiddleware)
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
