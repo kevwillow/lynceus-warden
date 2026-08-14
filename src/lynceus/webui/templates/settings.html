@@ -180,6 +180,30 @@
             <small>every alert reached the broker</small>
           {% endif %}
         </dd>
+        {# The dead-man's switch. Its whole purpose is that its ABSENCE means
+           something, so an operator must be able to confirm it is armed and
+           arriving -- otherwise they are trusting a guarantee nobody checked. #}
+        <dt>heartbeat</dt>
+        <dd>
+          {% if not heartbeat.enabled %}
+            <span class="badge-status-error">off</span>
+            <small>silence is ambiguous &mdash; nothing distinguishes "nothing is
+            out there" from "the daemon died". Set
+            <code>heartbeat_enabled: true</code> to arm it.</small>
+          {% elif heartbeat.undelivered %}
+            <span class="badge-status-error">{{ heartbeat.undelivered }}</span>
+            <small>heartbeat{{ '' if heartbeat.undelivered == 1 else 's' }} never
+            delivered &mdash; the proof-of-life you are relying on is NOT
+            arriving. Check the topic and auth token.</small>
+          {% elif heartbeat.last_delivered_at %}
+            <span class="badge-status-ok">on</span>
+            <small>every {{ heartbeat.interval_hours }}h; last delivered
+            {{ heartbeat.last_delivered_at | relative_time }}</small>
+          {% else %}
+            <span class="badge-status-ok">armed</span>
+            <small>every {{ heartbeat.interval_hours }}h &mdash; none delivered yet</small>
+          {% endif %}
+        </dd>
       </dl>
     {% else %}
       <p><em>ntfy is not configured.</em></p>

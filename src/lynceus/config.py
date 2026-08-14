@@ -181,6 +181,15 @@ class Config(BaseModel):
     min_rssi: int | None = None
     kismet_timeout_seconds: float = 10.0
     kismet_health_check_on_startup: bool = True
+    # --- Heartbeat / dead-man's switch -------------------------------------
+    # Off by default: it is the only feature that pushes when nothing has
+    # happened, so opting an existing operator into unsolicited notifications
+    # on upgrade would be the wrong default.
+    heartbeat_enabled: bool = False
+    # 24h suits the field deployment (mobile, checked daily). The floor is 1h
+    # rather than 0 because the point is a periodic proof of life, and an
+    # interval shorter than the poll interval cannot mean anything.
+    heartbeat_interval_hours: int = 24
     capture: CaptureConfig = CaptureConfig()
     ble_bridge: BleBridgeConfig = BleBridgeConfig()
     co_observation: CoObservationConfig = CoObservationConfig()
@@ -241,6 +250,16 @@ class Config(BaseModel):
     def _validate_dedup_window(cls, v: int) -> int:
         if v < 0:
             raise ValueError("alert_dedup_window_seconds must be >= 0")
+        return v
+
+    @field_validator("heartbeat_interval_hours")
+    @classmethod
+    def _validate_heartbeat_interval(cls, v: int) -> int:
+        # >= 1 rather than >= 0: a 0-hour interval would push on every poll
+        # tick, which is not a heartbeat but a flood, and would train the
+        # operator to mute the topic the alerts also arrive on.
+        if v < 1:
+            raise ValueError("heartbeat_interval_hours must be >= 1")
         return v
 
     @field_validator("sightings_retention_days")

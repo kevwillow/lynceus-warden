@@ -196,6 +196,7 @@ def test_migrations_dir_lists_both_files(db):
         "022_hot_path_indexes.sql",
         "023_devices_ble_device_class.sql",
         "024_alerts_notified_at.sql",
+        "025_heartbeats.sql",
     ]
 
 

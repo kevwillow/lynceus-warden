@@ -1004,6 +1004,18 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             # number is the difference between those two.
             "undelivered": db.count_undelivered_alerts(),
         },
+        # The dead-man's switch (migration 025). Reported here rather than on
+        # the home page because the question it answers -- "is my proof-of-life
+        # actually arriving?" -- is a configuration question. An enabled
+        # heartbeat that has never been delivered is the worst state to be in
+        # and not know about: the operator believes silence would be
+        # interrupted, and it would not.
+        "heartbeat": {
+            "enabled": config.heartbeat_enabled,
+            "interval_hours": config.heartbeat_interval_hours,
+            "last_delivered_at": db.latest_delivered_heartbeat_ts(),
+            "undelivered": db.count_undelivered_heartbeats(),
+        },
         "watchlist_stats": _watchlist_origin_breakdown(db),
         "watchlist_freshness": _watchlist_freshness_card(
             db,

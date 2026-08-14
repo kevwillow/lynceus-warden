@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **A heartbeat, so that silence means something.** Every other failure mode in
+  lynceus raises an alert. What was left is the daemon dying or notification
+  delivery breaking — and there the operator's only symptom is silence, which
+  looks exactly like "nothing is out there". With `heartbeat_enabled: true`,
+  lynceus pushes a periodic "still watching, N sightings in the last 24h, last
+  alert Xh ago", so a heartbeat that *stops* arriving is itself the signal.
+
+  ⛔ It never claims health it has not verified. If the poll loop has wedged, if
+  observations are failing to persist, or if alerts were written but never
+  delivered, the heartbeat says so explicitly and is sent at a higher priority
+  instead of the quiet one — a cheerful "all good" sent while ingest is dead
+  would be worse than no heartbeat at all, because it converts unease into false
+  confidence. A quiet RF environment is deliberately *not* treated as unhealthy;
+  that is the normal case for this tool.
+
+  It rides the delivery-tracked path added in migration 024, so a failed
+  heartbeat is retried (bounded) rather than costing a whole interval of
+  silence, and the interval is measured from the last *delivered* one rather
+  than the last attempted one. `/settings` reports whether the switch is armed
+  and when it last arrived, because a dead-man's switch nobody has verified is
+  a guarantee nobody is actually getting. Off by default; requires ntfy.
+
 ### Changed
 
 - **The alert action buttons no longer resize when you use them.** Acknowledge,

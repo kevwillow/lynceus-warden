@@ -58,6 +58,20 @@ log_level: INFO
 # Set to 0 to disable dedup (every hit becomes an alert).
 alert_dedup_window_seconds: 3600
 
+# --- Heartbeat (dead-man's switch) ---
+
+# Every other failure mode in lynceus raises an alert. What is left is the
+# daemon dying or notification delivery breaking -- and there your only symptom
+# is silence, which looks exactly like "nothing is out there". Turning this on
+# makes that silence meaningful: if the heartbeat stops arriving, something is
+# wrong. It also reports UNHEALTHY rather than claiming everything is fine when
+# it can see the pipeline is broken. Requires ntfy to be configured.
+heartbeat_enabled: false
+
+# How often to send it. Measured from the last SUCCESSFULLY DELIVERED
+# heartbeat, so a failed send is retried rather than costing a whole interval.
+heartbeat_interval_hours: 24
+
 # --- Notifications ---
 
 # ntfy notification settings (optional, leave unset to disable)
