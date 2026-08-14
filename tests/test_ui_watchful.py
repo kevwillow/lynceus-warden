@@ -1251,9 +1251,12 @@ def _watchful_copy_files():
     import lynceus.webui as _webui
 
     templates = Path(_webui.__file__).parent / "templates"
+    # ⛔ Case-INsensitive, and rglob. "Watchful device" in a heading was enough
+    # to exclude a template from this guard entirely, and a template moved into
+    # a subdirectory would vanish from it silently.
     return sorted(
-        p for p in templates.glob("*.html")
-        if "watchful" in p.read_text(encoding="utf-8")
+        p for p in templates.rglob("*.html")
+        if "watchful" in p.read_text(encoding="utf-8").lower()
     )
 
 
@@ -1265,10 +1268,16 @@ def test_watchful_copy_does_not_promise_a_low_priority_alert():
         f"only {len(files)} templates mention watchful ({[f.name for f in files]}); "
         f"the discovery is excluding files it should cover"
     )
+    # ⛔ One exact spelling was the whole check. "low priority", "Low-Priority"
+    # and a Unicode hyphen all express the same promise and all passed. Match
+    # the phrase, not one rendering of it.
+    import re as _re
+
+    promise = _re.compile(r"low[\s\u2010-\u2015_-]*priority", _re.IGNORECASE)
     for path in files:
         name = path.name
         text = path.read_text(encoding="utf-8")
-        assert "low-priority" not in text, (
+        assert not promise.search(text), (
             f"{name} promises a low-priority watchful alert, but "
             "poller._emit_watchful_escalation deliberately emits severity='high' "
             "with ntfy priority_override=4. Fix the copy, not the poller — the "

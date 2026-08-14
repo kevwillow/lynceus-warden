@@ -69,6 +69,16 @@ def _loaded_css() -> str:
     `lynceus.css:510`, and without this the guard would rubber-stamp it using
     the codebase's own documentation as evidence.
     """
+    entry = (_STATIC / "app.css").read_text(encoding="utf-8")
+    # ⛔ Credit a sheet only if app.css still IMPORTS it. Concatenating the
+    # three unconditionally would keep this guard green after someone dropped
+    # `@import url("lynceus.css")` — every rule would stop reaching the browser
+    # while the ratchet reported all 132 selectors present.
+    for sheet in ("pico.min.css", "lynceus.css"):
+        assert f'url("{sheet}")' in entry or f"url('{sheet}')" in entry, (
+            f"app.css no longer imports {sheet}; its rules do not reach the "
+            f"browser, so this guard must not count them as defined"
+        )
     css = "".join((_STATIC / f).read_text(encoding="utf-8") for f in _SHEETS)
     return re.sub(r"/\*.*?\*/", " ", css, flags=re.S)
 
@@ -87,13 +97,25 @@ def _literal_classes(attr: str) -> list[str]:
 
 def _classes_used() -> dict[str, set[str]]:
     used: dict[str, set[str]] = {}
-    for tpl in sorted(_TEMPLATES.glob("*.html")):
+    # rglob, not glob: a template moved into a subdirectory would otherwise
+    # become invisible to this guard while still rendering.
+    for tpl in sorted(_TEMPLATES.rglob("*.html")):
         txt = tpl.read_text(encoding="utf-8")
         txt = re.sub(r"<!--.*?-->", " ", txt, flags=re.S)
         txt = re.sub(r"\{#.*?#\}", " ", txt, flags=re.S)
-        for attr in re.findall(r'class="([^"]*)"', txt):
+        # Both quote styles. `class='x'` is valid HTML and was invisible here.
+        for _q, attr in re.findall(r"""class\s*=\s*(["'])(.*?)\1""", txt, re.S):
             for cls in _literal_classes(attr):
                 used.setdefault(cls, set()).add(tpl.name)
+        # ⛔ Fail loudly on a class attribute this scanner cannot read, rather
+        # than skipping it. An unquoted `class={{ expr }}` would otherwise make
+        # the ratchet vacuous for whatever it emits.
+        unreadable = re.findall(r"class\s*=\s*(?![\"'])(\S+)", txt)
+        assert not unreadable, (
+            f"{tpl.name}: class attribute(s) this guard cannot interpret: "
+            f"{unreadable}. Quote them, or teach the scanner — do not leave "
+            f"classes it silently cannot see."
+        )
     return used
 
 
@@ -127,10 +149,16 @@ def test_the_known_inert_list_has_not_silently_become_stale():
     """⭐ The other direction. If someone adds a rule for a KNOWN_INERT class,
     this list must shrink — otherwise it rots into a permanent excuse and the
     ratchet stops meaning anything."""
-    fixed = sorted(KNOWN_INERT & _defined())
-    assert fixed == [], (
-        f"these are in KNOWN_INERT but now HAVE a rule: {fixed}. Remove them "
-        f"from KNOWN_INERT so the ratchet keeps its teeth."
+    inert = {c for c in _classes_used() if c not in _defined()}
+    # Exact equality, both directions. The earlier one-directional check only
+    # noticed a name that GAINED a rule; a class whose last template use was
+    # deleted stayed in the list forever and would have been grandfathered back
+    # in on reintroduction.
+    gone = sorted(KNOWN_INERT - inert)
+    assert gone == [], (
+        f"these are in KNOWN_INERT but are no longer inert (rule added, or last "
+        f"template use removed): {gone}. Drop them from KNOWN_INERT so the list "
+        f"cannot rot into a permanent excuse."
     )
 
 
