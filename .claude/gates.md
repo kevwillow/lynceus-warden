@@ -78,21 +78,30 @@ at 8% for over 5 minutes with `jbd2/nvme0n1p2-8` (the ext4 journal) blocked in
 `D`, caused by other sessions on the same disk. **Check `grep full
 /proc/pressure/io` and the process state before diagnosing a slow run.**
 
-⭐ **CI baseline, measured 2026-08-14 on PR #19 (`.github/workflows/ci.yml`):
-`3283 passed, 1 skipped, 47 deselected, 0 failed` on BOTH 3.11 (5m29s) and
-3.12 (4m07s).**
+⭐ **Baseline, measured 2026-08-14 on PR #24, on the SAME TREE in both places:
+`3294 passed, 1 skipped, 47 deselected, 0 failed`.** Local ~19m39s; CI 4m06s
+(3.11) and 4m04s (3.12). Main before #24 was `3283 passed` in both.
 
-🪤 **CI and local both report skip count 1, and it is a DIFFERENT TEST each
-time.** This is the sharpest form of the skip-count trap, now confirmed across
-two environments:
+🪤 **Local and CI both report skip count 1, and it is a DIFFERENT TEST each
+time.** This is the sharpest form of the skip-count trap:
 
-| | passed | the one skip |
-|---|---|---|
-| Local (this box) | 3281 | `test_setup_wizard.py:1955` — real `/sys/class/bluetooth` present, so the missing-dir branch cannot be exercised |
-| CI (clean runner) | 3283 | `test_import_argus.py:3333` — no live Argus CSV, which CI does not and should not have |
+| | the one skip |
+|---|---|
+| Local (this box) | `test_setup_wizard.py:1955` — real `/sys/class/bluetooth` is present, so the missing-dir branch cannot be exercised |
+| CI (clean runner) | `test_import_argus.py:3333` — no live Argus CSV, which CI does not and should not have |
 
-Each environment runs tests the other cannot, which is also why the totals
-differ by two. ⇒ **A matching skip count proves nothing. Read the reason.**
+⇒ **A matching skip count proves nothing. Read the reason.**
+
+⚠️ **CORRECTION (2026-08-14).** An earlier version of this note claimed the
+two environments' totals "differ by two, because each runs tests the other
+cannot". **That is false.** The totals are identical — the two environments
+trade one skip for one run, so they cancel. The claim came from comparing CI
+against a **stale** local figure (3281, measured on an older tree) and reading
+the difference as environmental. Both numbers above are from the same commit.
+⇒ **Before attributing a delta to environment, confirm both sides were
+measured on the same tree.** A stale baseline invents differences that are not
+there, and an explanation that fits a wrong number is worse than no
+explanation.
 
 ⚠️ **CI is 3-4× faster than this box (4-5 min vs ~20).** That is contention
 here, not a slow suite — see the I/O warning above. Do not treat the local

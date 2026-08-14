@@ -213,6 +213,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A device whose sighting fails to persist is no longer lost forever.** The
+  poll watermark advanced to the tick time unconditionally, and the next tick
+  asks Kismet only for devices seen since that value — so any observation that
+  failed to persist was never asked for again. That is the normal case, not an
+  edge one: Kismet reports devices seen *during* the window while the watermark
+  is set to the window's **end**, so nearly every observation has a `last_seen`
+  older than the tick that processed it. Measured with the device last seen five
+  seconds before the tick:
+
+  ```
+  device last seen at 1699999995; tick ran at 1700000000
+  after poll 1: persisted=['01']  watermark=1700000000
+  after poll 2: asked Kismet since=1700000000 -> returned NOTHING
+  ```
+
+  A car with an ALPR that drives past once, during a disk hiccup, left no
+  alert, no row, and one WARNING line.
+
+  ⚠️ The obvious fix is wrong, and the old code was already defending against
+  it: holding the watermark until everything persists lets a record that fails
+  *every* time freeze it forever, leaving the daemon alive and permanently
+  blind to everything after it. Both extremes lose capture data, so the bound
+  is the design — the failed window is retried for up to three consecutive
+  ticks, then abandoned with an **ERROR**, because a permanent hole in
+  detection coverage is not a warning. Verified by planting both extremes.
+
 - **A transient ntfy failure no longer swallows the alert for a full hour.**
   The alert row was committed *before* delivery was attempted, and the dedup
   gate keyed on that row existing. So a send that failed logged a warning and
