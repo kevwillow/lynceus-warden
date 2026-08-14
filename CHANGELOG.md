@@ -237,6 +237,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Your watchlist total was wrong, and it under-counted the newest entries.**
+  The list of pattern types the app knew about had drifted two migrations behind
+  the database, which accepts ten. Rows of the two newest types — SSID patterns
+  and IMEI TACs — were counted as zero rather than reported, so `/healthz.json`
+  under-reported the watchlist and the `/settings` breakdown hid them. Measured
+  on three entries of three types:
+
+  ```
+  rows actually in the watchlist : 3
+  total the app reported         : 1
+  ```
+
+  The same stale list also made **"add to watchlist" fail outright** for those
+  two types, and made the YAML seeder skip six of the ten. There were three
+  independently drifted copies of the list; there is now one, checked against
+  the database's own constraint so a future migration cannot outgrow it quietly.
+
+- **Filtering the watchlist by a type the page did not recognise silently showed
+  you everything.** `/watchlist` and `/watchlist.csv` dropped an unrecognised
+  filter and answered with every row, with nothing saying the filter had been
+  ignored. The filter is still lenient — old bookmarks keep working — but the
+  page now says *"filter ignored — showing all entries"* and names it, and the
+  CSV export logs a warning rather than quietly exporting everything.
+
+- **A clock jump no longer deletes data inside your retention window.** If the
+  system clock leapt forward — an NTP correction after boot on a Pi with no
+  real-time clock — pruning computed its cutoff from the wrong time and deleted
+  sightings that were well inside the window. Measured: with a 30-day retention
+  and 30 daily sightings, a +30d jump deleted **29 of 30**. Evidence snapshots
+  had the same fault and are on by default: a +90d jump deleted **9 of 10**
+  snapshots less than ten days old. A jump *backwards* was the mirror image —
+  pruning stalled for the entire excursion, measured at a full year.
+
+- **A clock jump no longer blinds the daemon to every device.** The poll cursor
+  was written from the jumped clock, so later polls asked Kismet for devices
+  "since the future" and got nothing back — for as long as the excursion lasted,
+  looking exactly like a quiet environment. Unlike a skipped prune this was
+  persistent: the bad value was already stored, so correcting the clock did not
+  undo it.
+
+- **Re-running the Kismet setup no longer widens the permissions on your own
+  hardened config.** `lynceus-bootstrap-kismet` rewrote `kismet_site.conf` by
+  replacing the file, which reset it to world-readable each time. Kismet honours
+  `httpd_password=` there, so an operator who had correctly locked that file to
+  `0600` had it reopened to `0644` — password still inside — by an unrelated
+  `--add-source` run. Measured `0600 → 0644`. It now keeps whatever permissions
+  the file already had.
+
+- **Re-writing the main config no longer leaves your Kismet API key
+  world-readable.** `lynceus.yaml` was written in a way that only set safe
+  permissions when creating the file for the first time. Every rewrite —
+  including `--reconfigure` — left an already-permissive file exactly as it was
+  and put the Kismet API key and ntfy topic back into it. Measured: a `0644`
+  config stayed `0644` with the secrets in cleartext.
+
+- **`/healthz.json` no longer hands a raw database error to anyone who asks.**
+  The endpoint is unauthenticated and reachable from the network once
+  `ui_allow_remote` is set, and it returned the underlying SQLite driver message
+  — including the database file path — on failure. The real error still goes to
+  the server log.
+
+- **`--interface` now warns when the device you named is not there.** It used to
+  accept any name without checking, write a capture source for it, and report
+  success — so a typo produced a sensor that captured nothing while looking
+  healthy. It is a **warning, not a refusal**: the flag exists to configure
+  adapters that are not plugged in yet, and blocking that would break the reason
+  it was added.
+
+- **Acknowledging every alert at once now asks first.** The bulk acknowledge
+  button on `/alerts` took a single click to acknowledge every matching alert,
+  and there is no bulk undo — reversing it meant acknowledging each alert back
+  individually.
+
+- **"← Previous" is visually distinct from "Next" again in the setup wizard.**
+  Both rendered as identical filled primary buttons on all thirteen steps: the
+  class meant to de-emphasise the back button matched no rule in the stylesheet
+  the wizard actually loads, and an earlier fix that made the two buttons the
+  same size removed the last thing distinguishing them.
+
 - **A device whose sighting fails to persist is no longer lost forever.** The
   poll watermark advanced to the tick time unconditionally, and the next tick
   asks Kismet only for devices seen since that value — so any observation that
