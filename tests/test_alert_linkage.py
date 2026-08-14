@@ -1687,8 +1687,13 @@ def test_list_alerts_with_match_validates_pagination(db):
 def test_list_alerts_shape_through_migrations(db):
     # Migration 005 added matched_watchlist_id but kept it off
     # list_alerts' public shape on purpose. Migration 015 added
-    # rule_type and surfaces it on list_alerts. The watchlist join
-    # columns still do not leak.
+    # rule_type and surfaces it on list_alerts. Migration 024 added
+    # notified_at and surfaces it too: callers need to distinguish "the
+    # operator was paged about this" from "this is sitting in the database
+    # unseen", which is the distinction Wave 5 Finding 12 turned on.
+    # notify_attempts stays OFF the public shape -- it is retry bookkeeping
+    # for the poller, not something a caller should branch on.
+    # The watchlist join columns still do not leak.
     wl = _add_watchlist(db, "aa:bb:cc:dd:ee:ff")
     db.upsert_device("aa:bb:cc:dd:ee:ff", "wifi", "Acme", 0, 100)
     db.add_alert(
@@ -1711,6 +1716,7 @@ def test_list_alerts_shape_through_migrations(db):
         "message",
         "severity",
         "acknowledged",
+        "notified_at",
     }
 
 

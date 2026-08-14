@@ -165,6 +165,21 @@
         <dd><code>{{ ntfy.url }}</code></dd>
         <dt>topic</dt>
         <dd><code>{{ ntfy.topic_display }}</code> <small>(redacted)</small></dd>
+        {# Undelivered alerts. Reachability says the broker answered just now;
+           this says whether anything actually arrived. A wrong topic or a
+           stale auth token passes the former and fails the latter, and the
+           only symptom an operator gets is silence. #}
+        <dt>undelivered</dt>
+        <dd>
+          {% if ntfy.undelivered %}
+            <span class="badge-status-error">{{ ntfy.undelivered }}</span>
+            <small>alert{{ '' if ntfy.undelivered == 1 else 's' }} written but never
+            delivered &mdash; check the topic and auth token</small>
+          {% else %}
+            <span class="badge-status-ok">0</span>
+            <small>every alert reached the broker</small>
+          {% endif %}
+        </dd>
       </dl>
     {% else %}
       <p><em>ntfy is not configured.</em></p>

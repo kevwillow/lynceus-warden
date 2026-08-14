@@ -472,11 +472,17 @@ def test_complete_rerun_form_disables_button_on_submit():
     with _client(app) as c:
         resp = c.get(f"/apply-complete?token={TOKEN}")
     body = resp.text
-    # The Re-run form (action="/apply") carries an onsubmit that
-    # disables the submit button. Pin the substring rather than
-    # exact attribute formatting so quoting changes don't break.
-    assert "onsubmit=" in body
-    assert "disabled = true" in body or "disabled=true" in body
+    # ⚠️ Was an inline `onsubmit=`. The wizard's CSP (Wave 5, Finding 14)
+    # blocks inline event attributes, so the guard is now
+    # `data-disable-on-submit` + a delegated listener in _base.html. Pin BOTH
+    # halves: the attribute alone is decoration, because the wizard
+    # deliberately does not load lynceus.js.
+    assert "data-disable-on-submit" in body
+    assert 'form.getAttribute("data-disable-on-submit")' in body, (
+        "the delegated listener that implements data-disable-on-submit is missing"
+    )
+    assert "disabled = true" in body
+    assert "onsubmit=" not in body, "inline onsubmit is blocked by the CSP"
     # Confirm the disable is wired to the Re-run form specifically.
     # (The Done form on the same page has its own disable-on-click,
     # pinned by test_complete_done_form_disables_button_on_submit.)
@@ -506,17 +512,22 @@ def test_complete_done_form_disables_button_on_submit():
     # is /apply, not /done.)
     done_form_idx = body.find('action="/done')
     assert done_form_idx >= 0, "Done form not found on completion page"
-    # The onsubmit attribute lives on the same <form> tag — find the
-    # nearest preceding "<form" and confirm onsubmit is between it
-    # and the action attribute.
+    # The marker lives on the same <form> tag — find the nearest preceding
+    # "<form" and confirm it sits between that and the form tag's closing >.
     form_open = body.rfind("<form", 0, done_form_idx)
     assert form_open >= 0
-    # Window from form_open to the form's closing > should contain
-    # the onsubmit handler.
     form_tag_close = body.find(">", done_form_idx)
     form_tag = body[form_open:form_tag_close]
-    assert "onsubmit=" in form_tag
-    assert "disabled = true" in form_tag or "disabled=true" in form_tag
+    # ⚠️ Was an inline `onsubmit=`, which the wizard's CSP now blocks (Wave 5,
+    # Finding 14). The per-form half is the attribute; the implementing half
+    # is the delegated listener in _base.html, asserted separately below
+    # because it is page-level, not form-level.
+    assert "data-disable-on-submit" in form_tag
+    assert "onsubmit=" not in form_tag, "inline onsubmit is blocked by the CSP"
+    assert 'form.getAttribute("data-disable-on-submit")' in body, (
+        "the delegated listener that implements data-disable-on-submit is missing"
+    )
+    assert "disabled = true" in body
 
 
 # ---- token enforcement --------------------------------------------------

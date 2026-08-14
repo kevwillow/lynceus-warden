@@ -130,7 +130,7 @@ capture:
   # accept the privacy posture.
   probe_ssids: false
   # BLE devices broadcast a friendly name in the GAP advertisement
-  # (e.g. "Kev's AirPods", "Tile_a1b2"). This is broadcast with intent
+  # (e.g. "Alex's AirPods", "Tile_a1b2"). This is broadcast with intent
   # and is more useful than harmful for triage. Default ON.
   ble_friendly_names: true
 

@@ -1,0 +1,160 @@
+# Does the built wheel actually work when installed?
+#
+# ⚠️ Why this is separate from the test suite. `pytest` runs against the source
+# tree with `pythonpath = ["src"]`, so it can pass while the WHEEL is broken:
+# a missing `package-data` entry, a console script pointing at a moved
+# function, or a migration .sql that never got packaged are all invisible to
+# it. Those failures land on the operator at install time, not on us at test
+# time.
+#
+# `src/lynceus/migrations/*.sql` is the sharp edge here -- the database applies
+# them at every `Database()` construction, so if they are absent from the wheel
+# the daemon does not start at all. "Migration packaging revisit on more
+# install paths" is an open BACKLOG item; this closes the wheel half of it.
+name: packaging
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  wheel-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          ls -la dist/
+
+      # ⭐ A CLEAN venv, deliberately. Installing into the build environment
+      # would let a dependency that only the dev extra pulls in mask a missing
+      # runtime requirement.
+      - name: Install the wheel into a clean environment
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install --upgrade pip
+          /tmp/clean/bin/pip install dist/*.whl
+          /tmp/clean/bin/pip list
+
+      - name: Every console script exists and runs
+        run: |
+          set -euo pipefail
+          scripts="lynceus lynceus-seed-watchlist lynceus-import-argus lynceus-ui
+                   lynceus-quickstart lynceus-setup lynceus-validate
+                   lynceus-bootstrap-kismet lynceus-export-config"
+          for s in $scripts; do
+            if [ ! -x "/tmp/clean/bin/$s" ]; then
+              echo "::error::console script $s missing from the wheel"; exit 1
+            fi
+            # --help must exit 0. A script whose module moved fails here with
+            # an ImportError instead, which is exactly the regression we want.
+            /tmp/clean/bin/$s --help > /dev/null || {
+              echo "::error::$s --help failed"; exit 1; }
+            echo "  ok: $s"
+          done
+
+      # The real test: package data. Templates, static assets, the bundled
+      # Argus CSV and -- most importantly -- the migrations.
+      - name: Packaged data is present and usable
+        run: |
+          /tmp/clean/bin/python - <<'PY'
+          import pathlib, sys
+          from importlib.resources import files
+
+          failures = []
+
+          def need(pkg, sub, pattern, minimum=1):
+              try:
+                  d = pathlib.Path(str(files(pkg) / sub))
+              except (ModuleNotFoundError, TypeError, OSError) as e:
+                  failures.append(f"{pkg}/{sub}: cannot resolve ({e})")
+                  return []
+              if not d.is_dir():
+                  failures.append(f"{pkg}/{sub}: not packaged")
+                  return []
+              found = sorted(d.glob(pattern))
+              if len(found) < minimum:
+                  failures.append(
+                      f"{pkg}/{sub}/{pattern}: {len(found)} found, expected >= {minimum}")
+              return found
+
+          migrations = need("lynceus", "migrations", "*.sql", minimum=24)
+          need("lynceus.webui", "templates", "*.html", minimum=10)
+          need("lynceus.webui", "static", "*", minimum=3)
+          need("lynceus.setup.web", "templates", "*.html", minimum=10)
+          need("lynceus.data", "", "*.csv", minimum=1)
+
+          print(f"migrations packaged: {len(migrations)}")
+          if failures:
+              for f in failures:
+                  print(f"::error::{f}")
+              sys.exit(1)
+          print("all package data present")
+          PY
+
+      # ⭐ The end of the chain: build a real database from the INSTALLED
+      # package. This is what proves the migrations both shipped and apply --
+      # if they are absent the daemon cannot start at all, and no source-tree
+      # test would have noticed.
+      - name: A database can be built from the installed package
+        run: |
+          /tmp/clean/bin/python - <<'PY'
+          import tempfile, os, sys
+          from lynceus.db import Database
+          from lynceus import __version__
+
+          db = Database(os.path.join(tempfile.mkdtemp(), "ci.db"))
+          version = list(db._conn.execute("SELECT MAX(version) FROM schema_migrations"))[0][0]
+          tables = {r[0] for r in db._conn.execute(
+              "SELECT name FROM sqlite_master WHERE type='table'")}
+          cols = {r[1] for r in db._conn.execute("PRAGMA table_info(alerts)")}
+          db.close()
+
+          print(f"lynceus {__version__}, schema version {version}")
+          problems = []
+          if version is None or version < 24:
+              problems.append(f"schema version {version} -- migrations did not apply")
+          for t in ("alerts", "devices", "sightings", "watchlist"):
+              if t not in tables:
+                  problems.append(f"missing table: {t}")
+          # Pins the delivery-tracking columns specifically: they are the
+          # newest migration and therefore the likeliest to be missed by a
+          # packaging change.
+          for c in ("notified_at", "notify_attempts"):
+              if c not in cols:
+                  problems.append(f"alerts.{c} missing -- migration 024 not packaged")
+          if problems:
+              for p in problems:
+                  print(f"::error::{p}")
+              sys.exit(1)
+          print("database builds cleanly from the installed wheel")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-py${{ matrix.python-version }}
+          path: dist/*.whl
+          retention-days: 14

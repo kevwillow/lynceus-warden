@@ -72,15 +72,18 @@ public source it came from:
 signatures across BLE UUID, MAC, MAC range, SSID pattern, and BLE local name
 types, each with an argus id and a confidence score](docs/images/watchlist-argus.png)
 
-Probe history on `/probes`, with the reveals expanded. Two devices with
-nothing else in common are both asking for `Hendricks_Home`, which is the
-kind of correlation a randomised MAC address will never give you:
+Probe history on `/probes`, exactly as the page opens: three devices, and the
+networks each one asked for kept behind a `reveal` control rather than printed
+on screen. Click through and you can find two devices with nothing else in
+common asking for the same unusual network — the kind of correlation a
+randomised MAC address will never give you:
 
-![The probes page listing five devices with the networks each one probed for,
-two of them sharing a network named Hendricks_Home, each row's SSID list
-sitting behind a reveal control](docs/images/probes-history.png)
+![The probes page listing three devices with their MAC, type, vendor and last
+seen, the networks each one probed for sitting unopened behind a "reveal 2
+network(s)" control](docs/images/probes-history.png)
 
-That page is off by default and every SSID stays collapsed until you click.
+That page is off by default, and the device-to-network pairing stays collapsed
+until you ask for it — opening the page never puts it on screen.
 
 And the part most tools skip. `/settings` says when a feature is switched on
 but cannot possibly work, instead of leaving you to guess at antennas:
@@ -301,14 +304,18 @@ on-device. The Bluetooth fixes in 0.9.3 and 0.9.4 came out of real rig
 captures, not out of reasoning about what should work.
 
 **The test suite ships, so you can check the claims on this page yourself.**
-`pytest -q` on a clone runs 3024 tests, and `ruff check .` and
-`python -m build` both pass. Eleven test files stay out of the repo because
-they embed the capture adapter's own MAC or the rig account name, which is
-what "the fixtures describe a real rig" actually meant; they are listed by
-name in `.gitignore` rather than hidden behind a glob. The full local suite
-is 3508, so the numbers differ and this page quotes the one you can
-reproduce. `.claude/gates.md` records both, along with the traps that make a
-green run mean less than it looks like.
+`pytest -q` runs **3281 tests** on a clone (1 skipped, ~20 minutes), and
+`ruff check .` and `python -m build` both pass. CI runs all three on Python
+3.11 and 3.12 for every push and pull request.
+
+Ten test files, plus one capture fixture, stay out of the repo because they
+embed the capture adapter's own MAC or the rig account name — which is what
+"the fixtures describe a real rig" actually meant. They are listed by name in
+`.gitignore` rather than hidden behind a glob. Everything else is tracked, so
+the number above is the number you get: there is no larger private suite
+behind it. [CONTRIBUTING.md](CONTRIBUTING.md) and `.claude/gates.md` record
+the traps that make a green run mean less than it looks like — in particular,
+check *which* test skipped rather than the skip count.
 
 ## Installation
 
@@ -365,7 +372,10 @@ Full step-by-step for a fresh Kali / Debian / Ubuntu host is in
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), including a "common issues" section
 for the failure modes that actually show up. The short version:
 
-1. **Install Lynceus.** `./install.sh --user`.
+1. **Install Lynceus.** Pick the scope now, because step 4 differs:
+   `./install.sh --user` for a foreground demo on a machine you already use, or
+   `sudo ./install.sh --system` for a dedicated always-on host. **`--user`
+   installs no systemd units** — it is deliberately not a service install.
 2. **Install and configure Kismet.** `sudo lynceus-bootstrap-kismet` detects
    monitor-capable Wi-Fi and Bluetooth interfaces, patches
    `/etc/kismet/kismet_site.conf` (append-only, so your edits survive), and adds
@@ -375,14 +385,28 @@ for the failure modes that actually show up. The short version:
    <http://localhost:2501>, set an admin password, and create a `readonly` API
    key named `lynceus`.
 3. **Configure Lynceus.** `lynceus-setup`, or `lynceus-setup --web` for a
-   browser wizard, which is friendlier over SSH and for anyone who'd rather
-   not hand-edit YAML. Either flow probes Kismet and ntfy, auto-locates the
-   API key from `~/.kismet/session.db` (no copy-paste in the common case), and
-   asks about probe-SSID capture with the privacy explanation attached. Press
-   Enter at the ntfy prompt to skip notifications.
-4. **Run.** `lynceus-quickstart` for dev/demo (daemon + UI + browser, Ctrl+C
-   to stop). For production:
+   browser wizard, which is friendlier for anyone who'd rather not hand-edit
+   YAML. Either flow probes Kismet and ntfy, auto-locates the API key from
+   `~/.kismet/session.db` (no copy-paste in the common case), and asks about
+   probe-SSID capture with the privacy explanation attached. Press Enter at the
+   ntfy prompt to skip notifications.
+
+   ⚠️ **Say yes to Argus-backed alerting when it asks.** It is opt-in and
+   defaults to *no*, and declining it writes no `rules.yaml` — which leaves you
+   with a system that captures devices, populates the UI, and **can never raise
+   an alert**. The `/rules` tile on the dashboard says `no ruleset — nothing
+   will alert` when you are in that state.
+
+   ⚠️ **`--web` on a headless box needs an SSH tunnel.** The wizard binds
+   `127.0.0.1`, so `localhost:8766` in your laptop's browser is your *laptop*,
+   not the Pi. Forward it first:
+   `ssh -L 8766:127.0.0.1:8766 you@your-pi`, then open
+   <http://localhost:8766>. The same applies to the dashboard on port 8765.
+   Prefer this over `ui_allow_remote` — see [Privacy / threat model](#privacy--threat-model).
+4. **Run.** After a `--user` install: `lynceus-quickstart` (daemon + UI +
+   browser in the foreground, Ctrl+C to stop). After a `--system` install:
    `sudo systemctl enable --now lynceus.service lynceus-ui.service`.
+   These are not interchangeable — a `--user` install has no units to enable.
 5. **Verify.** Open the UI, watch sightings populate, browse `/watchlist`, and
    check `/settings` for capture state and connectivity.
 
@@ -461,8 +485,22 @@ browser auto-launch, clean Ctrl+C shutdown. Not for unattended use.
 
 ## Privacy / threat model
 
-- **Read-only UI is a security boundary.** Visibility supports operator
-  awareness; mutability would erode the boundary, so it isn't there.
+- **The UI is read-only about the *world*, not about your own triage.** It
+  never transmits, never reconfigures capture, and never edits `rules.yaml` —
+  those stay operator config on disk. It does let you act on what you are
+  shown: acknowledge, note, snooze, allowlist, watch. Every one of those is a
+  POST carrying a CSRF token behind a confirmation prompt, and every
+  allowlisting is written to the audit log, because suppressing an alert is
+  exactly the action an attacker would want.
+- **⚠️ The UI has no authentication, so keep it on loopback.** It binds
+  `127.0.0.1` by default and that is the only thing protecting it. To reach a
+  headless box, forward the port over SSH — `ssh -L 8765:127.0.0.1:8765
+  you@your-pi` — rather than setting `ui_allow_remote: true`. That flag exposes
+  an unauthenticated dashboard to your whole network: anyone on it can read
+  `/probes` (a partial location history of every device in range, most of them
+  bystanders') and can silence a device by allowlisting it, which you would
+  never be alerted about. Treat it as "I have my own reverse proxy with auth in
+  front of this", not as a remote-access switch.
 - **Probe SSID capture is OFF by default.** Probe lists are a partial Wi-Fi
   history of *other people's* devices. On by default would make Lynceus the
   thing it exists to detect. `/settings` shows a recording warning when it's

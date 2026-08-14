@@ -1267,9 +1267,19 @@ class Database:
         mac: str | None,
         since_ts: int,
     ) -> dict | None:
+        """Newest alert for this rule+mac inside the window, delivered or not.
+
+        ⚠️ ``notified_at`` and ``notify_attempts`` are in the projection
+        because the dedup caller needs them to tell two very different states
+        apart: "the operator has already been told about this" (suppress) and
+        "a row exists but nobody has been told" (retry). Keying dedup on row
+        EXISTENCE alone was Wave 5 Finding 12 — one failed send silently
+        swallowed the alert for the whole window.
+        """
         row = self._conn.execute(
             """
-            SELECT id, ts, rule_name, mac, message, severity, acknowledged
+            SELECT id, ts, rule_name, mac, message, severity, acknowledged,
+                   notified_at, notify_attempts
             FROM alerts
             WHERE rule_name = ?
               AND ts >= ?
@@ -1280,6 +1290,64 @@ class Database:
             (rule_name, since_ts, mac, mac, mac),
         ).fetchone()
         return dict(row) if row else None
+
+    def mark_alert_notified(self, alert_id: int, *, now_ts: int) -> None:
+        """Record that the operator was successfully told about ``alert_id``.
+
+        Called only after the notifier reports success. Until this runs the
+        row is invisible to dedup, so the next poll retries rather than
+        assuming delivery.
+        """
+        with self._conn:
+            self._conn.execute(
+                "UPDATE alerts SET notified_at = ? WHERE id = ?",
+                (int(now_ts), int(alert_id)),
+            )
+
+    def record_alert_notify_attempt(self, alert_id: int) -> int:
+        """Increment and return this alert's delivery-attempt counter.
+
+        Bounds the retry loop: without it a server that is down for the whole
+        dedup window would be re-tried on every tick (60 times at the default
+        interval), and each attempt costs a blocking HTTP timeout on the poll
+        path.
+
+        ⚠️ UPDATE-then-SELECT rather than `UPDATE ... RETURNING`, deliberately.
+        RETURNING needs SQLite >= 3.35 (2021-03), and this runs on the ALERT
+        HOT PATH -- every alert, every poll. Debian bullseye ships 3.34, and
+        Raspberry Pi OS images derived from it are squarely in this project's
+        stated target. The repo does depend on 3.35 elsewhere (DROP COLUMN in
+        the down migrations), but only under an explicit `lynceus-validate
+        rollback`, never during normal operation; putting that floor on the
+        capture loop would turn "your SQLite is old" into "no alert ever
+        fires". Both statements share the transaction, so the read cannot
+        observe another writer's increment.
+        """
+        with self._conn:
+            self._conn.execute(
+                "UPDATE alerts SET notify_attempts = notify_attempts + 1 WHERE id = ?",
+                (int(alert_id),),
+            )
+            row = self._conn.execute(
+                "SELECT notify_attempts FROM alerts WHERE id = ?",
+                (int(alert_id),),
+            ).fetchone()
+        return int(row["notify_attempts"]) if row else 0
+
+    def count_undelivered_alerts(self, *, since_ts: int | None = None) -> int:
+        """Alerts written but never successfully notified.
+
+        Surfaced on /settings so a broken ntfy topic or auth token is visible
+        as a number rather than as silence -- which is the one thing an
+        operator of this tool must never have to guess at.
+        """
+        sql = "SELECT COUNT(*) AS n FROM alerts WHERE notified_at IS NULL"
+        params: list = []
+        if since_ts is not None:
+            sql += " AND ts >= ?"
+            params.append(int(since_ts))
+        row = self._conn.execute(sql, params).fetchone()
+        return int(row["n"]) if row else 0
 
     def get_most_recent_alert_id_for_mac(self, mac: str) -> int | None:
         """Return the id of the newest alert for ``mac``, or None.
@@ -1467,7 +1535,13 @@ class Database:
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = (
             "SELECT a.id, a.ts, a.rule_name, a.rule_type, a.mac, a.message, "
-            f"a.severity, a.acknowledged {self._ALERTS_FROM_FOR_FILTERS} "
+            # notified_at carries delivery state (migration 024): NULL means
+            # the alert was written but nobody was ever told. Projected here
+            # so callers can distinguish "you were paged about this" from
+            # "this is sitting in the database unseen" -- the distinction
+            # Wave 5 Finding 12 turned on.
+            f"a.severity, a.acknowledged, a.notified_at "
+            f"{self._ALERTS_FROM_FOR_FILTERS} "
             f"{where} ORDER BY a.ts DESC, a.id DESC LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])

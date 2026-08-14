@@ -10,7 +10,7 @@
        lynceus.js writes ("lynceus-theme"). When the stored value is "auto"
        or absent, leave data-theme unset so the @media (prefers-color-scheme)
        rule in lynceus.css (and Pico) decides. #}
-    <script>
+    <script nonce="{{ request.state.csp_nonce }}">
       (function(){try{var t=localStorage.getItem("lynceus-theme");if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}}catch(_){}})();
     </script>
     {# Per-table column state pre-paint applier. Defined here (non-deferred,
@@ -23,7 +23,7 @@
        interactive reorder. Reads localStorage["lynceus-table:<id>"] =
        {order:[colKey...], widths:{colKey:px}}; stale/invalid JSON is ignored
        and the server-rendered default order/widths stand. #}
-    <script>
+    <script nonce="{{ request.state.csp_nonce }}">
       window.__lynTableApply = function (id) {
         try {
           var table = document.querySelector('table[data-table-id="' + id + '"]');

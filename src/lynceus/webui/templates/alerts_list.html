@@ -231,7 +231,7 @@
     </dl>
   </aside>
 
-  <script>
+  <script nonce="{{ request.state.csp_nonce }}">
     (function () {
       function isFormField(el) {
         if (!el) return false;

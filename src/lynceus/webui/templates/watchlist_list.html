@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}watchlist &mdash; lynceus{% endblock %}
 {% block content %}
-  {% from "_table_macro.html" import data_table %}
+  {% from "_table_macro.html" import data_table with context %}
   {% include "_topnav.html" %}
   <h2>watchlist</h2>
 

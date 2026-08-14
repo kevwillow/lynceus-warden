@@ -1,0 +1,102 @@
+# Weekly drift check.
+#
+# ⚠️ What this catches that `ci.yml` cannot. CI installs the dependency ranges
+# in pyproject and runs on push, so it only ever tells you about code YOU
+# changed. This project's dependencies move underneath it: `bleak` is pinned
+# `>=0.22,<4.0` and its 4.x line deprecates the `adapter=` argument the BLE
+# bridge relies on (the 3.x move is already recorded in BACKLOG.md), and
+# fastapi/starlette/pydantic all shift under `>=` bounds.
+#
+# The failure mode being defended against is specific and nasty: an operator
+# installs Lynceus six weeks from now, pip resolves a newer transitive
+# dependency, and the daemon breaks on a machine we never see. Silence in this
+# project is already the worst signal -- that applies to the supply chain too.
+#
+# It also runs the diagnostic suite, which is EXCLUDED from the default gate
+# (`addopts = -m 'not diagnostic'`). Those tests are observation-only by design
+# and assert little, so they are not a gate -- but they still import and
+# exercise real code paths, and one that starts erroring means something moved
+# under it. Nothing has run them automatically until now.
+name: weekly
+
+on:
+  schedule:
+    # Monday 05:23 UTC. Off the hour deliberately: scheduled jobs on the hour
+    # queue behind everyone else's cron and can be delayed or dropped.
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.13 is NOT in the supported classifiers; it rides here as an early
+        # warning so a break is found before anyone claims support for it.
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # No pip cache here, on purpose: the point is to resolve fresh and find
+      # out what today's resolver actually picks.
+      - name: Install with the newest permitted dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade -e ".[dev]"
+          echo "### Resolved versions" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          pip list >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report anything newer than our bounds allow
+        continue-on-error: true
+        run: |
+          echo "### Held back by our version bounds" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          pip list --outdated >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Tests
+        run: pytest -q
+
+      # Observation-only by design, so failure here means "something moved",
+      # not "a contract broke". Reported, never fatal.
+      - name: Diagnostic suite (informational)
+        continue-on-error: true
+        run: pytest -m diagnostic -q
+
+      - name: Build wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel
+
+  # A dependency going EOL or picking up an advisory is the other half of
+  # drift, and it does not show up in a passing test run.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Audit installed dependencies for known advisories
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip install -e .
+          # Informational: an advisory in a transitive dependency is worth
+          # knowing about on a Monday, not worth blocking an unrelated push on.
+          pip-audit --progress-spinner off || true

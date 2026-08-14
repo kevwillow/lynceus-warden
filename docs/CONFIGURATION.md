@@ -123,7 +123,7 @@ allowlist_path: /etc/lynceus/allowlist.yaml
 alert_dedup_window_seconds: 3600
 
 ntfy_url: https://ntfy.sh
-ntfy_topic: kev-lynceus-home
+ntfy_topic: lynceus-home-4b7e2f9a1c6d
 ```
 
 ### 2. Office, allowlist for known coworkers
@@ -149,7 +149,7 @@ allowlist_path: /etc/lynceus/allowlist.yaml
 alert_dedup_window_seconds: 1800
 
 ntfy_url: https://ntfy.sh
-ntfy_topic: office-lynceus
+ntfy_topic: lynceus-office-2e8f5b1d7a3c
 ntfy_auth_token: tk_replace_me
 ```
 
@@ -192,7 +192,7 @@ allowlist_path: /etc/lynceus/allowlist.travel.yaml
 alert_dedup_window_seconds: 0
 
 ntfy_url: https://ntfy.sh
-ntfy_topic: kev-lynceus-travel
+ntfy_topic: lynceus-travel-9d4c1a8b3e5f
 ```
 
 The companion `rules.travel.yaml` should bump the `new_non_randomized_device` rule from `low` to `med` or `high`, and add aggressive `watchlist_oui` entries for known surveillance vendors. See [RULES.md](RULES.md) for the rule schema.

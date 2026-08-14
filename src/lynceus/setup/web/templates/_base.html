@@ -11,7 +11,7 @@
        value is "auto" or absent, leave data-theme unset so Pico v2's own
        prefers-color-scheme rule decides. Mirrors the dashboard's mechanism
        (lynceus.webui base.html) but stays scoped to the wizard. #}
-    <script>
+    <script nonce="{{ request.state.csp_nonce }}">
       (function(){try{var t=localStorage.getItem("lynceus-theme");if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}}catch(_){}})();
     </script>
     <link rel="stylesheet" href="{{ url_for('static', path='/pico.min.css') }}">
@@ -115,7 +115,7 @@
        data-theme on <html>, which Pico honors. Inline + at end of <body>
        so the toggle button is already parsed when we wire it. Scoped to
        the wizard — the dashboard ships its own copy in lynceus.js. #}
-    <script>
+    <script nonce="{{ request.state.csp_nonce }}">
       (function () {
         "use strict";
         var THEME_KEY = "lynceus-theme";
@@ -149,6 +149,29 @@
             applyTheme(next);
           });
         }
+      })();
+    </script>
+    {# ⛔ data-disable-on-submit: the double-submit guard on /apply and /done.
+       It was an inline onsubmit= handler, which the wizard's CSP refuses
+       outright (a nonce covers <script> ELEMENTS, never on*= attributes).
+       Left unimplemented, the attribute would be decoration and the operator
+       could fire /apply twice by double-clicking — on the step that writes
+       config and, in system scope, chowns files. The wizard does not load
+       lynceus.js (it ships its own theme toggle above for the same reason),
+       so the behaviour lives here rather than in the dashboard bundle. #}
+    <script nonce="{{ request.state.csp_nonce }}">
+      (function () {
+        document.addEventListener(
+          "submit",
+          function (evt) {
+            var form = evt.target;
+            if (!form || typeof form.getAttribute !== "function") return;
+            if (!form.getAttribute("data-disable-on-submit")) return;
+            var button = form.querySelector('button[type="submit"], button:not([type])');
+            if (button) button.disabled = true;
+          },
+          false
+        );
       })();
     </script>
   </body>

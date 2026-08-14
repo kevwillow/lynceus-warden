@@ -719,7 +719,7 @@ def test_rollback_subcommand_to_zero(tmp_path, capsys):
     # versions match the full chain after the re-init — proves the
     # rollback was atomic + the forward path is still functional.
     db = Database(db_path)
-    assert db.applied_versions() == list(range(1, 24))
+    assert db.applied_versions() == list(range(1, 25))
     db.close()
 
 

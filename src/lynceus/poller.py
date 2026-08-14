@@ -81,6 +81,21 @@ HEALTH_CHECK_RETRY_BACKOFF: list[float] = [2.0, 4.0, 8.0]
 # this alert.
 RUNTIME_KISMET_LOSS_THRESHOLD = 3
 
+# How many delivery attempts one alert gets before the poller stops retrying
+# it. Wave 5 Finding 12: an alert row used to be committed before the send was
+# attempted, and dedup keyed on the row, so a failed send suppressed its own
+# retry for the whole dedup window (3600s by default). Delivery is now the
+# dedup key, which makes a retry possible -- and therefore makes a BOUND
+# necessary, because each attempt costs a blocking HTTP timeout on the poll
+# path and an unbounded loop would retry a dead server on every tick.
+#
+# 4 attempts at the default 60s interval covers roughly three minutes of
+# outage, which matches RUNTIME_KISMET_LOSS_THRESHOLD's tolerance above and is
+# comfortably longer than the mobile-data blips this exists to survive. When
+# they are spent the row stays notified_at=NULL, so it is still counted as
+# undelivered on /settings rather than quietly forgotten.
+NOTIFY_MAX_ATTEMPTS = 4
+
 # How long run_forever waits for the BLE bridge thread to drain its buffer and
 # close its own Database after stop() before logging that it overran. Generous
 # relative to a flush tick so a mid-flush shutdown completes cleanly.
@@ -397,31 +412,73 @@ def process_observation(
                     rule_type_suppression_counter.get(hit.rule_type, 0) + 1
                 )
             continue
+        # ⭐ Dedup on DELIVERY, not on row existence. Wave 5 Finding 12: the
+        # row was committed before the send was attempted and this gate keyed
+        # on the row, so a send that failed suppressed its own retry for the
+        # whole window -- at the default 3600s, one transient blip cost an
+        # hour of alerting for this device+rule.
+        #
+        # Three states, and collapsing any two of them reintroduces a defect:
+        #   delivered in-window        -> suppress; the operator knows.
+        #   undelivered, attempts left -> RETRY THE EXISTING ROW. Emitting a
+        #                                 new one instead would fill /alerts
+        #                                 with duplicates of one detection
+        #                                 every time ntfy was briefly down.
+        #   undelivered, attempts spent-> suppress the retry, but leave
+        #                                 notified_at NULL so /settings can
+        #                                 still report it as undelivered.
+        retry_alert: dict | None = None
         if config.alert_dedup_window_seconds > 0:
             since = now_ts - config.alert_dedup_window_seconds
-            if (
-                db.get_recent_alert_for_rule_and_mac(hit.rule_name, hit.mac, since)
-                is not None
-            ):
-                logger.debug("dedup-skip %s/%s", hit.rule_name, hit.mac)
-                continue
+            recent = db.get_recent_alert_for_rule_and_mac(hit.rule_name, hit.mac, since)
+            if recent is not None:
+                if recent.get("notified_at") is not None:
+                    logger.debug("dedup-skip %s/%s", hit.rule_name, hit.mac)
+                    continue
+                if int(recent.get("notify_attempts") or 0) >= NOTIFY_MAX_ATTEMPTS:
+                    logger.debug(
+                        "dedup-skip %s/%s (undelivered, %d attempts spent)",
+                        hit.rule_name,
+                        hit.mac,
+                        NOTIFY_MAX_ATTEMPTS,
+                    )
+                    continue
+                retry_alert = recent
+                logger.info(
+                    "retrying undelivered notification for %s/%s (alert %s, attempt %d)",
+                    hit.rule_name,
+                    hit.mac,
+                    recent["id"],
+                    int(recent.get("notify_attempts") or 0) + 1,
+                )
         hit_match_id = (
             matched_watchlist_id if hit.rule_type != "new_non_randomized_device" else None
         )
-        try:
-            new_alert_id = db.add_alert(
-                ts=now_ts,
-                rule_name=hit.rule_name,
-                mac=hit.mac,
-                message=hit.message,
-                severity=hit.severity,
-                matched_watchlist_id=hit_match_id,
-                rule_type=hit.rule_type,
-            )
-        except Exception as e:
-            logger.warning("Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e)
-            continue
-        if config.evidence_capture_enabled and obs.raw_record is not None:
+        if retry_alert is not None:
+            # Reuse the row; do NOT re-capture evidence, which is keyed to the
+            # original alert id and already stored.
+            new_alert_id = int(retry_alert["id"])
+        else:
+            try:
+                new_alert_id = db.add_alert(
+                    ts=now_ts,
+                    rule_name=hit.rule_name,
+                    mac=hit.mac,
+                    message=hit.message,
+                    severity=hit.severity,
+                    matched_watchlist_id=hit_match_id,
+                    rule_type=hit.rule_type,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e
+                )
+                continue
+        if (
+            retry_alert is None
+            and config.evidence_capture_enabled
+            and obs.raw_record is not None
+        ):
             capture_evidence(
                 db,
                 new_alert_id,
@@ -446,16 +503,72 @@ def process_observation(
         # category off the observation + Argus device_category off the
         # match (em-dash placeholder when absent, no inference).
         type_suffix = build_type_suffix(obs.device_type, device_category)
+        # Count the attempt BEFORE making it. A send that hangs and is killed,
+        # or one that raises in a way the except below cannot see, must still
+        # burn an attempt -- otherwise the bound is not a bound and a wedged
+        # notifier is retried on every tick forever.
+        #
+        # ⛔ But bookkeeping must NEVER cost a notification. This whole function
+        # runs inside a per-observation try/except in poll_once, so an
+        # unguarded raise here would abandon the observation entirely: no
+        # notification for this hit, and none for any remaining hit on the same
+        # device. Losing the counter costs at worst one extra retry later;
+        # losing the send means the operator is never told, which is the exact
+        # failure Finding 12 exists to close.
+        try:
+            attempts = db.record_alert_notify_attempt(new_alert_id)
+        except Exception as e:
+            logger.warning(
+                "Failed to record notify attempt for alert %s (sending anyway): %s",
+                new_alert_id,
+                e,
+            )
+            attempts = 0
         try:
             ok = notifier.send(
                 severity=hit.severity,
                 title=title,
                 message=hit.message + suffix + type_suffix,
             )
-            if not ok:
-                logger.warning("Notifier returned False for %s/%s", hit.rule_name, hit.mac)
+            if ok:
+                # ⭐ Only NOW is this alert deduplicatable. Until this row is
+                # stamped, the next poll retries it rather than assuming the
+                # operator was told (Wave 5 Finding 12).
+                #
+                # Guarded for the same reason as the counter above: this runs
+                # inside poll_once's per-observation try/except. If the stamp
+                # fails the delivery still happened, and the worst case is one
+                # duplicate notification on the next poll -- strictly better
+                # than abandoning the rest of this observation's hits.
+                try:
+                    db.mark_alert_notified(new_alert_id, now_ts=now_ts)
+                except Exception as e:
+                    logger.warning(
+                        "Delivered alert %s but failed to stamp it as notified "
+                        "(it may be re-sent once): %s",
+                        new_alert_id,
+                        e,
+                    )
+            else:
+                logger.warning(
+                    "Notifier returned False for %s/%s (alert %s, attempt %d/%d)%s",
+                    hit.rule_name,
+                    hit.mac,
+                    new_alert_id,
+                    attempts,
+                    NOTIFY_MAX_ATTEMPTS,
+                    "" if attempts < NOTIFY_MAX_ATTEMPTS else " -- giving up, alert UNDELIVERED",
+                )
         except Exception as e:
-            logger.warning("Notifier raised for %s/%s: %s", hit.rule_name, hit.mac, e)
+            logger.warning(
+                "Notifier raised for %s/%s (alert %s, attempt %d/%d): %s",
+                hit.rule_name,
+                hit.mac,
+                new_alert_id,
+                attempts,
+                NOTIFY_MAX_ATTEMPTS,
+                e,
+            )
 
 
 def poll_once(

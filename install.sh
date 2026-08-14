@@ -329,7 +329,7 @@ note_path_if_missing() {
 
 print_next_steps() {
     local scope="$1"  # user | system
-    local sudo_pfx setup_scope run_step
+    local sudo_pfx setup_scope
 
     if [[ "$scope" == "system" ]]; then
         sudo_pfx="sudo "

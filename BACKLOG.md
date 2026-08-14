@@ -257,14 +257,6 @@ fixed in PR #16, and `shared_probe_ssids`'s corpus-linear cost — the one item 
 defect rather than a judgement — was fixed straight after and is no longer on this list. What
 remains is hardening and one product question. Full register with every measurement is in those PRs.
 
-### No Content-Security-Policy header
-Measured: only `CSRFMiddleware` is installed; no CSP on any response. Escaping is the sole XSS
-barrier, so one overlooked raw render anywhere executes. Several internal docs **falsely claim a
-strict CSP applies** — that wording should be corrected whether or not a CSP lands.
-
-⚠️ `base.html` runs an inline `<script>` for the pre-paint theme. A strict CSP without a nonce or
-hash blocks it and reintroduces the light-mode flash.
-
 ### No `Cache-Control` on the co-observation 404
 `_absent()` sets no cache directives. Largely mitigated in practice because every response carries
 `Set-Cookie` (CSRF), which stops shared caches storing it — but it is incidental, not intended.
@@ -286,6 +278,86 @@ prominence but **inclusion** ("Showing 25 of N"); the set-aside groups are a cla
 SSIDs are ordered rarest-first; the demoted group has no drill-down affordance. Whether that
 amounts to a suspicion ranking expressed through layout is a **product judgement**, not a code
 defect — recorded so it is argued once, deliberately, rather than rediscovered.
+
+## Production-readiness pass, 2026-08-13 — unfixed items
+
+Findings from the shippable/shareable audit at `d66d844`. The defects that were fixed are recorded
+in `docs/AUDIT_REGISTER.md` (Wave 5, Findings 12–17) with their measurements. What follows is what
+was found and deliberately **not** taken on in that remediation.
+
+### Web UI has no authentication — 23 unauthenticated state-changing routes
+Measured: nothing in `src/lynceus/webui/` implements auth of any kind; loopback binding is the only
+control, and `ui_allow_remote: true` (`config.py:178,368`) removes it. There are 23 `@app.post`
+routes, including `/devices/{mac}/allowlist`, `/rules/{rule_type}/snooze` and
+`/alerts/{id}/ack`. CSRF does not help against a direct LAN attacker, who simply reads the token.
+
+Concrete attack: someone on the same network allowlists **their own** tracker; the operator is never
+alerted and the UI shows nothing wrong. They can also read `/probes`, which is the probe-SSID history
+of every device in range — the most sensitive data the system holds, and about bystanders rather than
+the operator.
+
+⭐ Partially self-limiting today, **by a bug rather than by design**: `ui_allow_remote` unconditionally
+sets a `Secure` CSRF cookie (`webui/app.py:1453`) while the bundled Uvicorn serves plain HTTP
+(`webui/server.py:55-63`), so a browser will not return the cookie and state-changing forms 403.
+That impairs the operator without impeding a non-browser attacker, who forges the header. Fixing the
+cookie bug **without** adding auth would make this strictly worse.
+
+- **Trigger**: any deployment story beyond "loopback, single operator" — a shared house, a second
+  device, or the first user who asks for remote access.
+- **Interim, and what the docs should say now**: SSH port-forwarding is the supported remote path;
+  `ui_allow_remote` should warn loudly at startup rather than reading as a normal toggle.
+- **Estimated**: real work. Session auth + a login surface + rate limiting, or delegate it to a
+  reverse proxy and document that as the only supported remote mode.
+
+### Silent pipeline death — the daemon stays alive with ingest stopped
+A persistent DB lock, disk-full, or a changed Kismet devices-schema is caught per-tick by
+`run_forever` and logged, while the runtime-loss state machine deliberately stays quiet because
+Kismet's health endpoint is still reachable (`poller.py:1257+`). Process alive, Kismet alive,
+ingest and alerting stopped, operator untold. `test_poller_runtime_kismet_loss.py` correctly
+prevents a *false* "Kismet down" for DB failures, but nothing requires a truthful
+"storage/pipeline degraded" notification in its place.
+- **Trigger**: take with the heartbeat work; they are the same "silence is ambiguous" problem.
+
+### Test gaps worth pinning (analysis only — no tests written)
+Ranked by consequence. The suite is ~3,260 tests and genuinely strong on rules, UI, import and
+evidence; these are gaps *between* well-tested units, on failure paths.
+
+- **Watermark advances past a failed record.** A per-observation exception is caught, but
+  `last_poll_ts` still advances to the tick time. If that device's Kismet `last_time` precedes the
+  new watermark it is never re-fetched. `test_e2e_observation_persist_failure_does_not_block_others`
+  proves isolation and explicitly accepts zero alerts for the failed device — it is easily mistaken
+  for recovery coverage, and there is none.
+- **BLE flush → alert handoff.** Decoder, buffer, callback, OR-patterns and teardown are all
+  covered; nothing proves a buffered advert reaches a device row, a rule, an alert and a notifier.
+  Breaking `_flush`'s `process_observation` call would leave every BLE test green and silently end
+  all BLE detection.
+- **Migration replay atomicity.** A crash after `executescript()` succeeds but before the
+  version row commits reapplies an additive migration and fails on a duplicate column at next
+  start. Only 007 and 014 have replay hardening.
+- **The real Kismet HTTP client.** 401/403, 5xx, invalid JSON, non-list responses, retry success
+  and retry exhaustion are untested; parser tests use fixtures or `FakeKismetClient`. The autouse
+  fixture that disables retries cites `test_h5_session_retry_mounted_for_*`, which **does not
+  exist**.
+- **`cli/bootstrap_kismet.py` (1,589 lines) has no behavioural test.** It can write a wrong-interface
+  `kismet_site.conf` and report success; Kismet then runs healthily capturing nothing relevant.
+- **Clock jumps.** `last_poll_ts` is wall-clock. One forward excursion makes later polls ask Kismet
+  for devices "since the future"; the same jump can compute a far-future retention cutoff and delete
+  evidence. All current cursor/retention tests use monotonically increasing time.
+
+### Heartbeat / dead-man's switch
+The one genuinely new feature worth building, deferred until the delivery path is trustworthy
+(audit register Finding 12). Every other failure mode now alerts — Kismet loss alerts and recovers,
+systemd restarts on failure, the allowlist fails safe. But if the daemon dies, the host loses power,
+the SD card wears out, or ntfy delivery itself breaks, the operator's phone simply goes quiet — **and
+quiet is indistinguishable from "you are safe"**, which is the worst possible failure for this
+product.
+
+A configurable low-priority "still watching, N devices seen, last alert Xh ago" push makes silence
+falsifiable, and continuously exercises the delivery path so a broken topic or auth token surfaces
+within a day instead of at the moment it matters.
+- **Trigger**: after Finding 12's delivery fix lands — building it on the current fire-and-forget
+  path would inherit the same defect.
+- **Estimated**: ~150 LOC + config knob + tests. Cheap; the value is in the sequencing.
 
 ## Followups for technical debt
 
@@ -418,10 +490,20 @@ Currently a single failed poll is silently logged and the next poll
 proceeds. If transient failures become noisy, add exponential backoff
 with a circuit breaker.
 
-### Kismet-died notification
-Lynceus can detect Kismet unreachability (via health_check) but doesn't
-currently alert via ntfy when this happens. Add a "lynceus infrastructure
-alert" tier that fires on kismet-down, db-locked, etc.
+### ~~Kismet-died notification~~ — ✅ SHIPPED in 0.9.1, entry was stale
+Verified 2026-08-13: `poller.py:1257-1310` implements exactly this. A runtime
+loss alerts once after `RUNTIME_KISMET_LOSS_THRESHOLD = 3` consecutive failed
+ticks (~3 min at the default interval), re-probes `health_check()` to avoid
+paging on a transient blip, and sends a **recovery** notification when Kismet
+comes back. `priority_override=4` keeps it below the 5 reserved for
+watchlist hits. Original text kept below for provenance:
+
+> Lynceus can detect Kismet unreachability (via health_check) but doesn't
+> currently alert via ntfy when this happens. Add a "lynceus infrastructure
+> alert" tier that fires on kismet-down, db-locked, etc.
+
+⚠️ The "db-locked, etc." half is **not** done — see "Silent pipeline death"
+under the 2026-08-13 items below.
 
 ### Per-channel filtering
 Same logic as per-band. Wait until the simpler primitives prove

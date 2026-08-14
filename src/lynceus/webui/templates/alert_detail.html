@@ -122,7 +122,7 @@
     </form>
     {% if alert.note %}
       <form method="post" action="/alerts/{{ alert.id }}/note"
-            onsubmit="return confirm('Clear the triage note for this alert?');">
+            data-confirm="Clear the triage note for this alert?">
         <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
         <input type="hidden" name="note_text" value="">
         <button type="submit" class="outline">Clear note</button>
@@ -136,12 +136,12 @@
       {% if allowlist_match is none %}
         <p>This device is not on the allowlist. Choose how to handle future alerts for <code>{{ alert.mac }}</code>:</p>
         <form method="post" action="/alerts/{{ alert.id }}/allowlist"
-              onsubmit="return confirm('Permanently allowlist {{ alert.mac }}? Future alerts for this device will be suppressed.');">
+              data-confirm="Permanently allowlist {{ alert.mac }}? Future alerts for this device will be suppressed.">
           <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
           <button type="submit">Allowlist this device</button>
         </form>
         <form method="post" action="/alerts/{{ alert.id }}/snooze"
-              onsubmit="return confirm('Snooze alerts for {{ alert.mac }}?');">
+              data-confirm="Snooze alerts for {{ alert.mac }}?">
           <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
           <label>
             Duration:
@@ -159,7 +159,7 @@
         </p>
         {% if allowlist_match_removable %}
           <form method="post" action="/alerts/{{ alert.id }}/allowlist/remove"
-                onsubmit="return confirm('Remove {{ alert.mac }} from the allowlist?');">
+                data-confirm="Remove {{ alert.mac }} from the allowlist?">
             <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
             <button type="submit">Remove from allowlist</button>
           </form>
@@ -173,7 +173,7 @@
         </p>
         {% if allowlist_match_removable %}
           <form method="post" action="/alerts/{{ alert.id }}/allowlist/remove"
-                onsubmit="return confirm('Cancel snooze for {{ alert.mac }}?');">
+                data-confirm="Cancel snooze for {{ alert.mac }}?">
             <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
             <button type="submit">Cancel snooze</button>
           </form>

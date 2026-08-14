@@ -82,7 +82,9 @@ rules:
   # existing operator deployments see zero behavioral change unless
   # they deliberately uncomment one of the entries below.
   #
-  # argus_mac is enabled by default as of 0.9.6. It was commented out,
+  # argus_mac is enabled by default from 0.9.6 (the next release; the
+  # shipped version is 0.9.5, so this entry is ahead of the tag). It was
+  # commented out,
   # and the consequence was not the intended conservatism: the
   # /devices/<mac>/watchlist button writes a watchlist row, turns the
   # panel green, and promises "It will raise alerts on every future

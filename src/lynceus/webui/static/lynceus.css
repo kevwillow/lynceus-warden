@@ -122,6 +122,30 @@ form fieldset.grid input {
     padding-bottom: 0.35em;
     --pico-form-element-spacing-vertical: 0.35em;
 }
+/* ⛔ The submit button was left out of BOTH rules above, and each omission
+   showed. Measured on /probes at 1400px before this rule:
+
+     input  marginBottom=0px   height=46px  bottom=337
+     button marginBottom=20px  height=62px  bottom=317   ← 20px high
+
+   Two separate causes, and fixing only one looks no better than fixing
+   neither. (1) Pico's default 20px bottom margin survived here because the
+   selector above names `select, input` only — and `align-items: end` aligns
+   MARGIN boxes, so the button's visible edge floated exactly its own margin
+   above the controls it sits beside. (2) It also kept Pico's full ~3rem
+   height while its neighbours were deliberately reduced, so zeroing the
+   margin alone would have bottom-aligned a button that then stood 16px
+   PROUD of the row. Same compact sizing + no margin puts every control in
+   the row on one baseline, which is what align-items:end was always for.
+   Applies to all six filter rows (/alerts, /allowlist, /devices, /probes,
+   /watchful, /watchlist) and to /rules' `apply`, which share this markup. */
+form fieldset.grid > button {
+    margin-bottom: 0;
+    height: auto;
+    padding-top: 0.35em;
+    padding-bottom: 0.35em;
+    --pico-form-element-spacing-vertical: 0.35em;
+}
 
 .badge-low   { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .badge-med   { background: var(--lyn-badge-warning-bg);  color: var(--lyn-badge-warning-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }

@@ -3,9 +3,16 @@
 install:
 	pip install -e ".[dev]"
 
-# NOTE: tests/ is gitignored and is NOT part of a clone -- this target does
-# nothing useful on a fresh checkout. See docs/TESTING.md for why the suite
-# is maintained out-of-tree.
+# The suite IS part of a clone. (This note previously said the opposite; that
+# stopped being true once the tests were tracked, and it discouraged the one
+# thing the README asks readers to do -- check its claims by running them.)
+# Ten test files (plus one capture fixture) stay out, listed by name in
+# .gitignore rather than hidden behind a glob, because they embed the capture
+# adapter's own MAC or the rig account name.
+#
+# Takes roughly 18 minutes. See CONTRIBUTING.md for the traps that make a green
+# run mean less than it looks like -- in particular, check WHICH test skipped
+# rather than the skip count.
 test:
 	pytest -v
 

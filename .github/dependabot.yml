@@ -1,0 +1,48 @@
+# Dependency updates.
+#
+# Two ecosystems, for different reasons.
+#
+# `github-actions`: a workflow pinned to a stale action is a supply-chain
+# surface, and this repo's CI now runs on every push. Third-party actions are
+# deliberately kept to zero -- everything in .github/workflows uses first-party
+# actions/* or plain shell -- so this is a small, low-noise feed.
+#
+# `pip`: the runtime bounds in pyproject are permissive (`>=`), so what an
+# operator actually installs drifts without anything here changing. The weekly
+# workflow catches breakage after the fact by resolving fresh; this proposes
+# the bump before someone hits it. `bleak` is the live example -- its 4.x line
+# deprecates the `adapter=` argument the BLE bridge relies on.
+#
+# ⚠️ Grouped and monthly on purpose. A security tool with a wall of open
+# single-dependency PRs is a repo that looks unmaintained, and nobody reviews
+# the twelfth bump of the week -- which is exactly when a bad one lands.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+    labels: ["dependencies", "ci"]
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      # Separated so a runtime bump -- which can reach an operator's Pi -- is
+      # never reviewed in the same breath as a test-only one.
+      runtime:
+        patterns: ["requests", "pydantic", "PyYAML", "fastapi", "uvicorn", "jinja2",
+                   "python-multipart", "bleak"]
+      dev:
+        patterns: ["pytest*", "httpx", "freezegun", "ruff", "build"]
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels: ["dependencies"]
