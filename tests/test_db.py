@@ -2718,16 +2718,16 @@ def test_watchlist_pattern_type_counts_empty_returns_zero_for_each_type(db):
     admits — stable shape lets the /settings template render without
     branching on per-type presence."""
     counts = db.watchlist_pattern_type_counts()
-    assert counts == {
-        "mac": 0,
-        "oui": 0,
-        "ssid": 0,
-        "ble_uuid": 0,
-        "mac_range": 0,
-        "ble_manufacturer_id": 0,
-        "drone_id_prefix": 0,
-        "ble_local_name": 0,
-    }
+    # Derived, not hardcoded. This assertion used to pin its own eight-entry
+    # copy of the manifest while its docstring said "every pattern_type the
+    # schema admits" -- the prose was right and the copy was two migrations
+    # stale, so it passed while /healthz.json under-reported the watchlist.
+    # tests/test_watchlist_pattern_type_manifest.py is what pins the manifest
+    # against the live CHECK constraint; this one only pins the SHAPE.
+    assert counts == {pt: 0 for pt in Database._WATCHLIST_PATTERN_TYPES}
+    assert len(counts) >= 10, (
+        f"implausibly few pattern types in the breakdown: {sorted(counts)}"
+    )
 
 
 def test_watchlist_pattern_type_counts_groups_by_type(db):
