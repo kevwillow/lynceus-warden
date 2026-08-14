@@ -702,7 +702,10 @@ here, and the full-suite run is what caught it.
 
 ### 🔴 Finding 15 — two personal ntfy topics are published in an already-public repo
 
-`docs/CONFIGURATION.md:126` (`kev-lynceus-home`) and `:195` (`kev-lynceus-travel`). `gh repo view`
+Two operator-specific ntfy topics were committed as sample values in
+`docs/CONFIGURATION.md:126` and `:195`. **The values are deliberately not repeated here** — this
+register is itself published, and restating a live shared secret in the document that reports it
+leaking would undo the scrub and make it *more* discoverable, not less. `gh repo view`
 reports the repository **PUBLIC**. An ntfy topic is a bidirectional shared secret: anyone who reads
 it can subscribe to the operator's surveillance alerts — deriving location and what is near them —
 and can publish forged alerts to their phone. The README already states that a topic is a secret,
