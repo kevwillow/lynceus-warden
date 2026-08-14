@@ -2527,15 +2527,39 @@ class Database:
 
     # --- watchlist_metadata (Argus side table) ----------------------------
 
+    # ⛔ THE SINGLE SOURCE OF TRUTH for watchlist pattern types. Import this;
+    # do not re-declare it.
+    #
+    # This tuple must match the ``pattern_type`` CHECK constraint on the
+    # ``watchlist`` table exactly, and
+    # ``tests/test_watchlist_pattern_type_manifest.py`` asserts that against the
+    # live schema so a migration cannot silently outgrow it.
+    #
+    # 🪤 It already had, twice, and the failure was silent in the direction that
+    # matters. Migration 019 added ``ssid_pattern`` and migration 021 added
+    # ``imei_tac``; this tuple stayed at eight. Because
+    # ``watchlist_pattern_type_counts`` seeds its dict from these keys and then
+    # only fills keys it already has, rows of an unlisted type are counted as
+    # zero rather than reported. Measured on three seeded rows of three types:
+    # watchlist holds 3, the reported total is 1. ``/healthz.json`` under-reports
+    # the operator's watchlist and ``/settings`` hides the rows entirely --
+    # "your watchlist has 1 entry" when it has 3, in a tool whose whole job is
+    # knowing what it is watching.
+    #
+    # There were three independently-drifted copies of this list (here,
+    # ``webui/app.py``, ``cli/seed_watchlist.py``), which is why a single
+    # definition is worth more than a correct one.
     _WATCHLIST_PATTERN_TYPES = (
         "mac",
         "oui",
         "ssid",
+        "ssid_pattern",
         "ble_uuid",
         "mac_range",
         "ble_manufacturer_id",
         "drone_id_prefix",
         "ble_local_name",
+        "imei_tac",
     )
     _METADATA_OPTIONAL_FIELDS = (
         "confidence",

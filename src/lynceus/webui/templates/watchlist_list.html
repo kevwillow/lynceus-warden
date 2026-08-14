@@ -5,6 +5,20 @@
   {% include "_topnav.html" %}
   <h2>watchlist</h2>
 
+  {# A filter the app could not honour is reported rather than dropped. The
+     old behaviour reset an unknown pattern_type to None and answered with
+     every row, so the page showed the whole watchlist while the operator
+     believed it was filtered. `status-pill` and `status-pill-warn` are both
+     defined in lynceus.css -- checked, because an undefined class here would
+     render nothing and reintroduce exactly the silence this is fixing. #}
+  {% if dropped_filters %}
+    <p class="status-line">
+      <span class="status-pill status-pill-warn">filter ignored</span>
+      showing <strong>all</strong> entries &mdash; this view does not recognise
+      {{ dropped_filters | join(", ") }}.
+    </p>
+  {% endif %}
+
   <form method="get" action="/watchlist">
     <fieldset class="grid">
       <label>type

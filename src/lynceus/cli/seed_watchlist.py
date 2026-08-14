@@ -18,7 +18,10 @@ from ..patterns import normalize_pattern
 from ..seeds.ble_uuids import TRACKER_UUIDS
 from ..seeds.threat_ouis import THREAT_OUIS
 
-VALID_PATTERN_TYPES = {"mac", "oui", "ssid", "ble_uuid"}
+# Frozen at migration 001 until 2026-08-14: this listed 4 of the 10 types the
+# schema admits, so the YAML seeder silently skipped rows of the other 6.
+# Derived from the single source of truth now -- see Database._WATCHLIST_PATTERN_TYPES.
+VALID_PATTERN_TYPES = set(Database._WATCHLIST_PATTERN_TYPES)
 VALID_SEVERITIES = {"low", "med", "high"}
 
 # Metadata block — mirrors the watchlist_metadata table's allowed columns.

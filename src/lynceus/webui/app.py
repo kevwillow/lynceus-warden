@@ -341,16 +341,15 @@ _PROBES_GROUP_DEFAULT: str = "device"
 # is intentionally absent here — it's matched alongside ssid under
 # the same watchlist_ssid rule_type and treated as one operator-
 # facing surface; tracking the gap is out of scope for this change.)
-_WATCHLIST_PATTERN_TYPES: tuple[str, ...] = (
-    "mac",
-    "oui",
-    "ssid",
-    "ble_uuid",
-    "mac_range",
-    "ble_manufacturer_id",
-    "drone_id_prefix",
-    "ble_local_name",
-)
+# ⛔ Not a copy. This is `Database._WATCHLIST_PATTERN_TYPES` re-exported under
+# the name the templates and route handlers already use.
+#
+# 🪤 It WAS a copy, frozen at migration 020, and the two lists drifted apart.
+# The consequence here was different from db.py's under-count and just as quiet:
+# `:3999` and `:4098` normalise an unrecognised `?pattern_type=` to None, which
+# DROPS the filter rather than rejecting it -- so /watchlist and /watchlist.csv
+# answered a filtered request with every row and looked like they had worked.
+_WATCHLIST_PATTERN_TYPES: tuple[str, ...] = Database._WATCHLIST_PATTERN_TYPES
 
 # Sentinel for the "(uncategorized)" device_category dropdown option
 # -- mirrors Database._WATCHLIST_UNCATEGORIZED_SENTINEL. Surfacing
@@ -3996,7 +3995,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
             raise HTTPException(status_code=400, detail="q must be <= 100 chars")
         q_clean = q if q else None
 
+        # Lenient, but NOT silent. An unknown pattern_type used to be reset to
+        # None, which DROPPED the filter and answered the request with every
+        # row -- the operator asked for one type and got the whole watchlist
+        # with nothing saying so. Staying lenient keeps stale bookmarks and
+        # hand-edited URLs working (a 400 would break them); surfacing it is
+        # what stops the page lying about what it is showing.
+        dropped_filters: list[str] = []
         if pattern_type is not None and pattern_type not in _WATCHLIST_PATTERN_TYPES:
+            dropped_filters.append(f"pattern type {pattern_type!r}")
             pattern_type = None
         pt_clean = pattern_type or None
 
@@ -4067,6 +4074,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "severity": severity or "",
                 "device_category": device_category or "",
                 "pattern_type_options": _WATCHLIST_PATTERN_TYPES,
+                "dropped_filters": dropped_filters,
                 "device_category_options": device_category_options,
                 "uncategorized_sentinel": _WATCHLIST_UNCATEGORIZED_SENTINEL,
                 "per_page_options": _WATCHLIST_PER_PAGE_ALLOWED,
@@ -4095,9 +4103,26 @@ def create_app(config: Config, db: Database) -> FastAPI:
             raise HTTPException(status_code=400, detail="q must be <= 100 chars")
         q_clean = q if q else None
 
+        # Lenient, but NOT silent. An unknown pattern_type used to be reset to
+        # None, which DROPPED the filter and answered the request with every
+        # row -- the operator asked for one type and got the whole watchlist
+        # with nothing saying so. Staying lenient keeps stale bookmarks and
+        # hand-edited URLs working (a 400 would break them); surfacing it is
+        # what stops the page lying about what it is showing.
+        dropped_filters: list[str] = []
         if pattern_type is not None and pattern_type not in _WATCHLIST_PATTERN_TYPES:
+            dropped_filters.append(f"pattern type {pattern_type!r}")
             pattern_type = None
         pt_clean = pattern_type or None
+        if dropped_filters:
+            # No page to carry a notice on, so the export must not be silent
+            # either: a CSV that quietly contains every row is worse than the
+            # HTML page, because it gets archived and cited later.
+            logger.warning(
+                "/watchlist.csv ignoring unrecognised filter(s): %s -- exporting "
+                "ALL matching rows",
+                ", ".join(dropped_filters),
+            )
 
         if severity is not None and severity not in ("low", "med", "high"):
             severity = None
