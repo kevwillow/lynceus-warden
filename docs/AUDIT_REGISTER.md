@@ -922,9 +922,12 @@ promise, confirmed `_atomic_write` was genuinely wired in at `core.py:524/533/56
 the first call. **Confirming a guard is wired in says nothing about its second invocation.**
 Found by session `e4288bb5` (packets W1-C and W1-D independently), reproduced independently here.
 
-⛔ **UNFIXED as of `8609fc9`.** It is the highest-severity item open in the repo. The fix is
-`os.fchmod(fd, mode)` after `os.open` and before the write — **not** the fix in Finding 22, which is
-its opposite.
+✅ **Fixed in PR #28** — `os.fchmod` on the **open descriptor**, before any content is written.
+⛔ **It must stay `fchmod`-on-descriptor and must NOT be "simplified" to `os.chmod(path, mode)`.**
+Two reasons: `O_TRUNC` has already emptied the file at that point, so the secret never exists on
+disk under the broader bits; and a path-based `chmod` between the `open` and the `chmod` is
+defeatable by a symlink swap, which an fd-based one is not.
+⛔ **Not** the fix in Finding 22, which is its opposite. Both docstrings now carry that warning.
 
 ### 🔴 Finding 22 — a Kismet re-run silently widens an operator's own hardening
 
@@ -1009,8 +1012,12 @@ set. Interacts with the standing no-auth finding. Recorded, not fixed. Found by 
 - **`py/jinja2/autoescape-false` at `test_webui.py:3414`** — a bare `Environment()` used only to
   test filter *selection*. `_device_label` returns a plain `str`, never `Markup`, and production
   renders through `Jinja2Templates` (`app.py:1437`), which enables autoescape.
-- **`py/clear-text-storage-sensitive-data` at `core.py:209`** — the YAML config is cleartext by
-  design. Changing that is a keyring feature, not a patch.
+- **`py/clear-text-storage-sensitive-data` at `core.py:209`** — ⚠️ **not refuted; reclassified as a
+  Windows-only design item.** On POSIX the control is the `0600` mode, and that control is exactly
+  what Finding 21's fix restores. But the alert sits on the **Windows branch** (`path.write_text`),
+  where there are no mode bits at all and access is governed by the parent directory's inherited
+  DACL — which this code never constrains. So "cleartext by design" is true on POSIX and overstated
+  on Windows. **Not a patch: it needs DPAPI or an explicit DACL.** Tracked, not fixed.
 - **`test_redact.py:264`** — flagged weak by a delegate; **left unpromoted because no one could
   construct a defect that slips past it** while its sibling `assert "user:pass" not in redacted`
   holds. Unproven is not the same as refuted, and it is recorded as unproven.
@@ -1022,9 +1029,13 @@ Both `HANDOFF_2026-08-14_HARDENING_AND_CI.md` (§5.2) and `HANDOFF_2026-08-14_OR
 leads … the DEBUG ntfy-topic leak (`notify.py:172-174`)"*.
 
 **CodeQL has zero `clear-text-logging` alerts in `notify.py`** — its only alert there is one
-`py/ineffectual-statement` at `:36`. Every `logger.*` call in that file already passes
-`safe_url = redact_topic_in_url(url)`. The `overly-permissive-file` half of the claim is sound; the
-clear-text-logging half corroborates nothing.
+`py/ineffectual-statement` at `:36`. Every logger call that **interpolates the URL** uses
+`safe_url = redact_topic_in_url(url)` (`:172`, `:180`). ⭐ **The leak is not an interpolated URL at
+all**: `:174` passes no URL and leaks the raw topic through the urllib3 traceback that
+`exc_info=True` renders. (Saying "every logger call is redacted" would be false and would make this
+finding look self-contradictory — there are four calls and two pass no URL.) The
+`overly-permissive-file` half of the claim is sound; the clear-text-logging half corroborates
+nothing.
 
 The underlying lead is nevertheless **real as behaviour and deliberate as design**. Measured:
 
@@ -1045,9 +1056,11 @@ patch, and it must not be re-reported as a new CodeQL finding.
 
 - The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,
   `watchlist_detail.html:97`) remains unverified and lower severity.
-- 🔴 **Finding 21** — `setup/core.py:211`. Reproduced, unfixed, highest severity open.
 - 🟡 **Findings 24 and 25** — recorded, not fixed; 24 is a contract change pinned by four tests.
 - **The ntfy DEBUG topic leak** — a maintainer decision, not a defect. See the correction above.
+- **`py/clear-text-storage-sensitive-data` on the Windows branch** — needs DPAPI or an explicit
+  DACL. Not a patch; a Windows-only design item.
+- ✅ **Finding 21 is fixed** (PR #28) and **Finding 22** (PR #25) and **Finding 23** (PR #26).
 
 ## Closed since the audit
 
@@ -1082,3 +1095,13 @@ Export `PYTHONPATH=<worktree>/src` before gating in one. 🪤 It produced a **fa
 this wave's own verification**: a reproduction script that hardcoded the primary checkout's path
 reported the just-merged Finding 22 fix as still broken, because the primary checkout's `main` was
 several commits behind. ⇒ **Assert which tree you imported before believing any worktree result.**
+
+⭐ **This repo's CodeQL check reports a MOVED alert as a NEW one.** Measured on PR #28: the check
+went red with *"3 new alerts including 3 high severity"*, one of which was
+`py/clear-text-storage-sensitive-data` on an expression that is **byte-identical to the one already
+open on `main`** — it had merely shifted from `core.py:209` to `:226` because a docstring above it
+grew. Verified with `git show origin/main:src/lynceus/setup/core.py | sed -n '209p'` against the
+branch's `:226`. ⇒ **Any PR that edits a docstring above a flagged line goes red for free. Diff the
+flagged expression against `main` before treating a CodeQL alert as introduced.** The alert
+re-anchors itself on merge. ⛔ Do not "fix" this by dismissing alerts or by rewriting a literal into
+something the analyser cannot resolve — that games the tool and hides a tracked design item.
