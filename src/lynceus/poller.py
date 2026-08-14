@@ -41,6 +41,31 @@ from .rules import (
 
 STATE_KEY_LAST_POLL = "last_poll_ts"
 
+#: How many consecutive ticks the poll watermark may be held back to retry
+#: observations that failed to persist. See the write site at the end of
+#: ``poll_once`` for the full reasoning; the short version is that this number
+#: is the whole design, because BOTH extremes are broken:
+#:
+#:   0 (always advance)  -> a device whose persist fails is PERMANENTLY LOST.
+#:                          Measured: watermark jumps to the tick time, past
+#:                          the device's last_seen, and Kismet is never asked
+#:                          for that window again. A car with an ALPR that
+#:                          drives past once during a disk hiccup leaves no
+#:                          alert, no row, and one WARNING line.
+#:   ∞ (never advance)   -> a record that fails EVERY time freezes the
+#:                          watermark and the daemon re-fetches the same
+#:                          window forever. Alive, and permanently blind.
+#:                          That is the A1 poison-record livelock.
+#:
+#: 3 matches RUNTIME_KISMET_LOSS_THRESHOLD's tolerance and covers roughly three
+#: minutes of transient failure at the default interval, which is the shape of
+#: a locked DB or a full disk being cleared. A failure that outlives it is not
+#: transient, so the watermark advances and the loss is logged at ERROR.
+POLL_WATERMARK_MAX_HOLDS = 3
+
+#: Consecutive ticks the watermark has been held. Reset on any clean tick.
+STATE_KEY_WATERMARK_HOLDS = "watermark_holds"
+
 # Per-tick counters surfaced on the home page, in /healthz, and as the
 # INFO heartbeat in journalctl. Each key is overwritten in place on
 # every poll tick (last-tick semantics, not cumulative) so the
@@ -633,6 +658,9 @@ def poll_once(
     )
     processed = [0]
     admitted = [0]
+    # last_seen of every observation that failed to persist this tick. Drives
+    # the watermark decision at the end of poll_once.
+    failed_last_seen: list[int] = []
     dropped_source_allowlist = 0
     dropped_min_rssi = 0
     # Per-tick aggregation of the source names that actually appeared on
@@ -699,6 +727,11 @@ def poll_once(
                 rule_type_suppression_counter=rule_type_suppression_counter,
             )
         except Exception as e:
+            # ⭐ Record WHEN this device was last seen, not just that it failed.
+            # The watermark decision at the end of the tick needs the oldest
+            # such timestamp: advancing past it is what loses the device for
+            # good, because Kismet is never asked for that window again.
+            failed_last_seen.append(obs.last_seen)
             logger.warning("Failed to persist observation %s: %s", obs.mac, e)
             continue
     dropped_unparseable = unparseable_counter[0]
@@ -748,7 +781,71 @@ def poll_once(
         STATE_KEY_LAST_TICK_DROPPED_UNPARSEABLE, str(dropped_unparseable)
     )
     db.set_state(STATE_KEY_LAST_TICK_COMPLETED_AT, str(now_ts))
-    db.set_state(STATE_KEY_LAST_POLL, str(now_ts))
+
+    # ⭐ The watermark. Advancing it unconditionally -- which is what this did
+    # -- silently and PERMANENTLY loses any observation that failed to persist.
+    #
+    # Measured, with the device last seen five seconds before the tick that
+    # processed it (the normal case: Kismet reports devices seen *during* the
+    # window, and the watermark is set to the window's END):
+    #
+    #     device last seen at 1699999995; tick ran at 1700000000
+    #     after poll 1: persisted=['01']  watermark=1700000000
+    #     after poll 2: asked Kismet since=1700000000 -> returned NOTHING
+    #     DOOMED recovered: False
+    #
+    # A device that appears once -- a car with an ALPR driving past -- during a
+    # transient DB failure is gone. No alert, no row, no trace but a WARNING.
+    # For a tool whose entire job is to notice that device, that is the worst
+    # failure it can have, and it is invisible.
+    #
+    # ⛔ But "hold the watermark until everything persists" is NOT the fix: a
+    # record that fails every time then freezes it forever and the daemon
+    # re-fetches the same window indefinitely -- alive, and permanently blind.
+    # That is the A1 poison-record livelock, and the unconditional advance
+    # above was the defence against it.
+    #
+    # So: hold, but BOUNDED. Retry the failed window for up to
+    # POLL_WATERMARK_MAX_HOLDS consecutive ticks, then give up loudly and move
+    # on. Transient failures recover; a genuinely poisonous record costs three
+    # ticks instead of the daemon's remaining lifetime.
+    holds = 0
+    try:
+        holds = int(db.get_state(STATE_KEY_WATERMARK_HOLDS) or 0)
+    except (TypeError, ValueError):
+        holds = 0
+    if failed_last_seen and holds < POLL_WATERMARK_MAX_HOLDS:
+        # ``- 1`` so the retry window is inclusive of the failed device
+        # regardless of whether Kismet's /devices/last-time boundary is
+        # strictly-greater or greater-or-equal. That is not settled here, and
+        # a one-second overlap costs an idempotent re-upsert of devices already
+        # stored, while getting it wrong the other way loses the device.
+        watermark = min(now_ts, min(failed_last_seen) - 1)
+        db.set_state(STATE_KEY_WATERMARK_HOLDS, str(holds + 1))
+        logger.warning(
+            "holding poll watermark at %d to retry %d observation(s) that failed "
+            "to persist (hold %d/%d)",
+            watermark,
+            len(failed_last_seen),
+            holds + 1,
+            POLL_WATERMARK_MAX_HOLDS,
+        )
+    else:
+        watermark = now_ts
+        if failed_last_seen:
+            # Out of retries. This is a real, permanent loss of capture data,
+            # so it is ERROR rather than WARNING -- the operator's detection
+            # coverage has a hole in it and nothing else will say so.
+            logger.error(
+                "giving up on %d observation(s) that failed to persist across %d "
+                "ticks; advancing the poll watermark past them -- THESE DEVICES "
+                "ARE LOST and will not be re-fetched",
+                len(failed_last_seen),
+                POLL_WATERMARK_MAX_HOLDS,
+            )
+        if holds:
+            db.set_state(STATE_KEY_WATERMARK_HOLDS, "0")
+    db.set_state(STATE_KEY_LAST_POLL, str(watermark))
     # Per-poll housekeeping for the rule_type_snoozes table: physically
     # delete rows whose expires_at has passed. Cheap (table is tiny;
     # indexed on expires_at) and defensive — the gate's

@@ -810,6 +810,79 @@ Findings until they are:
 - Fresh-DB `chmod` failure warns and continues; existing DBs are never checked or repaired
   (`webui/server.py:41-53`).
 
+## Wave 6 — the silent-failure gaps, 2026-08-14
+
+Taken at `d60cdbb` (post-#19). Both items were reported by a delegate in Wave 5 as *untested*; both
+turned out to be **broken**, not merely unguarded. Recorded separately because the difference
+matters: a test that pins broken behaviour is worse than no test.
+
+### 🔴 Finding 19 — an observation that fails to persist is lost permanently
+
+`poll_once` ends with `set_state(LAST_POLL, now_ts)`, unconditionally. The next tick asks Kismet for
+devices seen since that value, so an observation is re-fetchable only while its `last_seen` is at or
+after the watermark. Any observation that failed to persist is therefore never asked for again.
+
+⚠️ **This is the normal case, not a contrived one.** Kismet reports devices seen *during* the window
+and the watermark is set to the window's **end**, so nearly every observation has a `last_seen` older
+than the tick that processed it. Reproduced with the device last seen five seconds before the tick:
+
+```
+device last seen at 1699999995; tick ran at 1700000000
+after poll 1: persisted=['01']  watermark=1700000000
+after poll 2: asked Kismet since=1700000000 -> returned NOTHING
+DOOMED recovered: False
+```
+
+A car with an ALPR that drives past once, during a transient DB failure, leaves **no alert, no row,
+and one WARNING line**. For a tool whose entire job is noticing that device, that is the worst
+failure available to it, and it is invisible.
+
+🪤 **The obvious fix is wrong, and the code was already defending against it.** Holding the watermark
+until everything persists means a record that fails *every* time freezes it forever: the daemon stays
+alive and re-fetches the same window indefinitely, permanently blind to everything after it. That is
+the A1 poison-record livelock, and the unconditional advance was the defence. **Both extremes lose
+capture data; the bound is the design.**
+
+✅ **Fixed** with a bounded hold: retry the failed window for up to `POLL_WATERMARK_MAX_HOLDS = 3`
+consecutive ticks, then advance and log at **ERROR** — a permanent hole in detection coverage is not
+a WARNING. Verified at both extremes by planting each: unconditional advance fails 4 of the 6 new
+tests, unbounded hold fails 2. The retry window uses `min(failed_last_seen) - 1` because Kismet's
+`/devices/last-time` boundary (strict vs inclusive) was **not** established here; a one-second overlap
+costs an idempotent re-upsert, while guessing wrong the other way loses the device.
+
+⚠️ **`tests/test_diag_a1_poison_record_livelock.py` states a conclusion its own recorded output
+contradicts.** Its NOTES assert *"A1 REPRODUCES … last_poll never advances past its pre-poison
+value"*, while its OBSERVED lines show `last_poll` advancing `1700001001 → 1700001002` and every
+poison shape returning `None` rather than raising. Its cited line numbers (`poller.py:234/581`) are
+stale by hundreds of lines. It is observation-only with no assertions, so nothing caught the drift.
+⇒ **A diagnostic that records a narrative alongside its data will have the narrative rot first.**
+Read the OBSERVED block, never the NOTES.
+
+### 🔴 Finding 20 — breaking the BLE bridge's alert handoff is invisible to the entire BLE suite
+
+`BleBridge._flush` calls `process_observation`; that one call is the only thing connecting the
+decoders, buffer and scan loop to the product. **Measured** by neutering it:
+
+| Suite | Result with the handoff broken |
+|---|---|
+| `test_ble_bridge_continuity`, `_odid`, `_scan_teardown`, `test_ble_scan_or_patterns`, `test_poller_ble_bridge` (45 tests) | **45 passed** |
+| new `test_ble_bridge_flush_pipeline.py` | **5 failed** |
+
+Adverts are still received, decoded and buffered; the buffer still drains on schedule; the thread
+still starts and stops cleanly. No device row, no rule evaluation, no alert — and `/settings` still
+reports a healthy bridge with decoded adverts, so the operator sees a working sensor that never
+tells them anything.
+
+✅ **Covered** by a test that walks the whole chain (callback → buffer → flush → device → rule →
+alert → notifier), plus the negative case (a battery-service advert must persist *without*
+alerting, so the positive test is not passing merely because everything alerts) and per-advert
+failure isolation.
+
+⚠️ Both gaps were invisible in a clone for the same reason: `tests/test_poller.py` and
+`tests/test_ble_bridge.py` are among the ten files withheld for embedding the rig's own adapter MAC.
+**The withheld files are disproportionately the ones covering the capture path**, so a contributor
+running the public suite gets the least coverage exactly where the product's value is.
+
 ## Still open
 
 - The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,

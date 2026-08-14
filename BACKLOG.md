@@ -322,15 +322,13 @@ prevents a *false* "Kismet down" for DB failures, but nothing requires a truthfu
 Ranked by consequence. The suite is ~3,260 tests and genuinely strong on rules, UI, import and
 evidence; these are gaps *between* well-tested units, on failure paths.
 
-- **Watermark advances past a failed record.** A per-observation exception is caught, but
-  `last_poll_ts` still advances to the tick time. If that device's Kismet `last_time` precedes the
-  new watermark it is never re-fetched. `test_e2e_observation_persist_failure_does_not_block_others`
-  proves isolation and explicitly accepts zero alerts for the failed device — it is easily mistaken
-  for recovery coverage, and there is none.
-- **BLE flush → alert handoff.** Decoder, buffer, callback, OR-patterns and teardown are all
-  covered; nothing proves a buffered advert reaches a device row, a rule, an alert and a notifier.
-  Breaking `_flush`'s `process_observation` call would leave every BLE test green and silently end
-  all BLE detection.
+- ~~**Watermark advances past a failed record.**~~ ✅ **FIXED 2026-08-14** — and it was a live
+  defect, not just a coverage gap: the device was measured permanently lost, because the watermark
+  is set to the tick time while `last_seen` is older. Bounded hold (`POLL_WATERMARK_MAX_HOLDS`),
+  which retries transient failures without reintroducing the poison-record livelock the
+  unconditional advance was defending against. See audit register Finding 19.
+- ~~**BLE flush → alert handoff.**~~ ✅ **COVERED 2026-08-14** — measured: with the handoff broken,
+  45 existing BLE tests still passed and the new suite caught it. See Finding 20.
 - **Migration replay atomicity.** A crash after `executescript()` succeeds but before the
   version row commits reapplies an additive migration and fails on a duplicate column at next
   start. Only 007 and 014 have replay hardening.
