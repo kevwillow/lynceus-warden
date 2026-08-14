@@ -43,6 +43,18 @@ def _nonce_of(response):
     return m.group(1) if m else None
 
 
+# ⚠️ Every `<script>` scan below is case-INSENSITIVE, and that is not
+# defensive tidiness. CodeQL flagged the original patterns as high severity
+# (py/bad-tag-filter): HTML tag names are case-insensitive, so `<SCRIPT>` is a
+# perfectly valid inline script that `r"<script"` does not match.
+#
+# For a guard whose entire job is "EVERY inline script carries the nonce",
+# that is a hole of exactly the shape this file exists to close -- the scan
+# would report zero offenders while an unnonced script sat on the page. The
+# templates are ours and lowercase today; the guard must not depend on that
+# staying true. Found by CI on its first run against this branch.
+
+
 # --- the header itself ---------------------------------------------------
 
 
@@ -119,7 +131,7 @@ def test_every_inline_script_carries_the_current_nonce(client):
     r = client.get("/")
     nonce = _nonce_of(r)
     assert nonce
-    inline = re.findall(r"<script(?![^>]*\ssrc=)([^>]*)>", r.text)
+    inline = re.findall(r"<script(?![^>]*\ssrc=)([^>]*)>", r.text, re.I)
     assert inline, "no inline script found on the homepage; the test proves nothing"
     for attrs in inline:
         assert f'nonce="{nonce}"' in attrs, (
@@ -141,7 +153,7 @@ def test_the_table_macro_script_gets_the_nonce_through_the_import(client):
     nonce = _nonce_of(r)
     assert nonce
     assert "__lynTableApply" in r.text, "no table macro script on /devices; fixture is wrong"
-    macro_scripts = re.findall(r"<script([^>]*)>window\.__lynTableApply", r.text)
+    macro_scripts = re.findall(r"<script([^>]*)>window\.__lynTableApply", r.text, re.I)
     assert macro_scripts, "table applier script not found"
     for attrs in macro_scripts:
         assert f'nonce="{nonce}"' in attrs, (

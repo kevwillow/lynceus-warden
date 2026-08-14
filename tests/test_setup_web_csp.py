@@ -26,6 +26,13 @@ _TOKEN = "test-setup-token"
 #: refuses it and the page silently loses whatever it did. Measured in
 #: Chromium: "Executing inline event handler violates the following Content
 #: Security Policy directive ... The action has been blocked."
+#:
+#: ⚠️ ``re.I`` here and on the ``<script>`` scan below is load-bearing. HTML
+#: tag and attribute names are case-insensitive, so ``<SCRIPT>`` and
+#: ``ONCLICK=`` are valid and a case-sensitive pattern reports zero offenders
+#: while they sit on the page. CodeQL flagged the original as high severity
+#: (py/bad-tag-filter) on this workflow's first run -- a real hole in a guard
+#: whose whole job is completeness.
 _EVENT_ATTR = re.compile(r"\son[a-z]+\s*=", re.I)
 
 
@@ -109,7 +116,7 @@ def test_every_inline_script_carries_the_current_nonce(client):
     r = _get(client, "/")
     nonce = _nonce_of(r)
     assert nonce
-    inline = re.findall(r"<script(?![^>]*\ssrc=)([^>]*)>", r.text)
+    inline = re.findall(r"<script(?![^>]*\ssrc=)([^>]*)>", r.text, re.I)
     assert inline, "no inline script on the landing page; the test proves nothing"
     for attrs in inline:
         assert f'nonce="{nonce}"' in attrs, f"inline script without the nonce: <script{attrs}>"
