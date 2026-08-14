@@ -78,9 +78,29 @@ at 8% for over 5 minutes with `jbd2/nvme0n1p2-8` (the ext4 journal) blocked in
 `D`, caused by other sessions on the same disk. **Check `grep full
 /proc/pressure/io` and the process state before diagnosing a slow run.**
 
-⭐ **Baseline, measured 2026-08-14 on PR #24, on the SAME TREE in both places:
-`3294 passed, 1 skipped, 47 deselected, 0 failed`.** Local ~19m39s; CI 4m06s
-(3.11) and 4m04s (3.12). Main before #24 was `3283 passed` in both.
+⭐ **CURRENT BASELINE — always quoted WITH the SHA it was measured at.**
+
+| | |
+|---|---|
+| SHA | **`63aa497`** |
+| CI, Python 3.11 | **3523 passed, 1 skipped, 47 deselected** — 4m26s |
+| CI, Python 3.12 | **3523 passed, 1 skipped, 47 deselected** — 4m22s |
+| run | <https://github.com/kevwillow/lynceus-warden/actions/runs/31844656916> |
+
+⛔ **A bare total is a claim that quietly stops being true at the next merge.**
+This line has now rotted three times — 3024 → 3508 → 3294 — and the 3294 stood
+here for twelve days while main was at 3518, in the file everyone cites *before*
+trusting a green run. So the SHA is not decoration: **if the SHA above is not
+`origin/main`, this number is history, not a baseline.** Re-measure rather than
+quoting it.
+
+⇒ **Expect the current total to be HIGHER than the figure above.** A lower one
+is worth asking about before it is worth explaining. Same treatment the README
+now uses for the same number, for the same reason.
+
+**Historical, for the drift record:** `3294 passed, 1 skipped` at PR #24
+(2026-08-14, local ~19m39s / CI 4m06s+4m04s); `3283 passed` on main before #24;
+`3281` at `feat/csp`; `3249` at `d5c27e2`.
 
 🪤 **Local and CI both report skip count 1, and it is a DIFFERENT TEST each
 time.** This is the sharpest form of the skip-count trap:
