@@ -2821,16 +2821,18 @@ def test_migration_014_devices_check_still_rejects_unknown(db):
         db.upsert_device("aa:bb:cc:dd:ee:02", "zigbee", None, 0, 1000)
 
 
-def test_migration_014_preserves_existing_columns(db):
-    """The migration rebuilds the devices table — every column from
-    migration 001 plus the additive columns from migration 006
-    (probe_ssids, ble_name) must survive. A missed column in the
-    INSERT staging step would silently drop data."""
-    cols = {
-        row[1]
-        for row in db._conn.execute("PRAGMA table_info(devices)").fetchall()
-    }
-    assert cols == {
+#: What migration 014's table rebuild must carry through: migration 001's
+#: original columns plus migration 006's additive pair.
+#:
+#: ⛔ This is deliberately NOT the current full column list of `devices`, and
+#: it must never be "corrected" into one. `ble_device_class` arrives in
+#: migration 023 — nine migrations AFTER 014 — and it was only ever added to
+#: this expectation because the assertion below used to be `==`. That is the
+#: damage a bidirectional assertion does: it made an unrelated migration edit
+#: a test named after 014, and the edit that silenced it also destroyed the
+#: test's meaning. The set is frozen at what 014 is actually responsible for.
+_PRE_014_DEVICES_COLUMNS = frozenset(
+    {
         "mac",
         "device_type",
         "first_seen",
@@ -2841,8 +2843,44 @@ def test_migration_014_preserves_existing_columns(db):
         "notes",
         "probe_ssids",
         "ble_name",
-        "ble_device_class",
     }
+)
+
+
+def test_migration_014_preserves_existing_columns(db):
+    """The migration rebuilds the devices table — every column from
+    migration 001 plus the additive columns from migration 006
+    (probe_ssids, ble_name) must survive. A missed column in the
+    INSERT staging step would silently drop data.
+
+    ⭐ The property is ONE-DIRECTIONAL — "everything that existed survives" —
+    so the assertion is a subset check, not equality. Equality asserted a
+    second, unintended property ("nothing has been added since"), which is not
+    this test's business and which every later migration falsified. Same file,
+    same shape, opposite call from the migration manifest above: there the
+    literal is load-bearing because both sides would otherwise read the same
+    directory, here it was over-tight because the two sides are already
+    independent (a frozen expectation vs. the live schema).
+    """
+    cols = {
+        row[1]
+        for row in db._conn.execute("PRAGMA table_info(devices)").fetchall()
+    }
+    # Presence assertion beside the subset check: if the devices table were
+    # missing or renamed, PRAGMA returns an empty list, and a subset check
+    # phrased only as "nothing is missing" can be read as passing vacuously.
+    # Say which failure it is rather than leaving it to inference.
+    assert cols, "PRAGMA table_info(devices) returned no columns — table missing?"
+
+    missing = _PRE_014_DEVICES_COLUMNS - cols
+    assert not missing, (
+        f"migration 014's table rebuild DROPPED {sorted(missing)}.\n"
+        "  Every column that existed before 014 must survive the INSERT "
+        "staging step; a missed one silently discards that column's data for "
+        "every device row.\n"
+        "  ⛔ Do not fix this by removing the name from "
+        "_PRE_014_DEVICES_COLUMNS — that is the defect, not the expectation."
+    )
 
 
 def test_migration_014_preserves_existing_rows_through_rebuild(tmp_path):
