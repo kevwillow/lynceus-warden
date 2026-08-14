@@ -257,14 +257,18 @@ fixed in PR #16, and `shared_probe_ssids`'s corpus-linear cost — the one item 
 defect rather than a judgement — was fixed straight after and is no longer on this list. What
 remains is hardening and one product question. Full register with every measurement is in those PRs.
 
-### No `Cache-Control` on the co-observation 404
-`_absent()` sets no cache directives. Largely mitigated in practice because every response carries
-`Set-Cookie` (CSRF), which stops shared caches storing it — but it is incidental, not intended.
+### ~~No `Cache-Control` on the co-observation 404~~ — ✅ FIXED 2026-08-14 (#34)
+`_absent()` now sends `Cache-Control: no-store`. It is the shared response for **both** "capability
+off" and "no such device", so it is a statement about which MACs the operator has seen — the exact
+fact the shared response exists to withhold. The previous protection was incidental (the CSRF
+`Set-Cookie`) and would have vanished silently the day those cookies moved or became conditional.
 
-### The audit line is written before the query it describes
-`webui/app.py` logs "co-observation query: ..." immediately *before* `list_co_observations` runs, so
-a subsequent failure still leaves a log line that reads as a completed access. Low severity, but it
-undercuts a log now being relied on as the enumeration control.
+### ~~The audit line is written before the query it describes~~ — ✅ FIXED 2026-08-14 (#34)
+⭐ **The fix was NOT "move the line after the query"** — that re-introduces red-team finding 1 (fixed
+in #16), where a failed query leaves no trace at all and an attacker who can provoke failures erases
+themselves from the one control Decision 6 kept after rejecting rate limiting. The attempt is now
+logged *as* an attempt and the outcome recorded separately; the exception is re-raised unchanged, so
+a broken feature is not hidden from the operator by a handler meant to fix a log.
 
 ### Coverage thresholds are still uncalibrated
 `_CO_COVERAGE_MIN_RUNS = 20` and `_CO_COVERAGE_SHARE = 0.25` were reasoned, then validated only
@@ -316,7 +320,11 @@ Kismet's health endpoint is still reachable (`poller.py:1257+`). Process alive, 
 ingest and alerting stopped, operator untold. `test_poller_runtime_kismet_loss.py` correctly
 prevents a *false* "Kismet down" for DB failures, but nothing requires a truthful
 "storage/pipeline degraded" notification in its place.
-- **Trigger**: take with the heartbeat work; they are the same "silence is ambiguous" problem.
+- ~~**Trigger**: take with the heartbeat work.~~ ✅ **TAKEN 2026-08-14 (#31).** The heartbeat
+  reports this case explicitly rather than staying quiet: a watermark held at
+  `POLL_WATERMARK_MAX_HOLDS` renders as "observations are failing to persist (capture data is being
+  lost)", and the heartbeat is sent at raised priority instead of the low-priority path. ⛔ It never
+  claims health it has not verified — forcing `healthy = True` fails five tests.
 
 ### Test gaps worth pinning (analysis only — no tests written)
 Ranked by consequence. The suite is ~3,260 tests and genuinely strong on rules, UI, import and
@@ -329,20 +337,43 @@ evidence; these are gaps *between* well-tested units, on failure paths.
   unconditional advance was defending against. See audit register Finding 19.
 - ~~**BLE flush → alert handoff.**~~ ✅ **COVERED 2026-08-14** — measured: with the handoff broken,
   45 existing BLE tests still passed and the new suite caught it. See Finding 20.
-- **Migration replay atomicity.** A crash after `executescript()` succeeds but before the
-  version row commits reapplies an additive migration and fails on a duplicate column at next
-  start. Only 007 and 014 have replay hardening.
-- **The real Kismet HTTP client.** 401/403, 5xx, invalid JSON, non-list responses, retry success
-  and retry exhaustion are untested; parser tests use fixtures or `FakeKismetClient`. The autouse
-  fixture that disables retries cites `test_h5_session_retry_mounted_for_*`, which **does not
-  exist**.
-- **`cli/bootstrap_kismet.py` (1,589 lines) has no behavioural test.** It can write a wrong-interface
-  `kismet_site.conf` and report success; Kismet then runs healthily capturing nothing relevant.
-- **Clock jumps.** `last_poll_ts` is wall-clock. One forward excursion makes later polls ask Kismet
-  for devices "since the future"; the same jump can compute a far-future retention cutoff and delete
-  evidence. All current cursor/retention tests use monotonically increasing time.
+- ~~**Migration replay atomicity.**~~ ✅ **PINNED 2026-08-14 (#29).** ⚠️ And the finding it
+  produced had a **real state under a false cause**: a crash cannot reach the lossy replay, because
+  `commit()` is inside the per-migration loop (`db.py:479`), so a crash at N leaves N+1..HEAD unrun
+  and the column-adding migration has not run yet. The state (*schema ahead of stamp*) is real but
+  reachable only via `rollback_to`'s skip-but-unstamp branches. #37 closes the accidental one.
+- ~~**The real Kismet HTTP client.**~~ ✅ **PINNED 2026-08-14 (#29).**
+- **`cli/bootstrap_kismet.py` (now 1,607 lines) — PARTIALLY covered.** ✅ File modes (#25) and
+  ✅ the named case above, `--interface` pointing at a device that is not present, which now warns
+  rather than silently configuring a source Kismet cannot open (#36). ⚠️ **Still unpinned:** distro
+  detection, source-line generation, backup/atomic patching and dry-run.
+- ~~**Clock jumps.**~~ ✅ **FIXED 2026-08-14 (#35)** for the retention half, and it was a live
+  defect: measured **29 of 30** in-window sightings deleted on a +30d excursion, with `evidence.py`
+  worse because it is on by default. ⛔ **Not fixable inside `retention.py`** — from there, "the
+  clock jumped forward" and "the table holds only old rows" are the same observation, and an
+  existing test *requires* the second to delete everything. Fixed with a `time.monotonic()` anchor
+  in `Poller`, which declines to call the prunes at all while the clock is untrusted, with a bounded
+  hold. ⚠️ **Still open:** the `last_poll_ts` cursor half — a forward excursion still makes later
+  polls ask Kismet for devices "since the future".
 
-### Heartbeat / dead-man's switch
+### ~~Heartbeat / dead-man's switch~~ — ✅ SHIPPED 2026-08-14 (#31)
+Built on migration 024's delivery-tracked path, as the sequencing below required. `heartbeat_enabled`
+(default **false**) and `heartbeat_interval_hours` (default 24); migration 025 adds a `heartbeats`
+table mirroring the alert delivery columns, and `/settings` reports whether the switch is armed and
+when it last arrived.
+
+⛔ **The invariant it rests on: it never claims health it has not verified.** A cheerful "still
+watching" sent while ingest is dead is *worse* than no heartbeat — it converts unease into false
+confidence on the one channel the operator trusts. It names a wedged poll loop, failing persists and
+undelivered alerts, and raises priority when unhealthy. 🪤 A quiet RF environment is deliberately
+**not** unhealthy.
+
+⚠️ **Open, and Kev's call: nothing prompts for it.** It is off by default and the setup wizard does
+not offer it, so a safety feature ships unused. Adding a prompt is a UX decision with 200+ wizard
+tests behind it.
+
+The original rationale, kept because the sequencing argument is what made it correct:
+
 The one genuinely new feature worth building, deferred until the delivery path is trustworthy
 (audit register Finding 12). Every other failure mode now alerts — Kismet loss alerts and recovers,
 systemd restarts on failure, the allowlist fails safe. But if the daemon dies, the host loses power,
