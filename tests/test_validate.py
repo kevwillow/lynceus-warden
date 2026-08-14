@@ -8,6 +8,35 @@ import pytest
 
 from lynceus.cli import validate as v
 
+
+def _all_migration_versions() -> list[int]:
+    """Every forward migration on disk, discovered independently of the runner.
+
+    ⛔ Deliberately NOT `list(range(1, N))` with a hardcoded N. That literal was
+    the fifth place in this repo where adding one migration broke an unrelated
+    test, and each one is found only by running the suite that contains it --
+    a scavenger hunt for whoever adds migration 026.
+
+    ⚠️ Equally deliberately NOT `Database._iter_up_migration_files`: this is the
+    expected value in an assertion about what the runner actually applied, and a
+    test that asks the runner what it intended cannot catch the runner doing the
+    wrong thing. Same reasoning, and same independent glob, as
+    `tests/test_migration_replay.py::_up_migration_files`.
+
+    Nothing is lost by deriving it. The real invariant is "every migration on
+    disk got applied"; "there are exactly N migrations" was never a property
+    worth asserting.
+    """
+    from lynceus import db as db_module
+
+    migrations_dir = db_module._find_migrations_dir()
+    return sorted(
+        int(p.name.split("_", 1)[0])
+        for p in migrations_dir.glob("*.sql")
+        if not p.name.endswith("_down.sql")
+    )
+
+
 # ---- helpers ---------------------------------------------------------------
 
 
@@ -719,7 +748,7 @@ def test_rollback_subcommand_to_zero(tmp_path, capsys):
     # versions match the full chain after the re-init — proves the
     # rollback was atomic + the forward path is still functional.
     db = Database(db_path)
-    assert db.applied_versions() == list(range(1, 25))
+    assert db.applied_versions() == _all_migration_versions()
     db.close()
 
 

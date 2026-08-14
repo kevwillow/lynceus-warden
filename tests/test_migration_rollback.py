@@ -34,6 +34,35 @@ import pytest
 
 from lynceus.db import Database
 
+
+def _all_migration_versions() -> list[int]:
+    """Every forward migration on disk, discovered independently of the runner.
+
+    ⛔ Deliberately NOT `list(range(1, N))` with a hardcoded N. That literal was
+    the fifth place in this repo where adding one migration broke an unrelated
+    test, and each one is found only by running the suite that contains it --
+    a scavenger hunt for whoever adds migration 026.
+
+    ⚠️ Equally deliberately NOT `Database._iter_up_migration_files`: this is the
+    expected value in an assertion about what the runner actually applied, and a
+    test that asks the runner what it intended cannot catch the runner doing the
+    wrong thing. Same reasoning, and same independent glob, as
+    `tests/test_migration_replay.py::_up_migration_files`.
+
+    Nothing is lost by deriving it. The real invariant is "every migration on
+    disk got applied"; "there are exactly N migrations" was never a property
+    worth asserting.
+    """
+    from lynceus import db as db_module
+
+    migrations_dir = db_module._find_migrations_dir()
+    return sorted(
+        int(p.name.split("_", 1)[0])
+        for p in migrations_dir.glob("*.sql")
+        if not p.name.endswith("_down.sql")
+    )
+
+
 # --- schema-shape helpers --------------------------------------------------
 
 
@@ -123,7 +152,7 @@ def test_rollback_to_zero_then_reapply(db_path):
     db = Database(db_path)
     forward_shape = _schema_shape(db)
     forward_versions = db.applied_versions()
-    assert forward_versions == list(range(1, 26))
+    assert forward_versions == _all_migration_versions()
 
     with caplog_warning("lynceus.db"):
         rolled = db.rollback_to(0)
@@ -182,12 +211,12 @@ def test_rollback_one_step_each(db_path):
         shapes_at[version] = _schema_shape(sentinel_db)
         applied_far = version
     sentinel_db.close()
-    assert applied_far == 25
+    assert applied_far == max(_all_migration_versions())
 
     # Now run the real per-step rollback test on the primary db_path.
     db = Database(db_path)
     irreversible = {10}
-    for v in range(25, 0, -1):
+    for v in sorted(_all_migration_versions(), reverse=True):
         with caplog_warning("lynceus.db"):
             rolled = db.rollback_to(v - 1)
         assert rolled == [v], f"expected one-step rollback of {v}, got {rolled}"
@@ -210,7 +239,7 @@ def test_rollback_one_step_each(db_path):
 
 @pytest.mark.parametrize(
     "version",
-    [v for v in range(1, 26) if v != 10],  # 010 is IRREVERSIBLE
+    [v for v in _all_migration_versions() if v != 10],  # 010 is IRREVERSIBLE
 )
 def test_per_migration_up_down_up(db_path, version):
     """Drive each reversible migration through one up->down->up cycle and
@@ -347,9 +376,9 @@ def test_rollback_to_specific_target(db_path):
     assert expected_versions == list(range(1, 16))
 
     db = Database(db_path)
-    assert db.applied_versions() == list(range(1, 26))
+    assert db.applied_versions() == _all_migration_versions()
     rolled = db.rollback_to(15)
-    assert sorted(rolled) == [16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+    assert sorted(rolled) == [v for v in _all_migration_versions() if v > 15]
     assert db.applied_versions() == expected_versions
     assert _schema_shape(db) == expected_shape
     db.close()
