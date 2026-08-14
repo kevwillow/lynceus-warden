@@ -305,9 +305,16 @@ captures, not out of reasoning about what should work.
 
 **The test suite ships, so you can check the claims on this page yourself.**
 CI runs `pytest -q`, `ruff check .` and `python -m build` on Python 3.11 and
-3.12 for every push and pull request: **3294 passed, 1 skipped**, in about four
-minutes. That figure is quoted from CI rather than from a developer's machine
-so you can open the run and read it yourself.
+3.12 for every push and pull request, in about four minutes. Most recently
+measured: **3518 passed, 1 skipped**, at commit
+[`c2c86ce`](https://github.com/kevwillow/lynceus-warden/actions/runs/31843894231).
+
+The commit is named on purpose. A bare total is a claim that quietly stops
+being true at the next merge — this one had drifted to 3294 against an actual
+3494 before it was caught, on the very paragraph inviting you to verify it. A
+number you cannot date is a number you cannot check. Expect the current total
+to be *higher* than the figure above: compare against the newest run on `main`,
+and treat a *lower* one as worth asking about.
 
 ⚠️ Expect the *skip* to differ from ours, and check which test it is rather
 than the count. One test skips when `/sys/class/bluetooth` exists (it needs the
