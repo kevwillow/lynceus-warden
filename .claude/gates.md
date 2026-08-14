@@ -78,6 +78,32 @@ at 8% for over 5 minutes with `jbd2/nvme0n1p2-8` (the ext4 journal) blocked in
 `D`, caused by other sessions on the same disk. **Check `grep full
 /proc/pressure/io` and the process state before diagnosing a slow run.**
 
+⭐ **CI baseline, measured 2026-08-14 on PR #19 (`.github/workflows/ci.yml`):
+`3283 passed, 1 skipped, 47 deselected, 0 failed` on BOTH 3.11 (5m29s) and
+3.12 (4m07s).**
+
+🪤 **CI and local both report skip count 1, and it is a DIFFERENT TEST each
+time.** This is the sharpest form of the skip-count trap, now confirmed across
+two environments:
+
+| | passed | the one skip |
+|---|---|---|
+| Local (this box) | 3281 | `test_setup_wizard.py:1955` — real `/sys/class/bluetooth` present, so the missing-dir branch cannot be exercised |
+| CI (clean runner) | 3283 | `test_import_argus.py:3333` — no live Argus CSV, which CI does not and should not have |
+
+Each environment runs tests the other cannot, which is also why the totals
+differ by two. ⇒ **A matching skip count proves nothing. Read the reason.**
+
+⚠️ **CI is 3-4× faster than this box (4-5 min vs ~20).** That is contention
+here, not a slow suite — see the I/O warning above. Do not treat the local
+runtime as the suite's cost.
+
+⚠️ **`cancel-in-progress` means a rapid series of pushes never gets a full
+test run.** Measured on PR #19: three consecutive CI runs were cancelled by the
+next push, so the ~20-minute job only completed once pushing stopped. The
+setting is correct — a superseded commit should not hold a runner — but *wait
+for the run that matters* before reading anything into a green board.
+
 ⚠️ **Editing source mid-run invalidates the run.** Python caches imported
 modules, so a `src/` edit after collection is NOT picked up: the suite keeps
 testing what was on disk at start and reports green for code you no longer
