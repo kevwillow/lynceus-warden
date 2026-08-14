@@ -38,6 +38,27 @@ def _policy(response):
     return response.headers.get("content-security-policy", "")
 
 
+def _directives(policy: str) -> dict[str, list[str]]:
+    """Parse a CSP into ``{name: [sources]}``.
+
+    ⚠️ Why this exists. Every directive here used to be asserted with
+    ``assert "object-src 'none'" in policy``, and a CSP directive is a
+    SPACE-SEPARATED SOURCE LIST — so ``object-src 'none' https://evil.example``
+    contains that substring and satisfied the assertion. Appending an attacker
+    source to any directive left both CSP guards green.
+
+    That is the same defect as the URL-substring guards fixed in #26, on the
+    security control that matters most: the whole point of ``'none'`` is that
+    it is the ENTIRE list, and only comparing the parsed list can say so.
+    """
+    out: dict[str, list[str]] = {}
+    for chunk in policy.split(";"):
+        parts = chunk.split()
+        if parts:
+            out[parts[0]] = parts[1:]
+    return out
+
+
 def _nonce_of(response):
     m = re.search(r"'nonce-([A-Za-z0-9_-]+)'", _policy(response))
     return m.group(1) if m else None
@@ -92,14 +113,25 @@ def test_policy_locks_down_script_src_and_the_usual_suspects(client):
     assert "'unsafe-inline'" not in policy.split("script-src")[1].split(";")[0], (
         "script-src must not allow inline; the nonce is the whole point"
     )
-    for directive in (
-        "default-src 'self'",
-        "object-src 'none'",
-        "base-uri 'none'",
-        "frame-ancestors 'none'",
-        "form-action 'self'",
+    # EQUALITY on the parsed source list, not substring containment. An
+    # attacker source appended to any of these leaves the substring intact.
+    directives = _directives(policy)
+    for name, expected_sources in (
+        ("default-src", ["'self'"]),
+        ("object-src", ["'none'"]),
+        ("base-uri", ["'none'"]),
+        ("frame-ancestors", ["'none'"]),
+        ("form-action", ["'self'"]),
     ):
-        assert directive in policy, f"missing {directive!r}"
+        assert name in directives, f"missing {name!r} entirely"
+        assert directives[name] == expected_sources, (
+            f"{name} must be exactly {expected_sources}, got {directives[name]} — "
+            f"an extra source here silently widens the policy while every "
+            f"substring check still passes"
+        )
+    # Presence beside equality: a parser that returned {} would satisfy nothing
+    # above, but a policy that lost directives entirely should also be loud.
+    assert len(directives) >= 10, f"implausibly few directives: {sorted(directives)}"
 
 
 def test_style_src_inline_is_allowed_and_that_is_deliberate(client):
