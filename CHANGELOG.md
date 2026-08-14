@@ -30,67 +30,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and when it last arrived, because a dead-man's switch nobody has verified is
   a guarantee nobody is actually getting. Off by default; requires ntfy.
 
-### Changed
-
-- **The alert action buttons no longer resize when you use them.** Acknowledge,
-  unack and Watch were sized by their own labels — measured at 124px, and 68px
-  for Watch — so acknowledging a row swapped the label to "unack" and the
-  button shrank under the cursor. All three now occupy one fixed rectangle
-  (150×44) in every state, and the state is carried by colour: solid for the
-  action that is available, muted outline for the undo. 44px because that is
-  the tap-target floor this project already applies to the home page's ack
-  button and had never applied here — these were 30px tall.
-
-- **The action column is pinned, so the buttons are always on screen.** Both
-  alert tables are wider than a 1400px viewport (the /alerts table measured
-  2120px inside a 1360px wrapper), and the action column sat past the right
-  edge behind a horizontal scroll. It is now sticky. The column budget was cut
-  as well — 2120px to 1739px — by capping the columns that were spending
-  width on nothing: the checkbox column alone took 75px to hold a 13px control.
-
-- **The /alerts filter form stopped eating the page.** It marks itself
-  `class="grid"`, and the vendored Pico is the *classless* edition which
-  defines no such class — the identical trap already documented for
-  `.container-fluid`. Eleven filter controls therefore stacked full-width and
-  pushed the first alert roughly 450px down the page. The stylesheet now
-  supplies the grid the template always asked for, and the page is 5863px tall
-  instead of 8341px.
-
-- **The homepage got navigation tiles and a chart worth reading.** Six tiles
-  carry live counts and link to each section, so "is anything wrong over
-  there?" is answerable without clicking. The alerts-per-day strip — one flat
-  colour, no axis, no dates, so a busy day and a bad day drew the same bar — is
-  now stacked by severity with a labelled axis and a legend, backed by a new
-  `alerts_per_day_by_severity` query. The screenshots in `docs/images/` were
-  regenerated: all five were taken at v0.9.4, before the dashboard restructure,
-  and showed a homepage that no longer existed.
-
-- **Relicensed from MIT to AGPL-3.0-or-later, with a commercial licence
-  available.** The intent is unchanged from what the project has always been:
-  use it, run it, modify it, sell it. What the new licence adds is
-  reciprocity — everyone you pass it to gets the same freedoms and the same
-  source. AGPL rather than plain GPL because §13 extends that obligation to
-  people who only ever reach the software *over a network*, and a daemon whose
-  primary interface is a web UI is exactly the case GPL leaves open.
-
-  If you want to build Lynceus into something closed, that is what
-  [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) is for.
-
-  **This is not retroactive, and that matters.** Every release up to and
-  including 0.9.5 was published under MIT, and those rights are irrevocable for
-  those versions. Anyone who took the code under MIT keeps it. AGPL binds from
-  this commit forward. Dual licensing is only possible at all because the
-  repository has a single copyright holder; `.mailmap` is now tracked so that
-  `git log --format='%aN <%aE>' | sort -u` returns one line in a clone and not
-  just on the author's machine.
-
-  The dependency closure was scanned before committing to this: all 23 runtime
-  packages are MIT, BSD-3-Clause, Apache-2.0, MPL-2.0 or PSF-2.0. **No GPL-2.0-
-  only dependency exists**, which is the one licence that would have been
-  incompatible. The vendored Pico CSS keeps its own MIT licence.
-
-### Added
-
 - **A Content-Security-Policy, with a per-request nonce.** The UI had none —
   measured; only `CSRFMiddleware` was installed — while several internal
   documents asserted that "a strict CSP applies". Escaping was the only barrier
@@ -234,6 +173,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ⚠️ If you modify Lynceus and let anyone else reach your instance, §13 makes
   *your* modified source the thing that has to be offered. Point
   `SOURCE_URL` in `webui/app.py` at wherever you publish it.
+
+### Changed
+
+- **The alert action buttons no longer resize when you use them.** Acknowledge,
+  unack and Watch were sized by their own labels — measured at 124px, and 68px
+  for Watch — so acknowledging a row swapped the label to "unack" and the
+  button shrank under the cursor. All three now occupy one fixed rectangle
+  (150×44) in every state, and the state is carried by colour: solid for the
+  action that is available, muted outline for the undo. 44px because that is
+  the tap-target floor this project already applies to the home page's ack
+  button and had never applied here — these were 30px tall.
+
+- **The action column is pinned, so the buttons are always on screen.** Both
+  alert tables are wider than a 1400px viewport (the /alerts table measured
+  2120px inside a 1360px wrapper), and the action column sat past the right
+  edge behind a horizontal scroll. It is now sticky. The column budget was cut
+  as well — 2120px to 1739px — by capping the columns that were spending
+  width on nothing: the checkbox column alone took 75px to hold a 13px control.
+
+- **The /alerts filter form stopped eating the page.** It marks itself
+  `class="grid"`, and the vendored Pico is the *classless* edition which
+  defines no such class — the identical trap already documented for
+  `.container-fluid`. Eleven filter controls therefore stacked full-width and
+  pushed the first alert roughly 450px down the page. The stylesheet now
+  supplies the grid the template always asked for, and the page is 5863px tall
+  instead of 8341px.
+
+- **The homepage got navigation tiles and a chart worth reading.** Six tiles
+  carry live counts and link to each section, so "is anything wrong over
+  there?" is answerable without clicking. The alerts-per-day strip — one flat
+  colour, no axis, no dates, so a busy day and a bad day drew the same bar — is
+  now stacked by severity with a labelled axis and a legend, backed by a new
+  `alerts_per_day_by_severity` query. The screenshots in `docs/images/` were
+  regenerated: all five were taken at v0.9.4, before the dashboard restructure,
+  and showed a homepage that no longer existed.
+
+- **Relicensed from MIT to AGPL-3.0-or-later, with a commercial licence
+  available.** The intent is unchanged from what the project has always been:
+  use it, run it, modify it, sell it. What the new licence adds is
+  reciprocity — everyone you pass it to gets the same freedoms and the same
+  source. AGPL rather than plain GPL because §13 extends that obligation to
+  people who only ever reach the software *over a network*, and a daemon whose
+  primary interface is a web UI is exactly the case GPL leaves open.
+
+  If you want to build Lynceus into something closed, that is what
+  [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) is for.
+
+  **This is not retroactive, and that matters.** Every release up to and
+  including 0.9.5 was published under MIT, and those rights are irrevocable for
+  those versions. Anyone who took the code under MIT keeps it. AGPL binds from
+  this commit forward. Dual licensing is only possible at all because the
+  repository has a single copyright holder; `.mailmap` is now tracked so that
+  `git log --format='%aN <%aE>' | sort -u` returns one line in a clone and not
+  just on the author's machine.
+
+  The dependency closure was scanned before committing to this: all 23 runtime
+  packages are MIT, BSD-3-Clause, Apache-2.0, MPL-2.0 or PSF-2.0. **No GPL-2.0-
+  only dependency exists**, which is the one licence that would have been
+  incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
 
