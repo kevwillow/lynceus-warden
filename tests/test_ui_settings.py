@@ -23,6 +23,25 @@ from lynceus.webui.csrf import CSRF_HEADER_NAME
 KISMET_TOKEN_SENTINEL = "kismet-secret-token-DO-NOT-LEAK-12345"
 NTFY_TOPIC_SENTINEL = "lynceus-private-topic-abcdef-XYZ"
 
+# Absolute URLs rendered in the page, as WHOLE tokens.
+#
+# ⚠️ `assert "http://kismet.test:2501" in r.text` is satisfied by any longer
+# URL that merely contains it — `http://kismet.test:25010`, or an attacker
+# host carrying it in a query string. A URL is a delimited token, so assert
+# membership in the set of rendered URLs rather than a substring of the page.
+_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+
+
+def _rendered_urls(html: str) -> set[str]:
+    return {u.rstrip("/") for u in _URL_RE.findall(html.replace("&amp;", "&"))}
+
+
+def assert_url_rendered(html: str, url: str) -> None:
+    urls = _rendered_urls(html)
+    assert url.rstrip("/") in urls, (
+        f"expected {url!r} to be rendered as a whole URL; page rendered {sorted(urls)!r}"
+    )
+
 
 def _make_app(tmp_path, **config_overrides):
     kwargs = {"db_path": str(tmp_path / "settings.db")}
@@ -182,7 +201,7 @@ def test_kismet_section_renders_url(tmp_path, monkeypatch):
         with TestClient(app) as client:
             r = client.get("/settings")
         assert r.status_code == 200
-        assert "http://kismet.test:2501" in r.text
+        assert_url_rendered(r.text, "http://kismet.test:2501")
     finally:
         db.close()
 
@@ -307,7 +326,7 @@ def test_ntfy_section_renders_broker_url(tmp_path, monkeypatch):
         with TestClient(app) as client:
             r = client.get("/settings")
         assert r.status_code == 200
-        assert "https://ntfy.example.com" in r.text
+        assert_url_rendered(r.text, "https://ntfy.example.com")
     finally:
         db.close()
 

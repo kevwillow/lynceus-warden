@@ -10,6 +10,8 @@ flat line, empty input).
 from __future__ import annotations
 
 import logging
+import re
+from urllib.parse import urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +22,49 @@ from lynceus.evidence import capture_evidence
 from lynceus.webui.app import create_app, render_rssi_sparkline
 
 MAC = "aa:bb:cc:dd:ee:01"
+
+# The map link's host, asserted by EQUALITY rather than by substring.
+#
+# ⚠️ `assert "openstreetmap.org" in body` cannot fail on the defect it exists
+# to catch. Measured 2026-08-14: repointing the template's href at
+# `https://www.openstreetmap.org.attacker.invalid/?mlat=...` left all 17 tests
+# in this file green — including the one below whose whole job is to check the
+# anchor's `target`/`rel` attributes, because it located the anchor with a
+# *prefix* search (`body.find('href="https://www.openstreetmap.org')`) that the
+# attacker host also satisfies. It then reported the hijacked link as safe.
+#
+# A hostname is a right-anchored, dot-delimited hierarchy, so any check that is
+# not an equality on the parsed netloc is satisfiable by appending a
+# sub-domain. Parse the URL and compare the host.
+OSM_HOST = "www.openstreetmap.org"
+
+_ANCHOR_RE = re.compile(r"<a\b[^>]*\bhref=\"([^\"]*)\"[^>]*>", re.I)
+
+
+def _map_link(body: str) -> tuple[str, str]:
+    """Return ``(whole_anchor_tag, href)`` for the page's single map link.
+
+    Asserts there is exactly one and that its host is *exactly* ``OSM_HOST``.
+    Returning the whole tag lets callers assert on the same anchor this
+    function validated, rather than re-finding it by a substring that a
+    look-alike host would also match.
+    """
+    candidates = []
+    for match in _ANCHOR_RE.finditer(body):
+        href = match.group(1).replace("&amp;", "&")
+        host = urlsplit(href).netloc
+        if "openstreetmap" in host:
+            candidates.append((match.group(0), href, host))
+
+    assert candidates, "expected a map link on the page, found none"
+    assert len(candidates) == 1, f"expected exactly one map link, got {len(candidates)}"
+
+    tag, href, host = candidates[0]
+    assert host == OSM_HOST, (
+        f"map link host must be exactly {OSM_HOST!r}, got {host!r} — a "
+        f"look-alike host passes any substring check"
+    )
+    return tag, href
 
 
 def _kismet_record(
@@ -101,8 +146,12 @@ def test_alert_detail_with_evidence_renders_all_sections(tmp_path):
         assert "<polyline" in body
         assert "37.7749" in body
         assert "-122.4194" in body
-        assert "openstreetmap.org" in body
-        assert 'rel="noopener noreferrer"' in body
+        osm_tag, osm_href = _map_link(body)
+        assert 'rel="noopener noreferrer"' in osm_tag
+        # The coordinates must be in the LINK, not merely somewhere on the
+        # page — they were only ever asserted against the whole body above.
+        assert "37.7749" in osm_href
+        assert "-122.4194" in osm_href
     finally:
         db.close()
 
@@ -138,7 +187,7 @@ def test_alert_detail_with_evidence_but_no_rssi_history_omits_sparkline(tmp_path
         assert 'aria-label="RSSI history' not in body
         assert "<polyline" not in body
         # GPS still present (location was included).
-        assert "openstreetmap.org" in body
+        _map_link(body)
     finally:
         db.close()
 
@@ -397,12 +446,12 @@ def test_alert_detail_osm_link_opens_in_new_tab(tmp_path):
             r = client.get(f"/alerts/{aid}")
         assert r.status_code == 200
         body = r.text
-        assert "openstreetmap.org" in body
-        # Find the OSM <a> and assert it has both attributes.
-        osm_anchor_start = body.find('href="https://www.openstreetmap.org')
-        assert osm_anchor_start != -1
-        osm_anchor_end = body.find(">", osm_anchor_start)
-        osm_anchor = body[osm_anchor_start:osm_anchor_end]
+        # `_map_link` validates the host by equality and hands back the very
+        # anchor it validated. The previous prefix search
+        # (`body.find('href="https://www.openstreetmap.org')`) matched a
+        # look-alike host too, so these two attribute checks ran against the
+        # attacker's anchor and passed it as safe.
+        osm_anchor, _ = _map_link(body)
         assert 'target="_blank"' in osm_anchor
         assert 'rel="noopener noreferrer"' in osm_anchor
     finally:
