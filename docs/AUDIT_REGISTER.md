@@ -1178,6 +1178,81 @@ guarantees stated in `docs/`, templates, or `README.md`; or a promise made only 
 and `db.py` were adjudicated but carry **unfixed** findings — see Finding 27 and the list reported
 to the `poller.py` owner on the session board.
 
+## Round 9 — state-advancing writes, 2026-08-15
+
+**Class:** *a write that advances persistent state using a value the code has not validated, or has
+elsewhere decided not to trust.* The sibling of round 7's *"deletes a right one"* — this is
+**"writes a wrong one"**. Class proposed by session `e4288bb5` from `record_watchful_sighting`, and
+picked by Kev.
+
+**Method.** MiniMax-M3 extracted **74 write sites** across `poller.py`, `db.py` and five leaf
+modules, recording for each the value written, its provenance traced back through the file, and any
+validation it passes. Three `gpt-5.6-sol` packets then adjudicated. **~30 came back PERMANENT.**
+
+⛔ **Most did not survive re-derivation, and the fault is in my instrument, not their reasoning.**
+The bulk of the PERMANENT verdicts are of the form *"if a caller passes `alert_id=True`,
+`now_ts=0`, or `severity='critical'`, the database stores garbage"* — **API misuse, not a reachable
+defect**, because no caller does that. I asked "what value **can** be written" and was correctly
+answered with hypothetical callers. ⇒ **The question that separates a finding from a theory is
+"what does a caller actually pass", and the extraction has to carry that or the adjudication cannot
+know it.**
+
+### 🔴 Finding 29 — `obs.last_seen` is bounded below, not above, and is written into `sightings.ts`
+
+`DeviceObservation` carries a `first_seen` validator (`must be > 0`) and **no `last_seen`
+validator**. Measured against the real parser:
+
+```
+last_time = 0, -5, 1     -> REJECTED
+last_time = 4102444800   -> ACCEPTED   (year 2100)
+```
+
+`poller.py:321` passes `ts=obs.last_seen` straight into `insert_sighting`. Measured end to end:
+
+```
+sightings stored   : [1696544000, 4102444800]
+30-day prune       : deleted=1, remaining=[4102444800]
+'seen in last 24h' : 1
+```
+
+⇒ **The prune deleted the legitimate 40-day-old row and kept the bogus one.** A capture source with
+a corrupt clock writes a sighting that is **immune to retention forever** *and* **counts as "seen in
+the last 24 hours"**, because a future timestamp satisfies every recent-window query. The
+co-observation corpus is contaminated the same way.
+
+⛔ **Reported, not fixed.** The complete bound needs a clock to compare against, and the only layer
+holding one is `poller.process_observation` (it already has `now_ts`). `kismet.py` could add a
+static absurdity ceiling, but that catches only gross corruption — a source one year fast still
+passes. The real check is `obs.last_seen <= now_ts + skew`, in `poller.py`, which was another
+session's file for the duration of this round.
+
+### Refuted on re-derivation
+
+- **Watermark poisoning via `last_seen = 0`** — reported as: a failed observation with `last_seen=0`
+  makes `watermark = min(now_ts, 0-1) = -1`, replaying the entire source history every tick. The
+  arithmetic is correct **and the state is unreachable**: `last_time` values of `0`, `-5` and `1` are
+  all rejected at parse. Refuted.
+- **~25 further PERMANENT verdicts** — unreachable API-misuse shapes, as above.
+
+⇒ **The findings that survived are exactly the ones driven by EXTERNAL or UNTRUSTED input** —
+Kismet's `last_time`, and the wall clock. That is the class working as intended, and it is the
+filter to apply first in the next round of this shape.
+
+### ⛔ Coverage limit
+
+The instrument enumerates `INSERT INTO` / `UPDATE ... SET` / `set_state(` and `record_*`/`mark_*`/
+`add_*`/`update_*` calls in `src/lynceus/*.py`. It does **not** see: a write performed through a
+helper whose name hides it; a value corrupted before it reaches the write; writes in
+`migrations/*.sql`; or **whether a hypothetical bad caller exists**, which is precisely the gap that
+inflated the PERMANENT count. **Absence of further findings is not proof of correctness.**
+
+### DO-NOT-RE-AUDIT (round 9)
+
+`allowlist.py`, `evidence.py`, `retention.py` and `bridges/ble.py` had every state-advancing write
+adjudicated and are clean for this class — the prune watermarks self-correct because a negative
+elapsed is treated as due (#39), and the BLE buffer is not persistent. `poller.py` and `db.py` were
+adjudicated but carry **Finding 29 unfixed**.
+
 ## Still open
 
 - The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,
