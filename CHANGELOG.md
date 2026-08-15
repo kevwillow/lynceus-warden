@@ -235,6 +235,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Setting up a Bluetooth adapter told you to check a name that was already
+  correct.** `lynceus-bootstrap-kismet --interface hci0` is the obvious way to
+  add a Bluetooth controller, but the `--interface-type` flag defaults to
+  `wifi`, so Lynceus looked for `hci0` among the *network* interfaces, did not
+  find it, and said: *"hci0 is not present … otherwise check the name."* That
+  sentence was word for word the one you get for a name that genuinely does not
+  exist — and here the name was right. It was the *kind* that was wrong.
+
+  So the advice sent you back to the one thing that was already correct. Check
+  it, find it correct, conclude the warning is spurious, and you end up with a
+  Kismet source of `hci0:type=linuxwifi` — which Kismet cannot open. The result
+  is a sensor that is configured, reports success, and captures nothing:
+  exactly the state that warning exists to prevent, reached by following it.
+
+  Lynceus now looks in the other place before blaming the name. If your adapter
+  is real but filed under the other kind, it says so and names the flag that
+  fixes it. A name that exists nowhere still gets the original advice, because
+  for that case the advice was right.
+
 - **"Ignore this device" worked or didn't depending on where you wrote it in
   the file.** If you allowlisted a device by its MAC address — the strongest,
   most deliberate way to say "this one is mine, leave it alone" — and somewhere
