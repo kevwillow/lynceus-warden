@@ -1622,6 +1622,67 @@ the correct universe for "settings an operator can write" is the **40** you get 
 three sub-models (`capture`, `ble_bridge`, `co_observation`) one level. Reading 33 and disbelieving
 40 was the first reaction here and it was wrong. **Publish the universe beside the number.**
 
+### 🔴 Finding 37 — half the bundled OUI corpus lands in the watchlist and can never fire
+
+**Measured 2026-08-15 while adopting PR #86.** Not fixed — dropping bundled rows changes the shipped
+corpus, so it is a decision (see "Reserved for Kev"). ⭐ **This is Finding 32 one layer down**, in
+session 2's framing: rows stored, counted, reported to the operator, and unable to ever fire. There
+the cause was a rule shipped commented out; here it is data that no enabled rule could ever match.
+
+Measured on the shipped `src/lynceus/data/default_watchlist.csv` (schema_version=31, exported
+2026-06-03), with the CSV columns located **by name**:
+
+```
+oui rows in the bundled snapshot          444
+  can fire                                223
+  LOCALLY-ADMINISTERED (LA bit set)       221   <-- imported, and INERT
+  reserved-exact (00:00:00/ff:ff:ff/…)      0
+```
+
+**Mechanism:** `rules.evaluate`'s `watchlist_oui` branch calls `_is_reserved_oui_mac` on the
+**observation**, and it returns True for any MAC whose first octet has the locally-administered bit
+set. So a device can never match an LA-prefixed watchlist row — the row is discarded before the DB is
+consulted. `import_argus.py` filters only the exact string `00:00:00`, never the LA bit, so all 221
+land.
+
+⚠️ **An OUI with the LA bit set is not an IEEE assignment at all**, so these are almost certainly
+randomised MACs that the upstream corpus recorded as if they were vendor prefixes. That makes them a
+data-quality problem upstream as well as an inert-row problem here.
+
+### ⛔ And the number used to justify the guard was zero
+
+Both `import_argus.py:1077` and (copied verbatim into) PR #86's new write-time refusal justified
+themselves with *"~40 rows with `pattern=00:00:00`"* in the bundled snapshot.
+
+```
+total data rows in the snapshot        41,508
+identifier == '00:00:00', ANY type          0
+```
+
+**Zero.** The importer's placeholder skip matches that exact string, so it drops nothing from the
+bundled data and `dropped_placeholder_oui` is always 0 for it. The claim was presumably true when
+written (v0.7.9 Touch 7); the snapshot has been re-exported since. Both copies are corrected in #86.
+
+⇒ **One wrong number in two files is how it survives a reader who checks only one.** The second copy
+was written *this afternoon*, by a session that had read the first and had no reason to doubt it.
+Third instance today of a change falsifying prose elsewhere — see round 11's lesson.
+
+⚠️ **The conclusion the guard is right survives; only its stated reason was wrong.** The eval-time
+guard is needed MORE than the comment claimed, for 221 rows rather than a phantom 40. A reviewer who
+had checked the number and stopped there might have removed it.
+
+### 🪤 Two near-misses in measuring this, both the same shape
+
+- The 221 count was nearly published off a **guessed CSV column index**. The header sits on row 1
+  behind a `# meta:` comment line, so `csv.reader`'s first row is not the header — the guess was
+  right only by luck. **Locate columns by name.**
+- Session 3's "`Config` has 40 fields" (Finding 36) was nearly reported as wrong because
+  `Config.model_fields` is **33**. Both are right: 33 top-level, three of them sub-models, flattening
+  to 40 operator-writable settings.
+
+⇒ **Publish the universe beside the number.** In both cases the instinct to distrust a number was
+correct and the reason for distrusting it was not.
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -1706,7 +1767,14 @@ hardened regardless of reachability.
    had suppressed starts alerting. **Adopt the operator's location, or relocate them?** Either answer
    is defensible and the current behaviour is one of them by accident rather than by choice. This is
    the whole residual of Finding 36 — 3 of the 40 settings — so deciding it closes the finding.
-9. **Should the allowlist gain an `ssid_pattern` type?** (Finding 35.) `ssid_pattern` is one of only
+9. ⭐ **What to do about the 221 inert bundled OUI rows?** (Finding 37.) Half the shipped `oui`
+   corpus is on locally-administered prefixes and can never match. Options, none free: drop them at
+   import (changes the shipped corpus and the `/watchlist` count every operator already sees); keep
+   them and surface them as inert in the UI (session 2's #91 does this for rules, not data); or fix
+   it upstream in Argus, since an LA-bit "OUI" is not an IEEE assignment and is likely a randomised
+   MAC recorded as a vendor prefix. ⛔ **Deliberately not patched** — any of the three changes what
+   the operator sees.
+10. **Should the allowlist gain an `ssid_pattern` type?** (Finding 35.) `ssid_pattern` is one of only
    three watchlist types that fire on the shipped ruleset, and an operator cannot suppress by the
    same predicate they watched on — only by an exact `ssid` or a `mac`. ⚠️ It is not a free fix: a
    substring allowlist silences **everything** containing the needle, so one line in a hand-edited
