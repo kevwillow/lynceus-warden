@@ -2576,7 +2576,25 @@ class Database:
         severity: str,
         description: str | None = None,
     ) -> tuple[int, bool]:
-        """Insert a watchlist row, idempotent on ``(pattern, pattern_type)``.
+        """Insert a watchlist row, idempotent on ``(pattern, pattern_type)``
+        **for any pattern this method will store at all**.
+
+        ⚠️ Validation runs BEFORE the existing-row lookup, so the idempotence
+        above does not extend to patterns this method refuses. A `mac_range`
+        it cannot derive columns from, or an `oui` on a reserved prefix, raises
+        `ValueError` **even when an identical row is already present** — such
+        rows exist in every deployment because `cli/import_argus.py` inserts
+        with direct SQL and bypasses this method entirely (221 of the 444
+        bundled `oui` rows are on locally-administered prefixes; see
+        docs/AUDIT_REGISTER.md Finding 37).
+
+        ⭐ That ordering is deliberate, not an oversight. "This row could never
+        fire" is the more useful answer than "it already exists", and callers
+        already handle it: `cli/seed_watchlist.py` logs the reason and counts
+        the entry as skipped, exactly as it would for a duplicate, so a seed
+        run is not aborted by one such line. The docstring is what was wrong —
+        it promised idempotence unconditionally, and a caller written against
+        that promise would not expect a raise on a row it had just seen.
 
         Returns ``(watchlist_id, inserted)``. ``inserted`` is ``False``
         when a row for the same ``(pattern, pattern_type)`` already

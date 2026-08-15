@@ -80,7 +80,7 @@ CLASSIFIED = MUTATES_WITHOUT_CREDENTIALS | REFUSES_ON_DOMAIN_PRECONDITION
 
 
 @pytest.fixture()
-def app():
+def app_and_db():
     td = tempfile.mkdtemp()
     allowlist = Path(td) / "allowlist.yaml"
     allowlist.write_text("entries: []\n", encoding="utf-8")
@@ -92,9 +92,14 @@ def app():
     db = Database(cfg.db_path)
     db.ensure_location("default", "Default")
     try:
-        yield create_app(cfg, db)
+        yield create_app(cfg, db), db
     finally:
         db.close()
+
+
+@pytest.fixture()
+def app(app_and_db):
+    return app_and_db[0]
 
 
 def _post_routes(app) -> set[str]:
@@ -144,15 +149,35 @@ def test_the_two_classes_do_not_overlap():
     assert len(CLASSIFIED) == 23
 
 
-def test_the_register_claim_is_still_true(app):
+def test_the_register_claim_is_still_true(app_and_db):
     """The behavioural anchor, and the direction the structural check misses.
 
     ⚠️ If authentication lands, this fails — and that is the point. The register
     would otherwise keep asserting an exposure that no longer exists, which is
-    the same rot as asserting one that does. One representative route is enough;
-    the full 23-route sweep lives in the probe.
+    the same rot as asserting one that does.
+
+    ⛔ It asserts a PERSISTENT MUTATION, not a status code. An earlier version
+    accepted 200-or-303, and a cold read caught that **a login redirect is a
+    303** — so the single test whose job was to notice authentication landing
+    would have passed once it did. Worse, 200/303 is also satisfied by a
+    validation bounce or a swallowed failure, so it could not distinguish "the
+    caller changed the system" from "the caller was politely turned away".
+
+    ⚠️ Coverage stated plainly: ONE of the 22 routes is exercised here. The full
+    23-route sweep with a whole-database fingerprint lives in
+    `internal/session2-harnesses/auth_probe.py`, which is **gitignored** — so
+    in-repo, this anchor is the only behavioural evidence and the other 21 rest
+    on the classification list above.
     """
     from starlette.testclient import TestClient
+
+    app, db = app_and_db
+
+    def _snoozed() -> int:
+        return db._conn.execute("SELECT COUNT(*) FROM rule_type_snoozes").fetchone()[0]
+
+    before = _snoozed()
+    assert before == 0, "fixture is not clean; a pre-existing snooze would mask the result"
 
     client = TestClient(app, follow_redirects=False)
     # The only preliminary a browser -- or anyone who can reach the port -- does:
@@ -166,10 +191,12 @@ def test_the_register_claim_is_still_true(app):
         "/rules/watchlist_mac/snooze",
         data={"duration_seconds": "86400", CSRF_FORM_FIELD: _csrf(client)},
     )
-    assert response.status_code in (200, 303), (
-        f"POST /rules/watchlist_mac/snooze returned {response.status_code} for an "
-        "unauthenticated caller. If authentication was implemented, the register's "
-        "'22 of 23' evidence is now stale — update item 5 rather than deleting this."
+    assert _snoozed() == before + 1, (
+        f"POST /rules/watchlist_mac/snooze (status {response.status_code}) did not "
+        f"create a rule_type_snoozes row for an unauthenticated caller. If "
+        f"authentication was implemented — note a login redirect is also a 303, "
+        f"which is why this asserts the row and not the status — the register's "
+        f"'22 of 23' evidence is now stale. Update item 5 rather than deleting this."
     )
 
 

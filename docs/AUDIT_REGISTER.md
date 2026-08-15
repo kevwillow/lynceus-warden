@@ -1861,6 +1861,71 @@ switch that turns `oui` on; in fact it would turn on **223 of 444 rows** and lea
 inert. Since #86 an operator can no longer *create* such a row by hand — `add_watchlist` refuses —
 but the bundled corpus is imported by direct SQL and bypasses that refusal entirely.
 
+## Rig round 1 — a cold cross-model read of the day's own work, 2026-08-16
+
+Findings 33–40 and their guards were handed to codex (`gpt-5.6-sol` for the two behavioural
+changes, `gpt-5.6-terra` for the guards) with bounded context and **no repo access**, and asked one
+question about each guard: *what could be broken in the real system while this test still passes?*
+
+⛔ **Every finding below was re-measured before being believed, and two were REFUTED.** A delegate's
+finding is a draft.
+
+### 🔴 The one that mattered — my auth guard would have passed once auth landed
+
+`test_webui_post_routes_are_classified.py`'s behavioural anchor asserted `status_code in (200, 303)`.
+⇒ **A login redirect is a 303.** The single test whose stated job was to notice authentication
+arriving would have gone on passing the moment it did, leaving "Reserved for Kev" item 5 asserting an
+exposure that no longer existed.
+
+**Proven, not reasoned:** planting auth as a 303 redirect that mutates nothing, the OLD assertion
+**passed**; the new one fails. The anchor now asserts the `rule_type_snoozes` row appears, so it
+measures the mutation rather than the politeness of the refusal. 200-or-303 was also satisfied by a
+validation bounce or a swallowed error — it could not tell "the caller changed the system" from "the
+caller was turned away".
+
+### 🟡 Two instrument defects in the census guard, both latent, both closed
+
+- **Ragged rows were silently dropped.** `_rows()` filtered on `len(row) == len(header)` to avoid a
+  crash; a malformed re-export would have lost rows **quietly**, and the 40,000-row floor only
+  catches wholesale truncation. Measured: 0 dropped today, so nothing was wrong — but a census that
+  discards its own inputs reports a clean number about a corpus it did not fully read. Now asserts
+  zero dropped.
+- **The can-fire control was selected at runtime** (`sorted(can_fire)[0]`), so a corpus re-export
+  could silently change which prefix the test exercises. Now **named** (`00:04:7d`), with an
+  assertion that it is still present and still classified can-fire.
+
+### ⬜ REFUTED on measurement — recorded so they are not re-raised
+
+- **"`ssid_pattern` / `imei_tac` have no `_entry_matches` branch, so a valid entry never matches."**
+  ⇒ Neither type can be **constructed**: `AllowlistPatternType` rejects both (measured 2026-08-15,
+  Finding 35). The trigger requires "load a valid `AllowlistEntry` with `pattern_type='ssid_pattern'`",
+  which raises `ValidationError`. The unreachable branch is correct, not a gap.
+- **"A POST route in a mounted sub-application would evade the route scan."** ⇒ The only `app.mount`
+  is `StaticFiles` at `/static`, which registers no POST routes. Structurally true, currently empty.
+
+### 🟡 A prose defect the rig found in `add_watchlist`, and why the CODE was left alone
+
+Its docstring promised idempotence on `(pattern, pattern_type)` **unconditionally**. Validation runs
+first, so a refused pattern raises `ValueError` **even when an identical row already exists** — and
+such rows exist in every deployment, because the importer inserts with direct SQL (221 of 444 bundled
+`oui` rows; Finding 37). Measured: `add_watchlist('02:00:00', 'oui')` raises against a DB that
+already holds that row.
+
+⭐ **The docstring was corrected rather than the ordering, deliberately.** "This row could never fire"
+is a more useful answer than "it already exists", and `seed_watchlist` already logs it and counts it
+as skipped exactly as it would a duplicate — so a seed run is not aborted. ⚠️ The same gap applies to
+#84's `mac_range` refusal and predates this work.
+
+### ⭐ What this round is evidence for
+
+**Three of the four guards I shipped had a hole, and none was visible from inside.** I wrote them,
+planted defects against them, and proved they failed — and the plants I chose were the ones I already
+believed in. The cold read asked the one question I could not ask myself: *what passes while broken?*
+
+⇒ Pair with Finding 36's amendment, where a red-team found the regression my own derived fixture was
+structurally incapable of reaching. **Two independent instances in one day of a defect that was
+unreachable from inside the measurement that missed it.**
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -2002,7 +2067,19 @@ hardened regardless of reachability.
    it upstream in Argus, since an LA-bit "OUI" is not an IEEE assignment and is likely a randomised
    MAC recorded as a vendor prefix. ⛔ **Deliberately not patched** — any of the three changes what
    the operator sees.
-10. **Should the allowlist gain an `ssid_pattern` type?** (Finding 35.) `ssid_pattern` is one of only
+10. ⭐ **Is "hard vs soft" the right boundary, given a MAC is also broadcast?** (#82, sharpened by the
+    rig round.) The split treats `mac` / `mac_range` / `oui` as HARD because *"a device cannot present
+    someone else's MAC without actively spoofing the address it transmits on, which is a different and
+    more detectable act"*. ⚠️ **Nothing in lynceus detects that act** — "more detectable" is a
+    property of the world, not of this tool. So an attacker who spoofs a MAC the operator has
+    allowlisted gets **full suppression of an explicit watchlist hit**.
+    ⛔ **#88 widened this, and I should say so plainly:** before it, a soft entry sitting above the
+    hard one accidentally let such a hit through; now the hard entry wins regardless of order. That
+    accident was the bug #88 fixed, and removing it is correct under the documented design — but the
+    design's premise is what is worth re-examining, not the ordering. **Tightening to nothing, or
+    dropping the hard class, both break the feature** (BLE randomises addresses, which is why soft
+    matching exists). This is a design question, not a patch.
+11. **Should the allowlist gain an `ssid_pattern` type?** (Finding 35.) `ssid_pattern` is one of only
    three watchlist types that fire on the shipped ruleset, and an operator cannot suppress by the
    same predicate they watched on — only by an exact `ssid` or a `mac`. ⚠️ It is not a free fix: a
    substring allowlist silences **everything** containing the needle, so one line in a hand-edited
