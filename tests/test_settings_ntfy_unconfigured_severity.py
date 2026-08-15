@@ -21,7 +21,6 @@ as flagging a BLE bridge nobody enabled.
 
 from __future__ import annotations
 
-import pytest
 from starlette.testclient import TestClient
 
 from lynceus.config import Config
