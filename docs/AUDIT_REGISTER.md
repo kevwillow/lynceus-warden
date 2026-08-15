@@ -1349,11 +1349,13 @@ attached to it does not**, and the correction changes the fix shape rather than 
 > "802.11 caps SSIDs at 32 bytes, so anything longer is malformed by definition."
 
 `kismet.py:560` reads **`ssid = raw.get("kismet.device.base.name")`** — Kismet's *computed display
-name* for the device, not the SSID information element. So:
+name* for the device, not the SSID information element. ⛔ **And it is the same key on both flagged
+paths**: `_BLE_NAME_FIELD = "kismet.device.base.name"` (`kismet.py:286`, read at `:322`) populates
+`ble_local_name` from that identical field. Two of the reported fields, one source. So:
 
-- ⛔ **">32 bytes is malformed" does not hold for this field.** `base.name` is whatever Kismet
+- ⛔ **">32 bytes is malformed" does not hold for either field.** `base.name` is whatever Kismet
   decided to call the device; it is not required to be an SSID and is not bounded by the SSID IE.
-  A rejection rule built on 32 bytes would drop **legitimate** records.
+  A rejection rule built on 32 bytes would drop **legitimate** records on both paths.
 - ⭐ The field that *is* IE-shaped is **`probe_ssids`** (`dot11.probedssid.ssid`, `kismet.py:285`),
   and it is the one already capped — by **count** (`PROBE_SSIDS_PER_DEVICE_CAP = 50`), not length.
 - ⇒ Even there the radio ceiling is **255 bytes, not 65,536** — the IE length field is one octet. The
@@ -1364,6 +1366,17 @@ not only that reachability is unproven; it is that **nobody has established what
 allowed to contain**, and a bound written without that will reject good records. ✅ The
 `PROBE_SSIDS_PER_DEVICE_CAP` precedent shows the safe shape: bound the field whose contents are
 specified, leave the free-text display name alone.
+
+### ⭐ The generalisation — follow the provenance, not the label
+
+Both halves of H1's wrong argument came from one move: **reasoning from the field's NAME in
+lynceus's own model instead of from its SOURCE.** The attribute is called `ssid`, so it was taken to
+hold an SSID, so 802.11 was taken to bound it. Nothing in the code says any of that.
+
+⇒ **Check what populates a field before reasoning about what may legally be in it.** This is the
+same discipline as **PR #82** one layer up: that fix split allowlist pattern types by **who controls
+the value**, not by what the field is called — and the whole defect existed because a *device-chosen*
+attribute had been given the authority of an operator-chosen one.
 
 ⚠️ And truncation is not free either way: capping `ssid` changes allowlist/watchlist **matching**
 for any operator whose pattern is longer than the cap. Rejecting the record as unparseable — there
