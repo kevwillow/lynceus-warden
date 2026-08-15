@@ -1240,8 +1240,30 @@ filter to apply first in the next round of this shape.
 
 ### ⛔ Coverage limit
 
-The instrument enumerates `INSERT INTO` / `UPDATE ... SET` / `set_state(` and `record_*`/`mark_*`/
-`add_*`/`update_*` calls in `src/lynceus/*.py`. It does **not** see: a write performed through a
+⛔ **CORRECTION — this round's stated coverage was broader than its actual coverage.**
+The text below originally read "in `src/lynceus/*.py`". **It was not.** The extraction packets were
+given seven files — `poller.py`, `db.py`, `rules.py`, `allowlist.py`, `evidence.py`, `retention.py`,
+`bridges/ble.py` — and **`webui/app.py` was never among them.** Round 7 did cover it; round 9 did
+not, and the register claimed otherwise.
+
+⇒ **That omission hid a real finding, and another session found it afterwards:**
+`webui/app.py:3953` computes `expires_at = int(time.time()) + duration_seconds` — an **absolute
+deadline from a completely ungated clock**. The web UI is a *separate process* from the poller and
+contains **zero** references to `clock_trusted`, `ClockAnchor`, or any clock-trust notion. Measured:
+an operator clicking "snooze 24h" while the host clock is +91 days wrong gets a snooze that lasts
+**~92 days** — still silenced at +1h, +25h and +30d, resuming only at +92d.
+
+⚠️ **And it is unreachable from every fix shipped in rounds 7–9**, all of which live in `poller.py`,
+`retention.py`, `evidence.py` or `allowlist.py`. **A fix confined to the poller cannot close a write
+performed by the web process.** Any future sweep of clock exposure must include `webui/`.
+
+⇒ **The lesson is about the register, not the bug: a coverage limit is a claim, and it has to be
+derived from what the instrument was actually pointed at — not from what it was named.** I wrote
+"`src/lynceus/*.py`" from the class description rather than from the packet list, and the file that
+was missing is the one that held the finding.
+
+The instrument enumerated `INSERT INTO` / `UPDATE ... SET` / `set_state(` and `record_*`/`mark_*`/
+`add_*`/`update_*` calls in **the seven files listed above only**. It does **not** see: a write performed through a
 helper whose name hides it; a value corrupted before it reaches the write; writes in
 `migrations/*.sql`; or **whether a hypothetical bad caller exists**, which is precisely the gap that
 inflated the PERMANENT count. **Absence of further findings is not proof of correctness.**
