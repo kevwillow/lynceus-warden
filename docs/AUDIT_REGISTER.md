@@ -1916,11 +1916,59 @@ is a more useful answer than "it already exists", and `seed_watchlist` already l
 as skipped exactly as it would a duplicate — so a seed run is not aborted. ⚠️ The same gap applies to
 #84's `mac_range` refusal and predates this work.
 
+### Round 2 — the three guards the first round did not review
+
+⚠️ **The first round reviewed 2 of the 5 guards.** That is the partial-sweep shape this register
+keeps recording, applied to my own use of the rig. The other three, sent cold:
+
+- 🔴 **`test_severity_paths_are_wired.py` did not test the wiring its filename claims.** It built
+  `RuntimeSeverityOverride` **directly** and handed it to `evaluate()`, so it proved the evaluator
+  honours an *injected object* — never that `severity_overrides.yaml` reaches it. The loader could
+  drop a key, or the poller pass `None` forever, and all 48 cases stayed green. ⇒ Measured first:
+  the wiring **does** exist (`Poller.__init__` → `load_runtime_severity_overrides` → `evaluate`), so
+  this was a coverage gap, not a live defect. Now driven from a real YAML file end to end.
+- 🔴 **The notify tests inspected two dicts and never called `send()`** — it could hardcode a
+  priority, swap the maps, or ignore severity entirely. Now drives the real POST path and reads the
+  headers, including the `priority_override` case where a tag derived from the overridden priority
+  would silently relabel every escalation.
+- 🟡 **A missing control.** `test_a_soft_only_allowlist_still_suppresses_ambient_noise` never proved
+  the device would alert *without* the allowlist; disable the ambient rule and it passes while soft
+  allowlisting does nothing.
+- 🟡 **The all-types sweep could not see a MISCLASSIFICATION**, because it parametrises over the
+  implementation's own HARD/SOFT sets. Flip `oui` to soft and every cardinality, union and
+  parametrised expectation still passes while the real system stops suppressing an explicit OUI
+  allowlist. Now anchored to the criterion — *who controls the value* — restated independently.
+
+All five proven by planted defect, each naming its own invariant.
+
+### Complete disposition — all six of round 1's findings, including the two not fixed
+
+⚠️ Recorded because a round that dispositions *most* of its findings and calls itself complete is the
+same shape as sweeping most of a class. The four above plus:
+
+- **A hard-allowlisted device whose ONLY hit is ambient gets no audit trail.** `watchlist_hits`
+  excludes `new_non_randomized_device`, so the INFO loop is empty and only a DEBUG line is emitted.
+  ⇒ **Judged correct as written:** the docstring promises the audit pass records *"any watchlist hits
+  the allowlist just suppressed"*, and a new-device notice is not a watchlist hit. Recorded so it is
+  not re-derived as a defect.
+- **The dedup check-then-insert is racy.** Measured: **no UNIQUE constraint** on
+  `(pattern, pattern_type)`, only a non-unique `idx_watchlist_pattern_type_pattern`. Two concurrent
+  `add_watchlist` calls can both pass the existence check and both insert. ⇒ **Pre-existing, not
+  introduced by #86** — but #86 routed the seeder through `add_watchlist`, so a seed run concurrent
+  with operator clicks now shares the window. Not patched: a UNIQUE constraint is a migration and
+  changes what an importer collision does.
+
 ### ⭐ What this round is evidence for
 
-**Three of the four guards I shipped had a hole, and none was visible from inside.** I wrote them,
-planted defects against them, and proved they failed — and the plants I chose were the ones I already
+**All five guards I shipped had a hole, and none was visible from inside.** I wrote them, planted
+defects against them, and proved they failed — and the plants I chose were the ones I already
 believed in. The cold read asked the one question I could not ask myself: *what passes while broken?*
+
+⇒ **The same partial-sweep shape recurred three times in one night, at three altitudes**, which is
+worth more than any individual finding: round 10 swept the watchlist and not the allowlist; rig round
+1 reviewed 2 of 5 guards; and this round's first write-up dispositioned 4 of 6 findings. **Each time
+the omission looked like completion from inside.** The only reliable tell was someone — or something
+— counting the set from outside.
 
 ⇒ Pair with Finding 36's amendment, where a red-team found the regression my own derived fixture was
 structurally incapable of reaching. **Two independent instances in one day of a defect that was
