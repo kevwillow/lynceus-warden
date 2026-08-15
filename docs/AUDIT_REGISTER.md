@@ -1774,6 +1774,59 @@ its own it would have licensed "no findings" on a surface carrying one.
 fixtures now patch both trees. Same family as the worktree-import trap — **a harness that resolves
 part of its own environment silently grades something you did not choose.**
 
+### 🔴 Finding 39 — a severity override silences a watchlist row, and nothing beside that row says so
+
+**Found by session `d47d7e0b` from source; measured end to end here 2026-08-15 before being
+believed.** Not fixed — the fix is a UI surface and belongs with the liveness work, not with a
+register entry.
+
+⭐ **Finding 32's class one layer down, and the third instance today.** A row the operator stored,
+that `/watchlist` counts and renders like any other, which cannot produce an alert. Finding 32's
+cause was a rule shipped commented out; Finding 37's was data no rule can match; this one is
+**configuration in a third file** deciding it.
+
+**Mechanism:** `_apply_runtime_overrides` returns `None` when the matched row's `manufacturer` is in
+`suppress_vendors`, or its `device_category` is in `suppress_categories`. Every delegation branch
+then emits nothing. Both keys come from `watchlist_metadata`, so **which rows are affected is
+statically knowable per row** — which is precisely the argument Finding 32 makes for surfacing it.
+
+**Measured.** The operator's own HIGH-severity `mac` row, metadata vendor `Flock Safety`, against
+`suppress_vendors: [Flock Safety]`:
+
+```
+ALERTING    control, no overrides file  ->  ['argus_mac']
+            with suppress_vendors       ->  *** NO ALERT ***
+
+VISIBILITY  /watchlist        row rendered: YES    row-level signal: NONE
+            /watchlist/{id}   row rendered: YES    row-level signal: NONE
+```
+
+⚠️ **The row was isolated, not the page.** `/watchlist` does contain the word "override" once — a
+page-level grep would have called this a false positive and closed the finding. Within ±400
+characters of the MAC there is nothing about suppression, override, inert or "cannot fire". ⇒ **The
+same trap `d47d7e0b` hit from the other side**, where an assertion matched "cannot fire" inside a
+per-row tooltip instead of the banner it named. **Isolate the element, both when asserting presence
+and when concluding absence.**
+
+⚠️ `webui/liveness.py` cannot see this. It derives liveness from the **loaded ruleset**, and this
+suppression is data-driven — the overrides file plus `watchlist_metadata`. Not a defect in that
+work; a different input it was never given.
+
+### ⚠️ Finding 40 — an `oui` row on a reserved prefix cannot match even once its rule is enabled
+
+**LATENT today, and that is the point.** `rules.py`'s `_is_reserved_oui_mac` discards the
+**observation** before `resolve_matched_oui_for_eval` is consulted, so an `oui` row on a reserved or
+locally-administered prefix can never match — **enabling the delegating rule does not change that.**
+
+`oui` is dead-by-config today (Finding 32), so nothing is currently lost. ⛔ **It activates the moment
+Kev enables the six commented-out delegating rules**, which is Kev-decision 1. Finding 37 measured
+the scale: **221 of the 444 bundled `oui` rows are in exactly this state.**
+
+⇒ **Recorded here so decision 1 is priced honestly.** "Enable the delegating rules" reads as a single
+switch that turns `oui` on; in fact it would turn on **223 of 444 rows** and leave the rest silently
+inert. Since #86 an operator can no longer *create* such a row by hand — `add_watchlist` refuses —
+but the bundled corpus is imported by direct SQL and bypasses that refusal entirely.
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -1837,7 +1890,11 @@ hardened regardless of reachability.
 
 ⛔ **Do not decide these unilaterally.** Each changes behaviour for existing deployments.
 
-1. ⭐ **Should the six commented-out delegating rules ship ENABLED?** (Finding 32.) Today an operator
+1. ⭐ **Should the six commented-out delegating rules ship ENABLED?** (Finding 32.) ⚠️ **Price this
+   with Finding 40 in hand:** enabling `watchlist_oui` reads as one switch that turns the type on,
+   but **221 of the 444 bundled `oui` rows are on reserved or locally-administered prefixes and stay
+   inert regardless** — the eval-time guard discards the observation before the DB is consulted. So
+   the switch turns on 223 rows, not 444, and nothing currently says which. Today an operator
    adding an `oui`, `ble_uuid`, `ble_local_name`, `ble_manufacturer_id`, `drone_id_prefix` or
    `mac_range` watchlist entry gets **no alert and no warning**. Enabling them changes what alerts
    for every existing deployment. The safe subset — warn in the UI when an entry's type has no
