@@ -14,6 +14,31 @@
     {% if entry.description %}
       <p><strong>description:</strong> {{ entry.description }}</p>
     {% endif %}
+    {# This page is where an operator lands asking "I added this — why have I
+       heard nothing?", so it carries the explanation and the next step rather
+       than the list page's one-word badge. Shown only for an entry that is
+       actually inert; a live entry says nothing, and an unreadable rules file
+       says nothing either (`entry_is_live` is True when liveness is unknown —
+       marking a row dead on the strength of a broken config file would be a
+       worse lie than the silence). #}
+    {% if not entry_is_live %}
+      <p><small class="dim">
+        <span class="badge-inert">inert</span>
+        <strong>This entry cannot currently fire.</strong>
+        A watchlist row is consulted only by a rule whose <code>patterns:</code>
+        list is empty; no enabled rule in <code>rules.yaml</code> delegates to
+        <code>{{ entry.pattern_type }}</code>, so a device matching this pattern
+        raises no alert.
+        {% if entry.pattern_type in liveness.dead_by_model_types %}
+          Editing <code>rules.yaml</code> will not change that for this type —
+          nothing in a capture carries the field to compare against yet.
+        {% else %}
+          Enabling the delegating rule for this type in <code>rules.yaml</code>
+          changes what alerts for every device, so it is a deployment decision
+          rather than a setting.
+        {% endif %}
+      </small></p>
+    {% endif %}
     {% if entry.pattern_type == "mac_range" and entry.mac_range_prefix_length %}
       <p>
         <strong>prefix length:</strong> /{{ entry.mac_range_prefix_length }}

@@ -354,19 +354,66 @@
     {# pattern-type breakdown is about the LIVE watchlist contents,
        not the import metadata — render in both branches so an
        operator on a fresh install sees the bundled-row breakdown. #}
+    {# ⛔ This line WAS eight hardcoded lookups under a name promising "pattern
+       types", and the schema admits TEN: `ssid_pattern` and `imei_tac` were
+       counted by the DB, reported by /healthz.json, and rendered here by
+       nothing. An operator whose entries were all of one of those two read a
+       breakdown that did not mention them. The docstring on
+       `_watchlist_freshness_card` warned that adding a type "requires
+       extending the settings.html breakdown line too" — which is a note asking
+       a human to remember, and it was already not remembered twice.
+
+       ⇒ Iterating the dict removes the requirement instead of restating it.
+       The two sides genuinely differ: the keys come from the DB's admitted
+       pattern_types, the liveness verdict from the loaded ruleset. #}
     <p><strong>pattern types:</strong>
-      mac={{ watchlist_freshness.pattern_type_counts.mac }},
-      oui={{ watchlist_freshness.pattern_type_counts.oui }},
-      ssid={{ watchlist_freshness.pattern_type_counts.ssid }},
-      ble_uuid={{ watchlist_freshness.pattern_type_counts.ble_uuid }},
-      mac_range={{ watchlist_freshness.pattern_type_counts.mac_range }},
-      ble_manufacturer_id={{ watchlist_freshness.pattern_type_counts.ble_manufacturer_id }},
-      drone_id_prefix={{ watchlist_freshness.pattern_type_counts.drone_id_prefix }},
-      ble_local_name={{ watchlist_freshness.pattern_type_counts.ble_local_name }}
+      {% for pt, n in watchlist_freshness.pattern_type_counts | dictsort %}
+        {{ pt }}={{ n }}{% if pt in watchlist_liveness.inert_types %} <span class="badge-inert" title="no enabled rule delegates to this pattern type">inert</span>{% endif %}{% if not loop.last %},{% endif %}
+      {% endfor %}
     </p>
-    {# A rule type an operator can add, that is counted directly above, and
-       that has never been observed to match anything. Saying so beside the
-       count is the only place they would look. Conditional on the count, so a
+    {# ⚠️ #67's ble_manufacturer_id note is KEPT below, not replaced by this
+       one, because the two say different things and both are true. This block
+       answers "no enabled rule delegates to your type" — a ruleset fact that
+       Kev can change by uncommenting a rule. #67 answers "even with the rule
+       enabled, the company id is read from Kismet field paths that resolved 0
+       times across every BLE device in every fixture" — a capture fact that
+       uncommenting does NOT fix. Dropping it would replace a true warning with
+       a false all-clear the moment the delegating rules ship enabled. #}
+    {# The caution beneath the count. Conditional on there being an inert entry
+       the operator ACTUALLY HAS, so a healthy watchlist carries no warning at
+       all — a caution shown on every install is one an operator learns to
+       scroll past, which costs more than the note is worth. #}
+    {% if watchlist_liveness.known and watchlist_liveness.inert_count %}
+      <p><small class="dim">
+        ⚠️ <strong>{{ watchlist_liveness.inert_count }} of your
+        {{ watchlist_liveness.total }} watchlist
+        {% if watchlist_liveness.total == 1 %}entry{% else %}entries{% endif %}
+        cannot currently fire.</strong>
+        A watchlist row is only consulted by a rule whose <code>patterns:</code>
+        list is empty — an enabled rule with its own inline patterns matches
+        those instead and never reads your watchlist. No enabled rule in
+        <code>rules.yaml</code> delegates to
+        {% for pt in watchlist_liveness.inert_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+        Your other rule types are unaffected.
+        {% if watchlist_liveness.dead_by_model_types %}
+          {% for pt in watchlist_liveness.dead_by_model_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+          cannot be revived by editing <code>rules.yaml</code> at all — nothing
+          in a capture carries that field yet.
+        {% endif %}
+      </small></p>
+    {% elif not watchlist_liveness.known %}
+      <p><small class="dim">
+        Whether these entries can fire is <strong>unknown</strong> —
+        {{ watchlist_liveness.reason }}. This is not a report that they are
+        dead; it is a report that the question could not be answered.
+      </small></p>
+    {% endif %}
+    {# From #67, and deliberately NOT folded into the derived block above: this
+       is a CAPTURE-side limitation, not a ruleset one. Enabling
+       watchlist_ble_manufacturer_id makes the block above go quiet for this
+       type while the rule still fires nothing, because the company id is read
+       from candidate Kismet field paths that resolved 0 times across every BLE
+       device in every fixture in this repo. Conditional on the count, so a
        watchlist without one of these carries no warning at all. #}
     {% if watchlist_freshness.pattern_type_counts.ble_manufacturer_id %}
       <p><small class="dim">

@@ -46,6 +46,7 @@ from lynceus.patterns import mac_in_mac_range
 from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.csp import CSPMiddleware
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
+from lynceus.webui.liveness import is_pattern_type_live, watchlist_liveness
 from lynceus.webui.pagination import build_pagination, parse_pagination
 
 # Snooze duration vocabulary, shared between the per-alert /snooze
@@ -966,6 +967,19 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
     except sqlite3.Error:
         ble_class_counts = {}
 
+    # ⭐ Liveness is graded against the card's OWN counts, not a second query.
+    # The note says "3 of these cannot fire" directly beneath the breakdown
+    # line; two reads with a write possible between them would let the note
+    # and the numbers above it disagree, which is a worse failure than the
+    # silence this replaces -- an operator would go looking for a row that is
+    # not there.
+    freshness_card = _watchlist_freshness_card(
+        db,
+        config.watchlist_staleness_warn_days,
+        now_ts=int(time.time()),
+    )
+    liveness = watchlist_liveness(config, freshness_card["pattern_type_counts"])
+
     return {
         "capture": {
             "probe_ssids": bool(config.capture.probe_ssids),
@@ -1016,11 +1030,8 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             "undelivered": db.count_undelivered_heartbeats(),
         },
         "watchlist_stats": _watchlist_origin_breakdown(db),
-        "watchlist_freshness": _watchlist_freshness_card(
-            db,
-            config.watchlist_staleness_warn_days,
-            now_ts=int(time.time()),
-        ),
+        "watchlist_freshness": freshness_card,
+        "watchlist_liveness": liveness,
         "severity_overrides": {
             "path": str(overrides_path),
             "exists": overrides_path.exists(),
@@ -1392,6 +1403,14 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
         days_since_import is not None
         and days_since_import > config.watchlist_staleness_warn_days
     )
+    # ⭐ "Your watchlist has 12 entries" is a lie if seven of them cannot fire.
+    # An entry whose pattern_type has no enabled delegating rule is stored,
+    # counted and reported exactly like a working one -- so a monitoring tool
+    # polling total_rows reads a healthy number over a watchlist that watches
+    # nothing. Additive keys only; total_rows and by_pattern_type keep their
+    # existing meaning, because a consumer alerting on them must not have the
+    # numbers change under it.
+    liveness = watchlist_liveness(config, by_pattern_type)
     return {
         "status": "ok",
         "total_rows": int(total_rows),
@@ -1399,6 +1418,10 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
         "last_imported_at": last_imported_at_iso,
         "days_since_import": days_since_import,
         "stale": stale,
+        "liveness_known": bool(liveness["known"]),
+        "live_rows": int(liveness["live_count"]),
+        "inert_rows": int(liveness["inert_count"]),
+        "inert_pattern_types": list(liveness["inert_types"]),
     }
 
 
@@ -4095,6 +4118,14 @@ def create_app(config: Config, db: Database) -> FastAPI:
             or dc_clean
         )
 
+        # ⭐ Graded over the WHOLE watchlist, not this page of it. A per-page
+        # count would tell an operator on page 2 that nothing is wrong while
+        # page 1 was entirely inert. The per-row marker below is what makes it
+        # actionable; this is the headline that gets them to look.
+        liveness = watchlist_liveness(
+            app.state.config, db.watchlist_pattern_type_counts()
+        )
+
         return app.state.templates.TemplateResponse(
             request=request,
             name="watchlist_list.html",
@@ -4113,6 +4144,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "uncategorized_sentinel": _WATCHLIST_UNCATEGORIZED_SENTINEL,
                 "per_page_options": _WATCHLIST_PER_PAGE_ALLOWED,
                 "filters_active": filters_active,
+                "liveness": liveness,
+                "inert_pattern_types": liveness["inert_types"],
             },
         )
 
@@ -4298,6 +4331,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "last_verified": row.get("last_verified"),
                 "notes": row.get("notes"),
             }
+        # The detail page is where an operator lands from an alert-less hunt
+        # ("I added this, why have I heard nothing?"), so it carries the fuller
+        # explanation rather than the list page's one-word badge.
+        liveness = watchlist_liveness(
+            app.state.config, db.watchlist_pattern_type_counts()
+        )
         return app.state.templates.TemplateResponse(
             request=request,
             name="watchlist_detail.html",
@@ -4307,6 +4346,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "entry": entry,
                 "has_metadata": has_metadata,
                 "metadata": metadata,
+                "liveness": liveness,
+                "entry_is_live": is_pattern_type_live(entry["pattern_type"], liveness),
             },
         )
 

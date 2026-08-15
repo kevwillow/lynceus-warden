@@ -463,6 +463,18 @@ def test_healthz_json_response_shape_stability(tmp_path):
             "dropped_unparseable",
             "is_stale",
         }
+        # ⭐ The four liveness keys are a DELIBERATE addition, recorded here
+        # rather than waved through. `total_rows` keeps its exact old meaning
+        # -- a consumer already alerting on it must not have the number change
+        # underneath them -- and `live_rows` / `inert_rows` / `liveness_known`
+        # / `inert_pattern_types` answer the question it cannot: how many of
+        # those rows a rule would actually consult. See webui/liveness.py.
+        #
+        # ⛔ Kept as `==`, not `<=`. Loosening it to a subset check would make
+        # every future addition invisible AND is not needed for this change --
+        # the whole point of the exact set is that extending the public
+        # contract requires someone to say so here, in the file that documents
+        # it. An addition failing this test is the test working.
         assert set(body["checks"]["watchlist"].keys()) == {
             "status",
             "total_rows",
@@ -470,6 +482,10 @@ def test_healthz_json_response_shape_stability(tmp_path):
             "last_imported_at",
             "days_since_import",
             "stale",
+            "liveness_known",
+            "live_rows",
+            "inert_rows",
+            "inert_pattern_types",
         }
         assert set(body["checks"]["ruleset"].keys()) == {
             "status",
