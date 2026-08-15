@@ -558,6 +558,71 @@ def add_ui_entry(ui_path: Path, entry: AllowlistEntry) -> None:
     _atomic_write_yaml(ui_path, data)
 
 
+def repair_future_dated_ui_entries(
+    ui_path: Path, now_ts: int
+) -> list[tuple[str, int]]:
+    """Re-base UI suppressions written by a process whose clock was wrong.
+
+    ⛔ Same defect as `Database.repair_future_dated_rule_type_snoozes`, in the
+    other storage backend. `webui/app.py`'s `_write_ui_allowlist` computes
+    `expires_at = now_ts + seconds` from `int(time.time())` — the web process
+    has no `ClockAnchor` — so an operator clicking "snooze this device for 24h"
+    while the host clock is wrong stores a deadline wrong by the same amount.
+
+    Measured with the clock +91 days fast: a 24-hour snooze on ONE SUSPICIOUS
+    DEVICE suppressed it for **92 days**. That is worse than the rule_type case,
+    because the operator picked that MAC deliberately — it is the device they
+    thought was worth watching.
+
+    ⭐ Recoverable without a schema change for the same reason: the entry
+    carries BOTH `added_at` and `expires_at`, so their difference is the
+    duration that was actually chosen.
+
+    ⚠️ Keyed on `added_at` in the future, never on `expires_at` — a live
+    suppression always has a future `expires_at`, so keying on that would
+    re-base every healthy entry on every poll tick and extend it forever.
+
+    ⚠️ Entries with `expires_at is None` are PERMANENT allowlist entries, not
+    snoozes. They have no duration to preserve and are left untouched.
+
+    Returns ``[(pattern, intended_duration_seconds), ...]`` for rows re-based.
+    """
+    if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+        raise ValueError("now_ts must be an int (epoch seconds)")
+    if not ui_path.exists():
+        return []
+    entries = _load_ui_entries(ui_path)
+    repaired: list[tuple[str, int]] = []
+    rebuilt: list[AllowlistEntry] = []
+    for e in entries:
+        duration = None
+        if (
+            e.added_at is not None
+            and e.expires_at is not None
+            and e.added_at > now_ts
+        ):
+            duration = e.expires_at - e.added_at
+        if duration is not None and duration > 0:
+            rebuilt.append(
+                e.model_copy(
+                    update={"added_at": now_ts, "expires_at": now_ts + duration}
+                )
+            )
+            repaired.append((e.pattern, duration))
+        else:
+            rebuilt.append(e)
+    if not repaired:
+        # ⚠️ Do not rewrite the file when nothing changed. This runs every poll
+        # tick, and a needless write would churn the disk on a Pi and defeat the
+        # "an intact file is untouched" guarantee the corruption tests assert.
+        return []
+    _atomic_write_yaml(
+        ui_path,
+        {"entries": [e.model_dump(mode="json", exclude_none=True) for e in rebuilt]},
+    )
+    return repaired
+
+
 def remove_ui_entry(
     ui_path: Path,
     pattern: str,

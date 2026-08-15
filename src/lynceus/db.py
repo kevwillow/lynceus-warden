@@ -3434,6 +3434,173 @@ class Database:
             for r in rows
         ]
 
+    def repair_future_dated_rule_type_snoozes(self, now_ts: int) -> list[tuple[str, int]]:
+        """Re-base snoozes written by a process whose clock was wrong.
+
+        ⛔ The web UI is a SEPARATE PROCESS from the poller. It has no
+        `ClockAnchor` and no `clock_trusted` gate — `webui/app.py` computes
+        `expires_at = int(time.time()) + duration_seconds` and persists that
+        absolute deadline. So an operator clicking "snooze 24h" while the host
+        clock is wrong stores a deadline that is wrong by the same amount.
+        Measured with the clock +91 days fast: the 24-hour snooze stayed active
+        for 92 DAYS after NTP corrected it. They silenced something for a day
+        and it was silent for three months.
+
+        ⭐ No new column is needed, which is the point. `add_rule_type_snooze`
+        already persists BOTH `expires_at` and `added_at`, and its own docstring
+        says the caller computes `expires_at = now_ts + duration_seconds` — so
+        `expires_at - added_at` IS the operator's intended duration, already
+        stored. A row whose `added_at` lies in the future was written on a
+        jumped clock; re-basing it onto a trusted clock preserves exactly the
+        window that was asked for.
+
+        ⚠️ Keyed on `added_at`, not on `expires_at`. A future `expires_at` is
+        the NORMAL state of a live snooze and re-basing on that would reset
+        every healthy one on every tick. `added_at` in the future is not
+        reachable by any correct write.
+
+        ⚠️ Caller MUST pass a trusted `now_ts` — this is a repair, and repairing
+        against a bad clock is how you corrupt the rows that were fine. It is
+        also why this runs BEFORE `cleanup_expired_rule_type_snoozes`: a
+        re-based row must not be deleted by the same tick that fixed it.
+
+        Returns ``[(rule_type, intended_duration_seconds), ...]`` for the rows
+        it re-based, so the caller can log what the operator will actually see.
+        """
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        rows = self._conn.execute(
+            "SELECT rule_type, added_at, expires_at FROM rule_type_snoozes "
+            "WHERE added_at > ?",
+            (now_ts,),
+        ).fetchall()
+        repaired: list[tuple[str, int]] = []
+        if not rows:
+            return repaired
+        with self._conn:
+            for row in rows:
+                duration = int(row["expires_at"]) - int(row["added_at"])
+                # A non-positive duration means the row is not merely
+                # future-dated, it is incoherent. Leave it: the ordinary expiry
+                # path deletes it, and inventing a window the operator never
+                # chose would be worse than letting it lapse.
+                if duration <= 0:
+                    continue
+                self._conn.execute(
+                    "UPDATE rule_type_snoozes SET added_at = ?, expires_at = ? "
+                    "WHERE rule_type = ?",
+                    (now_ts, now_ts + duration, row["rule_type"]),
+                )
+                repaired.append((str(row["rule_type"]), duration))
+        return repaired
+
+    def repair_future_dated_watchful_snoozes(self, now_ts: int) -> list[tuple[str, int]]:
+        """Third instance of the same defect, and the most harmful.
+
+        `create_watchful_from_alert` computes
+        `snooze_expires_at = now_ts + snooze_duration_seconds` from the WEB
+        process's clock, which has no `ClockAnchor`.
+
+        ⚠️ `snooze_expires_at` gates the ORIGINAL alert pipeline for that MAC
+        (OQ-3) -- not merely the recurrence escalation. Measured with the web
+        clock +91 days fast, on a device the operator had explicitly watchlisted
+        as HIGH severity:
+
+            day  1: high-severity notifications = 0
+            day 30: high-severity notifications = 0
+            day 60: high-severity notifications = 0
+
+        ⇒ A "watch this device, snooze its alerts for 24 hours" silences the
+        operator's own stalker alert for 92 DAYS.
+
+        ⭐ Repairable for the same reason as the other two: `created_at` is
+        persisted next to `snooze_expires_at`, so their difference is the
+        duration the operator actually chose.
+
+        ⚠️ `snooze_expires_at IS NULL` is the "forever" option, a deliberate
+        permanent suppression with no duration to preserve. Left untouched --
+        inventing a window would convert the operator's explicit choice into a
+        snooze that silently expires.
+
+        Returns ``[(mac, intended_duration_seconds), ...]`` for rows re-based.
+        """
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        rows = self._conn.execute(
+            "SELECT id, mac, created_at, snooze_expires_at FROM watchful_recurrence "
+            "WHERE created_at > ? AND snooze_expires_at IS NOT NULL "
+            "AND archived_at IS NULL",
+            (now_ts,),
+        ).fetchall()
+        repaired: list[tuple[str, int]] = []
+        if not rows:
+            return repaired
+        with self._conn:
+            for row in rows:
+                duration = int(row["snooze_expires_at"]) - int(row["created_at"])
+                if duration <= 0:
+                    continue
+                self._conn.execute(
+                    "UPDATE watchful_recurrence SET snooze_expires_at = ? WHERE id = ?",
+                    (now_ts + duration, int(row["id"])),
+                )
+                repaired.append((str(row["mac"]), duration))
+        return repaired
+
+    def repair_future_dated_watchful_baselines(self, now_ts: int) -> list[tuple[str, int]]:
+        """Clamp a `last_seen_at` that a wrong clock pushed into the future.
+
+        ⛔ A FOURTH site, and it bypasses the gate #69 added. `last_seen_at` is
+        the baseline for the 24-hour recurrence debounce
+        (`gap = observed_at - last_seen_at`), so #69 gated the POLLER's write to
+        it. `reset_watchful_recurrence` writes the same column from the WEB
+        process, which has no anchor.
+
+        Measured — the operator clicks "reset" on an escalated entry while the
+        host clock is +91 days fast, then the clock is corrected:
+
+            real sighting at day  4: counted=False
+            real sighting at day 30: counted=False
+            real sighting at day 91: counted=False
+            real sighting at day 92: counted=True
+
+        ⇒ Their intent in clicking reset is "start watching this device fresh".
+        The tool did the opposite: it stopped watching for three months.
+
+        ⚠️ Unlike the three deadline sites there is no duration to preserve --
+        `last_seen_at` is a POINT, not a window. A device cannot have been seen
+        in the future, so the honest repair is to clamp to the trusted clock,
+        which is also exactly what "start fresh" meant.
+
+        ⚠️ Deliberately does NOT touch `created_at`, even though the same reset
+        can push it forward. `repair_future_dated_watchful_snoozes` keys on
+        `created_at > now_ts` to recognise a row written on a jumped clock --
+        clamping it here would erase that provenance and silently disable the
+        other repair.
+
+        Returns ``[(mac, seconds_clamped), ...]``.
+        """
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        rows = self._conn.execute(
+            "SELECT id, mac, last_seen_at FROM watchful_recurrence "
+            "WHERE last_seen_at > ? AND archived_at IS NULL",
+            (now_ts,),
+        ).fetchall()
+        repaired: list[tuple[str, int]] = []
+        if not rows:
+            return repaired
+        with self._conn:
+            for row in rows:
+                self._conn.execute(
+                    "UPDATE watchful_recurrence SET last_seen_at = ? WHERE id = ?",
+                    (now_ts, int(row["id"])),
+                )
+                repaired.append(
+                    (str(row["mac"]), int(row["last_seen_at"]) - now_ts)
+                )
+        return repaired
+
     def cleanup_expired_rule_type_snoozes(self, now_ts: int) -> int:
         """Physically delete snoozes whose ``expires_at <= now_ts``.
 

@@ -18,6 +18,7 @@ from .allowlist import (
     AllowlistParseError,
     _load_allowlist_with_counts,
     derive_ui_path,
+    repair_future_dated_ui_entries,
 )
 from .config import Config, load_config
 from .db import Database, WatchfulRecurrence
@@ -952,7 +953,24 @@ def _compose_heartbeat(db: Database, config: Config, *, now_ts: int) -> tuple[bo
         problems.append("no poll tick has ever completed")
     else:
         age = now_ts - int(last_tick_raw)
-        if age > 2 * config.poll_interval_seconds:
+        # ⛔ A NEGATIVE age means the recorded tick time sits in the FUTURE,
+        # which no sane clock produces -- it is what a tick completed while the
+        # clock was wrong-and-ahead leaves behind. A bare `age > threshold`
+        # reads that as "extremely recent" and reports HEALTHY, so the staleness
+        # check is disabled for the whole length of the excursion. Measured with
+        # a +91d anchor and a poll loop that had stopped completing ticks for an
+        # hour: healthy=True, "Still watching".
+        #
+        # ⚠️ That is the one thing this clause exists to catch. `retention.py`
+        # and `evidence.py` both already guard the identical shape with
+        # `0 <= elapsed`; this clause did not, and three siblings disagreeing
+        # about the same impossible value is how it survived.
+        if age < 0:
+            problems.append(
+                f"the last completed poll tick is recorded {-age}s in the "
+                f"FUTURE (clock jump?); tick staleness cannot be judged"
+            )
+        elif age > 2 * config.poll_interval_seconds:
             problems.append(
                 f"no poll tick for {age}s (expected every {config.poll_interval_seconds}s)"
             )
@@ -1562,6 +1580,98 @@ def poll_once(
     # purged=1, and correcting the clock does not bring it back -- the operator
     # simply starts receiving alerts they deliberately silenced.
     if clock_trusted:
+        # ⛔ REPAIR BEFORE PURGE, and the order is load-bearing. The web UI is a
+        # separate process with no ClockAnchor: it computes
+        # `expires_at = time.time() + duration` and persists that absolute
+        # deadline, so a snooze created while the host clock was wrong is wrong
+        # by the same amount. Measured at +91 days: a "24 hour" snooze stayed
+        # active for 92 DAYS after NTP corrected the clock.
+        #
+        # ⭐ Nothing here can prevent that write — it happens in another process
+        # that this gate cannot reach. So this is a REPAIR, the same shape as
+        # the suppression anchor's self-heal and for the same reason: where the
+        # bad state is written somewhere a gate cannot see, the state has to be
+        # fixable after the fact.
+        #
+        # ⚠️ Running it after the purge would let this tick delete a row it was
+        # about to re-base -- `cleanup` keys on `expires_at <= now_ts`, and a
+        # snooze written on a BACKWARD-jumped clock has exactly that shape.
+        try:
+            for rule_type, duration in db.repair_future_dated_rule_type_snoozes(now_ts):
+                logger.warning(
+                    "rule_type snooze for %s was created on a clock that read "
+                    "ahead of this one; re-based onto the current clock so it "
+                    "runs for the %ds the operator asked for, not until the "
+                    "wrong deadline",
+                    rule_type,
+                    duration,
+                )
+        except Exception as e:
+            logger.warning("rule_type_snoozes repair failed: %s", e)
+        # ⭐ The SAME defect lives in the other storage backend. `_write_ui_allowlist`
+        # persists per-device and per-alert snoozes to the UI YAML with the same
+        # `expires_at = time.time() + seconds` shape. Measured at +91 days: a
+        # 24-hour snooze on one suspicious device suppressed it for 92 DAYS.
+        #
+        # ⚠️ I found the rule_type instance by grepping for `db.<method>(now_ts=...)`,
+        # which structurally could not see this one -- it writes a file, not a row.
+        # Both are repaired here so the two backends cannot drift apart again.
+        try:
+            for pattern, duration in repair_future_dated_ui_entries(
+                derive_ui_path(Path(config.allowlist_path)), now_ts
+            ):
+                logger.warning(
+                    "UI suppression for %s was created on a clock that read "
+                    "ahead of this one; re-based so it runs for the %ds the "
+                    "operator chose, not until the wrong deadline",
+                    pattern,
+                    duration,
+                )
+        except Exception as e:
+            logger.warning("UI allowlist snooze repair failed: %s", e)
+        # ⚠️ THIRD instance of the same defect, and the most harmful of the
+        # three: `snooze_expires_at` gates the ORIGINAL alert pipeline for that
+        # MAC (OQ-3), not just the recurrence escalation. Measured with the web
+        # clock +91d, on a device the operator had explicitly watchlisted as
+        # HIGH severity: zero notifications at day 1, 30 and 60. A "snooze this
+        # device's alerts for 24 hours" silenced their own stalker alert for 92
+        # days.
+        #
+        # ⛔ I shipped the first two repairs believing that was the whole class.
+        # Three storage sites, three separate discoveries, one shape. Any new
+        # `x_expires_at = clock + duration` write belongs on this list.
+        try:
+            for mac, duration in db.repair_future_dated_watchful_snoozes(now_ts):
+                logger.warning(
+                    "watchful snooze for %s was created on a clock that read "
+                    "ahead of this one; re-based so its alerts resume after the "
+                    "%ds the operator chose",
+                    mac,
+                    duration,
+                )
+        except Exception as e:
+            logger.warning("watchful snooze repair failed: %s", e)
+        # ⚠️ FOURTH site, and this one is not a deadline -- it is a BASELINE.
+        # `last_seen_at` drives the 24h recurrence debounce, so #69 gated the
+        # poller's write to it; `reset_watchful_recurrence` writes the same
+        # column from the web process, which has no anchor. Measured: reset on a
+        # +91d clock froze recurrence counting until day 92, i.e. exactly the
+        # harm #69 fixed, arriving through the other process.
+        #
+        # ⛔ ORDER: after the snooze repair, never before. That one keys on
+        # `created_at > now_ts` to recognise a jumped write; this one must not
+        # erase the row's future-dated provenance before it has been read.
+        try:
+            for mac, ahead in db.repair_future_dated_watchful_baselines(now_ts):
+                logger.warning(
+                    "watchful baseline for %s was %ds in the future (a reset on "
+                    "a jumped clock?); clamped to now so recurrence counting "
+                    "resumes instead of stalling for that long",
+                    mac,
+                    ahead,
+                )
+        except Exception as e:
+            logger.warning("watchful baseline repair failed: %s", e)
         try:
             purged = db.cleanup_expired_rule_type_snoozes(now_ts)
             if purged > 0:
