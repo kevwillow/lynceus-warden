@@ -1851,6 +1851,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "rule_type": rule_type or "",
                 "q": q or "",
                 "window": window or "",
+                # The instant this page was rendered. Carried into the
+                # ack-all form so a bulk write acts on what was SHOWN,
+                # not on whatever the relative window matches later.
+                "rendered_at": now_ts,
                 "has_note": has_note or "all",
                 "has_action": has_action or "all",
                 "rule_types": _ALERTS_RULE_TYPES,
@@ -2194,6 +2198,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         has_note: str | None = Form(default=None),
         has_action: str | None = Form(default=None),
         note: str | None = Form(default=None),
+        rendered_at: str | None = Form(default=None),
     ):
         # The filter set MUST mirror /alerts GET exactly. If a filter
         # is on the page but missing here, "ack all matching" acks
@@ -2212,6 +2217,35 @@ def create_app(config: Config, db: Database) -> FastAPI:
         search_clean = search if search else None
         q_clean = q if q else None
         note = _normalize_optional_note(note)
+
+        # ⛔ Bound the write to what the operator was actually SHOWN.
+        #
+        # This route recomputes a RELATIVE window (`window=24h` -> `now - 24h`)
+        # at POST time, so an alert arriving between the page rendering and the
+        # operator clicking falls inside it and is acknowledged unseen. Measured
+        # with NO clock jump at all: three alerts on the page, a fourth
+        # HIGH-severity alert arrives, the operator clicks "acknowledge all 3
+        # matching" -- and the fourth is acknowledged too. It then drops out of
+        # the default unacknowledged views, and there is no bulk undo.
+        #
+        # ⭐ This function's own comments call an unmirrored filter "the worst
+        # class of bug for a bulk-write surface", and every filter IS carefully
+        # mirrored. The time window is the one filter that MOVES ON ITS OWN, so
+        # mirroring the parameter was never enough: the GET's instant has to be
+        # carried across too.
+        #
+        # ⚠️ A clock STEP between GET and POST is the same bug with a rarer
+        # trigger. This closes both.
+        effective_until_ts = until_ts
+        if rendered_at is not None:
+            try:
+                rendered_ts: int | None = int(rendered_at)
+            except (TypeError, ValueError):
+                rendered_ts = None
+            if rendered_ts is not None and rendered_ts > 0:
+                effective_until_ts = (
+                    rendered_ts if until_ts is None else min(until_ts, rendered_ts)
+                )
 
         if rule_type is not None and rule_type not in _ALERTS_RULE_TYPES:
             rule_type = None
@@ -2261,7 +2295,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             severity=sev,
             acknowledged=ack_bool,
             since_ts=effective_since_ts,
-            until_ts=until_ts,
+            until_ts=effective_until_ts,
             search=search_clean,
             rule_type=rule_type_for_db,
             q=q_clean,
@@ -2285,7 +2319,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             severity=sev,
             acknowledged=ack_bool,
             since_ts=effective_since_ts,
-            until_ts=until_ts,
+            until_ts=effective_until_ts,
             search=search_clean,
             rule_type=rule_type_for_db,
             q=q_clean,
