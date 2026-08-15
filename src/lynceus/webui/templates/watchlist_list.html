@@ -41,6 +41,21 @@
     </p>
   {% endif %}
 
+  {# 🔕 Snoozed is not inert. The rule matches; the poller drops the alert
+     because the operator silenced that rule_type — from this UI, in one click.
+     Telling them "no enabled rule delegates to this type" would send them into
+     rules.yaml to fix a file that is already correct. #}
+  {% if liveness.known and liveness.suppressed_count %}
+    <p class="status-line">
+      <span class="status-pill status-pill-warn">{{ liveness.suppressed_count }} snoozed</span>
+      {{ liveness.suppressed_count }} of {{ liveness.total }}
+      {% if liveness.total == 1 %}entry is{% else %}entries are{% endif %}
+      matching but silenced: you snoozed
+      {% for pt in liveness.suppressed_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+      Lift it on the rules page.
+    </p>
+  {% endif %}
+
   <form method="get" action="/watchlist">
     <fieldset class="grid">
       <label>type
@@ -113,6 +128,8 @@
               <td><a href="/watchlist/{{ e.id }}"><code>{{ e.pattern }}</code></a></td>
               <td>{{ e.pattern_type }}{% if e.pattern_type in inert_pattern_types %}
                 <span class="badge-inert" title="no enabled rule in rules.yaml delegates to this pattern type, so this entry cannot fire">inert</span>
+              {% elif e.pattern_type in snoozed_pattern_types %}
+                <span class="badge-snoozed-type" title="the rule matches, but you snoozed this rule_type from the rules page; alerts are dropped until it expires">snoozed</span>
               {% endif %}</td>
               <td><span class="badge-{{ e.severity }}">{{ e.severity }}</span></td>
               <td>{{ e.description or "" }}</td>

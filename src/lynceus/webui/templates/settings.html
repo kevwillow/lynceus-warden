@@ -408,6 +408,40 @@
         dead; it is a report that the question could not be answered.
       </small></p>
     {% endif %}
+    {# ⭐ A SECOND way a stored entry produces no alert, and a different one.
+       The rule fires; the poller drops the alert because the operator snoozed
+       that rule_type — from this very UI, in one click. Deliberately NOT
+       folded into the inert block above: "no enabled rule delegates to this
+       type" would be a FALSE explanation that sends them into rules.yaml to
+       fix a file that is already correct. Temporary, reversible, and theirs. #}
+    {% if watchlist_liveness.known and watchlist_liveness.suppressed_count %}
+      <p><small class="dim">
+        🔕 <strong>{{ watchlist_liveness.suppressed_count }} of your entries
+        {% if watchlist_liveness.suppressed_count == 1 %}is{% else %}are{% endif %}
+        snoozed, not dead.</strong>
+        You silenced
+        {% for pt in watchlist_liveness.suppressed_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+        from the <a href="/rules">rules page</a>; the rules still match, the
+        alerts are dropped until the snooze expires. Nothing in
+        <code>rules.yaml</code> needs changing — lift it on /rules.
+      </small></p>
+    {% endif %}
+    {# ⚠️ The limit of the claim, stated rather than implied. An entry NOT
+       flagged above means a rule consults its type — not that this particular
+       row will alert. Three further mechanisms can silence an individual row
+       and none is knowable from the ruleset alone. Saying so is what stops
+       the absence of a warning being read as a guarantee. #}
+    {% if watchlist_liveness.known %}
+      <p><small class="dim">
+        An entry not flagged above means <strong>a rule consults its type</strong>
+        — not that that row will alert. A row can still be silenced by a
+        <code>suppress_vendors</code> / <code>suppress_categories</code> entry in
+        your severity overrides, by an allowlist match, or (for
+        <code>oui</code>) by a prefix the matcher discards. And this reads
+        <code>rules.yaml</code> as it is on disk now; a running poller picks up
+        an edit when it restarts.
+      </small></p>
+    {% endif %}
     {# From #67, and deliberately NOT folded into the derived block above: this
        is a CAPTURE-side limitation, not a ruleset one. Enabling
        watchlist_ble_manufacturer_id makes the block above go quiet for this
