@@ -729,7 +729,16 @@ interface was absent while `Experimental` was commented out in
 list, so replaying it (the "narrow recovery path" its own test docstring
 describes, for a DB whose 014 row is missing but whose table was already
 rebuilt), recreates `devices` at the 014-era shape and silently drops every
-column added since. That is currently `ble_name` and `ble_device_class`.
+column added since. That is currently **`ble_device_class` alone**.
+⚠️ This entry also named `ble_name` until 2026-08-14. Measured: `ble_name`
+**survives** — it predates 014 and appears in 014's own `INSERT` list, so the
+rebuild carries it. Only columns added *after* 014 are dropped, which is the
+whole point of the defect; naming a survivor beside the casualty made this read
+as a broader data loss than it is. Verified: 11 columns before the replay, 10
+after, `ble_device_class` the only one missing.
+- **Pinned**: `tests/test_db.py::test_migration_014_sql_replay_is_safe_rebuild`
+  now asserts the drop in both directions (#54), so fixing this will fail that
+  test and bring you to its docstring. Delete that assertion as part of the fix.
 Surfaced while adding migration 023, which is the first migration to add a
 `devices` column after 014; nothing had exercised the interaction before.
 - **Trigger**: before anyone actually uses the 014 replay recovery path, or
