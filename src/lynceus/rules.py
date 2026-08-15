@@ -454,7 +454,19 @@ def load_runtime_severity_overrides(
     try:
         with open(p, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
-    except (OSError, yaml.YAMLError) as exc:
+    # ⛔ UnicodeDecodeError belongs in this tuple, and its absence made the
+    # docstring above false. `open(..., encoding="utf-8")` raises it BEFORE
+    # yaml sees the bytes, so it is neither an OSError nor a YAMLError and
+    # escaped both. Measured: a file containing one invalid byte, and a file an
+    # editor saved as UTF-16, each raised out of this function.
+    #
+    # Not cosmetic. `poller.py` calls this UNWRAPPED while constructing the
+    # Poller, so the exception takes the daemon down at startup — one bad byte
+    # in an optional, additive override file and RF monitoring never begins.
+    # `cli/validate.py` wraps its own call, so `lynceus-validate` survives what
+    # the daemon does not: the tool that only reports was more robust than the
+    # one doing the watching.
+    except (OSError, yaml.YAMLError, UnicodeDecodeError) as exc:
         logger.warning(
             "could not read severity overrides file %s (%s); runtime override "
             "layer disabled. Fix the file and restart the daemon to re-enable.",
