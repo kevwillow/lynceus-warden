@@ -11,9 +11,9 @@ Storage shape is two YAML files:
   Absent until the first UI write; the loader treats missing as empty.
 
 Entries from both files are concatenated into a single in-memory
-``Allowlist`` at load time. Order does not affect matching semantics —
-``is_allowed`` returns the first matching entry, but the only entry
-field that matters for suppression is the pattern itself.
+``Allowlist`` at load time. File order does not affect what gets
+suppressed: ``is_allowed`` returns the STRONGEST matching entry, not the
+first one — see its docstring for why the distinction is load-bearing.
 """
 
 from __future__ import annotations
@@ -53,13 +53,31 @@ class AllowlistParseError(Exception):
     """
 
 
-# Pattern types accepted by the allowlist. Mirrors the seven
-# delegation rule_types the watchlist supports so an operator can
-# express suppression in any shape the watchlist alerts on. The
-# canonicalizers and matchers below pair 1:1 with rules.evaluate's
-# watchlist_* branches — drift between the two surfaces silently
-# allows an alert to fire that an operator believed they had
-# allowlisted.
+# Pattern types accepted by the allowlist: EIGHT, matching the eight
+# DB-delegation rule_types in rules.evaluate one for one, so an
+# operator can express suppression in the same shape they watched in.
+#
+# ⚠️ Two watchlist pattern_types have NO allowlist counterpart, and the
+# gap is not symmetric with how live they are:
+#
+#   ssid_pattern  REJECTED here -- and it is one of only THREE watchlist
+#                 types that fire on the shipped ruleset (see Finding 32).
+#                 An operator watching a substring can suppress a specific
+#                 SSID or MAC, but cannot express "suppress this class".
+#   imei_tac      REJECTED here, and dead on the watchlist side too --
+#                 DeviceObservation carries no field for it at all.
+#
+# ⛔ This comment used to claim the allowlist covered "any shape the
+# watchlist alerts on", and said seven where there are eight. It was
+# wrong about ssid_pattern in the direction that hides a real gap: the
+# sentence below names the exact failure mode, and the codebase had it.
+# Whether a substring allowlist SHOULD exist is a live decision (a
+# substring silences everything containing the needle) and is recorded in
+# docs/AUDIT_REGISTER.md under "Reserved for Kev" -- not settled here.
+#
+# Drift between the two surfaces silently allows an alert to fire that an
+# operator believed they had allowlisted, which is why the counterparts
+# that DO exist are pinned by tests rather than by this comment.
 AllowlistPatternType = Literal[
     "mac",
     "oui",
@@ -151,7 +169,37 @@ class Allowlist(BaseModel):
         obs: DeviceObservation,
         now_ts: int | None = None,
     ) -> AllowlistEntry | None:
-        """Return the matching entry if the device is allowlisted, else None.
+        """Return the STRONGEST matching entry if the device is allowlisted,
+        else None.
+
+        ⛔ "Strongest", not "first", and the difference is a real defect this
+        function used to have. Since the hard/soft split landed, the returned
+        entry's ``pattern_type`` is what decides whether suppression happens at
+        all — ``poller.process_observation`` asks ``is_soft_attribute`` about
+        *this one entry*. Returning whichever entry happened to sit earliest in
+        the file therefore let an unrelated SOFT entry answer for a device the
+        operator had explicitly allowlisted by MAC.
+
+        🪤 Measured on the shipped ruleset, one device, one watchlist row, the
+        same two allowlist entries — only the FILE ORDER differs:
+
+            hard `mac` entry only                 -> suppressed
+            hard `mac` first, then soft `name`    -> suppressed
+            soft `name` first, then hard `mac`    -> *** 2 ALERTS, 2 SENT ***
+
+        The operator wrote "ignore this MAC" and, because an unrelated
+        headphones-by-name entry sat above it, kept getting paged. Nothing in
+        the UI, the logs, or the file hints at the ordering dependency, and the
+        module docstring positively asserted that order does not matter.
+
+        ⭐ So: a HARD match wins over a SOFT one regardless of position, and
+        position still breaks ties WITHIN a class (so the ``expires_at`` an
+        audit line reports is stable for soft-only allowlists, as before).
+
+        ⚠️ Expiry is still applied FIRST. An expired hard entry is not a match
+        at all and must not out-rank a live soft one — otherwise a lapsed
+        snooze would start silencing watchlist hits, which is the same defect
+        pointing the other way.
 
         Allowlist matches take precedence over watchlist matches: callers
         should not produce alerts for allowlisted devices, and should emit
@@ -176,12 +224,21 @@ class Allowlist(BaseModel):
         """
         if now_ts is None:
             now_ts = int(time.time())
+        first_soft: AllowlistEntry | None = None
         for entry in self.entries:
             if entry.expires_at is not None and entry.expires_at <= now_ts:
                 continue
-            if _entry_matches(entry, obs):
+            if not _entry_matches(entry, obs):
+                continue
+            if not is_soft_attribute(entry.pattern_type):
+                # A radio-level identifier is the operator's strongest
+                # statement about this device; nothing later can outrank it,
+                # so returning on the first one keeps this O(n) with no
+                # second pass.
                 return entry
-        return None
+            if first_soft is None:
+                first_soft = entry
+        return first_soft
 
 
 #: Allowlist pattern types split by whether the ATTACKER controls the value.
