@@ -1969,6 +1969,28 @@ class Poller:
         accumulated, not what was expected.
         """
         elapsed = now_ts - self._last_suppression_log_ts
+
+        # ⛔ A future anchor freezes this audit line for the length of the jump.
+        # Measured with SUPPRESSION_LOG_INTERVAL_SECONDS=3600 and a +8 day jump:
+        # the counter was cleared and `_last_suppression_log_ts` stamped 8 days
+        # ahead, after which no summary flushed until day 8 -- roughly 8 days of
+        # lost audit cadence, from one bad tick.
+        #
+        # Self-healing rather than gated on `clock_trusted`, deliberately. The
+        # anchor can be stamped from a jumped clock even when this method is
+        # never called on an untrusted tick, because ClockAnchor re-anchors
+        # after CLOCK_JUMP_MAX_HOLDS and reports the jumped clock as trusted --
+        # so a gate alone would not prevent the state this repairs.
+        if elapsed < 0:
+            logger.warning(
+                "suppression-summary anchor is %ds in the future (clock jump?); "
+                "re-anchoring to now so the audit line is not suppressed until "
+                "wall time catches up",
+                -elapsed,
+            )
+            self._last_suppression_log_ts = now_ts
+            return
+
         if elapsed < SUPPRESSION_LOG_INTERVAL_SECONDS:
             return
         if not self._rule_type_suppression_counter:
