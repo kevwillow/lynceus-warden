@@ -13,7 +13,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import NamedTuple
 
-from lynceus.patterns import mac_in_mac_range
+from lynceus.patterns import mac_in_mac_range, parse_mac_range_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -2599,6 +2599,33 @@ class Database:
             )
         if severity not in self._ALERT_SEVERITIES:
             raise ValueError(f"severity must be one of {self._ALERT_SEVERITIES}")
+        # mac_range is matched from the DERIVED columns, never from
+        # ``pattern``. ``_lookup_mac_range_matches`` queries the migration-011
+        # partial index on (mac_range_prefix_length, mac_range_prefix), so a
+        # row written with those NULL is stored, listed by /settings, counted
+        # by /healthz.json -- and can never match an observation. Before this,
+        # only the Argus importer populated them, so every hand-seeded and
+        # UI-created mac_range row was inert. Measured 2026-08-15: the seeder
+        # logged "inserted mac_range/3c:5a:b4:d/28 (high)" and the row never
+        # fired, even with the argus_mac_range rule enabled.
+        #
+        # Same failure mode the comment above ``normalize_pattern`` in
+        # seed_watchlist names -- "a row stored in non-canonical form silently
+        # never matches" -- one layer further in.
+        mac_range_prefix: str | None = None
+        mac_range_prefix_length: int | None = None
+        if pattern_type == "mac_range":
+            try:
+                mac_range_prefix, mac_range_prefix_length = parse_mac_range_pattern(pattern)
+            except ValueError as exc:
+                # Fail closed. Storing a row nothing can match is worse than
+                # refusing it: the operator is told they are being watched over
+                # and they are not.
+                raise ValueError(
+                    f"mac_range pattern {pattern!r} is not a shape lynceus can "
+                    f"match ({exc}); refusing to store a watchlist row that "
+                    "could never fire"
+                ) from exc
         existing = self._conn.execute(
             "SELECT id FROM watchlist WHERE pattern = ? AND pattern_type = ? LIMIT 1",
             (pattern, pattern_type),
@@ -2607,9 +2634,17 @@ class Database:
             return int(existing["id"]), False
         with self._conn:
             cur = self._conn.execute(
-                "INSERT INTO watchlist (pattern, pattern_type, severity, description) "
-                "VALUES (?, ?, ?, ?)",
-                (pattern, pattern_type, severity, description),
+                "INSERT INTO watchlist (pattern, pattern_type, severity, description, "
+                "mac_range_prefix, mac_range_prefix_length) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    pattern,
+                    pattern_type,
+                    severity,
+                    description,
+                    mac_range_prefix,
+                    mac_range_prefix_length,
+                ),
             )
         return int(cur.lastrowid), True
 
