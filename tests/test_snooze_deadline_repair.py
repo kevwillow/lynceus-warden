@@ -118,12 +118,41 @@ def test_an_incoherent_row_is_not_given_a_window_it_never_had(db):
 
 
 def test_the_repair_runs_before_the_purge(db):
-    """⭐ Ordering is load-bearing, not tidiness.
+    """Keep the safe ordering — but it protects nothing today, and the reason
+    this docstring used to give was FALSE.
 
-    `cleanup_expired_rule_type_snoozes` deletes `expires_at <= now_ts`. A snooze
-    written on a BACKWARD-jumped clock has exactly that shape while still being
-    inside the operator's intended window — so purging first would delete the
-    row the repair was about to rescue, and a deleted snooze cannot be restored.
+    ⛔ It claimed: *"A snooze written on a BACKWARD-jumped clock has exactly that
+    shape while still being inside the operator's intended window — so purging
+    first would delete the row the repair was about to rescue."*
+
+    Measured across all three reachable shapes, a 24h request:
+
+        correct clock (sanity)   purgeable=False repaired=0 purged=0  ->  24.0h
+        forward-jumped (+91d)    purgeable=False repaired=1 purged=0  ->  24.0h
+        backward-jumped (-6y)    purgeable=True  repaired=0 purged=1  ->   0.0h
+
+    ⇒ **No row is ever both purgeable and repairable.** "Repairable" means
+    `added_at` in the FUTURE; "purgeable" means `expires_at` in the PAST; those
+    are disjoint for every coherent write. The ordering cannot change any
+    outcome.
+
+    ⚠️ The dangerous part was not the inert assertion — it was that the
+    rationale implied the backward jump is HANDLED. It is not: nothing repairs
+    it, and the operator gets 0h for a 24h request (Finding 41).
+    `test_a_past_snooze_is_left_alone`, three functions above, already states the
+    true rule — "an already-expired snooze is the purge's business, not the
+    repair's" — so the two docstrings in this file contradicted each other, and
+    the backward case survived in the gap between them.
+
+    ⭐ The test is KEPT because the ordering is the safe one and a future repair
+    that did key on `expires_at` would need it. It is documented as a
+    forward-looking constraint rather than a live protection, which is the
+    honest version of what it does.
+
+    ⇒ Found by session `d47d7e0b` by asking what the `added_at > now_ts`
+    predicate structurally CANNOT match, rather than by reading the comments —
+    which is the only reason a self-consistent, confident, wrong rationale was
+    caught at all.
     """
     from lynceus import poller as _poller
 
@@ -132,8 +161,43 @@ def test_the_repair_runs_before_the_purge(db):
     repair_at = text.index("repair_future_dated_rule_type_snoozes")
     purge_at = text.index("cleanup_expired_rule_type_snoozes(now_ts)")
     assert repair_at < purge_at, (
-        "the purge runs before the repair; it will delete rows the repair "
-        "would have rescued"
+        "the purge now runs before the repair. Harmless for today's repair (the "
+        "two predicates are disjoint — see this docstring), but the safe order "
+        "is free and a repair keyed on expires_at would need it."
+    )
+
+
+def test_no_snooze_is_both_purgeable_and_repairable(db):
+    """The measurement the docstring above now rests on, asserted rather than
+    described — so "the ordering is inert" cannot rot into being wrong.
+
+    ⚠️ If a future repair DOES become able to rescue a purgeable row, this fails
+    and the ordering above stops being decorative. That is the signal to rewrite
+    both docstrings, not to delete this.
+    """
+    now = 1_700_000_000
+    day = 86_400
+    shapes = {
+        "correct": (now, now + day),
+        "forward-jumped": (now + 91 * day, now + 91 * day + day),
+        "backward-jumped": (now - 6 * 365 * day, now - 6 * 365 * day + day),
+    }
+    overlap = []
+    seen = 0
+    for label, (added_at, expires_at) in shapes.items():
+        db.remove_rule_type_snooze("watchlist_mac")
+        db.add_rule_type_snooze("watchlist_mac", expires_at=expires_at, added_at=added_at)
+        purgeable = expires_at <= now
+        repairable = bool(db.repair_future_dated_rule_type_snoozes(now))
+        seen += 1
+        if purgeable and repairable:
+            overlap.append(label)
+    # `assert seen >= N`: a shapes dict that emptied would make this vacuous.
+    assert seen == len(shapes) >= 3
+    assert not overlap, (
+        f"{overlap} is now BOTH purgeable and repairable, so repair-before-purge "
+        "has become load-bearing. Rewrite test_the_repair_runs_before_the_purge's "
+        "docstring — it currently says the ordering cannot change any outcome."
     )
 
 

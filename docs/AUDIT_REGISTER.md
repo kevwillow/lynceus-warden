@@ -1861,6 +1861,57 @@ switch that turns `oui` on; in fact it would turn on **223 of 444 rows** and lea
 inert. Since #86 an operator can no longer *create* such a row by hand — `add_watchlist` refuses —
 but the bundled corpus is imported by direct SQL and bypasses that refusal entirely.
 
+### 🟡 Finding 41 — a snooze written on a backward-jumped clock silently lasts zero hours
+
+**Found by session `d47d7e0b`; measured independently here before being recorded.** ⛔ **NOT FIXED.**
+
+A 24-hour rule-type snooze, written under three clock conditions:
+
+```
+correct clock (sanity)   purgeable=False  repaired=0  purged=0  ->  operator gets 24.0h
+forward-jumped (+91d)    purgeable=False  repaired=1  purged=0  ->  operator gets 24.0h
+backward-jumped (-6y)    purgeable=True   repaired=0  purged=1  ->  operator gets  0.0h
+```
+
+**Mechanism:** `repair_future_dated_rule_type_snoozes` keys on `added_at > now_ts` — a row written on
+a clock that was BEHIND has `added_at` in the past, so the repair cannot see it, and
+`cleanup_expired_rule_type_snoozes` then deletes it for having `expires_at <= now_ts`.
+
+⚠️ **Direction: fails OPEN.** The device keeps alerting, so this is a **visibility** defect, not a
+suppression one — `d47d7e0b` explicitly declined to grade it higher and that judgement is right.
+Finding 32's class again: stored, accepted, does nothing, no signal.
+
+⛔ **It cannot be repaired after the fact.** An `added_at` in the past is indistinguishable from an
+ordinary old row, so a write-time refusal is the only honest fix — the same call #86 made for
+reserved OUIs. ⚠️ Any such refusal must keep **permanent** allowlist entries allowed; blocking those
+would stop someone suppressing a device during the very incident that made them look.
+
+### ⭐ The reason it survived: two docstrings in one file contradicting each other
+
+`test_the_repair_runs_before_the_purge` justified its ordering by claiming a backward-jumped snooze
+is *"inside the operator's intended window — so purging first would delete the row the repair was
+about to rescue."* ⇒ **Measured: no row is ever both purgeable and repairable.** "Repairable" means
+`added_at` in the FUTURE, "purgeable" means `expires_at` in the PAST; disjoint for every coherent
+write. **The ordering it guards cannot change any outcome.**
+
+⚠️ **The inert assertion was not the danger — the rationale was.** It implied the backward jump is
+handled. Nothing handles it. And `test_a_past_snooze_is_left_alone`, three functions above in the
+same file, already stated the true rule: *"an already-expired snooze is the purge's business, not the
+repair's."* **The defect lived in the gap between two confident, self-consistent, mutually
+contradictory comments.**
+
+⇒ **It was found by asking what the `added_at > now_ts` predicate structurally CANNOT match, rather
+than by reading the comments.** A wrong rationale that is internally coherent survives every reading;
+only interrogating the predicate finds it. The docstring is corrected and the disjointness is now
+asserted (`test_no_snooze_is_both_purgeable_and_repairable`), so "the ordering is inert" cannot
+silently stop being true.
+
+⚠️ **Recorded as UNFIXED on purpose.** A web-UI write-time refusal was reported to me as landed in
+"#102"; **#102 is a different session's setup/bootstrap work, and `webui/clock.py` is on no branch
+and in no open PR.** The fix does not exist in this repo. ⇒ **Verify a PR number against `gh pr view`
+before quoting it in the register** — this entry was one sentence away from claiming a fix that was
+never pushed.
+
 ## Rig round 1 — a cold cross-model read of the day's own work, 2026-08-16
 
 Findings 33–40 and their guards were handed to codex (`gpt-5.6-sol` for the two behavioural
