@@ -286,3 +286,59 @@ def test_a_suppressed_escalation_is_counted_in_the_audit_summary(rig):
     assert counter.get("watchful_recurrence") == 1, (
         f"the audit summary omits the suppressed escalation: {counter}"
     )
+
+
+def test_the_retry_does_not_run_on_an_untrusted_clock(rig):
+    """Pins the interaction between this fix and the clock gate from #69.
+
+    ⭐ The retry driver lives inside the watchful block, which #69 gated on
+    `clock_trusted` so a jumped clock cannot fabricate recurrence. That means
+    retries pause during a clock excursion and resume afterwards — correct and
+    conservative, but entirely emergent from two independent changes. Neither
+    fix's own tests would notice if a future edit to either broke it.
+
+    Measured: 1 attempt at escalation, 0 across five untrusted ticks, then
+    resuming to the bound once the clock is trusted again.
+    """
+    db, cfg = rig
+    n = _Notifier(up=False)
+    t0 = _escalate(db, cfg, n)
+    assert len(n.sent_at) == 1
+
+    for i in range(1, 6):
+        ts = t0 + i * 600
+        n.now = ts
+        process_observation(
+            DeviceObservation(
+                mac=MAC,
+                device_type="wifi",
+                first_seen=ts,
+                last_seen=ts,
+                rssi=-40,
+                ssid=None,
+                oui_vendor=None,
+                is_randomized=False,
+            ),
+            db,
+            cfg,
+            ts,
+            effective_location_id="home",
+            effective_location_label="Home",
+            ensured_locations={"home"},
+            processed_counter=[0],
+            admitted_counter=[0],
+            ruleset=_NoRules(),
+            allowlist=_NoAllowlist(),
+            notifier=n,
+            clock_trusted=False,
+        )
+    assert len(n.sent_at) == 1, (
+        "the escalation was retried on an untrusted clock; the watchful block "
+        "must stay closed while the clock is not believed"
+    )
+
+    # ⚠️ And it must RESUME. A gate that never reopens loses the escalation
+    # just as thoroughly as no retry at all.
+    for i in range(1, 6):
+        _see(db, cfg, n, t0 + 3600 + i * 600)
+    assert len(n.sent_at) > 1, "retries never resumed once the clock was trusted"
