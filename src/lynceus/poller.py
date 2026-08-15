@@ -953,7 +953,24 @@ def _compose_heartbeat(db: Database, config: Config, *, now_ts: int) -> tuple[bo
         problems.append("no poll tick has ever completed")
     else:
         age = now_ts - int(last_tick_raw)
-        if age > 2 * config.poll_interval_seconds:
+        # ⛔ A NEGATIVE age means the recorded tick time sits in the FUTURE,
+        # which no sane clock produces -- it is what a tick completed while the
+        # clock was wrong-and-ahead leaves behind. A bare `age > threshold`
+        # reads that as "extremely recent" and reports HEALTHY, so the staleness
+        # check is disabled for the whole length of the excursion. Measured with
+        # a +91d anchor and a poll loop that had stopped completing ticks for an
+        # hour: healthy=True, "Still watching".
+        #
+        # ⚠️ That is the one thing this clause exists to catch. `retention.py`
+        # and `evidence.py` both already guard the identical shape with
+        # `0 <= elapsed`; this clause did not, and three siblings disagreeing
+        # about the same impossible value is how it survived.
+        if age < 0:
+            problems.append(
+                f"the last completed poll tick is recorded {-age}s in the "
+                f"FUTURE (clock jump?); tick staleness cannot be judged"
+            )
+        elif age > 2 * config.poll_interval_seconds:
             problems.append(
                 f"no poll tick for {age}s (expected every {config.poll_interval_seconds}s)"
             )

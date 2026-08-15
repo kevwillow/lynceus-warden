@@ -564,3 +564,67 @@ def test_an_honest_baseline_is_untouched(db):
         "SELECT last_seen_at FROM watchful_recurrence"
     ).fetchone()["last_seen_at"]
     assert after == before
+
+
+# --------------------------------------------------------------------------
+# a FIFTH site, in the state KV backend: the heartbeat's staleness check
+# --------------------------------------------------------------------------
+
+
+def _hb(db, tick_anchor, now):
+    from lynceus.config import Config
+    from lynceus.poller import (
+        STATE_KEY_LAST_TICK_ADMITTED,
+        STATE_KEY_LAST_TICK_COMPLETED_AT,
+        _compose_heartbeat,
+    )
+
+    cfg = Config(
+        db_path=":memory:",
+        rules_path="config/rules.yaml",
+        heartbeat_enabled=True,
+        poll_interval_seconds=60,
+    )
+    db.set_state(STATE_KEY_LAST_TICK_ADMITTED, "5")
+    db.set_state(STATE_KEY_LAST_TICK_COMPLETED_AT, str(tick_anchor))
+    return _compose_heartbeat(db, cfg, now_ts=now)
+
+
+def test_a_future_tick_anchor_does_not_hide_a_dead_poll_loop(db):
+    """⛔ The fifth site, in the `state` KV backend — which no schema query can
+    enumerate, so the column ratchet cannot see it either.
+
+    `last_tick_completed_at` drives the heartbeat's staleness clause. A NEGATIVE
+    age means the anchor sits in the future, and a bare `age > threshold` reads
+    that as "extremely recent". Measured with a +91d anchor and a poll loop that
+    had stopped completing ticks for an hour:
+
+        healthy=True, "Still watching."
+
+    ⇒ The one thing this clause exists to catch, disabled for the length of the
+    excursion.
+
+    ⚠️ `retention.py` and `evidence.py` both already guard the identical shape
+    with `0 <= elapsed`. Three siblings disagreeing about the same impossible
+    value is how this survived — the same way two atomic-write helpers
+    disagreeing about durability produced #77.
+    """
+    healthy, message = _hb(db, NOW + 91 * DAY, NOW + 3600)
+    assert healthy is False, (
+        "a future tick anchor reported the daemon healthy while the poll loop "
+        "had not completed a tick for an hour"
+    )
+    assert "FUTURE" in message
+
+
+def test_a_genuinely_stale_tick_is_still_reported(db):
+    """The twin: the original detection must survive the new branch."""
+    healthy, message = _hb(db, NOW, NOW + 3600)
+    assert healthy is False
+    assert "no poll tick for 3600s" in message
+
+
+def test_a_recent_tick_is_still_healthy(db):
+    """And the other twin: normal operation must not become a fault."""
+    healthy, _ = _hb(db, NOW + 3500, NOW + 3600)
+    assert healthy is True
