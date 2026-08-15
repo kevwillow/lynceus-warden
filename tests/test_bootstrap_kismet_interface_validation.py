@@ -308,3 +308,72 @@ def test_a_missing_sysfs_tree_makes_no_claim_either_way(tmp_path, monkeypatch, c
 
     assert present is True, "claimed absence with no evidence either way"
     assert out.strip() == "", f"warned without evidence: {out!r}"
+
+
+# ---------------------------------------------------------------------------
+# Round 3: an audit of these tests' own oracles (codex gpt-5.6-sol) asked what
+# else could produce "configured, captures nothing". Its sharpest point was not
+# about a case — it was that every test above stops at `_select_interfaces` and
+# so proves nothing about what the OPERATOR sees, or about what gets written.
+#
+# ⭐ Wiring-in is not behaviour. `_select_interfaces` returning the right thing
+# and printing the right warning is worth nothing if `run()` never calls it, or
+# calls it and discards the output. That has been a real defect in this repo
+# before, so it gets asserted rather than assumed.
+# ---------------------------------------------------------------------------
+
+
+def _run_bootstrap(monkeypatch, tmp_path, both_trees, interface, interface_type):
+    """Drive the real `run()` end to end, in dry-run, with sysfs and the target
+    conf path redirected. Returns (exit_code, stdout)."""
+    site_conf = tmp_path / "kismet_site.conf"
+    monkeypatch.setattr(bk, "_is_root", lambda: True, raising=False)
+    monkeypatch.setattr(bk, "resolve_site_conf_path", lambda: site_conf, raising=False)
+    monkeypatch.setattr(bk, "ensure_kismet_group", lambda *a, **kw: None, raising=False)
+    args = argparse.Namespace(
+        interface=[interface], interface_type=interface_type, yes=True,
+        dry_run=True, install=False, no_network=True, reset_config=False,
+    )
+    code = bk.run(args, input_fn=lambda _: "y")
+    return code, site_conf
+
+
+def test_the_misclassification_warning_actually_reaches_the_operator(
+    monkeypatch, tmp_path, both_trees, capsys
+):
+    """End to end through `run()`, not `_select_interfaces`: the warning must
+    survive the call chain the operator actually invokes."""
+    _run_bootstrap(monkeypatch, tmp_path, both_trees, "hci0", "wifi")
+    out = capsys.readouterr().out
+
+    assert "--interface-type bt" in out, (
+        f"the warning never reached stdout through run(): {out[-400:]!r}"
+    )
+
+
+def test_a_wired_nic_warning_also_reaches_the_operator(
+    monkeypatch, tmp_path, both_trees, capsys
+):
+    """The other new branch, through the same real path."""
+    _run_bootstrap(monkeypatch, tmp_path, both_trees, "eth0", "bt")
+    out = capsys.readouterr().out
+
+    assert "not a wireless one" in out, out
+    assert "--interface-type wifi" not in out, (
+        f"advised capturing a wired NIC as wifi, through the real CLI path: {out!r}"
+    )
+
+
+def test_the_named_interface_still_reaches_the_config_despite_the_warning(
+    monkeypatch, tmp_path, both_trees, capsys
+):
+    """⛔ Presence assertion, and the one that makes the two above mean
+    something: warning must not become refusal. `--interface` exists to bypass
+    detection for remote rigs, so the source line must still be written."""
+    _, site_conf = _run_bootstrap(monkeypatch, tmp_path, both_trees, "hci0", "wifi")
+    out = capsys.readouterr().out
+
+    # dry-run previews rather than writes, so assert on what it says it would do
+    assert bk.build_source_line("hci0", "wifi") in out, (
+        f"the interface was dropped instead of merely flagged: {out[-400:]!r}"
+    )
