@@ -552,3 +552,100 @@ def test_a_malformed_counter_cannot_take_the_heartbeat_down(tmp_path):
     healthy, message = _compose_heartbeat(db, cfg, now_ts=NOW + 60)
     assert isinstance(healthy, bool) and message
     db.close()
+
+
+# --------------------------------------------------------------------------
+# a capture source's clock is not our clock
+# --------------------------------------------------------------------------
+
+
+def _sighting_ts(db, mac=MAC):
+    return [r["ts"] for r in db._conn.execute(
+        "SELECT ts FROM sightings WHERE mac = ? ORDER BY ts", (mac,)
+    )]
+
+
+def _observe_at(db, config, notifier, *, source_ts, now_ts):
+    """Feed an observation whose SOURCE timestamp differs from our clock."""
+    process_observation(
+        DeviceObservation(
+            mac=MAC,
+            device_type="wifi",
+            first_seen=source_ts,
+            last_seen=source_ts,
+            rssi=-40,
+            ssid=None,
+            oui_vendor=None,
+            is_randomized=False,
+        ),
+        db,
+        config,
+        now_ts,
+        effective_location_id="home",
+        effective_location_label="Home",
+        ensured_locations={"home"},
+        processed_counter=[0],
+        admitted_counter=[0],
+        ruleset=_Ruleset(),
+        allowlist=_EmptyAllowlist(),
+        notifier=notifier,
+        clock_trusted=True,
+    )
+
+
+def test_a_future_source_timestamp_cannot_outlive_retention(wdb, minimal_config):
+    """`DeviceObservation` bounds `last_seen` below and NOT above.
+
+    Measured against the real parser: `last_time` of 0, -5 and 1 are all
+    REJECTED, but 4102444800 (year 2100) is ACCEPTED and written straight into
+    `sightings.ts`. End to end, before the clamp:
+
+        stored        : [1693088000, 4102444800]
+        30-day prune  : deleted=1, remaining=[4102444800]
+        seen last 24h : 1
+
+    ⚠️ The prune deleted the LEGITIMATE 40-day-old row and kept the bogus one.
+    Found by session 2bb4a6a3's round 9 sweep.
+    """
+    year_2100 = 4102444800
+    _observe_at(wdb, minimal_config, _Notifier(), source_ts=year_2100, now_ts=NOW)
+
+    stored = _sighting_ts(wdb)
+    assert stored, "the observation was dropped; a real detection must survive"
+    assert max(stored) <= NOW, (
+        f"a future sighting timestamp reached the database: {stored}. It would "
+        "never be pruned and would satisfy every recent-window query forever."
+    )
+
+    # And it must actually be pruneable: 30 days later, it is gone.
+    cutoff = NOW + 30 * DAY
+    wdb._conn.execute("DELETE FROM sightings WHERE ts < ?", (cutoff,))
+    wdb._conn.commit()
+    assert _sighting_ts(wdb) == [], "the clamped row still resisted retention"
+
+
+def test_the_detection_is_kept_not_discarded(wdb, minimal_config):
+    """⭐ Clamping, not rejecting. The device really was seen -- only the
+    source's opinion of when is wrong -- and for a stalking-detection tool,
+    discarding a real detection is the worse error.
+
+    ⚠️ Without this, "fixing" the bug by dropping the observation entirely
+    passes the test above.
+    """
+    _observe_at(wdb, minimal_config, _Notifier(), source_ts=4102444800, now_ts=NOW)
+    assert _sighting_ts(wdb) == [NOW], (
+        "the observation should be recorded at our clock, not dropped"
+    )
+
+
+def test_an_honest_source_timestamp_is_left_alone(wdb, minimal_config):
+    """The clamp must not rewrite timestamps that are merely slightly stale.
+
+    A sighting a few minutes old is normal -- capture sources batch, and the
+    poll tick lags the observation. Only the future is impossible.
+    """
+    slightly_old = NOW - 600
+    _observe_at(wdb, minimal_config, _Notifier(), source_ts=slightly_old, now_ts=NOW)
+    assert _sighting_ts(wdb) == [slightly_old], (
+        "a legitimate recent timestamp was rewritten"
+    )

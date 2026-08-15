@@ -323,9 +323,42 @@ def process_observation(
             )
     if config.capture.ble_friendly_names and obs.ble_local_name:
         db.update_device_ble_name(obs.mac, obs.ble_local_name)
+    # ⛔ `obs.last_seen` is bounded BELOW at parse (`first_seen` has a `> 0`
+    # validator and `last_seen` inherits the same floor) and NOT ABOVE, so a
+    # capture source with a corrupt clock can hand us any future timestamp.
+    # Measured with `last_time = 4102444800` (year 2100), which the parser
+    # accepts:
+    #
+    #   stored          : [1693088000, 4102444800]
+    #   30-day prune    : deleted=1, remaining=[4102444800]
+    #   seen last 24h   : 1
+    #
+    # ⚠️ The prune deleted the LEGITIMATE 40-day-old row and kept the bogus
+    # one. A future `ts` is immune to retention forever AND satisfies every
+    # recent-window query, so it also contaminates the co-observation corpus.
+    #
+    # ⭐ CLAMP rather than reject. The device really was seen -- only the
+    # source's opinion of when is wrong -- and for a stalking-detection tool,
+    # discarding a real detection is the worse error. `now_ts` is the honest
+    # answer to "when did we observe this": it is the reading the rest of this
+    # tick already uses. The tolerance matches the clock-jump one so the two
+    # notions of "close enough to now" cannot drift apart.
+    observed_at = obs.last_seen
+    if observed_at > now_ts + CLOCK_JUMP_TOLERANCE_SECONDS:
+        logger.warning(
+            "capture source reported %s seen at %d, which is %ds in the "
+            "future (clock skew on the source?); recording it as %d instead. "
+            "A future timestamp would never be pruned and would count as "
+            "'seen recently' forever.",
+            obs.mac,
+            observed_at,
+            observed_at - now_ts,
+            now_ts,
+        )
+        observed_at = now_ts
     db.insert_sighting(
         mac=obs.mac,
-        ts=obs.last_seen,
+        ts=observed_at,
         rssi=obs.rssi,
         ssid=obs.ssid,
         location_id=effective_location_id,
