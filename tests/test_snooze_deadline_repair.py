@@ -362,27 +362,67 @@ def test_all_three_repair_sites_are_wired_into_the_poller():
         assert f"{name}(" in text, f"{name} exists but the poller never calls it"
 
 
-def test_every_deadline_column_in_the_schema_has_a_repair(db):
+def test_every_timestamp_column_is_classified(db):
     """⭐ A RATCHET over the whole class, derived from the schema.
 
-    I found the first site, then a red-team found two more, and I shipped a fix
-    twice believing the class was closed. Enumerating by hand does not work, and
-    neither does grepping: a `grep` for `expires_at = now + duration` misses
-    `expires_at = None if seconds is None else now_ts + seconds` — which is one
-    of the three sites — because the `=` is followed by `None`.
+    I found the first site, a red-team found two more, and I shipped a fix TWICE
+    believing the class was closed. Then a FOURTH turned up that the first
+    version of this ratchet could not see, because it only looked at columns
+    whose name mentioned expiry — and `watchful_recurrence.last_seen_at` is a
+    BASELINE, not a deadline.
 
-    ⇒ So this derives the class from `sqlite_master` instead of from a text
-    pattern or my memory. If a migration adds a fourth deadline column, this
-    fails and names it, and whoever added it decides whether it needs a repair
-    rather than finding out from an operator whose 24-hour snooze lasted a
-    quarter.
+    ⇒ So the ratchet now covers EVERY timestamp column and forces each to be
+    classified. Enumerating by hand does not work; nor does grepping, which
+    found 1 of the 3 known sites because one of them reads
+    `expires_at = None if seconds is None else now_ts + seconds` and the `=` is
+    followed by `None`.
 
-    ⚠️ The YAML backend cannot be enumerated this way; `AllowlistEntry.expires_at`
-    is asserted separately below, and that asymmetry is the point — **a sweep
-    that covers one storage backend is not a sweep.** This project has three:
-    SQLite rows, the UI YAML, and the `state` key-value table.
+    ⚠️ REPAIRED means a wrong value there changes a DECISION and the poller
+    repairs it. RECORD_ONLY means a wrong value is displayed or audited but
+    drives nothing — each one carries the reason, because "it's just a
+    timestamp" is exactly the assumption that produced four bugs.
+
+    If a migration adds a column, this fails and names it. Classify it.
     """
-    deadline_columns = set()
+    REPAIRED = {
+        # repair_future_dated_rule_type_snoozes
+        "rule_type_snoozes.expires_at",
+        # repair_future_dated_watchful_snoozes
+        "watchful_recurrence.snooze_expires_at",
+        # repair_future_dated_watchful_baselines -- the 24h recurrence debounce
+        "watchful_recurrence.last_seen_at",
+    }
+    RECORD_ONLY = {
+        # Read only for display/audit, or tested for NULL-ness rather than
+        # compared to a clock. Verified by grepping for a time comparison on
+        # each: only escalated_at appears in one, and that is a display listing.
+        "alert_actions.ts": "audit trail; never compared to a clock",
+        "alerts.note_updated_at": "display only",
+        "alerts.notified_at": "NULL-tested for delivery; value never compared",
+        "alerts.ts":
+            "written by the gated poller; retention keys on sightings.ts",
+        "evidence_snapshots.captured_at":
+            "evidence provenance; the prune is gated in the poller",
+        "evidence_snapshots.gps_captured_at": "display provenance",
+        "heartbeats.notified_at": "bounded by not_after= at every scheduling read (#69)",
+        "heartbeats.ts": "bounded by not_after= at every scheduling read (#69)",
+        "import_runs.exported_at": "provenance of an external file",
+        "import_runs.imported_at": "provenance of a CLI run",
+        "rule_type_snoozes.added_at":
+            "PROVENANCE marker the repairs key on; must not be clamped",
+        "schema_migrations.applied_at": "migration bookkeeping",
+        "sightings.ts": "clamped at write time to now_ts (#69)",
+        "watchful_recurrence.archived_at": "NULL-tested; value never compared",
+        "watchful_recurrence.created_at":
+            "PROVENANCE marker the snooze repair keys on; must not be clamped",
+        "watchful_recurrence.escalated_at":
+            "compared only in list_recent_watchful_escalations, a display listing",
+        "watchful_recurrence.first_seen_at": "display only; the debounce uses last_seen_at",
+        "watchlist_metadata.created_at": "display only",
+        "watchlist_metadata.updated_at": "display only",
+    }
+
+    found = set()
     tables = [
         r["name"]
         for r in db._conn.execute(
@@ -392,20 +432,16 @@ def test_every_deadline_column_in_the_schema_has_a_repair(db):
     for table in tables:
         for col in db._conn.execute(f"PRAGMA table_info({table})"):
             name = col["name"]
-            if "expire" in name or name.endswith("_until") or "deadline" in name:
-                deadline_columns.add(f"{table}.{name}")
+            if name.endswith("_at") or name == "ts" or name.endswith("_ts"):
+                found.add(f"{table}.{name}")
 
-    covered = {
-        # repair_future_dated_rule_type_snoozes
-        "rule_type_snoozes.expires_at",
-        # repair_future_dated_watchful_snoozes
-        "watchful_recurrence.snooze_expires_at",
-    }
-    assert deadline_columns == covered, (
-        f"the set of deadline columns changed: {deadline_columns ^ covered}.\n"
-        "A column holding an absolute deadline computed from a wall clock needs "
-        "a repair in the poller's gated housekeeping, or an explicit note here "
-        "saying why it does not. See repair_future_dated_rule_type_snoozes."
+    classified = REPAIRED | set(RECORD_ONLY)
+    assert found == classified, (
+        f"unclassified timestamp column(s): {sorted(found - classified)}; "
+        f"stale entries: {sorted(classified - found)}.\n"
+        "Decide whether a wrong value there changes a DECISION (add a repair in "
+        "the poller's gated housekeeping) or is RECORD_ONLY (add it above with "
+        "the reason). Four bugs in this class came from assuming the latter."
     )
 
 
@@ -422,3 +458,109 @@ def test_the_yaml_backend_deadline_is_covered_too():
         "now pointing at nothing"
     )
     assert callable(repair_future_dated_ui_entries)
+
+
+# --------------------------------------------------------------------------
+# the FOURTH site: a baseline, not a deadline
+# --------------------------------------------------------------------------
+
+
+def test_a_watchful_baseline_pushed_into_the_future_is_clamped(db):
+    """⛔ This one bypasses the gate #69 added.
+
+    `last_seen_at` is the baseline for the 24-hour recurrence debounce, so #69
+    gated the POLLER's write to it. `reset_watchful_recurrence` writes the same
+    column from the WEB process, which has no anchor.
+
+    Measured — the operator clicks "reset" on an escalated entry while the host
+    clock is +91 days fast, then the clock is corrected:
+
+        real sighting at day  4: counted=False
+        real sighting at day 30: counted=False
+        real sighting at day 91: counted=False
+        real sighting at day 92: counted=True
+
+    ⇒ Their intent in clicking reset is "start watching this device fresh". The
+    tool did the opposite and stopped watching for three months.
+    """
+    db.ensure_location("home", "Home")
+    mac = "aa:bb:cc:dd:ee:01"
+    db.upsert_device(
+        mac=mac, device_type="wifi", oui_vendor=None, is_randomized=0, now_ts=NOW
+    )
+    db.insert_sighting(mac=mac, ts=NOW, rssi=-40, ssid=None, location_id="home")
+    alert_id = db.add_alert(
+        ts=NOW, rule_name="r", mac=mac, message="m", severity="high"
+    )
+    entry_id = db.create_watchful_from_alert(alert_id, None, NOW)
+    for day in (1, 2, 3):
+        db.record_watchful_sighting(entry_id, NOW + day * DAY)
+    db.escalate_watchful_recurrence(entry_id, NOW + 3 * DAY)
+
+    db.reset_watchful_recurrence(entry_id, now_ts=NOW + 91 * DAY)
+    assert db.repair_future_dated_watchful_baselines(NOW) == [(mac, 91 * DAY)]
+
+    outcome = db.record_watchful_sighting(entry_id, NOW + DAY)
+    assert outcome is not None and outcome.counted, (
+        "recurrence counting is still frozen; the operator asked to start "
+        "watching this device fresh and it stopped watching instead"
+    )
+
+
+def test_the_baseline_repair_does_not_erase_the_snooze_repair_s_evidence(db):
+    """⭐ ORDERING, and it is subtle enough to be worth its own test.
+
+    `repair_future_dated_watchful_snoozes` recognises a row written on a jumped
+    clock by `created_at > now_ts`. If the baseline repair clamped `created_at`
+    too — it is future-dated by the same reset — it would erase that provenance
+    and silently disable the other repair.
+
+    ⚠️ A fix that quietly breaks a neighbouring fix is worse than no fix, and
+    nothing else in the suite would have noticed.
+    """
+    db.ensure_location("home", "Home")
+    mac = "cc:cc:cc:cc:cc:cc"
+    db.upsert_device(
+        mac=mac, device_type="wifi", oui_vendor=None, is_randomized=0, now_ts=NOW
+    )
+    db.insert_sighting(mac=mac, ts=NOW, rssi=-40, ssid=None, location_id="home")
+    alert_id = db.add_alert(
+        ts=NOW, rule_name="r", mac=mac, message="m", severity="high"
+    )
+    # created on a jumped clock WITH a finite snooze: both repairs are due.
+    db.create_watchful_from_alert(alert_id, DAY, NOW + 91 * DAY)
+
+    db.repair_future_dated_watchful_baselines(NOW)
+    row = db._conn.execute(
+        "SELECT created_at FROM watchful_recurrence"
+    ).fetchone()
+    assert row["created_at"] > NOW, (
+        "the baseline repair clamped created_at; the snooze repair can no "
+        "longer tell this row was written on a jumped clock"
+    )
+    assert db.repair_future_dated_watchful_snoozes(NOW) == [(mac, DAY)], (
+        "the snooze repair no longer fires after the baseline repair ran"
+    )
+
+
+def test_an_honest_baseline_is_untouched(db):
+    """The twin: clamping every baseline would reset the debounce constantly."""
+    db.ensure_location("home", "Home")
+    mac = "dd:dd:dd:dd:dd:dd"
+    db.upsert_device(
+        mac=mac, device_type="wifi", oui_vendor=None, is_randomized=0, now_ts=NOW
+    )
+    db.insert_sighting(mac=mac, ts=NOW, rssi=-40, ssid=None, location_id="home")
+    alert_id = db.add_alert(
+        ts=NOW, rule_name="r", mac=mac, message="m", severity="high"
+    )
+    db.create_watchful_from_alert(alert_id, None, NOW)
+    before = db._conn.execute(
+        "SELECT last_seen_at FROM watchful_recurrence"
+    ).fetchone()["last_seen_at"]
+    for _ in range(5):
+        assert db.repair_future_dated_watchful_baselines(NOW + 60) == []
+    after = db._conn.execute(
+        "SELECT last_seen_at FROM watchful_recurrence"
+    ).fetchone()["last_seen_at"]
+    assert after == before

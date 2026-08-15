@@ -3547,6 +3547,60 @@ class Database:
                 repaired.append((str(row["mac"]), duration))
         return repaired
 
+    def repair_future_dated_watchful_baselines(self, now_ts: int) -> list[tuple[str, int]]:
+        """Clamp a `last_seen_at` that a wrong clock pushed into the future.
+
+        ⛔ A FOURTH site, and it bypasses the gate #69 added. `last_seen_at` is
+        the baseline for the 24-hour recurrence debounce
+        (`gap = observed_at - last_seen_at`), so #69 gated the POLLER's write to
+        it. `reset_watchful_recurrence` writes the same column from the WEB
+        process, which has no anchor.
+
+        Measured — the operator clicks "reset" on an escalated entry while the
+        host clock is +91 days fast, then the clock is corrected:
+
+            real sighting at day  4: counted=False
+            real sighting at day 30: counted=False
+            real sighting at day 91: counted=False
+            real sighting at day 92: counted=True
+
+        ⇒ Their intent in clicking reset is "start watching this device fresh".
+        The tool did the opposite: it stopped watching for three months.
+
+        ⚠️ Unlike the three deadline sites there is no duration to preserve --
+        `last_seen_at` is a POINT, not a window. A device cannot have been seen
+        in the future, so the honest repair is to clamp to the trusted clock,
+        which is also exactly what "start fresh" meant.
+
+        ⚠️ Deliberately does NOT touch `created_at`, even though the same reset
+        can push it forward. `repair_future_dated_watchful_snoozes` keys on
+        `created_at > now_ts` to recognise a row written on a jumped clock --
+        clamping it here would erase that provenance and silently disable the
+        other repair.
+
+        Returns ``[(mac, seconds_clamped), ...]``.
+        """
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        rows = self._conn.execute(
+            "SELECT id, mac, last_seen_at FROM watchful_recurrence "
+            "WHERE last_seen_at > ? AND archived_at IS NULL",
+            (now_ts,),
+        ).fetchall()
+        repaired: list[tuple[str, int]] = []
+        if not rows:
+            return repaired
+        with self._conn:
+            for row in rows:
+                self._conn.execute(
+                    "UPDATE watchful_recurrence SET last_seen_at = ? WHERE id = ?",
+                    (now_ts, int(row["id"])),
+                )
+                repaired.append(
+                    (str(row["mac"]), int(row["last_seen_at"]) - now_ts)
+                )
+        return repaired
+
     def cleanup_expired_rule_type_snoozes(self, now_ts: int) -> int:
         """Physically delete snoozes whose ``expires_at <= now_ts``.
 

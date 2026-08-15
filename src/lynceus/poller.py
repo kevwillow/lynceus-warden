@@ -1634,6 +1634,27 @@ def poll_once(
                 )
         except Exception as e:
             logger.warning("watchful snooze repair failed: %s", e)
+        # ⚠️ FOURTH site, and this one is not a deadline -- it is a BASELINE.
+        # `last_seen_at` drives the 24h recurrence debounce, so #69 gated the
+        # poller's write to it; `reset_watchful_recurrence` writes the same
+        # column from the web process, which has no anchor. Measured: reset on a
+        # +91d clock froze recurrence counting until day 92, i.e. exactly the
+        # harm #69 fixed, arriving through the other process.
+        #
+        # ⛔ ORDER: after the snooze repair, never before. That one keys on
+        # `created_at > now_ts` to recognise a jumped write; this one must not
+        # erase the row's future-dated provenance before it has been read.
+        try:
+            for mac, ahead in db.repair_future_dated_watchful_baselines(now_ts):
+                logger.warning(
+                    "watchful baseline for %s was %ds in the future (a reset on "
+                    "a jumped clock?); clamped to now so recurrence counting "
+                    "resumes instead of stalling for that long",
+                    mac,
+                    ahead,
+                )
+        except Exception as e:
+            logger.warning("watchful baseline repair failed: %s", e)
         try:
             purged = db.cleanup_expired_rule_type_snoozes(now_ts)
             if purged > 0:
