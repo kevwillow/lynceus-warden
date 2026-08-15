@@ -2309,9 +2309,39 @@ writer that bypasses `add_watchlist` and would leave the derived `mac_range` col
 ⇒ **Measured: false as of #86.** `cli/seed_watchlist.py` has no `INSERT INTO watchlist` at all — it
 delegates to `add_watchlist`, and the only remaining bypass is the Argus importer, which **does**
 populate `mac_range_prefix`/`_length` and **rejects** an underivable pattern rather than storing an
-inert row. ⚠️ The audit reasoned from this register's own historical text describing the **pre-#86**
-state. **A register that records history in the present tense will mislead the next reader — human or
-model — exactly as it did here.**
+inert row.
+
+### ⛔ CORRECTION — I blamed the wrong thing for that, in this file, an hour ago
+
+The paragraph above originally ended: *"the audit reasoned from this register's own historical text
+describing the pre-#86 state. A register that records history in the present tense will mislead the
+next reader."* ⇒ **That explanation was wrong, and I published it here and in my notes before
+checking it.** Finding 31's text is correctly PAST-tensed — *"`add_watchlist` and the seeder each
+**had** their own byte-for-byte INSERT"*, *"rows from the other two write paths **were** inert."*
+The register was not the source.
+
+⭐ **The actual source was a heading I wrote in the audit prompt.** I pasted a grep under the label:
+
+```
+=== the OTHER writers that bypass add_watchlist (relevant to 31/37/40) ===
+  src/lynceus/cli/import_argus.py:1361:  "INSERT INTO watchlist("
+  src/lynceus/db.py:2704:               "INSERT INTO watchlist (pattern, pattern_type, ..."
+  src/lynceus/db.py:2816:               "INSERT INTO watchlist_metadata(...)"
+```
+
+⛔ **`db.py:2704` IS `add_watchlist`.** `db.py:2816` writes a different table. **Not one line under
+that heading is an `add_watchlist` bypass except the importer** — the label asserted a conclusion the
+evidence beneath it did not support, and the reader believed the label.
+
+⇒ **A heading you write over pasted evidence is read as a FINDING, not as a filing label.** It
+carries your authority, it is not checked against the lines below it, and it is the one part of a
+prompt nobody treats as a claim. **Label context with what you ran, never with what you concluded** —
+`grep 'INSERT INTO watchlist' src/` describes the same three lines and asserts nothing.
+
+⚠️ **And the meta-lesson, which is why this correction is in the register rather than quietly
+amended:** I diagnosed a confident wrong finding with a confident wrong cause, in the same file, in
+the same hour — and the wrong cause was *more* satisfying because it blamed a document rather than
+me. **An explanation that fits is not evidence; check the artefact before publishing the diagnosis.**
 
 - ✅ **`--min-confidence` range validation** — enforced at parse time (`_confidence_percent`, values
   outside 0–100 fail with exit 2), so a typo can no longer import nothing and exit 0. Was the
