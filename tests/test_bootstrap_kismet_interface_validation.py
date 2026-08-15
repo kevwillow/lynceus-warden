@@ -57,9 +57,18 @@ def sysfs(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def both_trees(tmp_path, monkeypatch):
-    """A host with a real wifi interface AND a real bluetooth controller."""
+    """A host with a real wifi interface, a wired NIC, and a bluetooth controller.
+
+    ⚠️ ``wlan0/wireless`` is the kernel attribute that distinguishes a cfg80211
+    device from every other thing in ``/sys/class/net``. ``eth0`` deliberately
+    lacks it: without a non-wireless network interface in the fixture, "is it
+    wireless?" and "is it in /sys/class/net?" are the same question and a test
+    cannot tell the two apart.
+    """
     net = tmp_path / "net"
     (net / "wlan0" / "device").mkdir(parents=True)
+    (net / "wlan0" / "wireless").mkdir(parents=True)
+    (net / "eth0" / "device").mkdir(parents=True)
     bt = tmp_path / "bluetooth"
     (bt / "hci0").mkdir(parents=True)
     monkeypatch.setattr(bk, "_SYS_CLASS_NET", net, raising=False)
@@ -221,3 +230,81 @@ def test_an_unreadable_other_tree_falls_back_instead_of_guessing(
     assert "check the name" in out.lower(), out
     assert "--interface-type" not in out, out
     assert wifi == ["hci0"]
+
+
+# ---------------------------------------------------------------------------
+# Round 1 of the red-team on the fix above (codex gpt-5.6-sol, verified here).
+# Three of its findings landed on this function; all three were reproduced
+# before being fixed, and each gets the plant that proves the guard.
+# ---------------------------------------------------------------------------
+
+
+def test_a_wired_nic_is_not_advised_to_be_captured_as_wifi(both_trees, capsys):
+    """⛔ The misclassification branch, aimed back at itself.
+
+    `/sys/class/bluetooth` holds only controllers, so a hit there proves `bt`.
+    `/sys/class/net` holds ethernet, loopback, bridges, VLANs, tunnels and every
+    veth a container ever made, so a hit there proves NOTHING about wifi.
+    Measured before the fix: `--interface eth0 --interface-type bt` was advised
+    to "pass --interface-type wifi", yielding `source=eth0:type=linuxwifi` — a
+    source Kismet cannot capture with, recommended in the tool's own voice.
+    """
+    _, bts = bk._select_interfaces(
+        _args(interface=["eth0"], interface_type="bt"), input_fn=lambda _: "y"
+    )
+    out = capsys.readouterr().out
+
+    assert "--interface-type wifi" not in out, (
+        f"advised capturing a wired NIC as wifi — a concrete WRONG remedy, "
+        f"which is worse than the vague right one: {out!r}"
+    )
+    assert "not a wireless one" in out, f"said nothing useful about eth0: {out!r}"
+    assert bts == ["eth0"], "still a warning, never a refusal"
+
+
+def test_a_real_wireless_interface_is_still_advised(both_trees, capsys):
+    """⛔ Presence assertion beside it. Requiring proof of wirelessness must not
+    turn the useful advice off — `never suggest wifi` would pass the test above."""
+    _, bts = bk._select_interfaces(
+        _args(interface=["wlan0"], interface_type="bt"), input_fn=lambda _: "y"
+    )
+    out = capsys.readouterr().out
+
+    assert "--interface-type wifi" in out, out
+    assert bts == ["wlan0"]
+
+
+@pytest.mark.parametrize(
+    "bad", ["", ".", "..", "/etc/passwd", "wlan0/../wlan0", "wlan0\x00x"]
+)
+def test_a_string_that_is_not_an_interface_name_is_refused_not_looked_up(
+    both_trees, capsys, bad
+):
+    """`base / iface` is path arithmetic, not a child lookup.
+
+    `""` and `"."` resolve to `base` itself — which exists, so the check passed
+    silently — and an ABSOLUTE iface discards `base` entirely, so
+    `--interface /etc/passwd` was reported present. Measured: all five of these
+    returned present with NO warning, and each would then be written into
+    kismet_site.conf as a capture source.
+    """
+    present = bk._warn_if_interface_absent(bad, "wifi")
+    out = capsys.readouterr().out
+
+    assert present is False, f"{bad!r} was accepted as an existing interface"
+    assert "not a valid interface name" in out, out
+
+
+def test_a_missing_sysfs_tree_makes_no_claim_either_way(tmp_path, monkeypatch, capsys):
+    """🪤 `Path.exists()` returns False for a missing tree and never raises, so
+    the OSError branch does not cover this. In a container with no
+    /sys/class/net mounted, every name produced a confident "not present" that
+    meant nothing — the noise that teaches operators to ignore warnings."""
+    monkeypatch.setattr(bk, "_SYS_CLASS_NET", tmp_path / "absent", raising=False)
+    monkeypatch.setattr(bk, "_SYS_CLASS_BLUETOOTH", tmp_path / "gone", raising=False)
+
+    present = bk._warn_if_interface_absent("wlan0", "wifi")
+    out = capsys.readouterr().out
+
+    assert present is True, "claimed absence with no evidence either way"
+    assert out.strip() == "", f"warned without evidence: {out!r}"
