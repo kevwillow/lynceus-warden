@@ -137,7 +137,18 @@ REPLAY_RAISES_INTEGRITY_WITH_DATA = {11, 13, 19, 20}
 
 # No exception, but the devices table-rebuild is frozen at 014's column list, so
 # the replay drops every column a later migration added to devices.
-REPLAY_SILENTLY_LOSSY = {14}
+# ⭐ EMPTIED by the runner-level column-loss guard. 14 WAS the sole member:
+# replaying it against a head schema silently dropped devices.ble_device_class.
+# `Database._assert_no_columns_lost` now refuses to stamp any forward
+# migration that removes a column from a surviving table, so 14 raises
+# RuntimeError instead of quietly succeeding. Kept as an empty set rather
+# than deleted: the census below asserts an exact partition of HEAD, and an
+# empty category is the honest way to say "this failure mode is closed"
+# rather than "this failure mode never existed".
+REPLAY_SILENTLY_LOSSY: set[int] = set()
+#: Refused by the runner guard rather than by SQLite. Same loud outcome as
+#: REPLAY_RAISES_OPERATIONAL, different mechanism, so it gets its own row.
+REPLAY_REFUSED_BY_COLUMN_GUARD = {14}
 LOSSY_VICTIM_COLUMN = "ble_device_class"  # added by 023, destroyed by a 014 replay
 
 # Genuinely idempotent: IF NOT EXISTS guards (007, 008, 022), a pure UPDATE
@@ -540,18 +551,29 @@ def test_watchlist_rebuild_replay_is_a_data_dependent_landmine(version, fresh_co
     assert version not in _stamped_versions(seeded)
 
 
-def test_replaying_014_silently_destroys_a_later_migrations_column(fresh_copy):
-    """The worst case: no exception, and the daemon starts one column short.
+def test_replaying_014_is_refused_instead_of_silently_dropping_a_column(fresh_copy):
+    """Was the worst case; is now the loud one.
 
-    014 rebuilds ``devices`` from a column list frozen at its own version. 023
-    later added ``ble_device_class``. Replaying 014 on a head database copies
-    only 014's columns into the new table and drops the rest — every stored BLE
-    Continuity classification, gone, with nothing raised and nothing logged.
+    014 rebuilds ``devices`` from a column list frozen at its own version, and
+    023 later added ``ble_device_class``. Replaying 014 against a head database
+    copied only 014's columns and dropped the rest — every stored BLE Continuity
+    classification, gone, with nothing raised and nothing logged.
 
-    Presence assertions bracket the absence one: the column and its value are
-    verified present before the replay, and the device row is verified to still
-    exist after it, so this cannot be satisfied by a database that merely lost
-    everything.
+    ⛔ It could not be fixed in 014's SQL, and that was verified rather than
+    assumed: adding the column to 014's list breaks a fresh migrate-to-head with
+    ``no such column: ble_device_class``, because 023 has not run when 014
+    executes. A historical migration cannot reference a later migration's
+    schema.
+
+    So the fix lives in the runner. ``Database._assert_no_columns_lost``
+    compares each table's columns before and after every forward migration and
+    refuses to stamp one that lost any. Measured safe to apply
+    unconditionally: stepping 001..HEAD over an empty database produces zero
+    column losses.
+
+    Presence and absence together — the column and its value must be verified
+    present BEFORE the replay, or "it refused" proves nothing about what was at
+    stake.
     """
     path = fresh_copy(seed=True)
 
@@ -567,33 +589,12 @@ def test_replaying_014_silently_destroys_a_later_migrations_column(fresh_copy):
 
     _unstamp(path, 14)
 
-    # No exception: this is the failure mode that does not announce itself.
-    db = Database(str(path))
-    try:
-        assert db.applied_versions() == HEAD_VERSIONS, "014 re-stamped itself and looked healthy"
-        columns = _column_names(db._conn, "devices")
-        assert LOSSY_VICTIM_COLUMN not in columns, (
-            "014's replay no longer drops the column — if it was fixed, move 14 "
-            "from REPLAY_SILENTLY_LOSSY to REPLAY_CLEAN"
-        )
-        # The row itself survived, so the loss really is column-scoped.
-        assert "mac" in columns and "ble_name" in columns
-        survivors = db._conn.execute(
-            "SELECT mac FROM devices WHERE mac = ?", (SEED_MAC,)
-        ).fetchall()
-        assert len(survivors) == 1
-    finally:
-        db.close()
+    with pytest.raises(RuntimeError) as exc:
+        Database(str(path))
 
-    # And the damage persists: the next start sees a schema missing the column
-    # and does nothing about it, because 023 is still stamped as applied.
-    db = Database(str(path))
-    try:
-        assert LOSSY_VICTIM_COLUMN not in _column_names(db._conn, "devices")
-        assert 23 in set(db.applied_versions())
-    finally:
-        db.close()
-
+    message = str(exc.value)
+    assert LOSSY_VICTIM_COLUMN in message, f"the lost column is not named: {message}"
+    assert "14" in message, f"the migration is not named: {message}"
 
 @pytest.mark.parametrize("version", sorted(REPLAY_CLEAN))
 def test_replay_is_genuinely_idempotent(version, fresh_copy):
@@ -634,10 +635,20 @@ def test_replay_census_is_an_exact_partition_of_head():
     classes = {
         "REPLAY_RAISES_OPERATIONAL": set(REPLAY_RAISES_OPERATIONAL),
         "REPLAY_RAISES_INTEGRITY_WITH_DATA": REPLAY_RAISES_INTEGRITY_WITH_DATA,
+        "REPLAY_REFUSED_BY_COLUMN_GUARD": REPLAY_REFUSED_BY_COLUMN_GUARD,
         "REPLAY_SILENTLY_LOSSY": REPLAY_SILENTLY_LOSSY,
         "REPLAY_CLEAN": REPLAY_CLEAN,
     }
+    # ⭐ REPLAY_SILENTLY_LOSSY is deliberately allowed to be EMPTY, and it is
+    # the only one. It held exactly {14} until the runner-level column-loss
+    # guard turned that silent drop into a refusal. "No migration replays
+    # silently lossily" is a real, checkable property of the current tree —
+    # emptying the set is the finding, not a gap in the census. Every OTHER
+    # class must stay non-empty, because an empty one there means a failure
+    # mode stopped being observed rather than stopped existing.
     for name, members in classes.items():
+        if name == "REPLAY_SILENTLY_LOSSY":
+            continue
         assert members, f"{name} is empty; the census has lost a failure mode"
 
     seen: set[int] = set()

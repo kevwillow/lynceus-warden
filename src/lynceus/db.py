@@ -471,12 +471,79 @@ class Database:
             if version in applied:
                 continue
             sql = sql_path.read_text(encoding="utf-8")
+            before = self._table_column_sets()
             self._conn.executescript(sql)
+            self._assert_no_columns_lost(before, version, sql_path.name)
             self._conn.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (version, int(time.time())),
             )
             self._conn.commit()
+
+    def _table_column_sets(self) -> dict[str, set[str]]:
+        """``{table: {column, ...}}`` for every table currently in the DB."""
+        out: dict[str, set[str]] = {}
+        for (table,) in self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ):
+            out[table] = {
+                row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")
+            }
+        return out
+
+    def _assert_no_columns_lost(
+        self, before: dict[str, set[str]], version: int, filename: str
+    ) -> None:
+        """Refuse to stamp a forward migration that DROPPED a column.
+
+        ⛔ A forward migration must never remove a column from a table that
+        survives it. Verified against the whole chain: stepping migrations
+        001..HEAD in order over an empty database produces **zero** column
+        losses, so this can only fire on the defect it exists to catch.
+
+        🪤 The defect it exists to catch, measured. Six migrations rebuild a
+        table because SQLite cannot ALTER a CHECK constraint (011, 013, 014,
+        019, 020, 021), and each one's ``INSERT ... SELECT`` enumerates the
+        columns **as of its own version**. Migration 014 lists ten; migration
+        023 later adds ``devices.ble_device_class``. Replaying 014 against a
+        head database therefore rebuilds ``devices`` from the 014-era list and
+        silently drops that column, taking every stored Apple Continuity
+        classification with it -- no exception, no warning, and the daemon
+        starts happily one column short.
+
+        ⛔ **This cannot be fixed in 014's SQL, and that was verified rather
+        than assumed.** Adding ``ble_device_class`` to 014's list breaks a
+        fresh migrate-to-head with ``no such column: ble_device_class``,
+        because 023 has not run when 014 executes. A historical migration
+        cannot reference a later migration's schema, so the SQL must stay
+        frozen and the check has to live here, in the runner, where both
+        schemas are observable.
+
+        ⇒ Silent data loss becomes a loud refusal to stamp. The operator gets
+        a named column and a named migration instead of a quietly shorter
+        table.
+        """
+        after = self._table_column_sets()
+        lost: dict[str, list[str]] = {}
+        for table, columns in before.items():
+            if table not in after:
+                # The table itself is gone. That is a different (and
+                # legitimate) shape -- a rebuild renames a scratch table over
+                # the original, and a real drop is the migration's stated job.
+                continue
+            missing = columns - after[table]
+            if missing:
+                lost[table] = sorted(missing)
+        if lost:
+            raise RuntimeError(
+                f"migration {version} ({filename}) removed columns that existed "
+                f"before it ran: {lost}. A forward migration must never drop a "
+                f"column from a surviving table. This is the table-rebuild "
+                f"pattern replaying against a newer schema: the migration's "
+                f"INSERT enumerates the columns as of its own version, so every "
+                f"column added later is silently discarded. Refusing to stamp "
+                f"it rather than starting with a quietly shorter table."
+            )
 
     def rollback_to(self, target_version: int) -> list[int]:
         """Roll the DB back to ``target_version`` (exclusive-of-target).
