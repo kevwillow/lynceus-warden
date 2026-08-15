@@ -90,7 +90,12 @@ def _leaf_fields(cfg: Config) -> dict[str, object]:
 def _assert_all_non_default(cfg: Config) -> None:
     """VERIFY THE CONTROL: a seeded value equal to the default proves nothing."""
     defaults = _leaf_fields(Config())
-    for key, value in _leaf_fields(cfg).items():
+    leaves = _leaf_fields(cfg)
+    assert len(leaves) >= 35, (
+        f"_leaf_fields flattened only {len(leaves)} settings — the control "
+        f"check below would pass without examining anything"
+    )
+    for key, value in leaves.items():
         assert value != defaults[key], (
             f"fixture value for {key!r} equals the default — this test would "
             f"report it as 'preserved' even if the code discarded it"
@@ -100,6 +105,10 @@ def _assert_all_non_default(cfg: Config) -> None:
 def test_fixture_covers_every_config_field():
     """Guards the derivation itself. Without this, a field added to Config is
     silently absent from NON_DEFAULT and every test below skips it."""
+    assert len(Config.model_fields) >= 30, (
+        f"Config reports only {len(Config.model_fields)} fields — the set "
+        f"difference below would be empty for the wrong reason"
+    )
     missing = set(Config.model_fields) - set(NON_DEFAULT)
     assert not missing, (
         f"Config gained {sorted(missing)}; add non-default value(s) to "
@@ -115,6 +124,59 @@ def hand_edited(tmp_path: Path) -> tuple[Path, Config]:
     target = tmp_path / "lynceus.yaml"
     target.write_text(yaml.safe_dump(cfg.model_dump(mode="json")), encoding="utf-8")
     return target, cfg
+
+
+def _wizard_shaped(before: Config, tmp_path: Path, **overrides) -> Config:
+    """A ``Config`` shaped the way the REAL wizard hands one to ``apply_config``.
+
+    ⛔ Passing ``before.model_copy(...)`` — the operator's own loaded config —
+    was a shared-source flaw: every unasked setting arrived already carrying the
+    operator's value, so "it survived" could be satisfied by the INPUT rather
+    than by the carry-forward. `cli/setup.py` and `web/review.py` both build the
+    Config from the wizard's ANSWERS, which means DEFAULTS for the thirty
+    settings it never asks about. Only the file can supply those.
+    """
+    answered = {
+        # the wizard's own answer set, and nothing else
+        "kismet_url": before.kismet_url,
+        "kismet_api_key": before.kismet_api_key,
+        "kismet_sources": before.kismet_sources,
+        "ntfy_url": before.ntfy_url,
+        "ntfy_topic": before.ntfy_topic,
+        "min_rssi": before.min_rssi,
+        "capture": before.capture,
+        "ble_bridge": before.ble_bridge.model_copy(update={"flush_interval": None}),
+    }
+    cfg = Config(db_path=str(tmp_path / "custom.db"), **{**answered, **overrides})
+    # ⛔ Drift guard, stated as the CONTRACT rather than as a count. A ">= 25
+    # settings differ" floor was too loose to notice the input being widened:
+    # adding `heartbeat_enabled` and `log_level` back into `answered` left 28
+    # differing, so the floor passed and the tests stopped proving the
+    # carry-forward did the work. Measured with exactly that plant — it failed
+    # NOTHING. The set below is what the wizard actually asks about; anything
+    # else carrying a non-default value here means the input, not the file,
+    # could be the source.
+    ANSWERED_LEAVES = {
+        "db_path",
+        "kismet_url",
+        "kismet_api_key",
+        "kismet_sources",
+        "ntfy_url",
+        "ntfy_topic",
+        "min_rssi",
+        "capture.probe_ssids",
+        "capture.ble_friendly_names",
+        "ble_bridge.enabled",
+        "ble_bridge.adapter",
+    }
+    defaults = _leaf_fields(Config())
+    carried_by_input = {k for k, v in _leaf_fields(cfg).items() if v != defaults[k]}
+    assert carried_by_input <= ANSWERED_LEAVES, (
+        f"the wizard-shaped input carries {sorted(carried_by_input - ANSWERED_LEAVES)}, "
+        f"which the wizard never asks about — so 'it survived' could be "
+        f"satisfied by the input instead of by the carry-forward"
+    )
+    return cfg
 
 
 def _reconfigure(target: Path, cfg: Config, tmp_path: Path) -> Config:
@@ -140,7 +202,9 @@ def test_reconfigure_preserves_every_setting_the_wizard_does_not_ask_about(
     target, cfg = hand_edited
     before = load_config(str(target))
 
-    after = _reconfigure(target, before.model_copy(update={"kismet_api_key": "ROTATED"}), tmp_path)
+    after = _reconfigure(
+        target, _wizard_shaped(before, tmp_path, kismet_api_key="ROTATED"), tmp_path
+    )
 
     before_leaves, after_leaves = _leaf_fields(before), _leaf_fields(after)
     # Owned by the caller, not by the operator's file: `db_path`,
@@ -179,7 +243,9 @@ def test_reconfigure_still_applies_the_change_it_was_run_for(hand_edited, tmp_pa
     before = load_config(str(target))
     assert before.kismet_api_key == "SECRETKEY"
 
-    after = _reconfigure(target, before.model_copy(update={"kismet_api_key": "ROTATED"}), tmp_path)
+    after = _reconfigure(
+        target, _wizard_shaped(before, tmp_path, kismet_api_key="ROTATED"), tmp_path
+    )
 
     assert after.kismet_api_key == "ROTATED", (
         "the wizard failed to apply the change it was run for; preservation "
@@ -231,7 +297,11 @@ def test_a_readable_previous_config_is_reported_ok(hand_edited, tmp_path):
     )
     step = next(s for s in report.steps if s.name == "write_config")
     assert step.status == "ok", f"a readable config should not warn, got {step.message!r}"
-    assert step.detail["carried_forward"], "nothing was reported as carried forward"
+    # ⛔ Naming the keys, not just counting them: "reported a non-empty list"
+    # is satisfied by preserving the wrong things.
+    carried = set(step.detail["carried_forward"])
+    for expected in ("heartbeat_enabled", "ntfy_auth_token", "log_level"):
+        assert expected in carried, f"{expected} was not carried: {sorted(carried)}"
 
 
 def test_no_unhandled_wizard_owned_subkey():
@@ -243,18 +313,66 @@ def test_no_unhandled_wizard_owned_subkey():
     `enabled`/`adapter` with it. Each such sub-key therefore needs explicit
     handling, and this fails when a new one appears rather than trusting a
     comment to stay true.
+
+    ⛔ The loop is driven from ``Config``, NOT from the rendered output, and that
+    is load-bearing. Driving it from ``rendered`` made it **vacuous**: the body
+    ran only for values that are dicts, so a renderer emitting ``capture: null``
+    — or dropping the sub-keys entirely, which is exactly the regression this
+    exists to catch — skipped every iteration and the subset assertion was
+    trivially true. Measured with that plant: **1 passed**.
+
+    🪤 And the plant that "proved" it before was a different bug. Commenting the
+    block headers out orphaned their indented sub-lines, so the test died on
+    ``yaml.parser.ParserError`` — a failure, but not this guard firing. Naming
+    the invariant and checking the failure names it too is what separated them.
     """
     rendered = yaml.safe_load(render_config_yaml(_answers_from_config(Config(**NON_DEFAULT))))
     handled = {"ble_bridge.flush_interval"}
 
+    # Side A: which fields ARE sub-models, according to the model itself.
+    defaults = Config()
+    nested = {
+        name
+        for name in Config.model_fields
+        if hasattr(type(getattr(defaults, name)), "model_fields")
+    }
+    assert len(nested) >= 3, (
+        f"only found {len(nested)} sub-model field(s) on Config — the derivation "
+        f"is broken, and every assertion below would pass without examining "
+        f"anything"
+    )
+
+    # Side B: what the renderer actually emitted for each of them.
+    #
+    # ⚠️ Three cases, and only the middle one is a defect:
+    #   absent entirely  -> fine. carry_forward_settings rescues the whole key,
+    #                       which is how `co_observation` survives today.
+    #   present as a map -> its sub-keys must each be emitted or handled.
+    #   present, NOT a map -> the bad one. `carry_forward_settings` sees the key
+    #                       in the rendered output and declines to carry it,
+    #                       while the renderer supplies nothing usable, so the
+    #                       operator's whole sub-model is dropped.
+    examined = 0
     unowned = set()
-    for key, value in rendered.items():
-        if not isinstance(value, dict):
+    for key in sorted(nested):
+        if key not in rendered:
             continue
-        model = type(getattr(Config(), key))
-        for sub in model.model_fields:
+        value = rendered[key]
+        assert isinstance(value, dict), (
+            f"the renderer emitted `{key}: {value!r}` — a key the carry-forward "
+            f"will therefore treat as wizard-owned and decline to rescue, while "
+            f"the renderer supplies nothing usable. Every {key}.* setting the "
+            f"operator holds would be dropped."
+        )
+        examined += 1
+        for sub in type(getattr(defaults, key)).model_fields:
             if sub not in value:
                 unowned.add(f"{key}.{sub}")
+
+    assert examined >= 2, (
+        f"only {examined} rendered sub-model(s) examined — the sub-key sweep "
+        f"below would pass without looking at anything"
+    )
 
     assert unowned <= handled, (
         f"{sorted(unowned - handled)} are rewritten by the renderer but never "
@@ -270,12 +388,11 @@ def test_ble_bridge_flush_interval_survives_reconfigure(hand_edited, tmp_path):
     before = load_config(str(target))
     assert before.ble_bridge.flush_interval == 42
 
-    # As on the real --reconfigure path: the wizard never asks, so the incoming
-    # Config carries None and the value must come off the existing file.
-    fresh = before.model_copy(
-        update={"ble_bridge": before.ble_bridge.model_copy(update={"flush_interval": None})}
-    )
-    after = _reconfigure(target, fresh, tmp_path)
+    # As on the real --reconfigure path: the wizard never asks about
+    # flush_interval, so the incoming Config carries None and the value must
+    # come off the existing file. ⛔ The SIBLINGS matter as much: asserting them
+    # against a config that already held them proved nothing.
+    after = _reconfigure(target, _wizard_shaped(before, tmp_path), tmp_path)
 
     assert after.ble_bridge.flush_interval == 42
     assert after.ble_bridge.enabled is True, "carrying the sub-key dropped its siblings"
@@ -291,7 +408,11 @@ def test_fresh_install_port_matches_the_default(tmp_path):
 
     target = tmp_path / "lynceus.yaml"
     target.write_text(rendered, encoding="utf-8")
-    assert load_config(str(target)).ui_bind_port == DEFAULT_UI_PORT
+    # ⛔ 8765 as a LITERAL, not DEFAULT_UI_PORT: importing the oracle from the
+    # module under test means both sides move together, and the test would
+    # keep passing if the documented default silently changed.
+    assert load_config(str(target)).ui_bind_port == 8765
+    assert DEFAULT_UI_PORT == 8765, 'the documented default changed'
 
 
 def test_carry_forward_derives_the_owned_set_from_the_rendered_output(tmp_path):
@@ -414,7 +535,11 @@ def test_a_readable_config_is_not_backed_up(tmp_path):
 
     step = next(s for s in report.steps if s.name == "write_config")
     assert step.detail["backup_path"] is None
-    assert not list(tmp_path.glob("*.unreadable-*"))
+    # ⛔ Enumerate the directory rather than globbing one anticipated name:
+    # a copy to `.bak`, or anywhere else, would pass a shape-specific glob.
+    assert {p.name for p in tmp_path.iterdir()} == {
+        "lynceus.yaml", "so.yaml", "al.yaml",
+    }, sorted(p.name for p in tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("source", ["*missing", "null", "true", "[wlan0]", "name: value"])
