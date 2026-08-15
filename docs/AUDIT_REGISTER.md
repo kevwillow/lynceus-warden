@@ -1649,6 +1649,23 @@ land.
 randomised MACs that the upstream corpus recorded as if they were vendor prefixes. That makes them a
 data-quality problem upstream as well as an inert-row problem here.
 
+⭐ **GUARDED by `tests/test_bundled_oui_corpus_census.py`, and that guard is the actual fix for how
+this finding came to exist.** The numbers above were prose-only for one afternoon, which is exactly
+the state `import_argus.py`'s "~40 rows" was in when the corpus was re-exported underneath it. A
+census recorded only in a register is the next stale comment. The guard derives the counts from the
+CSV (columns located **by name**) and classifies with the real `_is_reserved_oui_mac`, so:
+
+- the corpus is re-exported and the census shifts → **fails**, and the message names all three places
+  that cite these figures (this entry, `db.py`'s refusal, `import_argus.py`'s placeholder skip).
+  Updating one and not the others is precisely the bug being guarded.
+- the upstream data is fixed, or an importer filter is added → **fails**, so the finding closes in
+  the register rather than being discovered stale months later.
+
+It also proves the inert rows inert **behaviourally**, driving the importer's direct-SQL bypass —
+which since #86 is the only path that can still create such a row, because `add_watchlist` now
+refuses them. Verified with four planted defects (a can-fire row appears; a `00:00:00` row returns;
+the classifier neutered; the classifier over-corrected), each failing and naming its own invariant.
+
 ### ⛔ And the number used to justify the guard was zero
 
 Both `import_argus.py:1077` and (copied verbatim into) PR #86's new write-time refusal justified
