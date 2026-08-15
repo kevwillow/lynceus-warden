@@ -2626,6 +2626,55 @@ class Database:
                     f"match ({exc}); refusing to store a watchlist row that "
                     "could never fire"
                 ) from exc
+        if pattern_type == "oui":
+            # Fail closed, same reasoning as mac_range above and the same
+            # operator harm: `rules.evaluate`'s watchlist_oui branch calls
+            # `_is_reserved_oui_mac` on the OBSERVATION and drops the hit
+            # before the DB is consulted -- so a row on a reserved prefix is
+            # accepted here, listed on /watchlist beside working entries, and
+            # can never fire. Measured 2026-08-15: `resolve_matched_oui_for_eval`
+            # FOUND the row and the guard discarded it afterwards.
+            #
+            # ⚠️ This does NOT replace that guard and must not be read as
+            # doing so. `cli/import_argus.py` inserts watchlist rows with
+            # direct SQL, bypassing this method entirely. This closes the
+            # OPERATOR-facing paths (web UI, seeder) so a person is told
+            # immediately instead of being silently ignored later.
+            #
+            # ⛔ An earlier draft of this comment justified the guard by
+            # "~40 rows with pattern=00:00:00" in the bundled snapshot,
+            # copied from `import_argus.py`'s placeholder-skip comment.
+            # Measured 2026-08-15 on the shipped default_watchlist.csv
+            # (schema_version=31, exported 2026-06-03): across all 41,508
+            # rows, `identifier == '00:00:00'` appears **ZERO** times. That
+            # importer skip matches the exact string, so it drops nothing
+            # from this snapshot.
+            #
+            # The guard's real workload is bigger and a different shape --
+            # of 444 bundled `oui` rows, 221 are LOCALLY-ADMINISTERED, and
+            # the importer does not filter those. They land in every
+            # deployment and can never match, because the eval-time guard
+            # drops the observation before the DB is consulted. So the guard
+            # is needed MORE than the old comment claimed, for other rows.
+            # See docs/AUDIT_REGISTER.md, Finding 37.
+            from lynceus.rules import _is_reserved_oui_mac
+
+            reserved, reason = _is_reserved_oui_mac(f"{pattern}:00:00:00")
+            if reserved:
+                # `_is_reserved_oui_mac` echoes the prefix back as its reason
+                # for the exact-match classes, which reads as a tautology in a
+                # log line the operator actually sees ("is 00:00:00"). The
+                # seeder surfaces this verbatim as
+                # "skipping entry oui/00:00:00: ...", so say what the class IS.
+                why = (
+                    reason
+                    if reason and reason.startswith("locally-administered")
+                    else "a reserved prefix (placeholder, broadcast or multicast)"
+                )
+                raise ValueError(
+                    f"oui pattern {pattern!r} is {why}; lynceus never matches "
+                    f"one against an observation, so this row could never fire"
+                )
         existing = self._conn.execute(
             "SELECT id FROM watchlist WHERE pattern = ? AND pattern_type = ? LIMIT 1",
             (pattern, pattern_type),

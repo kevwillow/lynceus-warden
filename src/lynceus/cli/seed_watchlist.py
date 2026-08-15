@@ -92,12 +92,21 @@ def _insert_entry(
     severity: str,
     description: str | None,
 ) -> None:
-    with db._conn:
-        db._conn.execute(
-            "INSERT INTO watchlist (pattern, pattern_type, severity, description) "
-            "VALUES (?, ?, ?, ?)",
-            (pattern, pattern_type, severity, description),
-        )
+    # ⛔ Delegates to ``Database.add_watchlist`` rather than issuing its own
+    # INSERT. This was the SECOND copy of that SQL in this file; #84 removed the
+    # first after it had drifted (it never learned to populate the derived
+    # mac_range columns the indexed lookup reads, so every seeded mac_range row
+    # was inert). This copy survived because it is only used for `oui` and
+    # `ble_uuid`, which need no derived columns -- but it also bypasses every
+    # validation `add_watchlist` performs, including the reserved-OUI refusal
+    # added alongside this change. A second writer that skips validation is the
+    # same defect as a second writer that skips a column.
+    db.add_watchlist(
+        pattern=pattern,
+        pattern_type=pattern_type,
+        severity=severity,
+        description=description,
+    )
 
 
 def _get_or_insert_watchlist_id(
