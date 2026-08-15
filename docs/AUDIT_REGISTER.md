@@ -1537,6 +1537,9 @@ is the sentence that was *right* and quietly stopped being.
 - **NOT swept:** the snooze / watchful surfaces; the wizard's written values; `poller.py`'s gates
   beyond the allowlist branch; the UI's allowlist write path (session 2's write set); whether the
   primary allowlist file's YAML round-trip preserves types under hand-editing.
+- ✅ **"the wizard's written values" is no longer uncovered** — session 3 swept it the same afternoon
+  and found Finding 36 below. Kept in this list so the two entries do not disagree about what was
+  looked at.
 - ⚠️ **Measured against the SHIPPED `config/rules.yaml`.** Seven of ten watchlist types are dead by
   configuration (Finding 32), so a suppression for one of those has nothing to suppress in a default
   deployment. Every result above holds for the rules that actually fire.
@@ -1561,6 +1564,63 @@ is the sentence that was *right* and quietly stopped being.
 - **`SOFT_ALLOWLIST_PATTERN_TYPES` naming `ssid_pattern` and `imei_tac`** — deliberate, not drift.
   The classification covers the WATCHLIST's ten types so a future allowlist type cannot inherit hard
   suppressing power silently; `AllowlistPatternType` is the eight an operator can actually write.
+
+### 🔴 Finding 36 — `lynceus-setup --reconfigure` silently reverted 29 of 40 hand-edited settings
+
+**Found and fixed by session 3 in PR #87 (`08299cc`); registered here, and the numbers below are an
+INDEPENDENT reproduction, not a transcription of the PR.** Same class as rounds 10 and 11, pointing a
+third way: rounds 10/11 asked whether a stored value reaches the code that acts on it, and this asks
+whether a stored value **survives another operator-facing path**.
+
+**Mechanism:** `--reconfigure` was a blind overwrite. `preflight_existing` gated only on whether the
+file existed; nothing ever read the old one back. The wizard collects **10** answers and writes a
+config carrying **40** settings, so every field the operator hand-edited was reset to its default
+while the wizard reported success.
+
+⭐ **Three separate surfaces offer hand-editing and `--reconfigure` as equivalent** — the generated
+`lynceus.yaml` header, `preflight_existing`'s message, and the wizard's closing text — and one of
+them destroyed the other's work.
+
+**Measured** by seeding a non-default value for all 40 flattened settings and rotating only
+`kismet_api_key` — the smallest plausible reason to re-run the wizard:
+
+| | survived | lost |
+|---|---|---|
+| before (`350035a`) | 11 | **29** |
+| after (`08299cc`) | **37** | 3 |
+
+⚠️ **The three that remain are exactly the registered decision below, not a residual defect:**
+`allowlist_path`, `db_path`, `severity_overrides_path`.
+
+Worst individual losses: `heartbeat_enabled` True→False — **the dead-man's switch, off** — and
+`ntfy_auth_token` dropped while `ntfy_url`/`ntfy_topic` survived, leaving a config that still
+validates, still looks complete, and delivers nothing to an authenticated server.
+
+⭐ **`ui_bind_port` was the sharpest case.** It was rendered from `DEFAULT_UI_PORT`, a **module
+constant**, never from any wizard answer — so it was the one setting that *looked* operator-supplied
+and was silently reset on every run.
+
+**Fix:** carry forward every key the renderer does not emit, with the renderer-owned set **derived by
+parsing the renderer's own output** rather than transcribed. Proven with five planted defects.
+
+⛔ **Open, deliberately not fixed in #87 — a decision, not a patch.** `allowlist_path`,
+`severity_overrides_path` and `db_path` are `apply_config` **arguments**, and both callers derive
+them from `paths.default_*_path(scope)` rather than from the operator's config. An operator who
+relocated their allowlist is repointed at a freshly scaffolded **EMPTY** one, so every device they
+had suppressed starts alerting again. Coherent (`apply_config` scaffolds those files) but not
+harmless. See "Reserved for Kev".
+
+### ⚠️ Two sessions measured this and got different numbers — the method is the finding
+
+Session 3's board reports **13 survived / 27 lost**; this independent run reports **11 / 29**. The
+gap is entirely in how the three `apply_config` path arguments are counted — the very fields that are
+the open decision above. Neither count is wrong; they answer slightly different questions.
+
+⇒ **A count of "settings lost" is not a fact until the universe is stated.** Recorded because the
+same trap bit twice in one afternoon in the other direction too: `Config.model_fields` is **33**, and
+the correct universe for "settings an operator can write" is the **40** you get by flattening the
+three sub-models (`capture`, `ble_bridge`, `co_observation`) one level. Reading 33 and disbelieving
+40 was the first reaction here and it was wrong. **Publish the universe beside the number.**
 
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
@@ -1639,7 +1699,14 @@ hardened regardless of reachability.
    `.mailmap`/dependabot authorship; de-identifying the withheld test files.
 7. ⛔ **Rotating the two ntfy topics on the broker** — scrubbed from the tree, still live in git
    history. Reported dead 2026-08-15; **confirm and close** rather than leaving listed.
-8. **Should the allowlist gain an `ssid_pattern` type?** (Finding 35.) `ssid_pattern` is one of only
+8. ⭐ **What does `--reconfigure` mean for a RELOCATED file?** (Finding 36.) `allowlist_path`,
+   `severity_overrides_path` and `db_path` are `apply_config` arguments derived from
+   `paths.default_*_path(scope)`, never read from the operator's config. So `--reconfigure` repoints
+   an operator who moved their allowlist at a freshly scaffolded **empty** one, and every device they
+   had suppressed starts alerting. **Adopt the operator's location, or relocate them?** Either answer
+   is defensible and the current behaviour is one of them by accident rather than by choice. This is
+   the whole residual of Finding 36 — 3 of the 40 settings — so deciding it closes the finding.
+9. **Should the allowlist gain an `ssid_pattern` type?** (Finding 35.) `ssid_pattern` is one of only
    three watchlist types that fire on the shipped ruleset, and an operator cannot suppress by the
    same predicate they watched on — only by an exact `ssid` or a `mac`. ⚠️ It is not a free fix: a
    substring allowlist silences **everything** containing the needle, so one line in a hand-edited
