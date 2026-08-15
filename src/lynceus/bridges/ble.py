@@ -37,7 +37,7 @@ from ..config import load_config
 from ..db import Database
 from ..kismet import DeviceObservation, normalize_mac, normalize_uuid
 from ..notify import NullNotifier, build_notifier
-from ..poller import process_observation
+from ..poller import ClockAnchor, process_observation
 from ..rules import Ruleset, load_ruleset, load_runtime_severity_overrides
 
 logger = logging.getLogger(__name__)
@@ -232,6 +232,22 @@ class BleBridge:
         self.adapter = adapter
         self.flush_interval = flush_interval
         self._buffer: dict[str, _BufferEntry] = {}
+        # ⛔ The bridge times its own flushes off `int(time.time())` rather than
+        # riding poll_once's tick, so it needs its OWN opinion of clock trust --
+        # it cannot borrow the Poller's. Without this the bridge fed jumped
+        # timestamps straight into the watchful-recurrence arithmetic that
+        # poll_once gates, i.e. a second door into the same defect.
+        #
+        # ⚠️ Known consequence of it being per-object: the bridge and the Poller
+        # count holds independently, so at different cadences one can re-anchor
+        # to a bad clock while the other is still refusing it, and watchful
+        # counting becomes dependent on which path ingested the observation. A
+        # bridge constructed AFTER a jump also anchors to the already-wrong
+        # clock and never notices. Sharing one anchor process-wide, or deciding
+        # trust on elapsed duration rather than each consumer's call count,
+        # would fix both; that is a change to the daemon's clock contract and
+        # belongs with whoever owns it, not smuggled in here.
+        self._clock = ClockAnchor()
         # Bridge-lived: tracks locations already ensured so process_observation
         # does not re-commit the row on every flush (it owns the dedup check).
         self._ensured_locations: set[str] = set()
@@ -364,6 +380,10 @@ class BleBridge:
         processed = [0]
         admitted = [0]
         allowlist = self._allowlist_provider()  # LIVE read — picks up hot reloads
+        # ⚠️ Exactly once per flush: is_trusted mutates hold state, so calling
+        # it per-observation would burn CLOCK_JUMP_MAX_HOLDS inside one flush
+        # and re-anchor to the jumped clock immediately.
+        clock_trusted = self._clock.is_trusted(now_ts)
         count = 0
         for mac, entry in buffered:
             try:
@@ -381,6 +401,7 @@ class BleBridge:
                     ruleset=self.ruleset,
                     allowlist=allowlist,
                     notifier=self.notifier,
+                    clock_trusted=clock_trusted,
                     severity_overrides=self.severity_overrides,
                     rule_type_suppression_counter=self._rule_type_suppression_counter,
                 )

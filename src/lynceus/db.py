@@ -1417,17 +1417,37 @@ class Database:
             )
         return int(cur.lastrowid)
 
-    def latest_heartbeat(self) -> dict | None:
+    def latest_heartbeat(self, *, not_after: int | None = None) -> dict | None:
         """The most recent heartbeat row, delivered or not.
 
-        Both scheduling decisions read this one row: whether a retry is owed
-        (``notified_at IS NULL`` with attempts left) and whether the next
-        interval has elapsed.
+        This is the RETRY CANDIDATE: whether a retry is owed is decided from
+        this row's ``notified_at`` and ``notify_attempts``.
+
+        ⚠️ Pass ``not_after`` from any scheduling path. Ordering is ``ts DESC``,
+        so a heartbeat composed during a forward clock jump stays the "most
+        recent" row long after the clock is corrected. It then shadows every
+        genuinely-newest row in retry selection, and because its own attempts
+        are already spent the caller falls straight through and composes yet
+        another heartbeat -- which is in turn shadowed. Measured with a down
+        topic: 200 corrected ticks produced 197 new rows and 200 delivery
+        attempts, each row abandoned after a single try. That defeats the
+        bounded retry entirely, which is the defect `test_retries_are_bounded`
+        exists to prevent.
+
+        Unbounded by default because callers that merely inspect state (tests,
+        the /settings panel) should see the real newest row.
         """
-        row = self._conn.execute(
-            "SELECT id, ts, healthy, message, notified_at, notify_attempts "
-            "FROM heartbeats ORDER BY ts DESC, id DESC LIMIT 1"
-        ).fetchone()
+        if not_after is None:
+            row = self._conn.execute(
+                "SELECT id, ts, healthy, message, notified_at, notify_attempts "
+                "FROM heartbeats ORDER BY ts DESC, id DESC LIMIT 1"
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT id, ts, healthy, message, notified_at, notify_attempts "
+                "FROM heartbeats WHERE ts <= ? ORDER BY ts DESC, id DESC LIMIT 1",
+                (int(not_after),),
+            ).fetchone()
         return dict(row) if row else None
 
     def record_heartbeat_notify_attempt(self, heartbeat_id: int) -> int:
@@ -1472,11 +1492,32 @@ class Database:
         ).fetchone()
         return int(row["n"]) if row else 0
 
-    def latest_delivered_heartbeat_ts(self) -> int | None:
-        """When the operator was last actually told the daemon was alive."""
-        row = self._conn.execute(
-            "SELECT MAX(notified_at) AS ts FROM heartbeats WHERE notified_at IS NOT NULL"
-        ).fetchone()
+    def latest_delivered_heartbeat_ts(
+        self, *, not_after: int | None = None
+    ) -> int | None:
+        """When the operator was last actually told the daemon was alive.
+
+        ``not_after`` bounds the answer to deliveries at or before that
+        timestamp. Scheduling MUST pass it: a forward clock jump stamps a
+        delivery in the future, and an unbounded ``MAX(notified_at)`` then
+        returns that future row forever, which drives the heartbeat storm
+        documented at ``poller.maybe_emit_heartbeat``'s future-anchor trap.
+
+        The default is unbounded because the web UI's health panel wants the
+        literal truth -- an operator diagnosing a clock problem needs to SEE
+        the future timestamp, not a sanitised one.
+        """
+        if not_after is None:
+            row = self._conn.execute(
+                "SELECT MAX(notified_at) AS ts FROM heartbeats "
+                "WHERE notified_at IS NOT NULL"
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT MAX(notified_at) AS ts FROM heartbeats "
+                "WHERE notified_at IS NOT NULL AND notified_at <= ?",
+                (int(not_after),),
+            ).fetchone()
         return int(row["ts"]) if row and row["ts"] is not None else None
 
     def latest_alert_ts(self) -> int | None:
