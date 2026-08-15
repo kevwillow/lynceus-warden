@@ -1324,6 +1324,105 @@ clock.
 crossed a trust boundary?"*** — not *"which writes could store garbage"*. Same sweep, a fraction of
 the noise. Use this framing for the next round of this shape.
 
+## Round 10 — features that are configured but not connected, 2026-08-15
+
+**The class:** a surface the operator can *use* — a form, a CLI flag, a config type — whose value
+never reaches the code that would act on it. Not "wrong result": **no result**, silently, with the
+write path reporting success.
+
+**The instrument:** for each value the operator can store, store one and drive the real evaluation
+path with an input that matches it exactly. ⭐ **Not a grep.** Every finding here is a behaviour two
+or three layers from where the value is written, and no static search would have connected them.
+
+⛔ **Coverage limit:** this swept the **watchlist** only. The allowlist, severity overrides, the
+snooze/watchful surfaces and the wizard have the same shape — a stored value that some later layer
+has to honour — and are **not** covered. Absence of a finding there is absence of a sweep.
+
+### 🔴 Finding 31 — a `mac_range` watchlist row was stored, reported inserted, and could never match
+
+Fixed in **PR #84**. `_lookup_mac_range_matches` reads the migration-011 partial index on
+`(mac_range_prefix_length, mac_range_prefix)` and never looks at `pattern`. Only the Argus importer
+populated those columns, so rows from the other two write paths were inert.
+
+Measured with `argus_mac_range` **enabled**, so the ruleset was not the variable:
+
+```
+add_watchlist("3c:5a:b4:d/28")          prefix=None      -> *** NO ALERT ***
+same row + derived columns populated    prefix=3c5ab4d   ->     ALERT
+```
+
+⭐ Reachable through a shipped CLI, which confirms the write in its own log line:
+
+```
+INFO: inserted mac_range/3c:5a:b4:d/28 (high)
+row: pattern='3c:5a:b4:d/28' mac_range_prefix=None mac_range_prefix_length=None
+```
+
+**Direction: fails OPEN.** The operator is told they are being watched over and they are not.
+
+⭐ **Keep this one for the shape, not the bug: two writers, one reader, and they disagreed about
+which column carries the meaning.** `add_watchlist` and the seeder each had their own byte-for-byte
+`INSERT`; the importer had a third that was correct. The evidence was in the seeder's own INFO line
+the entire time and nobody read it as a defect.
+
+### 🟡 Finding 32 — seven of ten watchlist pattern types produce no alert
+
+**Not fixed — reserved for Kev, see below.** Pinned by
+`tests/test_watchlist_pattern_types_are_wired.py` (#84), which fails in both directions.
+
+| pattern_type | alerts? | why |
+|---|---|---|
+| `mac`, `ssid`, `ssid_pattern` | ✅ | `argus_mac` / `argus_ssid` ship enabled with `patterns: []` |
+| `oui`, `ble_uuid`, `ble_local_name`, `ble_manufacturer_id`, `drone_id_prefix`, `mac_range` | ❌ | the delegating rule ships **commented out** |
+| `imei_tac` | ❌ | **no `DeviceObservation` field exists at all** |
+
+**Mechanism:** a rule consults the operator's SQLite watchlist only when its `patterns:` list is
+EMPTY. A non-empty list disables DB delegation for that rule_type entirely — which is why
+`watchlist_oui` *looks* present: `hak5_pineapple_oui` carries an inline `patterns: ["00:13:37"]`.
+
+⭐ **The codebase already names this bug.** `config/rules.yaml:95`, explaining why exact-MAC
+delegation was turned on: *"The promise protected a behaviour nobody wants — a watchlist that does
+not watch."* Fixed for the exact-MAC case only.
+
+⚠️ **`imei_tac` is a different class and no ruleset change can revive it.** Migration 021 admits it
+and `add_watchlist` accepts it, but there is nothing on the observation to compare it against. It
+needs capture-side work first.
+
+### ⭐ Verify the CONTROL, not just the treatment — the round's real lesson
+
+**Three invalid control values between two sessions in one morning, and every one produced a
+confident finding rather than an obvious error:**
+
+| Control used | Why it was invalid | What it "proved" |
+|---|---|---|
+| `de:ad:be` as an ordinary OUI | `0xDE` has the locally-administered bit set | "DB-delegated OUI matching is broken outright" |
+| `aa:bb:cc` as an ordinary OUI | `0xAA` likewise | same, independently |
+| `MyTarget*` as an ssid_pattern | it is a **substring needle**, not a glob — the `*` is literal | "`ssid_pattern` is a dead type" |
+
+⇒ **A broken treatment case fails loudly; a broken control case fabricates a result.** Assert the
+control behaves as a control before trusting the contrast — if the should-match case does not match,
+the experiment is void, not informative. `ac:de:48` is the genuine universally-administered control.
+
+### ⭐ When you derive a set, ITERATE over it — never transcribe it into cases
+
+The round's count was first reported as "6 of 9" for what is **7 of 10**. The list of storable types
+had been derived correctly from source and then **hand-copied into nine test cases**; the dropped
+element was `imei_tac`, the one dead in the most interesting way.
+
+⇒ A derived enumeration that is then transcribed has all the fragility of a hardcoded list and
+**none of its visibility** — it *looks* derived. `CASES` in
+`test_watchlist_pattern_types_are_wired.py` is such a transcription; it is safe only because
+`test_the_admitted_types_are_exactly_the_ones_we_have_classified` parses the live CHECK constraint
+and fails when the two diverge. That guard is what makes a transcription legitimate.
+
+### DO-NOT-RE-AUDIT (round 10)
+
+- **`ssid` / `ssid_pattern` / `mac` watchlist delivery** — measured alerting end to end, 2026-08-15.
+- **`ssid_pattern` semantics** — substring, case-insensitive, `? LIKE '%'||pattern||'%'`. Not a glob.
+  Do not re-report it as dead without checking the needle.
+- **`mac_range` write path** — fixed and guarded (#84). The `/24` shape is rejected *on purpose*.
+- **The `PROBE_SSIDS_PER_DEVICE_CAP` count cap** — already present; length is the unbounded axis.
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -1382,6 +1481,25 @@ attribute had been given the authority of an operator-chosen one.
 for any operator whose pattern is longer than the cap. Rejecting the record as unparseable — there
 is already a counter for it — cannot corrupt matching, and is the shape to prefer if Kev wants this
 hardened regardless of reachability.
+
+## Reserved for Kev — decisions, not defects
+
+⛔ **Do not decide these unilaterally.** Each changes behaviour for existing deployments.
+
+1. ⭐ **Should the six commented-out delegating rules ship ENABLED?** (Finding 32.) Today an operator
+   adding an `oui`, `ble_uuid`, `ble_local_name`, `ble_manufacturer_id`, `drone_id_prefix` or
+   `mac_range` watchlist entry gets **no alert and no warning**. Enabling them changes what alerts
+   for every existing deployment. The safe subset — warn in the UI when an entry's type has no
+   delegating rule — is a separate, smaller change.
+2. **`imei_tac` capture-side support**, or removing the type from the UI (Finding 32). It cannot work
+   as shipped.
+3. **The notifier's total deadline** (Finding 30 / H2) — the defect is real, the *number* is yours.
+4. `rollback_to` refusing to unstamp a migration it could not revert — a documented contract.
+5. **Web UI authentication** — 23 unauthenticated POST routes.
+6. The diagnostics assert-or-delete verdict; the heartbeat shipping off by default;
+   `.mailmap`/dependabot authorship; de-identifying the withheld test files.
+7. ⛔ **Rotating the two ntfy topics on the broker** — scrubbed from the tree, still live in git
+   history. Reported dead 2026-08-15; **confirm and close** rather than leaving listed.
 
 ## Still open
 
