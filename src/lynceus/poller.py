@@ -159,6 +159,13 @@ RUNTIME_KISMET_LOSS_THRESHOLD = 3
 # undelivered on /settings rather than quietly forgotten.
 NOTIFY_MAX_ATTEMPTS = 4
 
+#: Base spacing for watchful-escalation retries. The retry driver is "we saw the
+#: device again", which on a short poll interval fires every few minutes, so
+#: without spacing all NOTIFY_MAX_ATTEMPTS are spent inside one outage. Tripling
+#: puts attempts 2/3/4 at roughly +5min/+15min/+45min from the escalation, which
+#: is the timescale on which a moving operator regains signal.
+WATCHFUL_RETRY_BASE_SECONDS = 300
+
 # How long run_forever waits for the BLE bridge thread to drain its buffer and
 # close its own Database after stop() before logging that it overran. Generous
 # relative to a flush tick so a mid-flush shutdown completes cleanly.
@@ -204,7 +211,7 @@ def _emit_watchful_escalation(
         "Recurrence threshold reached."
     )
     try:
-        db.add_alert(
+        alert_id = db.add_alert(
             ts=now_ts,
             rule_name="watchful_recurrence",
             mac=entry.mac,
@@ -241,24 +248,164 @@ def _emit_watchful_escalation(
         device_type = None
         device_category = None
     type_suffix = build_type_suffix(device_type, device_category)
+    _deliver_watchful_escalation(
+        db,
+        notifier,
+        alert_id=alert_id,
+        mac=entry.mac,
+        body=message + type_suffix,
+        now_ts=now_ts,
+    )
+
+
+def _deliver_watchful_escalation(
+    db: Database,
+    notifier: Notifier,
+    *,
+    alert_id: int,
+    mac: str,
+    body: str,
+    now_ts: int,
+) -> bool:
+    """Send one watchful escalation and RECORD whether it actually arrived.
+
+    ⛔ This used to be a bare ``notifier.send`` whose result was logged and
+    discarded — the fire-and-forget shape PR #19 removed from the main alert
+    path and that the heartbeat was deliberately built to avoid. The escalation
+    kept it, and it is the worst place in the product to keep it: measured with
+    ntfy down at the moment the threshold was crossed, across eight further days
+    of the device continuing to follow the operator —
+
+        alert row : notified_at=None, notify_attempts=0
+        notifier  : called ONCE, never again
+        heartbeat : "1 alert written but never delivered", permanently
+
+    ⚠️ `escalate_watchful_recurrence` is idempotent by design ("fire once per
+    escalation"), so nothing re-drove it. One transient network blip at exactly
+    the wrong moment permanently lost the single most important message this
+    product sends — that someone appears to be following you — and the operator
+    was never told it had been lost.
+
+    Uses the DB-backed counters rather than in-memory ones (the shape #62 uses
+    for the Kismet-down notice, which has no alert row) precisely because this
+    one does have a row: the retry then survives a daemon restart, and losing
+    the escalation across a restart is exactly as bad as losing it to a blip.
+    """
+    # Bookkeeping must never cost a notification — same reasoning as the main
+    # alert path: losing the counter costs at worst one extra retry, losing the
+    # send means the operator is never told.
+    try:
+        attempts = db.record_alert_notify_attempt(alert_id)
+    except Exception as e:
+        logger.warning(
+            "Failed to record notify attempt for watchful escalation %s "
+            "(sending anyway): %s",
+            alert_id,
+            e,
+        )
+        attempts = 0
     try:
         ok = notifier.send(
             severity="high",
             title="lynceus: watchful escalation",
-            message=message + type_suffix,
+            message=body,
             priority_override=4,
         )
-        if not ok:
-            logger.warning(
-                "Notifier returned False for watchful escalation %s",
-                entry.mac,
-            )
     except Exception as e:
         logger.warning(
-            "Notifier raised for watchful escalation %s: %s",
-            entry.mac,
+            "Notifier raised for watchful escalation %s: %s", mac, e
+        )
+        return False
+    if not ok:
+        logger.warning(
+            "Watchful escalation for %s NOT delivered (attempt %d/%d)%s",
+            mac,
+            attempts,
+            NOTIFY_MAX_ATTEMPTS,
+            ""
+            if attempts < NOTIFY_MAX_ATTEMPTS
+            else " -- giving up; the operator has NOT been told this device "
+            "keeps recurring",
+        )
+        return False
+    try:
+        db.mark_alert_notified(alert_id, now_ts=now_ts)
+    except Exception as e:
+        logger.warning(
+            "Delivered watchful escalation %s but failed to stamp it "
+            "(it may be re-sent once): %s",
+            alert_id,
             e,
         )
+    return True
+
+
+def _retry_watchful_escalation(
+    db: Database,
+    notifier: Notifier,
+    entry,
+    now_ts: int,
+) -> None:
+    """Re-send an escalation the operator was never actually told about.
+
+    ⭐ The main alert path gets its retry for free: the rule fires again next
+    tick and the dedup lookup finds the undelivered row. The escalation has no
+    such driver, because `escalate_watchful_recurrence` fires exactly once per
+    entry. So the retry has to be driven by the thing that is still happening —
+    seeing the device again.
+
+    Bounded by the same NOTIFY_MAX_ATTEMPTS as everything else, and gated on the
+    rule_type snooze: if the operator has silenced `watchful_recurrence`,
+    retrying is still notifying.
+    """
+    escalated_at = getattr(entry, "escalated_at", None)
+    if escalated_at is None:
+        return
+    try:
+        # `since` is the escalation instant itself, so this finds that exact
+        # alert without depending on a window constant that could age out.
+        row = db.get_recent_alert_for_rule_and_mac(
+            "watchful_recurrence", entry.mac, int(escalated_at)
+        )
+    except Exception as e:
+        logger.warning("watchful escalation retry lookup failed for %s: %s", entry.mac, e)
+        return
+    if row is None or row.get("notified_at") is not None:
+        return
+    attempts = int(row.get("notify_attempts") or 0)
+    if attempts >= NOTIFY_MAX_ATTEMPTS:
+        return
+
+    # ⭐ SPACE the attempts out. The retry driver is "we saw the device again",
+    # which on a 5-minute poll fires every 5 minutes, so an unspaced retry burns
+    # all four attempts inside twenty minutes -- against a phone that is out of
+    # signal, which #62 notes is likeliest precisely while the operator is
+    # moving. Four attempts covering one outage is a coin flip; four attempts
+    # covering an hour is a retry.
+    #
+    # Derived from `notify_attempts` and the alert's own `ts` so it needs no
+    # `last_attempt_at` column and therefore no migration: attempt 2 at +5min,
+    # 3 at +15min, 4 at +45min from the escalation.
+    since_alert = now_ts - int(row["ts"])
+    required_wait = WATCHFUL_RETRY_BASE_SECONDS * (3 ** (attempts - 1))
+    if attempts >= 1 and since_alert < required_wait:
+        return
+
+    if db.is_rule_type_snoozed("watchful_recurrence", now_ts) is not None:
+        return
+    logger.info(
+        "retrying undelivered watchful escalation for %s (alert %s)",
+        entry.mac,
+        row["id"],
+    )
+    _deliver_watchful_escalation(
+        db,
+        notifier,
+        alert_id=int(row["id"]),
+        mac=entry.mac,
+        body=str(row["message"]),
+        now_ts=now_ts,
+    )
 
 
 def build_kismet_client(config: Config) -> KismetClient:
@@ -500,6 +647,35 @@ def process_observation(
                             "rule_type snooze: mac=%s",
                             obs.mac,
                         )
+                        # ⛔ Count it. The ordinary rule_type-snooze branch
+                        # increments this counter and the escalation branch did
+                        # not, so the hourly suppression summary — the line an
+                        # operator greps to see what their snoozes are actually
+                        # catching — silently omitted the highest-severity
+                        # suppression the product can make. Measured: an
+                        # escalation reached and suppressed, summary reports {}.
+                        if rule_type_suppression_counter is not None:
+                            rule_type_suppression_counter["watchful_recurrence"] = (
+                                rule_type_suppression_counter.get(
+                                    "watchful_recurrence", 0
+                                )
+                                + 1
+                            )
+            elif watchful_entry.escalated_at is not None:
+                # ⭐ Already escalated. If that escalation never actually
+                # REACHED the operator, this is the only thing that will drive
+                # a retry -- `escalate_watchful_recurrence` fires once per
+                # entry, so the first-crossing branch above is gone for good.
+                #
+                # Deliberately outside the `outcome.counted` test: counting is
+                # debounced to once per 24h, and a bounded four attempts spread
+                # a day apart is not a retry, it is a coin flip. Driven instead
+                # by the thing that is still happening -- seeing the device.
+                # No-ops immediately (one indexed lookup) once the alert is
+                # stamped delivered, which is the steady state.
+                _retry_watchful_escalation(
+                    db, notifier, watchful_entry, now_ts
+                )
             # snooze_expires_at on the watchful entry gates
             # the ORIGINAL alert pipeline for this MAC (per
             # OQ-3). The escalation alert above is

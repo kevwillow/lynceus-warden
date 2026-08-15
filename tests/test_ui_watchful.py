@@ -1285,13 +1285,56 @@ def test_watchful_copy_does_not_promise_a_low_priority_alert():
         )
 
 
-def test_watchful_escalation_really_is_high_severity():
+def test_watchful_escalation_really_is_high_severity(tmp_path):
     """Pins the behaviour the copy above describes, so the two cannot drift
-    apart again without one of these two tests failing."""
-    import inspect
+    apart again without one of these two tests failing.
 
-    from lynceus import poller as _poller
+    ⚠️ This used to `inspect.getsource(_emit_watchful_escalation)` and grep for
+    the literals `severity="high"` and `priority_override=4`. That matched one
+    RENDERING of the behaviour rather than the behaviour: moving the send into a
+    helper — same severity, same priority, same call — broke the guard while
+    changing nothing an operator could observe.
 
-    src = inspect.getsource(_poller._emit_watchful_escalation)
-    assert 'severity="high"' in src
-    assert "priority_override=4" in src
+    ⭐ A source-text assertion also fails in the direction that matters least.
+    It cannot catch the send being dropped, the notifier raising, or the
+    priority being computed rather than literal; it only catches the characters
+    moving. So it now drives a real escalation and reads what the notifier was
+    actually handed.
+    """
+    from lynceus.db import Database as _Database
+    from lynceus.poller import _emit_watchful_escalation
+
+    db = _Database(str(tmp_path / "esc.db"))
+    db.ensure_location("home", "Home")
+    mac = "aa:bb:cc:dd:ee:01"
+    now = 1_700_000_000
+    db.upsert_device(
+        mac=mac, device_type="wifi", oui_vendor=None, is_randomized=0, now_ts=now
+    )
+    db.insert_sighting(mac=mac, ts=now, rssi=-40, ssid=None, location_id="home")
+    alert_id = db.add_alert(
+        ts=now, rule_name="r", mac=mac, message="m", severity="high"
+    )
+    entry_id = db.create_watchful_from_alert(alert_id, None, now)
+    entry = db.get_active_watchful_recurrence_by_mac(mac)
+    assert entry is not None and entry.id == entry_id
+
+    calls = []
+
+    class _Capture:
+        def send(
+            self, severity=None, title=None, message=None, priority_override=None
+        ):
+            calls.append((severity, priority_override))
+            return True
+
+    _emit_watchful_escalation(db, _Capture(), entry, now)
+    db.close()
+
+    assert calls, "the escalation sent nothing at all"
+    severity, priority = calls[0]
+    assert severity == "high", f"escalation severity is {severity!r}, not 'high'"
+    assert priority == 4, (
+        f"escalation ntfy priority is {priority!r}, not 4 — the severity/priority "
+        "split is a locked decision, see the _emit_watchful_escalation docstring"
+    )
