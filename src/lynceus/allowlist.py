@@ -463,6 +463,25 @@ def _atomic_write_yaml(path: Path, payload: dict) -> None:
     The poller may stat / read the same file concurrently. ``os.replace``
     is atomic on both POSIX and Windows, so readers see either the old
     content or the new content, never a half-written file.
+
+    ⛔ Atomic is not the same as DURABLE, and this helper had only the first
+    half. Without an ``fsync`` before the replace, the rename can reach disk
+    ahead of the data, so a power loss leaves the file present and empty or
+    partially written — the corruption `_validate_ui_entries` exists to survive,
+    arriving through the one path that was supposed to prevent it. On the
+    SD-card-backed Pi this targets, that is not a theoretical crash.
+
+    ⭐ The sibling helper ``cli.bootstrap_kismet._atomic_write_bytes`` already
+    does ``flush()`` + ``fsync()`` before its ``os.replace``. Two atomic-write
+    helpers in one codebase disagreeing about durability is the bug; this makes
+    them agree.
+
+    ⚠️ Residual, deliberately not fixed here: the parent DIRECTORY is not
+    fsynced, so the rename itself is not guaranteed durable. That failure is
+    benign in a way this one was not — losing the rename leaves the previous
+    complete file, whereas losing the data left a corrupt one. Fixing it means
+    an extra directory fsync per UI write, which is a cost the sibling helper
+    also declined to pay.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmpname = tempfile.mkstemp(
@@ -473,6 +492,8 @@ def _atomic_write_yaml(path: Path, payload: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             yaml.safe_dump(payload, f, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmpname, path)
     except Exception:
         try:
