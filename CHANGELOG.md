@@ -269,6 +269,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Both now pause while the clock is untrusted and resume once it settles, which
   is the same treatment the retention cleanups already had.
 
+- **When the "Kismet has stopped" warning failed to send, you were never told
+  again.** Lynceus watches Kismet, and when Kismet disappears it pushes one
+  "Kismet unreachable" message. That message is the only thing standing between
+  you and hours of silence that looks exactly like a quiet street. It was sent
+  once and then recorded as delivered whether or not it actually arrived — so
+  if your phone was out of signal at that moment, which is likeliest while you
+  are moving, the warning was gone and nothing tried again. Measured with
+  notifications failing: **one attempt, nothing delivered, and no retry across
+  seven polls**, while capture stayed stopped. Worse, when Kismet came back you
+  were sent "Kismet reachable again", announcing the end of an outage nobody
+  had told you about.
+
+  It now tries up to four times and only treats the warning as delivered when
+  it actually is. If all four fail it says so plainly in the log instead of
+  claiming success, and it will not announce a recovery from an outage you were
+  never warned of.
+
 - **Your watchlist total was wrong, and it under-counted the newest entries.**
   The list of pattern types the app knew about had drifted two migrations behind
   the database, which accepts ten. Rows of the two newest types — SSID patterns

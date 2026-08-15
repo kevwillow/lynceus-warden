@@ -2135,6 +2135,11 @@ class Poller:
         #: writes only on CHANGE, so a healthy bridge costs one write at
         #: startup rather than one per poll for the daemon's lifetime.
         self._ble_bridge_last_status: str | None = None
+        #: Whether the "Kismet unreachable" notification was actually DELIVERED,
+        #: as distinct from attempted. The recovery edge keys on this so it
+        #: cannot announce the end of an outage the operator never heard about.
+        self._kismet_down_delivered = False
+        self._kismet_down_attempts = 0
         # Rule_type snooze suppression accumulator. Cumulative across
         # poll cycles; flushed to an INFO summary every
         # SUPPRESSION_LOG_INTERVAL_SECONDS. Initialized to "log on the
@@ -2511,7 +2516,13 @@ class Poller:
         out of the priority-5 reserved for opted-in watchlist hits.
         """
         if not poll_failed:
-            if self._kismet_down_alerted:
+            # ⛔ Pair the recovery with a down the operator ACTUALLY received.
+            # Keyed on `_kismet_down_delivered`, not `_kismet_down_alerted`:
+            # announcing "reachable again" for an outage that was never
+            # announced is worse than silence, because it retroactively tells
+            # the operator there was a gap in capture they were never warned
+            # about, and gives them no way to learn how long it lasted.
+            if self._kismet_down_delivered:
                 self.notifier.send(
                     "high",
                     "Lynceus: Kismet reachable again",
@@ -2519,7 +2530,9 @@ class Poller:
                     priority_override=4,
                 )
                 logger.info("Kismet reachable again; sent recovery notification")
-                self._kismet_down_alerted = False
+            self._kismet_down_alerted = False
+            self._kismet_down_delivered = False
+            self._kismet_down_attempts = 0
             self._consecutive_poll_failures = 0
             return
         self._consecutive_poll_failures += 1
@@ -2531,18 +2544,57 @@ class Poller:
         if health.get("reachable"):
             return
         error = health.get("error") or "no response"
-        self.notifier.send(
+        # ⛔ The send's result IS the state transition. It used to be discarded,
+        # so a False return still logged "sent down notification" and latched
+        # `_kismet_down_alerted = True`, which the guard above then used to
+        # suppress every retry for the rest of the outage. Measured with a
+        # failing notifier: 1 attempt, 0 delivered, no retry across 7 ticks --
+        # RF capture had stopped and the operator was never told.
+        #
+        # This is Wave 5 Finding 12 (see NOTIFY_MAX_ATTEMPTS above) on the INFRA
+        # alert path, which bypasses the device-alert pipeline and so never
+        # inherited that fix. It is the worse of the two instances: a missed
+        # device alert loses one sighting; a missed "Kismet unreachable" means
+        # every subsequent sighting is lost and nothing says so.
+        delivered = self.notifier.send(
             "high",
             "Lynceus: Kismet unreachable",
             f"Kismet at {self.config.kismet_url} is unreachable — "
             f"RF capture stopped. Last error: {error}",
             priority_override=4,
         )
+        self._kismet_down_attempts += 1
+        if delivered:
+            logger.warning(
+                "Kismet unreachable for %d consecutive polls; sent down notification",
+                self._consecutive_poll_failures,
+            )
+            self._kismet_down_alerted = True
+            self._kismet_down_delivered = True
+            return
+        # 🪤 Bounded, for the same reason NOTIFY_MAX_ATTEMPTS is: each attempt
+        # costs a blocking HTTP timeout on the poll path, so retrying a dead
+        # notifier every tick for the length of the outage would slow the
+        # capture loop exactly when it matters. Retry while attempts remain,
+        # then latch to stop retrying -- but leave `_kismet_down_delivered`
+        # False, so the recovery edge stays honest about what was actually said.
+        if self._kismet_down_attempts >= NOTIFY_MAX_ATTEMPTS:
+            logger.error(
+                "Kismet unreachable for %d consecutive polls and the down "
+                "notification FAILED all %d delivery attempts — the operator "
+                "has NOT been told that RF capture stopped",
+                self._consecutive_poll_failures,
+                self._kismet_down_attempts,
+            )
+            self._kismet_down_alerted = True
+            return
         logger.warning(
-            "Kismet unreachable for %d consecutive polls; sent down notification",
+            "Kismet unreachable for %d consecutive polls; down notification "
+            "delivery failed (attempt %d of %d) — will retry next tick",
             self._consecutive_poll_failures,
+            self._kismet_down_attempts,
+            NOTIFY_MAX_ATTEMPTS,
         )
-        self._kismet_down_alerted = True
 
     def clock_is_trusted(self, now_ts: int) -> bool:
         """Delegates to `ClockAnchor.is_trusted`; see it for the reasoning.

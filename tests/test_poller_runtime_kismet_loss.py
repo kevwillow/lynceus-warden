@@ -16,7 +16,10 @@ the RUNTIME-only paired/de-duped alert:
     central 189-spam regression guard: re-introducing startup-time alerting
     is the bug this whole feature is gated against.
 
-Tests are gitignored (OPSEC) — run locally, never committed.
+⚠️ This module's docstring used to say "Tests are gitignored (OPSEC) — run
+locally, never committed". That was false: the file is tracked, and has
+been for as long as git remembers. Removed rather than corrected, because a
+stale OPSEC claim invites someone to put a real adapter MAC in here.
 """
 
 from __future__ import annotations
@@ -28,7 +31,11 @@ import pytest
 
 from lynceus.config import Config
 from lynceus.notify import RecordingNotifier
-from lynceus.poller import RUNTIME_KISMET_LOSS_THRESHOLD, Poller
+from lynceus.poller import (
+    NOTIFY_MAX_ATTEMPTS,
+    RUNTIME_KISMET_LOSS_THRESHOLD,
+    Poller,
+)
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "kismet_devices.json"
 
@@ -235,4 +242,104 @@ def test_run_forever_recovery_pair_through_real_loop(config, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         poller.run_forever()
     assert len(_downs(rec)) == 1
+    assert len(_recovereds(rec)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Delivery, not just attempt.
+#
+# ⚠️ Every test above uses RecordingNotifier, whose send() returns True
+# unconditionally. That makes them structurally incapable of catching the
+# defect below — the same reason Wave 5 Finding 12 survived a green suite on
+# the device-alert path. A double that cannot fail cannot test a failure.
+# ---------------------------------------------------------------------------
+
+
+class _FailingNotifier(RecordingNotifier):
+    """Delivery fails for the first ``fail_first`` sends, then succeeds.
+
+    Mirrors ``OutageNotifier`` in test_notify_delivery.py; kept local so this
+    module has no cross-test-file import.
+    """
+
+    def __init__(self, fail_first: int = 99):
+        super().__init__()
+        self.fail_first = fail_first
+        self.attempts = 0
+
+    def send(self, severity, title, message, priority_override=None) -> bool:
+        self.attempts += 1
+        super().send(severity, title, message, priority_override=priority_override)
+        return self.attempts > self.fail_first
+
+
+def _fail_poller(config, *, fail_first: int):
+    poller, _ = _loss_poller(config, reachable=False)
+    rec = _FailingNotifier(fail_first=fail_first)
+    poller.notifier = rec
+    return poller, rec
+
+
+def test_a_failed_down_notification_is_retried_not_latched(config):
+    """The measured defect: send() returned False, the poller logged "sent",
+    latched _kismet_down_alerted, and never retried — so RF capture had
+    stopped and the operator was never told."""
+    poller, rec = _fail_poller(config, fail_first=1)
+
+    for _ in range(RUNTIME_KISMET_LOSS_THRESHOLD + 2):
+        poller._note_kismet_poll_result(poll_failed=True)
+
+    assert len(_downs(rec)) >= 2, (
+        "a down notification whose delivery FAILED was never retried; the "
+        "operator is never told that RF capture stopped"
+    )
+    assert poller._kismet_down_delivered is True
+
+
+def test_down_retries_are_bounded(config):
+    """⛔ The other extreme. Each attempt is a blocking HTTP timeout on the
+    poll path, so retrying a dead notifier every tick for the whole outage
+    would slow capture exactly when it matters."""
+    poller, rec = _fail_poller(config, fail_first=99)  # never succeeds
+
+    for _ in range(RUNTIME_KISMET_LOSS_THRESHOLD + 20):
+        poller._note_kismet_poll_result(poll_failed=True)
+
+    assert len(_downs(rec)) == NOTIFY_MAX_ATTEMPTS, (
+        f"expected exactly {NOTIFY_MAX_ATTEMPTS} bounded attempts, "
+        f"got {len(_downs(rec))}"
+    )
+    assert poller._kismet_down_delivered is False
+
+
+def test_no_recovery_alert_for_an_outage_never_announced(config):
+    """Announcing "reachable again" for an outage the operator never heard
+    about is worse than silence: it retroactively reveals a capture gap and
+    gives them no way to learn how long it lasted."""
+    poller, rec = _fail_poller(config, fail_first=99)
+
+    for _ in range(RUNTIME_KISMET_LOSS_THRESHOLD + 20):
+        poller._note_kismet_poll_result(poll_failed=True)
+    poller.client = SimpleNamespace(
+        health_check=lambda: {
+            "reachable": True, "version": None, "error": None, "status_code": None,
+        }
+    )
+    poller._note_kismet_poll_result(poll_failed=False)
+
+    assert _recovereds(rec) == [], (
+        "sent 'Kismet reachable again' for a down alert that was never delivered"
+    )
+
+
+def test_a_delivered_down_still_pairs_with_exactly_one_recovery(config):
+    """Presence assertion. Without it, the three tests above are satisfied by
+    a poller that never sends a recovery alert at all."""
+    poller, rec = _fail_poller(config, fail_first=0)  # delivery always succeeds
+
+    for _ in range(RUNTIME_KISMET_LOSS_THRESHOLD + 1):
+        poller._note_kismet_poll_result(poll_failed=True)
+    assert len(_downs(rec)) == 1
+    poller._note_kismet_poll_result(poll_failed=False)
+
     assert len(_recovereds(rec)) == 1
