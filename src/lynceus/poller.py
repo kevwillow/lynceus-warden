@@ -647,6 +647,20 @@ def process_observation(
                             "rule_type snooze: mac=%s",
                             obs.mac,
                         )
+                        # ⛔ Count it. The ordinary rule_type-snooze branch
+                        # increments this counter and the escalation branch did
+                        # not, so the hourly suppression summary — the line an
+                        # operator greps to see what their snoozes are actually
+                        # catching — silently omitted the highest-severity
+                        # suppression the product can make. Measured: an
+                        # escalation reached and suppressed, summary reports {}.
+                        if rule_type_suppression_counter is not None:
+                            rule_type_suppression_counter["watchful_recurrence"] = (
+                                rule_type_suppression_counter.get(
+                                    "watchful_recurrence", 0
+                                )
+                                + 1
+                            )
             elif watchful_entry.escalated_at is not None:
                 # ⭐ Already escalated. If that escalation never actually
                 # REACHED the operator, this is the only thing that will drive

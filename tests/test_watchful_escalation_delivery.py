@@ -230,3 +230,59 @@ def test_the_happy_path_still_fires_exactly_once(rig):
     row = _escalation_row(db)
     assert row["notified_at"] is not None
     assert row["notify_attempts"] == 1
+
+
+def test_a_suppressed_escalation_is_counted_in_the_audit_summary(rig):
+    """The hourly suppression summary is what an operator greps to see what
+    their snoozes are actually catching. The ordinary rule_type-snooze branch
+    counted; the escalation branch only logged.
+
+    ⭐ So the one suppression the summary most needed to report — a
+    "this device keeps following you" escalation that the operator's own snooze
+    silenced — was the one it omitted. Measured before the fix: escalation
+    reached and suppressed, summary reports `{}`.
+    """
+    db, cfg = rig
+    n = _Notifier(up=True)
+    db.add_rule_type_snooze(
+        "watchful_recurrence", expires_at=NOW + 30 * DAY, added_at=NOW
+    )
+    counter: dict[str, int] = {}
+
+    for day in (1, 2, 3):
+        ts = NOW + day * DAY
+        n.now = ts
+        process_observation(
+            DeviceObservation(
+                mac=MAC,
+                device_type="wifi",
+                first_seen=ts,
+                last_seen=ts,
+                rssi=-40,
+                ssid=None,
+                oui_vendor=None,
+                is_randomized=False,
+            ),
+            db,
+            cfg,
+            ts,
+            effective_location_id="home",
+            effective_location_label="Home",
+            ensured_locations={"home"},
+            processed_counter=[0],
+            admitted_counter=[0],
+            ruleset=_NoRules(),
+            allowlist=_NoAllowlist(),
+            notifier=n,
+            clock_trusted=True,
+            rule_type_suppression_counter=counter,
+        )
+
+    row = db._conn.execute(
+        "SELECT escalated_at FROM watchful_recurrence"
+    ).fetchone()
+    assert row["escalated_at"] is not None, "precondition: the entry escalated"
+    assert not n.sent_at, "precondition: the snooze suppressed the notification"
+    assert counter.get("watchful_recurrence") == 1, (
+        f"the audit summary omits the suppressed escalation: {counter}"
+    )
