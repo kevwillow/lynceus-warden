@@ -197,8 +197,9 @@ def test_a_previous_config_that_cannot_be_read_is_a_warning_not_a_silent_loss(
     target.write_text("kismet_url: [unclosed\n", encoding="utf-8")
     cfg = Config(db_path=str(tmp_path / "d.db"))
 
-    preserved, error = carry_forward_settings(target, "kismet_url: x\n")
+    preserved, dropped, error = carry_forward_settings(target, "kismet_url: x\n")
     assert preserved == {}
+    assert dropped == {}
     assert error is not None and "could not parse" in error
 
     report = apply_config(
@@ -212,7 +213,7 @@ def test_a_previous_config_that_cannot_be_read_is_a_warning_not_a_silent_loss(
     )
     step = next(s for s in report.steps if s.name == "write_config")
     assert step.status == "warning", f"expected a warning, got {step.status!r}"
-    assert "GONE" in step.message
+    assert "NOT carried forward" in step.message
 
 
 def test_a_readable_previous_config_is_reported_ok(hand_edited, tmp_path):
@@ -300,12 +301,224 @@ def test_carry_forward_derives_the_owned_set_from_the_rendered_output(tmp_path):
     target = tmp_path / "lynceus.yaml"
     target.write_text("kismet_url: http://a\nheartbeat_enabled: true\n", encoding="utf-8")
 
-    preserved, error = carry_forward_settings(target, "kismet_url: http://b\n")
+    preserved, dropped, error = carry_forward_settings(target, "kismet_url: http://b\n")
     assert error is None
+    assert dropped == {}
     assert preserved == {"heartbeat_enabled": True}
 
     # Same existing file, a render that now owns heartbeat_enabled too.
-    preserved, _ = carry_forward_settings(
+    preserved, _, _ = carry_forward_settings(
         target, "kismet_url: http://b\nheartbeat_enabled: false\n"
     )
     assert preserved == {}, "a key the renderer emits must not also be carried forward"
+
+
+# ---------------------------------------------------------------------------
+# Round 1 of the red-team on the carry-forward (codex gpt-5.6-sol, verified
+# here before being believed). Three findings landed on this path.
+# ---------------------------------------------------------------------------
+
+
+def test_an_unrecognised_key_is_dropped_and_named_not_carried_forward(tmp_path):
+    """⛔ A REGRESSION the carry-forward introduced, and the worst of the three.
+
+    `Config` sets `extra="forbid"`, so carrying an unknown key forward verbatim
+    makes the config fail to LOAD. Measured: an existing file holding
+    `heartbeat_interal_hours: 12` — one transposed letter — survived
+    `--reconfigure` and then raised ValidationError, i.e. the daemon would not
+    start. Before the carry-forward existed, the misspelling was discarded and
+    the wizard produced a runnable config.
+
+    Re-running setup is exactly what an operator would try in order to recover
+    from a typo; preservation must not take that away.
+    """
+    target = tmp_path / "lynceus.yaml"
+    target.write_text(
+        "kismet_url: http://127.0.0.1:2501\n"
+        "heartbeat_enabled: true\n"
+        "heartbeat_interal_hours: 12\n",
+        encoding="utf-8",
+    )
+
+    report = apply_config(
+        Config(db_path=str(tmp_path / "d.db")),
+        scope="user",
+        target_path=target,
+        severity_overrides_path=tmp_path / "so.yaml",
+        allowlist_path=tmp_path / "al.yaml",
+        enabled_rule_types=None,
+        run_bundled_import=False,
+    )
+
+    # The whole point: the daemon can still load what the wizard wrote.
+    reloaded = load_config(str(target))
+    assert reloaded.heartbeat_enabled is True, "the real setting was not preserved"
+
+    step = next(s for s in report.steps if s.name == "write_config")
+    assert list(step.detail["dropped"]) == ["heartbeat_interal_hours"]
+    assert "not a Lynceus setting" in step.detail["dropped"]["heartbeat_interal_hours"]
+    assert "heartbeat_interal_hours" in step.message, (
+        f"the key was dropped silently — the operator cannot fix a typo they "
+        f"are never shown: {step.message!r}"
+    )
+    assert step.status == "warning"
+
+
+def test_an_unreadable_previous_config_is_copied_aside_before_being_overwritten(
+    tmp_path,
+):
+    """⛔ "Fails closed" has to mean the bytes survive, not just that we said so.
+
+    The previous version reported a warning and overwrote anyway, which is
+    fail-OPEN for the operator's data: one YAML typo and every hand-edited
+    setting — `ntfy_auth_token` included — was gone, with the notice arriving
+    after the bytes had already been replaced.
+    """
+    target = tmp_path / "lynceus.yaml"
+    original = "heartbeat_enabled: true\nntfy_auth_token: secret-token\nbroken: [\n"
+    target.write_text(original, encoding="utf-8")
+
+    report = apply_config(
+        Config(db_path=str(tmp_path / "d.db")),
+        scope="user",
+        target_path=target,
+        severity_overrides_path=tmp_path / "so.yaml",
+        allowlist_path=tmp_path / "al.yaml",
+        enabled_rule_types=None,
+        run_bundled_import=False,
+    )
+
+    step = next(s for s in report.steps if s.name == "write_config")
+    backup = Path(step.detail["backup_path"])
+    assert backup.exists(), "no copy was kept of a config we could not read"
+    assert backup.read_text(encoding="utf-8") == original, "the copy is not byte-for-byte"
+    assert "secret-token" in backup.read_text(encoding="utf-8")
+    assert str(backup) in step.message, "the operator is not told where the copy is"
+
+
+def test_a_readable_config_is_not_backed_up(tmp_path):
+    """Presence assertion beside it: a copy of every readable config would be
+    litter, and "always back up" would satisfy the test above."""
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("heartbeat_enabled: true\n", encoding="utf-8")
+
+    report = apply_config(
+        Config(db_path=str(tmp_path / "d.db")),
+        scope="user",
+        target_path=target,
+        severity_overrides_path=tmp_path / "so.yaml",
+        allowlist_path=tmp_path / "al.yaml",
+        enabled_rule_types=None,
+        run_bundled_import=False,
+    )
+
+    step = next(s for s in report.steps if s.name == "write_config")
+    assert step.detail["backup_path"] is None
+    assert not list(tmp_path.glob("*.unreadable-*"))
+
+
+@pytest.mark.parametrize("source", ["*missing", "null", "true", "[wlan0]", "name: value"])
+def test_a_source_name_cannot_break_the_rendered_yaml(tmp_path, source):
+    """`kismet_sources` entries were emitted unquoted, so `*missing` became a
+    YAML ALIAS and `yaml.safe_load` raised — inside `carry_forward_settings`,
+    which reparses the render to decide ownership. A source label the operator
+    is allowed to type could therefore crash `--reconfigure` outright."""
+    cfg = Config(db_path=str(tmp_path / "d.db"), kismet_sources=[source])
+    rendered = render_config_yaml(_answers_from_config(cfg))
+
+    loaded = yaml.safe_load(rendered)
+    assert loaded["kismet_sources"] == [source], (
+        f"{source!r} did not survive the render as a string: "
+        f"{loaded['kismet_sources']!r}"
+    )
+    target = tmp_path / "lynceus.yaml"
+    target.write_text(rendered, encoding="utf-8")
+    assert load_config(str(target)).kismet_sources == [source]
+
+
+# ---------------------------------------------------------------------------
+# Round 2: a cold drift-review of round 1's own diff (codex gpt-5.6-terra),
+# each finding reproduced here before being believed. Two were real defects in
+# round 1, one was a prose overclaim, one was refuted.
+# ---------------------------------------------------------------------------
+
+
+def test_a_known_key_with_an_unloadable_value_is_dropped_too(tmp_path):
+    """🪤 Round 1 filtered on `Config.model_fields` — NAMES only — and its
+    docstring claimed it carried forward "only keys Config will accept".
+
+    `heartbeat_interval_hours: nope` is a perfectly good key carrying a value
+    pydantic rejects, so the name check passed it through and the daemon still
+    could not load the file. Measured: ValidationError at load, i.e. the very
+    outcome round 1 existed to prevent, reached by a route it did not check.
+    """
+    target = tmp_path / "lynceus.yaml"
+    target.write_text(
+        "kismet_url: http://127.0.0.1:2501\n"
+        "heartbeat_enabled: true\n"
+        "heartbeat_interval_hours: nope\n",
+        encoding="utf-8",
+    )
+
+    report = apply_config(
+        Config(db_path=str(tmp_path / "d.db")),
+        scope="user",
+        target_path=target,
+        severity_overrides_path=tmp_path / "so.yaml",
+        allowlist_path=tmp_path / "al.yaml",
+        enabled_rule_types=None,
+        run_bundled_import=False,
+    )
+
+    reloaded = load_config(str(target))
+    assert reloaded.heartbeat_enabled is True, "the valid setting was thrown out too"
+
+    step = next(s for s in report.steps if s.name == "write_config")
+    assert "heartbeat_interval_hours" in step.detail["dropped"]
+    assert "value rejected" in step.detail["dropped"]["heartbeat_interval_hours"]
+
+
+def test_a_non_string_yaml_key_does_not_crash_the_wizard(tmp_path):
+    """YAML mappings may key on non-strings: `123: value` is legal.
+
+    Round 1 sorted and joined the dropped keys as text, so an int key raised
+    TypeError — AFTER `write_config` had already replaced the file, so the
+    wizard crashed mid-apply having destroyed the original.
+    """
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("kismet_url: http://127.0.0.1:2501\n123: value\n", encoding="utf-8")
+
+    report = apply_config(
+        Config(db_path=str(tmp_path / "d.db")),
+        scope="user",
+        target_path=target,
+        severity_overrides_path=tmp_path / "so.yaml",
+        allowlist_path=tmp_path / "al.yaml",
+        enabled_rule_types=None,
+        run_bundled_import=False,
+    )
+
+    load_config(str(target))  # must still load
+    step = next(s for s in report.steps if s.name == "write_config")
+    assert "123" in step.detail["dropped"]
+
+
+def test_a_wizard_side_validation_failure_does_not_discard_operator_settings(tmp_path):
+    """⛔ The drop loop must not paper over the WIZARD's own bad answers by
+    eating operator data. Presence assertion for the `if not bad: break` arm —
+    without it, "drop until it validates" would strip a valid carried block
+    whenever the rendered half was at fault."""
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("heartbeat_enabled: true\nlog_level: DEBUG\n", encoding="utf-8")
+
+    preserved, dropped, error = carry_forward_settings(
+        target,
+        # ntfy_url set with no ntfy_topic: a cross-field failure owned entirely
+        # by the rendered half, naming neither carried key.
+        "kismet_url: http://127.0.0.1:2501\nntfy_url: https://ntfy.example.org\n",
+    )
+
+    assert error is None
+    assert preserved == {"heartbeat_enabled": True, "log_level": "DEBUG"}, (
+        f"operator settings were discarded to hide a wizard-side failure: {dropped}"
+    )

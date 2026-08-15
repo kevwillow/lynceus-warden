@@ -235,6 +235,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A typo in your config could stop Lynceus starting after you re-ran setup.**
+  The wizard had just learned to keep the settings it does not ask you about,
+  which is what you want — except that it kept *everything* it did not
+  recognise, including misspellings. Write `heartbeat_interal_hours` instead of
+  `heartbeat_interval_hours`, re-run `lynceus-setup --reconfigure`, and the
+  misspelled line came through untouched into a file the daemon then refused to
+  load at all. Re-running setup is exactly what you would try in order to fix a
+  typo, and it had quietly become the thing that preserved it. Unrecognised
+  settings are now dropped and listed by name, so you can see which line was
+  wrong instead of hunting a daemon that will not start.
+
+- **A config Lynceus could not read was overwritten without a copy being kept.**
+  If your `lynceus.yaml` had a YAML mistake in it — or was momentarily
+  unreadable — re-running setup replaced it and told you afterwards that its
+  settings were gone. Which they were, including any notification token in it.
+  The old file is now copied to `lynceus.yaml.unreadable-<timestamp>` before
+  anything is written, and setup tells you where the copy is. If the copy cannot
+  be made, setup stops rather than destroying something it cannot give back.
+
+- **A capture source name with an odd character could break the setup file.**
+  Source names were written into `lynceus.yaml` unquoted, so a name beginning
+  with `*` was read back as a YAML reference rather than text and the file
+  stopped parsing. Names like `null` and `true` quietly turned into something
+  other than names. They are quoted now.
+
+- **Setup could tell you to capture on a network cable.** A follow-on from the
+  adapter fix below: when the interface you named turned up in the wrong place,
+  Lynceus offered the other kind. But `/sys/class/net` holds ethernet ports,
+  bridges and virtual devices as well as Wi-Fi adapters, so naming a wired NIC
+  got you told to configure it as Wi-Fi — advice that produces a source Kismet
+  cannot use. Lynceus now checks the interface really is wireless before
+  suggesting that, and says plainly when a device simply cannot do the job.
+  Interface names that are not names at all (empty, `.`, or a file path) are
+  refused instead of being looked up, and a machine with no `/sys/class` at all
+  no longer produces confident claims about hardware it cannot see.
+
 - **Setting up a Bluetooth adapter told you to check a name that was already
   correct.** `lynceus-bootstrap-kismet --interface hci0` is the obvious way to
   add a Bluetooth controller, but the `--interface-type` flag defaults to

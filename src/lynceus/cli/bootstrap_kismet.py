@@ -1318,7 +1318,40 @@ def _warn_if_interface_absent(iface: str, kind: str) -> bool:
     from "nothing is out there" -- the same ambiguity the heartbeat and the
     Kismet-loss alert exist to remove, arriving here before either can help.
     """
+    # ⛔ A sysfs lookup only means anything for a plain interface NAME. `base /
+    # iface` is path arithmetic, not a child lookup: `""` and `"."` resolve to
+    # `base` itself (which exists, so the check silently passed), and an
+    # ABSOLUTE iface discards `base` entirely -- `--interface /etc/passwd` was
+    # reported present. Measured: '', '.', '..', '/etc/passwd' and
+    # 'wlan0/../wlan0' all returned present with NO warning, and every one of
+    # them would then be written into kismet_site.conf as a capture source.
+    # Kernel interface names cannot contain '/' or NUL and cannot be '.' or
+    # '..', so anything else is not a name and no lookup can vindicate it.
+    if (
+        iface != Path(iface).name
+        or iface in ("", ".", "..")
+        or "/" in iface
+        or "\0" in iface
+    ):
+        _print(
+            f"  ! {iface!r} is not a valid interface name -- Kismet will capture "
+            f"nothing from it. Interface names cannot contain '/' or be '.' / "
+            f"'..'; pass the adapter name on its own, like 'wlan0' or 'hci0'."
+        )
+        return False
+
     base = _SYS_CLASS_NET if kind == "wifi" else _SYS_CLASS_BLUETOOTH
+    # 🪤 A MISSING class tree is not evidence that the interface is missing --
+    # `Path.exists()` returns False for it and never raises, so the OSError
+    # branch below does not cover this. In a container with no /sys/class/net
+    # mounted, every name produced a confident "not present" that meant nothing.
+    # Same reasoning as the OSError branch: no evidence, so no claim.
+    try:
+        if not base.is_dir():
+            return True
+    except OSError:
+        return True
+
     try:
         present = (base / iface).exists()
     except OSError:
@@ -1347,19 +1380,54 @@ def _warn_if_interface_absent(iface: str, kind: str) -> bool:
     other = _SYS_CLASS_BLUETOOTH if kind == "wifi" else _SYS_CLASS_NET
     other_kind = "bt" if kind == "wifi" else "wifi"
     try:
-        misclassified = (other / iface).exists()
+        in_other = (other / iface).exists()
     except OSError:
         # Same reasoning as the base lookup: an unreadable OTHER tree means the
         # sharper diagnosis cannot be substantiated, so fall through to the
         # general one rather than guessing at a cause.
-        misclassified = False
-    if misclassified:
+        in_other = False
+
+    # ⛔ Being in the other tree is not enough to name a remedy, and getting
+    # this wrong reintroduces the very defect this branch was added to fix.
+    # `/sys/class/bluetooth` holds only bluetooth controllers, so a hit there
+    # does prove `bt`. But `/sys/class/net` holds ethernet, loopback, bridges,
+    # VLANs, tunnels and every veth a container ever made -- so a hit there
+    # proves nothing about WIFI. Measured: `--interface eth0 --interface-type
+    # bt` was advised to "pass --interface-type wifi", which yields
+    # `source=eth0:type=linuxwifi` -- a source Kismet cannot capture with,
+    # recommended in the tool's own voice. A concrete wrong remedy is worse
+    # than the vague right one, so the wifi direction demands positive proof:
+    # the `wireless` attribute, which the kernel creates only for cfg80211
+    # devices.
+    if in_other and other_kind == "wifi":
+        try:
+            in_other = (other / iface / "wireless").exists()
+        except OSError:
+            in_other = False
+
+    if in_other:
         _print(
             f"  ! {iface} is not a {kind} interface, but it IS present under "
             f"{other}. Kismet would be told "
             f"'{build_source_line(iface, kind)}' and would capture nothing "
             f"from it. The name is right and the kind is wrong -- pass "
             f"--interface-type {other_kind}."
+        )
+        return False
+
+    # Present as a network device but NOT wireless: also worth naming, because
+    # "check the name" is wrong here too -- the name is fine and the device
+    # simply cannot do what is being asked of it.
+    try:
+        wired = other_kind == "wifi" and (other / iface).exists()
+    except OSError:
+        wired = False
+    if wired:
+        _print(
+            f"  ! {iface} is a network interface but not a wireless one (no "
+            f"{other / iface / 'wireless'}), so Kismet cannot capture with it. "
+            f"Lynceus needs a wifi adapter that supports monitor mode, or a "
+            f"bluetooth controller with --interface-type bt."
         )
         return False
 
