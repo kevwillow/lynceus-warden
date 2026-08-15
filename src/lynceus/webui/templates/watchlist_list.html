@@ -19,6 +19,28 @@
     </p>
   {% endif %}
 
+  {# An entry whose pattern_type has no enabled delegating rule is accepted,
+     stored, counted and listed exactly like a working one. Nothing in this
+     view said so, so an operator adding one has no way to learn it short of
+     waiting for an alert that will never arrive.
+
+     ⚠️ Graded over the whole watchlist, not the current page — a per-page
+     count reads "all fine" on page 2 while page 1 is entirely inert. #}
+  {% if liveness.known and liveness.inert_count %}
+    <p class="status-line">
+      <span class="status-pill status-pill-warn">{{ liveness.inert_count }} inert</span>
+      {{ liveness.inert_count }} of {{ liveness.total }}
+      {% if liveness.total == 1 %}entry{% else %}entries{% endif %}
+      cannot fire: no enabled rule delegates to
+      {% for pt in liveness.inert_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+      {# ⚠️ Kept as contiguous plain text on purpose. Wrapping a word of this
+         sentence in a <span> splits it in the rendered HTML, and the guard
+         that asserts the banner exists then matches the per-row tooltip
+         instead and stops failing when the banner is deleted. Measured. #}
+      Marked inert in the table below.
+    </p>
+  {% endif %}
+
   <form method="get" action="/watchlist">
     <fieldset class="grid">
       <label>type
@@ -89,7 +111,9 @@
           {% for e in entries %}
             <tr>
               <td><a href="/watchlist/{{ e.id }}"><code>{{ e.pattern }}</code></a></td>
-              <td>{{ e.pattern_type }}</td>
+              <td>{{ e.pattern_type }}{% if e.pattern_type in inert_pattern_types %}
+                <span class="badge-inert" title="no enabled rule in rules.yaml delegates to this pattern type, so this entry cannot fire">inert</span>
+              {% endif %}</td>
               <td><span class="badge-{{ e.severity }}">{{ e.severity }}</span></td>
               <td>{{ e.description or "" }}</td>
               <td>{{ e.vendor or "" }}</td>
