@@ -1074,16 +1074,34 @@ def _classify_row(
 
         # Placeholder-OUI skip (v0.7.9 Touch 7). Argus emits
         # identifier=00:00:00 + identifier_type=oui for vendor rows
-        # where no real OUI is known upstream (~40 rows in the bundled
-        # default_watchlist.csv, all CCTV vendors). Admitting them
-        # adds nothing the rules engine can match against -- any
-        # Kismet observation with a 00:00:00 source MAC is filtered
-        # by rules.py's reserved-OUI guard regardless of the
-        # watchlist contents. Skip at import to keep the table clean
-        # and surface the count in the run summary. INFO-level log
-        # per row so operators can audit. Belt and suspenders with
+        # where no real OUI is known upstream. Admitting them adds
+        # nothing the rules engine can match against -- any Kismet
+        # observation with a 00:00:00 source MAC is filtered by
+        # rules.py's reserved-OUI guard regardless of the watchlist
+        # contents. Skip at import to keep the table clean and
+        # surface the count in the run summary. INFO-level log per
+        # row so operators can audit. Belt and suspenders with
         # rules.py:_is_reserved_oui_mac (which defends regardless of
         # importer behavior, including operator-injected rows).
+        #
+        # ⛔ This comment used to say "~40 rows in the bundled
+        # default_watchlist.csv, all CCTV vendors". Measured
+        # 2026-08-15 on the shipped snapshot (schema_version=31,
+        # exported 2026-06-03): across all 41,508 rows,
+        # `identifier == '00:00:00'` appears **ZERO** times, so this
+        # branch drops nothing from the bundled data and
+        # `dropped_placeholder_oui` is always 0 for it. The claim was
+        # presumably true when written and the snapshot has been
+        # re-exported since. It had also been copied verbatim into
+        # `db.py`'s new write-time refusal, which is how a wrong
+        # number survives a reader who checks only one of the files.
+        #
+        # ⚠️ The branch stays -- an operator-supplied CSV can still
+        # carry placeholder rows. But it is NOT the reason the
+        # eval-time guard is needed. That reason is the 221 of 444
+        # bundled `oui` rows on LOCALLY-ADMINISTERED prefixes, which
+        # this filter does not match and which therefore DO land and
+        # can never fire. See docs/AUDIT_REGISTER.md, Finding 37.
         if pattern_type == "oui" and pattern == "00:00:00":
             report.dropped_placeholder_oui += 1
             logger.info(
