@@ -1564,6 +1564,12 @@ is the sentence that was *right* and quietly stopped being.
 - **`SOFT_ALLOWLIST_PATTERN_TYPES` naming `ssid_pattern` and `imei_tac`** — deliberate, not drift.
   The classification covers the WATCHLIST's ten types so a future allowlist type cannot inherit hard
   suppressing power silently; `AllowlistPatternType` is the eight an operator can actually write.
+- **CLI flags that are declared and never read** — all **54** `add_argument` flags across the 7
+  `cli/` modules derived and checked, 2026-08-15. The 8 hits are all refuted (see Finding 38's method
+  note): 4 × `action="version"`, 2 self-declared no-ops, 1 documented deprecation, and `--user`,
+  whose dangerous case is refused by name. ⛔ **Do not re-run the static scan and report "clean" —
+  it is blind to this class.** The flag in every real instance IS read; the behavioural pass is the
+  one that finds things.
 
 ### 🔴 Finding 36 — `lynceus-setup --reconfigure` silently reverted 29 of 40 hand-edited settings
 
@@ -1683,6 +1689,74 @@ had checked the number and stopped there might have removed it.
 ⇒ **Publish the universe beside the number.** In both cases the instinct to distrust a number was
 correct and the reason for distrusting it was not.
 
+### 🔴 Finding 38 — the setup warning for a Bluetooth adapter blamed the name, when the name was right
+
+**Found and fixed by session 3 in PR #90 (`be65b8f`).** A fourth pointing of the same class: rounds
+10/11 asked whether a stored value reaches the code that acts on it, Finding 36 asked whether it
+survives another operator-facing path, and this asks whether **the diagnostic we already emit names
+the right cause**.
+
+`--interface-type` defaults to `wifi`, and `_warn_if_interface_absent` looks under
+`/sys/class/net` for `wifi` and `/sys/class/bluetooth` for `bt`. So
+`lynceus-bootstrap-kismet --interface hci0` — the obvious way to add a Bluetooth controller —
+looked for `hci0` among the *network* interfaces and did not find it.
+
+**Measured** on a host carrying a real `hci0` and `hci1` under `/sys/class/bluetooth`:
+
+| invocation | warning emitted | line written |
+|---|---|---|
+| `--interface hci0` (default kind) | `not present under /sys/class/net … otherwise check the name` | `source=hci0:type=linuxwifi` |
+| `--interface hci0 --interface-type bt` | *(none)* | `source=hci0:type=linuxbluetooth` |
+| `--interface wlan99` | `not present under /sys/class/net … otherwise check the name` | `source=wlan99:type=linuxwifi` |
+
+⛔ **Rows 1 and 3 are the same sentence and their fixes are opposite.** For `wlan99` the name is
+wrong. For `hci0` the name is **right** and the *kind* is wrong; the fix is `--interface-type bt`,
+which the message never mentioned.
+
+⭐ **The failure mode is that the advice gets followed.** Check the name, find it correct, conclude
+the warning is spurious, proceed — and land on `source=hci0:type=linuxwifi`, which Kismet cannot
+open. That is the "configured, capturing nothing" state the warning exists to prevent, reached by
+obeying the warning. ⇒ **#36 closed the silence and left the wrong diagnosis behind.** A diagnostic
+that names the wrong cause is worse than none: it spends the operator's trust and then fails anyway.
+
+**Fix:** consult the OTHER sysfs tree before blaming the name; when the adapter is found there,
+quote the source line Kismet would have been given and name the flag. The suggestion is **derived
+from `kind`**, so the mirror case (a wifi interface named with `--interface-type bt`) is the same
+code path rather than a second branch that can drift. Still a WARNING, never a refusal — `--interface`
+exists for remote rigs and not-yet-plugged-in adapters. A name absent from **both** trees still gets
+the original advice, because for that case the advice was right; an **unreadable** other tree falls
+back rather than guessing.
+
+### 🪤 The sweep that found nothing, on a surface that was broken
+
+Worth recording as method, because it nearly stopped the audit one step early.
+
+Finding 38 was **not** found by the sweep aimed at it. That sweep derived all **54** `add_argument`
+flags across the 7 CLI modules by AST, derived every `args.<dest>` read the same way, and diffed
+them. It surfaced 8 declared-but-unread flags and **all 8 were refuted**:
+
+| flag(s) | verdict |
+|---|---|
+| 4 × `--version` | `action="version"`; argparse consumes it |
+| `--no-color` (`export_config`, `validate`) | help text says *"no-op in v1 … reserved for future"* — the operator is told |
+| `--skip-install` (`bootstrap_kismet`) | documented **deprecated** no-op, stated in help, module docstring and an inline comment |
+| `--user` (`setup`) | mutually-exclusive marker; its one dangerous case (root without `--system`) is **refused by name** |
+
+⇒ **A declared-but-unread scan is structurally blind to this class, because in every real instance
+the flag IS read.** `--interface wlan99` was read, stored, and written to `kismet_site.conf`. The
+finding came from the pass afterwards: take each value the operator can set, follow it into the
+artefact it lands in, and ask what the **consumer** of that artefact does with it.
+
+⛔ **So "swept" must say which pass was run.** The static half is genuine coverage of the trivial
+cases and is recorded as such — the CLI flag surface is now swept, not merely unexamined — but on
+its own it would have licensed "no findings" on a surface carrying one.
+
+⚠️ **And one of the tests for the fix initially graded the HOST, not the code.** The pre-existing
+`sysfs` fixture patched only `_SYS_CLASS_NET`, so the new branch read the machine's real
+`/sys/class/bluetooth`: green on a host with no controller, different on one with an `hci0`. Both
+fixtures now patch both trees. Same family as the worktree-import trap — **a harness that resolves
+part of its own environment silently grades something you did not choose.**
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -1800,6 +1874,10 @@ hardened regardless of reachability.
   cards (`settings.html`).
 - ✅ **`sightings` retention** — landed in PR #11 (`sightings_retention_days`, off by default). The
   "unchanged across four handoffs" note is retired.
+- ✅ **Finding 36** — `--reconfigure` reverting hand-edited settings, fixed in PR #87 (`08299cc`).
+  ⚠️ Its residual (3 of the 40 — the `apply_config` path arguments) is **not** closed; it is
+  decision 8 under "Reserved for Kev".
+- ✅ **Finding 38** — the interface-kind misdiagnosis, fixed in PR #90 (`be65b8f`). Nothing residual.
 
 ## Method note
 
