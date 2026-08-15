@@ -206,7 +206,30 @@
         </dd>
       </dl>
     {% else %}
-      <p><em>ntfy is not configured.</em></p>
+      {# ⚠️ This is the most consequential state on this page and it used to be
+         the mildest-looking: a plain italic "ntfy is not configured." with no
+         badge, while the heartbeat-off case directly above gets
+         badge-status-error and a sentence naming what it costs.
+
+         Without ntfy, nothing reaches the operator's phone. Alerts land in this
+         web UI and nowhere else — and a tool whose purpose is to warn someone
+         while they are MOVING cannot rely on them refreshing a page. Severity
+         should track consequence, not how easy the state is to describe. #}
+      <dl class="metadata-grid">
+        <dt>status</dt>
+        <dd>
+          <span class="badge-status-error">not configured</span>
+          <small>no alert reaches your phone &mdash; alerts appear in this web
+          UI and nowhere else. If you are relying on being warned while away
+          from a screen, you are not currently being warned.</small>
+        </dd>
+      </dl>
+      {# ⚠️ Deliberately NOT flagging every alert as undelivered to express
+         this. A web-UI-only install is a legitimate choice, and marking its
+         alerts undelivered forever would make /settings and the heartbeat
+         report a permanent fault -- a warning shown always is one an operator
+         learns to scroll past. The channel being absent is the thing to say;
+         the individual alerts are fine. #}
     {% endif %}
     <p><small>To change, run <code>lynceus-setup --reconfigure</code>, then restart the daemon.</small></p>
   </article>
