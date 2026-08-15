@@ -1324,6 +1324,52 @@ clock.
 crossed a trust boundary?"*** — not *"which writes could store garbage"*. Same sweep, a fraction of
 the noise. Use this framing for the next round of this shape.
 
+## Hardening candidates — cost measured, trigger UNPROVEN
+
+⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
+not refuted. Someone measured a real cost, and then could not show that anything can reach it.
+Filing them under "still open" overstates them into work that looks owed; dropping them throws away
+the measurement. They live here until someone proves reachability — at which point they graduate to
+a numbered finding — or proves it is unreachable, at which point they move to Refuted.
+
+⛔ **The rule that puts a thing here: an unbounded write is a LOCATION, not a severity, until you
+show who can reach it.** Same bar every delegate finding is graded by; it applies to ours.
+
+| # | Candidate | Cost, measured | What would settle it |
+|---|---|---|---|
+| H1 | No length bound on device-supplied strings (`kismet.py`) | 200 sightings × 64 KB name = 13.4 MB on disk, **58× a 32-byte baseline** | whether Kismet ever emits an oversized value |
+| H2 | The notifier has no TOTAL deadline (**Finding 30**) | a slow server blinds the tool for the whole poll | Kev's call on the deadline value; the defect is real, the *number* is unproven |
+| H3 | A temporary allowlist silence consumes "new device" status | the device is never new again once the silence lapses | whether operators use temporary silences that way |
+
+### ⚠️ H1 — the reachability argument is aimed at the wrong field
+
+Reported from `e4288bb5` with the 58× measurement, which reproduces. **The severity argument
+attached to it does not**, and the correction changes the fix shape rather than the finding:
+
+> "802.11 caps SSIDs at 32 bytes, so anything longer is malformed by definition."
+
+`kismet.py:560` reads **`ssid = raw.get("kismet.device.base.name")`** — Kismet's *computed display
+name* for the device, not the SSID information element. So:
+
+- ⛔ **">32 bytes is malformed" does not hold for this field.** `base.name` is whatever Kismet
+  decided to call the device; it is not required to be an SSID and is not bounded by the SSID IE.
+  A rejection rule built on 32 bytes would drop **legitimate** records.
+- ⭐ The field that *is* IE-shaped is **`probe_ssids`** (`dot11.probedssid.ssid`, `kismet.py:285`),
+  and it is the one already capped — by **count** (`PROBE_SSIDS_PER_DEVICE_CAP = 50`), not length.
+- ⇒ Even there the radio ceiling is **255 bytes, not 65,536** — the IE length field is one octet. The
+  reachable amplification over a 32-byte baseline is ~8×, not 2048×.
+
+⇒ **The conclusion "do not fix yet" stands, for a better reason than the one given.** The blocker is
+not only that reachability is unproven; it is that **nobody has established what this field is
+allowed to contain**, and a bound written without that will reject good records. ✅ The
+`PROBE_SSIDS_PER_DEVICE_CAP` precedent shows the safe shape: bound the field whose contents are
+specified, leave the free-text display name alone.
+
+⚠️ And truncation is not free either way: capping `ssid` changes allowlist/watchlist **matching**
+for any operator whose pattern is longer than the cap. Rejecting the record as unparseable — there
+is already a counter for it — cannot corrupt matching, and is the shape to prefer if Kev wants this
+hardened regardless of reachability.
+
 ## Still open
 
 - The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,
