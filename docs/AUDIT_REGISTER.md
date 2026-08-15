@@ -1863,7 +1863,11 @@ but the bundled corpus is imported by direct SQL and bypasses that refusal entir
 
 ### 🟡 Finding 41 — a snooze written on a backward-jumped clock silently lasts zero hours
 
-**Found by session `d47d7e0b`; measured independently here before being recorded.** ⛔ **NOT FIXED.**
+**Found by session `d47d7e0b`; measured independently here before being recorded.**
+🟡 **PARTIALLY MITIGATED, NOT CLOSED.** PR #106 (`5d9c593`) narrows the window at the web write;
+**the DB/poller side is unclaimed and the defect is still reachable.** See "what #106 does and does
+not reach" below — and ⛔ note that this entry said "✅ FIXED" for the length of one review, which is
+recorded rather than quietly corrected.
 
 A 24-hour rule-type snooze, written under three clock conditions:
 
@@ -1906,11 +1910,77 @@ only interrogating the predicate finds it. The docstring is corrected and the di
 asserted (`test_no_snooze_is_both_purgeable_and_repairable`), so "the ordering is inert" cannot
 silently stop being true.
 
-⚠️ **Recorded as UNFIXED on purpose.** A web-UI write-time refusal was reported to me as landed in
-"#102"; **#102 is a different session's setup/bootstrap work, and `webui/clock.py` is on no branch
-and in no open PR.** The fix does not exist in this repo. ⇒ **Verify a PR number against `gh pr view`
-before quoting it in the register** — this entry was one sentence away from claiming a fix that was
-never pushed.
+### 🟡 What #106 does and does not reach — and the overclaim I nearly shipped
+
+⛔ **#106 reads as if it closes this finding. It does not.** It refuses a duration-bearing write when
+this host's clock reads earlier than a row *already recorded here*. **An install where EVERY row was
+stamped by the same behind clock has no ahead-row to compare against**, so the check never fires and
+the snooze dies on correction exactly as registered. Measured:
+
+```
+install where ALL history was stamped by the behind clock
+  latest_alert_ts                      itself behind
+  timed write on that same clock  ->   ALLOWED — the refusal does not fire
+  after clock correction          ->   repaired=0 purged=1, operator gets 0.0h
+```
+
+⭐ `d47d7e0b` pinned that limitation as a TEST rather than a footnote
+(`test_an_install_with_no_ahead_rows_is_a_known_blind_spot`), which is why it was catchable at all.
+
+⛔ **I had already written "✅ FIXED in PR #106" into this entry and opened the PR carrying it.** The
+author corrected me before it merged. ⇒ **A fix that addresses the surface a finding was reported
+against is not the same as a fix that closes it**, and a conclusive-sounding PR title landing right
+after a registration is precisely when that conflation happens. **The accurate line is "partially
+mitigated at the web write; the DB/poller side is unclaimed."**
+
+### ✅ The web-write half, verified rather than accepted — and my first verification was WRONG
+
+`webui/clock.py` (#106) refuses a **duration-bearing** write when this host's clock reads earlier
+than history it has already recorded, naming the delta and the source. ⭐ Permanent allowlist entries
+are deliberately still allowed: blocking those would stop someone suppressing a device during the
+very incident that made them look.
+
+```
+no history recorded yet, clock -6y   ->  allowed   (correct: no evidence either way)
+correct clock (+60s)                 ->  allowed
+clock BEHIND by 6 years              ->  REFUSED, naming the delta and the source
+```
+
+🪤 **My first run of that probe said the refusal did NOT fire, and I nearly reported the fix broken.**
+The check compares against `latest_alert_ts` / `latest_delivered_heartbeat_ts` — timestamps the
+**poller** wrote on this host. My probe had seeded a `rule_type_snoozes` row, which is not a history
+source, so there were no candidates and "allowed" was the correct answer to the wrong question.
+
+⇒ **The control was invalid, and the failure mode was pointed at someone else's merged work.** Every
+other instance of this trap today produced a false finding about my own code; this one would have
+produced a false accusation. **Assert your fixture actually populates the input the code reads,
+before concluding the code ignores it.**
+
+⚠️ **Two timestamp sources are deliberately EXCLUDED and that is not an oversight:** the poll
+watermark carries Kismet's `last_seen` — a *different host's* clock — so a fast Kismet box would make
+a correct local clock look behind and refuse writes that were fine. ⛔ **A fresh install with no
+recorded history is a known blind spot**, pinned as such rather than papered over: on day one there
+is no evidence either way and every write is allowed.
+
+⇒ **On PR numbers:** this was first reported to me as landed in "#102", which is a different
+session's setup/bootstrap work. **Verify a number against `gh pr view` before quoting it** — the
+finding was real and the reference was not.
+
+### ⛔ What is still open, so nobody reads this entry as closed
+
+**The DB/poller side is unclaimed.** Closing Finding 41 needs one of:
+
+1. a repair that can recognise a row written by a behind clock — ⚠️ **believed impossible after the
+   fact**: an `added_at` in the past is indistinguishable from an ordinary old row, which is why
+   #106 chose a write-time refusal; or
+2. a durable monotonic anchor written alongside the row, so "when was this stamped" does not depend
+   on the same clock that was wrong; or
+3. an accepted, documented limitation — with the operator told at the point of the write, which is
+   what #106 does for the cases it *can* see.
+
+⚠️ **The residual is the install where the clock was behind for the whole of its recorded history.**
+That is not exotic: an RTC-less Pi that has never had NTP reach it looks exactly like this on every
+boot until the moment it is corrected.
 
 ## Rig round 1 — a cold cross-model read of the day's own work, 2026-08-16
 
