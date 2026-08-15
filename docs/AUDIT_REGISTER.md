@@ -1920,13 +1920,36 @@ hardened regardless of reachability.
 
 ## Still open
 
-- The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,
-  `watchlist_detail.html:97`) remains unverified and lower severity.
-- 🟡 **Finding 25** — fixed in PR #30. **Finding 24 withdrawn**, see above.
+⚠️ **Audited 2026-08-15 and four entries were removed as already closed** — see the note below this
+list. Everything here has been checked against `main` on that date; a bullet with no date has not.
+
+- **The watchlist report's provenance-cross-link claim** (`webui/app.py:3766`,
+  `watchlist_detail.html:97`) — unverified, lower severity. Genuinely open: nobody has measured it.
 - **The ntfy DEBUG topic leak** — a maintainer decision, not a defect. See the correction above.
 - **`py/clear-text-storage-sensitive-data` on the Windows branch** — needs DPAPI or an explicit
   DACL. Not a patch; a Windows-only design item.
-- ✅ **Finding 21 is fixed** (PR #28) and **Finding 22** (PR #25) and **Finding 23** (PR #26).
+
+### 🪤 This section was itself stale, and said so in its own text
+
+**Four of its six bullets were CLOSED**, and the register announced that inline while leaving them
+filed under "Still open":
+
+```
+🟡 Finding 25 — fixed in PR #30.                                  <- filed under "Still open"
+✅ Finding 21 is fixed (#28), Finding 22 (#25), Finding 23 (#26)  <- filed under "Still open"
+```
+
+Verified rather than believed before moving them — all four are on `main`: **#25 `8609fc9`,
+#26 `4993e9c`, #28 `7571d57`, #30 `2dca5fb`.** Finding 24 was **withdrawn on verification**, which is
+neither open nor fixed and now sits in Wave 7 where it was withdrawn.
+
+⇒ **A "Still open" list is a claim with an expiry date, exactly like a number is.** Anyone scanning
+it to answer *"what is outstanding?"* got four false positives — and the failure is in the direction
+that wastes work, since each looks like something to go and fix. Same class as the day's other three:
+prose that was accurate when written and quietly stopped being.
+
+⇒ **Date the audit, not just the entries.** The header line above says when this list was last
+checked against `main`, so the next reader knows how much to trust it rather than guessing.
 
 ## Closed since the audit
 
@@ -1941,6 +1964,20 @@ hardened regardless of reachability.
   ⚠️ Its residual (3 of the 40 — the `apply_config` path arguments) is **not** closed; it is
   decision 8 under "Reserved for Kev".
 - ✅ **Finding 38** — the interface-kind misdiagnosis, fixed in PR #90 (`be65b8f`). Nothing residual.
+- ✅ **Finding 21** — a config rewrite leaving the secrets world-readable, fixed in PR #28
+  (`7571d57`). Verified on `main` 2026-08-15; was misfiled under "Still open" until then.
+- ✅ **Finding 22** — a Kismet re-run widening an operator's own hardening, fixed in PR #25
+  (`8609fc9`). Verified on `main` 2026-08-15.
+- ✅ **Finding 23** — five URL guards that could not fail on the defect they guard, fixed in PR #26
+  (`4993e9c`). Verified on `main` 2026-08-15.
+- ✅ **Finding 25** — a raw DB driver error returned in an unauthenticated 503, fixed in PR #30
+  (`2dca5fb`). Verified on `main` 2026-08-15.
+- ✅ **Finding 33** — a soft allowlist entry above a hard one silently defeating it, fixed in PR #88
+  (`350035a`). Guarded by `tests/test_allowlist_match_precedence.py`.
+- ✅ **Finding 31** — the inert `mac_range` row, fixed in PR #84. Guarded by
+  `tests/test_watchlist_pattern_types_are_wired.py`.
+- ⬜ **Finding 24** — **withdrawn on verification**, not fixed. Filed in Wave 7 where it was
+  withdrawn; listed here only so nobody re-opens it looking for a fix that never existed.
 
 ## Method note
 
