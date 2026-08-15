@@ -151,6 +151,38 @@ def test_every_admitted_pattern_type_is_counted(db):
         )
 
 
+# A realistic sample pattern per admitted type. Placeholders ("gated-3",
+# "row-3") were fine until add_watchlist learned to REFUSE a mac_range pattern
+# it cannot derive matchable columns from -- a junk mac_range is now rejected on
+# purpose, because storing one produces a row the operator believes is watching
+# and nothing can ever match. These tests are about which TYPES are accepted, so
+# they get valid values and stay orthogonal to that.
+_SAMPLE_PATTERNS = {
+    "mac": "3c:5a:b4:dd:ee:{i}",
+    "oui": "3c:5a:b{i}",
+    "mac_range": "3c:5a:b4:{i}/28",
+    "ssid": "sample-ssid-{i}",
+    "ssid_pattern": "sample-{i}",
+    "ble_uuid": "0000fd5{i}-0000-1000-8000-00805f9b34fb",
+    "ble_manufacturer_id": "004{i}",
+    "ble_local_name": "sample-name-{i}",
+    "drone_id_prefix": "1581{i}",
+    "imei_tac": "3529161{i}",
+}
+
+
+def _sample_pattern(pattern_type: str, i: int) -> str:
+    """Valid sample for ``pattern_type``. Fails loudly on an unknown type so a
+    new one cannot silently fall back to a placeholder these tests would then
+    stop covering."""
+    template = _SAMPLE_PATTERNS.get(pattern_type)
+    assert template is not None, (
+        f"no sample pattern for admitted pattern_type {pattern_type!r}; add one "
+        "to _SAMPLE_PATTERNS so this file keeps covering every admitted type"
+    )
+    return template.format(i=i)
+
+
 def test_add_watchlist_accepts_every_admitted_type(db):
     """Four DB methods gate writes/filters on the manifest.
 
@@ -164,7 +196,7 @@ def test_add_watchlist_accepts_every_admitted_type(db):
     schema = sorted(_schema_pattern_types(db))
     for i, pattern_type in enumerate(schema):
         db.add_watchlist(
-            pattern=f"gated-{i}",
+            pattern=_sample_pattern(pattern_type, i),
             pattern_type=pattern_type,
             severity="high",
         )
@@ -196,7 +228,7 @@ def _app_with_rows(tmp_path):
     database = Database(config.db_path)
     for i, pattern_type in enumerate(sorted(set(Database._WATCHLIST_PATTERN_TYPES))):
         database.add_watchlist(
-            pattern=f"row-{i}", pattern_type=pattern_type, severity="high"
+            pattern=_sample_pattern(pattern_type, i), pattern_type=pattern_type, severity="high"
         )
     return TestClient(create_app(config, database)), database
 
@@ -220,8 +252,10 @@ def test_an_unrecognised_pattern_type_filter_is_reported_not_dropped(tmp_path):
             "showing every row while the operator believes it is filtered"
         )
         assert "not_a_real_type" in body, "the notice must name the filter it ignored"
-        # ...and the rows really are all still rendered.
-        assert "row-0" in body
+        # ...and the rows really are all still rendered. Derived from the same
+        # helper _app_with_rows seeds with, so the two sides cannot drift.
+        first_type = sorted(set(Database._WATCHLIST_PATTERN_TYPES))[0]
+        assert _sample_pattern(first_type, 0) in body
     finally:
         database.close()
 

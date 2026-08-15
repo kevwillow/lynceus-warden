@@ -107,20 +107,23 @@ def _get_or_insert_watchlist_id(
     severity: str,
     description: str | None,
 ) -> tuple[int, bool]:
-    """Return (watchlist_id, was_inserted). Inserts only when row absent."""
-    row = db._conn.execute(
-        "SELECT id FROM watchlist WHERE pattern = ? AND pattern_type = ? LIMIT 1",
-        (pattern, pattern_type),
-    ).fetchone()
-    if row is not None:
-        return int(row[0]), False
-    with db._conn:
-        cur = db._conn.execute(
-            "INSERT INTO watchlist (pattern, pattern_type, severity, description) "
-            "VALUES (?, ?, ?, ?)",
-            (pattern, pattern_type, severity, description),
-        )
-        return int(cur.lastrowid), True
+    """Return (watchlist_id, was_inserted). Inserts only when row absent.
+
+    Delegates to ``Database.add_watchlist`` rather than issuing its own INSERT.
+    This was a byte-for-byte duplicate of that method's SQL, and the two had
+    already drifted in the way that matters: ``add_watchlist`` learned to
+    populate the derived ``mac_range_prefix`` columns that the indexed lookup
+    reads, and this copy did not -- so every mac_range row seeded from YAML was
+    stored, reported as "inserted", and could never match. Callers here have
+    already validated pattern_type and severity, so the extra validation in
+    ``add_watchlist`` is a no-op on this path.
+    """
+    return db.add_watchlist(
+        pattern=pattern,
+        pattern_type=pattern_type,
+        severity=severity,
+        description=description,
+    )
 
 
 def seed_threat_ouis(db: Database) -> tuple[int, int]:
@@ -212,9 +215,18 @@ def seed_from_yaml(db: Database, yaml_path: str) -> tuple[int, int]:
                 skipped += 1
                 continue
 
-        watchlist_id, was_inserted = _get_or_insert_watchlist_id(
-            db, pattern, pattern_type, severity, description
-        )
+        try:
+            watchlist_id, was_inserted = _get_or_insert_watchlist_id(
+                db, pattern, pattern_type, severity, description
+            )
+        except ValueError as exc:
+            # add_watchlist now refuses a mac_range pattern it cannot derive
+            # matchable columns from. Skip it the same way this loop skips
+            # every other unusable entry, rather than aborting the whole seed
+            # run over one bad line in an operator's YAML.
+            logger.warning("skipping entry %s/%s: %s", pattern_type, pattern, exc)
+            skipped += 1
+            continue
         if was_inserted:
             logger.info("inserted %s/%s (%s)", pattern_type, pattern, severity)
             inserted += 1
