@@ -128,6 +128,12 @@
     <form method="post" action="/alerts/ack-all-visible"
           data-confirm="Acknowledge all {{ total_count }} matching alert{{ '' if total_count == 1 else 's' }}? There is no bulk undo — reversing this means un-acknowledging each one individually.">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+      {# The instant this page was rendered. The POST bounds its write to
+         alerts that existed at this moment, so an alert arriving while the
+         operator reads the page is not acknowledged unseen. Without it a
+         relative window like "last 24h" is recomputed at POST time and
+         sweeps up whatever has arrived since. #}
+      <input type="hidden" name="rendered_at" value="{{ rendered_at }}">
       {% if severity %}<input type="hidden" name="severity" value="{{ severity }}">{% endif %}
       {% if acknowledged is sameas true %}<input type="hidden" name="acknowledged" value="true">{% endif %}
       {% if acknowledged is sameas false %}<input type="hidden" name="acknowledged" value="false">{% endif %}
