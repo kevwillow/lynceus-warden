@@ -169,3 +169,66 @@ def test_an_empty_file_is_silent(ui, caplog):
         "an empty UI file warned; that is the normal state and will train "
         "operators to ignore the warning"
     )
+
+
+def test_an_absurd_expiry_is_rejected_at_the_boundary():
+    """`expires_at` was an unrestricted `int`, and the poller formats it:
+
+        _dt.datetime.fromtimestamp(entry.expires_at, tz=_dt.UTC)
+
+    Measured with a hand-edit typo of `expires_at: 99999999999999` — the kind
+    an extra keypress makes — `process_observation` raised `ValueError: year
+    3170843 is out of range`, AFTER the device and sighting were persisted and
+    both counters advanced. That device is then unprocessable on every tick it
+    appears, and the poll watermark is held and eventually advanced past it.
+
+    ⭐ Validated at the model, not at the format call: this is the boundary
+    where operator-authored YAML enters, and a bad value should be rejected
+    once with a legible message rather than raising from an unrelated line on
+    every poll.
+    """
+    from pydantic import ValidationError
+
+    for bad in (99999999999999, -1):
+        with pytest.raises(ValidationError, match="representable Unix timestamp"):
+            AllowlistEntry(
+                pattern="aa:bb:cc:dd:ee:01", pattern_type="mac", expires_at=bad
+            )
+
+    # ⚠️ The twin: a representable epoch must still be accepted, or the
+    # validator is just an off-switch for expiring entries.
+    ok = AllowlistEntry(
+        pattern="aa:bb:cc:dd:ee:01", pattern_type="mac", expires_at=253_402_300_799
+    )
+    assert ok.expires_at == 253_402_300_799
+    assert (
+        AllowlistEntry(pattern="aa:bb:cc:dd:ee:01", pattern_type="mac").expires_at
+        is None
+    )
+
+
+def test_a_bad_expiry_drops_only_its_own_entry(tmp_path):
+    """The two fixes must compose: rejected at the boundary, and the rejection
+    costs only that entry rather than the whole file."""
+    import yaml as _yaml
+
+    ui = tmp_path / "allowlist_ui.yaml"
+    ui.write_text(
+        _yaml.safe_dump(
+            {
+                "entries": [
+                    {"pattern": "aa:bb:cc:dd:ee:01", "pattern_type": "mac"},
+                    {
+                        "pattern": "aa:bb:cc:dd:ee:02",
+                        "pattern_type": "mac",
+                        "expires_at": 99999999999999,
+                    },
+                    {"pattern": "aa:bb:cc:dd:ee:03", "pattern_type": "mac"},
+                ]
+            }
+        )
+    )
+    kept = {e.pattern for e in _load_ui_entries(ui)}
+    assert kept == {"aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:03"}, (
+        f"one bad expiry took its neighbours with it: {kept}"
+    )

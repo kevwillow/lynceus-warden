@@ -88,6 +88,44 @@ class AllowlistEntry(BaseModel):
     added_at: int | None = None
 
     @model_validator(mode="after")
+    def _bound_timestamps(self) -> AllowlistEntry:
+        """Reject epochs `datetime.fromtimestamp` cannot represent.
+
+        ⛔ `expires_at` was an unrestricted `int`, and the poller formats it for
+        the suppression audit line:
+
+            _dt.datetime.fromtimestamp(entry.expires_at, tz=_dt.UTC)
+
+        Measured with a hand-edit typo of `expires_at: 99999999999999` — the
+        kind an extra keypress produces — `process_observation` raised
+        `ValueError: year 3170843 is out of range`, AFTER the device and
+        sighting were persisted and both counters advanced. That device is then
+        unprocessable on every tick it appears, and the poll watermark is held
+        and eventually advanced past it, losing capture data.
+
+        ⭐ Validating here rather than guarding the format call is the point:
+        this is the system boundary where operator-authored YAML enters, and a
+        bad value should be rejected once at load with a legible message rather
+        than raising from an unrelated line every poll. A rejected entry is now
+        handled gracefully by the loaders — the primary logs/raises per its
+        `raise_on_parse_error` contract, and the UI sibling drops just that
+        entry and keeps the others.
+        """
+        # `datetime.fromtimestamp(..., tz=UTC)` tops out at year 9999 and
+        # cannot take a negative epoch on every supported platform.
+        MAX_EPOCH = 253_402_300_799  # 9999-12-31T23:59:59Z
+        for field in ("expires_at", "added_at"):
+            value = getattr(self, field)
+            if value is None:
+                continue
+            if value < 0 or value > MAX_EPOCH:
+                raise ValueError(
+                    f"{field}={value} is not a representable Unix timestamp "
+                    f"(expected 0..{MAX_EPOCH})"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _normalize_pattern(self) -> AllowlistEntry:
         # All known pattern_types route through lynceus.patterns so
         # the canonical form stored here matches the canonical form
