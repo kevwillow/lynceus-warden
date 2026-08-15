@@ -53,6 +53,9 @@ from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.liveness import (
     is_pattern_type_live,
     is_pattern_type_snoozed,
+    is_row_suppressed_by_overrides,
+    override_suppression_reason,
+    runtime_suppressions,
     watchlist_liveness,
 )
 from lynceus.webui.pagination import build_pagination, parse_pagination
@@ -979,6 +982,7 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
     # was just refused needs somewhere that explains why -- and one whose clock
     # is wrong should not have to be refused first to find out.
     clock_state = clock_behind_recorded_history(db, int(time.time()))
+    suppressions = runtime_suppressions(config)
 
     # ⭐ Liveness is graded against the card's OWN counts, not a second query.
     # The note says "3 of these cannot fire" directly beneath the breakdown
@@ -1051,6 +1055,7 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
         "watchlist_freshness": freshness_card,
         "watchlist_liveness": liveness,
         "clock_state": clock_state,
+        "runtime_suppressions": suppressions,
         "severity_overrides": {
             "path": str(overrides_path),
             "exists": overrides_path.exists(),
@@ -1430,6 +1435,7 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
     # existing meaning, because a consumer alerting on them must not have the
     # numbers change under it.
     liveness = watchlist_liveness(config, by_pattern_type, db=db, now_ts=now_ts)
+    suppressions = runtime_suppressions(config)
     return {
         "status": "ok",
         "total_rows": int(total_rows),
@@ -1457,6 +1463,14 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
         ),
         "inert_pattern_types": list(liveness["inert_types"]),
         "snoozed_pattern_types": list(liveness["suppressed_types"]),
+        # ⚠️ The THIRD silencing cause, and the only per-ROW one. Reported as
+        # the configured lists, never as a row count: counting would scan the
+        # whole watchlist (17k+ rows on an Argus install) on every poll of this
+        # endpoint, with no indexed vendor filter to do it cheaply. A monitoring
+        # tool can still alert on "any suppression is configured", which is the
+        # question worth asking here; /watchlist answers WHICH rows.
+        "override_suppressed_vendors": list(suppressions["vendors"]),
+        "override_suppressed_categories": list(suppressions["categories"]),
     }
 
 
@@ -4255,6 +4269,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             db=db,
             now_ts=int(time.time()),
         )
+        row_suppressions = runtime_suppressions(app.state.config)
 
         return app.state.templates.TemplateResponse(
             request=request,
@@ -4275,6 +4290,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "per_page_options": _WATCHLIST_PER_PAGE_ALLOWED,
                 "filters_active": filters_active,
                 "liveness": liveness,
+                # ⭐ Marked per ROW, not per type: a severity override silences
+                # an individual entry by its vendor/category, so the type-level
+                # verdict cannot express it. Free here -- the rows are already
+                # loaded with the metadata the override matches on.
+                "suppressed_ids": {
+                    r.id for r in rows
+                    if is_row_suppressed_by_overrides(
+                        r.vendor, r.device_category, row_suppressions
+                    )
+                },
                 "inert_pattern_types": liveness["inert_types"],
                 "snoozed_pattern_types": liveness["suppressed_types"],
             },
@@ -4365,8 +4390,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
             # It answers the same question the pages now answer: an operator
             # exporting their watchlist to review it was getting the identical
             # silent lie the UI no longer tells.
-            # Values: yes / no / snoozed / unknown.
+            # Values: yes / no / snoozed / unknown. TYPE-level only.
             "can_fire",
+            # ⭐ Its own column, not a fifth `can_fire` value: this cause is
+            # per-ROW and INDEPENDENT of the type-level verdict, so a row can
+            # carry both and one enum cannot say so. Values: yes / no.
+            "override_suppressed",
         ]
 
         def _iso_utc(ts) -> str:
@@ -4384,12 +4413,25 @@ def create_app(config: Config, db: Database) -> FastAPI:
             db=db,
             now_ts=int(time.time()),
         )
+        csv_suppressions = runtime_suppressions(app.state.config)
 
         def _can_fire(pattern_type: str) -> str:
-            """Four values, because collapsing any two loses the operator's
-            next step: no = fix rules.yaml, snoozed = lift it on /rules,
-            unknown = the question could not be answered, yes = a rule
-            consults this type (NOT a guarantee this row alerts)."""
+            """The TYPE-level verdict: no = fix rules.yaml, snoozed = lift it
+            on /rules, unknown = the question could not be answered, yes = a
+            rule consults this type.
+
+            ⛔ Deliberately does NOT fold in the per-row override cause. A
+            single enum cannot carry two INDEPENDENT causes: an entry can be
+            inert AND override-suppressed, and whichever check ran first would
+            hide the other -- so an operator told "no" would fix rules.yaml and
+            still hear nothing. `override_suppressed` is its own column for
+            exactly that reason.
+
+            🪤 An earlier version of this column DID answer from the type-level
+            verdict alone and reported `yes` for an override-silenced row; the
+            first fix then made `override` a fifth enum value, which traded one
+            wrong answer for a different one. A cold read caught the second.
+            """
             if not csv_liveness["known"]:
                 return "unknown"
             if pattern_type in csv_liveness["inert_types"]:
@@ -4437,6 +4479,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
                         row.get("last_verified") if row.get("last_verified") is not None else "",
                         row.get("notes") or "",
                         _can_fire(row.get("pattern_type") or ""),
+                        "yes"
+                        if is_row_suppressed_by_overrides(
+                            row.get("vendor"),
+                            row.get("device_category"),
+                            csv_suppressions,
+                        )
+                        else "no",
                     ]
                 )
                 yield buf.getvalue()
@@ -4517,6 +4566,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "entry_is_live": is_pattern_type_live(entry["pattern_type"], liveness),
                 "entry_is_snoozed": is_pattern_type_snoozed(
                     entry["pattern_type"], liveness
+                ),
+                "override_suppression_reason": override_suppression_reason(
+                    row.get("vendor"),
+                    row.get("device_category"),
+                    runtime_suppressions(app.state.config),
                 ),
             },
         )

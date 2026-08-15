@@ -442,15 +442,33 @@ def test_the_list_page_banner_reports_the_inert_count(inert_client):
     assert INERT_TYPE in body
 
 
+def _type_cell(body: str, pattern_type: str) -> str:
+    """The rendered `<td>` for this pattern_type's column, whole.
+
+    🪤 This exists because the assertion below used to be
+    ``r"<td>mac(?:</td>|\\s*<span[^>]*badge-inert)"`` — an alternation that
+    required `</td>` IMMEDIATELY after the type name. Adding an unrelated
+    `{% if %}` to that cell introduced one space, the regex matched nothing,
+    and the test failed for a WHITESPACE reason while the behaviour was
+    correct. It cuts the other way too: had the pattern matched a *different*
+    cell instead of nothing, the test would have passed on the wrong element.
+
+    ⚠️ ``\b`` matters: without it ``mac`` also matches a ``mac_range`` cell.
+    """
+    match = re.search(r"<td>" + pattern_type + r"\b.{0,300}?</td>", body)
+    assert match, f"could not locate the {pattern_type} cell in the rendered table"
+    return match.group(0)
+
+
 def test_the_list_page_marks_the_inert_row(inert_client):
     """The per-row marker, asserted separately from the banner. Deleting either
     one must fail exactly one of these two tests, not neither."""
     body = _prose(inert_client.get("/watchlist").text)
 
-    row = re.search(r"<td>" + INERT_TYPE + r".{0,220}?</td>", body)
-    assert row, f"could not locate the {INERT_TYPE} row in the rendered table"
-    assert "badge-inert" in row.group(0), (
-        f"the {INERT_TYPE} row carries no inert marker: {row.group(0)[:200]}"
+    cell = _type_cell(body, INERT_TYPE)
+
+    assert "badge-inert" in cell, (
+        f"the {INERT_TYPE} row carries no inert marker: {cell[:200]}"
     )
 
 
@@ -473,13 +491,9 @@ def test_the_live_entry_on_a_mixed_page_is_not_marked_inert(inert_client):
     work."""
     body = _prose(inert_client.get("/watchlist").text)
 
-    row = re.search(
-        r"<td>" + LIVE_TYPE + r"(?:</td>|\s*<span[^>]*badge-inert)", body
-    )
-    assert row, f"could not locate the {LIVE_TYPE} row in the rendered table"
-    assert "badge-inert" not in row.group(0), (
-        f"the {LIVE_TYPE} row is marked inert; it can fire"
-    )
+    cell = _type_cell(body, LIVE_TYPE)
+
+    assert "badge-inert" not in cell, f"the {LIVE_TYPE} row is marked inert; it can fire"
 
 
 def test_the_detail_page_of_a_live_entry_says_nothing(inert_client):
@@ -814,10 +828,10 @@ def test_a_snoozed_entry_says_so_on_every_surface(snoozed_client, path, needle):
 def test_the_snoozed_row_is_badged_snoozed_and_not_inert(snoozed_client):
     body = _prose(snoozed_client.get("/watchlist").text)
 
-    row = re.search(r"<td>" + LIVE_TYPE + r".{0,260}?</td>", body)
-    assert row, f"could not locate the {LIVE_TYPE} row"
-    assert "badge-snoozed-type" in row.group(0)
-    assert "badge-inert" not in row.group(0)
+    cell = _type_cell(body, LIVE_TYPE)
+
+    assert "badge-snoozed-type" in cell
+    assert "badge-inert" not in cell
 
 
 def test_healthz_reports_a_snooze_separately_from_inert(snoozed_client):
@@ -919,7 +933,7 @@ def _csv_rows(client, path="/watchlist.csv"):
     return list(_csv.reader(_io.StringIO(client.get(path).text)))
 
 
-def test_the_csv_carries_can_fire_as_the_LAST_column(inert_client):
+def test_the_csv_carries_can_fire_after_the_original_columns(inert_client):
     """⚠️ Appended, never inserted. A consumer reading the existing columns
     positionally must keep working; a new column in the middle is a silent
     data-corruption bug in someone's spreadsheet.
@@ -930,7 +944,12 @@ def test_the_csv_carries_can_fire_as_the_LAST_column(inert_client):
     rows = _csv_rows(inert_client)
     header = rows[0]
 
-    assert header[-1] == "can_fire"
+    # ⚠️ "after the original 21", not "last": `override_suppressed` was appended
+    # after this one when the per-row override cause landed. Pinning "last"
+    # would make every future addition a failure here rather than at the
+    # header contract in test_ui_watchlist.py, which is where that decision
+    # belongs.
+    assert header[21] == "can_fire"
     assert header[:21] == [
         "id", "pattern", "pattern_type", "severity", "description",
         "mac_range_prefix", "mac_range_prefix_length", "argus_record_id",

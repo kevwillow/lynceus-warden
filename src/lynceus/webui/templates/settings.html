@@ -417,6 +417,31 @@
     {# ⛔ A clock reading behind recorded history cannot produce a usable
        deadline. Shown wherever it is true, not only after a refusal, so an
        operator finds it before they lose a snooze rather than after. #}
+    {# ⚠️ Names the suppressed vendors/categories, deliberately NOT a count of
+       affected rows: counting would scan the whole watchlist (17k+ rows on an
+       Argus install) on every page load, and there is no indexed vendor filter.
+       The rows themselves are marked on /watchlist, which also answers WHICH. #}
+    {% if runtime_suppressions.configured and (runtime_suppressions.vendors or runtime_suppressions.categories) %}
+      <p><small class="dim">
+        🔇 <strong>Your severity overrides are configured to silence
+        alerts.</strong>
+        {% if runtime_suppressions.vendors %}
+          Vendors: {% for v in runtime_suppressions.vendors %}<code>{{ v }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+        {% endif %}
+        {% if runtime_suppressions.categories %}
+          Categories: {% for c in runtime_suppressions.categories %}<code>{{ c }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+        {% endif %}
+        {# ⚠️ "any entry whose ... is listed", NOT "some of your entries are
+           silenced". This block only proves a SELECTOR is configured; it does
+           not check whether any row matches it, and saying otherwise would be
+           a claim about rows nothing here looked at. /watchlist marks the rows
+           that actually match. #}
+        Any watchlist entry whose vendor or category is listed there still
+        matches — its alert is discarded. Entries that match are marked
+        <span class="badge-snoozed-type">override</span> on the watchlist;
+        if none are marked there, nothing you have stored is affected.
+      </small></p>
+    {% endif %}
     {% if clock_state.behind %}
       <p><small class="dim">
         🕐 <strong>This machine's clock reads behind events already recorded
