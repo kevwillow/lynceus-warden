@@ -18,6 +18,7 @@ from .allowlist import (
     AllowlistParseError,
     _load_allowlist_with_counts,
     derive_ui_path,
+    is_soft_attribute,
     repair_future_dated_ui_entries,
 )
 from .config import Config, load_config
@@ -540,17 +541,62 @@ def process_observation(
                 matched_allowlist_entry.expires_at, tz=_dt.UTC
             ).strftime("%Y-%m-%dT%H:%M:%SZ")
             expires_suffix = f" (expires {expires_iso})"
-        for sh in suppressed_hits:
-            if sh.rule_type == "new_non_randomized_device":
-                continue
-            logger.info(
-                "Allowlist suppressed watchlist hit: rule=%s mac=%s severity=%s%s",
-                sh.rule_name,
+        # ⛔ A SOFT allowlist match may not silence an EXPLICIT watchlist hit.
+        #
+        # The pattern types split by who controls the matched value
+        # (`allowlist.HARD_ALLOWLIST_PATTERN_TYPES`): a MAC/OUI/mac_range is a
+        # property of the radio, while a local name, SSID, service UUID or
+        # manufacturer id is FREE TEXT the device puts in its own
+        # advertisement. Suppressing on the latter means "ignore anything that
+        # SAYS it is X" -- and anything can say it is X.
+        #
+        # 🪤 Measured before this gate existed. Operator allowlists their own
+        # headphones by name, which is the documented use of `ble_local_name`:
+        #
+        #     the real headphones                mac=aa:...:01  suppressed=YES
+        #     AN ATTACKER broadcasting that name mac=de:...:99  suppressed=YES
+        #     the same attacker, not spoofing    mac=de:...:99  suppressed=no
+        #
+        # An attacker only had to name themselves after something the operator
+        # allowlisted, and the operator's own HIGH-severity watchlist entry for
+        # that MAC went silent. In a tool whose job is noticing who is
+        # following you, that is detection evasion rather than noise control.
+        #
+        # ⭐ This code already computed the answer and threw it away. The audit
+        # pass below re-evaluates the rules purely to LOG the watchlist hits the
+        # allowlist just silenced -- an INFO line that exists precisely because
+        # someone judged those events to matter. Turning that log line into a
+        # decision is the whole change.
+        #
+        # ⛔ Deliberately NOT "ignore soft entries entirely": a soft match still
+        # suppresses ambient noise (`new_non_randomized_device`), which is the
+        # legitimate everyday use. Only an explicit watchlist hit overrides it.
+        soft_match = is_soft_attribute(matched_allowlist_entry.pattern_type)
+        watchlist_hits = [
+            sh for sh in suppressed_hits
+            if sh.rule_type != "new_non_randomized_device"
+        ]
+        if soft_match and watchlist_hits:
+            logger.warning(
+                "Allowlist entry matched a SPOOFABLE attribute (%s=%r) on a "
+                "device with %d watchlist hit(s); NOT suppressing them. A "
+                "device chooses this value itself, so it cannot silence an "
+                "explicit watchlist entry. mac=%s",
+                matched_allowlist_entry.pattern_type,
+                matched_allowlist_entry.pattern,
+                len(watchlist_hits),
                 obs.mac,
-                sh.severity,
-                expires_suffix,
             )
-        return
+        else:
+            for sh in watchlist_hits:
+                logger.info(
+                    "Allowlist suppressed watchlist hit: rule=%s mac=%s severity=%s%s",
+                    sh.rule_name,
+                    obs.mac,
+                    sh.severity,
+                    expires_suffix,
+                )
+            return
     # Watchful tracking gate (migration 018). Per the locked
     # gate-ordering decision -- allowlist -> watchful tracking
     # -> rule eval -> per-rule_type snooze -> per-alert snooze
