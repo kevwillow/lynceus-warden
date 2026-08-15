@@ -46,7 +46,11 @@ from lynceus.patterns import mac_in_mac_range
 from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.csp import CSPMiddleware
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
-from lynceus.webui.liveness import is_pattern_type_live, watchlist_liveness
+from lynceus.webui.liveness import (
+    is_pattern_type_live,
+    is_pattern_type_snoozed,
+    watchlist_liveness,
+)
 from lynceus.webui.pagination import build_pagination, parse_pagination
 
 # Snooze duration vocabulary, shared between the per-alert /snooze
@@ -978,7 +982,12 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
         config.watchlist_staleness_warn_days,
         now_ts=int(time.time()),
     )
-    liveness = watchlist_liveness(config, freshness_card["pattern_type_counts"])
+    liveness = watchlist_liveness(
+        config,
+        freshness_card["pattern_type_counts"],
+        db=db,
+        now_ts=int(time.time()),
+    )
 
     return {
         "capture": {
@@ -1410,7 +1419,7 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
     # nothing. Additive keys only; total_rows and by_pattern_type keep their
     # existing meaning, because a consumer alerting on them must not have the
     # numbers change under it.
-    liveness = watchlist_liveness(config, by_pattern_type)
+    liveness = watchlist_liveness(config, by_pattern_type, db=db, now_ts=now_ts)
     return {
         "status": "ok",
         "total_rows": int(total_rows),
@@ -1418,10 +1427,26 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
         "last_imported_at": last_imported_at_iso,
         "days_since_import": days_since_import,
         "stale": stale,
+        # ⛔ null, not 0, when liveness is unknown. A number here is a claim,
+        # and `live_rows: <total>` beside `liveness_known: false` was a claim
+        # nothing had established -- a consumer graphing live_rows without
+        # gating on the boolean read a clean bill off an unreadable rules file.
+        # JSON null forces the consumer to handle the state instead of
+        # silently averaging a fabricated zero or total into a dashboard.
         "liveness_known": bool(liveness["known"]),
-        "live_rows": int(liveness["live_count"]),
-        "inert_rows": int(liveness["inert_count"]),
+        "live_rows": (
+            int(liveness["live_count"]) if liveness["live_count"] is not None else None
+        ),
+        "inert_rows": (
+            int(liveness["inert_count"]) if liveness["inert_count"] is not None else None
+        ),
+        "snoozed_rows": (
+            int(liveness["suppressed_count"])
+            if liveness["suppressed_count"] is not None
+            else None
+        ),
         "inert_pattern_types": list(liveness["inert_types"]),
+        "snoozed_pattern_types": list(liveness["suppressed_types"]),
     }
 
 
@@ -4123,7 +4148,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # page 1 was entirely inert. The per-row marker below is what makes it
         # actionable; this is the headline that gets them to look.
         liveness = watchlist_liveness(
-            app.state.config, db.watchlist_pattern_type_counts()
+            app.state.config,
+            db.watchlist_pattern_type_counts(),
+            db=db,
+            now_ts=int(time.time()),
         )
 
         return app.state.templates.TemplateResponse(
@@ -4146,6 +4174,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "filters_active": filters_active,
                 "liveness": liveness,
                 "inert_pattern_types": liveness["inert_types"],
+                "snoozed_pattern_types": liveness["suppressed_types"],
             },
         )
 
@@ -4226,6 +4255,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "last_verified_iso_utc",
             "last_verified_unix",
             "notes",
+            # ⭐ APPENDED, never inserted. This export is for offline triage, so
+            # a consumer reading columns positionally must keep working; a new
+            # column at the end is additive, one in the middle is a silent
+            # data-corruption bug in somebody's spreadsheet.
+            #
+            # It answers the same question the pages now answer: an operator
+            # exporting their watchlist to review it was getting the identical
+            # silent lie the UI no longer tells.
+            # Values: yes / no / snoozed / unknown.
+            "can_fire",
         ]
 
         def _iso_utc(ts) -> str:
@@ -4234,6 +4273,28 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return _dt.datetime.fromtimestamp(int(ts), tz=_dt.UTC).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             )
+
+        # Computed ONCE, outside the generator: this route streams, and a
+        # per-row lookup would re-parse rules.yaml for every exported entry.
+        csv_liveness = watchlist_liveness(
+            app.state.config,
+            db.watchlist_pattern_type_counts(),
+            db=db,
+            now_ts=int(time.time()),
+        )
+
+        def _can_fire(pattern_type: str) -> str:
+            """Four values, because collapsing any two loses the operator's
+            next step: no = fix rules.yaml, snoozed = lift it on /rules,
+            unknown = the question could not be answered, yes = a rule
+            consults this type (NOT a guarantee this row alerts)."""
+            if not csv_liveness["known"]:
+                return "unknown"
+            if pattern_type in csv_liveness["inert_types"]:
+                return "no"
+            if pattern_type in csv_liveness["suppressed_types"]:
+                return "snoozed"
+            return "yes"
 
         def _row_generator():
             buf = io.StringIO()
@@ -4273,6 +4334,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                         _iso_utc(row.get("last_verified")),
                         row.get("last_verified") if row.get("last_verified") is not None else "",
                         row.get("notes") or "",
+                        _can_fire(row.get("pattern_type") or ""),
                     ]
                 )
                 yield buf.getvalue()
@@ -4335,7 +4397,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # ("I added this, why have I heard nothing?"), so it carries the fuller
         # explanation rather than the list page's one-word badge.
         liveness = watchlist_liveness(
-            app.state.config, db.watchlist_pattern_type_counts()
+            app.state.config,
+            db.watchlist_pattern_type_counts(),
+            db=db,
+            now_ts=int(time.time()),
         )
         return app.state.templates.TemplateResponse(
             request=request,
@@ -4348,6 +4413,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "metadata": metadata,
                 "liveness": liveness,
                 "entry_is_live": is_pattern_type_live(entry["pattern_type"], liveness),
+                "entry_is_snoozed": is_pattern_type_snoozed(
+                    entry["pattern_type"], liveness
+                ),
             },
         )
 

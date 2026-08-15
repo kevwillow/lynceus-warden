@@ -41,12 +41,14 @@ different things, and a map that drifts from the delegation branches fails.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import TYPE_CHECKING
 
 from lynceus import rules as rules_mod
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from lynceus.config import Config
+    from lynceus.db import Database
     from lynceus.rules import Ruleset
 
 logger = logging.getLogger(__name__)
@@ -105,12 +107,64 @@ def live_pattern_types(ruleset: Ruleset) -> frozenset[str]:
     return frozenset(live)
 
 
-def watchlist_liveness(config: Config, pattern_type_counts: dict[str, int]) -> dict:
+def snoozed_pattern_types(db: Database, now_ts: int) -> dict[str, int]:
+    """``{pattern_type: snooze expiry}`` for every type an active rule_type
+    snooze is currently silencing.
+
+    ⭐ A snooze is a SECOND way a stored entry produces no alert, and it is a
+    completely different thing from being inert. The rule fires normally — the
+    poller drops the alert at emit time (``poller.py``'s
+    ``is_rule_type_snoozed`` gate). So the entry is not dead: it is silenced,
+    deliberately, by the operator, until a time they chose.
+
+    ⛔ Which is exactly why it must NOT be folded into ``inert_types``. Telling
+    someone "no enabled rule delegates to this type" about a type they snoozed
+    themselves last week sends them into ``rules.yaml`` to fix a file that is
+    already correct. The cause is different, the fix is different, and the
+    honest report says which one it is.
+
+    ⚠️ The web UI can set one of these itself (``POST /rules/{rule_type}/snooze``),
+    so this is reachable without ever touching a config file.
+    """
+    by_rule_type: dict[str, int] = {}
+    try:
+        for snooze in db.list_active_rule_type_snoozes(now_ts):
+            by_rule_type[snooze.rule_type] = int(snooze.expires_at)
+    except sqlite3.Error as exc:
+        # A legacy install predating the rule_type_snoozes table must not 500
+        # the watchlist pages. No snoozes readable = report none, which is the
+        # same answer the pre-snooze releases gave.
+        logger.warning("watchlist liveness: rule_type snoozes unreadable (%s)", exc)
+        return {}
+
+    out: dict[str, int] = {}
+    for rule_type, expires_at in by_rule_type.items():
+        for pattern_type in RULE_TYPE_DELEGATES_TO.get(rule_type, ()):
+            # A pattern_type served by two rule_types is silenced only while
+            # EVERY one of them is snoozed -- but no such type exists today
+            # (the map is many-to-one in that direction), so the later value
+            # simply wins. Kept as max() so adding one cannot silently pick
+            # the earlier expiry and under-report the silence.
+            out[pattern_type] = max(out.get(pattern_type, 0), expires_at)
+    return out
+
+
+def watchlist_liveness(
+    config: Config,
+    pattern_type_counts: dict[str, int],
+    *,
+    db: Database | None = None,
+    now_ts: int | None = None,
+) -> dict:
     """The operator-facing liveness summary for a watchlist.
 
     ``pattern_type_counts`` is the live per-type breakdown that ``/settings``
     and ``/healthz.json`` already compute — passed in rather than re-queried so
     the number the operator reads and the number graded here cannot disagree.
+
+    ``db`` / ``now_ts`` are optional so a caller that only wants the ruleset
+    verdict need not supply them; omitting them reports **no** snoozes, which
+    is what every release before them reported.
 
     Returns a dict with a deliberate **three-state** ``known`` flag:
 
@@ -122,15 +176,34 @@ def watchlist_liveness(config: Config, pattern_type_counts: dict[str, int]) -> d
     inert" because the rules file has a typo would be a worse lie than the
     silence this module exists to fix — an operator would go and delete rows
     that were fine. Unknown must read as unknown.
+
+    ⭐ The stored types PARTITION into three sets, and the partition is the
+    point: ``live_types`` (a rule consults them and the alert is emitted),
+    ``suppressed_types`` (a rule consults them; a snooze the operator set is
+    dropping the alert), ``inert_types`` (no enabled rule consults them at
+    all). Collapsing any two of those gives the operator the wrong next step.
     """
     total = sum(int(v) for v in pattern_type_counts.values())
+    # ⛔ `None`, not `total`. This said `live_count: total` and it was a
+    # CONTRADICTION shipped as a reassurance: `/healthz.json` returned
+    # `liveness_known: false` beside `live_rows: <every row you have>`, and a
+    # monitoring tool that graphs live_rows without gating on the boolean reads
+    # a clean bill off an unreadable rules file. Unknown means no row is KNOWN
+    # live; the only honest count is no count.
+    #
+    # 🪤 My own guard missed this. The unknown-state test asserted `inert_rows`
+    # and did not assert `live_rows` — an absence assertion with no presence
+    # assertion beside it. Both are asserted now.
     unknown = {
         "known": False,
         "total": total,
-        "live_count": total,
-        "inert_count": 0,
+        "live_count": None,
+        "inert_count": None,
+        "suppressed_count": None,
         "live_types": (),
         "inert_types": (),
+        "suppressed_types": (),
+        "suppressed_until": {},
         "dead_by_model_types": (),
         "reason": None,
     }
@@ -154,15 +227,31 @@ def watchlist_liveness(config: Config, pattern_type_counts: dict[str, int]) -> d
     # operator learns to scroll past.
     stored = {pt for pt, n in pattern_type_counts.items() if int(n) > 0}
     inert = stored - live_types
-    live_count = sum(int(pattern_type_counts[pt]) for pt in stored & live_types)
-    inert_count = sum(int(pattern_type_counts[pt]) for pt in inert)
+
+    snoozed_until: dict[str, int] = {}
+    if db is not None and now_ts is not None:
+        # ⚠️ Intersected with `live_types`, not applied to `stored`. A snooze on
+        # a rule_type whose rule is commented out changes nothing -- reporting
+        # it would offer "unsnooze" as a fix for a type that would still not
+        # fire afterwards. Inert is the more fundamental cause and wins.
+        snoozed_until = {
+            pt: exp
+            for pt, exp in snoozed_pattern_types(db, now_ts).items()
+            if pt in stored and pt in live_types
+        }
+    suppressed = set(snoozed_until)
+    firing = (stored & live_types) - suppressed
+
     return {
         "known": True,
         "total": total,
-        "live_count": live_count,
-        "inert_count": inert_count,
-        "live_types": tuple(sorted(stored & live_types)),
+        "live_count": sum(int(pattern_type_counts[pt]) for pt in firing),
+        "inert_count": sum(int(pattern_type_counts[pt]) for pt in inert),
+        "suppressed_count": sum(int(pattern_type_counts[pt]) for pt in suppressed),
+        "live_types": tuple(sorted(firing)),
         "inert_types": tuple(sorted(inert)),
+        "suppressed_types": tuple(sorted(suppressed)),
+        "suppressed_until": dict(sorted(snoozed_until.items())),
         "dead_by_model_types": tuple(sorted(inert & DEAD_BY_MODEL)),
         "reason": None,
     }
@@ -174,7 +263,20 @@ def is_pattern_type_live(pattern_type: str, liveness: dict) -> bool:
     Unknown liveness renders as live: an entry marked "cannot fire" on the
     strength of an unreadable rules file is the false alarm this whole change
     is supposed to avoid.
+
+    ⚠️ A SNOOZED type is live by this predicate, deliberately. The rule does
+    consult it; an alert is being dropped downstream for a reason the operator
+    chose and can reverse. ``is_pattern_type_snoozed`` reports that separately
+    — collapsing the two would label a deliberate, temporary silence with the
+    permanent cause's explanation.
     """
     if not liveness.get("known"):
         return True
     return pattern_type not in liveness["inert_types"]
+
+
+def is_pattern_type_snoozed(pattern_type: str, liveness: dict) -> bool:
+    """Whether this entry's type is currently silenced by a rule_type snooze."""
+    if not liveness.get("known"):
+        return False
+    return pattern_type in liveness["suppressed_types"]

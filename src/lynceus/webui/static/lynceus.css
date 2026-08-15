@@ -632,6 +632,12 @@ details > summary { cursor: pointer; }
    nothing is broken and no data is lost -- the entry simply does not do what
    an operator would assume it does. Negative would read as "this failed",
    which sends them looking for an error that does not exist. */
+/* A watchlist entry whose rule_type the operator snoozed from /rules: the
+   rule matches, the alert is dropped, and it comes back on its own. The
+   NEUTRAL tier, not the warning tier badge-inert uses -- this is a state the
+   operator chose and it is not a fault. Distinct from `.badge-snoozed`, which
+   marks an individual snoozed ALERT. */
+.badge-snoozed-type    { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .badge-inert           { background: var(--lyn-badge-warning-bg);  color: var(--lyn-badge-warning-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; font-weight: 600; }
 /* Allowlist management surface: source + entry-status pills. The
    primary/UI split is rendered as a badge per row; status (active /

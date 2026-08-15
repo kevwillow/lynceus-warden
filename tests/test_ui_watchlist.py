@@ -754,6 +754,17 @@ def _parse_csv_response(body: str) -> tuple[list[str], list[list[str]]]:
     return rows[0], rows[1:]
 
 
+#: The exported column order, pinned. ⛔ A LITERAL on purpose: deriving it from
+#: the same header list the route builds would compare the code to itself and
+#: could never fail. This side has to be independently written down, because
+#: what it exists to catch is a REORDER — which moves both sides together.
+#:
+#: ⭐ `can_fire` (added with the liveness work) is APPENDED, never inserted. A
+#: consumer reading these columns positionally must keep working; a new column
+#: in the middle is a silent data-corruption bug in somebody's spreadsheet.
+#: This test caught that constraint being checked rather than assumed — the
+#: grep that "showed the columns were not pinned" had simply stopped at the
+#: first ten hits.
 _WATCHLIST_CSV_HEADER = [
     "id",
     "pattern",
@@ -776,6 +787,7 @@ _WATCHLIST_CSV_HEADER = [
     "last_verified_iso_utc",
     "last_verified_unix",
     "notes",
+    "can_fire",
 ]
 
 

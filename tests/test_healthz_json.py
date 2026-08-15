@@ -463,18 +463,29 @@ def test_healthz_json_response_shape_stability(tmp_path):
             "dropped_unparseable",
             "is_stale",
         }
-        # ⭐ The four liveness keys are a DELIBERATE addition, recorded here
+        # ⭐ The six liveness keys are a DELIBERATE addition, recorded here
         # rather than waved through. `total_rows` keeps its exact old meaning
         # -- a consumer already alerting on it must not have the number change
-        # underneath them -- and `live_rows` / `inert_rows` / `liveness_known`
-        # / `inert_pattern_types` answer the question it cannot: how many of
-        # those rows a rule would actually consult. See webui/liveness.py.
+        # underneath them -- and the rest answer the question it cannot: of
+        # those rows, how many will actually produce an alert. Three states,
+        # because the operator's next step differs for each:
+        #
+        #   live_rows     a rule consults the type and nothing is silencing it
+        #   inert_rows    no enabled rule delegates to the type   -> rules.yaml
+        #   snoozed_rows  a rule matches; a rule_type snooze the operator set
+        #                 is dropping the alert                   -> /rules
+        #
+        # ⚠️ All three counts are **null**, not 0, when `liveness_known` is
+        # false. A number there is a claim, and `live_rows: <total>` beside
+        # `liveness_known: false` was a contradiction a consumer could graph as
+        # a clean bill. See webui/liveness.py.
         #
         # ⛔ Kept as `==`, not `<=`. Loosening it to a subset check would make
         # every future addition invisible AND is not needed for this change --
         # the whole point of the exact set is that extending the public
         # contract requires someone to say so here, in the file that documents
-        # it. An addition failing this test is the test working.
+        # it. An addition failing this test is the test working. (It caught
+        # this change's first four keys, and then these two.)
         assert set(body["checks"]["watchlist"].keys()) == {
             "status",
             "total_rows",
@@ -485,7 +496,9 @@ def test_healthz_json_response_shape_stability(tmp_path):
             "liveness_known",
             "live_rows",
             "inert_rows",
+            "snoozed_rows",
             "inert_pattern_types",
+            "snoozed_pattern_types",
         }
         assert set(body["checks"]["ruleset"].keys()) == {
             "status",

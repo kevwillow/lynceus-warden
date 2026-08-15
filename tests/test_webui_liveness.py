@@ -27,6 +27,7 @@ in the file is not contiguous in the HTML.
 
 from __future__ import annotations
 
+import ast
 import re
 import sqlite3
 from pathlib import Path
@@ -600,7 +601,18 @@ def test_healthz_keeps_its_existing_keys(inert_client):
     assert check["by_pattern_type"][INERT_TYPE] == 1
 
 
-def test_healthz_reports_unknown_liveness_without_calling_rows_inert(tmp_path):
+def test_healthz_reports_unknown_liveness_as_null_not_as_a_count(tmp_path):
+    """⛔ These were `live_rows: <total>, inert_rows: 0` beside
+    `liveness_known: false` — a contradiction shipped as a reassurance. A
+    monitoring tool graphing `live_rows` without gating on the boolean read a
+    clean bill off an unreadable rules file.
+
+    🪤 **The previous version of this test asserted `inert_rows` and not
+    `live_rows`**, so the defect passed it. An absence assertion with no
+    presence assertion beside it is exactly the shape this project keeps
+    getting caught by. Both are asserted now, and `total_rows` too — because
+    "no count is known" must not be confused with "there are no rows".
+    """
     cfg, db, app = _client(tmp_path, rules_path=None, entries=[(INERT_TYPE, "ac:de:48")])
     try:
         with TestClient(app) as client:
@@ -609,5 +621,351 @@ def test_healthz_reports_unknown_liveness_without_calling_rows_inert(tmp_path):
         db.close()
 
     assert check["liveness_known"] is False
-    assert check["inert_rows"] == 0
+    assert check["live_rows"] is None, (
+        "liveness is unknown, so no row is KNOWN live; a number here is a claim "
+        "nothing established"
+    )
+    assert check["inert_rows"] is None
+    assert check["snoozed_rows"] is None
     assert check["inert_pattern_types"] == []
+    assert check["snoozed_pattern_types"] == []
+    # The presence half: the rows themselves are still counted and reported.
+    assert check["total_rows"] == 1
+
+
+# --------------------------------------------------------------------------
+# 6. The map's completeness is proven against rules.py's SOURCE, not itself.
+# --------------------------------------------------------------------------
+
+
+def _delegating_rule_types_from_evaluate_source() -> dict[str, list[str]]:
+    """Parse ``rules.evaluate`` and return every ``rule_type`` whose branch
+    actually consults ``db``.
+
+    ⭐ This exists because a cold review caught the previous proof being
+    **partly circular**: ``_all_delegating_enabled()`` builds its ruleset by
+    iterating ``RULE_TYPE_DELEGATES_TO``, so a real delegation branch MISSING
+    from the map never got a rule of that type, evaluate() produced no hit,
+    the module also said "not live", and the two agreed — passing.
+
+    Reading the source is a genuinely independent side: it knows nothing about
+    the map, and a new `elif rule.rule_type == "x":` branch that calls `db.`
+    shows up here the moment it is written.
+    """
+    tree = ast.parse((REPO_ROOT / "src/lynceus/rules.py").read_text(encoding="utf-8"))
+    evaluate_fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "evaluate"
+    )
+    found: dict[str, list[str]] = {}
+    for node in ast.walk(evaluate_fn):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (
+            isinstance(test, ast.Compare)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Eq)
+            and isinstance(test.left, ast.Attribute)
+            and test.left.attr == "rule_type"
+            and isinstance(test.comparators[0], ast.Constant)
+        ):
+            continue
+        calls = sorted(set(re.findall(r"db\.(\w+)", ast.unparse(node.body))))
+        if calls:
+            found[test.comparators[0].value] = calls
+    return found
+
+
+def test_the_delegating_rule_types_are_derived_from_evaluate_not_from_the_map():
+    """A branch that consults the DB and is absent from the map is a
+    pattern_type reported inert while it fires perfectly well."""
+    from_source = _delegating_rule_types_from_evaluate_source()
+
+    assert len(from_source) >= 8, (
+        f"only found {len(from_source)} DB-consulting branches in evaluate(); "
+        f"the AST derivation has probably stopped matching: {sorted(from_source)}"
+    )
+    assert set(from_source) == set(RULE_TYPE_DELEGATES_TO), (
+        f"delegation branches in rules.evaluate but NOT in the map: "
+        f"{sorted(set(from_source) - set(RULE_TYPE_DELEGATES_TO))}; "
+        f"in the map but with no DB-consulting branch: "
+        f"{sorted(set(RULE_TYPE_DELEGATES_TO) - set(from_source))}"
+    )
+
+
+def test_a_rule_type_consulting_two_matchers_maps_to_two_pattern_types():
+    """``watchlist_ssid`` dispatches `ssid` and `ssid_pattern` under one
+    rule_type. Derived from the source rather than asserted as a literal: the
+    branch calls two distinct `resolve_matched_*` helpers, and the map must
+    carry as many pattern_types as the branch has matchers."""
+    from_source = _delegating_rule_types_from_evaluate_source()
+
+    multi = {
+        rt: calls
+        for rt, calls in from_source.items()
+        if len([c for c in calls if c.startswith("resolve_matched_")]) > 1
+    }
+    assert multi, "expected at least one rule_type with two matchers"
+    for rule_type, calls in multi.items():
+        matchers = [c for c in calls if c.startswith("resolve_matched_")]
+        assert len(RULE_TYPE_DELEGATES_TO[rule_type]) == len(matchers), (
+            f"{rule_type} consults {len(matchers)} matchers ({matchers}) but the "
+            f"map gives it {RULE_TYPE_DELEGATES_TO[rule_type]}"
+        )
+
+
+# --------------------------------------------------------------------------
+# 7. Snoozed is not inert. A different cause, a different fix, said separately.
+# --------------------------------------------------------------------------
+
+SNOOZE_RULE_TYPE = "watchlist_mac"  # the rule_type serving LIVE_TYPE
+SNOOZED_NOTE = "matches, but its alerts are being dropped"
+SNOOZED_BANNER = "matching but silenced"
+
+
+def _snooze_via_the_ui(client, rule_type: str = SNOOZE_RULE_TYPE) -> None:
+    """Snooze through the sanctioned web path, not a direct DB write — the
+    point of the finding is that this is reachable from the UI in one click."""
+    client.get("/")
+    token = client.cookies.get("lynceus_csrf")
+    r = client.request(
+        "POST",
+        f"/rules/{rule_type}/snooze",
+        data={"duration_seconds": "86400", "_csrf": token},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303, f"snooze POST failed: {r.status_code} {r.text[:200]}"
+
+
+@pytest.fixture()
+def snoozed_client(tmp_path):
+    """A watchlist whose every entry's type is LIVE, with that rule_type
+    snoozed from the UI. So every assertion below distinguishes 'silenced by
+    the operator' from 'dead', on a watchlist with nothing wrong with it."""
+    cfg, db, app = _client(
+        tmp_path,
+        rules_path=str(SHIPPED_RULES),
+        entries=[(LIVE_TYPE, "3c:5a:b4:dd:ee:01")],
+    )
+    with TestClient(app) as c:
+        c.db = db
+        _snooze_via_the_ui(c)
+        yield c
+    db.close()
+
+
+def test_the_snooze_fixture_really_snoozed_something(snoozed_client):
+    """⭐ Verify the control. If the POST silently did nothing, every
+    assertion below would pass against an unsnoozed watchlist and report a
+    working feature that does not exist."""
+    import time as _time
+
+    snooze = snoozed_client.db.is_rule_type_snoozed(SNOOZE_RULE_TYPE, int(_time.time()))
+
+    assert snooze is not None, "the UI snooze POST did not create a snooze"
+    assert snooze.expires_at > int(_time.time())
+
+
+def test_a_snoozed_type_is_reported_suppressed_and_NOT_inert(snoozed_client):
+    """⛔ The whole point. Folding this into `inert_types` would tell the
+    operator "no enabled rule delegates to this type" about a type they
+    silenced themselves — sending them into rules.yaml to fix a file that is
+    already correct."""
+    import time as _time
+
+    liveness = watchlist_liveness(
+        snoozed_client.app.state.config,
+        snoozed_client.db.watchlist_pattern_type_counts(),
+        db=snoozed_client.db,
+        now_ts=int(_time.time()),
+    )
+
+    assert liveness["suppressed_types"] == (LIVE_TYPE,)
+    assert liveness["suppressed_count"] == 1
+    assert liveness["inert_types"] == (), "a snoozed type must NOT read as inert"
+    assert liveness["inert_count"] == 0
+    assert liveness["live_types"] == (), "a suppressed type is not also counted live"
+    assert liveness["live_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("path", "needle"),
+    [
+        ("/settings", "snoozed, not dead"),
+        ("/watchlist", SNOOZED_BANNER),
+        ("/watchlist/1", SNOOZED_NOTE),
+    ],
+)
+def test_a_snoozed_entry_says_so_on_every_surface(snoozed_client, path, needle):
+    body = _prose(snoozed_client.get(path).text)
+
+    assert body.count(needle) == 1, (
+        f"{path} does not report the snooze (found {body.count(needle)} "
+        f"occurrences of {needle!r}, expected exactly one)"
+    )
+    assert CANNOT_FIRE not in body, (
+        f"{path} calls a snoozed entry dead — that is the wrong explanation and "
+        f"the wrong next step"
+    )
+
+
+def test_the_snoozed_row_is_badged_snoozed_and_not_inert(snoozed_client):
+    body = _prose(snoozed_client.get("/watchlist").text)
+
+    row = re.search(r"<td>" + LIVE_TYPE + r".{0,260}?</td>", body)
+    assert row, f"could not locate the {LIVE_TYPE} row"
+    assert "badge-snoozed-type" in row.group(0)
+    assert "badge-inert" not in row.group(0)
+
+
+def test_healthz_reports_a_snooze_separately_from_inert(snoozed_client):
+    check = snoozed_client.get("/healthz.json").json()["checks"]["watchlist"]
+
+    assert check["snoozed_rows"] == 1
+    assert check["snoozed_pattern_types"] == [LIVE_TYPE]
+    assert check["inert_rows"] == 0
+    assert check["live_rows"] == 0
+
+
+def test_a_healthy_watchlist_reports_no_snooze(healthy_client):
+    """The absence half. Nothing is snoozed, so nothing may say it is."""
+    check = healthy_client.get("/healthz.json").json()["checks"]["watchlist"]
+
+    assert check["snoozed_rows"] == 0
+    assert check["snoozed_pattern_types"] == []
+    for path in ("/settings", "/watchlist", "/watchlist/1"):
+        body = _prose(healthy_client.get(path).text)
+        assert SNOOZED_BANNER not in body
+        assert SNOOZED_NOTE not in body
+        assert "badge-snoozed-type" not in body
+
+
+def test_an_expired_snooze_stops_being_reported(tmp_path):
+    """A snooze is temporary, and the report must be too — otherwise the
+    warning outlives the condition and becomes the noise it was meant to
+    replace. Graded at a now_ts past the expiry rather than by sleeping."""
+    import time as _time
+
+    cfg, db, app = _client(
+        tmp_path, rules_path=str(SHIPPED_RULES), entries=[(LIVE_TYPE, "3c:5a:b4:dd:ee:01")]
+    )
+    try:
+        with TestClient(app) as client:
+            _snooze_via_the_ui(client)
+        now = int(_time.time())
+        during = watchlist_liveness(
+            cfg, db.watchlist_pattern_type_counts(), db=db, now_ts=now
+        )
+        after = watchlist_liveness(
+            cfg, db.watchlist_pattern_type_counts(), db=db, now_ts=now + 86_400 + 60
+        )
+    finally:
+        db.close()
+
+    assert during["suppressed_types"] == (LIVE_TYPE,)
+    assert after["suppressed_types"] == (), "the snooze expired; the report did not"
+    assert after["live_types"] == (LIVE_TYPE,)
+
+
+def test_a_snooze_on_an_inert_type_does_not_offer_unsnooze_as_the_fix(tmp_path):
+    """⚠️ Inert wins over snoozed, deliberately. Lifting a snooze on a type
+    whose delegating rule is commented out changes nothing — reporting it as
+    "snoozed" would offer a fix that does not work."""
+    import time as _time
+
+    cfg, db, app = _client(
+        tmp_path, rules_path=str(SHIPPED_RULES), entries=[(INERT_TYPE, "ac:de:48")]
+    )
+    try:
+        with TestClient(app) as client:
+            _snooze_via_the_ui(client, "watchlist_oui")
+        liveness = watchlist_liveness(
+            cfg, db.watchlist_pattern_type_counts(), db=db, now_ts=int(_time.time())
+        )
+    finally:
+        db.close()
+
+    assert liveness["inert_types"] == (INERT_TYPE,)
+    assert liveness["suppressed_types"] == ()
+
+
+def test_liveness_without_a_db_reports_no_snoozes_rather_than_failing(tmp_path):
+    """``db``/``now_ts`` are optional. A caller that only wants the ruleset
+    verdict must still get one, and must not get a fabricated snooze set."""
+    cfg, db, app = _client(
+        tmp_path, rules_path=str(SHIPPED_RULES), entries=[(LIVE_TYPE, "3c:5a:b4:dd:ee:01")]
+    )
+    try:
+        liveness = watchlist_liveness(cfg, db.watchlist_pattern_type_counts())
+    finally:
+        db.close()
+
+    assert liveness["known"] is True
+    assert liveness["suppressed_types"] == ()
+    assert liveness["live_types"] == (LIVE_TYPE,)
+
+
+# --------------------------------------------------------------------------
+# 8. /watchlist.csv — the export an operator reviews offline.
+# --------------------------------------------------------------------------
+
+
+def _csv_rows(client, path="/watchlist.csv"):
+    import csv as _csv
+    import io as _io
+
+    return list(_csv.reader(_io.StringIO(client.get(path).text)))
+
+
+def test_the_csv_carries_can_fire_as_the_LAST_column(inert_client):
+    """⚠️ Appended, never inserted. A consumer reading the existing columns
+    positionally must keep working; a new column in the middle is a silent
+    data-corruption bug in someone's spreadsheet.
+
+    The prior column order is pinned as a literal ON PURPOSE — deriving it
+    from the same header list the route builds would compare the code to
+    itself and could never catch a reorder."""
+    rows = _csv_rows(inert_client)
+    header = rows[0]
+
+    assert header[-1] == "can_fire"
+    assert header[:21] == [
+        "id", "pattern", "pattern_type", "severity", "description",
+        "mac_range_prefix", "mac_range_prefix_length", "argus_record_id",
+        "device_category", "confidence", "vendor", "source", "source_url",
+        "source_excerpt", "fcc_id", "geographic_scope", "first_seen_iso_utc",
+        "first_seen_unix", "last_verified_iso_utc", "last_verified_unix",
+        "notes",
+    ], "an existing CSV column moved; positional consumers just broke"
+
+
+def test_the_csv_says_no_for_an_inert_row_and_yes_for_a_live_one(inert_client):
+    rows = _csv_rows(inert_client)
+    header, data = rows[0], rows[1:]
+    pt, cf = header.index("pattern_type"), header.index("can_fire")
+    verdicts = {r[pt]: r[cf] for r in data}
+
+    assert verdicts[INERT_TYPE] == "no"
+    assert verdicts[LIVE_TYPE] == "yes", (
+        "the live row must say yes — an export that marked everything 'no' "
+        "would pass a test that only checked the inert row"
+    )
+
+
+def test_the_csv_says_snoozed_and_unknown_in_those_states(snoozed_client, tmp_path):
+    rows = _csv_rows(snoozed_client)
+    header, data = rows[0], rows[1:]
+    cf = header.index("can_fire")
+    assert [r[cf] for r in data] == ["snoozed"]
+
+    cfg, db, app = _client(
+        tmp_path, rules_path=None, entries=[(LIVE_TYPE, "3c:5a:b4:dd:ee:01")]
+    )
+    try:
+        with TestClient(app) as client:
+            rows = _csv_rows(client)
+    finally:
+        db.close()
+    assert [r[rows[0].index("can_fire")] for r in rows[1:]] == ["unknown"]
