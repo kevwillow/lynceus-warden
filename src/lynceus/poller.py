@@ -1137,20 +1137,32 @@ def poll_once(
         db.set_state(STATE_KEY_LAST_POLL, str(watermark))
     # Per-poll housekeeping for the rule_type_snoozes table: physically
     # delete rows whose expires_at has passed. Cheap (table is tiny;
-    # indexed on expires_at) and defensive — the gate's
-    # ``expires_at > now_ts`` filter already ignores expired rows, so a
-    # missed cleanup never affects correctness, only steady-state row
-    # count. Wrapped defensively for the same reason as the evidence
-    # prune below: a housekeeping failure must not abort the poll loop.
-    try:
-        purged = db.cleanup_expired_rule_type_snoozes(now_ts)
-        if purged > 0:
-            logger.debug(
-                "rule_type_snoozes: purged %d expired row(s) on poll cycle",
-                purged,
-            )
-    except Exception as e:
-        logger.warning("rule_type_snoozes cleanup failed: %s", e)
+    # indexed on expires_at). Wrapped defensively for the same reason as the
+    # evidence prune below: a housekeeping failure must not abort the poll loop.
+    #
+    # ⛔ Gated on `clock_trusted` for the same reason the prunes below are, and
+    # this one is a DELETE of operator intent rather than of capture data.
+    # Measured: a snooze the operator set to last until NOW+7d is physically
+    # deleted at clock +8d, and correcting the clock does not bring it back.
+    #
+    # 🪤 The comment that used to sit here argued the opposite — "a missed
+    # cleanup never affects correctness, only steady-state row count, because
+    # the gate's ``expires_at > now_ts`` filter already ignores expired rows".
+    # That reasoning is sound for a cleanup that does NOT RUN. It does not
+    # cover one that RUNS with a wrong clock and deletes rows that have not
+    # expired, and the read-side filter cannot restore a deleted row. Skipping
+    # this on an untrusted clock is exactly the harmless case that comment
+    # described; running it is not.
+    if clock_trusted:
+        try:
+            purged = db.cleanup_expired_rule_type_snoozes(now_ts)
+            if purged > 0:
+                logger.debug(
+                    "rule_type_snoozes: purged %d expired row(s) on poll cycle",
+                    purged,
+                )
+        except Exception as e:
+            logger.warning("rule_type_snoozes cleanup failed: %s", e)
     # Per-poll housekeeping for watchful_recurrence: archive entries
     # whose last_seen_at is >= 90 days stale. Per OQ-3 this is the
     # SOLE lifecycle clock for unactioned watchful entries --
@@ -1159,15 +1171,24 @@ def poll_once(
     # watchful table's small steady-state size). Wrapped defensively
     # for the same reason as the surrounding housekeeping blocks: a
     # failure here must not abort the poll loop.
-    try:
-        archived = db.auto_archive_watchful_recurrence(now_ts)
-        if archived > 0:
-            logger.info(
-                "watchful_recurrence: archived %d entries (90d quiet-stretch reached)",
-                archived,
-            )
-    except Exception as e:
-        logger.warning("watchful_recurrence auto-archive failed: %s", e)
+    #
+    # ⛔ Also gated on `clock_trusted`. Archiving is keyed on a 90-day
+    # quiet stretch measured against the same wall clock, so a forward jump
+    # retires entries the operator has not finished with. Milder than the
+    # snooze purge — archived is recoverable where deleted is not — but it is
+    # the same cause, and leaving one of a pair ungated is how the next reader
+    # concludes the gate was a judgement about THIS call rather than an
+    # oversight.
+    if clock_trusted:
+        try:
+            archived = db.auto_archive_watchful_recurrence(now_ts)
+            if archived > 0:
+                logger.info(
+                    "watchful_recurrence: archived %d entries (90d quiet-stretch reached)",
+                    archived,
+                )
+        except Exception as e:
+            logger.warning("watchful_recurrence auto-archive failed: %s", e)
     # Daily housekeeping: prune evidence rows past the retention window. The
     # helper is a no-op except once per ~24h, so this is cheap to call from
     # every poll tick. Wrapped defensively because a prune failure must not
