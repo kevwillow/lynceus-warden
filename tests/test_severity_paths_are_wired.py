@@ -323,3 +323,159 @@ def test_priorities_are_distinct_and_ordered_by_severity():
     the operator's notifications."""
     assert SEVERITY_TO_PRIORITY["low"] < SEVERITY_TO_PRIORITY["med"] < SEVERITY_TO_PRIORITY["high"]
     assert len(set(SEVERITY_TO_TAGS.values())) == len(SEVERITY_TO_TAGS)
+
+
+# ---------------------------------------------------------------------------
+# ⛔ Everything above proves the EVALUATOR honours an override object handed to
+# it. A cold read pointed out that the file is called `..._are_wired` and never
+# tested the wiring: `_evaluate` constructs `RuntimeSeverityOverride` directly,
+# so the YAML loader could ignore a key, or the poller could pass None forever,
+# and every test above would stay green.
+#
+# The wiring does exist — `Poller.__init__` calls
+# `load_runtime_severity_overrides(config.severity_overrides_path)` and threads
+# the result into `evaluate`. These tests drive it from a real FILE so that
+# claim is measured rather than asserted by a filename.
+# ---------------------------------------------------------------------------
+
+
+def test_a_real_overrides_FILE_suppresses_through_the_real_loader(tmp_path):
+    """YAML on disk -> `load_runtime_severity_overrides` -> `evaluate`.
+
+    The half `_evaluate` cannot reach: a loader that dropped `suppress_vendors`
+    would leave every parametrised case above passing.
+    """
+    from lynceus.rules import load_runtime_severity_overrides
+
+    path = tmp_path / "severity_overrides.yaml"
+    path.write_text(f"suppress_vendors:\n  - {VENDOR}\n", encoding="utf-8")
+
+    overrides = load_runtime_severity_overrides(str(path))
+    assert overrides is not None, "the loader returned None for a valid overrides file"
+    assert not overrides.is_empty(), (
+        "the loader parsed the file to an EMPTY runtime view; the key it needs is "
+        "`suppress_vendors` and nothing downstream will suppress anything"
+    )
+
+    # Control first: the same row alerts when no overrides file is involved.
+    control = _evaluate("watchlist_mac", None, tmp_path, "file-control")
+    assert control, "control invalid: the row does not alert even without an override"
+
+    suppressed = _evaluate("watchlist_mac", overrides, tmp_path, "file-treatment")
+    assert not suppressed, (
+        "an overrides FILE that the real loader parsed did not suppress the match. "
+        "The evaluator honours an injected object (tests above), so the break is in "
+        "the loader or its key mapping."
+    )
+
+
+def test_the_poller_threads_the_loaded_overrides_into_evaluate():
+    """The last link, checked structurally because standing a poller up needs a
+    live Kismet.
+
+    ⚠️ Deliberately NOT a grep for the string in the file — that matches the
+    import line and the parameter default. This resolves the attribute the
+    poller actually stores and the signature `evaluate` actually accepts, so a
+    rename on either side fails here rather than silently decoupling the two.
+    """
+    import inspect
+
+    from lynceus import poller as poller_module
+
+    source = inspect.getsource(poller_module.Poller.__init__)
+    assert "load_runtime_severity_overrides" in source, (
+        "Poller.__init__ no longer loads the overrides file; the runtime layer is "
+        "disconnected and every test in this file would still pass"
+    )
+    assert "severity_overrides" in inspect.signature(evaluate).parameters, (
+        "evaluate() no longer accepts severity_overrides"
+    )
+    assert "severity_overrides" in inspect.signature(
+        poller_module.process_observation
+    ).parameters, (
+        "process_observation no longer accepts severity_overrides, so the poller "
+        "cannot hand the loaded file to the evaluator"
+    )
+
+
+def test_send_ACTUALLY_uses_the_maps_rather_than_merely_declaring_them(monkeypatch):
+    """⛔ The two tests above inspect dictionaries. Nothing made `send()` read them.
+
+    A cold read caught it: `send` could hardcode a priority, swap the two maps,
+    or ignore severity entirely, and the coverage/ordering assertions would all
+    stay green. This drives the real POST path and reads the headers it builds.
+    """
+    from lynceus import notify as notify_module
+
+    captured: dict = {}
+
+    class _Response:
+        status_code = 200
+
+    def _fake_post(url, data=None, headers=None, timeout=None):
+        captured["headers"] = headers
+        return _Response()
+
+    monkeypatch.setattr(notify_module.requests, "post", _fake_post)
+    notifier = notify_module.NtfyNotifier(base_url="https://ntfy.example", topic="t")
+
+    seen: dict[str, tuple[str, str]] = {}
+    for severity in sorted(ALL_SEVERITIES):
+        captured.clear()
+        assert notifier.send(severity, "title", "body") is True
+        headers = captured["headers"]
+        seen[severity] = (headers["Priority"], headers["Tags"])
+
+    # `assert seen >= N`: a loop over an emptied set would otherwise pass.
+    assert len(seen) == len(ALL_SEVERITIES) >= 3
+
+    for severity, (priority, tag) in seen.items():
+        assert priority == str(SEVERITY_TO_PRIORITY[severity]), (
+            f"send() sent Priority={priority} for severity={severity!r} but the map "
+            f"says {SEVERITY_TO_PRIORITY[severity]} — the map is decorative"
+        )
+        assert tag == SEVERITY_TO_TAGS[severity], (
+            f"send() sent Tags={tag!r} for severity={severity!r} but the map says "
+            f"{SEVERITY_TO_TAGS[severity]!r}"
+        )
+
+    # Presence beside the mapping: the values must actually DIFFER between
+    # severities, or a send() that hardcoded one value would satisfy the loop
+    # above whenever the maps happened to agree with it.
+    assert len({p for p, _ in seen.values()}) == len(seen)
+
+
+def test_a_priority_override_does_not_silently_discard_the_severity_tag():
+    """The documented decoupling: the watchful escalation site sends
+    severity="high" with priority_override=4 so prominence and tone can differ.
+
+    Pinned because "tag follows severity in both cases" is a comment, and a
+    refactor that derived the tag from the PRIORITY would look correct and
+    silently relabel every overridden alert.
+    """
+    from lynceus import notify as notify_module
+
+    captured: dict = {}
+
+    class _Response:
+        status_code = 200
+
+    monkeypatch_target = notify_module.requests
+
+    def _fake_post(url, data=None, headers=None, timeout=None):
+        captured["headers"] = headers
+        return _Response()
+
+    original = monkeypatch_target.post
+    monkeypatch_target.post = _fake_post
+    try:
+        notifier = notify_module.NtfyNotifier(base_url="https://ntfy.example", topic="t")
+        assert notifier.send("high", "t", "b", priority_override=4) is True
+    finally:
+        monkeypatch_target.post = original
+
+    assert captured["headers"]["Priority"] == "4", "priority_override was ignored"
+    assert captured["headers"]["Tags"] == SEVERITY_TO_TAGS["high"], (
+        "the tag followed the OVERRIDDEN priority instead of the severity; an "
+        "escalation sent at priority 4 would be relabelled as a lower tier"
+    )

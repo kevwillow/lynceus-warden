@@ -371,3 +371,73 @@ def test_position_still_breaks_ties_within_a_class(tmp_path):
 
     reversed_match = Allowlist(entries=[second, first]).is_allowed(obs, now_ts=NOW)
     assert reversed_match is not None and reversed_match.pattern_type == "ble_manufacturer_id"
+
+
+def test_the_control_for_the_ambient_noise_suppression_claim(tmp_path):
+    """⚠️ The control `test_a_soft_only_allowlist_still_suppresses_ambient_noise`
+    was missing, and without it that test is vacuous.
+
+    A cold read named it: if the `new_non_randomized_device` rule were removed,
+    disabled, or broken, the same device would generate nothing anyway and the
+    "soft allowlist suppressed it" assertion would pass while soft allowlisting
+    did nothing at all.
+
+    So: the SAME device, NOT watchlisted, with an EMPTY allowlist, must alert.
+    """
+    obs = _observation(["ble_local_name"])
+    alerts, sent = _observe(tmp_path, [], obs, watchlisted=False)
+
+    assert alerts, (
+        "a new non-randomized device produced NO alert with an empty allowlist, so "
+        "`test_a_soft_only_allowlist_still_suppresses_ambient_noise` is measuring a "
+        "dead ambient rule, not a working suppression"
+    )
+    assert any(row[0] == "new_device_alert" for row in alerts), (
+        f"expected the ambient new-device rule to fire; got {[r[0] for r in alerts]}"
+    )
+    assert sent, "the ambient alert was written but never delivered"
+
+
+def test_the_hard_soft_classification_has_an_INDEPENDENT_semantic_anchor():
+    """⛔ The sweep above parametrises over the implementation's own HARD/SOFT
+    sets, so it cannot notice a type being MISCLASSIFIED.
+
+    A cold read put it precisely: flip `oui` to soft and `ssid` to hard, and the
+    cardinalities, the union, the disjointness and every parametrised expectation
+    still pass — while the real system stops suppressing an explicit OUI
+    allowlist and lets a device-chosen SSID silence a watchlist hit.
+
+    This is the independent side: the classification restated from WHO CONTROLS
+    THE VALUE, which is the actual criterion, written out here rather than
+    imported. Two lists that must agree, from two sources.
+    """
+    # Radio-level: a property of the transmitting radio. The device cannot
+    # present another's without spoofing the address it transmits on.
+    radio_level = {"mac", "mac_range", "oui"}
+    # Device-chosen: free text in the device's own advertisement. Anything can
+    # claim any of these.
+    device_chosen = {
+        "ssid",
+        "ssid_pattern",
+        "ble_uuid",
+        "ble_manufacturer_id",
+        "ble_local_name",
+        "drone_id_prefix",
+        "imei_tac",
+    }
+
+    assert HARD_ALLOWLIST_PATTERN_TYPES == radio_level, (
+        f"the HARD set no longer matches the radio-level criterion. "
+        f"Newly hard: {sorted(HARD_ALLOWLIST_PATTERN_TYPES - radio_level)}; "
+        f"no longer hard: {sorted(radio_level - HARD_ALLOWLIST_PATTERN_TYPES)}. "
+        "A type is hard only if the ATTACKER cannot choose the value — if that "
+        "judgement changed, change it here deliberately and say why in "
+        "docs/AUDIT_REGISTER.md."
+    )
+    assert SOFT_ALLOWLIST_PATTERN_TYPES == device_chosen, (
+        f"the SOFT set no longer matches the device-chosen criterion: "
+        f"{sorted(SOFT_ALLOWLIST_PATTERN_TYPES ^ device_chosen)}"
+    )
+    # Presence beside the equality: the two criteria must stay disjoint and
+    # non-empty, or a future edit could satisfy both by emptying one.
+    assert radio_level and device_chosen and not (radio_level & device_chosen)
