@@ -1142,15 +1142,26 @@ def poll_once(
     # missed cleanup never affects correctness, only steady-state row
     # count. Wrapped defensively for the same reason as the evidence
     # prune below: a housekeeping failure must not abort the poll loop.
-    try:
-        purged = db.cleanup_expired_rule_type_snoozes(now_ts)
-        if purged > 0:
-            logger.debug(
-                "rule_type_snoozes: purged %d expired row(s) on poll cycle",
-                purged,
-            )
-    except Exception as e:
-        logger.warning("rule_type_snoozes cleanup failed: %s", e)
+    #
+    # ⛔ GATED. `expires_at <= now_ts` is a wall-clock comparison, so a forward
+    # jump expires snoozes that have not expired. Measured on an untrusted
+    # clock: a 7-day snooze was DELETED by a poll at +8d -- and the same tick
+    # logged "clock is untrusted" twice while this ran anyway.
+    #
+    # A snooze is an operator's explicit "stop telling me about this until
+    # then". Cancelling it early does not just lose a row: it resumes alerting
+    # the operator deliberately silenced, which is how people learn to ignore
+    # this tool.
+    if clock_trusted:
+        try:
+            purged = db.cleanup_expired_rule_type_snoozes(now_ts)
+            if purged > 0:
+                logger.debug(
+                    "rule_type_snoozes: purged %d expired row(s) on poll cycle",
+                    purged,
+                )
+        except Exception as e:
+            logger.warning("rule_type_snoozes cleanup failed: %s", e)
     # Per-poll housekeeping for watchful_recurrence: archive entries
     # whose last_seen_at is >= 90 days stale. Per OQ-3 this is the
     # SOLE lifecycle clock for unactioned watchful entries --
@@ -1159,15 +1170,25 @@ def poll_once(
     # watchful table's small steady-state size). Wrapped defensively
     # for the same reason as the surrounding housekeeping blocks: a
     # failure here must not abort the poll loop.
-    try:
-        archived = db.auto_archive_watchful_recurrence(now_ts)
-        if archived > 0:
-            logger.info(
-                "watchful_recurrence: archived %d entries (90d quiet-stretch reached)",
-                archived,
-            )
-    except Exception as e:
-        logger.warning("watchful_recurrence auto-archive failed: %s", e)
+    #
+    # ⛔ GATED, and this is the worst of the three for THIS product. Watchful
+    # recurrence is how the tool notices a device that keeps coming back --
+    # the core signal for "someone is following me". Archiving is driven by
+    # `last_seen_at` vs `now_ts`, so one forward jump past the 90-day
+    # quiet-stretch silently stops tracking every live entry.
+    #
+    # Measured on an untrusted clock: a poll at +91d archived the only active
+    # watchful entry. The operator is told nothing; the surface simply empties.
+    if clock_trusted:
+        try:
+            archived = db.auto_archive_watchful_recurrence(now_ts)
+            if archived > 0:
+                logger.info(
+                    "watchful_recurrence: archived %d entries (90d quiet-stretch reached)",
+                    archived,
+                )
+        except Exception as e:
+            logger.warning("watchful_recurrence auto-archive failed: %s", e)
     # Daily housekeeping: prune evidence rows past the retention window. The
     # helper is a no-op except once per ~24h, so this is cheap to call from
     # every poll tick. Wrapped defensively because a prune failure must not
