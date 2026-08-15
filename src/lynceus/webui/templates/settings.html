@@ -341,6 +341,20 @@
       drone_id_prefix={{ watchlist_freshness.pattern_type_counts.drone_id_prefix }},
       ble_local_name={{ watchlist_freshness.pattern_type_counts.ble_local_name }}
     </p>
+    {# A rule type an operator can add, that is counted directly above, and
+       that has never been observed to match anything. Saying so beside the
+       count is the only place they would look. Conditional on the count, so a
+       watchlist without one of these carries no warning at all. #}
+    {% if watchlist_freshness.pattern_type_counts.ble_manufacturer_id %}
+      <p><small class="dim">
+        ⚠️ <strong>ble_manufacturer_id rules are not currently matching.</strong>
+        The manufacturer company id is read from candidate Kismet field paths
+        that have never been confirmed against a live capture, so these rules
+        are stored and counted but have not been seen to fire. Your other rule
+        types are unaffected. For Apple devices the <code>ble_device_class</code>
+        rule type is decoded from the advert itself and does match — prefer it.
+      </small></p>
+    {% endif %}
     <p><small>
       Staleness threshold is
       <code>watchlist_staleness_warn_days</code> in
