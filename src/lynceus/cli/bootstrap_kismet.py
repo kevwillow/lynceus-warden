@@ -1328,6 +1328,41 @@ def _warn_if_interface_absent(iface: str, kind: str) -> bool:
         return True
     if present:
         return True
+
+    # ⛔ Absent from the tree implied by `kind` -- but is it simply the other
+    # kind? `--interface-type` defaults to `wifi`, so an operator adding a
+    # Bluetooth adapter with `--interface hci0` (the obvious invocation) used to
+    # get `hci0 is not present under /sys/class/net ... otherwise check the
+    # name`. Measured on a host with a real hci0: byte-identical to the warning
+    # for `wlan99`, which genuinely does not exist. But the name was RIGHT and
+    # only the kind was wrong, so an operator who checks the name, finds it
+    # correct and dismisses the warning ends up with
+    # `source=hci0:type=linuxwifi` -- which Kismet cannot open. That is the
+    # exact "configured, capturing nothing" state this warning exists to
+    # prevent, reached by following the warning's own advice.
+    #
+    # Two causes with opposite fixes must not share one sentence. The
+    # information to separate them was already here: look in the other tree
+    # before blaming the name.
+    other = _SYS_CLASS_BLUETOOTH if kind == "wifi" else _SYS_CLASS_NET
+    other_kind = "bt" if kind == "wifi" else "wifi"
+    try:
+        misclassified = (other / iface).exists()
+    except OSError:
+        # Same reasoning as the base lookup: an unreadable OTHER tree means the
+        # sharper diagnosis cannot be substantiated, so fall through to the
+        # general one rather than guessing at a cause.
+        misclassified = False
+    if misclassified:
+        _print(
+            f"  ! {iface} is not a {kind} interface, but it IS present under "
+            f"{other}. Kismet would be told "
+            f"'{build_source_line(iface, kind)}' and would capture nothing "
+            f"from it. The name is right and the kind is wrong -- pass "
+            f"--interface-type {other_kind}."
+        )
+        return False
+
     _print(
         f"  ! {iface} is not present under {base} -- Kismet will capture "
         f"nothing from it. That is expected if the adapter is not plugged in "
