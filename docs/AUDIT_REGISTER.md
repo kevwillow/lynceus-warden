@@ -1846,7 +1846,53 @@ hardened regardless of reachability.
    as shipped.
 3. **The notifier's total deadline** (Finding 30 / H2) — the defect is real, the *number* is yours.
 4. `rollback_to` refusing to unstamp a migration it could not revert — a documented contract.
-5. **Web UI authentication** — 23 unauthenticated POST routes.
+5. ⭐ **Web UI authentication — the evidence is COMPLETE, so this is a priced decision rather than an
+   open worry.** Measured by session `d47d7e0b`; **independently re-measured on `1e0fdef`**,
+   2026-08-15, and unchanged (their run was at `0e199dd`, four merges earlier):
+
+   ```
+   POST routes, DERIVED from the live app                 23
+   changed persistent state for an UNAUTHENTICATED caller 22
+   refused — on a DOMAIN precondition, not access control  1   (/devices/{mac}/watch)
+   control: the same requests with NO CSRF token         403   — CSRF refuses, and is not auth
+   ```
+
+   ⭐ **The route set is derived from the running app, not from the probe's own list.** Four merges
+   landed between the two measurements; a route added by any of them would have been silently missed
+   by a hardcoded list. Both agree at 23, so coverage is complete rather than assumed.
+
+   ⚠️ **Method, because the number is only as good as it:** every POST issued with no credential of
+   any kind, then **every row of every table plus both allowlist files** diffed after each request. A
+   hand-picked fingerprint reports "no change" for whatever it forgot to look at, which turns an
+   unmeasured route into a clean bill.
+
+   **What an unauthenticated caller achieves:** silence an entire rule type (`/rules/{t}/snooze` —
+   `rule_type_snoozes` 0→1 in one request); write an arbitrary allowlist pattern, so **a device can
+   allowlist itself**; acknowledge **every** alert in one call (11 `alert_actions` rows); lift
+   existing suppressions; and write operator-attributed notes and verdicts nobody typed.
+
+   ⛔ **The scenario to price:** an adversary lynceus exists to notice, who can reach the port, can
+   **allowlist their own MAC and snooze the rule type that would have caught them — one POST each —
+   and the dashboard looks clean afterwards.**
+
+   **What must NOT be double-counted, both verified as controls:**
+   - **CSRF works and is not authentication.** Tokenless requests are refused 403, so a blind
+     cross-site POST fails; a direct caller (curl, a script, anything on the LAN) simply GETs a page
+     first to collect the cookie. `csrf.py`'s docstring is accurate and claims no more.
+   - **The default bind is loopback**, and `config.py` refuses to start on a non-loopback host
+     without an explicit `ui_allow_remote: true`. LAN exposure exists only where an operator opted
+     in — but on a default install the surface is still every local user and process on the box.
+
+   **Three shapes, ascending cost:** (a) a shared secret in a header/cookie for all non-GET routes;
+   (b) single-user password + session; (c) leave it and document that the port is
+   trusted-equivalent. ⚠️ **(c) is the current de-facto posture and is defensible for a
+   loopback-only install** — the real gap there is that nothing says so anywhere an operator would
+   read it. **Nothing has been implemented. This is Kev's call and it is large.**
+
+   📌 The full per-route consequence table lives in `internal/session2-harnesses/auth_table.md`,
+   which is **gitignored** — that is why the measurement is summarised here rather than referenced.
+   Guarded by `tests/test_webui_post_routes_are_classified.py`, which fails when a POST route is
+   added, so the surface cannot widen while this decision is outstanding.
 6. The diagnostics assert-or-delete verdict; the heartbeat shipping off by default;
    `.mailmap`/dependabot authorship; de-identifying the withheld test files.
 7. ⛔ **Rotating the two ntfy topics on the broker** — scrubbed from the tree, still live in git
