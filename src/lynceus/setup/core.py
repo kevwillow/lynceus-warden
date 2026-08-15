@@ -29,6 +29,8 @@ import sys
 from pathlib import Path
 from typing import Literal
 
+import yaml
+
 from lynceus import paths
 from lynceus.config import BleBridgeConfig, Config
 from lynceus.kismet import KismetClient
@@ -521,6 +523,20 @@ def render_config_yaml(answers: dict) -> str:
         "ble_bridge:",
         f"  enabled: {_yaml_bool(answers.get('ble_bridge_enabled', False))}",
         f"  adapter: {_yaml_str(answers.get('ble_bridge_adapter') or _DEFAULT_BLE_ADAPTER)}",
+        # ⛔ `flush_interval` is the one BleBridgeConfig field the wizard never
+        # asks about, and `ble_bridge:` as a whole IS rewritten here — so unlike
+        # the top-level settings it cannot be rescued by carry_forward_settings
+        # (appending a second `ble_bridge:` key would make YAML take the last
+        # one and drop enabled/adapter with it). Emitted only when set, so a
+        # fresh install's file is unchanged.
+        # `test_no_unhandled_wizard_owned_subkey` DERIVES the unowned nested
+        # sub-keys and fails if a new one appears, rather than trusting this
+        # comment to stay true.
+        *(
+            [f"  flush_interval: {int(answers['ble_bridge_flush_interval'])}"]
+            if answers.get("ble_bridge_flush_interval") is not None
+            else []
+        ),
         "",
         "# --- Notifications (ntfy) ---",
         "# Topic acts as the shared secret — anyone who knows it can publish",
@@ -533,9 +549,15 @@ def render_config_yaml(answers: dict) -> str:
         "# indoors; -85 is more permissive.",
         f"min_rssi: {int(answers['min_rssi'])}",
         "",
-        "# --- Web UI ---",
-        f"ui_bind_port: {DEFAULT_UI_PORT}",
-        "",
+        # ⛔ `ui_bind_port: 8765` used to be emitted here from DEFAULT_UI_PORT,
+        # a module constant — not from any answer, because the wizard has never
+        # asked about the port. That made it the one setting that LOOKED
+        # operator-configured in the generated file and was silently reset to
+        # 8765 by every `--reconfigure`. Emitting nothing is not a behaviour
+        # change for a fresh install: Config.ui_bind_port defaults to
+        # DEFAULT_UI_PORT anyway, so an absent key and `8765` load identically.
+        # Absent, it is now carried forward like every other setting the wizard
+        # does not own. Pinned by `test_fresh_install_port_matches_the_default`.
     ]
     return "\n".join(lines)
 
@@ -543,6 +565,87 @@ def render_config_yaml(answers: dict) -> str:
 def write_config(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, content)
+
+
+def carry_forward_settings(existing_path: Path, rendered: str) -> tuple[dict, str | None]:
+    """Settings in an existing ``lynceus.yaml`` that ``rendered`` would destroy.
+
+    ``--reconfigure`` is a blind overwrite: ``preflight_existing`` gates only on
+    whether the file exists, and nothing has ever read the old one back. But the
+    wizard collects ten answers, while ``Config`` has forty fields — so every
+    setting the operator hand-edited was reverted to its default by any re-run,
+    with the wizard reporting success. Measured on a hand-edited config: rotating
+    the Kismet API key silently reverted **eight** settings, among them
+    ``heartbeat_enabled`` (the dead-man's switch — the one feature whose entire
+    job is to notice when nothing is happening) and ``ntfy_auth_token`` (after
+    which every alert to an authenticated ntfy server fails to deliver, while the
+    config still looks complete because ``ntfy_url`` and ``ntfy_topic`` survived).
+
+    That the operator would hand-edit is not an assumption: the generated file's
+    own header says "Edit this file directly, or re-run `lynceus-setup
+    --reconfigure`", ``preflight_existing`` says "Use --reconfigure to overwrite,
+    or edit it manually", and the wizard says "To enable later, edit lynceus.yaml
+    or run lynceus-setup --reconfigure". All three offer the two as equivalent
+    alternatives, and one of them destroys the other's work.
+
+    ⭐ The owned set is DERIVED by parsing ``rendered`` — never transcribed into a
+    constant here. A hand-listed set is the same disease as the mac_range columns
+    (Finding 31): two writers disagreeing about which field carries the meaning.
+    Add a field to the renderer and it becomes owned automatically; stop
+    rendering one and it becomes preserved automatically.
+
+    Returns ``(preserved, error)``. Fails CLOSED: an unreadable or unparseable
+    existing file yields ``({}, reason)`` so the caller reports a warning rather
+    than quietly claiming a clean write.
+    """
+    existing, error = _existing_mapping(existing_path)
+    if error is not None:
+        return {}, error
+    # The renderer's own output is the authority on what the wizard owns.
+    rendered_keys = yaml.safe_load(rendered) or {}
+    return {k: v for k, v in existing.items() if k not in rendered_keys}, None
+
+
+def _existing_mapping(path: Path) -> tuple[dict, str | None]:
+    """Load ``path`` as a YAML mapping. Never raises; reports why instead.
+
+    Shared by ``carry_forward_settings`` and ``apply_config``'s nested-sub-key
+    seeding so the two cannot disagree about what "the previous config" was.
+    """
+    if not path.exists():
+        return {}, None
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {}, f"could not read {path}: {exc}"
+    try:
+        loaded = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        return {}, f"could not parse {path}: {exc}"
+    if loaded is None:
+        return {}, None
+    if not isinstance(loaded, dict):
+        return {}, f"{path} is not a YAML mapping; carried nothing forward"
+    return loaded, None
+
+
+def render_carried_forward_block(preserved: dict) -> str:
+    """Serialize carried-forward settings as an appendable YAML block.
+
+    ``yaml.safe_dump`` rather than the hand-rolled ``_yaml_str`` helpers: these
+    values are arbitrary operator data (nested ``co_observation`` mappings,
+    ``kismet_source_locations`` dicts, ints, nulls), and hand-rolling the
+    escaping for that is how a config file stops parsing.
+    """
+    if not preserved:
+        return ""
+    body = yaml.safe_dump(preserved, default_flow_style=False, sort_keys=True)
+    return (
+        "\n# --- Settings preserved from your previous config ---\n"
+        "# The wizard does not ask about these, so `--reconfigure` carries them\n"
+        "# forward verbatim rather than reverting them to defaults. Edit freely.\n"
+        + body
+    )
 
 
 def scaffold_severity_overrides(path: Path) -> bool:
@@ -1105,6 +1208,7 @@ def _answers_from_config(config: Config) -> dict:
         "ble_friendly_names": config.capture.ble_friendly_names,
         "ble_bridge_enabled": config.ble_bridge.enabled,
         "ble_bridge_adapter": config.ble_bridge.adapter,
+        "ble_bridge_flush_interval": config.ble_bridge.flush_interval,
         "ntfy_url": config.ntfy_url or "",
         "ntfy_topic": config.ntfy_topic or "",
         "min_rssi": config.min_rssi if config.min_rssi is not None else 0,
@@ -1176,7 +1280,20 @@ def apply_config(
             progress.record(step)
 
     # 1. write_config — render + atomic write + perms under --system.
-    content = _frontend_render_config_yaml(_answers_from_config(config))
+    answers = _answers_from_config(config)
+    # ⛔ `ble_bridge.flush_interval` needs seeding here, not in
+    # carry_forward_settings, because `ble_bridge:` IS a rendered key: it is
+    # rewritten wholesale, so the sub-key cannot be appended afterwards without
+    # a duplicate YAML key silently discarding enabled/adapter. On the
+    # --reconfigure path `config` is built from the wizard's answers, and the
+    # wizard never asks about flush_interval, so it arrives here as None even
+    # when the operator set it. Read it back off the existing file instead.
+    if answers.get("ble_bridge_flush_interval") is None:
+        prior, _ = _existing_mapping(target_path)
+        prior_bridge = prior.get("ble_bridge")
+        if isinstance(prior_bridge, dict) and prior_bridge.get("flush_interval") is not None:
+            answers["ble_bridge_flush_interval"] = prior_bridge["flush_interval"]
+    content = _frontend_render_config_yaml(answers)
     if config.rules_path:
         # Single-render path: caller pre-decided alerting and pre-set
         # Config.rules_path, so emit it inline rather than appending
@@ -1236,15 +1353,42 @@ def apply_config(
         + "# install scope; edit only if you have a reason to relocate.\n"
         + f"db_path: {_yaml_str(str(scope_db_path))}\n"
     )
+    # Carry forward whatever the operator set that the wizard does not ask
+    # about. Must be computed BEFORE write_config — that call is the atomic
+    # overwrite that used to destroy these settings.
+    preserved, preserve_error = carry_forward_settings(target_path, content)
+    content = content + render_carried_forward_block(preserved)
     write_config(target_path, content)
     if scope == "system":
         _apply_system_perms_to_file(target_path)
+    # ⚠️ A previous config we could not read is reported as a WARNING, not
+    # swallowed. "ok" here would tell the operator their settings were handled
+    # when the truth is that we do not know what they were — and the file has
+    # already been overwritten by the time they could check.
     _emit(
         ApplyStep(
             name="write_config",
-            status="ok",
-            message=f"Config written to {target_path}",
-            detail={"path": str(target_path)},
+            status="warning" if preserve_error else "ok",
+            message=(
+                f"Config written to {target_path}, but the previous config could "
+                f"not be read, so any settings it held are GONE: {preserve_error}"
+                if preserve_error
+                else (
+                    f"Config written to {target_path}"
+                    + (
+                        f" (carried forward {len(preserved)} setting"
+                        f"{'' if len(preserved) == 1 else 's'} the wizard does "
+                        f"not ask about: {', '.join(sorted(preserved))})"
+                        if preserved
+                        else ""
+                    )
+                )
+            ),
+            detail={
+                "path": str(target_path),
+                "carried_forward": sorted(preserved),
+                "carry_forward_error": preserve_error,
+            },
         )
     )
 

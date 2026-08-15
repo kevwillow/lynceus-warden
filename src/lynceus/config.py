@@ -171,9 +171,14 @@ class Config(BaseModel):
     # and applies overrides at alert time for DB-delegation matches.
     # When None, the runtime override layer is disabled and delegation
     # matches fire at their imported severities unchanged. The wizard
-    # scaffolds this file at paths.default_overrides_path(scope) but
-    # does NOT currently persist the path into lynceus.yaml — operators
-    # opting into runtime overrides set this field explicitly.
+    # scaffolds this file at paths.default_overrides_path(scope) AND
+    # persists the path into lynceus.yaml (setup/core.py's
+    # "--- Severity overrides ---" block), so a wizard-installed operator
+    # gets the override layer wired up without hand-editing anything.
+    # ⚠️ This comment used to say the opposite — that the path was never
+    # persisted and operators had to set the field themselves. True when
+    # written, false since the wizard started emitting it, and it survived
+    # long enough to send a reader hunting a defect that no longer existed.
     severity_overrides_path: str | None = None
     alert_dedup_window_seconds: int = 3600
     ntfy_url: str | None = None
