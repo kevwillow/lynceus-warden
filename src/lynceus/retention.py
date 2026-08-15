@@ -19,7 +19,6 @@ one retention idiom in this codebase rather than two.
 from __future__ import annotations
 
 import logging
-import time
 
 from lynceus.db import Database
 
@@ -41,7 +40,7 @@ def prune_old_sightings(
     db: Database,
     retention_days: int | None,
     *,
-    now_ts: int | None = None,
+    now_ts: int,
 ) -> tuple[int, int | None]:
     """Delete sightings older than ``retention_days``.
 
@@ -57,10 +56,21 @@ def prune_old_sightings(
     Touches ``sightings`` only. Alerts are the operator's record of what was
     decided and must outlive the observations behind them; devices carry
     identity that stays meaningful after its rows age out.
+
+    ⛔ ``now_ts`` is REQUIRED. It has no wall-clock default on purpose.
+
+    This deletes rows on a time comparison, and the decision about whether the
+    clock can be trusted is made by the caller -- ``poll_once`` gates every
+    call on ``clock_trusted`` after a monotonic-anchor check (#35/#40/#58).
+    A ``now_ts=None`` default silently substituted ``int(time.time())``, so a
+    single call that omitted the argument would have bypassed that gate
+    entirely and deleted against a raw, possibly-jumped clock. Nothing in the
+    signature said so, and it would not have failed -- it would have deleted.
+
+    ⇒ The gate is now structural rather than a matter of caller discipline:
+    omitting the argument is a TypeError at the call site.
     """
     _validate_retention(retention_days)
-    if now_ts is None:
-        now_ts = int(time.time())
     if retention_days is None:
         oldest_row = db._conn.execute("SELECT MIN(ts) FROM sightings").fetchone()
         oldest = int(oldest_row[0]) if oldest_row and oldest_row[0] is not None else None
@@ -85,7 +95,7 @@ def maybe_prune_sightings(
     db: Database,
     retention_days: int | None,
     *,
-    now_ts: int | None = None,
+    now_ts: int,
     interval_seconds: int = 86_400,
 ) -> bool:
     """Run :func:`prune_old_sightings` at most once per ``interval_seconds``.
@@ -93,12 +103,23 @@ def maybe_prune_sightings(
     Returns True only when a prune actually executed. A ``retention_days`` of
     None returns False without recording a run, so enabling retention later
     prunes immediately instead of waiting out an interval it never served.
+
+    ⛔ ``now_ts`` is REQUIRED. It has no wall-clock default on purpose.
+
+    This deletes rows on a time comparison, and the decision about whether the
+    clock can be trusted is made by the caller -- ``poll_once`` gates every
+    call on ``clock_trusted`` after a monotonic-anchor check (#35/#40/#58).
+    A ``now_ts=None`` default silently substituted ``int(time.time())``, so a
+    single call that omitted the argument would have bypassed that gate
+    entirely and deleted against a raw, possibly-jumped clock. Nothing in the
+    signature said so, and it would not have failed -- it would have deleted.
+
+    ⇒ The gate is now structural rather than a matter of caller discipline:
+    omitting the argument is a TypeError at the call site.
     """
     _validate_retention(retention_days)
     if retention_days is None:
         return False
-    if now_ts is None:
-        now_ts = int(time.time())
     last_raw = db.get_state(STATE_KEY_LAST_SIGHTINGS_PRUNE)
     if last_raw is not None:
         try:

@@ -271,16 +271,27 @@ def prune_old_evidence(
     db: Database,
     retention_days: int,
     *,
-    now_ts: int | None = None,
+    now_ts: int,
 ) -> tuple[int, int | None]:
     """Delete evidence rows older than ``retention_days``.
 
     Returns ``(rows_deleted, oldest_remaining_captured_at)``. The second
     element is None when the table is empty after pruning. Logs at INFO
     so a daily run leaves an audit trail in journalctl.
+
+    ⛔ ``now_ts`` is REQUIRED. It has no wall-clock default on purpose.
+
+    This deletes rows on a time comparison, and the decision about whether the
+    clock can be trusted is made by the caller -- ``poll_once`` gates every
+    call on ``clock_trusted`` after a monotonic-anchor check (#35/#40/#58).
+    A ``now_ts=None`` default silently substituted ``int(time.time())``, so a
+    single call that omitted the argument would have bypassed that gate
+    entirely and deleted against a raw, possibly-jumped clock. Nothing in the
+    signature said so, and it would not have failed -- it would have deleted.
+
+    ⇒ The gate is now structural rather than a matter of caller discipline:
+    omitting the argument is a TypeError at the call site.
     """
-    if now_ts is None:
-        now_ts = int(time.time())
     cutoff = now_ts - retention_days * 86400
     with db._conn:
         cur = db._conn.execute(
@@ -298,7 +309,7 @@ def maybe_prune_evidence(
     db: Database,
     retention_days: int,
     *,
-    now_ts: int | None = None,
+    now_ts: int,
     interval_seconds: int = 86400,
 ) -> bool:
     """Run prune_old_evidence at most once per ``interval_seconds``.
@@ -306,9 +317,20 @@ def maybe_prune_evidence(
     Returns True when prune actually executed, False when it was skipped
     because the previous run is too recent. State is recorded under
     ``STATE_KEY_LAST_EVIDENCE_PRUNE`` in the existing poller_state table.
+
+    ⛔ ``now_ts`` is REQUIRED. It has no wall-clock default on purpose.
+
+    This deletes rows on a time comparison, and the decision about whether the
+    clock can be trusted is made by the caller -- ``poll_once`` gates every
+    call on ``clock_trusted`` after a monotonic-anchor check (#35/#40/#58).
+    A ``now_ts=None`` default silently substituted ``int(time.time())``, so a
+    single call that omitted the argument would have bypassed that gate
+    entirely and deleted against a raw, possibly-jumped clock. Nothing in the
+    signature said so, and it would not have failed -- it would have deleted.
+
+    ⇒ The gate is now structural rather than a matter of caller discipline:
+    omitting the argument is a TypeError at the call site.
     """
-    if now_ts is None:
-        now_ts = int(time.time())
     last_raw = db.get_state(STATE_KEY_LAST_EVIDENCE_PRUNE)
     if last_raw is not None:
         try:
