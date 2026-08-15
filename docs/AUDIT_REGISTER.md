@@ -1609,6 +1609,40 @@ and was silently reset on every run.
 **Fix:** carry forward every key the renderer does not emit, with the renderer-owned set **derived by
 parsing the renderer's own output** rather than transcribed. Proven with five planted defects.
 
+### 🔴 …and that fix introduced a regression, which this entry claimed for hours it had not
+
+⛔ **`Config` sets `extra="forbid"`, so carrying an UNRECOGNISED key forward verbatim makes the
+config fail to LOAD.** Found by a `gpt-5.6-sol` red-team of #87 and #90, fixed in **PR #96**
+(`f0e6e9b`). Re-measured here rather than taken on report — one transposed letter,
+`heartbeat_interal_hours`:
+
+| | typo survives `--reconfigure`? | daemon starts? |
+|---|---|---|
+| at `08299cc` (post-#87) | **yes** | **NO** — `ValidationError` |
+| at `f0e6e9b` (#96) | no, dropped and named | yes |
+
+⇒ **Re-running setup is exactly what an operator does to RECOVER from a typo**, and #87 had quietly
+made it the thing that *preserved* one. Carry-forward is now filtered to `Config.model_fields`, with
+dropped keys named in the step message — a key removed silently is a typo the operator cannot find.
+
+### 🪤 Why the original measurement could not have caught it — a limit of a DERIVED fixture
+
+The 40-field sweep above seeded a non-default value for every field **derived from
+`Config.model_fields`** — correctly, per "iterate the derived set, never transcribe it". ⇒ **That is
+precisely why the fixture could never contain an unrecognised key.** The derivation that made the
+sweep complete over known fields made it structurally blind to unknown ones, and it was reported as
+"37 survived / 3 lost, residual fully accounted for" with no caveat.
+
+⇒ **A derived fixture inherits the boundaries of whatever it derives from.** `Config.model_fields`
+answers *"what settings exist"*; the code faces *"what might an operator's file contain"*, and
+`extra="forbid"` is the seam where those diverge — the defect lived exactly in the gap. This does not
+retract the iterate-don't-transcribe rule; it bounds it: **derive the set, then add a case from
+outside what the source can express** — an unknown key, an extra column, a wrong-typed value.
+
+⚠️ Two independent measurements of this finding also disagreed (13/27 vs 11/29) before agreeing —
+see the note below. **Both the count and the coverage were qualified only after someone else
+attacked the change.**
+
 ⛔ **Open, deliberately not fixed in #87 — a decision, not a patch.** `allowlist_path`,
 `severity_overrides_path` and `db_path` are `apply_config` **arguments**, and both callers derive
 them from `paths.default_*_path(scope)` rather than from the operator's config. An operator who
