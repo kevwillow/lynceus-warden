@@ -235,6 +235,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **"Ignore this device" worked or didn't depending on where you wrote it in
+  the file.** If you allowlisted a device by its MAC address — the strongest,
+  most deliberate way to say "this one is mine, leave it alone" — and somewhere
+  *above* it in the same file you had a softer entry that also happened to match
+  that device, say your headphones silenced by their advertised name, the softer
+  one won. Lynceus kept alerting on a device you had explicitly told it to
+  ignore, and nothing anywhere said why.
+
+  The cause is that a recent change made the *kind* of allowlist entry decide
+  how much it is allowed to silence — a name a device chooses for itself can no
+  longer suppress a deliberate watchlist hit, because anything can claim any
+  name. That was the right change, but the code picking which entry to consult
+  still returned whichever one came first in the file, so an unrelated soft
+  entry could answer on behalf of a device you had named by address. Measured on
+  the shipped rules: the same device, the same two entries, swapped order — no
+  alerts one way, two alerts and two notifications the other.
+
+  Now the strongest matching entry answers, wherever it sits. Order still breaks
+  ties between entries of equal strength, so nothing else changes. ⚠️ An
+  *expired* entry is still no match at all and cannot outrank a live one — the
+  obvious version of this fix would have let a lapsed one-day snooze start
+  silencing real watchlist hits permanently, which is worse than the bug.
+
 - **A watchlist entry for a Bluetooth tracker could never match anything.**
   This is the one that matters most, because it is the thing the tool is for.
   Bluetooth devices announce themselves with a short service code — `fd5a` is

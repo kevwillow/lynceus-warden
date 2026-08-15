@@ -796,9 +796,27 @@ def evaluate(
     purpose so existing callers stay source-compatible.
 
     ``severity_overrides`` is the runtime view of
-    severity_overrides.yaml (see ``RuntimeSeverityOverride``). Only
-    the five DB-delegation branches consult it; in-memory pattern
-    matches keep their rule-sourced severity unchanged. None or
+    severity_overrides.yaml (see ``RuntimeSeverityOverride``). All
+    EIGHT DB-delegation branches consult it — every ``watchlist_*``
+    type plus ``ble_uuid``; in-memory pattern matches keep their
+    rule-sourced severity unchanged.
+
+    ⚠️ This said "the five DB-delegation branches" until 2026-08-15,
+    and had been wrong since the ble_manufacturer_id /
+    drone_id_prefix / ble_local_name branches landed. Understating
+    coverage is not the harmless direction: an operator reading it
+    concludes their overrides are silently ignored for three of the
+    types they configured, and the obvious response is to go and
+    "wire up" branches that were never disconnected.
+    ``tests/test_severity_paths_are_wired.py`` now measures the set
+    instead of asserting it in prose, so the count cannot rot again.
+
+    The three non-delegating rule_types
+    (``new_non_randomized_device``, ``ble_device_class``,
+    ``watchful_recurrence``) consult NOTHING, and cannot: an
+    override keys on the matched watchlist row's category / vendor /
+    argus_record_id, and those rule_types match no watchlist row.
+    That is inherent, not a gap to close. None or
     empty config short-circuits to pass-through — byte-identical
     RuleHits to the pre-overrides behavior. The three per-match
     metadata-driven checks each gate independently: vendor-suppress

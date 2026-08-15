@@ -1423,6 +1423,145 @@ and fails when the two diverge. That guard is what makes a transcription legitim
 - **`mac_range` write path** — fixed and guarded (#84). The `/24` shape is rejected *on purpose*.
 - **The `PROBE_SSIDS_PER_DEVICE_CAP` count cap** — already present; length is the unbounded axis.
 
+## Round 11 — the connectivity class, finished: allowlist, severity overrides, notify, 2026-08-15
+
+**Round 10's class**, swept over the three surfaces round 10 named as uncovered. Same instrument: for
+each value the operator can store, **store one and drive the real path with an input that matches it
+exactly.** Not a grep — every result below is a behaviour two or three layers from the write site.
+
+⭐ **Round 10 asked whether a stored value produces a result. This round asks the mirror question:
+whether a stored SUPPRESSION actually suppresses.** The two fail in opposite directions and only one
+of them is eventually visible. A dead alert is noticed the day something happens and nobody was
+warned. A dead suppression is never noticed at all — the operator is warned too often, concludes the
+tool is noisy, and stops reading it.
+
+### ✅ Measured and NOT broken
+
+Recorded explicitly, because "we found nothing" is worthless without saying what was looked at.
+
+| Surface | Instrument | Result |
+|---|---|---|
+| all **8** storable allowlist `pattern_type`s | store one, observe a device matching it exactly, drive `process_observation` | every type matches and suppresses — **no dead type** |
+| all **11** `RuleType`s × all **5** runtime override keys | seed a watchlist row + metadata, drive `evaluate` with an override that would apply | all **8** delegation branches honour all 5; the 3 non-delegating types honour none |
+| every `Severity` → `notify` | `SEVERITY_TO_PRIORITY` / `SEVERITY_TO_TAGS` against the `Severity` Literal | complete, distinct, correctly ordered |
+
+⇒ **The allowlist is not a second Finding 32.** That was this round's leading hypothesis, and it is
+refuted by measurement for all eight types.
+
+### 🔴 Finding 33 — an explicit `mac` allowlist entry is silently defeated by an unrelated soft entry above it
+
+**Fixed in this change.** `Allowlist.is_allowed` returned the **first** matching entry. Since the
+hard/soft split (#82), the returned entry's `pattern_type` is what decides whether suppression
+happens at all — `process_observation` asks `is_soft_attribute` about *that one entry*. So a SOFT
+entry sitting earlier in the file answered for a device the operator had explicitly allowlisted by
+MAC.
+
+Measured on the shipped ruleset. One device, one watchlist row, the same two allowlist entries;
+**only the file ORDER differs:**
+
+```
+hard `mac` entry only                 -> suppressed,  0 sent
+hard `mac` first, then soft `name`    -> suppressed,  0 sent
+soft `name` first, then hard `mac`    -> *** 2 ALERTS, 2 SENT ***
+```
+
+**Direction: fails NOISY.** The operator wrote "ignore this MAC", kept getting paged, and nothing in
+the UI, the logs or the file hints that position matters.
+
+⭐ **The prose is why nobody looked.** `allowlist.py`'s module docstring asserted the opposite —
+*"Order does not affect matching semantics … the only entry field that matters for suppression is
+the pattern itself."* True when written; falsified by #82 **three days earlier**, which made
+`pattern_type` the deciding field and never revisited the sentence saying it could not be.
+
+**Fix:** a HARD match outranks a SOFT one regardless of position; position still breaks ties WITHIN a
+class, so the `expires_at` the audit line reports is unchanged for soft-only allowlists. ⚠️ Expiry is
+applied FIRST — an expired hard entry must not out-rank a live soft one, which is the same defect
+pointing the other way and strictly worse.
+
+Guarded by `tests/test_allowlist_match_precedence.py`, which sweeps the derived soft × hard
+cross-product rather than one example pair. Proven against four planted defects — the original plus
+three distinct over-corrections (hard-only; preference-before-expiry; any-hard-entry-regardless-of-
+match) — each failing and naming its own invariant.
+
+### 🟡 Finding 34 — `evaluate`'s docstring understated override coverage by three rule_types
+
+**Fixed (prose).** It said *"Only the five DB-delegation branches consult it"*. Measured: **eight**
+do — every `watchlist_*` type plus `ble_uuid`. Wrong since the `ble_manufacturer_id` /
+`drone_id_prefix` / `ble_local_name` branches landed.
+
+⚠️ **Understating coverage is not the harmless direction.** An operator reading it concludes their
+overrides are dead for three of the types they configured, and the obvious response is to go and
+"wire up" branches that were never disconnected. **No grep would have caught this** — all eight call
+sites were present and correct. Only running them shows which ones bite. Now measured rather than
+asserted, by `tests/test_severity_paths_are_wired.py`.
+
+### 🟡 Finding 35 — the allowlist cannot express `ssid_pattern`, and its own comment promised it could
+
+**Prose fixed; the capability is a decision — see "Reserved for Kev".**
+
+`AllowlistPatternType` admits 8 types. Its comment claimed it *"Mirrors the seven delegation
+rule_types the watchlist supports so an operator can express suppression in any shape the watchlist
+alerts on"*, and that the matchers *"pair 1:1 with `rules.evaluate`'s `watchlist_*` branches — drift
+between the two surfaces silently allows an alert to fire that an operator believed they had
+allowlisted."*
+
+| Claim | Measured |
+|---|---|
+| "the seven delegation rule_types" | there are **eight** |
+| "any shape the watchlist alerts on" | `ssid_pattern` is REJECTED — and it is one of only **three** watchlist types that fire today (Finding 32) |
+| "pair 1:1 with `rules.evaluate`'s branches" | `ssid_pattern` dispatches under `watchlist_ssid` with no allowlist counterpart |
+
+⇒ **The comment named the exact failure mode the codebase then exhibited.** An operator running the
+shipped `argus_ssid` rule against the bundled `ssid_pattern` rows cannot express the matching
+suppression — only an exact `ssid` or a `mac`, which silence one device rather than the class they
+watched on. `imei_tac` is also absent but harmless: dead on both sides.
+
+Pinned by `tests/test_allowlist_watchlist_type_parity.py`, which parses the live CHECK constraint so
+the gap can neither widen nor close silently.
+
+### ⭐ The round's real lesson — a fix can falsify prose three files away
+
+#82 turned `pattern_type` from a field that did not affect suppression into **the field that decides
+it**. Every sentence written before that describing `pattern_type` as inert became false, and nothing
+failed, because comments do not have tests. Two of this round's three findings are exactly that
+shape, and in Finding 33 the stale sentence was the single strongest reason not to look.
+
+⇒ **When a change makes a field load-bearing, grep for the prose that says it isn't.** Round 9's
+"prose, not code, is often the defect" generalises: the dangerous prose is not the wrong sentence, it
+is the sentence that was *right* and quietly stopped being.
+
+### ⛔ Coverage limit (round 11)
+
+- **Swept:** the allowlist's 8 storable types end to end; all 11 `RuleType`s against all 5 runtime
+  override keys; the `Severity` → notify maps.
+- **NOT swept:** the snooze / watchful surfaces; the wizard's written values; `poller.py`'s gates
+  beyond the allowlist branch; the UI's allowlist write path (session 2's write set); whether the
+  primary allowlist file's YAML round-trip preserves types under hand-editing.
+- ⚠️ **Measured against the SHIPPED `config/rules.yaml`.** Seven of ten watchlist types are dead by
+  configuration (Finding 32), so a suppression for one of those has nothing to suppress in a default
+  deployment. Every result above holds for the rules that actually fire.
+- ⚠️ **In-memory rule paths are out of scope for overrides by construction** — an override keys on
+  the matched watchlist row's category / vendor / `argus_record_id`, and an in-memory match resolves
+  no row.
+- ⚠️ **A soft allowlist match that is overridden by a watchlist hit also stops suppressing the
+  ambient `new_non_randomized_device` notice.** Measured, and judged to MATCH the documented contract
+  (*"Only an explicit watchlist hit overrides it"*) rather than to violate it. Recorded so the next
+  sweep does not re-derive it as a finding.
+
+### DO-NOT-RE-AUDIT (round 11)
+
+- **Allowlist per-type suppression** — all 8 storable types measured end to end, 2026-08-15. No dead
+  type. Do not re-report the allowlist as a mirror of Finding 32.
+- **Runtime severity overrides per rule_type** — all 8 delegation branches × all 5 keys measured.
+  `new_non_randomized_device` and `ble_device_class` ignoring overrides is **inherent** (they match
+  no watchlist row), not a gap to close.
+- **`notify.py` severity routing** — three severities, complete priority and tag maps, one channel.
+  There is **no configurable minimum-severity filter**, so there is none to be disconnected. Do not
+  go looking for one.
+- **`SOFT_ALLOWLIST_PATTERN_TYPES` naming `ssid_pattern` and `imei_tac`** — deliberate, not drift.
+  The classification covers the WATCHLIST's ten types so a future allowlist type cannot inherit hard
+  suppressing power silently; `AllowlistPatternType` is the eight an operator can actually write.
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -1500,6 +1639,12 @@ hardened regardless of reachability.
    `.mailmap`/dependabot authorship; de-identifying the withheld test files.
 7. ⛔ **Rotating the two ntfy topics on the broker** — scrubbed from the tree, still live in git
    history. Reported dead 2026-08-15; **confirm and close** rather than leaving listed.
+8. **Should the allowlist gain an `ssid_pattern` type?** (Finding 35.) `ssid_pattern` is one of only
+   three watchlist types that fire on the shipped ruleset, and an operator cannot suppress by the
+   same predicate they watched on — only by an exact `ssid` or a `mac`. ⚠️ It is not a free fix: a
+   substring allowlist silences **everything** containing the needle, so one line in a hand-edited
+   file could blanket-suppress a whole class. The comment claiming parity is now corrected either
+   way; this is the capability question, and it is yours.
 
 ## Still open
 
