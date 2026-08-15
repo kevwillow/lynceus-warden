@@ -392,8 +392,71 @@ Second line.
 # ---- wireless interface enumeration ----------------------------------------
 
 
-def test_enumerate_freeform_fallback_when_unavailable(monkeypatch):
-    monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+def test_enumerate_returns_none_when_sysfs_is_absent(monkeypatch, tmp_path):
+    """The case the function exists to handle: no /sys/class/net at all (macOS,
+    Windows, a minimal container), so the operator types the name in instead.
+
+    ⛔ This test used to read, in full:
+
+        monkeypatch.setattr(wiz, "enumerate_wireless_interfaces", lambda: None)
+        assert wiz.enumerate_wireless_interfaces() is None
+
+    — it replaced the function under test with a stub and asserted the stub did
+    what stubs do. No product code ran. Measured: making the real function raise
+    unconditionally left it PASSING. It could not fail for any change to
+    Lynceus, and its name promised a fallback it never reached.
+    """
+    monkeypatch.setattr(wiz, "_SYS_CLASS_NET", tmp_path / "does-not-exist", raising=False)
+    assert wiz.enumerate_wireless_interfaces() is None
+
+
+def test_enumerate_returns_none_when_no_interface_is_wireless(monkeypatch, tmp_path):
+    """`return interfaces or None` — an empty list must collapse to None, since
+    every caller writes `enumerate_wireless_interfaces() or []` and a bare `[]`
+    would be indistinguishable from "we could not tell"."""
+    net = tmp_path / "net"
+    (net / "eth0" / "device").mkdir(parents=True)
+    (net / "lo").mkdir(parents=True)
+    monkeypatch.setattr(wiz, "_SYS_CLASS_NET", net, raising=False)
+
+    assert wiz.enumerate_wireless_interfaces() is None
+
+
+def test_enumerate_lists_wireless_interfaces_sorted(monkeypatch, tmp_path):
+    """⛔ The presence assertion. Without it, a function that returned None
+    unconditionally would satisfy every other test in this group."""
+    net = tmp_path / "net"
+    for name in ("wlan1", "wlan0", "eth0"):
+        (net / name).mkdir(parents=True)
+    (net / "wlan0" / "wireless").mkdir()
+    (net / "wlan1" / "wireless").mkdir()
+    monkeypatch.setattr(wiz, "_SYS_CLASS_NET", net, raising=False)
+
+    assert wiz.enumerate_wireless_interfaces() == ["wlan0", "wlan1"], (
+        "wired interfaces must be excluded and the order must be stable"
+    )
+
+
+def test_enumerate_returns_none_when_sysfs_cannot_be_read(monkeypatch, tmp_path):
+    """An unreadable sysfs must not PROPAGATE — the wizard degrades to "type the
+    name in", it does not die at the operator's first prompt.
+
+    ⚠️ A plant swapping `except OSError: return None` for `interfaces = []`
+    fails nothing, and that is correct rather than a hole: `sorted()` consumes
+    the whole generator before the loop body runs, so `interfaces` is always
+    empty when the exception fires, and `return interfaces or None` collapses
+    it to None either way. The two branches are genuinely equivalent. What this
+    test pins is the `try` itself — remove it and the OSError escapes.
+    """
+
+    class _Unreadable:
+        def is_dir(self):
+            return True
+
+        def iterdir(self):
+            raise OSError("hardened mount")
+
+    monkeypatch.setattr(wiz, "_SYS_CLASS_NET", _Unreadable(), raising=False)
     assert wiz.enumerate_wireless_interfaces() is None
 
 

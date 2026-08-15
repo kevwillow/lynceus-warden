@@ -508,13 +508,27 @@ def _redact_kismet_api_key(key: str) -> str:
 
 # --- Wireless interface enumeration ----------------------------------------
 
+#: Where the kernel exposes network interfaces. A module constant so a test can
+#: point it at a fixture — matching ``cli/bootstrap_kismet._SYS_CLASS_NET``,
+#: which does the same lookup and has been patchable all along.
+#:
+#: ⛔ This was inlined as ``Path("/sys/class/net")`` inside the function below,
+#: so the function could not be reached from a test without patching ``Path``
+#: itself. The test that claimed to cover it settled for replacing the whole
+#: function with ``lambda: None`` and asserting that returned ``None`` — two
+#: lines that exercise ``monkeypatch`` and no product code at all. Measured: the
+#: real function can be made to raise unconditionally and that test still
+#: passes. Two sibling modules doing the same lookup, one testable and one not,
+#: is how a test ends up shaped like that.
+_SYS_CLASS_NET = Path("/sys/class/net")
+
 
 def enumerate_wireless_interfaces() -> list[str] | None:
     """Return a sorted list of wireless interface names, or None when the OS
     doesn't expose them in a way we recognise (operator falls back to typing
     the name in directly)."""
     if os.name == "posix":
-        sys_class_net = Path("/sys/class/net")
+        sys_class_net = _SYS_CLASS_NET
         if not sys_class_net.is_dir():
             return None
         interfaces: list[str] = []
