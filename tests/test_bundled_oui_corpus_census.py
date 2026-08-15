@@ -68,11 +68,21 @@ def _rows() -> list[dict[str, str]]:
         f"in the first 5 lines of {BUNDLED_CSV}; the export format changed"
     )
     header = raw[header_idx]
-    return [
-        dict(zip(header, row, strict=True))
-        for row in raw[header_idx + 1 :]
-        if len(row) == len(header)
-    ]
+    data = raw[header_idx + 1 :]
+    kept = [row for row in data if len(row) == len(header)]
+    # ⛔ Do not let the instrument silently discard what it is supposed to count.
+    # A cold read caught this: the width filter existed to avoid a ragged-row
+    # crash, but a malformed re-export would have lost rows QUIETLY, and the
+    # 40,000-row floor below only catches wholesale truncation, never selective
+    # loss. A census that drops its own inputs reports a clean number about a
+    # corpus it did not fully read.
+    dropped = len(data) - len(kept)
+    assert dropped == 0, (
+        f"{dropped} of {len(data)} rows in {BUNDLED_CSV.name} do not have the "
+        f"header's {len(header)} columns and were about to be silently skipped. "
+        "Re-export or repair the corpus; do not widen this filter."
+    )
+    return [dict(zip(header, row, strict=True)) for row in kept]
 
 
 def _oui_identifiers() -> list[str]:
@@ -224,12 +234,22 @@ def test_a_bundled_prefix_that_CAN_fire_actually_does(tmp_path):
     Without it, "no alert" above is satisfied by a delegation path that alerts on
     nothing at all — a broken control fabricates a confident finding, which is
     how three invalid results were produced in one morning on this project.
+
+    ⛔ The control prefix is NAMED, not selected at runtime. It used to be
+    `sorted(can_fire)[0]`, which a cold read flagged: a corpus re-export could
+    silently change which prefix this test exercises, so the case would drift
+    without anyone reviewing it — and a regression breaking every OUI except the
+    alphabetically-first one would still pass.
     """
-    can_fire = [
-        o for o in _oui_identifiers() if not _is_reserved_oui_mac(f"{o.lower()}:00:00:00")[0]
-    ]
-    assert can_fire, "no can-fire bundled OUI to use as a control"
-    prefix = sorted(can_fire)[0].lower()
+    prefix = "00:04:7d"  # Motorola Solutions, police_radio — globally administered
+    assert prefix in [o.lower() for o in _oui_identifiers()], (
+        f"the named control prefix {prefix!r} is no longer in the bundled corpus; "
+        "pick another globally-administered row and name it here explicitly"
+    )
+    assert not _is_reserved_oui_mac(f"{prefix}:00:00:00")[0], (
+        f"the control prefix {prefix!r} is now classified reserved, so it can no "
+        "longer serve as the can-fire control"
+    )
 
     db_path = str(tmp_path / "control.db")
     db = Database(db_path)
