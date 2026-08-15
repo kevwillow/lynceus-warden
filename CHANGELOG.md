@@ -258,6 +258,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   obvious version of this fix would have let a lapsed one-day snooze start
   silencing real watchlist hits permanently, which is worse than the bug.
 
+- **Re-running the setup wizard quietly undid the settings you had edited by
+  hand.** The generated `lynceus.yaml` tells you, in its own first two lines, to
+  either edit it directly or re-run `lynceus-setup --reconfigure`. Both are
+  offered as equally good ways to change something. But the wizard only ever
+  asks about ten settings, and there are forty, so re-running it wrote those ten
+  back and let every other one fall to its default — and reported success.
+  Measured on a hand-edited config: rotating the Kismet API key, and changing
+  nothing else, **silently reverted eight settings**.
+
+  Two of the eight matter more than the rest. `heartbeat_enabled` went back to
+  off — that is the dead-man's switch, the one feature whose entire job is to
+  tell you when nothing is happening, so losing it looks exactly like a quiet
+  week. And `ntfy_auth_token` was dropped while `ntfy_url` and `ntfy_topic`
+  survived, which leaves a config that still looks complete and delivers nothing
+  at all to a notification server that requires a password.
+
+  The wizard now carries forward everything it does not ask about, and tells you
+  which settings it kept. If it cannot read your previous config it says so, and
+  says plainly that those settings are gone, rather than reporting a clean write
+  it cannot vouch for. `ui_bind_port` was a sharper case of the same problem: it
+  was written from a built-in constant rather than from anything you chose, so
+  it was the one setting that *looked* configured in the file and was reset to
+  8765 every time regardless.
+
 - **A watchlist entry for a Bluetooth tracker could never match anything.**
   This is the one that matters most, because it is the thing the tool is for.
   Bluetooth devices announce themselves with a short service code — `fd5a` is
