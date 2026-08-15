@@ -235,6 +235,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A watchlist entry for a Bluetooth tracker could never match anything.**
+  This is the one that matters most, because it is the thing the tool is for.
+  Bluetooth devices announce themselves with a short service code — `fd5a` is
+  Apple's Find My, the one an AirTag uses. When you added `fd5a` to your
+  watchlist, Lynceus expanded it to the full-length form the standard defines.
+  When it *saw* that same code on the air, it did not: it rejected the short
+  form as invalid and quietly discarded it. So the two halves of the tool were
+  writing the same thing down in two different ways, and a tracker following
+  you could sit in range all day without ever matching the rule you had written
+  to catch it. There was no error to notice — the discard was logged at debug
+  level, which nobody reads.
+
+  Both halves now write it the same way. ⚠️ The first attempt at this fix went
+  too far: it reused the watchlist's text handling on the incoming-signal side
+  as well, and that handling also strips a piece of commentary the surveillance
+  database is allowed to attach to a code. Correct when reading a watchlist
+  file, wrong when reading the air — it would have accepted, as a genuine
+  sighting, something that was never broadcast. The incoming side is now
+  strict again and only the shared expansion is shared.
+
+- **A clock jump no longer deletes a rule you silenced.** If you tell Lynceus
+  to stop alerting on a category for a week, that instruction is stored with an
+  expiry date and checked against the system clock. When the clock leapt
+  forward — an NTP correction after boot on a Pi with no battery-backed clock —
+  the housekeeping pass read those expiry dates against the wrong time and
+  deleted the ones it thought had lapsed. Measured: a snooze set to last seven
+  days was **erased at a jump of eight**, and putting the clock right did not
+  bring it back. You would simply start receiving alerts you had deliberately
+  turned off, with nothing to explain why. The same jump also retired entries
+  from the watchful list early.
+
+  Both now pause while the clock is untrusted and resume once it settles, which
+  is the same treatment the retention cleanups already had.
+
 - **Your watchlist total was wrong, and it under-counted the newest entries.**
   The list of pattern types the app knew about had drifted two migrations behind
   the database, which accepts ten. Rows of the two newest types — SSID patterns
