@@ -70,8 +70,14 @@ class CoObservationConfig(BaseModel):
     output is "devices that keep appearing near a person" cannot be reached by
     accident.
 
-    ``window_days`` bounds the scan because ``sightings`` has no retention
-    policy and is never pruned. ``proximity_seconds`` is W, the co-observation
+    ``window_days`` bounds the scan because ``sightings`` retention is
+    OPT-IN and defaults to off (``sightings_retention_days = None``), so on
+    a default install the table does grow without bound. ⚠️ This used to
+    read "has no retention policy and is never pruned", which was true
+    when written and stopped being true when opt-in retention shipped --
+    the bound is still needed, but for a weaker reason than the prose
+    claimed, and an operator who HAS enabled retention was being told
+    something false about their own install. ``proximity_seconds`` is W, the co-observation
     threshold: two sightings at one location within W of each other. The UI
     offers 1/5/15-minute presets and always displays the value in use, because
     a relationship that dissolves as W tightens is information the operator

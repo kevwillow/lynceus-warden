@@ -1097,6 +1097,87 @@ before grading the finding. This cuts both ways: an unwired guard overstates saf
 unchecked gate overstates severity. Confirming a helper is wired in says nothing about its *second*
 invocation, and confirming a value reaches a sink says nothing about *who* can stand at that sink.
 
+## Round 8 — asserted guarantees, audited against the code, 2026-08-15
+
+**Class:** *a comment or docstring that asserts a guarantee the code does not provide.*
+
+Chosen because this project's failure record is overwhelmingly **prose, not logic**: a 12-day-stale
+baseline in `.claude/gates.md`; a README test figure that rotted three times; `BACKLOG.md` naming
+the wrong casualty column; **54% of the diagnostics' `file:line` citations rotted**; a green test in
+`test_rules.py` asserting a false belief; and B5's own defending comment — *"a missed cleanup never
+affects correctness"* — false for the case that mattered.
+
+**Method.** MiniMax-M3 mechanically extracted every comment/docstring containing a guarantee word
+(`never`, `always`, `cannot`, `guaranteed`, `impossible`, `must not`) together with the code it
+governs — **165 records across 11 modules**. Three `gpt-5.6-sol` packets then adjudicated them at
+high effort. **22 came back FALSE.** Every one was re-derived from the code before being recorded.
+
+### 🔴 Finding 27 — the heartbeat claims health it has not verified
+
+`poller._compose_heartbeat`. Its own docstring states the invariant:
+
+> ⛔ *"The one invariant that matters: **this must never claim health it has not verified.** A
+> heartbeat that says 'all good' while ingest is dead is strictly worse than no heartbeat at all."*
+
+Measured:
+
+```
+devices admitted this tick          : 0
+devices dropped by source allowlist : 412
+devices stored in the DB            : 0
+→ heartbeat healthy?                : True
+→ message : "Still watching. 0 device sighting(s) in the last 24h, no alerts yet."
+```
+
+⭐ **That is the exact message a genuinely quiet environment produces.** The operator cannot
+distinguish *"nothing is out there"* from *"my source allowlist matches none of Kismet's sources and
+I am blind"* — the precise ambiguity the heartbeat exists to remove.
+
+⭐ **The evidence is already recorded and simply not read.** The poller writes
+`LAST_TICK_ADMITTED`, `DROPPED_SOURCE_ALLOWLIST`, `DROPPED_MIN_RSSI` and `DROPPED_UNPARSEABLE` every
+tick; `_compose_heartbeat` reads only `LAST_TICK_COMPLETED_AT` and `WATERMARK_HOLDS`. The fix is a
+clause, not a feature.
+
+⚠️ **The threshold is a judgement, not a lookup.** `admitted == 0` alone must stay healthy — a quiet
+RF environment is the normal case and flagging it trains the operator to ignore the channel. But
+`admitted == 0 AND dropped_source_allowlist > 0` is not quiet: it is Kismet reporting devices the
+config is discarding. ⛔ **Reported, not fixed** — `poller.py` was in flight in another session.
+
+### 🟡 Finding 28 — a stale reason in `config.py`
+
+`config.py:73` stated *"``sightings`` has no retention policy and is never pruned"* as the reason
+`window_days` bounds the co-observation scan. True when written; false since opt-in retention
+shipped. The bound is still needed — retention defaults to **off** — but an operator who *had*
+enabled it was being told something false about their own install. ✅ Fixed here.
+
+### Refuted on re-derivation — the adjudicator was wrong
+
+- **`rules.py:515` and `:565`** — reported as: a non-string YAML key (`pattern_overrides: {123: high}`)
+  reaches `raw_key.strip()` and raises `AttributeError`, disabling the whole severity layer.
+  **False.** An `isinstance(raw_key, str)` guard sits four lines above the `.strip()`; all three
+  malformed shapes (int, null, in both `pattern_overrides` and `vendor_severity`) log a warning and
+  drop only that entry, exactly as the docstring promises. The adjudicator read the `.strip()` and
+  missed the guard above it.
+- **`notify.py:127`** — the DEBUG traceback topic leak is real but already recorded as a **deliberate
+  tradeoff** (Wave 7 correction). Not a new finding.
+
+⇒ **2 of 22 FALSE verdicts overturned on re-derivation, both downward.** Consistent with this
+project's standing rule: *delegates' `file:line` citations hold up; their verdicts do not.*
+
+### ⛔ Coverage limit
+
+The instrument finds **asserted** guarantees — a guarantee word in a comment or docstring in
+`src/*.py`. It does **not** see: a guarantee implied by a function's name or type signature;
+guarantees stated in `docs/`, templates, or `README.md`; or a promise made only in a commit message.
+**Absence of further findings is not proof of correctness.**
+
+### DO-NOT-RE-AUDIT (round 8)
+
+`retention.py`, `evidence.py`, `patterns.py`, `config.py`, `bridges/ble.py`, `allowlist.py`,
+`notify.py`, `rules.py` and `kismet.py` have had every asserted guarantee adjudicated. `poller.py`
+and `db.py` were adjudicated but carry **unfixed** findings — see Finding 27 and the list reported
+to the `poller.py` owner on the session board.
+
 ## Still open
 
 - The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,
