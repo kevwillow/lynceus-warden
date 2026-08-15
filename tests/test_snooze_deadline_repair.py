@@ -360,3 +360,65 @@ def test_all_three_repair_sites_are_wired_into_the_poller():
         "repair_future_dated_watchful_snoozes",
     ):
         assert f"{name}(" in text, f"{name} exists but the poller never calls it"
+
+
+def test_every_deadline_column_in_the_schema_has_a_repair(db):
+    """⭐ A RATCHET over the whole class, derived from the schema.
+
+    I found the first site, then a red-team found two more, and I shipped a fix
+    twice believing the class was closed. Enumerating by hand does not work, and
+    neither does grepping: a `grep` for `expires_at = now + duration` misses
+    `expires_at = None if seconds is None else now_ts + seconds` — which is one
+    of the three sites — because the `=` is followed by `None`.
+
+    ⇒ So this derives the class from `sqlite_master` instead of from a text
+    pattern or my memory. If a migration adds a fourth deadline column, this
+    fails and names it, and whoever added it decides whether it needs a repair
+    rather than finding out from an operator whose 24-hour snooze lasted a
+    quarter.
+
+    ⚠️ The YAML backend cannot be enumerated this way; `AllowlistEntry.expires_at`
+    is asserted separately below, and that asymmetry is the point — **a sweep
+    that covers one storage backend is not a sweep.** This project has three:
+    SQLite rows, the UI YAML, and the `state` key-value table.
+    """
+    deadline_columns = set()
+    tables = [
+        r["name"]
+        for r in db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    ]
+    for table in tables:
+        for col in db._conn.execute(f"PRAGMA table_info({table})"):
+            name = col["name"]
+            if "expire" in name or name.endswith("_until") or "deadline" in name:
+                deadline_columns.add(f"{table}.{name}")
+
+    covered = {
+        # repair_future_dated_rule_type_snoozes
+        "rule_type_snoozes.expires_at",
+        # repair_future_dated_watchful_snoozes
+        "watchful_recurrence.snooze_expires_at",
+    }
+    assert deadline_columns == covered, (
+        f"the set of deadline columns changed: {deadline_columns ^ covered}.\n"
+        "A column holding an absolute deadline computed from a wall clock needs "
+        "a repair in the poller's gated housekeeping, or an explicit note here "
+        "saying why it does not. See repair_future_dated_rule_type_snoozes."
+    )
+
+
+def test_the_yaml_backend_deadline_is_covered_too():
+    """The third backend, which no schema query can see.
+
+    ⚠️ Asserted structurally because that is the only way to state it: the field
+    exists on the model, and a repair for it exists and is exported.
+    """
+    from lynceus.allowlist import AllowlistEntry, repair_future_dated_ui_entries
+
+    assert "expires_at" in AllowlistEntry.model_fields, (
+        "AllowlistEntry lost its expires_at field; the UI-snooze repair is "
+        "now pointing at nothing"
+    )
+    assert callable(repair_future_dated_ui_entries)
