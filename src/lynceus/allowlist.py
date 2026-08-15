@@ -184,6 +184,64 @@ class Allowlist(BaseModel):
         return None
 
 
+#: Allowlist pattern types split by whether the ATTACKER controls the value.
+#:
+#: ⛔ HARD identifiers are properties of the radio itself. A device cannot
+#: present someone else's MAC without actively spoofing the address it
+#: transmits on, which is a different and more detectable act than choosing
+#: what to call itself.
+#:
+#: ⛔ SOFT attributes are FREE TEXT the device puts in its own advertisement.
+#: A BLE peripheral names itself; it advertises whatever service UUIDs and
+#: manufacturer ID it likes. Suppressing on one of these means "ignore anything
+#: that SAYS it is X", and anything can say it is X.
+#:
+#: 🪤 Measured before this split existed. Operator allowlists their own
+#: headphones by name -- the obvious, documented use of `ble_local_name`:
+#:
+#:     the real headphones                mac=aa:bb:cc:dd:ee:01  suppressed=YES
+#:     AN ATTACKER broadcasting that name mac=de:ad:be:ef:00:99  suppressed=YES
+#:     the same attacker, not spoofing    mac=de:ad:be:ef:00:99  suppressed=no
+#:
+#: One freely-chosen advertisement field silenced everything for a completely
+#: different MAC -- including the operator's own HIGH-severity watchlist entry
+#: for that MAC. An attacker only has to name themselves after something the
+#: operator allowlisted.
+#:
+#: ⛔ Tightening allowlisting to MAC-only is NOT the fix and would break the
+#: feature: BLE devices use randomised, rotating addresses, which is precisely
+#: why name/UUID/manufacturer matching exists at all.
+HARD_ALLOWLIST_PATTERN_TYPES: frozenset[str] = frozenset(
+    {"mac", "mac_range", "oui"}
+)
+
+#: Everything else. Kept as an explicit complement rather than "not hard" so a
+#: NEW pattern_type cannot silently inherit full suppressing power -- see
+#: `assert_allowlist_pattern_types_are_classified`.
+SOFT_ALLOWLIST_PATTERN_TYPES: frozenset[str] = frozenset(
+    {
+        "ssid",
+        "ssid_pattern",
+        "ble_uuid",
+        "ble_manufacturer_id",
+        "ble_local_name",
+        "drone_id_prefix",
+        "imei_tac",
+    }
+)
+
+
+def is_soft_attribute(pattern_type: str) -> bool:
+    """True when the matched value is chosen by the device, not by the radio.
+
+    A soft match may suppress ambient noise -- new-device notices and the like
+    -- but must never silence an EXPLICIT watchlist hit, because the operator
+    naming a MAC is a deliberate instruction and the advertisement field is
+    attacker-controlled.
+    """
+    return pattern_type not in HARD_ALLOWLIST_PATTERN_TYPES
+
+
 def _entry_matches(entry: AllowlistEntry, obs: DeviceObservation) -> bool:
     """Per-pattern_type predicate paired with ``rules.evaluate``.
 
