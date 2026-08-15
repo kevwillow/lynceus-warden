@@ -3434,6 +3434,66 @@ class Database:
             for r in rows
         ]
 
+    def repair_future_dated_rule_type_snoozes(self, now_ts: int) -> list[tuple[str, int]]:
+        """Re-base snoozes written by a process whose clock was wrong.
+
+        ⛔ The web UI is a SEPARATE PROCESS from the poller. It has no
+        `ClockAnchor` and no `clock_trusted` gate — `webui/app.py` computes
+        `expires_at = int(time.time()) + duration_seconds` and persists that
+        absolute deadline. So an operator clicking "snooze 24h" while the host
+        clock is wrong stores a deadline that is wrong by the same amount.
+        Measured with the clock +91 days fast: the 24-hour snooze stayed active
+        for 92 DAYS after NTP corrected it. They silenced something for a day
+        and it was silent for three months.
+
+        ⭐ No new column is needed, which is the point. `add_rule_type_snooze`
+        already persists BOTH `expires_at` and `added_at`, and its own docstring
+        says the caller computes `expires_at = now_ts + duration_seconds` — so
+        `expires_at - added_at` IS the operator's intended duration, already
+        stored. A row whose `added_at` lies in the future was written on a
+        jumped clock; re-basing it onto a trusted clock preserves exactly the
+        window that was asked for.
+
+        ⚠️ Keyed on `added_at`, not on `expires_at`. A future `expires_at` is
+        the NORMAL state of a live snooze and re-basing on that would reset
+        every healthy one on every tick. `added_at` in the future is not
+        reachable by any correct write.
+
+        ⚠️ Caller MUST pass a trusted `now_ts` — this is a repair, and repairing
+        against a bad clock is how you corrupt the rows that were fine. It is
+        also why this runs BEFORE `cleanup_expired_rule_type_snoozes`: a
+        re-based row must not be deleted by the same tick that fixed it.
+
+        Returns ``[(rule_type, intended_duration_seconds), ...]`` for the rows
+        it re-based, so the caller can log what the operator will actually see.
+        """
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        rows = self._conn.execute(
+            "SELECT rule_type, added_at, expires_at FROM rule_type_snoozes "
+            "WHERE added_at > ?",
+            (now_ts,),
+        ).fetchall()
+        repaired: list[tuple[str, int]] = []
+        if not rows:
+            return repaired
+        with self._conn:
+            for row in rows:
+                duration = int(row["expires_at"]) - int(row["added_at"])
+                # A non-positive duration means the row is not merely
+                # future-dated, it is incoherent. Leave it: the ordinary expiry
+                # path deletes it, and inventing a window the operator never
+                # chose would be worse than letting it lapse.
+                if duration <= 0:
+                    continue
+                self._conn.execute(
+                    "UPDATE rule_type_snoozes SET added_at = ?, expires_at = ? "
+                    "WHERE rule_type = ?",
+                    (now_ts, now_ts + duration, row["rule_type"]),
+                )
+                repaired.append((str(row["rule_type"]), duration))
+        return repaired
+
     def cleanup_expired_rule_type_snoozes(self, now_ts: int) -> int:
         """Physically delete snoozes whose ``expires_at <= now_ts``.
 

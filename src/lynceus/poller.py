@@ -18,6 +18,7 @@ from .allowlist import (
     AllowlistParseError,
     _load_allowlist_with_counts,
     derive_ui_path,
+    repair_future_dated_ui_entries,
 )
 from .config import Config, load_config
 from .db import Database, WatchfulRecurrence
@@ -1562,6 +1563,55 @@ def poll_once(
     # purged=1, and correcting the clock does not bring it back -- the operator
     # simply starts receiving alerts they deliberately silenced.
     if clock_trusted:
+        # ⛔ REPAIR BEFORE PURGE, and the order is load-bearing. The web UI is a
+        # separate process with no ClockAnchor: it computes
+        # `expires_at = time.time() + duration` and persists that absolute
+        # deadline, so a snooze created while the host clock was wrong is wrong
+        # by the same amount. Measured at +91 days: a "24 hour" snooze stayed
+        # active for 92 DAYS after NTP corrected the clock.
+        #
+        # ⭐ Nothing here can prevent that write — it happens in another process
+        # that this gate cannot reach. So this is a REPAIR, the same shape as
+        # the suppression anchor's self-heal and for the same reason: where the
+        # bad state is written somewhere a gate cannot see, the state has to be
+        # fixable after the fact.
+        #
+        # ⚠️ Running it after the purge would let this tick delete a row it was
+        # about to re-base -- `cleanup` keys on `expires_at <= now_ts`, and a
+        # snooze written on a BACKWARD-jumped clock has exactly that shape.
+        try:
+            for rule_type, duration in db.repair_future_dated_rule_type_snoozes(now_ts):
+                logger.warning(
+                    "rule_type snooze for %s was created on a clock that read "
+                    "ahead of this one; re-based onto the current clock so it "
+                    "runs for the %ds the operator asked for, not until the "
+                    "wrong deadline",
+                    rule_type,
+                    duration,
+                )
+        except Exception as e:
+            logger.warning("rule_type_snoozes repair failed: %s", e)
+        # ⭐ The SAME defect lives in the other storage backend. `_write_ui_allowlist`
+        # persists per-device and per-alert snoozes to the UI YAML with the same
+        # `expires_at = time.time() + seconds` shape. Measured at +91 days: a
+        # 24-hour snooze on one suspicious device suppressed it for 92 DAYS.
+        #
+        # ⚠️ I found the rule_type instance by grepping for `db.<method>(now_ts=...)`,
+        # which structurally could not see this one -- it writes a file, not a row.
+        # Both are repaired here so the two backends cannot drift apart again.
+        try:
+            for pattern, duration in repair_future_dated_ui_entries(
+                derive_ui_path(Path(config.allowlist_path)), now_ts
+            ):
+                logger.warning(
+                    "UI suppression for %s was created on a clock that read "
+                    "ahead of this one; re-based so it runs for the %ds the "
+                    "operator chose, not until the wrong deadline",
+                    pattern,
+                    duration,
+                )
+        except Exception as e:
+            logger.warning("UI allowlist snooze repair failed: %s", e)
         try:
             purged = db.cleanup_expired_rule_type_snoozes(now_ts)
             if purged > 0:
