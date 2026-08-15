@@ -2290,16 +2290,46 @@ checked against `main`, so the next reader knows how much to trust it rather tha
 
 ## Closed since the audit
 
+⚠️ **Audited 2026-08-16 by a cold cross-model read, for one specific failure: a finding marked FIXED
+when only the SURFACE it was reported against was addressed.** That is not hypothetical — Finding 41
+was marked ✅ FIXED here for the length of one review before its own fix's author corrected it.
+
+⛔ **The audit found this heading doing the inverse of what "Still open" was doing yesterday:**
+entries filed under ✅ whose own text says the residual is *not* closed. Marked inline below rather
+than moved, because the fix genuinely landed and only the residual is open.
+
+⇒ **Before adding a ✅ here, re-run the finding's ORIGINAL measurement — not the fix's own tests.**
+A fix's tests pass and are usually honest; they simply cover what the fix set out to do. **The
+question is how many paths reach the mechanism and whether the fix sits on all of them.**
+
+### ⬜ Refuted by the audit — recorded so it is not re-raised
+
+The audit ranked **Finding 31 as PARTIAL**, on the grounds that the seeder is a second watchlist
+writer that bypasses `add_watchlist` and would leave the derived `mac_range` columns NULL.
+⇒ **Measured: false as of #86.** `cli/seed_watchlist.py` has no `INSERT INTO watchlist` at all — it
+delegates to `add_watchlist`, and the only remaining bypass is the Argus importer, which **does**
+populate `mac_range_prefix`/`_length` and **rejects** an underivable pattern rather than storing an
+inert row. ⚠️ The audit reasoned from this register's own historical text describing the **pre-#86**
+state. **A register that records history in the present tense will mislead the next reader — human or
+model — exactly as it did here.**
+
 - ✅ **`--min-confidence` range validation** — enforced at parse time (`_confidence_percent`, values
   outside 0–100 fail with exit 2), so a typo can no longer import nothing and exit 0. Was the
   behaviour change flagged "Kev's call"; done deliberately as the operational-trap fix it described.
 - ✅ **The three `/settings` cards now say "then restart the daemon"**, matching the BLE and severity
   cards (`settings.html`).
-- ✅ **`sightings` retention** — landed in PR #11 (`sightings_retention_days`, off by default). The
-  "unchanged across four handoffs" note is retired.
-- ✅ **Finding 36** — `--reconfigure` reverting hand-edited settings, fixed in PR #87 (`08299cc`).
-  ⚠️ Its residual (3 of the 40 — the `apply_config` path arguments) is **not** closed; it is
-  decision 8 under "Reserved for Kev".
+- 🟡 **`sightings` retention — closed as a CAPABILITY, not as a behaviour.** Landed in PR #11
+  (`sightings_retention_days`), **off by default**. ⚠️ If the original finding was "retention cannot
+  be configured", this closes it; if it was "sightings grow without bound", **a default install still
+  does exactly that.** Flagged by the 2026-08-16 audit and left as-is because the original acceptance
+  criterion is not recorded — ⇒ **which is itself the lesson: a finding whose criterion was never
+  written down cannot be proven closed.** The "unchanged across four handoffs" note is retired.
+- 🟡 **Finding 36 — PARTIAL, not closed.** `--reconfigure` reverting hand-edited settings, fixed in
+  PR #87 (`08299cc`) for 37 of the 40 settings, **plus a regression it introduced, fixed in #96**.
+  ⛔ **Its residual is still reachable:** the three `apply_config` path arguments. An operator who
+  relocated their allowlist and re-runs `--reconfigure` is still repointed at a freshly scaffolded
+  empty one, and every device they had suppressed starts alerting. That is decision 8 under
+  "Reserved for Kev" — **deciding it closes the finding; nothing else will.**
 - ✅ **Finding 38** — the interface-kind misdiagnosis, fixed in PR #90 (`be65b8f`). Nothing residual.
 - ✅ **Finding 21** — a config rewrite leaving the secrets world-readable, fixed in PR #28
   (`7571d57`). Verified on `main` 2026-08-15; was misfiled under "Still open" until then.
