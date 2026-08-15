@@ -41,23 +41,39 @@ from lynceus.config import Config
 from lynceus.poller import (
     CLOCK_JUMP_MAX_HOLDS,
     CLOCK_JUMP_TOLERANCE_SECONDS,
-    Poller,
+    ClockAnchor,
 )
 
 
 class _FakePoller:
     """Just the clock machinery, without standing up a Kismet client or DB.
 
-    `clock_is_trusted` depends only on `_clock_anchor` and `_clock_holds`, so
-    binding the real method to a bare object exercises the production code
-    rather than a copy of it.
+    This used to bind `Poller.clock_is_trusted` to a bare object carrying
+    `_clock_anchor`/`_clock_holds`, because the machinery was only reachable
+    through a Poller. It now lives in `ClockAnchor`, which is directly
+    constructible, so this drives the real production object and only overrides
+    the anchor -- one less thing standing between the test and the code.
     """
 
     def __init__(self, wall: float, mono: float) -> None:
-        self._clock_anchor = (wall, mono)
-        self._clock_holds = 0
+        self._clock = ClockAnchor()
+        self._clock._anchor = (wall, mono)
+        self._clock._holds = 0
 
-    clock_is_trusted = Poller.clock_is_trusted
+    def clock_is_trusted(self, now_ts: int) -> bool:
+        return self._clock.is_trusted(now_ts)
+
+    # The hold counter and anchor are what several tests below assert on
+    # directly; expose them under their historical names so those assertions
+    # keep describing the same state rather than being rewritten around the
+    # refactor.
+    @property
+    def _clock_holds(self) -> int:
+        return self._clock._holds
+
+    @property
+    def _clock_anchor(self) -> tuple[float, float]:
+        return self._clock._anchor
 
 
 def _p(monkeypatch, *, mono_now: float) -> _FakePoller:

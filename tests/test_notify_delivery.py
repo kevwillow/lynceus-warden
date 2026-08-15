@@ -98,6 +98,7 @@ def _poll(db, config, ruleset, notifier, *, ts):
         processed_counter=[0],
         admitted_counter=[0],
         ruleset=ruleset,
+        clock_trusted=True,
         allowlist=Allowlist(),
         notifier=notifier,
     )

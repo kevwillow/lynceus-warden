@@ -285,12 +285,19 @@ def process_observation(
     ruleset,
     allowlist,
     notifier,
+    clock_trusted: bool,
     severity_overrides=None,
     rule_type_suppression_counter=None,
 ) -> None:
     """Persist one observation and run its alert pipeline.
 
     Extracted from poll_once; accumulators are mutated in place.
+
+    ``clock_trusted`` is REQUIRED and deliberately has no default. Watchful
+    recurrence counting is arithmetic on wall-clock differences, so a caller
+    that has not thought about clock trust must not be able to inherit a
+    permissive one by omission -- the same structural-gate reasoning that made
+    ``now_ts`` required for retention and evidence pruning.
     """
     existing_device = db.get_device(obs.mac)
     is_new = existing_device is None
@@ -378,7 +385,53 @@ def process_observation(
     # immediately when the table is empty (typical steady
     # state). Backward-compat: poll cycles with no tracking
     # entries are byte-identical to pre-rc6 behavior.
-    watchful_entry = db.get_active_watchful_recurrence_by_mac(obs.mac)
+    #
+    # ⛔ GATED on `clock_trusted`. Recurrence is a claim about ELAPSED TIME --
+    # `record_watchful_sighting` counts an observation only when
+    # `now_ts - last_seen_at >= 24h` -- so an untrustworthy clock cannot
+    # produce a trustworthy count. Measured on an ungated build:
+    #
+    #   +24h jump  -> sighting_count 1->2, counted=True   (a recurrence that
+    #                 never happened; four of these cross the escalation
+    #                 threshold and tell the operator they are being followed)
+    #   +91d jump  -> last_seen_at written 91 days AHEAD, after which real
+    #                 sightings counted again only from day 92
+    #
+    # ⚠️ Three harms, and the second is the one that matters most for this
+    # product: fabricated evidence, ~92 days of SILENCE while a device that
+    # genuinely is following the operator goes uncounted, and a permanent
+    # `escalated_at` that does not heal when the clock is corrected.
+    #
+    # ⭐ Round 7's sweep sanctioned "destructive operations" -- DELETEs and
+    # archives -- and missed this because it is a state-ADVANCING write.
+    # Writing a wrong value is as damaging as deleting a right one.
+    #
+    # Skipping is the conservative direction here, unlike the heartbeat's
+    # deliberate fail-toward-sending. But be honest about what it costs, because
+    # the first draft of this comment was not:
+    #
+    # ⚠️ A skipped count is NOT simply "recoverable on the next sighting". There
+    # may be no next sighting; a later call adds one count, it does not
+    # reconstruct the ones that were skipped; and if the entry sat at 3, a
+    # genuine threshold-crossing sighting produces no warning at the moment the
+    # operator most needs it. The trade is a DELAYED-or-LOST true escalation
+    # against a FABRICATED one, and it is chosen only because a false "you are
+    # being followed" alert is unrecoverable -- `escalated_at` is permanent, and
+    # the operator's trust in the tool is more so.
+    #
+    # ⛔ RESIDUAL, not fixed here: `ClockAnchor` re-anchors after
+    # CLOCK_JUMP_MAX_HOLDS consecutive divergent ticks and then reports the
+    # jumped clock as trusted. A clock that stays wrong therefore resumes
+    # poisoning recurrence state from the 4th tick onward. That fail-open is a
+    # deliberate system-wide decision (an unbounded hold is the other broken
+    # extreme) and cannot be undone from here -- the honest fix is to measure
+    # recurrence gaps monotonically rather than from the wall clock, which
+    # `last_seen_at` being persisted across restarts makes non-trivial. This
+    # gate removes the transient-jump case, which is the common one; it does
+    # not make recurrence counting clock-proof.
+    watchful_entry = None
+    if clock_trusted:
+        watchful_entry = db.get_active_watchful_recurrence_by_mac(obs.mac)
     if watchful_entry is not None:
         outcome = db.record_watchful_sighting(watchful_entry.id, now_ts)
         if outcome is not None:
@@ -703,6 +756,57 @@ def _compose_heartbeat(db: Database, config: Config, *, now_ts: int) -> tuple[bo
             "trackers, are not being seen; Kismet capture is unaffected)"
         )
 
+    # 5. Kismet reported devices and we admitted NONE of them.
+    #
+    # ⭐ Clause 4 above watches the BLE path; this one watches the KISMET path,
+    # and they are the same failure arriving through the two different capture
+    # routes: the daemon is up, the pipeline is not carrying anything, and
+    # nothing else in this function can tell.
+    #
+    # ⛔ This closes the gap between this function's stated invariant and what
+    # it did. Measured on main: a tick with 412 devices dropped by the source
+    # allowlist and 0 admitted produced healthy=True and the message "Still
+    # watching. 0 device sighting(s) in the last 24h" -- BYTE-IDENTICAL to what
+    # an operator in a genuinely quiet area receives. So the one thing the
+    # heartbeat exists to disambiguate, it did not.
+    #
+    # ⭐ "admitted == 0" alone stays HEALTHY, deliberately: a quiet RF
+    # environment is not a fault, and alerting on it trains the operator to
+    # ignore the channel. The signal is not silence, it is CONTRADICTION --
+    # Kismet handed us devices and every one was discarded. That cannot be a
+    # quiet site by construction, whatever the drop reason.
+    #
+    # ⚠️ Deliberately does not fire when admitted > 0. A config that drops most
+    # devices but admits some is doing its job; second-guessing the operator's
+    # own filter thresholds is not this function's business.
+    def _tick_count(key: str) -> int:
+        try:
+            return int(db.get_state(key) or 0)
+        except (TypeError, ValueError):
+            # A malformed counter must not take the heartbeat down with it --
+            # this function is what reports faults, so it has to survive them.
+            return 0
+
+    admitted = _tick_count(STATE_KEY_LAST_TICK_ADMITTED)
+    discarded = {
+        "source allowlist": _tick_count(
+            STATE_KEY_LAST_TICK_DROPPED_SOURCE_ALLOWLIST
+        ),
+        "min_rssi": _tick_count(STATE_KEY_LAST_TICK_DROPPED_MIN_RSSI),
+        "unparseable": _tick_count(STATE_KEY_LAST_TICK_DROPPED_UNPARSEABLE),
+    }
+    total_discarded = sum(discarded.values())
+    if last_tick_raw is not None and admitted == 0 and total_discarded > 0:
+        # Name the reason: "not watching" without a cause sends the operator
+        # to the hardware, and the fault is almost always in their config.
+        why = ", ".join(
+            f"{n} by {reason}" for reason, n in discarded.items() if n
+        )
+        problems.append(
+            f"every device Kismet reported was discarded ({why}); "
+            f"lynceus is not watching anything"
+        )
+
     healthy = not problems
 
     since_ts = now_ts - config.heartbeat_interval_hours * 3600
@@ -750,7 +854,9 @@ def maybe_emit_heartbeat(
     if not config.heartbeat_enabled or notifier is None:
         return False
 
-    latest = db.latest_heartbeat()
+    # ⛔ Bounded for the same reason as both scheduling lookups below: a
+    # future-dated row must not shadow the newest real one in retry selection.
+    latest = db.latest_heartbeat(not_after=now_ts)
 
     # An undelivered heartbeat with attempts left is retried before any new one
     # is composed -- the operator is owed the message that was already written,
@@ -774,7 +880,9 @@ def maybe_emit_heartbeat(
                 latest["message"], now_ts=now_ts, retry=True,
             )
 
-    last_delivered = db.latest_delivered_heartbeat_ts()
+    # ⛔ `not_after=now_ts` is load-bearing, not defensive tidiness. See the
+    # future-anchor trap below.
+    last_delivered = db.latest_delivered_heartbeat_ts(not_after=now_ts)
     interval = config.heartbeat_interval_hours * 3600
 
     # What the interval is measured from. Delivery is the honest reference --
@@ -788,8 +896,34 @@ def maybe_emit_heartbeat(
     # and burns another four attempts -- a row and four blocking HTTP timeouts
     # per poll tick, forever. The bounded-retry logic above is defeated by
     # simply making a new thing to retry.
+    #
+    # 🪤 THE FUTURE-ANCHOR TRAP. Both lookups are clamped to `now_ts` because a
+    # forward clock jump writes a heartbeat row stamped in the future, and
+    # `latest_heartbeat` orders by `ts DESC` while `latest_delivered_...` takes
+    # `MAX(notified_at)` -- so once the clock is corrected, that future row wins
+    # every subsequent comparison. `elapsed` is then negative on EVERY tick,
+    # which the `0 <= elapsed` test below deliberately treats as "send", and
+    # nothing a normal-time tick writes can ever supersede it.
+    #
+    # ⭐ The comment below used to say a spurious heartbeat "costs one
+    # notification". That reasoned about a transient BACKWARD jump and was
+    # wrong about the case that actually happens: a FORWARD jump leaves a
+    # permanent future anchor. Measured on a fixture before this clamp existed:
+    # 300 corrected 60s ticks produced 300 sends -- one per tick, not one total
+    # -- extrapolating to ~131,040 over a 91-day excursion. Clamping restores
+    # the documented tradeoff: the future row is ignored for scheduling, so at
+    # most one extra heartbeat is sent and normal cadence resumes immediately.
+    # The row is still shown verbatim in the web UI, which reads unclamped
+    # because an operator inspecting health should see the bad timestamp.
     reference = last_delivered
     if reference is None and latest is not None:
+        # ⚠️ Leaving this as None is NOT a safe simplification: None means
+        # "never sent one, send promptly", which composes a brand-new row on
+        # every tick and defeats the bounded retry. Measured: 200 corrected
+        # ticks, 200 new rows.
+        #
+        # This is safe only because `latest` was fetched with `not_after=now_ts`
+        # above. Unbounded, it would be the future row itself.
         reference = int(latest["ts"])
 
     if reference is not None:
@@ -1015,6 +1149,7 @@ def poll_once(
                 ruleset=ruleset,
                 allowlist=allowlist,
                 notifier=notifier,
+                clock_trusted=clock_trusted,
                 severity_overrides=severity_overrides,
                 rule_type_suppression_counter=rule_type_suppression_counter,
             )
@@ -1371,6 +1506,83 @@ def log_watchlist_staleness(
         )
 
 
+class ClockAnchor:
+    """Tracks whether the wall clock has moved independently of elapsed time.
+
+    Extracted from ``Poller`` so the BLE bridge can reach the same judgement.
+    The bridge flushes observations straight into ``process_observation`` off
+    its own ``int(time.time())`` reading, so before this existed it had no way
+    to form an opinion about its clock at all -- a second, unguarded door into
+    the watchful-recurrence arithmetic that ``poll_once`` gates.
+
+    ⚠️ ``is_trusted`` mutates hold state, so call it exactly once per tick.
+    """
+
+    def __init__(self) -> None:
+        self._anchor: tuple[float, float] = (time.time(), time.monotonic())
+        self._holds = 0
+
+    def is_trusted(self, now_ts: int) -> bool:
+        """Has the wall clock moved independently of elapsed real time?
+
+        Compares the wall clock against what it *should* read given how much
+        monotonic time has passed since the anchor. A divergence beyond
+        CLOCK_JUMP_TOLERANCE_SECONDS means the clock itself moved -- NTP
+        stepping, a manual set, an RTC-less board finally syncing -- rather
+        than time simply passing.
+
+        Returns False while a jump is fresh, so the caller can decline to do
+        anything the wall clock would get wrong. After CLOCK_JUMP_MAX_HOLDS
+        consecutive holds it re-anchors and returns True again: see that
+        constant for why an unbounded hold is the other broken extreme.
+        """
+        wall, mono = self._anchor
+        expected = wall + (time.monotonic() - mono)
+        drift = abs(now_ts - expected)
+        if drift <= CLOCK_JUMP_TOLERANCE_SECONDS:
+            if self._holds:
+                logger.info(
+                    "wall clock agrees with elapsed time again (drift %.1fs); "
+                    "resuming normal operation",
+                    drift,
+                )
+            self._holds = 0
+            return True
+
+        self._holds += 1
+        if self._holds >= CLOCK_JUMP_MAX_HOLDS:
+            logger.error(
+                "wall clock has diverged from elapsed time by %.0fs for %d "
+                "consecutive ticks; ACCEPTING the new clock and re-anchoring. "
+                "Retention pruning resumes against it -- if this clock is wrong, "
+                "data inside the retention window may now be deleted.",
+                drift,
+                self._holds,
+            )
+            # ⚠️ Re-anchor to `now_ts`, NOT to a fresh `time.time()`. `now_ts`
+            # is the reading the rest of this tick will actually use, and the
+            # anchor has to describe that same clock -- a second reading can
+            # differ, and then the very next tick measures drift against a
+            # value nothing else in the system saw. Caught by
+            # test_the_hold_is_bounded_and_then_re_anchors, which held the
+            # jumped clock steady and watched the drift reappear from nowhere.
+            self._anchor = (float(now_ts), time.monotonic())
+            self._holds = 0
+            return True
+
+        logger.error(
+            "wall clock jumped: reads %ds, expected ~%ds from elapsed time "
+            "(drift %.0fs). Holding %d/%d -- time-dependent housekeeping is "
+            "suspended this tick.",
+            now_ts,
+            int(expected),
+            drift,
+            self._holds,
+            CLOCK_JUMP_MAX_HOLDS,
+        )
+        return False
+
+
 class Poller:
     def __init__(self, config: Config, config_path: str | None = None) -> None:
         self.config = config
@@ -1386,8 +1598,7 @@ class Poller:
         # reading taken at the same instant makes a jump *during this process*
         # unambiguous, while a restart after genuine downtime is correctly not
         # flagged (a new process takes a new anchor).
-        self._clock_anchor: tuple[float, float] = (time.time(), time.monotonic())
-        self._clock_holds = 0
+        self._clock = ClockAnchor()
         self.db = Database(config.db_path)
         self.client = build_kismet_client(config)
         if config.kismet_health_check_on_startup:
@@ -1917,66 +2128,14 @@ class Poller:
         self._kismet_down_alerted = True
 
     def clock_is_trusted(self, now_ts: int) -> bool:
-        """Has the wall clock moved independently of elapsed real time?
+        """Delegates to `ClockAnchor.is_trusted`; see it for the reasoning.
 
-        Compares the wall clock against what it *should* read given how much
-        monotonic time has passed since the anchor. A divergence beyond
-        CLOCK_JUMP_TOLERANCE_SECONDS means the clock itself moved -- NTP
-        stepping, a manual set, an RTC-less board finally syncing -- rather
-        than time simply passing.
-
-        Returns False while a jump is fresh, so the caller can decline to do
-        anything the wall clock would get wrong. After CLOCK_JUMP_MAX_HOLDS
-        consecutive holds it re-anchors and returns True again: see that
-        constant for why an unbounded hold is the other broken extreme.
+        Kept as a method because it is the daemon's per-tick entry point and
+        several tests drive it through a Poller.
 
         ⚠️ Mutates hold state, so call it exactly once per tick.
         """
-        wall, mono = self._clock_anchor
-        expected = wall + (time.monotonic() - mono)
-        drift = abs(now_ts - expected)
-        if drift <= CLOCK_JUMP_TOLERANCE_SECONDS:
-            if self._clock_holds:
-                logger.info(
-                    "wall clock agrees with elapsed time again (drift %.1fs); "
-                    "resuming normal operation",
-                    drift,
-                )
-            self._clock_holds = 0
-            return True
-
-        self._clock_holds += 1
-        if self._clock_holds >= CLOCK_JUMP_MAX_HOLDS:
-            logger.error(
-                "wall clock has diverged from elapsed time by %.0fs for %d "
-                "consecutive ticks; ACCEPTING the new clock and re-anchoring. "
-                "Retention pruning resumes against it -- if this clock is wrong, "
-                "data inside the retention window may now be deleted.",
-                drift,
-                self._clock_holds,
-            )
-            # ⚠️ Re-anchor to `now_ts`, NOT to a fresh `time.time()`. `now_ts`
-            # is the reading the rest of this tick will actually use, and the
-            # anchor has to describe that same clock -- a second reading can
-            # differ, and then the very next tick measures drift against a
-            # value nothing else in the system saw. Caught by
-            # test_the_hold_is_bounded_and_then_re_anchors, which held the
-            # jumped clock steady and watched the drift reappear from nowhere.
-            self._clock_anchor = (float(now_ts), time.monotonic())
-            self._clock_holds = 0
-            return True
-
-        logger.error(
-            "wall clock jumped: reads %ds, expected ~%ds from elapsed time "
-            "(drift %.0fs). Holding %d/%d -- time-dependent housekeeping is "
-            "suspended this tick.",
-            now_ts,
-            int(expected),
-            drift,
-            self._clock_holds,
-            CLOCK_JUMP_MAX_HOLDS,
-        )
-        return False
+        return self._clock.is_trusted(now_ts)
 
     def run_forever(self) -> None:
         try:
