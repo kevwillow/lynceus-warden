@@ -418,11 +418,18 @@ def test_healthz_json_returns_200_on_healthy_db(tmp_path):
         body = r.json()
         assert body["status"] == "ok"
         assert isinstance(body["version"], str)
+        # ⭐ `clock` is a DELIBERATE addition: whether this process's clock
+        # reads behind events already recorded here, which decides whether a
+        # timed suppression can be expressed at all. Recorded here rather than
+        # waved through, and the exact set is kept `==` for the same reason as
+        # the per-check sets below — an addition failing this test is the test
+        # working.
         assert set(body["checks"].keys()) == {
             "db",
             "poller",
             "watchlist",
             "ruleset",
+            "clock",
             "alerts",
         }
     finally:

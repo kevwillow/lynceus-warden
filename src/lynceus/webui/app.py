@@ -44,6 +44,10 @@ from lynceus.db import (
 )
 from lynceus.patterns import mac_in_mac_range
 from lynceus.redact import redact_ntfy_topic
+from lynceus.webui.clock import (
+    clock_behind_recorded_history,
+    refuse_if_clock_behind,
+)
 from lynceus.webui.csp import CSPMiddleware
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.liveness import (
@@ -971,6 +975,11 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
     except sqlite3.Error:
         ble_class_counts = {}
 
+    # Surfaced beside the other health facts, because an operator whose snooze
+    # was just refused needs somewhere that explains why -- and one whose clock
+    # is wrong should not have to be refused first to find out.
+    clock_state = clock_behind_recorded_history(db, int(time.time()))
+
     # ⭐ Liveness is graded against the card's OWN counts, not a second query.
     # The note says "3 of these cannot fire" directly beneath the breakdown
     # line; two reads with a write possible between them would let the note
@@ -1041,6 +1050,7 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
         "watchlist_stats": _watchlist_origin_breakdown(db),
         "watchlist_freshness": freshness_card,
         "watchlist_liveness": liveness,
+        "clock_state": clock_state,
         "severity_overrides": {
             "path": str(overrides_path),
             "exists": overrides_path.exists(),
@@ -1450,6 +1460,27 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
     }
 
 
+def _check_clock(db: Database, *, now_ts: int) -> dict:
+    """Does this process's clock read earlier than events already recorded?
+
+    ⭐ ``status`` stays ``"ok"`` even when the clock is behind, matching the
+    ruleset check's contract: only the DB check drives the top-level status, so
+    a monitoring tool alerting on ``status`` does not start paging because a
+    host drifted. The condition is reported in its own boolean instead --
+    ``behind: true`` is the thing to alert on, and it is unambiguous.
+    """
+    state = clock_behind_recorded_history(db, now_ts)
+    return {
+        "status": "ok",
+        "behind": bool(state["behind"]),
+        "behind_by_seconds": int(state["behind_by"]),
+        "newest_recorded_at": (
+            unix_to_iso(state["newest_ts"]) if state["newest_ts"] is not None else None
+        ),
+        "blocks_duration_writes": bool(state["behind"]),
+    }
+
+
 def _check_ruleset(config: Config) -> dict:
     """Loads ``rules.yaml`` on each call (cheap — the file is small and
     operators rarely poll /healthz.json at sub-second cadence). When the
@@ -1639,6 +1670,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "poller": _check_poller(db, config, now_ts=now_ts),
             "watchlist": _check_watchlist(db, config, now_ts=now_ts),
             "ruleset": _check_ruleset(config),
+            "clock": _check_clock(db, now_ts=now_ts),
             "alerts": _check_alerts(db, now_ts=now_ts),
         }
         overall = (
@@ -2602,6 +2634,20 @@ def create_app(config: Config, db: Database) -> FastAPI:
         result = _load_alert_for_triage(alert_id, request)
         if not isinstance(result, dict):
             return result
+        # ⛔ A duration is only meaningful if the clock stamping it is: a
+        # deadline written by a clock that reads behind recorded history is
+        # already in the past, so the suppression never takes effect. Refused
+        # rather than stored -- see webui/clock.py for the measurement and for
+        # why this cannot be repaired after the fact.
+        #
+        # ⚠️ Placed AFTER this handler's own input validation, deliberately. A
+        # bad duration or an unknown rule_type must be reported as what it is;
+        # answering a malformed request with "your clock is wrong" tells the
+        # caller nothing about the mistake they actually made.
+        clock_refusal = refuse_if_clock_behind(db, int(time.time()))
+        if clock_refusal:
+            raise HTTPException(status_code=400, detail=clock_refusal)
+
         _write_ui_allowlist(
             result["mac"],
             snooze_duration_key=snooze_duration,
@@ -2746,6 +2792,20 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 ),
             )
         seconds = _SNOOZE_DURATIONS[snooze_duration]
+        # ⛔ A duration is only meaningful if the clock stamping it is: a
+        # deadline written by a clock that reads behind recorded history is
+        # already in the past, so the suppression never takes effect. Refused
+        # rather than stored -- see webui/clock.py for the measurement and for
+        # why this cannot be repaired after the fact.
+        #
+        # ⚠️ Placed AFTER this handler's own input validation, deliberately. A
+        # bad duration or an unknown rule_type must be reported as what it is;
+        # answering a malformed request with "your clock is wrong" tells the
+        # caller nothing about the mistake they actually made.
+        clock_refusal = refuse_if_clock_behind(db, int(time.time()))
+        if clock_refusal:
+            raise HTTPException(status_code=400, detail=clock_refusal)
+
         try:
             new_id = db.create_watchful_from_alert(
                 alert_id,
@@ -3758,6 +3818,20 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 detail="no alert for this MAC; watchful tracking starts from an alert",
             )
         seconds = _SNOOZE_DURATIONS[snooze_duration]
+        # ⛔ A duration is only meaningful if the clock stamping it is: a
+        # deadline written by a clock that reads behind recorded history is
+        # already in the past, so the suppression never takes effect. Refused
+        # rather than stored -- see webui/clock.py for the measurement and for
+        # why this cannot be repaired after the fact.
+        #
+        # ⚠️ Placed AFTER this handler's own input validation, deliberately. A
+        # bad duration or an unknown rule_type must be reported as what it is;
+        # answering a malformed request with "your clock is wrong" tells the
+        # caller nothing about the mistake they actually made.
+        clock_refusal = refuse_if_clock_behind(db, int(time.time()))
+        if clock_refusal:
+            raise HTTPException(status_code=400, detail=clock_refusal)
+
         try:
             db.create_watchful_from_alert(
                 source_alert_id,
@@ -3816,6 +3890,20 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 status_code=400,
                 detail="allowlist_path is not configured; nothing to write to",
             )
+        # ⛔ A duration is only meaningful if the clock stamping it is: a
+        # deadline written by a clock that reads behind recorded history is
+        # already in the past, so the suppression never takes effect. Refused
+        # rather than stored -- see webui/clock.py for the measurement and for
+        # why this cannot be repaired after the fact.
+        #
+        # ⚠️ Placed AFTER this handler's own input validation, deliberately. A
+        # bad duration or an unknown rule_type must be reported as what it is;
+        # answering a malformed request with "your clock is wrong" tells the
+        # caller nothing about the mistake they actually made.
+        clock_refusal = refuse_if_clock_behind(db, int(time.time()))
+        if clock_refusal:
+            raise HTTPException(status_code=400, detail=clock_refusal)
+
         _write_ui_allowlist(
             normalized, snooze_duration_key=snooze_duration, now_ts=int(time.time())
         )
@@ -4032,6 +4120,20 @@ def create_app(config: Config, db: Database) -> FastAPI:
             )
         normalized_note = _normalize_optional_note(note)
         now_ts = int(time.time())
+        # ⛔ A duration is only meaningful if the clock stamping it is: a
+        # deadline written by a clock that reads behind recorded history is
+        # already in the past, so the suppression never takes effect. Refused
+        # rather than stored -- see webui/clock.py for the measurement and for
+        # why this cannot be repaired after the fact.
+        #
+        # ⚠️ Placed AFTER this handler's own input validation, deliberately. A
+        # bad duration or an unknown rule_type must be reported as what it is;
+        # answering a malformed request with "your clock is wrong" tells the
+        # caller nothing about the mistake they actually made.
+        clock_refusal = refuse_if_clock_behind(db, now_ts)
+        if clock_refusal:
+            raise HTTPException(status_code=400, detail=clock_refusal)
+
         expires_at = now_ts + duration_seconds
         db.add_rule_type_snooze(
             rule_type=rule_type,

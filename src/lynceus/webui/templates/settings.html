@@ -414,6 +414,19 @@
        folded into the inert block above: "no enabled rule delegates to this
        type" would be a FALSE explanation that sends them into rules.yaml to
        fix a file that is already correct. Temporary, reversible, and theirs. #}
+    {# ⛔ A clock reading behind recorded history cannot produce a usable
+       deadline. Shown wherever it is true, not only after a refusal, so an
+       operator finds it before they lose a snooze rather than after. #}
+    {% if clock_state.behind %}
+      <p><small class="dim">
+        🕐 <strong>This machine's clock reads behind events already recorded
+        here.</strong> Snoozes and other timed suppressions are being refused,
+        because a deadline set from this clock would already have passed — the
+        suppression would never take effect and would then be deleted as
+        expired. Permanent allowlist entries are unaffected. Check NTP
+        (<code>timedatectl</code>).
+      </small></p>
+    {% endif %}
     {% if watchlist_liveness.known and watchlist_liveness.suppressed_count %}
       <p><small class="dim">
         🔕 <strong>{{ watchlist_liveness.suppressed_count }} of your entries
