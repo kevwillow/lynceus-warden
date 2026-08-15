@@ -1612,6 +1612,28 @@ def poll_once(
                 )
         except Exception as e:
             logger.warning("UI allowlist snooze repair failed: %s", e)
+        # ⚠️ THIRD instance of the same defect, and the most harmful of the
+        # three: `snooze_expires_at` gates the ORIGINAL alert pipeline for that
+        # MAC (OQ-3), not just the recurrence escalation. Measured with the web
+        # clock +91d, on a device the operator had explicitly watchlisted as
+        # HIGH severity: zero notifications at day 1, 30 and 60. A "snooze this
+        # device's alerts for 24 hours" silenced their own stalker alert for 92
+        # days.
+        #
+        # ⛔ I shipped the first two repairs believing that was the whole class.
+        # Three storage sites, three separate discoveries, one shape. Any new
+        # `x_expires_at = clock + duration` write belongs on this list.
+        try:
+            for mac, duration in db.repair_future_dated_watchful_snoozes(now_ts):
+                logger.warning(
+                    "watchful snooze for %s was created on a clock that read "
+                    "ahead of this one; re-based so its alerts resume after the "
+                    "%ds the operator chose",
+                    mac,
+                    duration,
+                )
+        except Exception as e:
+            logger.warning("watchful snooze repair failed: %s", e)
         try:
             purged = db.cleanup_expired_rule_type_snoozes(now_ts)
             if purged > 0:

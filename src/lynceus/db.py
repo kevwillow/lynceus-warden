@@ -3494,6 +3494,59 @@ class Database:
                 repaired.append((str(row["rule_type"]), duration))
         return repaired
 
+    def repair_future_dated_watchful_snoozes(self, now_ts: int) -> list[tuple[str, int]]:
+        """Third instance of the same defect, and the most harmful.
+
+        `create_watchful_from_alert` computes
+        `snooze_expires_at = now_ts + snooze_duration_seconds` from the WEB
+        process's clock, which has no `ClockAnchor`.
+
+        ⚠️ `snooze_expires_at` gates the ORIGINAL alert pipeline for that MAC
+        (OQ-3) -- not merely the recurrence escalation. Measured with the web
+        clock +91 days fast, on a device the operator had explicitly watchlisted
+        as HIGH severity:
+
+            day  1: high-severity notifications = 0
+            day 30: high-severity notifications = 0
+            day 60: high-severity notifications = 0
+
+        ⇒ A "watch this device, snooze its alerts for 24 hours" silences the
+        operator's own stalker alert for 92 DAYS.
+
+        ⭐ Repairable for the same reason as the other two: `created_at` is
+        persisted next to `snooze_expires_at`, so their difference is the
+        duration the operator actually chose.
+
+        ⚠️ `snooze_expires_at IS NULL` is the "forever" option, a deliberate
+        permanent suppression with no duration to preserve. Left untouched --
+        inventing a window would convert the operator's explicit choice into a
+        snooze that silently expires.
+
+        Returns ``[(mac, intended_duration_seconds), ...]`` for rows re-based.
+        """
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            raise ValueError("now_ts must be an int (epoch seconds)")
+        rows = self._conn.execute(
+            "SELECT id, mac, created_at, snooze_expires_at FROM watchful_recurrence "
+            "WHERE created_at > ? AND snooze_expires_at IS NOT NULL "
+            "AND archived_at IS NULL",
+            (now_ts,),
+        ).fetchall()
+        repaired: list[tuple[str, int]] = []
+        if not rows:
+            return repaired
+        with self._conn:
+            for row in rows:
+                duration = int(row["snooze_expires_at"]) - int(row["created_at"])
+                if duration <= 0:
+                    continue
+                self._conn.execute(
+                    "UPDATE watchful_recurrence SET snooze_expires_at = ? WHERE id = ?",
+                    (now_ts + duration, int(row["id"])),
+                )
+                repaired.append((str(row["mac"]), duration))
+        return repaired
+
     def cleanup_expired_rule_type_snoozes(self, now_ts: int) -> int:
         """Physically delete snoozes whose ``expires_at <= now_ts``.
 

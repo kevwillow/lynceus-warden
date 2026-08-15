@@ -265,3 +265,98 @@ def test_a_healthy_ui_snooze_is_untouched_and_the_file_is_not_rewritten(tmp_path
     assert ui.stat().st_mtime_ns == before_mtime, (
         "the UI file was rewritten despite nothing needing repair"
     )
+
+
+# --------------------------------------------------------------------------
+# the THIRD site, and the most harmful
+# --------------------------------------------------------------------------
+
+
+def _watchful(db, mac, duration, at):
+    db.upsert_device(
+        mac=mac, device_type="wifi", oui_vendor=None, is_randomized=0, now_ts=NOW
+    )
+    db.insert_sighting(mac=mac, ts=NOW, rssi=-40, ssid=None, location_id="home")
+    alert_id = db.add_alert(
+        ts=NOW, rule_name="r", mac=mac, message="m", severity="high"
+    )
+    return db.create_watchful_from_alert(alert_id, duration, at)
+
+
+def test_a_watchful_snooze_written_on_a_fast_clock_is_rebased(db):
+    """⚠️ The most harmful of the three sites.
+
+    `snooze_expires_at` gates the ORIGINAL alert pipeline for that MAC (OQ-3),
+    not merely the recurrence escalation. Measured with the web clock +91 days
+    fast, on a device the operator had explicitly watchlisted as HIGH severity:
+
+        day  1: high-severity notifications = 0
+        day 30: high-severity notifications = 0
+        day 60: high-severity notifications = 0
+
+    ⇒ "Watch this device, snooze its alerts for 24 hours" silenced their own
+    stalker alert for 92 days.
+    """
+    db.ensure_location("home", "Home")
+    mac = "aa:bb:cc:dd:ee:01"
+    _watchful(db, mac, DAY, NOW + 91 * DAY)
+
+    assert db.repair_future_dated_watchful_snoozes(NOW) == [(mac, DAY)]
+
+    row = db._conn.execute(
+        "SELECT snooze_expires_at FROM watchful_recurrence"
+    ).fetchone()
+    assert row["snooze_expires_at"] == NOW + DAY, (
+        "the operator's 24 hours was not restored"
+    )
+
+
+def test_a_forever_watchful_snooze_is_never_rebased(db):
+    """⚠️ `snooze_expires_at IS NULL` is the deliberate 'forever' option.
+
+    It has no duration to preserve. Inventing one would convert an explicit
+    permanent suppression into a snooze that silently expires — turning the
+    operator's choice into an alert storm they did not ask for.
+    """
+    db.ensure_location("home", "Home")
+    _watchful(db, "bb:bb:bb:bb:bb:bb", None, NOW + 91 * DAY)
+    assert db.repair_future_dated_watchful_snoozes(NOW) == []
+    row = db._conn.execute(
+        "SELECT snooze_expires_at FROM watchful_recurrence"
+    ).fetchone()
+    assert row["snooze_expires_at"] is None
+
+
+def test_a_healthy_watchful_snooze_is_untouched(db):
+    """The twin: a live snooze always has a future `snooze_expires_at`, so
+    keying on that instead of `created_at` would re-base every healthy entry
+    on every poll tick."""
+    db.ensure_location("home", "Home")
+    _watchful(db, "cc:cc:cc:cc:cc:cc", 7 * DAY, NOW)
+    before = db._conn.execute(
+        "SELECT created_at, snooze_expires_at FROM watchful_recurrence"
+    ).fetchone()
+    for _ in range(5):
+        assert db.repair_future_dated_watchful_snoozes(NOW + 60) == []
+    after = db._conn.execute(
+        "SELECT created_at, snooze_expires_at FROM watchful_recurrence"
+    ).fetchone()
+    assert dict(after) == dict(before)
+
+
+def test_all_three_repair_sites_are_wired_into_the_poller():
+    """⛔ I shipped the first two repairs believing that was the whole class.
+
+    Three storage sites, three separate discoveries, one shape. This asserts
+    every repair helper is actually CALLED — a helper nobody invokes is the
+    quietest way for the fourth instance to arrive.
+    """
+    from lynceus import poller as _poller
+
+    text = Path(_poller.__file__).read_text()
+    for name in (
+        "repair_future_dated_rule_type_snoozes",
+        "repair_future_dated_ui_entries",
+        "repair_future_dated_watchful_snoozes",
+    ):
+        assert f"{name}(" in text, f"{name} exists but the poller never calls it"
