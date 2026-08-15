@@ -1253,6 +1253,55 @@ adjudicated and are clean for this class — the prune watermarks self-correct b
 elapsed is treated as due (#39), and the BLE buffer is not persistent. `poller.py` and `db.py` were
 adjudicated but carry **Finding 29 unfixed**.
 
+### 🔴 Finding 30 — the notifier has no TOTAL deadline, and a slow server blinds the tool
+
+⚠️ **Threat-model finding, not merely robustness.** Raised as *"`notifier.send()` can hang, and
+`except` cannot see it"*. **That stated mechanism is refuted** — `notify.py:165` passes
+`timeout=self.timeout`, `requests` raises `Timeout`, and `:171` converts it to `False`:
+
+```
+STALLING  server (accepts, sends nothing) -> returned False after  3.0s   (timeout=3.0)
+```
+
+**But the instinct was right for a different reason.** `requests`' timeout is a **per-socket-read**
+timeout, not a total deadline. Against a server that sends a valid 42-byte response one byte at a
+time:
+
+```
+DRIBBLING server -> returned True after 58.5s   (20x the configured timeout)
+```
+
+⛔ **It returned `True`.** Not a timeout, not an error — a *successful delivery* that consumed 20×
+its budget while the poll loop blocked for all of it. At the shipped 10s default the ceiling is
+roughly `response_bytes × 10s` per call.
+
+⭐ **Why this is worse here than a generic slowloris.** The operator points lynceus at an ntfy
+server — often public, sometimes across a network someone else controls. **Anyone who can influence
+or MITM that endpoint can stall the detection loop and blind the tool, while every log line and
+every heartbeat reports successful delivery.** For a counter-surveillance tool, *"the channel that
+tells you you are being followed can be silently slowed by whoever you are telling"* is a threat
+model question.
+
+⛔ **Unclaimed and deliberately unfixed — this needs Kev.** `requests` offers no total deadline, so
+a real fix means a watchdog thread, a custom adapter, or moving the send off the poll thread. That
+is a change to the notifier's contract, and picking the shape is a design decision rather than a
+patch. Found by session `e4288bb5`; reproduced independently here before recording.
+
+⇒ **The method lesson, which outranks the finding: refuting the stated MECHANISM is not the same as
+clearing the CONCERN.** The adjudicator's reasoning was wrong and its instinct was right. Stopping
+at *"timeout present, refuted, next"* would have missed a 20× overrun that reports success.
+
+### ⭐ Round 9's instrument, reframed — keep this over the round's findings
+
+Round 9 asked **"what value CAN be written"** and got ~30 PERMANENT verdicts, most of them
+unreachable API-misuse (*"if a caller passes `alert_id=True`…"*). The survivors were, without
+exception, the sites fed by **external or untrusted input** — Kismet's `last_time`, and the wall
+clock.
+
+⇒ **The question that would have found them directly is: *"which writes are driven by a value that
+crossed a trust boundary?"*** — not *"which writes could store garbage"*. Same sweep, a fraction of
+the noise. Use this framing for the next round of this shape.
+
 ## Still open
 
 - The watchlist report's provenance-cross-link claim (`webui/app.py:3766`,
