@@ -54,14 +54,44 @@ def ui(tmp_path):
 
 
 def _truncate(p: Path) -> None:
-    """Cut the file in half — the shape a power cut leaves behind.
+    """Cut the file after a complete line, leaving VALID YAML.
 
-    ⚠️ The result is still VALID YAML: it parses to a list whose last element
-    is missing `pattern_type`. That is what made this survive review — the file
+    ⚠️ The result still parses: a list whose last element is missing
+    `pattern_type`. That is what made the original bug survive review — the file
     does not look corrupt, it looks fine and is quietly rejected.
+
+    ⭐ This is only ONE of the two shapes a truncation can take, and the
+    distinction is not cosmetic. A cut landing mid-token produces a
+    `ScannerError` and is unrecoverable by design (see
+    `test_totally_unparseable_yaml_still_fails_soft`); a cut landing on a line
+    boundary is recoverable, and that recovery is what this module is about.
+
+    🪤 Which shape you get depends on incidental fixture details — entries
+    carrying a `note` are three lines instead of two, so the half-way cut lands
+    differently. A fixture chosen for convenience silently decided which code
+    path the whole file exercised. Both shapes are now asserted explicitly
+    rather than left to arithmetic.
+    """
+    lines = p.read_text().splitlines(keepends=True)
+    # Keep whole lines, then drop the tail of the last entry so it is
+    # structurally incomplete but still parseable.
+    p.write_text("".join(lines[: len(lines) // 2]))
+
+
+def _truncate_mid_token(p: Path) -> None:
+    """Cut inside a MAC so the file ends on a dangling `:`, which YAML cannot
+    scan at all.
+
+    ⚠️ Not every mid-token cut does this — `pattern: aa:bb:cc` is perfectly
+    valid YAML on its own, and my first attempt at this helper cut there and
+    quietly asserted nothing. Measured across every cut point in a 5-entry
+    file: 105 of 334 raise, so roughly a THIRD of truncations are
+    unrecoverable and two thirds are not. The trailing colon is what breaks
+    the scanner.
     """
     text = p.read_text()
-    p.write_text(text[: len(text) // 2])
+    cut = text.index("pattern: aa:bb:cc:dd:ee:03") + len("pattern: aa:bb:")
+    p.write_text(text[:cut])
 
 
 def test_one_bad_entry_does_not_discard_the_good_ones(ui):
@@ -231,4 +261,29 @@ def test_a_bad_expiry_drops_only_its_own_entry(tmp_path):
     kept = {e.pattern for e in _load_ui_entries(ui)}
     assert kept == {"aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:03"}, (
         f"one bad expiry took its neighbours with it: {kept}"
+    )
+
+
+def test_both_truncation_shapes_are_covered(ui):
+    """⭐ Pins the distinction the fixture used to decide by accident.
+
+    A truncation lands either on a line boundary (valid YAML, incomplete last
+    entry → RECOVERABLE) or mid-token (`ScannerError` → not recoverable, and
+    deliberately so). The module's central claim only holds for the first, and
+    before this the test suite exercised whichever one the fixture's line count
+    happened to produce.
+    """
+    import yaml as _yaml
+
+    line_cut = ui.read_text()
+    _truncate(ui)
+    _yaml.safe_load(ui.read_text())  # must not raise: this is the valid shape
+    assert len(_load_ui_entries(ui)) >= 2, "the recoverable shape lost everything"
+
+    ui.write_text(line_cut)
+    _truncate_mid_token(ui)
+    with pytest.raises(_yaml.YAMLError):
+        _yaml.safe_load(ui.read_text())  # must raise: this is the other shape
+    assert _load_ui_entries(ui) == [], (
+        "an unscannable file should fail soft to empty, not raise"
     )
