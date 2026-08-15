@@ -649,3 +649,39 @@ def test_an_honest_source_timestamp_is_left_alone(wdb, minimal_config):
     assert _sighting_ts(wdb) == [slightly_old], (
         "a legitimate recent timestamp was rewritten"
     )
+
+
+def test_the_clamp_cannot_bound_our_own_clock(wdb, minimal_config):
+    """⛔ The documented LIMIT of the clamp, pinned so it is visible.
+
+    The clamp bounds a capture SOURCE's clock against OUR clock. It cannot
+    bound our clock against itself: when both are wrong, the sighting is
+    recorded at the jumped `now_ts`, and a future-dated sighting is once again
+    immune to retention.
+
+    Measured — source says year 2100, our clock has jumped +91d:
+
+        sightings = [NOW, NOW+91d]
+
+    ⭐ This is strictly better than the unclamped behaviour (year 2100 rather
+    than +91d) and strictly worse than correct. The general fix is the open
+    question of what ALL observation persistence should do on an untrusted
+    clock — a blanket `clock_trusted` gate is the wrong answer there, because
+    it would discard real capture data, which is the one thing this tool must
+    not do. Recorded here so the next person finds the boundary in a test
+    rather than in production.
+
+    ⚠️ If this test starts failing because sightings are now bounded by
+    something better than `now_ts`, that is progress: delete it and say so.
+    """
+    _observe_at(
+        wdb, minimal_config, _Notifier(), source_ts=4102444800, now_ts=NOW + 91 * DAY
+    )
+    stored = _sighting_ts(wdb)
+    assert stored == [NOW + 91 * DAY], (
+        f"expected the jumped now_ts to be recorded, got {stored}"
+    )
+    assert max(stored) < 4102444800, (
+        "the source's absurd timestamp reached the database; the clamp is not "
+        "working at all"
+    )
