@@ -88,6 +88,44 @@ class AllowlistEntry(BaseModel):
     added_at: int | None = None
 
     @model_validator(mode="after")
+    def _bound_timestamps(self) -> AllowlistEntry:
+        """Reject epochs `datetime.fromtimestamp` cannot represent.
+
+        ⛔ `expires_at` was an unrestricted `int`, and the poller formats it for
+        the suppression audit line:
+
+            _dt.datetime.fromtimestamp(entry.expires_at, tz=_dt.UTC)
+
+        Measured with a hand-edit typo of `expires_at: 99999999999999` — the
+        kind an extra keypress produces — `process_observation` raised
+        `ValueError: year 3170843 is out of range`, AFTER the device and
+        sighting were persisted and both counters advanced. That device is then
+        unprocessable on every tick it appears, and the poll watermark is held
+        and eventually advanced past it, losing capture data.
+
+        ⭐ Validating here rather than guarding the format call is the point:
+        this is the system boundary where operator-authored YAML enters, and a
+        bad value should be rejected once at load with a legible message rather
+        than raising from an unrelated line every poll. A rejected entry is now
+        handled gracefully by the loaders — the primary logs/raises per its
+        `raise_on_parse_error` contract, and the UI sibling drops just that
+        entry and keeps the others.
+        """
+        # `datetime.fromtimestamp(..., tz=UTC)` tops out at year 9999 and
+        # cannot take a negative epoch on every supported platform.
+        MAX_EPOCH = 253_402_300_799  # 9999-12-31T23:59:59Z
+        for field in ("expires_at", "added_at"):
+            value = getattr(self, field)
+            if value is None:
+                continue
+            if value < 0 or value > MAX_EPOCH:
+                raise ValueError(
+                    f"{field}={value} is not a representable Unix timestamp "
+                    f"(expected 0..{MAX_EPOCH})"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _normalize_pattern(self) -> AllowlistEntry:
         # All known pattern_types route through lynceus.patterns so
         # the canonical form stored here matches the canonical form
@@ -202,20 +240,107 @@ def derive_ui_path(primary_path: Path) -> Path:
     return primary_path.with_stem(primary_path.stem + "_ui")
 
 
+def _validate_ui_entries(raw: object, ui_path: Path) -> list[AllowlistEntry]:
+    """Validate UI entries ONE AT A TIME, keeping the ones that are good.
+
+    ⛔ This used to be `Allowlist(**data).entries` — all-or-nothing. A single
+    malformed entry therefore discarded every other suppression in the file,
+    and combined with the read-modify-write path below that turned a partial
+    corruption into a permanent one. Measured on a file truncated mid-write
+    (a power cut, or SD-card rot on the Pi this runs on):
+
+        5 UI suppressions -> truncated -> readable: 0
+        operator adds one more via the UI          -> readable: 0
+        ...and the malformed entry is now written back, forever
+
+    ⭐ The root cause was that the read path and the write path used DIFFERENT
+    validators: this function checked the schema, `_read_ui_yaml` did not. So a
+    file the reader rejected, the writer faithfully preserved and extended.
+    Every subsequent "Allowlist this device" click reported success and did
+    nothing, because the file could never be read again.
+
+    Dropping per entry fixes both directions at once: a truncated file keeps
+    the suppressions that survived, and the next UI write rewrites the file
+    without the bad entry, repairing it.
+    """
+    # ⚠️ Keep the "could not be parsed" phrasing on these two branches. It is
+    # the string operators grep journalctl for, and `test_split_loader_
+    # malformed_ui_logs_warning_treats_as_empty` pins it — the same
+    # stable-prefix reasoning as "Allowlist suppressed watchlist hit:".
+    if not isinstance(raw, dict):
+        logger.warning(
+            "allowlist UI file %s could not be parsed (not a mapping); "
+            "treating as empty",
+            ui_path,
+        )
+        return []
+    items = raw.get("entries")
+    if items is None:
+        # ⚠️ An empty mapping is the ordinary "nothing written yet" state and
+        # must stay silent. A NON-empty mapping with no `entries` key is a
+        # malformed file — rubbish that happened to parse as YAML, e.g.
+        # `:::not valid yaml:::` becomes `{':::not valid yaml::': None}`.
+        #
+        # The previous `Allowlist(**data)` rejected that via `extra="forbid"`
+        # and logged. Returning [] silently here would be a REGRESSION: the
+        # operator loses every UI suppression and nothing says so. Caught by
+        # `test_split_loader_malformed_ui_logs_warning_treats_as_empty`.
+        if raw:
+            logger.warning(
+                "allowlist UI file %s could not be parsed (no 'entries' key; "
+                "found %s); treating as empty",
+                ui_path,
+                ", ".join(sorted(map(str, raw))[:5]),
+            )
+        return []
+    if not isinstance(items, list):
+        logger.warning(
+            "allowlist UI file %s could not be parsed ('entries' is not a "
+            "list); treating as empty",
+            ui_path,
+        )
+        return []
+    good: list[AllowlistEntry] = []
+    dropped = 0
+    for item in items:
+        try:
+            good.append(AllowlistEntry(**item))
+        except Exception as exc:
+            dropped += 1
+            logger.warning(
+                "dropping malformed allowlist UI entry %r in %s (%s)",
+                item,
+                ui_path,
+                exc,
+            )
+    if dropped:
+        # ⚠️ Loud on purpose. Every dropped entry is a suppression the operator
+        # asked for and will now stop getting, so they need to know before the
+        # alerts start rather than after.
+        logger.error(
+            "allowlist UI file %s: %d entr%s dropped as malformed, %d kept. "
+            "Suppressions from the dropped entries are NO LONGER ACTIVE.",
+            ui_path,
+            dropped,
+            "y" if dropped == 1 else "ies",
+            len(good),
+        )
+    return good
+
+
 def _load_ui_entries(ui_path: Path) -> list[AllowlistEntry]:
     """Read entries from the daemon-managed UI file.
 
     Absent file → empty list (the normal state before any UI write).
-    Malformed file → WARNING, empty list. The daemon must not crash
-    because the UI sibling got corrupted; the operator's primary file
-    is the load-bearing surface and stays consulted.
+    Malformed entries → WARNING and skipped individually; the rest are kept.
+    The daemon must not crash because the UI sibling got corrupted, and it must
+    not throw away good suppressions because of one bad neighbour.
     """
     if not ui_path.exists():
         return []
     try:
         with open(ui_path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        return Allowlist(**data).entries
     except Exception as exc:
         logger.warning(
             "allowlist UI file %s could not be parsed (%s); treating as empty",
@@ -223,6 +348,7 @@ def _load_ui_entries(ui_path: Path) -> list[AllowlistEntry]:
             exc,
         )
         return []
+    return _validate_ui_entries(data, ui_path)
 
 
 def _load_primary(
@@ -380,6 +506,21 @@ def _read_ui_yaml(ui_path: Path) -> dict:
         data = {}
     if not isinstance(data.get("entries"), list):
         data["entries"] = []
+    # ⛔ Validate through the SAME path the reader uses, then re-serialise.
+    #
+    # This function used to hand back whatever YAML happened to contain. That
+    # made the writer strictly more permissive than the reader, so an entry the
+    # reader rejected got faithfully appended-to and written back on the next UI
+    # click — persisting the corruption forever while every read returned
+    # nothing. Measured: 5 suppressions, a truncation, one "Allowlist this
+    # device" click, and the file was permanently unreadable with the operator
+    # told nothing.
+    #
+    # ⭐ Round-tripping through validation makes any UI write REPAIR the file
+    # instead of entrenching the damage: the surviving entries are rewritten
+    # cleanly and the malformed one is gone.
+    validated = _validate_ui_entries(data, ui_path)
+    data["entries"] = [e.model_dump(mode="json", exclude_none=True) for e in validated]
     return data
 
 
