@@ -533,10 +533,40 @@ def process_observation(
                     rule_type=hit.rule_type,
                 )
             except Exception as e:
-                logger.warning(
-                    "Failed to write alert %s for %s: %s", hit.rule_name, hit.mac, e
-                )
-                continue
+                # ⛔ Do NOT swallow this. The rule has already MATCHED: a
+                # watchlisted device is in range and the operator has not been
+                # told. Logging a warning and moving on discards a confirmed
+                # hit, and because the device and sighting rows were written
+                # just above (upsert_device, insert_sighting), the tick looks
+                # entirely normal afterwards.
+                #
+                # Measured before this change, with add_alert raising sqlite's
+                # "database is locked" on a real fixture device:
+                #
+                #     healthy : 5 devices, 5 sightings, 1 alert, 1 notification
+                #     failing : 5 devices, 5 sightings, 0 alerts, 0 notifications
+                #               watermark holds = 0, watermark ADVANCED
+                #
+                # Holds staying at 0 is the part that makes it permanent: the
+                # watermark moves past the window, so Kismet is never asked for
+                # it again and the hit cannot come back on a later tick.
+                #
+                # Raising instead hands this to the persist-failure path the
+                # caller already has (see `failed_last_seen` in poll_once),
+                # which holds the watermark and retries the window — bounded by
+                # POLL_WATERMARK_MAX_HOLDS, so a genuinely poisonous record
+                # still cannot livelock the daemon.
+                #
+                # ⚠️ The cost: the retry re-inserts a sighting for a device
+                # whose sighting already landed, because the sighting write
+                # precedes the alert write. That duplicate is already the
+                # accepted behaviour for every OTHER post-sighting failure on
+                # this path; this change makes alert-write failures consistent
+                # with it rather than introducing it. A duplicated sighting row
+                # is a far cheaper error than a silently dropped alert.
+                raise RuntimeError(
+                    f"failed to write alert {hit.rule_name} for {hit.mac}: {e}"
+                ) from e
         if (
             retry_alert is None
             and config.evidence_capture_enabled
