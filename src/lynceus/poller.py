@@ -96,6 +96,22 @@ STATE_KEY_WATERMARK_HOLDS = "watermark_holds"
 # min_rssi gates inside poll_once and the parser-None bucket counted
 # inside KismetClient.get_devices_since via the unparseable_counter
 # kwarg.
+#: Liveness of the opt-in BLE bridge, as observed by the poll loop each tick.
+#: One of "running" / "failed" / "stopped".
+#:
+#: ⚠️ ABSENT means the bridge has never been enabled on this install, which is
+#: the default. That is NOT a problem and the heartbeat must stay silent about
+#: it — a dead-man's switch that complains about a feature nobody turned on
+#: trains the operator to ignore it, which costs more than the warning is worth.
+#:
+#: ⛔ Written only by the main poll loop, never by the bridge thread. The thread
+#: owns a separate database connection, and a second writer for one status
+#: string buys nothing while adding a cross-thread write to the state table.
+STATE_KEY_BLE_BRIDGE_STATUS = "ble_bridge_status"
+BLE_BRIDGE_RUNNING = "running"
+BLE_BRIDGE_FAILED = "failed"
+BLE_BRIDGE_STOPPED = "stopped"
+
 STATE_KEY_LAST_TICK_COMPLETED_AT = "last_tick_completed_at"
 STATE_KEY_LAST_TICK_ADMITTED = "last_tick_admitted"
 STATE_KEY_LAST_TICK_DROPPED_SOURCE_ALLOWLIST = "last_tick_dropped_source_allowlist"
@@ -667,6 +683,25 @@ def _compose_heartbeat(db: Database, config: Config, *, now_ts: int) -> tuple[bo
     undelivered = db.count_undelivered_alerts()
     if undelivered:
         problems.append(f"{undelivered} alert(s) written but never delivered")
+
+    # 4. Is the BLE bridge still alive? Clauses 1-3 all watch the KISMET path,
+    #    so a dead bridge left this function reporting "still watching" while
+    #    BLE-only devices -- the trackers and tags this tool exists to find --
+    #    were not being seen at all, and stayed unseen until someone restarted
+    #    the daemon. That is exactly the claim-health-you-have-not-verified
+    #    failure the docstring above forbids, arriving through the one capture
+    #    path none of the other clauses observe.
+    #
+    #    ⚠️ ABSENT means the bridge has never been enabled, which is the default
+    #    and is NOT a fault; "stopped" is a clean shutdown and likewise is not.
+    #    Only enabled-then-dead is a problem. The poll loop is the sole writer
+    #    and only writes when the bridge is enabled.
+    bridge_status = db.get_state(STATE_KEY_BLE_BRIDGE_STATUS)
+    if bridge_status == BLE_BRIDGE_FAILED:
+        problems.append(
+            "the BLE bridge is not running (BLE-only devices, including "
+            "trackers, are not being seen; Kismet capture is unaffected)"
+        )
 
     healthy = not problems
 
@@ -1490,6 +1525,10 @@ class Poller:
         # transition/de-dup logic lives in _note_kismet_poll_result.
         self._consecutive_poll_failures = 0
         self._kismet_down_alerted = False
+        #: Last BLE-bridge status written by this process. The per-tick check
+        #: writes only on CHANGE, so a healthy bridge costs one write at
+        #: startup rather than one per poll for the daemon's lifetime.
+        self._ble_bridge_last_status: str | None = None
         # Rule_type snooze suppression accumulator. Cumulative across
         # poll cycles; flushed to an INFO summary every
         # SUPPRESSION_LOG_INTERVAL_SECONDS. Initialized to "log on the
@@ -1953,9 +1992,16 @@ class Poller:
         if self.config.ble_bridge.enabled:
             try:
                 bridge, bridge_thread = self._start_ble_bridge()
+                self.db.set_state(STATE_KEY_BLE_BRIDGE_STATUS, BLE_BRIDGE_RUNNING)
             except Exception:
                 logger.error("BLE bridge failed to start; continuing without it", exc_info=True)
                 bridge, bridge_thread = None, None
+                # ⛔ Record it. Continuing without the bridge is the right call
+                # for Kismet polling, but until now it was also INVISIBLE: the
+                # heartbeat reported "still watching" while BLE-only devices —
+                # the trackers this tool exists to find — were not being seen
+                # at all, and stayed unseen until someone restarted the daemon.
+                self.db.set_state(STATE_KEY_BLE_BRIDGE_STATUS, BLE_BRIDGE_FAILED)
         try:
             while not self._stop_flag:
                 # Per-iteration exception boundary. A single transient failure
@@ -1971,6 +2017,13 @@ class Poller:
                 try:
                     self._maybe_reload_allowlist()
                     now_ts = int(time.time())
+                    # ⛔ Observe the bridge BEFORE composing the heartbeat, so
+                    # the heartbeat inside poll_once reads this tick's truth
+                    # rather than the previous one. A thread can die without its
+                    # own except handler running — killed, or an error escaping
+                    # the callback — so liveness is checked here rather than
+                    # trusted to the crash path to report itself.
+                    self._observe_ble_bridge(bridge_thread)
                     # Exactly once per tick: it advances the hold counter.
                     clock_trusted = self.clock_is_trusted(now_ts)
                     poll_once(
@@ -2006,7 +2059,39 @@ class Poller:
         finally:
             if bridge is not None:
                 self._stop_ble_bridge(bridge, bridge_thread)
+                # A clean shutdown is not a fault. Without this the last thing
+                # written would be "running" or "failed", and the next start
+                # would inherit a stale verdict about a process that has ended.
+                self.db.set_state(STATE_KEY_BLE_BRIDGE_STATUS, BLE_BRIDGE_STOPPED)
             self.db.close()
+
+    def _observe_ble_bridge(self, thread) -> None:
+        """Record whether the BLE bridge is still alive, once per tick.
+
+        ⚠️ Only ever writes when the bridge is ENABLED. On the default install
+        the key stays absent, and `_compose_heartbeat` treats absent as "not in
+        use" rather than as a fault — a dead-man's switch that complains about a
+        feature nobody turned on is one the operator learns to ignore.
+
+        Wrapped defensively like the rest of the per-tick housekeeping: failing
+        to record bridge health must not abort the poll loop, because Kismet
+        capture is still running and is the more important of the two.
+        """
+        if not self.config.ble_bridge.enabled:
+            return
+        alive = thread is not None and thread.is_alive()
+        status = BLE_BRIDGE_RUNNING if alive else BLE_BRIDGE_FAILED
+        try:
+            if status != self._ble_bridge_last_status:
+                if not alive:
+                    logger.error(
+                        "BLE bridge is not running; BLE-only devices are not "
+                        "being seen. Kismet capture is unaffected."
+                    )
+                self.db.set_state(STATE_KEY_BLE_BRIDGE_STATUS, status)
+                self._ble_bridge_last_status = status
+        except Exception as e:
+            logger.warning("could not record BLE bridge status: %s", e)
 
     def _start_ble_bridge(self):
         """Construct + start the passive BLE bridge in a daemon thread.
