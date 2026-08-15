@@ -209,7 +209,16 @@ def test_the_recorded_entry_holds_no_payload_bytes_anywhere(bridge):
     )
     entry = bridge._buffer["aa:bb:cc:dd:ee:55"]
     payload = _odid_payload()
-    for field in dataclasses.fields(entry):
+    # ⚠️ A sweep needs a floor before it judges anything. Both assertions below
+    # live inside the loop, so if `dataclasses.fields(entry)` ever came back
+    # empty — a refactor of _BufferEntry, a swap to a plain class — the body
+    # would never run and this test would pass having checked nothing. That
+    # matters more here than usual: what it verifies is a PRIVACY guarantee,
+    # that raw ODID payload bytes never reach the buffered entry. A vacuous
+    # pass reports that guarantee as held.
+    fields = dataclasses.fields(entry)
+    assert len(fields) >= 4, f"expected _BufferEntry to carry fields, got {fields!r}"
+    for field in fields:
         value = getattr(entry, field.name)
         assert not isinstance(value, (bytes, bytearray)), field.name
         assert payload not in repr(value).encode("utf-8", "replace"), field.name
