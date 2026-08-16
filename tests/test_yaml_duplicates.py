@@ -299,27 +299,80 @@ _EXEMPT: dict[str, str] = {
 }
 
 
+_SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "lynceus"
+
+# Any of these, called on a YAML file, collapses a duplicate key silently.
+_LOADER_NAMES = frozenset({"safe_load", "load", "full_load", "unsafe_load"})
+
+
+def _reporter_names() -> frozenset[str]:
+    """Duplicate-key reporters DEFINED in the tree, derived by walking it.
+
+    ⛔ Neither transcribed nor fuzzy, and both alternatives were shipped and
+    were wrong. A hardcoded list of three names missed that the allowlist's
+    reporter is called `_warn_on_duplicate_keys` and marked a wired loader
+    unwired. Replacing it with "any called name containing 'duplicate'" then
+    made the guard gameable in the other direction -- a call to an unrelated
+    `deduplicate_cache()` in the same function certified the loader as
+    protected. ⇒ The answer to a transcribed list is a DERIVED list, not a
+    loose one.
+    """
+    names = set()
+    for f in sorted(_SRC.rglob("*.py")):
+        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.FunctionDef) and "duplicate" in node.name.lower():
+                if node.name.lstrip("_").startswith("warn"):
+                    names.add(node.name)
+    return frozenset(names)
+
+
+def _yaml_import_aliases(tree: ast.AST) -> set[str]:
+    """Names bound by `from yaml import safe_load[, load as ...]` in a module.
+
+    ⚠️ Without this the scan matched only `yaml.safe_load(...)` as an
+    attribute, so a module doing `from yaml import safe_load` and then calling
+    a bare `safe_load(path)` was INVISIBLE to the guard -- a straight bypass of
+    the anti-rot mechanism, found by a cold read rather than by any of the five
+    defects planted against it.
+    """
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "yaml":
+            for alias in node.names:
+                if alias.name in _LOADER_NAMES:
+                    out.add(alias.asname or alias.name)
+    return out
+
+
 def _safe_load_sites() -> dict[str, bool]:
     """Map "<module>::<function>" -> is it wired to a duplicate reporter."""
-    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "lynceus"
+    reporters = _reporter_names()
     sites: dict[str, bool] = {}
-    for f in sorted(root.rglob("*.py")):
+    for f in sorted(_SRC.rglob("*.py")):
         tree = ast.parse(f.read_text(encoding="utf-8"))
+        aliases = _yaml_import_aliases(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             names, loads = set(), False
             for sub in ast.walk(node):
-                if isinstance(sub, ast.Call):
-                    fn = sub.func
-                    nm = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
-                    if nm:
-                        names.add(nm)
-                    if isinstance(fn, ast.Attribute) and fn.attr == "safe_load":
+                if not isinstance(sub, ast.Call):
+                    continue
+                fn = sub.func
+                if isinstance(fn, ast.Attribute):
+                    names.add(fn.attr)
+                    # `yaml.safe_load(...)` / `yaml.load(...)`
+                    if isinstance(fn.value, ast.Name) and fn.value.id == "yaml":
+                        if fn.attr in _LOADER_NAMES:
+                            loads = True
+                elif isinstance(fn, ast.Name):
+                    names.add(fn.id)
+                    # a bare `safe_load(...)` bound by `from yaml import ...`
+                    if fn.id in aliases:
                         loads = True
             if loads:
-                rel = f.relative_to(root.parent).as_posix()
-                sites[f"{rel}::{node.name}"] = any("duplicate" in n.lower() for n in names)
+                rel = f.relative_to(_SRC.parent).as_posix()
+                sites[f"{rel}::{node.name}"] = bool(names & reporters)
     return sites
 
 
@@ -352,3 +405,256 @@ def test_no_exemption_is_stale():
     a guarantee about nothing."""
     sites = _safe_load_sites()
     assert [s for s in _EXEMPT if s not in sites] == []
+
+
+# ---------------------------------------------------------------------------
+# Round two: five defects a cold cross-model read found in the work above,
+# AFTER five planted defects had all been caught by it. Fifth round running
+# that the plants proved only the failures their author had imagined.
+# ---------------------------------------------------------------------------
+
+
+def test_a_triplicated_key_names_the_line_that_actually_wins(tmp_path):
+    """⛔ The pairwise version emitted TWO records for three occurrences, and
+    the first said "line 2 is the one in force" when safe_load keeps line 3.
+    An operator following that message edits line 2, watches nothing change,
+    and the dangerous value stays live.
+
+    The assertion is against `safe_load`'s OWN answer, not a transcribed 3 --
+    the two sides must have independent sources.
+    """
+    p = _write(tmp_path, "a: 1\na: 2\na: 3\n")
+    (dupe,) = find_duplicate_keys(p)
+    assert dupe.occurrence_lines == (1, 2, 3)
+    assert dupe.winning_line == 3
+    assert dupe.first_line == 1
+    # the value on winning_line is the value in force, checked against PyYAML
+    assert yaml.safe_load(p.read_text(encoding="utf-8"))["a"] == 3
+    msg = dupe.describe()
+    assert "line 3 is the one in force" in msg
+    assert "line 2 is the one in force" not in msg
+
+
+def test_every_reported_winner_agrees_with_safe_load(tmp_path):
+    """The general form of the above, over several shapes at once."""
+    body = "a: 1\na: 2\na: 3\nb: 10\nb: 20\nc: 5\n"
+    p = _write(tmp_path, body)
+    loaded = yaml.safe_load(body)
+    lines = body.splitlines()
+    for dupe in find_duplicate_keys(p):
+        key = dupe.key_path
+        winning_text = lines[dupe.winning_line - 1]
+        assert winning_text.strip() == f"{key}: {loaded[key]}", (
+            f"{key}: message points at line {dupe.winning_line} "
+            f"({winning_text!r}) but safe_load holds {loaded[key]!r}"
+        )
+
+
+class _ExplodingLogger(logging.Logger):
+    """A logger whose emit path raises -- a full disk on a FileHandler, a
+    broken formatter, a filter with a bug. None of it is exotic."""
+
+    def warning(self, *a, **k):
+        raise RuntimeError("handler exploded")
+
+    def debug(self, *a, **k):
+        raise RuntimeError("handler exploded")
+
+
+def test_a_raising_logger_cannot_escape_the_reporter(tmp_path):
+    """⛔ The first version wrapped only the DETECTION call; the emit loop sat
+    outside the try. `logger.warning` is not inert, so the helper documented as
+    "Never raises" propagated straight through `load_config` and `load_ruleset`
+    and took the daemon down at startup on a file it had already parsed fine.
+    The docstring was the defect, not just the code.
+    """
+    p = _write(tmp_path, "dup: 1\ndup: 2\n")
+    warn_duplicate_keys(p, logger=_ExplodingLogger("boom"), subject="thing")
+
+
+def test_a_raising_logger_cannot_change_what_load_ruleset_returns(tmp_path, monkeypatch):
+    """The property where it bites: the loader's return value, via a logger
+    that raises rather than a detector that does."""
+    body = (
+        "rules:\n"
+        "  - name: r\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        '    patterns: ["de:ad:be:ef:00:01"]\n'
+        '    patterns: ["00:00:00:00:00:00"]\n'
+    )
+    p = tmp_path / "rules.yaml"
+    p.write_text(body, encoding="utf-8")
+    import lynceus.rules as rules_mod
+
+    monkeypatch.setattr(rules_mod, "logger", _ExplodingLogger("boom"))
+    rs = load_ruleset(str(p))
+    assert [r.name for r in rs.rules] == ["r"]
+    assert rs.rules[0].patterns == ["00:00:00:00:00:00"]
+
+
+def test_a_resolved_key_collision_is_a_KNOWN_BLIND_SPOT_and_fails_closed(tmp_path):
+    """⚠️ Pinned as a LIMIT, with the measurement that sets its severity.
+
+    The detector keys on raw scalar text, so YAML 1.1 spellings that resolve to
+    the same Python key (`on`/`true`/`yes`, `null`/`~`) collapse in `safe_load`
+    without being reported. A reviewer graded this HIGH; measuring the actual
+    loaders downgrades it: pydantic's `extra="forbid"` rejects the resulting
+    non-str key, so both files that matter fail CLOSED and loudly rather than
+    silently obeying the wrong value.
+
+    If this test ever fails because a loader ACCEPTS the collision, the blind
+    spot has become reachable and the detector must start resolving keys.
+    """
+    body = "on: 1\ntrue: 2\n"
+    p = _write(tmp_path, body)
+    assert len(yaml.safe_load(body)) == 1, "PyYAML no longer collapses these"
+    assert find_duplicate_keys(p) == [], "detector changed; update this limit"
+    # TypeError today (pydantic rejecting a non-str key under extra="forbid").
+    # Named concretely so that a change to a SILENT acceptance fails here
+    # rather than being absorbed by a blind `Exception`.
+    with pytest.raises((TypeError, ValueError)):
+        load_config(str(p))
+
+
+def test_the_scan_sees_a_bare_safe_load_bound_by_from_yaml_import(tmp_path):
+    """⚠️ The scan matched only the `yaml.safe_load` ATTRIBUTE form, so
+
+        from yaml import safe_load
+        def loader(p): return safe_load(open(p))
+
+    was invisible to the guard -- a straight bypass of the anti-rot mechanism,
+    found by a cold read after five planted defects had all been caught.
+    """
+    mod = tmp_path / "sneaky.py"
+    mod.write_text(
+        "from yaml import safe_load\n\n\ndef loader(p):\n    return safe_load(open(p))\n",
+        encoding="utf-8",
+    )
+    tree = ast.parse(mod.read_text(encoding="utf-8"))
+    assert _yaml_import_aliases(tree) == {"safe_load"}
+
+
+def test_an_unrelated_duplicate_named_call_does_not_certify_a_loader():
+    """⛔ "any called name containing 'duplicate'" certified this as wired:
+
+        def loader(p):
+            deduplicate_cache()
+            return yaml.safe_load(open(p))
+
+    The reporter set is now derived from the functions actually defined in the
+    tree, so an unrelated name cannot vouch for a loader.
+    """
+    reporters = _reporter_names()
+    assert "deduplicate_cache" not in reporters
+    assert "warn_duplicate_keys" in reporters
+    # the allowlist's differently-named reporter is discovered, not transcribed
+    assert "_warn_on_duplicate_keys" in reporters
+
+
+def test_the_reporter_set_is_not_empty():
+    """The derived set's own control: if the discovery predicate ever matches
+    nothing, every loader scores as unwired and the suite fails loudly rather
+    than certifying everything as fine."""
+    assert len(_reporter_names()) >= 2, _reporter_names()
+
+
+# --- the three CLI loaders: behaviour, not just an AST assertion ------------
+#
+# ⛔ The cold read's largest cross-suite finding: these three were wired and
+# then covered ONLY by the AST guard. A call could use the wrong path, sit on
+# one branch, or be a no-op whose name merely contains "duplicate" -- and the
+# scan would still certify them. An AST guard proves a call EXISTS; only these
+# prove it fires on the file the loader actually read.
+
+
+def test_import_argus_override_file_warns_on_a_duplicate(tmp_path, caplog):
+    from lynceus.cli.import_argus import load_override_config
+
+    p = tmp_path / "overrides.yaml"
+    p.write_text("vendor_overrides: {}\nvendor_overrides:\n  acme: drop\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        load_override_config(str(p))
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("vendor_overrides" in r.getMessage() for r in warned), warned
+    assert any(str(p) in r.getMessage() for r in warned), "must name the file it read"
+
+
+def test_import_argus_override_file_is_silent_when_clean(tmp_path, caplog):
+    """The control -- half the guard. Without it the assertion above passes for
+    a reporter that warns on every file."""
+    from lynceus.cli.import_argus import load_override_config
+
+    p = tmp_path / "overrides.yaml"
+    p.write_text("vendor_overrides:\n  acme: drop\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        load_override_config(str(p))
+    assert [r for r in caplog.records if "duplicate key" in r.getMessage()] == []
+
+
+def test_setup_core_carry_forward_read_warns_on_a_duplicate(tmp_path, caplog):
+    """`--reconfigure` carries this result forward, so the winning value is
+    rewritten into the new file as though the operator had chosen it."""
+    from lynceus.setup.core import _existing_mapping
+
+    p = tmp_path / "lynceus.yaml"
+    p.write_text("heartbeat_enabled: true\nheartbeat_enabled: false\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        loaded, err = _existing_mapping(p)
+    assert err is None
+    assert loaded["heartbeat_enabled"] is False
+    assert any("heartbeat_enabled" in r.getMessage() for r in caplog.records)
+
+
+def test_setup_core_carry_forward_read_is_silent_when_clean(tmp_path, caplog):
+    from lynceus.setup.core import _existing_mapping
+
+    p = tmp_path / "lynceus.yaml"
+    p.write_text("heartbeat_enabled: true\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        _existing_mapping(p)
+    assert [r for r in caplog.records if "duplicate key" in r.getMessage()] == []
+
+
+def test_seed_watchlist_yaml_warns_on_a_duplicate_pattern(tmp_path, caplog):
+    """#122's defect pointed the other way: there a duplicate silenced a
+    device, here it watches one the operator never named."""
+    from lynceus.cli.seed_watchlist import seed_from_yaml
+    from lynceus.db import Database
+
+    p = tmp_path / "seed.yaml"
+    p.write_text(
+        "entries:\n"
+        '  - pattern: "de:ad:be:ef:00:01"\n'
+        '    pattern: "de:ad:be:ef:99:99"\n'
+        "    pattern_type: mac\n"
+        "    severity: high\n",
+        encoding="utf-8",
+    )
+    db = Database(str(tmp_path / "t.db"))
+    with caplog.at_level(logging.WARNING):
+        seed_from_yaml(db, str(p))
+    assert any("entries[0].pattern" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_the_allowlist_reporter_now_delegates_to_the_shared_one(tmp_path, caplog):
+    """The overclaim this round fixed: the PR said the never-raise property was
+    "implemented once so it is tested once" while the allowlist kept its own
+    copy -- which had the same logger-outside-the-try hole. It delegates now,
+    so the guards above cover it too."""
+    import lynceus.allowlist as al
+
+    p = tmp_path / "allowlist.yaml"
+    p.write_text(
+        'entries:\n  - pattern: "ac:de:48:00:11:22"\n'
+        '    pattern: "ac:de:48:99:99:99"\n    pattern_type: mac\n',
+        encoding="utf-8",
+    )
+    monkey = _ExplodingLogger("boom")
+    original, al.logger = al.logger, monkey
+    try:
+        al._warn_on_duplicate_keys(p)  # must not raise
+    finally:
+        al.logger = original
