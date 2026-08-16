@@ -570,6 +570,17 @@ tr.row-acked    { opacity: 0.55; }
 tr.row-watchful-escalated { background: var(--lyn-row-sev-high); }
 tr.row-watchful-archived  { opacity: 0.55; }
 
+/* `last activity` — the column is a recurrence clock, not a sighting log: it is
+   set by a counted sighting, by an operator reset, or by a clock repair.
+   Deliberately NOT a badge. A badge here would compete with the state badge one
+   column to the left, and this is a caveat on a value rather than a state of
+   its own — so it reads as quiet inline copy, and the distinction it carries is
+   in the words, not the colour. `.dim` already supplies the de-emphasis both
+   share; these rules only add the spacing and size that keep them subordinate
+   to the timestamp they qualify. */
+.watchful-last-activity-note  { display: inline-block; margin-top: 0.25em; line-height: 1.4; }
+.watchful-last-activity-reset { margin-left: 0.4em; font-size: 0.85em; white-space: nowrap; }
+
 /* Stat tile row (mirrors stat-grid layout but only counts) */
 .tile-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1em; margin: 0.5em 0; }
 .tile { padding: 0.75em; text-align: center; border: 1px solid var(--pico-muted-border-color, #ccc); border-radius: 4px; }
