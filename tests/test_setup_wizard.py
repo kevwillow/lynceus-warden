@@ -4793,9 +4793,21 @@ def test_enable_alerting_user_scope_writes_0600_rules_yaml(monkeypatch, tmp_path
 def test_enable_alerting_does_not_overwrite_existing_rules_path_in_config(monkeypatch, tmp_path):
     """If lynceus.yaml somehow already declares rules_path (operator
     hand-edit between renders, or future config-render change), the
-    wizard must not append a duplicate key. The duplicate would break
-    yaml.safe_load with a "duplicate key" error and the daemon would
-    fail to start."""
+    wizard must not append a duplicate key.
+
+    ⛔ The reason stated here used to be that "the duplicate would break
+    yaml.safe_load with a 'duplicate key' error and the daemon would fail to
+    start". Measured on PyYAML 6.0.3: `yaml.safe_load("a: 1\\na: 2")` returns
+    `{'a': 2}` with no error and no warning. The daemon starts perfectly well
+    and silently uses the LAST value -- which is worse than failing to start,
+    because the operator's file still reads as though the first value applies.
+
+    The guard is right; only its rationale was wrong. Keeping the wrong reason
+    would matter, because "duplicates are self-detecting" is a good explanation
+    for why nothing in this codebase checked for them -- see
+    `lynceus.yaml_duplicates`, added after a stray second `pattern:` line in a
+    hand-edited allowlist.yaml was measured moving a suppression onto a device
+    the operator never named."""
     target = _stub_path_resolution(monkeypatch, tmp_path)
     config_dir = _stub_alerting_paths(monkeypatch, tmp_path)
     _stub_bundled_import(monkeypatch)
