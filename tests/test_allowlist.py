@@ -825,7 +825,15 @@ def test_a_failing_duplicate_check_cannot_disable_suppression(tmp_path, monkeypa
     def _boom(_path):
         raise RecursionError("pathological nesting")
 
-    monkeypatch.setattr(al_mod, "find_duplicate_keys", _boom)
+    # ⚠️ Patched on `yaml_duplicates`, not on `allowlist`. This module's
+    # `_warn_on_duplicate_keys` used to own the never-propagate contract and now
+    # DELEGATES to the shared reporter, so that module is where the detector
+    # lives. The property under test is unchanged -- a failing duplicate check
+    # must not turn a loadable allowlist into a disabled one -- and it is now
+    # enforced in one place for every loader instead of per copy.
+    import lynceus.yaml_duplicates as dup_mod
+
+    monkeypatch.setattr(dup_mod, "find_duplicate_keys", _boom)
 
     with caplog.at_level(logging.DEBUG, logger="lynceus.allowlist"):
         assert len(load_allowlist(str(p)).entries) == 1

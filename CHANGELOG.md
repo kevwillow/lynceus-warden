@@ -235,6 +235,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A duplicate key in a hand-edited config file silently changed what the
+  daemon enforced.** `yaml.safe_load` keeps the LAST of a duplicate mapping key
+  with no error and no warning, so the value you read at the top of your file
+  need not be the value in force. Only the allowlist checked for this. Measured,
+  every case fail-OPEN: a second top-level `rules:` block — the natural way to
+  append to a file whose top-level key is a list — **discards every rule above
+  it**; a stray second `patterns:` line swaps the watched addresses; a duplicate
+  `heartbeat_enabled:` disarms the dead-man's switch.
+
+  None of it was visible, and the reason generalises: every startup line lynceus
+  prints narrates a **count**, so a duplicate that changes a *value* inside a
+  structure that still has the same shape passes through all of them. The
+  `patterns:` case logged a line byte-identical to the correct file's. The
+  daemon now warns at load, naming the key path, every line the key appears on,
+  and which line actually won; `lynceus-validate` still reports the same finding
+  as an error with exit 1. Files are loaded, not refused — one stray line should
+  not drop every other rule you wrote.
+
 - **`watchful` reported a device as last seen at the moment you clicked a
   button.** Resetting an escalated entry walks its count back — and, because the
   same column is also the recurrence debounce and the 90-day auto-archive clock,

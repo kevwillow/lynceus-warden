@@ -35,7 +35,7 @@ from lynceus.patterns import (
     normalize_pattern,
     parse_mac_range_pattern,
 )
-from lynceus.yaml_duplicates import find_duplicate_keys
+from lynceus.yaml_duplicates import warn_duplicate_keys
 
 logger = logging.getLogger(__name__)
 
@@ -504,22 +504,19 @@ def _warn_on_duplicate_keys(primary_path: Path) -> None:
     disabled one. `yaml.compose` on a pathological file can still raise past
     the OSError/YAMLError that `find_duplicate_keys` handles (RecursionError
     on deep nesting, MemoryError), so the broad catch is the point.
+
+    ⇒ **Delegates to `yaml_duplicates.warn_duplicate_keys`**, which owns that
+    property for every loader. This function used to implement it here, and
+    keeping a second copy was an overclaim in the PR that introduced the shared
+    one ("implemented once so the property is tested once" -- while this copy
+    stayed live). The copy also had the same hole the shared one did: it
+    wrapped only the DETECTION call, leaving `logger.warning` outside the try,
+    so a raising handler propagated into `_load_primary`'s parse-failure path
+    and produced exactly the empty allowlist this docstring warns about.
     """
-    try:
-        dupes = find_duplicate_keys(primary_path)
-    except Exception as exc:  # noqa: BLE001 -- see above; never propagate
-        logger.debug(
-            "duplicate-key check skipped for %s (%s)", primary_path, exc
-        )
-        return
-    for dupe in dupes:
-        logger.warning(
-            "allowlist primary file %s: %s. The entry loaded is not the one "
-            "written on line %d.",
-            primary_path,
-            dupe.describe(),
-            dupe.first_line,
-        )
+    warn_duplicate_keys(
+        primary_path, logger=logger, subject="allowlist primary file"
+    )
 
 
 def _load_primary(
