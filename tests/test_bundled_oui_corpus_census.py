@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import csv
 import sqlite3
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -263,4 +264,85 @@ def test_a_bundled_prefix_that_CAN_fire_actually_does(tmp_path):
     assert [h.rule_name for h in hits] == ["argus_oui"], (
         f"the control bundled OUI {prefix!r} produced no alert either, so the "
         f"absence assertions above are measuring a dead pipeline, not inert data"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The other number in import_argus.py that nothing was holding still.
+# ---------------------------------------------------------------------------
+#
+# `NON_RF_IDENTIFIER_TYPES`'s comment states: "The bundled snapshot is ~43% such
+# rows (17,952 of 41,508 at schema_version=31)". Re-measured 2026-08-16 against
+# the shipped CSV and exact on every figure -- so this is a guard against future
+# rot, not a correction.
+#
+# ⭐ The second test below is the one that matters, and the source comment says
+# so itself: "An Argus release that adds a genuinely RF-observable identifier
+# type Lynceus has not mapped would otherwise land in the same silent bucket and
+# quietly shrink detection coverage with no operator-visible signal."
+#
+# There IS a runtime WARNING for that case, but it fires during an import an
+# operator may never read, and the bundled snapshot ships WITH the product --
+# so a re-export carrying a new type would reach every install having produced
+# no signal anybody saw. This fails in CI instead.
+
+EXPECTED_TOTAL_ROWS = 41_508
+EXPECTED_NON_RF_ROWS = 17_952
+EXPECTED_MAPPED_ROWS = 23_556
+
+
+def _identifier_types() -> Counter[str]:
+    return Counter((r["identifier_type"] or "").strip().lower() for r in _rows())
+
+
+def test_the_non_rf_share_of_the_bundled_corpus_still_matches_the_comment():
+    """Pins the "~43% (17,952 of 41,508)" figure in import_argus.py.
+
+    Fails in BOTH directions on a re-export: update the comment and this
+    block together, or discover later that a sentence stopped being true.
+    """
+    from lynceus.cli.import_argus import IDENTIFIER_TYPE_MAP, NON_RF_IDENTIFIER_TYPES
+
+    types = _identifier_types()
+    total = sum(types.values())
+    non_rf = sum(n for t, n in types.items() if t in NON_RF_IDENTIFIER_TYPES)
+    mapped = sum(n for t, n in types.items() if t in IDENTIFIER_TYPE_MAP)
+
+    assert (total, non_rf, mapped) == (
+        EXPECTED_TOTAL_ROWS,
+        EXPECTED_NON_RF_ROWS,
+        EXPECTED_MAPPED_ROWS,
+    ), (
+        f"bundled corpus census moved: total={total} non_rf={non_rf} "
+        f"mapped={mapped}. Re-measure, then update BOTH these constants and "
+        f"the '~43% such rows' comment in import_argus.py's "
+        f"NON_RF_IDENTIFIER_TYPES block."
+    )
+
+
+def test_every_bundled_identifier_type_is_mapped_or_recorded_as_non_rf():
+    """No shipped row may land in the silent bucket.
+
+    A type that is neither in `IDENTIFIER_TYPE_MAP` nor in
+    `NON_RF_IDENTIFIER_TYPES` is dropped as `unknown_type`. For a type Argus
+    added that IS observable over the air, that is detection coverage lost
+    with the only signal a WARNING during an import nobody watches.
+
+    ⚠️ The failure is not "add it to the non-RF set to make this pass". Decide
+    which it is: a matcher in `IDENTIFIER_TYPE_MAP` if Lynceus can see it, an
+    entry in `NON_RF_IDENTIFIER_TYPES` if it genuinely cannot -- the two are
+    held disjoint by `test_non_rf_set_and_identifier_map_are_disjoint`.
+    """
+    from lynceus.cli.import_argus import IDENTIFIER_TYPE_MAP, NON_RF_IDENTIFIER_TYPES
+
+    types = _identifier_types()
+    unclassified = {
+        t: n
+        for t, n in types.items()
+        if t not in IDENTIFIER_TYPE_MAP and t not in NON_RF_IDENTIFIER_TYPES
+    }
+    assert unclassified == {}, (
+        f"identifier types in the bundled corpus that are neither matched nor "
+        f"recorded as non-RF, so they import as 'unknown_type' drops: "
+        f"{unclassified}"
     )
