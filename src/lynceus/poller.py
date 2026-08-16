@@ -1436,9 +1436,22 @@ def poll_once(
 ) -> int:
     """Run one poll tick: fetch from Kismet, persist sightings, evaluate rules.
 
-    Allowlist precedence: a device matching any allowlist entry is suppressed,
-    regardless of any watchlist rules it would have matched. When suppression
-    hides what would have been a watchlist hit, an INFO-level audit line is
+    Allowlist precedence: a device matching a **HARD** allowlist entry (``mac``,
+    ``mac_range``, ``oui`` -- properties of the radio itself) is suppressed
+    regardless of any watchlist rules it would have matched. ⛔ A **SOFT** entry
+    (``ble_local_name``, ``ssid``, uuid, manufacturer id -- free text the device
+    chooses for itself) does **not** silence an explicit watchlist hit, because
+    an attacker could otherwise suppress themselves by broadcasting a name the
+    operator had allowlisted. See ``allowlist.HARD_ALLOWLIST_PATTERN_TYPES`` and
+    the carve-out in ``process_observation``.
+
+    ⚠️ This sentence used to read *"a device matching ANY allowlist entry is
+    suppressed, regardless of any watchlist rules"*. That was true when written
+    and stopped being true at #82, which introduced the hard/soft split -- the
+    single most repeated defect shape on this project, and it survived here for
+    the length of the whole hard/soft rollout.
+
+    When suppression hides what would have been a watchlist hit, an INFO-level audit line is
     emitted so operators can review whether the allowlist is too permissive —
     silently disabling a watchlist rule by allowlisting the matching device
     is exactly the kind of misconfiguration the audit log is meant to surface.

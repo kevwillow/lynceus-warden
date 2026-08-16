@@ -4170,3 +4170,255 @@ def test_list_recent_watchful_escalations_empty_window(db):
     exception). The digest's empty-state copy renders off of this."""
     _insert_watchful(db, mac="aa:bb:cc:00:00:01", escalated_at=500)
     assert db.list_recent_watchful_escalations(since_ts=10000) == []
+
+
+# ---------------------------------------------------------------------------
+# C-1: the web process runs 42 sync handlers on a threadpool against ONE
+# sqlite3 connection, and transaction state is per-CONNECTION, not per-thread.
+# ---------------------------------------------------------------------------
+
+
+def test_every_transaction_block_takes_the_lock(tmp_path):
+    """⛔ The containment is only real if EVERY block uses it. One bare
+    `with self._conn:` reopens the hole for whatever it guards, and a new one
+    is exactly what a future change would add without noticing."""
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parents[1] / "src" / "lynceus" / "db.py").read_text(
+        encoding="utf-8"
+    )
+    guarded = src.count("with self._lock, self._conn:")
+    # NOT `count(...) - guarded`: "with self._lock, self._conn:" does not contain
+    # the substring "with self._conn:", so subtracting double-counted and the
+    # assertion read `-34 == 0`. The guard caught its own arithmetic.
+    bare = src.count("with self._conn:")
+    assert guarded >= 30, f"the pattern has drifted; only {guarded} guarded blocks found"
+    assert bare == 0, f"{bare} transaction block(s) still bypass the lock"
+
+
+def test_a_failed_write_cannot_survive_on_another_threads_commit(tmp_path):
+    """The reproduced C-1 interleaving, pinned against the pattern db.py uses.
+
+    ⚠️ Session 3's original probe used the RAW `with db._conn:`, which bypasses
+    every Database method -- so it keeps reporting the defect no matter what
+    db.py does. This exercises the guarded pattern, and asserts the barrier was
+    actually reached so a pass cannot mean "the interleaving never happened".
+    """
+    import threading
+
+    db = Database(str(tmp_path / "c1.db"))
+    try:
+        db._conn.execute("CREATE TABLE probe (who TEXT)")
+        db._conn.commit()
+
+        a_in = threading.Event()
+        b_done = threading.Event()
+        reached = {"barrier": False}
+
+        def thread_a():
+            try:
+                with db._lock, db._conn:
+                    db._conn.execute("INSERT INTO probe VALUES ('A')")
+                    a_in.set()
+                    b_done.wait(timeout=3)  # under the lock B cannot proceed
+                    reached["barrier"] = True
+                    raise RuntimeError("handler A failed after writing")
+            except RuntimeError:
+                pass
+
+        def thread_b():
+            a_in.wait(timeout=3)
+            with db._lock, db._conn:
+                db._conn.execute("INSERT INTO probe VALUES ('B')")
+            b_done.set()
+
+        ta, tb = threading.Thread(target=thread_a), threading.Thread(target=thread_b)
+        ta.start(), tb.start(), ta.join(), tb.join()
+
+        assert reached["barrier"], "the interleaving never happened; result is meaningless"
+        rows = sorted(r[0] for r in db._conn.execute("SELECT who FROM probe"))
+        assert rows == ["B"], f"a rolled-back write survived: {rows}"
+    finally:
+        db.close()
+
+
+def test_an_unreadable_probe_ssids_value_is_logged_before_it_is_overwritten(
+    db, caplog
+):
+    """A corrupt OR merely wrong-shaped blob decodes to [] and is written back,
+    so the original is gone and the result is indistinguishable from the
+    legitimate "this device has never probed". Overwriting is right; being
+    SILENT about it was the defect."""
+    import logging
+
+    db.ensure_location("default", "Default")
+    db.upsert_device(
+        mac="aa:bb:cc:dd:ee:ff",
+        device_type="wifi",
+        oui_vendor="V",
+        is_randomized=0,
+        now_ts=1000,
+    )
+    with db._lock, db._conn:
+        db._conn.execute(
+            "UPDATE devices SET probe_ssids = ? WHERE mac = ?",
+            ('{"ssid": "home-wifi"}', "aa:bb:cc:dd:ee:ff"),
+        )
+
+    with caplog.at_level(logging.WARNING, logger="lynceus.db"):
+        db.merge_device_probe_ssids("aa:bb:cc:dd:ee:ff", ["cafe"])
+
+    assert "unreadable probe_ssids" in caplog.text
+    assert "aa:bb:cc:dd:ee:ff" in caplog.text
+
+
+def test_a_valid_probe_ssids_value_logs_nothing(db, caplog):
+    """The control. Without it, "always warn" would pass the test above and
+    every healthy merge would cry corruption."""
+    import json
+    import logging
+
+    db.ensure_location("default", "Default")
+    db.upsert_device(
+        mac="aa:bb:cc:dd:ee:00",
+        device_type="wifi",
+        oui_vendor="V",
+        is_randomized=0,
+        now_ts=1000,
+    )
+    with db._lock, db._conn:
+        db._conn.execute(
+            "UPDATE devices SET probe_ssids = ? WHERE mac = ?",
+            (json.dumps(["home-wifi"]), "aa:bb:cc:dd:ee:00"),
+        )
+
+    with caplog.at_level(logging.WARNING, logger="lynceus.db"):
+        db.merge_device_probe_ssids("aa:bb:cc:dd:ee:00", ["cafe"])
+
+    assert "unreadable probe_ssids" not in caplog.text
+
+
+def test_poll_once_no_longer_claims_ANY_allowlist_entry_beats_the_watchlist():
+    """#82 split allowlist entries into HARD and SOFT, and a SOFT entry must not
+    silence an explicit watchlist hit. The docstring kept saying "any ...
+    regardless" for the whole rollout. Prose that was true when written and
+    quietly stopped being is this project's most repeated defect."""
+    import inspect
+
+    import lynceus.poller as poller
+
+    doc = inspect.getdoc(poller.poll_once) or ""
+    assert "HARD" in doc and "SOFT" in doc, "the hard/soft split is not documented"
+    assert "matching any allowlist entry is suppressed" not in doc, (
+        "the unconditional precedence claim is back; a SOFT entry does not "
+        "silence an explicit watchlist hit"
+    )
+
+
+class _RacingConn:
+    """Fires `on_select` once, right after a matching SELECT is materialised and
+    BEFORE the UPDATE that follows it. That interleaving IS the defect: the
+    poller and the web UI are separate PROCESSES, so no in-process lock covers
+    it and only a compare-and-swap can."""
+
+    class _Rows(list):
+        def fetchall(self):
+            return list(self)
+
+    def __init__(self, real, needle, on_select):
+        self._real, self._needle, self._on_select = real, needle, on_select
+        self._fired = False
+
+    def execute(self, sql, params=()):
+        cur = self._real.execute(sql, params)
+        if not self._fired and self._needle in sql:
+            rows = self._Rows(cur.fetchall())
+            self._fired = True
+            self._on_select()
+            return rows
+        return cur
+
+    def __enter__(self):
+        return self._real.__enter__()
+
+    def __exit__(self, *a):
+        return self._real.__exit__(*a)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _watchful_row(db, mac, **cols):
+    db.ensure_location("default", "Default")
+    db.upsert_device(
+        mac=mac, device_type="wifi", oui_vendor="V", is_randomized=0, now_ts=1000
+    )
+    aid = db.add_alert(ts=1000, rule_name="argus_mac", mac=mac, message="m", severity="high")
+    eid = db.create_watchful_from_alert(alert_id=aid, snooze_duration_seconds=86400, now_ts=1000)
+    if cols:
+        sets = ", ".join(f"{k} = ?" for k in cols)
+        with db._lock, db._conn:
+            db._conn.execute(
+                f"UPDATE watchful_recurrence SET {sets} WHERE id = ?",
+                (*cols.values(), eid),
+            )
+    return eid
+
+
+def test_the_watchful_snooze_repair_does_not_clobber_a_concurrent_write(db):
+    """Finding 53. #142 gave the rule_type repair a CAS; this sibling had none.
+    The web UI writes from a SEPARATE PROCESS, so the lock cannot help."""
+    NOW = 1_770_000_000
+    mac = "aa:bb:cc:dd:ee:01"
+    eid = _watchful_row(db, mac, created_at=NOW + 91 * 86400,
+                        snooze_expires_at=NOW + 91 * 86400 + 86400)
+
+    def operator_reshoozes():
+        db._real.execute(
+            "UPDATE watchful_recurrence SET snooze_expires_at = ? WHERE id = ?",
+            (NOW + 3600, eid),
+        )
+        db._real.commit()
+
+    db._real = db._conn
+    db._conn = _RacingConn(
+        db._real, "SELECT id, mac, created_at, snooze_expires_at", operator_reshoozes
+    )
+    try:
+        repaired = db.repair_future_dated_watchful_snoozes(NOW)
+    finally:
+        db._conn = db._real
+
+    got = db._conn.execute(
+        "SELECT snooze_expires_at FROM watchful_recurrence WHERE id = ?", (eid,)
+    ).fetchone()[0]
+    assert got == NOW + 3600, "the repair overwrote the operator's newer snooze"
+    assert repaired == [], "reported a repair it did not make; that line reaches the operator"
+
+
+def test_the_watchful_baseline_repair_does_not_clobber_a_concurrent_write(db):
+    """The sharper sibling: `last_seen_at` is the SOLE lifecycle clock, so a
+    stale-read overwrite can move a row the operator just reset into the archive
+    window -- Finding 51's harm arriving from the other side."""
+    NOW = 1_770_000_000
+    mac = "aa:bb:cc:dd:ee:02"
+    eid = _watchful_row(db, mac, last_seen_at=NOW + 91 * 86400)
+
+    def operator_resets():
+        db._real.execute(
+            "UPDATE watchful_recurrence SET last_seen_at = ? WHERE id = ?", (NOW, eid)
+        )
+        db._real.commit()
+
+    db._real = db._conn
+    db._conn = _RacingConn(db._real, "SELECT id, mac, last_seen_at", operator_resets)
+    try:
+        repaired = db.repair_future_dated_watchful_baselines(NOW)
+    finally:
+        db._conn = db._real
+
+    got = db._conn.execute(
+        "SELECT last_seen_at FROM watchful_recurrence WHERE id = ?", (eid,)
+    ).fetchone()[0]
+    assert got == NOW, "the repair overwrote a concurrently-written baseline"
+    assert repaired == [], "reported a repair it did not make"

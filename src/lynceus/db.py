@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -403,6 +404,32 @@ class Database:
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             is_fresh = not Path(path).exists()
+        # ⛔ Serialises TRANSACTIONS on the shared connection. The web process
+        # runs 42 sync route handlers on Starlette's THREADPOOL against ONE
+        # `app.state.db`, and `sqlite3` transaction state is per-CONNECTION,
+        # not per-thread -- so one thread's `with self._lock, self._conn:` exit committed
+        # everything pending, including another thread's half-finished work.
+        # Measured with a barrier that asserts the interleaving really happened:
+        #
+        #     A: BEGIN, INSERT 'A', raise -> A's block rolls back
+        #     B: (concurrently) INSERT 'B', exits its block -> COMMIT
+        #     rows afterwards: ['A', 'B']   <- A rolled back, its write SURVIVED
+        #
+        # Both directions are reachable: a suppression from a FAILED request
+        # persists (fail-OPEN), and A's rollback can equally discard B's
+        # committed-looking write (fail-CLOSED -- the operator is told a
+        # watchlist row exists and it does not).
+        #
+        # ⚠️ CONTAINMENT, NOT THE ARCHITECTURE FIX. This makes the interleaving
+        # above impossible. It does NOT give application-level atomicity: a
+        # read outside the block, a decision in Python, then a write, can still
+        # act on stale state. That needs request-scoped connections and explicit
+        # units of work, which is a decision rather than a patch. Registered.
+        #
+        # Reentrant on purpose: several methods call others that take the lock.
+        # Migrations and `rollback_to` write outside these blocks; both are
+        # admin-time, before traffic, and deliberately out of scope here.
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(
             path,
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
@@ -673,7 +700,7 @@ class Database:
         now_ts: int,
         ble_device_class: str | None = None,
     ) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO devices(
@@ -729,7 +756,7 @@ class Database:
 
         Returns ``(stored_count, truncated)``.
         """
-        with self._conn:
+        with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT probe_ssids FROM devices WHERE mac = ?", (mac,)
             ).fetchone()
@@ -738,12 +765,39 @@ class Database:
             raw = row["probe_ssids"]
             existing: list[str] = []
             if raw:
+                # ⛔ An unusable stored value is LOGGED, because the next line
+                # overwrites it and the operator would otherwise never know.
+                # Measured: a corrupt blob (`{not json`) and a merely
+                # WRONG-SHAPED one (`{"ssid": "x"}`, `"x"`, `123`) both end up
+                # as `[]`, and the UPDATE below writes that back -- so the
+                # original is gone and the result is indistinguishable from the
+                # legitimate "this device has never probed anything". With no
+                # new SSIDs to merge the column is set to NULL outright.
+                #
+                # ⚠️ Note the wrong-shape cases never reach the `except` at all:
+                # they decode fine and simply are not lists. A report describing
+                # this as "a bare except" is describing the wrong mechanism.
+                #
+                # Overwriting is still the right call -- keeping an unreadable
+                # blob would strand the column forever -- so the fix is to stop
+                # it being SILENT, not to stop it happening.
+                unusable = False
                 try:
                     decoded = json.loads(raw)
                     if isinstance(decoded, list):
                         existing = [s for s in decoded if isinstance(s, str)]
+                    else:
+                        unusable = True
                 except (json.JSONDecodeError, TypeError, ValueError):
-                    existing = []
+                    unusable = True
+                if unusable:
+                    logger.warning(
+                        "device %s had an unreadable probe_ssids value (%.60r); "
+                        "it cannot be merged and is being replaced, so any SSIDs "
+                        "it held are lost",
+                        mac,
+                        raw,
+                    )
             merged: list[str] = list(existing)
             seen: set[str] = set(existing)
             for ssid in new_ssids:
@@ -765,7 +819,7 @@ class Database:
 
     def update_device_ble_name(self, mac: str, ble_name: str) -> None:
         """Set the device's BLE friendly name. Latest write wins."""
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE devices SET ble_name = ? WHERE mac = ?",
                 (ble_name, mac),
@@ -779,7 +833,7 @@ class Database:
         ssid: str | None,
         location_id: str,
     ) -> int:
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "INSERT INTO sightings(mac, ts, rssi, ssid, location_id) VALUES (?, ?, ?, ?, ?)",
                 (mac, ts, rssi, ssid, location_id),
@@ -787,7 +841,7 @@ class Database:
             return cur.lastrowid
 
     def ensure_location(self, location_id: str, label: str) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 "INSERT INTO locations(id, label) VALUES (?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET label = excluded.label",
@@ -821,7 +875,7 @@ class Database:
         # the rule_name -> rule_type mapping requires the loaded
         # ruleset and isn't recoverable retroactively. Always
         # passed from poller.py for new alerts.
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "INSERT INTO alerts(ts, rule_name, mac, message, severity, "
                 "matched_watchlist_id, rule_type) "
@@ -1382,7 +1436,7 @@ class Database:
         row is invisible to dedup, so the next poll retries rather than
         assuming delivery.
         """
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE alerts SET notified_at = ? WHERE id = ?",
                 (int(now_ts), int(alert_id)),
@@ -1407,7 +1461,7 @@ class Database:
         fires". Both statements share the transaction, so the read cannot
         observe another writer's increment.
         """
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE alerts SET notify_attempts = notify_attempts + 1 WHERE id = ?",
                 (int(alert_id),),
@@ -1426,7 +1480,7 @@ class Database:
 
     def insert_heartbeat(self, *, ts: int, healthy: bool, message: str) -> int:
         """Record a composed heartbeat, undelivered. Returns its id."""
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "INSERT INTO heartbeats(ts, healthy, message, notify_attempts) "
                 "VALUES (?, ?, ?, 0)",
@@ -1474,7 +1528,7 @@ class Database:
         ``record_alert_notify_attempt``: RETURNING needs SQLite >= 3.35 and
         Debian bullseye (a stated target for the Pi deployment) ships 3.34.
         """
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE heartbeats SET notify_attempts = notify_attempts + 1 WHERE id = ?",
                 (int(heartbeat_id),),
@@ -1492,7 +1546,7 @@ class Database:
         The interval clock runs from DELIVERY, not from composition -- a
         heartbeat nobody received has not proved anything.
         """
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE heartbeats SET notified_at = ? WHERE id = ?",
                 (int(now_ts), int(heartbeat_id)),
@@ -1609,7 +1663,7 @@ class Database:
         moment of write — always set; the integer Unix epoch matches
         the rest of the schema's timestamp convention.
         """
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "INSERT INTO import_runs(imported_at, exported_at, source, record_count) "
                 "VALUES (?, ?, ?, ?)",
@@ -1656,7 +1710,7 @@ class Database:
         return row[0] if row else None
 
     def set_state(self, key: str, value: str) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 "INSERT INTO poller_state(key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -2716,7 +2770,7 @@ class Database:
         ).fetchone()
         if existing is not None:
             return int(existing["id"]), False
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "INSERT INTO watchlist (pattern, pattern_type, severity, description, "
                 "mac_range_prefix, mac_range_prefix_length) "
@@ -2820,7 +2874,7 @@ class Database:
             raise ValueError(f"unknown metadata fields: {sorted(unknown)}")
 
         now_ts = int(time.time())
-        with self._conn:
+        with self._lock, self._conn:
             existing = self._conn.execute(
                 "SELECT id FROM watchlist_metadata WHERE watchlist_id = ?",
                 (watchlist_id,),
@@ -3225,7 +3279,7 @@ class Database:
         else:
             persist = stripped
             ts_value = now_ts if now_ts is not None else int(time.time())
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "UPDATE alerts SET note = ?, note_updated_at = ? WHERE id = ?",
                 (persist, ts_value, alert_id),
@@ -3244,7 +3298,7 @@ class Database:
         self._validate_alert_id(alert_id)
         actor_clean = self._validate_actor_and_note(actor, note)
         target_flag = 1 if action == "ack" else 0
-        with self._conn:
+        with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT acknowledged FROM alerts WHERE id = ?", (alert_id,)
             ).fetchone()
@@ -3305,7 +3359,7 @@ class Database:
         already_acked = 0
         missing = 0
         action_rows = 0
-        with self._conn:
+        with self._lock, self._conn:
             for aid in unique_ids:
                 row = self._conn.execute(
                     "SELECT acknowledged FROM alerts WHERE id = ?", (aid,)
@@ -3495,7 +3549,7 @@ class Database:
             raise ValueError("expires_at must be an int (epoch seconds)")
         if not isinstance(added_at, int) or isinstance(added_at, bool):
             raise ValueError("added_at must be an int (epoch seconds)")
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO rule_type_snoozes("
                 "rule_type, expires_at, added_at, note) VALUES (?, ?, ?, ?)",
@@ -3513,7 +3567,7 @@ class Database:
         """
         if not isinstance(rule_type, str) or not rule_type:
             raise ValueError("rule_type must be a non-empty string")
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "DELETE FROM rule_type_snoozes WHERE rule_type = ?",
                 (rule_type,),
@@ -3596,7 +3650,7 @@ class Database:
         repaired: list[tuple[str, int]] = []
         if not rows:
             return repaired
-        with self._conn:
+        with self._lock, self._conn:
             for row in rows:
                 duration = int(row["expires_at"]) - int(row["added_at"])
                 # A non-positive duration means the row is not merely
@@ -3674,16 +3728,25 @@ class Database:
         repaired: list[tuple[str, int]] = []
         if not rows:
             return repaired
-        with self._conn:
+        with self._lock, self._conn:
             for row in rows:
                 duration = int(row["snooze_expires_at"]) - int(row["created_at"])
                 if duration <= 0:
                     continue
-                self._conn.execute(
-                    "UPDATE watchful_recurrence SET snooze_expires_at = ? WHERE id = ?",
-                    (now_ts + duration, int(row["id"])),
+                # ⛔ COMPARE-AND-SWAP, same reason as the rule_type sibling: the
+                # SELECT above ran outside this transaction, and the WEB UI is a
+                # SEPARATE PROCESS -- so the lock cannot help here and the row can
+                # change underneath. Keyed only on `id`, this stamped the OLD
+                # duration onto whatever the operator had just written.
+                cur = self._conn.execute(
+                    "UPDATE watchful_recurrence SET snooze_expires_at = ? "
+                    "WHERE id = ? AND snooze_expires_at = ?",
+                    (now_ts + duration, int(row["id"]), int(row["snooze_expires_at"])),
                 )
-                repaired.append((str(row["mac"]), duration))
+                # Reporting a repair that did not happen puts a false line in the
+                # operator's log, which is the same class of defect as the repair.
+                if cur.rowcount:
+                    repaired.append((str(row["mac"]), duration))
         return repaired
 
     def repair_future_dated_watchful_baselines(self, now_ts: int) -> list[tuple[str, int]]:
@@ -3729,15 +3792,22 @@ class Database:
         repaired: list[tuple[str, int]] = []
         if not rows:
             return repaired
-        with self._conn:
+        with self._lock, self._conn:
             for row in rows:
-                self._conn.execute(
-                    "UPDATE watchful_recurrence SET last_seen_at = ? WHERE id = ?",
-                    (now_ts, int(row["id"])),
+                # ⛔ COMPARE-AND-SWAP. `last_seen_at` is the SOLE lifecycle clock
+                # for an unactioned entry, so a stale-read overwrite can move a row
+                # the operator just reset straight into the archive window -- the
+                # fail-CLOSED direction (Finding 51's shape, arriving from the other
+                # side). Cross-process, so the lock does not cover it.
+                cur = self._conn.execute(
+                    "UPDATE watchful_recurrence SET last_seen_at = ? "
+                    "WHERE id = ? AND last_seen_at = ?",
+                    (now_ts, int(row["id"]), int(row["last_seen_at"])),
                 )
-                repaired.append(
-                    (str(row["mac"]), int(row["last_seen_at"]) - now_ts)
-                )
+                if cur.rowcount:
+                    repaired.append(
+                        (str(row["mac"]), int(row["last_seen_at"]) - now_ts)
+                    )
         return repaired
 
     def find_impossible_rule_type_snoozes(self, now_ts: int) -> list[ImpossibleSnooze]:
@@ -3835,7 +3905,7 @@ class Database:
         """
         if not isinstance(now_ts, int) or isinstance(now_ts, bool):
             raise ValueError("now_ts must be an int (epoch seconds)")
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "DELETE FROM rule_type_snoozes WHERE expires_at <= ?",
                 (now_ts,),
@@ -3965,7 +4035,7 @@ class Database:
             raise ValueError("entry_id must be an int")
         if not isinstance(observed_at, int) or isinstance(observed_at, bool):
             raise ValueError("observed_at must be an int (epoch seconds)")
-        with self._conn:
+        with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
                 "sighting_count, snooze_expires_at, escalated_at, archived_at, "
@@ -4024,7 +4094,7 @@ class Database:
             raise ValueError("entry_id must be an int")
         if not isinstance(escalated_at, int) or isinstance(escalated_at, bool):
             raise ValueError("escalated_at must be an int (epoch seconds)")
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET escalated_at = ? "
                 "WHERE id = ? "
@@ -4072,7 +4142,7 @@ class Database:
         if not isinstance(now_ts, int) or isinstance(now_ts, bool):
             raise ValueError("now_ts must be an int (epoch seconds)")
         cutoff = now_ts - self.WATCHFUL_RECURRENCE_ARCHIVE_QUIET_SECONDS
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET archived_at = ? "
                 "WHERE archived_at IS NULL AND last_seen_at <= ?",
@@ -4114,7 +4184,7 @@ class Database:
             raise ValueError("entry_id must be an int")
         if not isinstance(now_ts, int) or isinstance(now_ts, bool):
             raise ValueError("now_ts must be an int (epoch seconds)")
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET archived_at = ? "
                 "WHERE id = ? AND archived_at IS NULL",
@@ -4198,7 +4268,7 @@ class Database:
         stored_pattern = entry.pattern
         stored_pattern_type = entry.pattern_type
 
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET archived_at = ? "
                 "WHERE id = ? AND archived_at IS NULL",
@@ -4271,7 +4341,7 @@ class Database:
             raise ValueError("entry_id must be an int")
         if not isinstance(now_ts, int) or isinstance(now_ts, bool):
             raise ValueError("now_ts must be an int (epoch seconds)")
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET "
                 "escalated_at = NULL, sighting_count = 1, "
@@ -4326,7 +4396,7 @@ class Database:
             raise ValueError("now_ts must be an int (epoch seconds)")
         if note is not None and not isinstance(note, str):
             raise ValueError("note must be a string or None")
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET "
                 "flagged_for_investigation = 1, operator_note = ? "
@@ -4363,7 +4433,7 @@ class Database:
             raise ValueError("now_ts must be an int (epoch seconds)")
         if note is not None and not isinstance(note, str):
             raise ValueError("note must be a string or None")
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET "
                 "confirmed_safe = 1, operator_note = ?, archived_at = ? "
@@ -4439,7 +4509,7 @@ class Database:
             if snooze_duration_seconds is not None
             else None
         )
-        with self._conn:
+        with self._lock, self._conn:
             cur = self._conn.execute(
                 "INSERT INTO watchful_recurrence("
                 "mac, created_at, first_seen_at, last_seen_at, sighting_count, "
