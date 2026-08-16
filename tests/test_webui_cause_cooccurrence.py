@@ -355,3 +355,55 @@ def test_the_csv_snooze_column_is_unknown_when_liveness_is(tmp_path):
     header, data = rows[0], rows[1:]
     idx = header.index("type_snoozed")
     assert [r[idx] for r in data] == ["unknown"]
+
+
+def test_settings_does_not_claim_the_rules_still_match_for_a_both_type(tmp_path):
+    """🪤 The first fix here scoped only "Nothing in rules.yaml needs changing"
+    and left "the rules still match, the alerts are dropped until the snooze
+    expires" rendering unconditionally — false in every clause for a type no
+    enabled rule delegates to. A cold read caught the half-fix.
+    """
+    cfg, db, app, both_id, live_id = _build(tmp_path, snooze=BOTH_RULE_TYPE)
+    try:
+        with TestClient(app) as client:
+            settings = _prose(client.get("/settings").text)
+    finally:
+        db.close()
+
+    assert "also inert" in settings
+    assert "the rules still match" not in settings.lower(), (
+        "settings still asserts the rules match for a type nothing delegates to"
+    )
+
+
+def test_settings_keeps_the_matching_claim_when_the_snoozed_type_delegates(tmp_path):
+    """The other half — for a delegated type the rules DO still match, and
+    deleting the sentence outright would be the mirror-image false claim.
+    """
+    cfg, db, app, both_id, live_id = _build(tmp_path, snooze="watchlist_mac")
+    try:
+        with TestClient(app) as client:
+            settings = _prose(client.get("/settings").text)
+    finally:
+        db.close()
+
+    assert "The rules still match" in settings
+    assert "also inert" not in settings
+
+
+def test_the_detail_page_names_the_rule_type_not_the_pattern_type(tmp_path):
+    """⛔ "You snoozed the `ssid_pattern` rule type" names something that does
+    not exist on /rules. The rule_type is `watchlist_ssid`, and it serves both
+    `ssid` and `ssid_pattern`.
+    """
+    cfg, db, app, both_id, live_id = _build(tmp_path, snooze="watchlist_mac")
+    try:
+        with TestClient(app) as client:
+            detail = _prose(client.get(f"/watchlist/{live_id}").text)
+    finally:
+        db.close()
+
+    assert "You snoozed <code>watchlist_mac</code>" in detail, (
+        "the page does not name the rule_type the operator has a button for"
+    )
+    assert "You snoozed the <code>mac</code> rule type" not in detail

@@ -478,6 +478,32 @@ def severity_remap_axis(
     return matched[0] if matched else None
 
 
+def _next_tier_severity(
+    stored_severity: str,
+    vendor: str | None,
+    device_category: str | None,
+    argus_record_id: str | None,
+    overrides,
+) -> str:
+    """The severity this row would carry if the WINNING remap entry were removed.
+
+    ⭐ Answered by walking the engine's own precedence list one step down, not
+    by reasoning about it: the second matching axis wins, and if there is no
+    second one the stored value does. That makes "removing this restores X" a
+    computed fact rather than an expectation.
+    """
+    matched = matching_remap_axes(vendor, device_category, argus_record_id, overrides)
+    if len(matched) < 2 or overrides is None:
+        return stored_severity
+    axis, key = matched[1]
+    table = {
+        "pattern_overrides": overrides.pattern_overrides,
+        "vendor_severity": overrides.vendor_severity,
+        "device_category_severity": overrides.device_category_severity,
+    }[axis]
+    return table.get(key, stored_severity)
+
+
 def matching_remap_axes(
     vendor: str | None,
     device_category: str | None,
@@ -574,23 +600,45 @@ def severity_remap(
         "effective": effective,
         "axis": axis[0] if axis else None,
         "key": axis[1] if axis else None,
-        # ⚠️ Whether the winning axis is the ONLY one that matches this row.
+        # ⚠️ Whether removing the winning entry actually restores the STORED
+        # severity — which is a question about the next tier's VALUE, not about
+        # how many axes match.
         #
-        # 🪤 The first draft of the detail page said "removing that entry from
-        # the overrides file restores <stored>". That is a claim the code had
-        # not established: with two axes matching, removing the winner hands the
-        # row to the NEXT TIER, not to its stored value -- so an operator
-        # following the advice would edit the file and see the severity change
-        # to a third value. Same shape as the error message that asserted a
-        # cause it never established (#106). Cheap to answer properly, so the
-        # page states a fact instead of an expectation.
-        "sole_axis": len(
-            matching_remap_axes(vendor, device_category, argus_record_id, overrides)
+        # 🪤 Two drafts, both wrong, and the second was caught by a cold read.
+        # The first said "removing that entry restores <stored>" unconditionally
+        # — false when a second axis takes over. The second answered
+        # `len(matching) == 1`, which is false in the other direction: with
+        # stored=high, pattern_overrides=low and vendor_severity=high, two axes
+        # match and removing the winner DOES land back on high. Counting is not
+        # the question; the value is.
+        "restores_stored": _next_tier_severity(
+            stored_severity, vendor, device_category, argus_record_id, overrides
         )
-        == 1,
+        == stored_severity,
     }
 
 
+
+
+def serving_rule_types(pattern_type: str) -> tuple[str, ...]:
+    """The rule_type(s) whose delegation branch consults this pattern_type.
+
+    ⛔ The two are NOT the same name, and the UI was printing the wrong one:
+    "You snoozed the ``ssid_pattern`` rule type" names something that does not
+    exist on ``/rules`` — the rule_type is ``watchlist_ssid``, and it serves
+    both ``ssid`` and ``ssid_pattern``. An operator sent to unsnooze
+    ``ssid_pattern`` finds nothing to click.
+
+    ⚠️ Returns a TUPLE because the map is not one-to-one in that direction, and
+    could stop being one-to-one in the other: ``watchlist_ssid`` already serves
+    two pattern_types today. Derived by inverting ``RULE_TYPE_DELEGATES_TO``
+    rather than by writing a second map that could drift from it.
+    """
+    return tuple(
+        sorted(
+            rt for rt, pts in RULE_TYPE_DELEGATES_TO.items() if pattern_type in pts
+        )
+    )
 
 
 def allowlist_answerable_for(pattern_type: str) -> bool:
