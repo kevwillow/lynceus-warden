@@ -2199,6 +2199,117 @@ the omission looked like completion from inside.** The only reliable tell was so
 structurally incapable of reaching. **Two independent instances in one day of a defect that was
 unreachable from inside the measurement that missed it.**
 
+## Round 12 — `poller.py`'s gate chain, driven rather than read, 2026-08-16
+
+**The surface:** the register has said since round 11 that `poller.py`'s gates BEYOND the allowlist
+branch were never swept. This round swept them with one instrument: **for each gate, store the value
+that should trigger it and drive `process_observation` for real.** Nothing here was concluded by
+reading the code.
+
+⭐ **The class being hunted is round 11's:** *a stored value some later layer has to honour, which
+silently does nothing.* It found one defect of a different and worse shape — a value the layer
+**did** honour, whose failure to record it was invisible.
+
+### ✅ The per-rule_type snooze gate — SWEPT and honest, do not re-audit
+
+Every `rule_type` in the `RuleType` Literal (derived via `get_args`, never transcribed), each driven
+through `process_observation` twice — once with no snooze, once with one stored:
+
+```
+10 of 11 rule_types : control 1 alert 1 send  ->  snoozed 0 alerts 0 sends, counter incremented
+watchful_recurrence : control 0 alerts        ->  INVALID CONTROL, measured separately (below)
+```
+
+⚠️ `watchful_recurrence` is reported as **cannot-measure-this-way**, not as "the snooze works":
+`evaluate` has no branch for it, so no `hit` ever carries that rule_type and the gate inside the
+`for hit in hits:` loop can never see one. Its snooze is consulted at **two other sites** —
+the escalation emit and `_retry_watchful_escalation` — and both were driven directly instead.
+
+### 🔴 Finding 43 — a watchful escalation whose alert WRITE failed was lost permanently and silently
+
+**FIXED** — measured, fixed and guarded in the same change; the original measurement was re-run
+against the fix rather than the fix's own tests.
+
+#74 hardened the escalation **send**. The layer above it — the `db.add_alert` that CREATES the row
+the retry path looks for — still swallowed its exception and returned, while the main alert path
+three hundred lines below deliberately **raises** for exactly that case. `escalated_at` was stamped
+*before* the write, and `escalate_watchful_recurrence` fires once per entry, so a failed write left
+an entry marked escalated with no alert row and `_retry_watchful_escalation` returns early when it
+cannot find one. **Nothing re-drove it.**
+
+Measured on a FOREVER watchful snooze — the operator's documented worst case, where the escalation
+is the only signal that can still arrive — across eight further days of daily sightings:
+
+```
+                        esc rows  delivered  heartbeat
+healthy DB                     1          1  healthy    "Still watching."
+DELIVERY fails (#74's case)    1          0  UNHEALTHY  "1 alert(s) written but never delivered"
+the WRITE fails                0          0  healthy    "Still watching."
+```
+
+⛔ **The third row is why this is worse than the defect #74 fixed.** It is identical to a healthy
+install on the operator's only health channel: `count_undelivered_alerts` counts ROWS, and there is
+no row to count. The single most important message this product sends — *that someone appears to be
+following you* — was lost silently and permanently, and the tool reported itself healthy for it.
+
+⚠️ **Reachable, not theoretical.** sqlite's `database is locked` is the condition the main alert
+path's own measurement used, and the web UI is a separate process writing this same file.
+
+**Fix:** stamp `escalated_at` only once the row exists. A failed write leaves the entry unescalated,
+so the next sighting retries. Same principle the main path already applies one gate down (*dedup on
+DELIVERY, not on row existence*). `outcome.counted` was also dropped from the escalation condition —
+counting is debounced to once per 24h, so requiring it put the earliest possible recovery up to a day
+away while the device is in front of the sensor every poll; `escalated_at is None` is what keeps it
+firing once.
+
+⭐ **The rule_type-snooze branch still stamps, deliberately, and that is load-bearing.** A snoozed
+escalation writes no row by design (*detection runs, notification does not*), so without that stamp
+it would be **indistinguishable from a failed write** — and the recovery would resurrect the alert
+the operator deliberately silenced, the moment their snooze expired. Two causes, one observable
+state: pinned as `test_a_snoozed_escalation_is_consumed_and_never_resurrected`.
+
+⛔ **CORRECTION, made the same hour I wrote the claim.** This entry first said "escalated, no alert
+row" **must mean exactly one thing**. A cold cross-model read refuted it and it is worth recording
+rather than quietly editing: that holds for rows written *from this change onward*, and **not** for
+an install that already hit the defect. Those entries are stamped escalated with no row today, and
+after upgrading they stay lost — `_retry_watchful_escalation` still returns early on a missing row,
+which is correct for a suppressed escalation and wrong for a legacy one, and nothing can now tell
+them apart. **The fix is not retroactive, and no migration attempts to be.** Distinguishing them
+would need a durable disposition (`suppressed_at`, or an escalation record linked to the entry)
+rather than the absence of a row.
+
+### ⭐ What the cold read found in this fix, and the guard hole it exposed
+
+**My recovery test would have passed with the defect restored.** The change drops `outcome.counted`
+from the escalation condition so recovery happens on the next POLL rather than the next counted
+sighting — but every test I wrote drove sightings a **day** apart, so all of them recover either way.
+Measured: with `outcome.counted` put back, **5 of 5 passed**. The claim was in the commit message and
+in this entry; nothing guarded it. Now pinned by
+`test_recovery_happens_on_the_NEXT_POLL_not_the_next_counted_day`, which drives the retry at +5
+minutes, and by a plant that restores `outcome.counted`.
+
+⇒ **This is the fourth consecutive round where a cold read found a hole in guards that had already
+been proven with planted defects.** The plants were the ones I believed in. The tell here is
+specific and reusable: **every case in the file shared one parameter value** (a one-day interval), so
+no plant could distinguish a fix that depended on it from one that did not.
+
+**Acceptance criterion, recorded now so this can be proven closed later:** with the escalation's
+`add_alert` raising, (a) `escalated_at` stays NULL, (b) the write is retried on subsequent sightings
+rather than attempted once, and (c) a single transient failure still ends with exactly one escalation
+row, delivered. All three measured; four planted defects — the original ordering, dropping the
+fire-once guard, dropping the snooze branch's stamp, and reporting a failed write as success — each
+fail the suite, with unique anchors and a clean tree verified after every plant.
+
+### ⛔ What this round could NOT see — stated so a partial sweep is not read as a complete one
+
+- **The retention prunes and the clock-trust holds were NOT swept.** They are in `poll_once`, not
+  `process_observation`, and this instrument does not reach them.
+- **The allowlist gate was not re-measured** — round 11 swept it and it is on the do-not-re-audit
+  list; this round assumed that result rather than re-proving it.
+- **Concurrency was not tested.** Every measurement is single-threaded; the poller/web-UI race that
+  makes `database is locked` reachable was *simulated* by raising, not reproduced.
+- **Finding 41's DB/poller half remains open** and is unchanged by this round.
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are

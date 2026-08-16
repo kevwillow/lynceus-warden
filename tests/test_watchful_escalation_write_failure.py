@@ -121,16 +121,24 @@ def watched(tmp_path):
     db.close()
 
 
-def _sightings(db, config, ruleset, notifier, *, days):
-    for d in range(1, days + 1):
-        ts = T0 + d * DAY
-        process_observation(
-            _obs(ts), db, config, ts,
-            effective_location_id="home", effective_location_label="Home",
-            ensured_locations=set(), processed_counter=[0], admitted_counter=[0],
-            ruleset=ruleset, clock_trusted=True, allowlist=Allowlist(),
-            notifier=notifier,
-        )
+def _observe_at(db, config, ruleset, notifier, ts):
+    """One observation at an EXACT timestamp."""
+    process_observation(
+        _obs(ts), db, config, ts,
+        effective_location_id="home", effective_location_label="Home",
+        ensured_locations=set(), processed_counter=[0], admitted_counter=[0],
+        ruleset=ruleset, clock_trusted=True, allowlist=Allowlist(),
+        notifier=notifier,
+    )
+
+
+def _sightings(db, config, ruleset, notifier, *, days, start_day=1):
+    """One sighting per day. ``start_day`` exists because a second call that
+    silently restarted at day 1 would feed timestamps BACKWARD -- which reads
+    like "and then time passed" and is not."""
+    for d in range(start_day, start_day + days):
+        _observe_at(db, config, ruleset, notifier, T0 + d * DAY)
+    return start_day + days  # the next unused day
 
 
 def _escalation_rows(db):
@@ -194,6 +202,100 @@ def test_the_escalation_is_recovered_after_a_transient_failure(watched):
     assert notifier.sent, "the operator was never told"
 
 
+def test_recovery_happens_on_the_NEXT_POLL_not_the_next_counted_day(watched):
+    """The `outcome.counted` drop, pinned.
+
+    ⛔ A cold cross-model read caught this: every other test here drives
+    sightings a DAY apart, so all of them pass with `outcome.counted` restored
+    — the next day's sighting is counted and recovers anyway. They prove
+    recovery happens; none of them proves it happens PROMPTLY.
+
+    Counting is debounced to once per 24h. If the escalation condition requires
+    a counted sighting, a failed write cannot be retried until the next counted
+    one, i.e. up to a day later, while the device is in front of the sensor
+    every poll. This drives the retry at +5 MINUTES — an under-debounce
+    observation — which is the interval that actually matters."""
+    db, config, ruleset, entry_id = watched
+    proxy = _LockedOnEscalationWrite(db, fail_first_n=1)
+    notifier = RecordingNotifier()
+    next_day = _sightings(proxy, config, ruleset, notifier, days=3)
+
+    # The threshold was reached and the one write attempt was consumed.
+    assert proxy.blocked == 1, "the plant did not fire exactly once"
+    assert _escalation_rows(db) == [], "precondition: no row should exist yet"
+    entry = db.get_watchful_recurrence(entry_id)
+    assert entry.escalated_at is None, "precondition: entry must be unescalated"
+    assert entry.sighting_count >= Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD
+
+    # Five minutes later: an ordinary poll, far inside the 24h debounce.
+    ts = T0 + (next_day - 1) * DAY + 300
+    _observe_at(proxy, config, ruleset, notifier, ts)
+
+    rows = _escalation_rows(db)
+    assert len(rows) == 1, (
+        "the escalation was NOT recovered on the next poll; it is waiting for "
+        "the next COUNTED sighting, up to 24h away, while the device is being "
+        "seen every five minutes"
+    )
+    assert rows[0]["notified_at"] is not None, "recovered row was never delivered"
+    assert db.get_watchful_recurrence(entry_id).escalated_at is not None
+
+
+def test_a_stamp_that_fails_after_the_row_lands_costs_at_most_one_duplicate(watched):
+    """The other side of the window, from the cold read — and the residual is
+    REAL, so this pins the bound rather than claiming there is no window.
+
+    The row write and the `escalated_at` stamp are two transactions. A failure
+    between them leaves a row with no stamp, and the next sighting takes the
+    first-crossing branch again. That costs ONE duplicate escalation (Finding
+    44: closing it needs a generation-keyed escalation record, i.e. a
+    migration).
+
+    ⛔ What must NOT happen, and is what this actually guards: the failure
+    escaping `process_observation` and abandoning the rest of the tick, the
+    operator not being told at all, or the duplication being UNBOUNDED — one
+    extra warning is tolerable, a new "this device is following you" every poll
+    for a week trains the operator to ignore the alert that matters."""
+    db, config, ruleset, entry_id = watched
+
+    class _StampFailsOnce:
+        def __init__(self, inner):
+            self._db = inner
+            self.blocked = 0
+
+        def escalate_watchful_recurrence(self, entry_id_, ts):
+            if self.blocked == 0:
+                self.blocked += 1
+                raise RuntimeError("database is locked")
+            return self._db.escalate_watchful_recurrence(entry_id_, ts)
+
+        def __getattr__(self, name):
+            return getattr(self._db, name)
+
+    proxy = _StampFailsOnce(db)
+    notifier = RecordingNotifier()
+    next_day = _sightings(proxy, config, ruleset, notifier, days=3)
+    assert proxy.blocked == 1, "the plant never fired: no stamp was attempted"
+    # The row landed even though the stamp did not.
+    assert len(_escalation_rows(db)) == 1, "precondition: the row should exist"
+
+    # Six more days of sightings: the duplication must not keep growing.
+    _sightings(proxy, config, ruleset, notifier, days=6, start_day=next_day)
+    rows = _escalation_rows(db)
+    assert len(rows) <= 2, (
+        f"a failed STAMP produced {len(rows)} escalation rows across 9 days of "
+        "sightings; the window costs at most ONE duplicate, so this is "
+        "re-emitting on every sighting"
+    )
+    assert any(r["notified_at"] is not None for r in rows), (
+        "the operator was never told, which is the failure this must not have"
+    )
+    assert db.get_watchful_recurrence(entry_id).escalated_at is not None, (
+        "the entry never recovered its escalated stamp, so it stays eligible "
+        "to re-emit forever"
+    )
+
+
 def test_a_delivered_escalation_fires_exactly_once(watched):
     """The OVER-CORRECTION. Retrying the write must not become 'emit a new
     escalation on every sighting' — that fills /alerts with duplicates of one
@@ -223,7 +325,8 @@ def test_a_snoozed_escalation_is_consumed_and_never_resurrected(watched):
         "fixture failed: the snooze the gate reads is not active"
     )
     notifier = RecordingNotifier()
-    _sightings(db, config, ruleset, notifier, days=3)  # crossing happens snoozed
+    # crossing happens while snoozed
+    next_day = _sightings(db, config, ruleset, notifier, days=3)
 
     entry = db.get_watchful_recurrence(entry_id)
     assert entry.escalated_at is not None, (
@@ -232,8 +335,12 @@ def test_a_snoozed_escalation_is_consumed_and_never_resurrected(watched):
     )
     assert _escalation_rows(db) == [], "snooze did not suppress the emit"
 
-    # Keep going well past the snooze's expiry: it must stay silenced.
-    _sightings(db, config, ruleset, notifier, days=20)
+    # Keep going FORWARD, well past the snooze's expiry: it must stay silenced.
+    end_day = _sightings(db, config, ruleset, notifier, days=20, start_day=next_day)
+    assert db.is_rule_type_snoozed("watchful_recurrence", T0 + end_day * DAY) is None, (
+        "fixture failed: the snooze never expired during the run, so 'still "
+        "silenced' below would pass for the wrong reason"
+    )
     assert _escalation_rows(db) == [], (
         "the escalation the operator snoozed was resurrected after expiry"
     )

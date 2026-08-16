@@ -732,9 +732,38 @@ def process_observation(
                     if _emit_watchful_escalation(
                         db, notifier, outcome.entry, now_ts
                     ):
-                        db.escalate_watchful_recurrence(
-                            watchful_entry.id, now_ts
-                        )
+                        # ⚠️ RESIDUAL, registered as Finding 44 rather than
+                        # patched here. The row write and this stamp are two
+                        # transactions, so a failure BETWEEN them leaves a row
+                        # with no stamp, and the next sighting takes the
+                        # first-crossing branch again -- one duplicate
+                        # escalation. Closing that needs an escalation record
+                        # keyed to the entry GENERATION (`reset_count`), i.e. a
+                        # migration: deduplicating on "an escalation row exists
+                        # for this MAC" would suppress the genuine escalation of
+                        # a RESET entry, which is the unsafe direction.
+                        #
+                        # ⛔ Guarded so bookkeeping cannot cost the rest of the
+                        # observation -- the same rule the notify counter and
+                        # the notified stamp already follow on the main path. An
+                        # unguarded raise here abandons every remaining hit on
+                        # this device, and the alert has ALREADY been delivered
+                        # by this point. The trade is one possible duplicate
+                        # "this device is following you" against dropping the
+                        # rest of the tick, and a duplicate is the safe
+                        # direction.
+                        try:
+                            db.escalate_watchful_recurrence(
+                                watchful_entry.id, now_ts
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Delivered the watchful escalation for %s but "
+                                "failed to stamp the entry as escalated (it may "
+                                "be re-sent once): %s",
+                                obs.mac,
+                                e,
+                            )
                 else:
                     # ⛔ The snooze CONSUMES the escalation -- stamp it, per
                     # the design doc's "detection runs, notification does
