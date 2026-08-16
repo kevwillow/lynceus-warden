@@ -9,8 +9,53 @@
     <p>
       <strong>pattern:</strong> <code>{{ entry.pattern }}</code>
       &middot; <strong>type:</strong> {{ entry.pattern_type }}
-      &middot; <strong>severity:</strong> <span class="badge-{{ entry.severity }}">{{ entry.severity }}</span>
+      {# ⭐ Finding 42. The badge carries the severity an alert will actually
+         have; the stored column is kept beside it rather than replaced,
+         because it is a real value that the CSV exports and the /watchlist
+         severity filter matches on. #}
+      {% if severity_remap %}
+        &middot; <strong>severity:</strong>
+        <span class="badge-{{ severity_remap.effective }}">{{ severity_remap.effective }}</span>
+        <small class="dim">stored <s>{{ severity_remap.stored }}</s></small>
+      {% else %}
+        &middot; <strong>severity:</strong> <span class="badge-{{ entry.severity }}">{{ entry.severity }}</span>
+      {% endif %}
     </p>
+    {# ⛔ Its own block, like the override-suppression one and for the same
+       reason: this is a per-ROW cause that is independent of everything the
+       pattern_type can express. An entry can be remapped AND snoozed AND
+       inert. #}
+    {% if severity_remap %}
+      <p><small class="dim">
+        <span class="badge-{{ severity_remap.effective }}">{{ severity_remap.effective }}</span>
+        <strong>This entry alerts at a different severity from the one stored
+        against it.</strong>
+        {% if severity_remap.axis %}
+          Your severity overrides list <code>{{ severity_remap.key }}</code>
+          under <code>{{ severity_remap.axis }}</code>, which the runtime layer
+          applies at alert time on top of whatever the importer stored.
+        {% else %}
+          A severity override in your overrides file is remapping it at alert
+          time.
+        {% endif %}
+        The stored value <code>{{ severity_remap.stored }}</code> is what
+        <code>/watchlist.csv</code> exports and what the severity filter on the
+        watchlist matches; <code>{{ severity_remap.effective }}</code> is what
+        an alert will actually carry.
+        {# ⚠️ Only claimed when it is the ONLY axis matching this row. With two,
+           removing the winner hands the row to the next tier of the file, so
+           promising the stored value back would send the operator to make an
+           edit and watch a third value appear. #}
+        {% if severity_remap.sole_axis %}
+          Removing that entry from the overrides file restores
+          <code>{{ severity_remap.stored }}</code>.
+        {% else %}
+          More than one override entry matches this row, so removing that one
+          hands it to the next entry rather than back to
+          <code>{{ severity_remap.stored }}</code>.
+        {% endif %}
+      </small></p>
+    {% endif %}
     {% if entry.description %}
       <p><strong>description:</strong> {{ entry.description }}</p>
     {% endif %}

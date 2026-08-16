@@ -28,6 +28,15 @@ carries its own remediation and reporting only one offers a next step that does
 not restore alerting. The two unreported ones mean **no count here is a promise
 that a row will alert** — see ``watchlist_liveness``.
 
+⭐ **One more mechanism sits OUTSIDE that table, because it silences nothing: a
+severity REMAP** (``pattern_overrides`` / ``vendor_severity`` /
+``device_category_severity``). It does not stop the alert; it changes what the
+alert says — so it is not a sixth row above, and counting it as one would
+overstate what that table is about. Every watchlist surface rendered
+``watchlist.severity``, which the runtime layer then re-decides at alert time: a
+row stored ``high`` alerting ``low``, on the severity column an operator sorts
+and filters by. That is Finding 42, and ``effective_severity`` answers it.
+
 An operator adds a watchlist entry, the UI accepts it, ``/settings`` counts it
 and ``/healthz.json`` reports it — and for seven of the ten storable
 pattern_types nothing will ever fire (Finding 32, ``docs/AUDIT_REGISTER.md``).
@@ -335,6 +344,265 @@ def watchlist_liveness(
     }
 
 
+def load_overrides(config: Config):
+    """The parsed runtime override layer, or ``None`` when there is none.
+
+    Split out of ``runtime_suppressions`` so a caller that needs BOTH the
+    suppression axes and the severity remap reads the file once. Every failure
+    mode is benign and returns ``None`` — a page must not 500 because the
+    operator's overrides file has a typo, and reporting "no overrides" is the
+    same answer every release before this one gave.
+    """
+    path = getattr(config, "severity_overrides_path", None)
+    if not path:
+        return None
+    try:
+        return rules_mod.load_runtime_severity_overrides(path)
+    except Exception as exc:  # noqa: BLE001 — the loader is documented as benign
+        logger.warning("runtime suppressions: overrides unreadable (%s)", exc)
+        return None
+
+
+def suppression_axes_of(overrides) -> dict:
+    """``runtime_suppressions``' return value, from an already-loaded object."""
+    if overrides is None:
+        return {"configured": False, "vendors": (), "categories": ()}
+    return {
+        "configured": True,
+        "vendors": tuple(sorted(overrides.suppress_vendors)),
+        "categories": tuple(sorted(overrides.suppress_categories)),
+    }
+
+
+def effective_severity(
+    stored_severity: str,
+    vendor: str | None,
+    device_category: str | None,
+    argus_record_id: str | None,
+    suppressions: dict,
+    overrides,
+) -> str | None:
+    """The severity an alert for this row would ACTUALLY carry — or ``None``
+    when a suppression axis means there is no alert to carry one.
+
+    ⭐ **Finding 42.** ``watchlist.severity`` is what the importer baked in;
+    ``_apply_runtime_overrides`` re-applies the override file at ALERT time, on
+    top of it. Three axes remap (``pattern_overrides`` by argus_record_id,
+    ``vendor_severity`` by manufacturer, ``device_category_severity`` by
+    category), so a row stored ``high`` can alert ``low`` — measured on all
+    three. Every watchlist surface rendered the stored column, which is the one
+    number the operator will never receive.
+
+    ⛔ **Delegates to the engine's own function rather than reimplementing the
+    precedence.** A local copy of "row beats vendor beats category" is a second
+    manifest that can drift from the first, which is the defect behind Findings
+    32, 34 and 37. ``_is_reserved_oui_mac`` is imported for the same reason.
+
+    ⚠️ **The suppression check runs FIRST, and that ordering is load-bearing
+    for a reason that is not about correctness.** Both of
+    ``_apply_runtime_overrides``' suppression branches emit an INFO log naming a
+    rule and a watchlist_id. Those describe an alert being dropped at poll time.
+    Reaching them from a page render would write that line once per suppressed
+    row per page load — a log entry asserting an event that did not happen.
+    Returning early on the suppressed rows means the engine call is only ever
+    reached on the branch where neither log statement can execute, which is a
+    structural guarantee rather than a comment asking for care. Pinned by
+    ``test_rendering_a_suppressed_row_writes_no_alert_log``.
+
+    ⚠️ Returns ``None`` for suppressed rows rather than a severity, because a
+    suppressed row HAS no effective severity — reporting the remapped value
+    beside "this row's alerts are discarded" would invite the operator to read
+    it as what they will receive.
+    """
+    if override_suppression_axes(vendor, device_category, suppressions):
+        return None
+    return rules_mod._apply_runtime_overrides(
+        match_severity=stored_severity,
+        match_device_category=device_category,
+        match_manufacturer=vendor,
+        match_argus_record_id=argus_record_id,
+        # Only ever used in the two INFO log messages, which this function is
+        # structurally unable to reach. Named honestly anyway: if a future
+        # refactor did reach them, the line would say where it came from
+        # instead of naming a rule that never ran.
+        match_watchlist_id=-1,
+        rule_name="webui:watchlist-render",
+        overrides=overrides,
+    )
+
+
+def severity_remap_axis(
+    vendor: str | None,
+    device_category: str | None,
+    argus_record_id: str | None,
+    overrides,
+) -> tuple[str, str] | None:
+    """``(axis, key)`` naming WHICH override entry remaps this row, or None.
+
+    ⚠️ Exactly ONE axis, unlike ``override_suppression_axes``, and the
+    difference is not an inconsistency. Suppression axes are independent — a row
+    listed under both ``suppress_vendors`` and ``suppress_categories`` needs
+    both removed, so naming one would offer a next step that does not restore
+    alerting. The remaps are a PRECEDENCE: exactly one wins, and removing the
+    winner hands the row to the next tier rather than to its stored value. So
+    the honest answer here is the one that is actually in force.
+
+    ⛔ Both this and ``matching_remap_axes`` read ONE list, so "which axis won"
+    and "how many matched" cannot drift apart. The list's order is the engine's
+    documented precedence, and
+    ``test_the_named_axis_is_the_one_the_engine_actually_used`` grades it
+    against ``evaluate`` rather than against this file.
+    """
+    matched = matching_remap_axes(vendor, device_category, argus_record_id, overrides)
+    return matched[0] if matched else None
+
+
+def matching_remap_axes(
+    vendor: str | None,
+    device_category: str | None,
+    argus_record_id: str | None,
+    overrides,
+) -> tuple[tuple[str, str], ...]:
+    """Every ``(axis, key)`` whose selector matches this row, most specific
+    first — the engine's own precedence order.
+
+    ⚠️ Normalisation mirrors ``_apply_runtime_overrides`` exactly: vendor is
+    ``strip().lower()`` (the loader stores keys in that form), category is
+    compared RAW, and ``argus_record_id`` is compared raw against keys the
+    loader lowercased. Using different rules here would name an axis the engine
+    did not use, which is worse than naming none.
+    """
+    if overrides is None:
+        return ()
+    matched: list[tuple[str, str]] = []
+    if argus_record_id is not None and argus_record_id in overrides.pattern_overrides:
+        matched.append(("pattern_overrides", argus_record_id))
+    if vendor is not None:
+        key = vendor.strip().lower()
+        if key in overrides.vendor_severity:
+            matched.append(("vendor_severity", key))
+    if (
+        device_category is not None
+        and device_category in overrides.device_category_severity
+    ):
+        matched.append(("device_category_severity", device_category))
+    return tuple(matched)
+
+
+def severity_remap(
+    stored_severity: str,
+    vendor: str | None,
+    device_category: str | None,
+    argus_record_id: str | None,
+    suppressions: dict,
+    overrides,
+) -> dict | None:
+    """What a surface needs to render this row honestly, or ``None`` when the
+    stored severity IS the severity the operator will receive.
+
+    ⭐ **The rendering decision this encodes, written down because it is a
+    decision and not a mechanical fix.** The stored value is real: the importer
+    computed it, ``/watchlist.csv`` has always exported it and the severity
+    filter is SQL over that column. The remap is equally real and sits on top of
+    it. So neither value alone is the truth —
+
+      * rendering only the stored value is Finding 42, the number the operator
+        will never receive;
+      * rendering only the effective value hides that the row's own column says
+        something else, and silently disagrees with the severity filter, which
+        cannot be made remap-aware without the full-table scan #111 refused.
+
+    ⇒ Surfaces show **both**: the effective severity as the value, the stored
+    one marked superseded beside it, and the axis and key that did it so the
+    next step is actionable.
+
+    ⚠️ ``None`` when a remap axis matches but maps to the severity already
+    stored. Nothing is being hidden in that case and a "superseded" marker
+    would be noise claiming a change that did not happen.
+    """
+    effective = effective_severity(
+        stored_severity,
+        vendor,
+        device_category,
+        argus_record_id,
+        suppressions,
+        overrides,
+    )
+    if effective is None or effective == stored_severity:
+        return None
+    axis = severity_remap_axis(vendor, device_category, argus_record_id, overrides)
+    if axis is None:
+        # The engine remapped and this module cannot say which entry did it —
+        # the two have drifted. Rendering "superseded" without the cause is
+        # still strictly better than rendering the stored value as though it
+        # were what arrives, so degrade rather than hide it, and say so loudly
+        # in the log. `test_every_engine_remap_can_be_attributed_to_an_axis`
+        # is what keeps this unreachable.
+        logger.warning(
+            "severity remap: the engine remapped %s -> %s but no override axis "
+            "matched (vendor=%r category=%r argus_record_id=%r) — "
+            "severity_remap_axis has drifted from _apply_runtime_overrides",
+            stored_severity,
+            effective,
+            vendor,
+            device_category,
+            argus_record_id,
+        )
+    return {
+        "stored": stored_severity,
+        "effective": effective,
+        "axis": axis[0] if axis else None,
+        "key": axis[1] if axis else None,
+        # ⚠️ Whether the winning axis is the ONLY one that matches this row.
+        #
+        # 🪤 The first draft of the detail page said "removing that entry from
+        # the overrides file restores <stored>". That is a claim the code had
+        # not established: with two axes matching, removing the winner hands the
+        # row to the NEXT TIER, not to its stored value -- so an operator
+        # following the advice would edit the file and see the severity change
+        # to a third value. Same shape as the error message that asserted a
+        # cause it never established (#106). Cheap to answer properly, so the
+        # page states a fact instead of an expectation.
+        "sole_axis": len(
+            matching_remap_axes(vendor, device_category, argus_record_id, overrides)
+        )
+        == 1,
+    }
+
+
+
+
+def has_configured_remap(overrides) -> bool:
+    """Whether ANY of the three remap axes is populated.
+
+    ⚠️ A property of the FILE, not of the rows — it says a remap selector
+    exists, never that a stored row matches one. The distinction is the same one
+    ``/settings`` makes for the suppression lists, and it is what stops "you
+    have overrides" being read as "your rows are affected".
+    """
+    axes = configured_remap_axes(overrides)
+    return bool(axes["categories"] or axes["vendors"] or axes["rows"])
+
+
+def configured_remap_axes(overrides) -> dict:
+    """The remap selectors the operator has configured, for ``/settings``.
+
+    ⛔ Selectors, never a row count — the same refusal ``runtime_suppressions``
+    documents. Counting affected rows means scanning the whole watchlist (17k+
+    rows on an Argus install) on every page load with no index to do it
+    cheaply. The rows are marked where they are already loaded instead, which
+    also answers WHICH.
+    """
+    if overrides is None:
+        return {"configured": False, "categories": {}, "vendors": {}, "rows": {}}
+    return {
+        "configured": True,
+        "categories": dict(sorted(overrides.device_category_severity.items())),
+        "vendors": dict(sorted(overrides.vendor_severity.items())),
+        "rows": dict(sorted(overrides.pattern_overrides.items())),
+    }
+
+
 def runtime_suppressions(config: Config) -> dict:
     """The vendors and device categories the severity overrides silence.
 
@@ -366,23 +634,13 @@ def runtime_suppressions(config: Config) -> dict:
     ``/settings`` and ``/healthz.json`` hit, and there is no indexed vendor
     filter to do it cheaply. Rows are marked where they are already loaded
     instead — which is also the more useful answer, because it says WHICH.
+
+    ⚠️ Kept as a ``config``-taking wrapper over ``load_overrides`` +
+    ``suppression_axes_of`` so its callers and its tests are unchanged. A route
+    that also needs the severity remap calls those two directly and reads the
+    file once instead of twice.
     """
-    empty = {"configured": False, "vendors": (), "categories": ()}
-    path = getattr(config, "severity_overrides_path", None)
-    if not path:
-        return empty
-    try:
-        overrides = rules_mod.load_runtime_severity_overrides(path)
-    except Exception as exc:  # noqa: BLE001 — the loader is documented as benign
-        logger.warning("runtime suppressions: overrides unreadable (%s)", exc)
-        return empty
-    if overrides is None:
-        return empty
-    return {
-        "configured": True,
-        "vendors": tuple(sorted(overrides.suppress_vendors)),
-        "categories": tuple(sorted(overrides.suppress_categories)),
-    }
+    return suppression_axes_of(load_overrides(config))
 
 
 def override_suppression_axes(

@@ -102,6 +102,24 @@
     {% endif %}
   </form>
 
+  {# ⚠️ The severity filter is SQL over the STORED column, and it cannot be
+     anything else: making it match the effective severity would mean applying
+     the override layer to every row in the table on every filtered request,
+     which is the full-table scan #111 refused for counting. So the filter is
+     not fixed here -- it is DECLARED, in the one place where the difference can
+     actually mislead someone. Shown only when a severity filter is active AND
+     the overrides file configures a remap; on an install with neither, this
+     page is unchanged. #}
+  {% if severity_filter_is_stored_only %}
+    <p class="status-line">
+      <span class="status-pill status-pill-warn">stored severity</span>
+      This filter matches the severity <strong>stored</strong> on each entry. A
+      severity override can change the severity an alert is actually sent with,
+      so a remapped entry can be missing from these results or shown in them.
+      Remapped entries are marked in the table below.
+    </p>
+  {% endif %}
+
   <p>
     <small>Page {{ pagination.page }} of {{ pagination.total_pages }} &middot; {{ pagination.total }} total &middot; per_page={{ pagination.per_page }}</small>
     &middot;
@@ -142,7 +160,23 @@
               {% if e.id in never_match_ids %}
                 <span class="badge-inert" title="this OUI prefix is reserved or locally administered, so this row can never match">never</span>
               {% endif %}</td>
-              <td><span class="badge-{{ e.severity }}">{{ e.severity }}</span></td>
+              {# ⭐ Finding 42. The badge is the severity the alert will ACTUALLY
+                 carry; the stored value stays visible beside it, struck
+                 through, because it is real -- it is what the CSV exports and
+                 what the severity filter above matches on. Showing only one of
+                 the two is wrong in one direction or the other; the reasoning
+                 is written out in `liveness.severity_remap`.
+
+                 ⚠️ `severity_remaps` holds only the rows where the two actually
+                 differ, so an unremapped row renders exactly as before. #}
+              {% if e.id in severity_remaps %}
+                {% set remap = severity_remaps[e.id] %}
+                <td><span class="badge-{{ remap.effective }}"
+                      title="{% if remap.axis %}{{ remap.axis }}: {{ remap.key }} in your severity overrides remaps this row{% else %}a severity override remaps this row{% endif %} from {{ remap.stored }} to {{ remap.effective }} at alert time">{{ remap.effective }}</span>
+                  <small class="dim">stored <s>{{ remap.stored }}</s></small></td>
+              {% else %}
+                <td><span class="badge-{{ e.severity }}">{{ e.severity }}</span></td>
+              {% endif %}
               <td>{{ e.description or "" }}</td>
               <td>{{ e.vendor or "" }}</td>
               <td>{{ e.device_category or "" }}</td>
