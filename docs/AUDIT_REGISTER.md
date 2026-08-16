@@ -2406,6 +2406,52 @@ than moved, because the fix genuinely landed and only the residual is open.
 A fix's tests pass and are usually honest; they simply cover what the fix set out to do. **The
 question is how many paths reach the mechanism and whether the fix sits on all of them.**
 
+### ✅ The four CANNOT TELLs, RESOLVED by supplying what the audit asked for
+
+The 2026-08-16 audit returned **CANNOT TELL** for four "fixed" findings and named exactly what it
+needed: the original reproducer and the patch. Both were supplied. ⭐ **Three closed at the
+MECHANISM, not merely at the reported caller** — which is the distinction that had gone wrong in
+Finding 41:
+
+| finding | verdict | why it closes the mechanism |
+|---|---|---|
+| **21** — config rewrite left secrets world-readable | ✅ **CLOSED** | the defect was reusing an existing permissive inode, which `os.open(..., mode)` cannot change; the fix `os.fchmod()`s the **descriptor** before any secret is written |
+| **22** — a Kismet re-run widened operator hardening | ✅ **CLOSED** | the defect was replacement with a NEW inode carrying default `0644`; the fix snapshots `S_IMODE` off the existing target and reuses it, while still honouring the requested mode when the file does not exist |
+| **25** — raw driver error in an unauthenticated 503 | ✅ **CLOSED** | `_check_db()` returned `str(exc)` verbatim; the fix substitutes a fixed public message for **every** caught exception and keeps the detail in `logger.exception()` |
+| **23** — five URL guards that could not fail | ⬜ **PARTIAL → REFUTED**, see below |
+
+⇒ ⚠️ **`sightings` retention is deliberately absent.** Its original acceptance criterion was never
+recorded, so **no evidence I could supply would resolve it.** It stays registered as unprovable
+rather than guessed at.
+
+### 🪤 The one PARTIAL was caused by MY packet, again — this time by truncation
+
+The audit ruled Finding 23 **PARTIAL**, stating: *"no supplied hunk wires those three tests to
+`_map_link()`"*, and that a look-alike host would still reach the old substring assertions.
+
+⇒ **Measured: `_map_link` is wired at three call sites** (`tests/test_webui_evidence.py` lines 149,
+190, 454) — exactly the three guards it named. **The verdict is wrong about the code and was
+LITERALLY ACCURATE about what I sent it**; it even hedged, "*As shown*…".
+
+**The cause, measured:**
+
+```
+commit message lines           42
+full `git show` output        157
+my packet kept (head -110)    110   <- window ends at `return tag, href`,
+                                        the last line of the helper DEFINITION
+```
+
+⛔ **`head -N` on `git show` silently eats the diff when the commit message is long**, and this
+project writes 40-line messages. The audit saw a helper being *defined* and never saw it *used*.
+
+⇒ **This is the second false finding my own packet assembly produced, and it is a different shape
+from the first.** The heading incident asserted a conclusion the evidence did not support; this one
+**removed the evidence that would have changed the conclusion**. ⚠️ Truncation is the sneakier of the
+two, because nothing is asserted — the context is merely incomplete, and `head -N` is the natural
+thing to write. **Cap patches by `--stat` first, or pass the diff whole; never trim a `git show` by
+line count.**
+
 ### ⬜ Refuted by the audit — recorded so it is not re-raised
 
 The audit ranked **Finding 31 as PARTIAL**, on the grounds that the seeder is a second watchlist
