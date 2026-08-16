@@ -45,14 +45,34 @@
      because the operator silenced that rule_type — from this UI, in one click.
      Telling them "no enabled rule delegates to this type" would send them into
      rules.yaml to fix a file that is already correct. #}
+  {# ⚠️ "silenced by a snooze", NOT "matching but silenced". The old wording
+     asserted that the rule matches — true for a snoozed type that delegates,
+     FALSE for one that is also inert, where no enabled rule consults the row at
+     all. A banner cannot claim matching without checking it, and this one never
+     did. #}
   {% if liveness.known and liveness.suppressed_count %}
     <p class="status-line">
       <span class="status-pill status-pill-warn">{{ liveness.suppressed_count }} snoozed</span>
       {{ liveness.suppressed_count }} of {{ liveness.total }}
       {% if liveness.total == 1 %}entry is{% else %}entries are{% endif %}
-      matching but silenced: you snoozed
+      silenced by a rule_type snooze: you snoozed
       {% for pt in liveness.suppressed_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
       Lift it on the rules page.
+    </p>
+  {% endif %}
+
+  {# ⛔ Its own line rather than a clause inside either banner above. Both
+     causes are already reported; what neither can say is that fixing ONE of
+     them changes nothing, which is the only thing an operator holding both
+     needs to know. #}
+  {% if liveness.known and liveness.both_types %}
+    <p class="status-line">
+      <span class="status-pill status-pill-warn">both</span>
+      {% for pt in liveness.both_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+      {% if liveness.both_types | length == 1 %}is{% else %}are{% endif %}
+      inert <strong>and</strong> snoozed. These are separate causes, so lifting
+      the snooze alone will not restore alerting and enabling the rule alone
+      will not either.
     </p>
   {% endif %}
 
@@ -144,10 +164,17 @@
           {% for e in entries %}
             <tr>
               <td><a href="/watchlist/{{ e.id }}"><code>{{ e.pattern }}</code></a></td>
+              {# ⛔ TWO independent `{% if %}`s, never an `{% if %}/{% elif %}`
+                 chain. #116 made inert and snoozed independent flags in
+                 `liveness.py` and left this chain in place, so a type that is
+                 both showed only `inert` here while the detail page one click
+                 away showed only `snoozed` — two contradictory diagnoses of
+                 one row, each naming a fix that alone restores nothing. #}
               <td>{{ e.pattern_type }}{% if e.pattern_type in inert_pattern_types %}
                 <span class="badge-inert" title="no enabled rule in rules.yaml delegates to this pattern type, so this entry cannot fire">inert</span>
-              {% elif e.pattern_type in snoozed_pattern_types %}
-                <span class="badge-snoozed-type" title="the rule matches, but you snoozed this rule_type from the rules page; alerts are dropped until it expires">snoozed</span>
+              {% endif %}
+              {% if e.pattern_type in snoozed_pattern_types %}
+                <span class="badge-snoozed-type" title="you snoozed this rule_type from the rules page; alerts are dropped until it expires">snoozed</span>
               {% endif %}
               {# ⭐ Per-ROW, and checked INDEPENDENTLY of the type-level badges
                  above rather than as another {% elif %}: a severity override

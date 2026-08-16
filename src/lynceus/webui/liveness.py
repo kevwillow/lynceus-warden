@@ -245,6 +245,14 @@ def watchlist_liveness(
     defect.** A type can be inert AND snoozed; both are reported, because
     fixing either one alone does not restore alerting.
 
+    ⚠️ **Which means the counts OVERLAP and must not be summed.** A type in
+    ``both_types`` is counted in ``inert_count`` and in ``suppressed_count``,
+    so ``live + inert + suppressed`` can exceed ``total``. That is the correct
+    behaviour for independent flags and the wrong behaviour for anything
+    treating them as a partition — ``/healthz.json`` exports the two type LISTS
+    beside the counts precisely so a consumer can intersect them rather than
+    infer a partition that does not exist.
+
     ⚠️ **``live_count`` is not "rows that will alert."** It counts rows whose
     TYPE is delegated and unsnoozed. Two further mechanisms silence individual
     rows and neither is visible here:
@@ -279,6 +287,7 @@ def watchlist_liveness(
         "live_types": (),
         "inert_types": (),
         "suppressed_types": (),
+        "both_types": (),
         "suppressed_until": {},
         "dead_by_model_types": (),
         "reason": None,
@@ -338,6 +347,14 @@ def watchlist_liveness(
         "live_types": tuple(sorted(firing)),
         "inert_types": tuple(sorted(inert)),
         "suppressed_types": tuple(sorted(suppressed)),
+        # ⭐ The intersection, DERIVED here once rather than recomputed in each
+        # template that needs it. #116 made these two independent flags in this
+        # module and left every surface rendering them as an `{% elif %}` chain,
+        # so a type that is both was reported as one cause on the list page and
+        # as the OTHER on the detail page — contradictory diagnoses one click
+        # apart, each naming a fix that alone restores nothing. Exposing the
+        # intersection is what lets a surface say "both" instead of choosing.
+        "both_types": tuple(sorted(inert & suppressed)),
         "suppressed_until": dict(sorted(snoozed_until.items())),
         "dead_by_model_types": tuple(sorted(inert & DEAD_BY_MODEL)),
         "reason": None,

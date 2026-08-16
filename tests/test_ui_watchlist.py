@@ -792,6 +792,11 @@ _WATCHLIST_CSV_HEADER = [
     #: cause is per-row and INDEPENDENT of the type-level verdict, so a row can
     #: carry both and a single enum would hide whichever check ran second.
     "override_suppressed",
+    #: ⭐ The snooze flag, INDEPENDENT of `can_fire`. That enum answers `no` for
+    #: a type that is inert AND snoozed — inert is checked first — so the snooze
+    #: vanished from the export and an operator acting on `no` would edit
+    #: rules.yaml and still hear nothing. Values: yes / no / unknown.
+    "type_snoozed",
     #: ⭐ Finding 42, appended for the same reason. `severity` above is what the
     #: importer baked in; this is what an alert will actually carry once the
     #: runtime override layer has re-applied. This export exists for offline
