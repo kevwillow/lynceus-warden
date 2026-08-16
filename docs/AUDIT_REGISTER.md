@@ -1811,8 +1811,8 @@ part of its own environment silently grades something you did not choose.**
 ### 🔴 Finding 39 — a severity override silences a watchlist row, and nothing beside that row says so
 
 **Found by session `d47d7e0b` from source; measured end to end here 2026-08-15 before being
-believed.** Not fixed — the fix is a UI surface and belongs with the liveness work, not with a
-register entry.
+believed.** ✅ **FIXED in PR #111 (`28572a7`) — and this time the ORIGINAL measurement was re-run,
+not the fix's tests.** See "re-measured, including the part I expected to still be broken" below.
 
 ⭐ **Finding 32's class one layer down, and the third instance today.** A row the operator stored,
 that `/watchlist` counts and renders like any other, which cannot produce an alert. Finding 32's
@@ -1845,6 +1845,70 @@ and when concluding absence.**
 ⚠️ `webui/liveness.py` cannot see this. It derives liveness from the **loaded ruleset**, and this
 suppression is data-driven — the overrides file plus `watchlist_metadata`. Not a defect in that
 work; a different input it was never given.
+
+### ✅ Re-measured 2026-08-16, including the part I expected to still be broken
+
+⭐ **Applying this register's own new rule: re-run the finding's ORIGINAL measurement, not the fix's
+tests.** The original was "row rendered, row-level signal NONE". Re-run against `28572a7`:
+
+```
+ALERTING    with suppress_vendors  ->  *** NO ALERT ***     (unchanged, and correct —
+                                                             #111 is a visibility fix)
+VISIBILITY  /watchlist        row-level signal: PRESENT
+            /watchlist/{id}   "…matches, but a severity override drops its alerts. Its vendor
+                               Flock Safety is listed under suppress_vendors in your severity
+                               overrides, so the rule matches and the alert is discarded…"
+```
+
+The detail page names the **cause, the vendor and the key** — more than the finding asked for.
+
+⚠️ **I then went looking for a residual and did not find one.** `/watchlist` shows only the token
+`override` at row level, and "override" covers two states that could not be more different:
+`suppress_vendors` **silences** a row, while `device_category_severity` merely **remaps** its
+severity. A badge that cannot tell those apart would be a new instance of this very finding.
+
+⇒ **Measured, one silenced row beside one remapped row:**
+
+```
+SILENCED (suppress_vendors)     ->  "ac:de:48:11:22:01  mac  override"
+REMAPPED (device_category_severity) -> "ac:de:48:11:22:02  mac  low  …"
+```
+
+**The list distinguishes them** — a silenced row shows `override` where its severity would be; a
+remapped row shows its severity. ⬜ **Concern refuted, recorded so nobody re-derives it.**
+
+### 🟡 Finding 42 — `/watchlist` shows a severity the runtime will override
+
+⛔ **I wrote this off.** The line here originally read: *"One unrelated fidelity note, NOT a defect
+and not investigated further: the list shows a remapped row's stored severity, not the severity it
+will actually alert at."* Session `d47d7e0b` measured the thing I declined to chase; **it is a
+defect, and it is this very track's class.** Reproduced independently:
+
+```
+stored watchlist.severity          high
+/watchlist list renders            high
+severity the alert ACTUALLY has    low     (device_category_severity: {tracker: low})
+```
+
+**Mechanism:** `device_category_severity` is applied by the runtime layer at alert time, on top of
+whatever the importer baked into `watchlist.severity`. `/watchlist` renders the stored column. ⇒ **An
+operator triaging by the severity column is sorting and filtering on a number they will never
+receive** — and the overrides file that decides the real value is one `/watchlist` already loads.
+
+⚠️ **Not "will it fire" but "at what severity"**, which is why it reads as cosmetic and is not: the
+severity column is the triage surface.
+
+⛔ **NOT a mechanical fix.** "Just render the remapped value" is wrong — the stored value is real and
+the runtime layer sits on top of it, so an honest rendering shows **both**, or marks the stored one
+as superseded. That is a UI decision. Unclaimed; probe at
+`internal/session2-harnesses/sev_remap_probe.py`.
+
+### 🪤 Twice now I have dismissed something as "not a defect" and been corrected by measurement
+
+The other was the `d47d7e0b` clock finding, which I nearly closed on a PR title. ⇒ **"Not
+investigated further" is a decision, and it deserves the same scepticism as a finding.** Writing the
+observation down anyway is what let someone else measure it — ⭐ **flagging what you have decided not
+to chase is cheap, and it is the only reason this one exists.**
 
 ### ⚠️ Finding 40 — an `oui` row on a reserved prefix cannot match even once its rule is enabled
 
