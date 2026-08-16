@@ -35,6 +35,35 @@ cannot store (`ssid_pattern`, `imei_tac`). That is not drift: the classification
 is checked against the WATCHLIST schema's ten types so a future allowlist type
 cannot inherit hard power silently, while `AllowlistPatternType` is the eight an
 operator can actually write. Everything below derives from the storable eight.
+
+⛔ WHAT A GREEN RUN HERE DOES NOT PROVE — read before citing this file as evidence.
+
+Four tests below pin a DESIGN DECISION rather than an observation, and their
+names say so:
+
+    test_no_soft_type_can_outrank_any_hard_type
+    test_a_soft_entry_above_a_hard_one_does_not_defeat_it
+    test_a_soft_only_allowlist_still_suppresses_ambient_noise
+    test_position_still_breaks_ties_within_a_class
+
+A planted defect against these proves THE CODE MATCHES THE POLICY. It cannot
+tell you the policy is right — and two of the four have already been contested:
+
+  * "hard outranks soft" rests on a MAC being a property of the radio, i.e. that
+    spoofing one is "a different and more detectable act". ⚠️ NOTHING IN LYNCEUS
+    DETECTS THAT ACT, so an attacker who spoofs an allowlisted MAC gets full
+    suppression of an explicit watchlist hit. Open as decision 10 in
+    docs/AUDIT_REGISTER.md.
+  * "a soft match still suppresses ambient noise" is ONE reading of the poller's
+    contract. A cold review read the same comment as "an explicit watchlist hit
+    overrides the soft match entirely" — which would make this test wrong rather
+    than the code. Recorded in round 11's coverage limit.
+
+⇒ A test named after a decision is a design choice wearing a guard's clothes
+(`d47d7e0b`, 2026-08-16, after a plant certified a model that was itself wrong).
+These are KEPT because the policy is the shipped behaviour and pinning it is
+right — but if the decision moves, THESE TESTS ARE THE THING TO CHANGE, not
+evidence against the change.
 """
 
 from __future__ import annotations
