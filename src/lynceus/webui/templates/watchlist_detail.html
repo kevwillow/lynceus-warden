@@ -28,8 +28,20 @@
     {% if severity_remap %}
       <p><small class="dim">
         <span class="badge-{{ severity_remap.effective }}">{{ severity_remap.effective }}</span>
-        <strong>This entry alerts at a different severity from the one stored
-        against it.</strong>
+        {# ⚠️ The verb depends on whether this row can alert AT ALL. Saying
+           "this entry alerts at a different severity" on a row the same page
+           calls inert, snoozed or allowlisted is two sentences about one row
+           where one of them has to be false. The remap still matters — it
+           decides the severity the moment the other blocker is lifted — so it
+           is stated conditionally rather than hidden. #}
+        {% if entry_can_alert %}
+          <strong>This entry alerts at a different severity from the one stored
+          against it.</strong>
+        {% else %}
+          <strong>If this entry produced an alert it would carry a different
+          severity from the one stored against it</strong> — it produces none
+          today, for the reason given elsewhere on this page.
+        {% endif %}
         {% if severity_remap.axis %}
           Your severity overrides list <code>{{ severity_remap.key }}</code>
           under <code>{{ severity_remap.axis }}</code>, which the runtime layer
@@ -41,16 +53,16 @@
         The stored value <code>{{ severity_remap.stored }}</code> is what
         <code>/watchlist.csv</code> exports and what the severity filter on the
         watchlist matches; <code>{{ severity_remap.effective }}</code> is what
-        an alert will actually carry.
-        {# ⚠️ Only claimed when it is the ONLY axis matching this row. With two,
-           removing the winner hands the row to the next tier of the file, so
-           promising the stored value back would send the operator to make an
-           edit and watch a third value appear. #}
-        {% if severity_remap.sole_axis %}
+        an alert
+        {% if entry_can_alert %}will actually carry{% else %}would carry{% endif %}.
+        {# ⚠️ Keyed on what the next tier's VALUE actually is, not on how many
+           axes match. Two entries can both match and still land back on the
+           stored severity, and a count cannot tell you that. #}
+        {% if severity_remap.restores_stored %}
           Removing that entry from the overrides file restores
           <code>{{ severity_remap.stored }}</code>.
         {% else %}
-          More than one override entry matches this row, so removing that one
+          Another override entry also matches this row, so removing that one
           hands it to the next entry rather than back to
           <code>{{ severity_remap.stored }}</code>.
         {% endif %}
@@ -106,19 +118,33 @@
     {# ⛔ Its own block. This cause sits UPSTREAM of everything else on this
        page: the poller checks the allowlist before it consults a rule, so an
        allowlisted device raises nothing whatever the ruleset says. #}
-    {% if allowlist_entry %}
+    {% if allowlist_entries %}
       <p><small class="dim">
         <span class="badge-snoozed-type">allowlisted</span>
         <strong>This entry's device is on the allowlist, so nothing it does
         raises an alert.</strong>
-        The allowlist entry is <code>{{ allowlist_entry.pattern }}</code>
-        (<code>{{ allowlist_entry.pattern_type }}</code>){% if allowlist_entry.expires_at %},
-        which expires at
-        <time>{{ allowlist_entry.expires_at | unix_to_utc_human }}</time>{% else %},
-        and it is permanent{% endif %}. Remove it on the
-        <a href="/allowlist">allowlist page</a> to bring this entry back.
-        The allowlist is checked before any rule is consulted, so this applies
-        whatever the notes below say.
+        {# ⚠️ EVERY covering entry, for the reason the override block names: a
+           MAC can be covered by an exact entry and an `oui` entry at once, and
+           removing only the one we happened to name leaves the other
+           suppressing it. #}
+        {% for a in allowlist_entries %}
+          The allowlist entry is <code>{{ a.pattern }}</code>
+          (<code>{{ a.pattern_type }}</code>){% if a.expires_at %}, which expires at
+          <time>{{ a.expires_at | unix_to_utc_human }}</time>{% else %}, and it is
+          permanent{% endif %}.
+        {% endfor %}
+        {% if allowlist_entries | length > 1 %}
+          ⚠️ <strong>{{ allowlist_entries | length }} entries</strong> cover this
+          device — removing one will not be enough.
+        {% endif %}
+        {# ⚠️ "clears this particular blocker", never "brings the entry back".
+           The allowlist is one of several independent causes, and the notes
+           below may name others; promising restoration from here would be the
+           same defect the override block was written to avoid. #}
+        Removing {% if allowlist_entries | length > 1 %}them{% else %}it{% endif %}
+        on the <a href="/allowlist">allowlist page</a> clears this particular
+        blocker. The allowlist is checked before any rule is consulted, so it
+        applies whatever the notes below say.
       </small></p>
     {% endif %}
     {% if oui_never_matches_reason %}
@@ -142,8 +168,14 @@
         {% else %}
           <strong>You have also snoozed this entry's rule type.</strong>
         {% endif %}
-        You snoozed the <code>{{ entry.pattern_type }}</code> rule type from the
-        <a href="/rules">rules page</a>.
+        {# ⛔ The RULE_TYPE, not the pattern_type. They are different names:
+           `ssid_pattern` rows are served by `watchlist_ssid`, and an operator
+           sent to unsnooze "ssid_pattern" finds nothing on /rules to click.
+           Derived by inverting the delegation map, so it cannot drift. #}
+        You snoozed
+        {% for rt in entry_rule_types %}<code>{{ rt }}</code>{% if not loop.last %} / {% endif %}{% endfor %}
+        &mdash; the rule type that serves <code>{{ entry.pattern_type }}</code>
+        &mdash; from the <a href="/rules">rules page</a>.
         {% if entry_is_live %}
           The rule still runs and still matches this pattern; the alert is
           suppressed until the snooze expires. Nothing in

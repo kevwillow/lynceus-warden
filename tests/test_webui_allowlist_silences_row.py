@@ -324,7 +324,7 @@ def test_the_detail_page_names_the_entry_to_remove(tmp_path):
     # ⚠️ Stops at the MAC. Stripping tags turns `<code>mac</code>` into
     # ` mac `, so reaching past it would pin the stripper's spacing rather than
     # the page's meaning — brittle in the direction that wastes time.
-    named = f"The allowlist entry is {MAC}"
+    named = f"The allowlist entry is {MAC}"  # noqa: E501
     assert detail.count(named) == 1, (
         f"expected exactly one {named!r} on the page; the block that names the "
         f"entry to remove is the only thing that should render it"
@@ -355,3 +355,75 @@ def test_a_watchlist_with_no_mac_rows_does_not_read_the_allowlist(tmp_path, monk
         db.close()
 
     assert calls == [], "the allowlist was loaded for a page with no `mac` rows"
+
+
+TWO_COVERING = f"""
+    entries:
+      - pattern: "{MAC}"
+        pattern_type: mac
+        note: the exact device
+      - pattern: "{MAC[:8]}"
+        pattern_type: oui
+        note: the whole prefix
+    """
+
+
+def test_every_covering_allowlist_entry_is_named(tmp_path):
+    """⛔ A MAC can be covered by an exact entry AND an `oui` entry at once.
+    Naming one and telling the operator to remove it offers a next step that
+    does not restore alerting — the identical defect #116 fixed for the
+    override axes, found here by a cold read of the composed subsystem.
+    """
+    cfg, db, app, wid = _build(tmp_path, TWO_COVERING)
+    try:
+        with TestClient(app) as client:
+            detail = _prose(client.get(f"/watchlist/{wid}").text)
+    finally:
+        db.close()
+
+    # 🪤 `f"The allowlist entry is {MAC[:8]}"` is a PREFIX of the exact entry's
+    # own rendering (`...is 3c:5a:b4:dd:ee:01`), so it matched even when only
+    # one entry rendered — a planted `[:1]` slice survived against it. Count the
+    # blocks instead; the needle cannot be satisfied by one of them twice.
+    assert detail.count("The allowlist entry is") == 2, (
+        f"expected both covering entries named, found "
+        f"{detail.count('The allowlist entry is')} — removing only the one that "
+        f"is named would leave the other suppressing this device"
+    )
+    assert f"The allowlist entry is {MAC} ( mac )" in detail
+    assert f"The allowlist entry is {MAC[:8]} ( oui )" in detail
+    assert "2 entries" in detail
+    assert "removing one will not be enough" in detail
+
+
+def test_one_covering_entry_does_not_claim_there_are_two(tmp_path):
+    """The other half. Rendering the plural unconditionally would pass the test
+    above forever.
+    """
+    cfg, db, app, wid = _build(tmp_path, HARD_ENTRY)
+    try:
+        with TestClient(app) as client:
+            detail = _prose(client.get(f"/watchlist/{wid}").text)
+    finally:
+        db.close()
+
+    assert "entries</strong> cover this device" not in detail
+    assert "removing one will not be enough" not in detail
+
+
+def test_the_page_clears_a_blocker_and_never_promises_the_entry_back(tmp_path):
+    """⛔ "Remove it ... to bring this entry back" promises restoration without
+    checking the other independent causes — the row may also be snoozed,
+    override-suppressed or inert, all of which are in the same template
+    context. The override block next to it already says "clears this particular
+    blocker" for exactly this reason.
+    """
+    cfg, db, app, wid = _build(tmp_path, HARD_ENTRY)
+    try:
+        with TestClient(app) as client:
+            detail = _prose(client.get(f"/watchlist/{wid}").text)
+    finally:
+        db.close()
+
+    assert "clears this particular blocker" in detail
+    assert "to bring this entry back" not in detail

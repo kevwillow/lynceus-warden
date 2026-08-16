@@ -569,7 +569,15 @@ def test_the_stored_severity_caveat_appears_only_where_it_can_mislead(
 # 5. /settings names the remap selectors it had been silent about.
 # --------------------------------------------------------------------------
 
-SETTINGS_NOTE = "Your severity overrides rewrite the severity of some alerts."
+# ⚠️ Reworded after a cold read: the old sentence, "Your severity overrides
+# rewrite the severity of some alerts", asserted that alerts exist and that a
+# stored row matches. This block establishes only that a SELECTOR is
+# configured — the neighbouring suppression block already worded its claim that
+# way, and this one did not.
+SETTINGS_NOTE = (
+    "Your severity overrides are configured to rewrite the severity of "
+    "matching alerts."
+)
 
 
 def test_settings_names_the_configured_remap_selectors(tmp_path):
@@ -618,3 +626,162 @@ def test_effective_severity_passes_through_when_no_overrides_are_loaded():
         effective_severity(STORED, VENDOR, CATEGORY, ARGUS_ID, {"configured": False}, None)
         == STORED
     )
+
+
+def test_two_matching_entries_still_promise_the_stored_value_when_the_next_tier_equals_it(
+    tmp_path,
+):
+    """🪤 The SECOND wrong answer here, caught by a cold read after the first
+    was fixed.
+
+    The page keyed its wording on how many axes match. Counting is not the
+    question — the next tier's VALUE is. Stored ``high``, ``pattern_overrides``
+    → ``low`` (wins), ``vendor_severity`` → ``high``: two axes match, and
+    removing the winner lands back on ``high``. The count said "does not
+    restore"; the engine says it does.
+    """
+    body = (
+        f"pattern_overrides:\n  {ARGUS_ID}: low\n"
+        f"vendor_severity:\n  {VENDOR.lower()}: {STORED}\n"
+    )
+    cfg, db, app, wid = _build(tmp_path, body)
+    try:
+        assert _emitted_severity(cfg, db) == "low", "fixture: the row override should win"
+        overrides = load_overrides(cfg)
+        assert len(matching_remap_axes(VENDOR, CATEGORY, ARGUS_ID, overrides)) == 2, (
+            "fixture: this case needs TWO matching axes, else it is the "
+            "one-axis case and proves nothing"
+        )
+        with TestClient(app) as client:
+            detail = _prose(client.get(f"/watchlist/{wid}").text)
+    finally:
+        db.close()
+
+    # The measurement the prose rests on: drop the winner, ask the ENGINE.
+    without_winner = tmp_path / "without"
+    without_winner.mkdir()
+    cfg2, db2, _a, _w = _build(
+        without_winner, f"vendor_severity:\n  {VENDOR.lower()}: {STORED}\n"
+    )
+    try:
+        assert _emitted_severity(cfg2, db2) == STORED
+    finally:
+        db2.close()
+
+    assert f"restores <code>{STORED}</code>" in detail, (
+        "two axes match but the next tier IS the stored severity, so removing "
+        "the winner does restore it — the page says otherwise"
+    )
+    assert "hands it to the next entry" not in detail
+
+
+def test_a_row_that_cannot_alert_says_would_carry_not_will_carry(tmp_path):
+    """⛔ The remap block said "This entry alerts at a different severity"
+    beside the same page's "This entry cannot currently fire." Two sentences
+    about one row, one of which had to be false.
+
+    The remap is still shown — it decides the severity the moment the other
+    blocker is lifted — but conditionally.
+    """
+    cfg, db, app, wid = _build(
+        tmp_path,
+        f"device_category_severity:\n  {CATEGORY}: low\n",
+    )
+    try:
+        # An inert type: `ble_uuid`'s delegating rule ships commented out.
+        inert_id, _ = db.add_watchlist(
+            pattern="0000fd5a-0000-1000-8000-00805f9b34fb",
+            pattern_type="ble_uuid",
+            severity=STORED,
+        )
+        db.upsert_metadata(
+            inert_id,
+            {"argus_record_id": "b1", "vendor": VENDOR, "device_category": CATEGORY},
+        )
+        with TestClient(app) as client:
+            inert_detail = _prose(client.get(f"/watchlist/{inert_id}").text)
+            live_detail = _prose(client.get(f"/watchlist/{wid}").text)
+    finally:
+        db.close()
+
+    assert "cannot currently fire" in inert_detail, "fixture: the row is not inert"
+    assert "If this entry produced an alert" in inert_detail
+    assert "This entry alerts at a different severity" not in inert_detail
+
+    # The other half: a row that CAN alert keeps the direct wording.
+    assert "This entry alerts at a different severity" in live_detail
+    assert "If this entry produced an alert" not in live_detail
+
+
+def test_the_overrides_card_reports_the_configured_path_not_the_default(tmp_path):
+    """⛔ The card read ``paths.default_overrides_path("user")`` unconditionally,
+    so an operator with a configured path was shown the existence of a file
+    nothing reads — and invited to create one there.
+    """
+    cfg, db, app, wid = _build(tmp_path, f"device_category_severity:\n  {CATEGORY}: low\n")
+    try:
+        with TestClient(app) as client:
+            html = client.get("/settings").text
+    finally:
+        db.close()
+
+    card = re.search(
+        r"<header><strong>severity overrides</strong></header>(.*?)</article>",
+        html,
+        flags=re.S,
+    )
+    assert card, "the severity overrides card is gone"
+    body = card.group(1)
+    assert cfg.severity_overrides_path in body, (
+        "the card shows a path that is not the one the app loads"
+    )
+    assert "severity_overrides_path" in body, "the card does not say which path this is"
+
+
+def test_an_unparseable_overrides_file_is_not_reported_as_exists(tmp_path):
+    """⛔ "exists" is not "in force". An unparseable file leaves the runtime
+    layer disabled — the poller applies nothing — and the card's green badge was
+    all the operator had to go on.
+
+    ⚠️ Measured, so the branch is not guesswork: the loader returns None for an
+    absent file AND for an unparseable one, and a real object for a valid file
+    even when it carries only import-time keys. Present + configured + not
+    loaded is exactly "unparseable".
+    """
+    cfg, db, app, wid = _build(tmp_path, "device_category_severity: [[[\n")
+    try:
+        with TestClient(app) as client:
+            card = re.search(
+                r"<header><strong>severity overrides</strong></header>(.*?)</article>",
+                client.get("/settings").text,
+                flags=re.S,
+            ).group(1)
+    finally:
+        db.close()
+
+    assert "unreadable" in card
+    assert "badge-status-ok" not in card, (
+        "an unparseable overrides file is badged as healthy"
+    )
+
+
+def test_a_valid_import_time_only_overrides_file_is_still_reported_as_exists(tmp_path):
+    """The control for the branch above. A file holding only import-time keys
+    parses fine and disables nothing; badging it "unreadable" would send the
+    operator to fix a file that is correct.
+    """
+    cfg, db, app, wid = _build(
+        tmp_path, "vendor_overrides:\n  acme: drop\nconfidence_downgrade_threshold: 70\n"
+    )
+    try:
+        with TestClient(app) as client:
+            card = re.search(
+                r"<header><strong>severity overrides</strong></header>(.*?)</article>",
+                client.get("/settings").text,
+                flags=re.S,
+            ).group(1)
+    finally:
+        db.close()
+
+    assert "badge-status-ok" in card
+    assert "unreadable" not in card

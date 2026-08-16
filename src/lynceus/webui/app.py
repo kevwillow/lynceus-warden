@@ -62,6 +62,7 @@ from lynceus.webui.liveness import (
     oui_prefix_never_matches,
     override_suppression_axes,
     runtime_suppressions,
+    serving_rule_types,
     severity_remap,
     suppression_axes_of,
     watchlist_liveness,
@@ -954,7 +955,23 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             db_size_human = None
             db_mtime = None
 
-    overrides_path = paths.default_overrides_path("user")
+    # ⛔ The CONFIGURED path, falling back to the default only when nothing is
+    # configured. This read `paths.default_overrides_path("user")`
+    # unconditionally, so an operator who set `severity_overrides_path`
+    # elsewhere was shown the existence of a file nothing reads — measured:
+    # config pointing at a loaded temp file, card printing the user default and
+    # "missing". The next step it invites is to create a file at that path,
+    # where nothing will ever look at it.
+    #
+    # ⚠️ `configured` travels to the template so the page can say WHICH of the
+    # two it is showing. A path with no provenance is how this defect stayed
+    # invisible.
+    configured_overrides = getattr(config, "severity_overrides_path", None)
+    overrides_path = (
+        Path(configured_overrides)
+        if configured_overrides
+        else paths.default_overrides_path("user")
+    )
     config_path_default = paths.default_config_path("user")
     log_dir_default = paths.default_log_dir("user")
 
@@ -1074,6 +1091,12 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
         "severity_overrides": {
             "path": str(overrides_path),
             "exists": overrides_path.exists(),
+            "configured": bool(configured_overrides),
+            # ⚠️ Existing is not the same as being READ. An unparseable file
+            # leaves the runtime layer disabled — `load_runtime_severity_overrides`
+            # logs and returns None, and the poller then applies nothing — while
+            # the card said "exists" and stopped there.
+            "loaded": settings_overrides is not None,
         },
         "system": {
             "lynceus_version": lynceus_version,
@@ -1123,16 +1146,39 @@ def _match_mac_in_entries(
     way would be worse than not matching at all. Expired entries are
     skipped, mirroring poll-time semantics.
     """
+    matches = _match_all_mac_in_entries(entries, mac, now_ts)
+    return matches[0] if matches else None
+
+
+def _match_all_mac_in_entries(
+    entries: list[AllowlistEntry],
+    mac: str,
+    now_ts: int,
+) -> list[AllowlistEntry]:
+    """EVERY active entry covering this MAC, not the first.
+
+    ⛔ A MAC can be covered by an exact `mac` entry AND an `oui` entry AND a
+    `mac_range` entry at once. Naming one and telling the operator to remove it
+    offers a next step that does not restore alerting — the identical defect
+    ``override_suppression_axes`` was changed to fix in #116, found here by a
+    cold read of the composed subsystem.
+
+    ⚠️ ``_match_mac_in_entries`` keeps returning the first, because its callers
+    (the alert-detail "actioned" badge) ask a yes/no question and the first
+    match answers it. Only the surfaces that offer a REMEDIATION need all of
+    them.
+    """
+    out: list[AllowlistEntry] = []
     for entry in entries:
         if entry.expires_at is not None and entry.expires_at <= now_ts:
             continue
         if entry.pattern_type == "mac" and entry.pattern == mac:
-            return entry
-        if entry.pattern_type == "oui" and mac.startswith(entry.pattern + ":"):
-            return entry
-        if entry.pattern_type == "mac_range" and mac_in_mac_range(mac, entry.pattern):
-            return entry
-    return None
+            out.append(entry)
+        elif entry.pattern_type == "oui" and mac.startswith(entry.pattern + ":"):
+            out.append(entry)
+        elif entry.pattern_type == "mac_range" and mac_in_mac_range(mac, entry.pattern):
+            out.append(entry)
+    return out
 
 
 def _merged_allowlist_entries(config: Config) -> list:
@@ -4534,12 +4580,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
             # ⭐ The fifth silencing mechanism, for the rows where it has one
             # answer. Values: yes / no / n/a.
             #
-            # ⛔ `n/a` is not a hedge and not "no". A row that can match many
-            # devices (oui, mac_range, ssid, ...) has some matching devices
-            # allowlisted and some not, so `no` would be false for part of the
-            # set it describes. `mac` rows name exactly one device and get a
-            # real answer; everything else says the question does not resolve
-            # per row. Same reasoning as `can_fire`'s `unknown`.
+            # ⛔ `n/a` is "not evaluated for this row shape", and it is neither
+            # a hedge nor a `no`. A row that can match many devices (oui,
+            # mac_range, ssid, ...) may have none, some or all of them
+            # allowlisted, and nothing here checks which -- so any yes/no would
+            # be a claim about a set nobody enumerated.
+            #
+            # 🪤 An earlier version of this comment asserted such a row HAS
+            # "some allowlisted and some not". That is a mixture the code never
+            # established either; a cold read caught it. The honest statement is
+            # about what was not evaluated, not about what the set contains.
             "allowlist_suppressed",
         ]
 
@@ -4754,6 +4804,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "entry_is_snoozed": is_pattern_type_snoozed(
                     entry["pattern_type"], liveness
                 ),
+                # The rule_type an operator actually has a button for on
+                # /rules -- not the pattern_type, which is a different name.
+                "entry_rule_types": serving_rule_types(entry["pattern_type"]),
                 # ⭐ Finding 42, with the axis and the key named: this page is
                 # where an operator lands asking why an alert did not look the
                 # way they expected, so it carries the cause rather than the
@@ -4771,20 +4824,49 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     row.get("device_category"),
                     suppressions,
                 ),
+                # ⚠️ Whether ANY cause on this page stops the row alerting at
+                # all. The remap block used to say "an alert will actually
+                # carry X" beside "this entry cannot currently fire" — two
+                # sentences about one row, one of which had to be false. The
+                # remap is still worth showing (it decides the severity the
+                # moment the other blocker is lifted); it just cannot be
+                # phrased as something that happens today.
+                "entry_can_alert": (
+                    is_pattern_type_live(entry["pattern_type"], liveness)
+                    and not is_pattern_type_snoozed(entry["pattern_type"], liveness)
+                    and not override_suppression_axes(
+                        row.get("vendor"), row.get("device_category"), suppressions
+                    )
+                    and not oui_prefix_never_matches(
+                        row.get("pattern_type"), row.get("pattern")
+                    )
+                    and not (
+                        _match_all_mac_in_entries(
+                            _merged_allowlist_entries(app.state.config),
+                            row["pattern"],
+                            int(time.time()),
+                        )
+                        if allowlist_answerable_for(row.get("pattern_type") or "")
+                        and row.get("pattern")
+                        else []
+                    )
+                ),
                 "oui_never_matches_reason": oui_prefix_never_matches(
                     row.get("pattern_type"), row.get("pattern")
                 ),
-                # ⭐ The entry itself, not a bool: the operator needs to know
-                # WHICH allowlist line to remove, and whether it expires.
-                "allowlist_entry": (
-                    _match_mac_in_entries(
+                # ⭐ EVERY covering entry, not the first. A MAC can be covered
+                # by an exact entry and an `oui` entry at once, and removing the
+                # one named would leave the other suppressing it -- the same
+                # defect #116 fixed for the override axes, in a new place.
+                "allowlist_entries": (
+                    _match_all_mac_in_entries(
                         _merged_allowlist_entries(app.state.config),
                         row["pattern"],
                         int(time.time()),
                     )
                     if allowlist_answerable_for(row.get("pattern_type") or "")
                     and row.get("pattern")
-                    else None
+                    else []
                 ),
             },
         )
