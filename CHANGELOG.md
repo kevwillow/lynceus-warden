@@ -235,6 +235,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`lynceus-validate` could report your allowlist file as broken when the
+  problem was in the file next to it.** Lynceus keeps two allowlist files: the
+  one you write and curate, and a sibling it manages itself for entries added
+  from the web UI. The validator checked your file by loading *both* and then
+  described the result as though it were yours alone.
+
+  So a single damaged entry in the sibling made your own file come back invalid,
+  with the message "would empty the allowlist at startup" — which was not going
+  to happen; suppression from both files kept working throughout. The advice
+  pointed at the wrong file, and the real problem was reported further down the
+  page as a separate line. The same merge also made the count wrong: two entries
+  of yours beside three of the UI's were reported as "5 entries valid" on your
+  file's line and "3 entries valid" on the sibling's, so five entries read as
+  eight.
+
+  Each file is now validated and counted on its own. A genuine problem in your
+  file still says "would empty the allowlist at startup", because for that file
+  it is true — the daemon does start with suppression disabled and logs it.
+
 - **A watchlist entry Lynceus could never act on is now refused when you add it,
   instead of being accepted and quietly ignored.** Some vendor prefixes cannot
   belong to a real device — placeholder and broadcast addresses, and the range
