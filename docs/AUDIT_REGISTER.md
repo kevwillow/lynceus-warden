@@ -2225,6 +2225,66 @@ nothing else was covering it.
 three ways.** Planting proves a guard catches the failure you modelled. It cannot tell you the
 predicate is unsound, because the plants are written by the same person who wrote the predicate.
 
+#### ⛔ ROUND 2 — the correction was read cold too, and the composed subsystem gave up a pre-existing race
+
+Two `gpt-5.6-sol` packets: one on the correction's diff, one on the **composed** clock-repair
+subsystem (all four repairs, the purge, the archive, the web gate, in execution order). Everything
+below reproduced before being believed.
+
+🔴 **A pre-existing TOCTOU in `repair_future_dated_rule_type_snoozes` — not introduced by any of this
+work, and the composed read is the only thing that could have seen it.** The repair `SELECT`s outside
+its transaction and then `UPDATE`d keyed **only on `rule_type`**. `add_rule_type_snooze` is
+`INSERT OR REPLACE` **in a separate process**, so an operator replacing the row between the read and
+the write got the OLD row's duration stamped onto their NEW snooze: **a fresh 1h snooze silently
+became 24h.** ⇒ 23 extra hours of suppression nobody asked for, and **suppression is the direction
+that hides a follower.** Fixed with a compare-and-swap on the values actually read; a row that changed
+underneath is left alone and **not reported as repaired**, because that return value drives an
+operator-facing WARNING.
+
+⚠️ **The forward repairs RESTART the window rather than preserving the operator's deadline, and the
+log line claimed otherwise.** A 24h snooze written on a +91d clock and corrected 12 real hours later
+is re-based to `now + 24h` — **36 hours of total silence**. Nothing stored can fix it: both timestamps
+came from the wrong clock, so elapsed real time is unrecoverable. The message said it *"runs for the
+Nds the operator asked for"*; it now says **"for Nds FROM NOW"** and warns that the total may exceed
+what was asked. **A limit, stated, not a patch.**
+
+⛔ **My "reported once, not every cycle" claim was too strong.** The bound comes from the purge
+deleting the row immediately after — but report and purge are two statements, not one transaction. If
+the DELETE fails (locked, read-only, I/O error) or the process stops between them, the row is reported
+again next tick. **Bounded in practice, not by construction**, and the docstring now says so.
+
+🪤 **One unrenderable timestamp used to silence the whole batch.** `datetime.fromtimestamp` on an
+out-of-range epoch raised out of the loop, so every REMAINING impossible snooze was purged with no
+warning at all. Now formatted per row inside its own `try`.
+
+🪤 **And the sharpest one, because it is about testing: a plant showed my own new test was theatre.**
+`test_the_forward_repair_does_not_clobber_a_snooze_written_under_it` performed the competing write
+**before** calling the repair — so the repair's own `SELECT` returned nothing, there was no race to
+lose, and it passed with the compare-and-swap removed. Rewritten to interleave the write between the
+`SELECT` and the `UPDATE` through a wrapping connection. ⇒ **A concurrency test that does not
+interleave is not a concurrency test**, and only the plant could tell me.
+
+⭐ **`find_impossible_rule_type_snoozes` now returns a NamedTuple (`ImpossibleSnooze`).** Swapping the
+unpacking order at the call site — `for rule_type, duration, added_at in …` — showed the operator a
+1970 timestamp while every value-checking test passed. Naming the fields makes the mistake
+unrepresentable rather than merely detectable.
+
+⬜ **REFUTED by measurement, recorded so it is not re-raised:** "the stored duration is not the
+operator's duration, because the UI evaluates `time.time()` separately for each column". The handler
+captures `now_ts = int(time.time())` **once** and derives both (`app.py`, the `/rules/{rule_type}/snooze`
+POST). The delta is exactly the requested duration.
+
+**4/4 plants killed by the expected test** (`internal/session1-harnesses/plant_f41_round2.py`).
+
+📋 **Unverified leads from an M3 class sweep — NOT findings, and listed as leads on purpose.** The
+sweep looked for *"a check whose reference value comes from the same untrusted source it is judging"*
+and returned 17 candidates, most of which restate "a wrong clock makes clock-based logic wrong" — the
+Finding 41 class, not new defects. **Two intersect areas Round 12 recorded as UNSWEPT and are worth
+someone's time:** the retention prunes (`prune_old_evidence` / `prune_old_sightings`, where a
+corrected-ahead clock may silently double the retention window) and `_check_poller`'s staleness test
+(which decides whether the home page says the daemon is alive). ⛔ **Neither has been measured by
+anyone.** Raw report at `internal/session1-harnesses/REPORT_M3D.md`.
+
 ## Rig round 1 — a cold cross-model read of the day's own work, 2026-08-16
 
 Findings 33–40 and their guards were handed to codex (`gpt-5.6-sol` for the two behavioural
@@ -2897,7 +2957,24 @@ only on an **escalated** entry, so the operator must already have had a recurren
 makes it rarer — and worse when it happens, because an escalated entry is by definition the one the
 product most wants kept.
 
-🟡 **REGISTERED, NOT PATCHED — the write is in `webui/app.py`, another session's write set**, and the
+✅ **MITIGATED in `db.py` — the measured harm is closed; the route gate is still open and still
+session 2's.** `reset_watchful_recurrence` now writes `last_seen_at = MAX(last_seen_at, ?)`, so a
+reset can never move an entry **backwards** into the archive window. It is a no-op on a sane clock
+(`now_ts` is already the larger value), which is why the existing walk-back test was unaffected.
+Re-measured with the original probe: all three behind-clock cases now `archived=0, tracked=True`
+against a control that still survives.
+
+⚠️ **The clamp bounds the damage; it does not restore intent.** On a behind clock the entry keeps
+whatever staleness it already had, so an entry ALREADY past the archive window still archives.
+Nothing local can do better — if the clock is wrong there is no trustworthy "now" to move it to, and
+inventing one is the same defect pointing the other way. **Refusing the write outright belongs at the
+route, beside the other five**, which is the half below.
+
+⭐ **Both halves are wanted, not either/or:** the clamp is defence in depth in the layer every caller
+passes through, and the gate is the loud refusal that tells the operator their clock is wrong instead
+of silently doing less than they asked.
+
+🟡 **The ROUTE half is still open — the write is in `webui/app.py`, another session's write set**, and the
 fix is a choice between two places: add the existing `refuse_if_clock_behind` gate to the reset route
 (consistent with the other five, refuses loudly), or clamp inside `reset_watchful_recurrence`
 (`db.py`) so no caller can archive-by-reset. ⛔ **Do not "fix" it by widening the archive window** —
@@ -3103,11 +3180,17 @@ below describes, running in the other direction:**
   silent, and this is the RTC-less-Pi residual the entry always named. ⭐ Also recorded there: the
   clock-trust hold is **not** a mitigation for this defect, so the earlier framing of the purge as
   the harm was wrong.
-- 🔴 **Finding 51 — registered, NOT patched, and it is the only FAIL-CLOSED member of Finding 41's
-  family.** A reset performed on a behind clock archives the watchful entry the operator just said
-  they were still watching. `watchful_reset_post` is the one duration-adjacent web write with no
-  `refuse_if_clock_behind` gate. ⛔ Fix belongs in `webui/app.py` (the gate) or
-  `reset_watchful_recurrence` (a clamp) — **not** in the archive window.
+- 🟡 **Finding 51 — the `db.py` half is FIXED; the ROUTE half is open and is session 2's.**
+  `reset_watchful_recurrence` now clamps `last_seen_at` so a reset cannot move an entry backwards
+  into the archive window (measured: all behind-clock cases now survive). Still open:
+  `watchful_reset_post` is the one duration-adjacent web write with **no `refuse_if_clock_behind`
+  gate**, so the operator is never told their clock is wrong — they simply get less than they asked
+  for. ⛔ Not to be "fixed" by widening the archive window.
+- 📋 **UNVERIFIED LEADS, nobody has measured these** (from an M3 same-source-reference sweep; the
+  rest of its 17 candidates restate the Finding 41 class): the **retention prunes**
+  (`prune_old_evidence` / `prune_old_sightings`) may silently double the retention window after a
+  clock correction, and **`_check_poller`'s staleness test** decides whether the home page claims the
+  daemon is alive. Both sit in Round 12's UNSWEPT list. Cite as leads, never as findings.
 - 🟡 **Finding 50 — registered, NOT patched.** An operator reset cancels the retry of an undelivered
   escalation and leaves a permanent, unclearable line in the heartbeat's *"written but never
   delivered"* count. ⛔ The obvious fix — windowing the counter — is the **unsafe** direction: it
