@@ -142,30 +142,59 @@ def clock_behind_recorded_history(db: Database, now_ts: int) -> dict:
     }
 
 
-def refuse_if_clock_behind(db: Database, now_ts: int) -> str | None:
+def refuse_if_clock_behind(
+    db: Database, now_ts: int, duration_seconds: int | None = None
+) -> str | None:
     """Message explaining why a duration-bearing write must not proceed, or
     ``None`` when it may.
 
-    Callers raise ``HTTPException(400, detail=...)`` with the returned string —
-    the message names the delta, the evidence and the fix, because "clock
-    error" on its own tells an operator nothing they can act on.
+    ⭐ ``duration_seconds`` makes the refusal PRECISE, and its absence was an
+    overclaim. The deadline is ``now + duration`` on the *writing* clock, so it
+    is in the future for that clock and the suppression does work — until the
+    clock is corrected. What happens then depends on a comparison this function
+    could not previously make:
+
+        duration >  behind_by   the suppression SURVIVES correction, shortened
+                                by roughly `behind_by`. Allowed.
+        duration <= behind_by   the deadline lands on the far side of the gap:
+                                it expires the moment the clock is fixed and is
+                                then purged. Refused.
+
+    Without the duration this refused both cases and told the operator the
+    suppression "would never take effect" — false for the first, and the kind
+    of error message that sends someone to fix the wrong thing. Omitting the
+    argument keeps the old conservative behaviour (refuse whenever the clock
+    disagrees), which is why it defaults to None rather than being required.
+
+    Callers raise ``HTTPException(400, detail=...)``; the message names the
+    delta, the evidence and the fix.
     """
     state = clock_behind_recorded_history(db, now_ts)
     if not state["behind"]:
         return None
-    hours = state["behind_by"] / 3600.0
-    # ⚠️ Phrased as a DISAGREEMENT, not as "your clock is wrong". The check
-    # cannot tell whether this clock is behind or that record was stamped ahead
-    # -- see clock_behind_recorded_history -- and an error message that asserts
-    # more than the code knows sends an operator to fix the wrong thing.
+    behind_by = state["behind_by"]
+    if duration_seconds is not None and duration_seconds > behind_by:
+        # Survives the correction with time to spare -- refusing would block a
+        # write that works.
+        return None
+    hours = behind_by / 3600.0
+    # ⚠️ Phrased as a DISAGREEMENT, not "your clock is wrong": the check cannot
+    # tell whether this clock is behind or that record was stamped ahead, and an
+    # error asserting more than the code knows sends an operator to fix the
+    # wrong thing.
+    scope = (
+        f"a {duration_seconds // 3600}-hour suppression set now"
+        if duration_seconds
+        else "a suppression set now"
+    )
     return (
         f"This machine's clock reads {hours:.1f} hours EARLIER than "
-        f"{state['source']}, so the two disagree about what time it is. A "
-        f"duration set now would be stored with a deadline on the wrong side "
-        f"of that gap: the suppression would never take effect and would then "
-        f"be deleted as expired. Refusing rather than accepting a setting that "
-        f"may not work. Check the clock (NTP / `timedatectl`); if it is "
-        f"correct, the stale record clears as it ages out of retention. "
-        f"Permanent allowlist entries are unaffected and still work — they "
-        f"carry no deadline."
+        f"{state['source']}, so the two disagree about what time it is. "
+        f"{scope} would be stored with a deadline on the near side of that "
+        f"gap: it would expire the moment the clock is corrected, and then be "
+        f"deleted as expired. Refusing rather than accepting a setting that "
+        f"will not survive. Check the clock (NTP / `timedatectl`); if it is "
+        f"correct, the stale record clears as it ages out of retention. A "
+        f"longer duration than the gap would survive, and permanent allowlist "
+        f"entries are unaffected — they carry no deadline."
     )

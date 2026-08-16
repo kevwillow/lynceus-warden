@@ -420,12 +420,16 @@ def test_the_refusal_names_the_delta_the_evidence_and_the_fix(tmp_path):
     page = _prose(response.text)
 
     assert "hours EARLIER than" in page, "the operator is not told how far off it is"
+    assert "expire the moment the clock is corrected" in page, (
+        "the message claims more than the check knows -- the suppression does "
+        "work until the clock is fixed"
+    )
     assert "the two disagree about what time it is" in page, (
         "the message asserts the clock is wrong; the check cannot know that, "
         "and overclaiming sends the operator to fix the wrong thing"
     )
     assert "timedatectl" in page, "the operator is not told how to fix it"
-    assert "Permanent allowlist entries are unaffected" in page, (
+    assert "permanent allowlist entries are unaffected" in page.lower(), (
         "without this an operator reads the refusal as 'suppression is broken' "
         "and stops trying to suppress anything"
     )
@@ -475,3 +479,29 @@ def test_healthz_reports_the_clock(tmp_path, offset, expected):
         assert check["newest_recorded_at"], "the operator needs the timestamp to compare"
     else:
         assert check["behind_by_seconds"] == 0
+
+
+def test_a_duration_LONGER_than_the_gap_is_allowed(tmp_path):
+    """⭐ The refusal used to be duration-blind, and said such a write "would
+    never take effect". False: the deadline is ``now + duration`` on the writing
+    clock, so it works until the clock is corrected — and if the duration
+    exceeds the gap it SURVIVES that correction with time to spare.
+
+    Refusing it blocked a write that works. Found by a cold read of the composed
+    subsystem; no planted defect could have, because I had not modelled the
+    case."""
+    cfg, db, _live_app = _app(tmp_path, alert_offset=2 * 3600)  # clock 2h behind
+    try:
+        now = int(time.time())
+        assert refuse_if_clock_behind(db, now, 1 * 3600) is not None, (
+            "a 1h suppression cannot survive a 2h gap and must still be refused"
+        )
+        assert refuse_if_clock_behind(db, now, 24 * 3600) is None, (
+            "a 24h suppression outlives a 2h gap; refusing it blocks a write "
+            "that works"
+        )
+        # ⚠️ The duration-blind call keeps the old conservative behaviour, so an
+        # un-updated caller cannot silently start allowing dead writes.
+        assert refuse_if_clock_behind(db, now) is not None
+    finally:
+        db.close()

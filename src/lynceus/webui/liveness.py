@@ -1,5 +1,33 @@
 """Which watchlist pattern_types can actually fire, given the loaded ruleset.
 
+⛔ **KNOWN LIMITS — read these before treating anything here as "will alert".**
+There are FIVE mechanisms that stop a stored entry producing an alert. This
+module reports three of them, and the other two are stated rather than
+half-answered:
+
+===========================  ==========  ==================================
+mechanism                    reported?   why / why not
+===========================  ==========  ==================================
+no delegating rule (inert)   yes         per pattern_type, from the ruleset
+rule_type snoozed            yes         per pattern_type, from the DB
+severity override            yes         per ROW, from watchlist_metadata
+allowlist match              **no**      suppresses by DEVICE, not by row --
+                                         one watchlist row can match many
+                                         devices, so there is no honest
+                                         per-row answer to render
+clock-disagreement at write  **no**      `webui/clock.py` is a WRITE-TIME
+                                         guard, not a row state: nothing
+                                         records that an existing
+                                         suppression was written under a
+                                         bad clock, so it cannot be
+                                         attributed to a row afterwards
+===========================  ==========  ==================================
+
+⇒ Inert / snoozed / override are **independent flags and can co-occur**; each
+carries its own remediation and reporting only one offers a next step that does
+not restore alerting. The two unreported ones mean **no count here is a promise
+that a row will alert** — see ``watchlist_liveness``.
+
 An operator adds a watchlist entry, the UI accepts it, ``/settings`` counts it
 and ``/healthz.json`` reports it — and for seven of the ten storable
 pattern_types nothing will ever fire (Finding 32, ``docs/AUDIT_REGISTER.md``).
@@ -140,11 +168,16 @@ def snoozed_pattern_types(db: Database, now_ts: int) -> dict[str, int]:
     out: dict[str, int] = {}
     for rule_type, expires_at in by_rule_type.items():
         for pattern_type in RULE_TYPE_DELEGATES_TO.get(rule_type, ()):
-            # A pattern_type served by two rule_types is silenced only while
-            # EVERY one of them is snoozed -- but no such type exists today
-            # (the map is many-to-one in that direction), so the later value
-            # simply wins. Kept as max() so adding one cannot silently pick
-            # the earlier expiry and under-report the silence.
+            # ⚠️ This marks the type suppressed when ANY serving rule_type is
+            # snoozed, and takes the latest expiry.
+            #
+            # 🪤 The comment here used to claim the opposite -- "silenced only
+            # while EVERY one is snoozed" -- which `max()` does not establish
+            # and the code never did. Dormant today (no pattern_type has two
+            # delegators), so nothing exercised the difference; it would have
+            # OVER-reported suppression the moment the map gained that shape.
+            # A cold read caught it. If such a type is ever added, decide the
+            # semantics deliberately and test it, rather than inheriting this.
             out[pattern_type] = max(out.get(pattern_type, 0), expires_at)
     return out
 
@@ -177,11 +210,24 @@ def watchlist_liveness(
     silence this module exists to fix — an operator would go and delete rows
     that were fine. Unknown must read as unknown.
 
-    ⭐ The stored types PARTITION into three sets, and the partition is the
-    point: ``live_types`` (a rule consults them and the alert is emitted),
-    ``suppressed_types`` (a rule consults them; a snooze the operator set is
-    dropping the alert), ``inert_types`` (no enabled rule consults them at
-    all). Collapsing any two of those gives the operator the wrong next step.
+    ⛔ **These are INDEPENDENT FLAGS, not a partition — an earlier version of
+    this docstring said "partition" and the code enforced it, which was the
+    defect.** A type can be inert AND snoozed; both are reported, because
+    fixing either one alone does not restore alerting.
+
+    ⚠️ **``live_count`` is not "rows that will alert."** It counts rows whose
+    TYPE is delegated and unsnoozed. Two further mechanisms silence individual
+    rows and neither is visible here:
+
+      * a ``suppress_vendors`` / ``suppress_categories`` severity override —
+        per row, reported by ``override_suppression_axes`` and marked on
+        ``/watchlist``, but NOT subtracted from this count (doing so needs a
+        full-table scan; see ``runtime_suppressions``);
+      * an **allowlist** match — which suppresses by DEVICE, not by watchlist
+        row, so it has no clean per-row rendering at all. Stated as a known
+        limit rather than half-answered.
+
+    ⇒ Read ``live_count`` as *delegated and unsnoozed*, never as a promise.
     """
     total = sum(int(v) for v in pattern_type_counts.values())
     # ⛔ `None`, not `total`. This said `live_count: total` and it was a
@@ -230,16 +276,27 @@ def watchlist_liveness(
 
     snoozed_until: dict[str, int] = {}
     if db is not None and now_ts is not None:
-        # ⚠️ Intersected with `live_types`, not applied to `stored`. A snooze on
-        # a rule_type whose rule is commented out changes nothing -- reporting
-        # it would offer "unsnooze" as a fix for a type that would still not
-        # fire afterwards. Inert is the more fundamental cause and wins.
+        # ⛔ Applied to everything STORED, not intersected with `live_types`.
+        #
+        # 🪤 It was intersected, on the reasoning that "unsnoozing an inert type
+        # changes nothing, so inert wins". That reasoning has an exact inverse
+        # which is just as true: **fixing the delegation changes nothing either,
+        # because the snooze is still there.** Collapsing to one cause offers a
+        # remediation that does not restore alerting, whichever one you pick.
+        #
+        # ⇒ They are INDEPENDENT FLAGS, not states in a partition. A type can be
+        # both, and both have to be said, because the operator has to do both.
+        # I had a planted defect asserting the old behaviour was correct -- a
+        # plant certifies the model the test encodes, so it happily pinned this.
         snoozed_until = {
             pt: exp
             for pt, exp in snoozed_pattern_types(db, now_ts).items()
-            if pt in stored and pt in live_types
+            if pt in stored
         }
     suppressed = set(snoozed_until)
+    # "Firing" means nothing known to THIS function silences it: the type is
+    # delegated AND not snoozed. ⚠️ It still cannot account for the per-row
+    # causes (a severity override, an allowlist match) -- see the docstring.
     firing = (stored & live_types) - suppressed
 
     return {
@@ -307,10 +364,18 @@ def runtime_suppressions(config: Config) -> dict:
     }
 
 
-def override_suppression_reason(
+def override_suppression_axes(
     vendor: str | None, device_category: str | None, suppressions: dict
-) -> str | None:
-    """Which axis silences this entry — ``"vendor"``, ``"category"`` or None.
+) -> tuple[str, ...]:
+    """EVERY axis that silences this entry — ``("vendor",)``, ``("category",)``,
+    both, or empty.
+
+    ⛔ A TUPLE, not a single reason. The first version returned on the first
+    match, so a row listed under BOTH ``suppress_vendors`` and
+    ``suppress_categories`` was described as vendor-suppressed only — and
+    removing the vendor entry, the next step the page offered, would not have
+    restored alerting. Independent causes need independent flags; picking one
+    to report is the same defect as collapsing them.
 
     ⚠️ Returns the REASON, not a bool, because the UI has to name the axis that
     actually matched. Printing every populated metadata field as though it
@@ -334,19 +399,20 @@ def override_suppression_reason(
     whole job.
     """
     if not suppressions.get("configured"):
-        return None
+        return ()
+    axes: list[str] = []
     if vendor is not None and vendor.strip().lower() in suppressions["vendors"]:
-        return "vendor"
+        axes.append("vendor")
     if device_category is not None and device_category in suppressions["categories"]:
-        return "category"
-    return None
+        axes.append("category")
+    return tuple(axes)
 
 
 def is_row_suppressed_by_overrides(
     vendor: str | None, device_category: str | None, suppressions: dict
 ) -> bool:
     """Whether this entry's alerts are dropped by a severity override."""
-    return override_suppression_reason(vendor, device_category, suppressions) is not None
+    return bool(override_suppression_axes(vendor, device_category, suppressions))
 
 
 def is_pattern_type_live(pattern_type: str, liveness: dict) -> bool:

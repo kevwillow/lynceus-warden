@@ -43,6 +43,7 @@ from lynceus.rules import evaluate, load_ruleset, load_runtime_severity_override
 from lynceus.webui.app import create_app
 from lynceus.webui.liveness import (
     is_row_suppressed_by_overrides,
+    override_suppression_axes,
     runtime_suppressions,
 )
 
@@ -277,21 +278,19 @@ def test_the_engine_null_semantics_are_matched_exactly(tmp_path):
 def test_the_reason_names_the_axis_that_actually_matched(tmp_path):
     """Only one axis may match. Reporting the other sends the operator to
     remove a suppression that had nothing to do with it."""
-    from lynceus.webui.liveness import override_suppression_reason
-
     cfg, db, _app, _s, _o = _build(tmp_path, "suppress_vendors:\n  - acmecorp\n")
     try:
         sup = runtime_suppressions(cfg)
-        assert override_suppression_reason(VENDOR, CATEGORY, sup) == "vendor"
-        assert override_suppression_reason(None, CATEGORY, sup) is None
+        assert override_suppression_axes(VENDOR, CATEGORY, sup) == ("vendor",)
+        assert override_suppression_axes(None, CATEGORY, sup) == ()
     finally:
         db.close()
 
     cfg, db, _app, _s, _o = _build(tmp_path, "suppress_categories:\n  - tracker\n")
     try:
         sup = runtime_suppressions(cfg)
-        assert override_suppression_reason(VENDOR, CATEGORY, sup) == "category"
-        assert override_suppression_reason(VENDOR, None, sup) is None
+        assert override_suppression_axes(VENDOR, CATEGORY, sup) == ("category",)
+        assert override_suppression_axes(VENDOR, None, sup) == ()
     finally:
         db.close()
 
@@ -511,3 +510,29 @@ def test_a_configured_suppression_that_matches_nothing_marks_no_rows(tmp_path):
         "suppression that is not the reason"
     )
     assert ">override<" not in _row_html(list_page, ok_id)
+
+
+def test_a_row_matching_BOTH_axes_reports_both(tmp_path):
+    """⭐ The case that made a single "reason" wrong. A row listed under both
+    `suppress_vendors` and `suppress_categories` was described as
+    vendor-suppressed only — and removing the vendor entry, the next step the
+    page offered, would not have restored alerting."""
+    cfg, db, app, sup_id, _ok = _build(
+        tmp_path,
+        "suppress_vendors:\n  - acmecorp\nsuppress_categories:\n  - tracker\n",
+    )
+    try:
+        sup = runtime_suppressions(cfg)
+        axes = override_suppression_axes(VENDOR, CATEGORY, sup)
+        with TestClient(app) as client:
+            detail = _prose(client.get(f"/watchlist/{sup_id}").text)
+    finally:
+        db.close()
+
+    assert axes == ("vendor", "category"), f"only one axis reported: {axes}"
+    assert "suppress_vendors" in detail and "suppress_categories" in detail, (
+        "the page names only one of the two suppressions that apply"
+    )
+    assert "removing only one will not bring this" in detail, (
+        "the page offers a next step that would not restore alerting"
+    )
