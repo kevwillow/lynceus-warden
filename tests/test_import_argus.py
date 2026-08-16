@@ -3373,19 +3373,16 @@ def test_cross_repo_live_argus_csv_imports_without_errors(tmp_path, db):
         f"first 3: {report.error_log[:3]}"
     )
     assert report.imported_new > 0, "live Argus CSV imported zero rows"
-    total_classified = (
-        report.imported_new
-        + report.updated
-        + report.unchanged
-        + report.dropped_mac_range
-        + report.dropped_severity_drop
-        + report.dropped_geographic_filter
-        + report.dropped_unknown_type
-        + report.dropped_low_confidence
-        + report.dropped_peer_collision
-        + report.dropped_in_import_dup
-        + report.normalization_failed
-        + report.errors
+    # ⛔ This sum used to be transcribed, and it omitted `operator_preserved`
+    # and `dropped_placeholder_oui`. Measured on a synthetic CSV carrying one
+    # placeholder-OUI row, the transcribed version reports a mismatch of 1 --
+    # a FALSE failure. It never fired only because the bundled snapshot
+    # contains ZERO rows with `identifier=00:00:00` (#86 corrected the comment
+    # claiming "~40" to zero across all 41,508 rows), and because this test
+    # skips without a live CSV. Both of those are properties of the data and
+    # the environment, not of the assertion.
+    total_classified = sum(
+        getattr(report, name) for name in _outcome_counter_names()
     )
     # mac_range rows land in the watchlist as of the 011 migration.
     # Argus's 2026-05-14T22:34:07Z snapshot carried ~17,798 mac_range
@@ -4166,3 +4163,151 @@ def test_min_confidence_valid_value_is_not_rejected_by_the_type(capsys):
     err = capsys.readouterr().err.lower()
     assert "0-100" not in err, err
     assert "required" in err and ("input" in err or "from-github" in err), err
+
+
+# ---------------------------------------------------------------------------
+# Row accounting: can a CSV row vanish without landing in any counter?
+# ---------------------------------------------------------------------------
+#
+# `ImportReport.render()` prints every counter it knows about, so an operator
+# can tell "imported" from "skipped" per counter. What that does not answer is
+# whether some drop path has NO counter -- a row that is neither imported nor
+# reported, which reads as a clean import.
+#
+# The project's only reconciliation check lived inside
+# `test_cross_repo_live_argus_csv_imports_without_errors`, and it had two
+# properties that made it weaker than it looked:
+#
+#   1. its counter list was TRANSCRIBED, omitting `operator_preserved` and
+#      `dropped_placeholder_oui`. Measured on a synthetic CSV containing one
+#      placeholder-OUI row, it reports a mismatch of 1 -- a FALSE failure. It
+#      does not fire today only because the bundled snapshot contains ZERO
+#      rows with `identifier=00:00:00` (measured in #86, where the comment
+#      claiming "~40" was corrected to zero across all 41,508 rows).
+#   2. it `pytest.skip`s unless a live Argus CSV sits beside the repo, so it
+#      almost never runs in CI.
+#
+# The two guards below derive the counter set from the dataclass and run on a
+# synthetic CSV, so neither property applies to them.
+
+_NON_OUTCOME_REPORT_FIELDS = frozenset(
+    {
+        "total_rows",  # the total itself
+        "ssid_exact_wildcard_warn",  # a warning on a row that IS imported
+        "dropped_unknown_type_breakdown",  # breakdown of a counter already here
+        "error_log",
+        "dry_run",
+    }
+)
+
+
+def _outcome_counter_names() -> list[str]:
+    """Every per-row outcome counter, DERIVED from ImportReport's fields.
+
+    Deriving is the point: a counter added later joins both guards below with
+    nobody having to remember. Transcribing is what left the existing
+    reconciliation two counters short.
+    """
+    import dataclasses
+
+    from lynceus.cli.import_argus import ImportReport
+
+    return [
+        f.name
+        for f in dataclasses.fields(ImportReport)
+        if f.name not in _NON_OUTCOME_REPORT_FIELDS and f.type in ("int", int)
+    ]
+
+
+def _mixed_outcome_rows() -> list[dict[str, str]]:
+    """Rows aimed at as many distinct outcome paths as possible."""
+    return [
+        _row(argus_record_id="a-ok", identifier="ac:de:48:00:11:22"),
+        _row(argus_record_id="a-ok2", identifier="ac:de:48:00:11:23"),
+        _row(argus_record_id="a-ph", identifier="00:00:00", identifier_type="oui"),
+        _row(
+            argus_record_id="a-unk",
+            identifier="someone@example.com",
+            identifier_type="email",
+        ),
+        _row(argus_record_id="a-norm", identifier="!!!not-a-mac!!!"),
+        _row(argus_record_id="a-ok", identifier="ac:de:48:00:11:25"),  # dup id
+        _row(argus_record_id="a-peer1", identifier="ac:de:48:00:11:26"),
+        _row(argus_record_id="a-peer2", identifier="AC:DE:48:00:11:26"),  # peer
+        _row(
+            argus_record_id="a-ble",
+            identifier="0000fd6f-0000-1000-8000-00805f9b34fb",
+            identifier_type="ble_uuid",
+        ),
+        _row(argus_record_id="a-empty", identifier=""),  # error
+    ]
+
+
+def test_every_csv_row_lands_in_some_outcome_counter(tmp_path, db):
+    """No row may be dropped without a counter naming why.
+
+    A row that lands nowhere is invisible: the operator reads a clean summary
+    and a device they were told to watch is simply not in the watchlist. This
+    is the fail-open direction, and it is the one the run summary exists to
+    make impossible.
+    """
+    path = _write_csv(tmp_path / "mixed.csv", _mixed_outcome_rows())
+    report = import_csv(db, path, OverrideConfig(), dry_run=True)
+
+    names = _outcome_counter_names()
+    accounted = sum(getattr(report, n) for n in names)
+    unaccounted = report.total_rows - accounted
+
+    assert unaccounted == 0, (
+        f"{unaccounted} of {report.total_rows} rows landed in no counter at "
+        f"all. Per-counter tallies: "
+        f"{ {n: getattr(report, n) for n in names if getattr(report, n)} }"
+    )
+    # The control: if the CSV only ever exercised one path, the identity above
+    # would hold trivially and prove nothing about the drop branches.
+    exercised = [n for n in names if getattr(report, n)]
+    assert len(exercised) >= 5, (
+        f"only {len(exercised)} outcome paths exercised ({exercised}); the "
+        f"reconciliation above is close to vacuous"
+    )
+
+
+def test_the_run_summary_shows_every_outcome_counter():
+    """A counter the operator is never shown is a silent drop with extra steps.
+
+    Asserted by VALUE, not by name. `render()` writes "Imported (new)" for
+    `imported_new` and "Operator-seeded preserved (Argus declined)" for
+    `operator_preserved`, so matching field names against that prose would be
+    a guard against a spelling: it would fail the day someone improves the
+    wording, and pass the day someone deletes a line while the same words
+    survive elsewhere. Giving every counter a distinct value and requiring
+    each value to appear tests the thing itself -- that this number reached
+    the operator.
+
+    Iterating the derived field set rather than listing the lines is the
+    lesson from /settings rendering 8 of 10 pattern types: a docstring asked a
+    human to remember, and it had already not been remembered twice.
+    """
+    import re
+
+    from lynceus.cli.import_argus import ImportReport
+
+    names = _outcome_counter_names()
+    # Distinct and wide apart, so no counter's value can be satisfied by
+    # another's, nor by the totals render() computes from them.
+    values = {name: 1000 + 7 * i for i, name in enumerate(names)}
+
+    report = ImportReport(total_rows=sum(values.values()))
+    for name, value in values.items():
+        setattr(report, name, value)
+    rendered = report.render()
+
+    missing = [
+        name
+        for name, value in values.items()
+        if not re.search(rf"\b{value}\b", rendered)
+    ]
+    assert missing == [], (
+        f"outcome counters whose value never reaches the operator: {missing}. "
+        f"Rendered:\n{rendered}"
+    )
