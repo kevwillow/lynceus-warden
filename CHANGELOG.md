@@ -244,6 +244,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   yet succeeded. A confirmed-safe entry that was previously flagged now says it
   *was* flagged, rather than presenting both dispositions as current facts.
 
+  Three neighbouring claims are corrected with it. The `sightings` counter had
+  the same defect as the column beside it: a reset seeds the count at one
+  **without a sighting**, so a freshly reset row said `sightings: 1` while the
+  timestamp next to it said *not a sighting* — it now says which it is. If the
+  delivery lookup itself fails, the row reads **delivery unknown** rather than
+  looking like an ordinary delivered escalation, because a diagnostic that
+  cannot run must not be reported as a clean bill. And the never-sent copy now
+  states what is actually recorded — that no alert was ever written, so you were
+  not notified — before naming the snooze as the cause, rather than asserting a
+  snooze nobody observed. `notified_at` means the notifier reported success,
+  which is not the same as a human receiving anything, and the wording no longer
+  claims otherwise.
+
 - **`/healthz.json`'s watchlist numbers looked like they added up, and stopped
   doing so the first time you snoozed the wrong thing.** `live_rows`,
   `inert_rows` and `snoozed_rows` are independent flags, not a partition: a

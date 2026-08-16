@@ -21,9 +21,11 @@
         <span class="badge-watchful-tracking">tracking</span>
       {% endif %}
       {% if escalation_delivery == 'suppressed' %}
-        &middot; <span class="badge-watchful-nosend" title="The watchful_recurrence rule type was snoozed when this entry crossed the threshold, so the escalation alert was never written and you were never notified. The entry cannot escalate again unless you reset it.">never sent</span>
+        &middot; <span class="badge-watchful-nosend" title="No escalation alert was ever written for this entry, so you were not notified. That is what happens when the watchful_recurrence rule type is snoozed at the moment the threshold is crossed: the escalation is consumed deliberately. Removing the snooze does not re-send it — reset this entry if you want it to escalate again.">never sent</span>
       {% elif escalation_delivery == 'undelivered' %}
         &middot; <span class="badge-watchful-undelivered" title="The escalation alert was written but delivery has not succeeded. The poller retries when the device is seen again.">not delivered</span>
+      {% elif escalation_delivery == 'unknown' %}
+        &middot; <span class="badge-watchful-delivery-unknown" title="Whether this escalation was delivered could not be determined — the lookup failed. This is a reporting failure, not a statement about the alert.">delivery unknown</span>
       {% endif %}
       {% if entry.flagged_for_investigation %}
         {% if entry.confirmed_safe %}
@@ -40,6 +42,7 @@
     <p>
       <strong>MAC:</strong> <code>{{ entry.mac }}</code>
       &middot; <strong>sightings:</strong> {{ entry.sighting_count }}
+      {% if is_unsighted_reset_generation %}<small class="dim">(the reset's starting count, not a sighting)</small>{% endif %}
       {% if entry.reset_count > 0 %}
         &middot; <strong>resets:</strong> {{ entry.reset_count }}
       {% endif %}
@@ -53,7 +56,7 @@
       <time datetime="{{ entry.last_seen_at | unix_to_iso }}" title="{{ entry.last_seen_at | unix_to_utc_human }}">
         {{ entry.last_seen_at | relative_time(now_ts=now_ts) }}
       </time>
-      {% if last_activity_is_the_reset %}{{ reset_marker() }}{% endif %}
+      {% if is_unsighted_reset_generation %}{{ reset_marker() }}{% endif %}
       &middot; <strong>created:</strong>
       <time datetime="{{ entry.created_at | unix_to_iso }}" title="{{ entry.created_at | unix_to_utc_human }}">
         {{ entry.created_at | relative_time(now_ts=now_ts) }}
@@ -61,7 +64,7 @@
     </p>
     {{ last_activity_note() }}
     {% if escalation_delivery == 'suppressed' %}
-      <p>This escalation was never sent. The <code>watchful_recurrence</code> rule type was snoozed when the threshold was crossed, so no alert was written and you were not notified. Removing the snooze does not re-send it — reset this entry if you want it to escalate again.</p>
+      <p>This escalation was never sent: no alert was written for it, so you were not notified. That is what happens when the <code>watchful_recurrence</code> rule type is snoozed as the threshold is crossed — the escalation is consumed deliberately. Removing the snooze does not re-send it; reset this entry if you want it to escalate again.</p>
     {% endif %}
     <p>
       <strong>escalated:</strong>

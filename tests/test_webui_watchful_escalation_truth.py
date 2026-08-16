@@ -139,6 +139,36 @@ def test_an_entry_that_never_escalated_carries_no_delivery_badge(tmp_path):
         db.close()
 
 
+def test_a_failed_delivery_lookup_renders_as_unknown_not_as_delivered(tmp_path, monkeypatch):
+    app, db = _build(tmp_path)
+    try:
+        entry_id = _create_escalated_watchful_entry(db)
+
+        def failed_lookup(*_args, **_kwargs):
+            raise RuntimeError("lookup unavailable")
+
+        monkeypatch.setattr(
+            app.state.db, "get_recent_alert_for_rule_and_mac", failed_lookup,
+        )
+        with TestClient(app) as client:
+            for html in _pages(client, entry_id).values():
+                assert "badge-watchful-delivery-unknown" in html
+    finally:
+        db.close()
+
+
+def test_a_never_sent_entry_states_the_observation_before_the_cause(tmp_path):
+    app, db = _build(tmp_path)
+    try:
+        entry_id = _create_escalated_watchful_entry(db)
+        with TestClient(app) as client:
+            detail_prose = _prose(_pages(client, entry_id)["detail"])
+        assert "no alert was written" in detail_prose
+        assert "was snoozed when this entry crossed the threshold" not in detail_prose
+    finally:
+        db.close()
+
+
 def test_a_confirmed_safe_entry_does_not_also_claim_a_current_investigation(tmp_path):
     app, db = _build(tmp_path)
     try:

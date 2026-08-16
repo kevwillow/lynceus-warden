@@ -39,6 +39,7 @@ is stated in the page copy rather than silently folded in -- see
 
 from __future__ import annotations
 
+import html as html_lib
 import re
 from pathlib import Path
 
@@ -68,7 +69,7 @@ def _prose(html: str) -> str:
     rather than shaping every needle around the markup.
     """
     s = re.sub(r"<!--.*?-->", " ", html, flags=re.S)
-    return " ".join(re.sub(r"<[^>]+>", " ", s).split())
+    return html_lib.unescape(" ".join(re.sub(r"<[^>]+>", " ", s).split()))
 
 
 def _build(tmp_path):
@@ -177,19 +178,18 @@ def test_a_reset_row_does_not_present_its_timestamp_as_a_sighting(tmp_path):
     db.close()
 
 
-def test_the_marker_names_what_the_timestamp_actually_is(tmp_path):
-    """A marker that only says 'reset' repeats the state badge. It has to say
-    the thing the operator would otherwise get wrong: this is not a sighting."""
+def test_the_visible_marker_does_not_name_a_writer_the_clock_repair_can_falsify(tmp_path):
+    """The reset-shaped counts cannot prove which non-sighting writer won."""
     app, db = _build(tmp_path)
     eid = _insert(db, last_seen_at=2000, sighting_count=1, reset_count=1)
     with TestClient(app) as client:
         for name, html in _pages(client, eid).items():
-            # ⚠️ VISIBLE text, not the raw HTML. The marker's own `title=`
-            # explains the same thing at length, so a raw-HTML needle would go
-            # on passing after the visible label was reduced to "(reset)" --
-            # which a planted defect proved it did.
-            assert re.search(r"not a sighting", _prose(html), re.I), (
-                f"{name}'s marker does not say the timestamp is not an observation"
+            visible = _prose(html).lower()
+            assert "operator reset —" not in visible, (
+                f"{name}'s visible marker names a writer the clock repair can falsify"
+            )
+            assert "no sighting since the reset" in visible, (
+                f"{name}'s visible marker does not state the reset-generation fact"
             )
     db.close()
 
@@ -255,6 +255,35 @@ def test_the_marker_appears_after_a_reset_driven_through_the_route(tmp_path):
         for name, html in _pages(client, eid).items():
             assert "watchful-last-activity-reset" in html, (
                 f"{name} is unmarked after a real reset"
+            )
+    db.close()
+
+
+def test_a_reset_generations_sighting_count_is_not_presented_as_a_sighting(tmp_path):
+    app, db = _build(tmp_path)
+    eid = _insert(db, last_seen_at=1000, sighting_count=4, escalated_at=1500)
+    db.reset_watchful_recurrence(eid, now_ts=2000)
+    assert db.get_watchful_recurrence(eid).sighting_count == 1
+    with TestClient(app) as client:
+        for name, page in _pages(client, eid).items():
+            assert "(the reset's starting count, not a sighting)" in page, (
+                f"{name} presents the reset's starting count as a sighting"
+            )
+    db.close()
+
+
+def test_a_row_with_a_real_counted_sighting_does_not_carry_the_counter_note(tmp_path):
+    app, db = _build(tmp_path)
+    reset_ts = 2000
+    eid = _insert(db, last_seen_at=1000, sighting_count=4, escalated_at=1500)
+    db.reset_watchful_recurrence(eid, now_ts=reset_ts)
+    outcome = db.record_watchful_sighting(eid, observed_at=reset_ts + 25 * 3600)
+    assert outcome is not None and outcome.counted
+    assert db.get_watchful_recurrence(eid).sighting_count == 2
+    with TestClient(app) as client:
+        for name, page in _pages(client, eid).items():
+            assert "(the reset's starting count, not a sighting)" not in page, (
+                f"{name} still carries the reset-generation counter note"
             )
     db.close()
 

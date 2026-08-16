@@ -92,9 +92,11 @@
                   <span class="badge-watchful-tracking">tracking</span>
                 {% endif %}
                 {% if row.escalation_delivery == 'suppressed' %}
-                  <span class="badge-watchful-nosend" title="The watchful_recurrence rule type was snoozed when this entry crossed the threshold, so the escalation alert was never written and you were never notified. The entry cannot escalate again unless you reset it.">never sent</span>
+                  <span class="badge-watchful-nosend" title="No escalation alert was ever written for this entry, so you were not notified. That is what happens when the watchful_recurrence rule type is snoozed at the moment the threshold is crossed: the escalation is consumed deliberately. Removing the snooze does not re-send it — reset this entry if you want it to escalate again.">never sent</span>
                 {% elif row.escalation_delivery == 'undelivered' %}
                   <span class="badge-watchful-undelivered" title="The escalation alert was written but delivery has not succeeded. The poller retries when the device is seen again.">not delivered</span>
+                {% elif row.escalation_delivery == 'unknown' %}
+                  <span class="badge-watchful-delivery-unknown" title="Whether this escalation was delivered could not be determined — the lookup failed. This is a reporting failure, not a statement about the alert.">delivery unknown</span>
                 {% endif %}
                 {% if e.flagged_for_investigation %}
                   {% if e.confirmed_safe %}
@@ -110,7 +112,10 @@
                   <small class="dim" title="operator-driven escalation resets">(reset &times;{{ e.reset_count }})</small>
                 {% endif %}
               </td>
-              <td>{{ e.sighting_count }}</td>
+              <td>
+                {{ e.sighting_count }}
+                {% if row.is_unsighted_reset_generation %}<small class="dim">(the reset's starting count, not a sighting)</small>{% endif %}
+              </td>
               <td title="{{ e.first_seen_at | unix_to_utc_human }}">
                 <time datetime="{{ e.first_seen_at | unix_to_iso }}">
                   {{ e.first_seen_at | relative_time(now_ts=now_ts) }}
@@ -120,7 +125,7 @@
                 <time datetime="{{ e.last_seen_at | unix_to_iso }}">
                   {{ e.last_seen_at | relative_time(now_ts=now_ts) }}
                 </time>
-                {% if row.last_activity_is_the_reset %}{{ reset_marker() }}{% endif %}
+                {% if row.is_unsighted_reset_generation %}{{ reset_marker() }}{% endif %}
               </td>
               <td>
                 {% if e.escalated_at %}
