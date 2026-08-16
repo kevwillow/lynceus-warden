@@ -320,6 +320,9 @@ _LOADER_NAMES = frozenset(
         "safe_load_all",
         "load_all",
         "full_load_all",
+        # `unsafe_load` was listed and `unsafe_load_all` was not -- a loader
+        # name half-covered is the shape a future author reads as covered.
+        "unsafe_load_all",
     }
 )
 
@@ -935,3 +938,42 @@ def test_the_validator_survives_a_detector_that_raises_anything(tmp_path, monkey
     assert any("duplicate" in i.message for i in report.issues), [
         i.message for i in report.issues
     ]
+
+
+def test_duplicates_are_found_in_a_MULTI_DOCUMENT_file(tmp_path):
+    """⛔ `yaml.compose` raises ComposerError on a `---`-separated file, and the
+    catch turned that into "no duplicates". Every duplicate in a multi-document
+    file was silently missed.
+
+    That is worse than a gap. #144 added `safe_load_all` to the coverage
+    guard's loader names, so a future multi-document loader would have been
+    certified WIRED while this returned nothing for it — **a guard promising
+    coverage the detector does not have**, which is the exact class this whole
+    subsystem exists to remove.
+    """
+    p = _write(tmp_path, "---\na: 1\na: 2\n---\nb: 1\nb: 2\n")
+    found = {d.key_path: d.occurrence_lines for d in find_duplicate_keys(p)}
+    assert found == {"a": (2, 3), "b": (5, 6)}, found
+
+
+def test_the_detector_does_not_leak_key_nodes_across_scans(tmp_path):
+    """⛔ A module-level `SafeConstructor` retained every key node it ever saw.
+
+    `construct_object` records each node in `constructed_objects`; the clearing
+    happens in `construct_document`, which this module never calls. Measured:
+    200 scans left 400 nodes alive permanently. In a daemon that re-reads its
+    config on every reload that is an unbounded process-lifetime leak, and it
+    fails OPEN — the worker degrades until duplicate detection stops working.
+
+    The guard is that no constructor OUTLIVES a call, asserted structurally
+    rather than by watching memory, which would be flaky.
+    """
+    import lynceus.yaml_duplicates as mod
+
+    assert not hasattr(mod, "_CONSTRUCTOR"), (
+        "a module-level constructor is back; it accumulates every key node"
+    )
+    for i in range(50):
+        find_duplicate_keys(_write(tmp_path, f"k{i}: 1\nk{i}: 2\n"))
+    # Nothing to assert about a constructor that no longer exists -- which is
+    # the point. The structural assertion above is what fails if one returns.

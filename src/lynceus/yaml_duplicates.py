@@ -84,10 +84,9 @@ def _format_path(prefix: tuple[object, ...], key: str) -> str:
     return f"{out}.{key}" if out else key
 
 
-_CONSTRUCTOR = yaml.constructor.SafeConstructor()
-
-
-def _key_identity(key_node: yaml.ScalarNode) -> tuple[str, object]:
+def _key_identity(
+    key_node: yaml.ScalarNode, constructor: yaml.constructor.SafeConstructor
+) -> tuple[str, object]:
     """The identity `safe_load` will use for this key, not its raw text.
 
     ⛔ Raw text was wrong in BOTH directions, and each direction shipped:
@@ -103,9 +102,18 @@ def _key_identity(key_node: yaml.ScalarNode) -> tuple[str, object]:
     loader by construction rather than by a rule we maintain separately.
     Unhashable or unconstructible keys fall back to raw text -- they cannot
     collide in a dict anyway, so the fallback cannot invent a duplicate.
+
+    ⛔ The constructor is passed IN, not held at module level. A module-level
+    ``SafeConstructor`` was measured retaining every key node it ever saw:
+    ``construct_object`` records each one in ``constructed_objects``, and the
+    normal clearing happens in ``construct_document``, which this code never
+    calls. 200 scans left 400 nodes alive permanently. In a daemon that
+    re-reads config on every reload that is an unbounded process-lifetime leak,
+    and the direction is fail-open: the process degrades until duplicate
+    detection stops working or the worker dies.
     """
     try:
-        value = _CONSTRUCTOR.construct_object(key_node, deep=True)
+        value = constructor.construct_object(key_node, deep=True)
         hash(value)
     except Exception:  # noqa: BLE001 -- fall back, never fail the scan
         return ("raw", key_node.value)
@@ -116,6 +124,7 @@ def _walk(
     node: yaml.Node,
     prefix: tuple[object, ...],
     out: list[DuplicateKey],
+    constructor: yaml.constructor.SafeConstructor,
     seen_nodes: set[int] | None = None,
 ) -> None:
     # ⛔ Cycle guard. A recursive alias is VALID YAML that `yaml.compose`
@@ -143,9 +152,9 @@ def _walk(
                 # A complex key (a list or mapping used as a key). Legal YAML,
                 # never produced by hand-editing these files; skipped rather
                 # than guessed at.
-                _walk(value_node, prefix, out, seen_nodes)
+                _walk(value_node, prefix, out, constructor, seen_nodes)
                 continue
-            ident = _key_identity(key_node)
+            ident = _key_identity(key_node, constructor)
             seen.setdefault(ident, []).append(
                 (key_node.start_mark.line + 1, str(key_node.value))
             )
@@ -170,16 +179,16 @@ def _walk(
         winner: dict[tuple[str, object], yaml.Node] = {}
         for key_node, value_node in node.value:
             if isinstance(key_node, yaml.ScalarNode):
-                winner[_key_identity(key_node)] = value_node
+                winner[_key_identity(key_node, constructor)] = value_node
         for key_node, value_node in node.value:
             if not isinstance(key_node, yaml.ScalarNode):
                 continue
-            ident = _key_identity(key_node)
+            ident = _key_identity(key_node, constructor)
             if winner.get(ident) is value_node:
-                _walk(value_node, prefix + (str(key_node.value),), out, seen_nodes)
+                _walk(value_node, prefix + (str(key_node.value),), out, constructor, seen_nodes)
     elif isinstance(node, yaml.SequenceNode):
         for i, item in enumerate(node.value):
-            _walk(item, prefix + (i,), out, seen_nodes)
+            _walk(item, prefix + (i,), out, constructor, seen_nodes)
 
 
 def find_duplicate_keys(path: Path) -> list[DuplicateKey]:
@@ -189,14 +198,23 @@ def find_duplicate_keys(path: Path) -> list[DuplicateKey]:
     parse -- every caller reports those conditions itself, and a parse error
     reported twice in different words is worse than one reported once.
     """
+    # ⛔ compose_ALL. `yaml.compose` raises ComposerError on a multi-document
+    # file, which the catch below turned into "no duplicates" -- so every
+    # duplicate in a `---`-separated file was silently missed. That is worse
+    # than a gap: #144 added `safe_load_all` to the coverage guard's loader
+    # names, so a future multi-document loader would have been certified WIRED
+    # while this function returned nothing for it. A guard cannot promise
+    # coverage the detector does not have.
     try:
         with open(path, encoding="utf-8") as fh:
-            node = yaml.compose(fh)
+            nodes = list(yaml.compose_all(fh))
     except (OSError, yaml.YAMLError):
         return []
     out: list[DuplicateKey] = []
-    if node is not None:
-        _walk(node, (), out)
+    constructor = yaml.constructor.SafeConstructor()
+    for node in nodes:
+        if node is not None:
+            _walk(node, (), out, constructor)
     # `_walk` emits each mapping's duplicates before descending, so nested
     # results trail their parent's rather than following the file. Sorting by
     # first definition restores the documented "in file order".
