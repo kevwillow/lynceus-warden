@@ -2122,6 +2122,68 @@ finding was real and the reference was not.
 That is not exotic: an RTC-less Pi that has never had NTP reach it looks exactly like this on every
 boot until the moment it is corrected.
 
+#### 🟡 Disposition 2026-08-16 — the DB/poller half is now REPORTED, and option 1 was only half impossible
+
+Measured with `internal/session1-harnesses/f41_poller_probe.py`, which asserts against `poller.py`'s
+source that it still models the real call order (repair at `:1741`, purge at `:1817`, both inside the
+one `if clock_trusted:` opened at `:1723`). **The operator asked for 24h in every row:**
+
+```
+CONTROL correct clock             trusted=True   repaired=0 purged=0   gets 24.0h
+forward-jumped (+91d)             trusted=True   repaired=1 purged=0   gets 24.0h   <- already fixed
+BACKWARD (-6y), clock now right   trusted=True   repaired=0 purged=1   gets  0.0h   <- the finding
+BACKWARD (-6y), jump DETECTED     trusted=False  repaired=0 purged=0   gets  0.0h   <- see below
+ordinary expired row              trusted=True   repaired=0 purged=1   gets  0.0h   <- correct
+```
+
+⛔ **The fourth row changes what this finding is about, and it contradicts how the entry above reads.**
+Everything here framed `cleanup_expired_rule_type_snoozes` as the harm — *"and then deletes it"*. With
+the clock-trust hold ACTIVE the row is **not** deleted and the operator **still gets zero**, because
+`is_rule_type_snoozed` keys on `expires_at > now_ts` and that deadline is already in the past.
+⇒ **#35's clock gate is not a mitigation for this defect; it delays the DELETE, not the harm. The
+purge was never the cause — the past deadline is.** A row surviving on disk while being functionally
+dead is the same shape as Finding 32: stored, counted, unable to do anything.
+
+⭐ **Option 1 above — post-hoc detection, recorded as "believed impossible" — is impossible for CLOCK
+reasoning and possible for ORDERING.** A row cannot predate its own database's first migration.
+`find_impossible_rule_type_snoozes` uses `MIN(applied_at)` from `schema_migrations` as that floor.
+Measured with `f41_migration_floor_probe.py`, **4/4 including the controls that decide it**:
+
+| case | flagged | why it matters |
+|---|---|---|
+| BACKWARD (-6y), install was fine | **yes** | the dead-RTC shape — detected |
+| ordinary expired row | **no** | ⛔ the control the whole thing rests on; flagging it would warn on every stale row on every install |
+| healthy 24h snooze | no | |
+| clock wrong since first migration | **no** | ⚠️ the blind spot, measured rather than caveated |
+
+⚠️ **The blind spot is published beside the capability, because it is the register's own residual:**
+`applied_at` is stamped `int(time.time())` (`db.py:478`) by the **same host clock**, so the floor is
+wrong by the same amount on an install that was never right. **That half of Finding 41 remains
+OPEN** — this closes the dead-RTC population, not the RTC-less-Pi one.
+
+⛔ **`MIN(applied_at)`, not the version that created the table.** Hardcoding a migration number has
+broken five call sites across four files here before; the minimum is also strictly **conservative**,
+sitting at or below the table's own creation, so it can only flag fewer rows. A false positive would
+tell an operator their snooze was discarded when it was not.
+
+✅ **Reported, NOT resurrected, and that is the design decision.** A snooze SUPPRESSES alerting, so
+the safe direction is the one it already fails in — the device keeps alerting. Re-basing would
+silently begin suppressing a rule type on the strength of a row whose real elapsed age is unknowable.
+**What was wrong is that it happened silently**, and that is the half fixed. Pinned by
+`test_an_impossible_snooze_is_reported_but_NOT_resurrected`, and the plausible "helpful" change —
+sparing such rows from the purge — is one of the planted defects it kills.
+
+🪤 **A guard of mine SURVIVED its plant, and the reason generalises.** The ordering test used
+`str.index("db.find_impossible_rule_type_snoozes")`; the plant replaced the call with
+`for ... in []:  # db.find_impossible_rule_type_snoozes()` and the needle **still matched, in the
+comment left behind**. Rewritten to walk the AST for `Call` nodes. ⇒ **A guard that matches a
+spelling passes any change that keeps the spelling** — and this is the second time that exact trap
+has been recorded here.
+
+**5 plants, 5 killed by the expected test** (`internal/session1-harnesses/plant_f41.py`), sources
+verified **byte-identical to baseline** afterwards by content comparison rather than `git status` —
+the work was uncommitted, so `git status` could never have told plant residue from the change itself.
+
 ## Rig round 1 — a cold cross-model read of the day's own work, 2026-08-16
 
 Findings 33–40 and their guards were handed to codex (`gpt-5.6-sol` for the two behavioural
@@ -2714,6 +2776,55 @@ loaders pydantic's `extra="forbid"` rejects the resulting non-str key, so both f
 loader ever starts ACCEPTING it. **Double-parse memory** and the **TOCTOU second read** are documented
 limits, not defects, on config-sized files read once at startup.
 
+### 🟡 Finding 50 — an operator reset cancels the retry of an escalation that was never delivered, and leaves a complaint nothing can clear
+
+**Found by session 2, who did not fix it (outside their write set) and wrote it up with BOTH possible
+dispositions rather than the one they preferred. Re-measured here before registering** —
+`internal/session2-harnesses/reset_probe.py` part C, repointed at a fresh tree, notifier returning
+`False` (ntfy down at the threshold cross):
+
+```
+CONTROL  no reset, device seen again   notifier calls 1 -> 2   attempts 2/4   notified_at None
+TREATMENT operator clicks reset        notifier calls 1 -> 1   attempts 1/4   notified_at None
+```
+
+**Mechanism, confirmed in the code and not only in the probe:** #123 built `_retry_watchful_escalation`
+so an escalation whose SEND failed is re-driven by seeing the device again (+0/+5/+15/+45 min). Its
+first statement is `if escalated_at is None: return` (`poller.py:377`). `reset_watchful_recurrence`
+sets `escalated_at = NULL`. ⇒ **the reset silently removes the retry path with 3 of 4 attempts
+unspent, and no mechanism can ever spend them.** The documented give-up state is
+`attempts >= NOTIFY_MAX_ATTEMPTS`, which this never reaches.
+
+⛔ **The consequence outlives the argument about intent.** `count_undelivered_alerts()` takes an
+optional `since_ts` and **both callers pass nothing** — `poller.py:1134` (the heartbeat) and
+`app.py:1071` (`/settings`). The row stays `notified_at IS NULL` forever, so every such reset adds a
+**permanent, unclearable** line to *"N alert(s) written but never delivered"* — on the one surface
+whose entire value depends on the operator still reading it.
+
+⚠️ **Session 2 offered two readings and asked for a measurement rather than a preference. The
+measurement supports the second, and it also dissolves the disagreement:**
+
+1. *"Not a defect — the reset form renders only on an escalated entry, so the operator saw the
+   escalation; reset is an acknowledgement."* This is a **legitimate product argument about what
+   reset means**, and nothing here refutes it.
+2. *"A defect — the row is left uncounted-down and permanently counted."* **Confirmed.**
+
+⇒ **Both readings agree the COUNTER is wrong.** Even if reset-as-acknowledgement is the right
+semantics, a row the operator has actioned should stop being counted as an undelivered alert. The
+disagreement is only about whether to keep retrying; it is not about whether the heartbeat should
+carry a complaint forever.
+
+🟡 **REGISTERED, NOT PATCHED — it is a decision about what `count_undelivered_alerts` MEANS**, not a
+patch: "written but never delivered" and "written, undelivered, and abandoned by operator action" are
+different states, and only the second is safe to stop counting. ⛔ **The unsafe direction is obvious
+and must be named:** making the counter windowed (`since_ts`) to make the line go away would also
+hide a genuinely broken ntfy topic, which is the exact silence that counter exists to break.
+
+**Acceptance criterion:** after a reset on an entry whose escalation was never delivered, the
+heartbeat's undelivered count returns to what it was before the escalation, **AND** a genuinely
+undelivered alert on a healthy entry still raises it. The second half is not optional — without it,
+"stop counting" passes trivially by counting nothing.
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -2900,11 +3011,19 @@ this file learned the hard way one section down.
 **Open as of 2026-08-16, and absent from this list until now — which is exactly the failure the note
 below describes, running in the other direction:**
 
-- 🔴 **Finding 41's DB/poller half — NOT STARTED and UNCLAIMED.** #106 narrowed the web-UI write
-  only. An install where *every* row was written by the same behind clock has no ahead-row to compare
-  against, so the check never fires; pinned as
-  `test_an_install_with_no_ahead_rows_is_a_known_blind_spot`. What closing it would take is written
-  into Finding 41's own entry. **This is the single largest open item in the file.**
+- 🟡 **Finding 41 — the DB/poller half is now REPORTED; ONE POPULATION REMAINS OPEN.** ⚠️ This bullet
+  said *"NOT STARTED and UNCLAIMED … the single largest open item in the file"* and is **narrowed,
+  not closed** — re-read Finding 41's 2026-08-16 disposition rather than this line. A snooze written
+  by a clock that was right at install and later fell back (**dead RTC battery**) is now detected by
+  an ordering fact and warned about at WARNING. ⛔ **Still open: the install whose clock was wrong
+  from its very first migration** — the floor is stamped by that same clock, so the discriminator is
+  silent, and this is the RTC-less-Pi residual the entry always named. ⭐ Also recorded there: the
+  clock-trust hold is **not** a mitigation for this defect, so the earlier framing of the purge as
+  the harm was wrong.
+- 🟡 **Finding 50 — registered, NOT patched.** An operator reset cancels the retry of an undelivered
+  escalation and leaves a permanent, unclearable line in the heartbeat's *"written but never
+  delivered"* count. ⛔ The obvious fix — windowing the counter — is the **unsafe** direction: it
+  would also hide a genuinely broken ntfy topic, which is the silence that counter exists to break.
 - 🟡 **Finding 44 — registered, NOT patched.** One duplicate escalation is reachable between the row
   write and the stamp. ⛔ The obvious dedup is the **unsafe** direction (it suppresses the genuine
   escalation of a RESET entry); closing it honestly needs a generation-keyed escalation record, i.e.
