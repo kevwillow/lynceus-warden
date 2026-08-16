@@ -1572,6 +1572,25 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
             if liveness["suppressed_count"] is not None
             else None
         ),
+        # ⚠️ inert and snoozed are INDEPENDENT FLAGS, not a partition: a type
+        # that is both has its rows counted in `inert_rows` AND in
+        # `snoozed_rows`. Exported as a number because the payload previously
+        # left a consumer to discover the overlap by intersecting the two type
+        # lists -- and the sum EQUALS total on a normal install and on a
+        # snoozed live type, so a dashboard that assumes a partition validates
+        # and only breaks later. The invariant this makes checkable is
+        #     live_rows + inert_rows + snoozed_rows - double_counted_rows == total_rows
+        # `null` when liveness is unknown, matching the three counts above:
+        # a number here would be a claim nothing established.
+        "double_counted_rows": (
+            sum(
+                int(by_pattern_type.get(pattern_type, 0))
+                for pattern_type in liveness["both_types"]
+            )
+            if liveness["known"]
+            else None
+        ),
+        "both_inert_and_snoozed_pattern_types": list(liveness["both_types"]),
         "inert_pattern_types": list(liveness["inert_types"]),
         "snoozed_pattern_types": list(liveness["suppressed_types"]),
         # ⚠️ The THIRD silencing cause, and the only per-ROW one. Reported as
