@@ -84,40 +84,102 @@ def _format_path(prefix: tuple[object, ...], key: str) -> str:
     return f"{out}.{key}" if out else key
 
 
-def _walk(node: yaml.Node, prefix: tuple[object, ...], out: list[DuplicateKey]) -> None:
+_CONSTRUCTOR = yaml.constructor.SafeConstructor()
+
+
+def _key_identity(key_node: yaml.ScalarNode) -> tuple[str, object]:
+    """The identity `safe_load` will use for this key, not its raw text.
+
+    ⛔ Raw text was wrong in BOTH directions, and each direction shipped:
+
+    * false NEGATIVE -- `on:` and `true:` are different text and the same
+      Python key (`True`) under YAML 1.1, so a real collapse went unreported.
+    * false POSITIVE -- `on:` and `"on":` are the SAME text and different
+      Python keys (`True` and `'on'`), so the tool warned that a value had
+      been discarded when nothing had. That is the worse half: it is this
+      module telling an operator something untrue about their own file.
+
+    Resolving through PyYAML's own constructor makes both agree with the
+    loader by construction rather than by a rule we maintain separately.
+    Unhashable or unconstructible keys fall back to raw text -- they cannot
+    collide in a dict anyway, so the fallback cannot invent a duplicate.
+    """
+    try:
+        value = _CONSTRUCTOR.construct_object(key_node, deep=True)
+        hash(value)
+    except Exception:  # noqa: BLE001 -- fall back, never fail the scan
+        return ("raw", key_node.value)
+    return ("resolved", value)
+
+
+def _walk(
+    node: yaml.Node,
+    prefix: tuple[object, ...],
+    out: list[DuplicateKey],
+    seen_nodes: set[int] | None = None,
+) -> None:
+    # ⛔ Cycle guard. A recursive alias is VALID YAML that `yaml.compose`
+    # happily represents as a graph:
+    #
+    #     x: &x
+    #       self: *x
+    #
+    # Without this set the walk recurses forever and raises RecursionError --
+    # which `find_duplicate_keys` did not catch, so `lynceus-validate` CRASHED
+    # on a file it was asked to report on instead of reporting on it.
+    if seen_nodes is None:
+        seen_nodes = set()
+    if id(node) in seen_nodes:
+        return
+    seen_nodes.add(id(node))
+
     if isinstance(node, yaml.MappingNode):
-        # ⚠️ Keyed on the RAW scalar text, not on the resolved value. Resolving
-        # would make `on:` and `true:` collide as keys, which is a different
-        # (and much rarer) complaint than the one this module exists to report.
         # Two passes on purpose. The winner is the LAST occurrence, which is
         # not known until the mapping has been read to the end, so nothing can
         # be emitted from inside the collecting loop without guessing.
-        seen: dict[str, list[int]] = {}
+        seen: dict[tuple[str, object], list[tuple[int, str]]] = {}
         for key_node, value_node in node.value:
             if not isinstance(key_node, yaml.ScalarNode):
                 # A complex key (a list or mapping used as a key). Legal YAML,
                 # never produced by hand-editing these files; skipped rather
                 # than guessed at.
-                _walk(value_node, prefix, out)
+                _walk(value_node, prefix, out, seen_nodes)
                 continue
-            key = str(key_node.value)
-            seen.setdefault(key, []).append(key_node.start_mark.line + 1)
-        for key, lines in seen.items():
-            if len(lines) > 1:
+            ident = _key_identity(key_node)
+            seen.setdefault(ident, []).append(
+                (key_node.start_mark.line + 1, str(key_node.value))
+            )
+        for occurrences in seen.values():
+            if len(occurrences) > 1:
+                lines = [line for line, _text in occurrences]
                 out.append(
                     DuplicateKey(
-                        key_path=_format_path(prefix, key),
+                        key_path=_format_path(prefix, occurrences[0][1]),
                         first_line=lines[0],
                         winning_line=lines[-1],
                         occurrence_lines=tuple(lines),
                     )
                 )
+        # ⛔ Descend only into the value of the WINNING occurrence of each key.
+        # Descending into a losing one produced statements that were simply
+        # false: for `outer: {x: 1, x: 2}` followed by a second `outer:`, the
+        # whole first mapping is discarded, so reporting "outer.x line 3 is the
+        # one in force" names a line that is in force of nothing. An operator
+        # edits it, nothing changes, and the tool has sent them to the wrong
+        # place -- the same defect class this module exists to report.
+        winner: dict[tuple[str, object], yaml.Node] = {}
         for key_node, value_node in node.value:
             if isinstance(key_node, yaml.ScalarNode):
-                _walk(value_node, prefix + (str(key_node.value),), out)
+                winner[_key_identity(key_node)] = value_node
+        for key_node, value_node in node.value:
+            if not isinstance(key_node, yaml.ScalarNode):
+                continue
+            ident = _key_identity(key_node)
+            if winner.get(ident) is value_node:
+                _walk(value_node, prefix + (str(key_node.value),), out, seen_nodes)
     elif isinstance(node, yaml.SequenceNode):
         for i, item in enumerate(node.value):
-            _walk(item, prefix + (i,), out)
+            _walk(item, prefix + (i,), out, seen_nodes)
 
 
 def find_duplicate_keys(path: Path) -> list[DuplicateKey]:

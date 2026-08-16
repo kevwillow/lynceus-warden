@@ -278,10 +278,6 @@ _EXEMPT: dict[str, str] = {
         "validate reports duplicates itself via _duplicate_key_issues, "
         "as an ERROR, per validator"
     ),
-    "lynceus/cli/export_config.py::_resolved_config_paths": (
-        "read-only path reporting; the file it reads is wired at load_config"
-    ),
-    "lynceus/cli/export_config.py::_resolved_state_paths": "read-only path reporting",
     "lynceus/cli/quickstart.py::_read_ui_port_from_config": (
         "machine-written port override, not an operator-authored file"
     ),
@@ -295,7 +291,19 @@ _EXEMPT: dict[str, str] = {
 _SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "lynceus"
 
 # Any of these, called on a YAML file, collapses a duplicate key silently.
-_LOADER_NAMES = frozenset({"safe_load", "load", "full_load", "unsafe_load"})
+_LOADER_NAMES = frozenset(
+    {
+        "safe_load",
+        "load",
+        "full_load",
+        "unsafe_load",
+        # ⚠️ The *_all variants were missing, so a loader reading a multi-document
+        # operator file was invisible to this guard entirely.
+        "safe_load_all",
+        "load_all",
+        "full_load_all",
+    }
+)
 
 
 def _reporter_names() -> frozenset[str]:
@@ -317,6 +325,28 @@ def _reporter_names() -> frozenset[str]:
                 if node.name.lstrip("_").startswith("warn"):
                     names.add(node.name)
     return frozenset(names)
+
+
+def _yaml_module_aliases(tree: ast.AST) -> set[str]:
+    """Names the module is bound to, e.g. `yaml` plus any `import yaml as y`.
+
+    ⚠️ The scan used to require the receiver to be literally named `yaml`, so
+
+        import yaml as y
+        def load_thing(p): return y.safe_load(p)
+
+    was invisible. Three separate blind spots were found in one cold read --
+    this one, module-level calls outside any function, and the `*_all`
+    variants -- all in a guard whose entire job is to stop a loader joining
+    the codebase unwired.
+    """
+    out = {"yaml"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "yaml" and alias.asname:
+                    out.add(alias.asname)
+    return out
 
 
 def _yaml_import_aliases(tree: ast.AST) -> set[str]:
@@ -344,28 +374,53 @@ def _safe_load_sites() -> dict[str, bool]:
     for f in sorted(_SRC.rglob("*.py")):
         tree = ast.parse(f.read_text(encoding="utf-8"))
         aliases = _yaml_import_aliases(tree)
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        modules = _yaml_module_aliases(tree)
+        rel = f.relative_to(_SRC.parent).as_posix()
+
+        def scan(
+            body_nodes,
+            label: str,
+            *,
+            modules=modules,
+            aliases=aliases,
+            rel=rel,
+        ) -> None:
+            # Bound as defaults, not captured: ruff B023. A late-binding closure
+            # here would grade every file against the LAST file's import table.
             names, loads = set(), False
-            for sub in ast.walk(node):
-                if not isinstance(sub, ast.Call):
-                    continue
-                fn = sub.func
-                if isinstance(fn, ast.Attribute):
-                    names.add(fn.attr)
-                    # `yaml.safe_load(...)` / `yaml.load(...)`
-                    if isinstance(fn.value, ast.Name) and fn.value.id == "yaml":
-                        if fn.attr in _LOADER_NAMES:
+            for top in body_nodes:
+                for sub in ast.walk(top):
+                    if not isinstance(sub, ast.Call):
+                        continue
+                    fn = sub.func
+                    if isinstance(fn, ast.Attribute):
+                        names.add(fn.attr)
+                        if (
+                            isinstance(fn.value, ast.Name)
+                            and fn.value.id in modules
+                            and fn.attr in _LOADER_NAMES
+                        ):
                             loads = True
-                elif isinstance(fn, ast.Name):
-                    names.add(fn.id)
-                    # a bare `safe_load(...)` bound by `from yaml import ...`
-                    if fn.id in aliases:
-                        loads = True
+                    elif isinstance(fn, ast.Name):
+                        names.add(fn.id)
+                        if fn.id in aliases:
+                            loads = True
             if loads:
-                rel = f.relative_to(_SRC.parent).as_posix()
-                sites[f"{rel}::{node.name}"] = bool(names & reporters)
+                sites[f"{rel}::{label}"] = bool(names & reporters)
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scan([node], node.name)
+        # ⚠️ Module level too. `DATA = yaml.safe_load(open(CONFIG))` at import
+        # time is a loader with no enclosing function, and the previous scan
+        # only ever looked inside `def`s -- so the one form that runs before
+        # anything else could get logged was the one form it could not see.
+        scan(
+            [n for n in tree.body if not isinstance(
+                n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            )],
+            "<module>",
+        )
     return sites
 
 
@@ -398,6 +453,20 @@ def test_no_exemption_is_stale():
     a guarantee about nothing."""
     sites = _safe_load_sites()
     assert [s for s in _EXEMPT if s not in sites] == []
+
+
+def test_every_exemption_states_an_actual_reason():
+    """⛔ The exemption model checked bookkeeping, not content. An empty string
+    satisfied every other test here -- and #138 already proved a *false* reason
+    survives indefinitely, so the least this can do is refuse a blank one."""
+    empty = [site for site, reason in _EXEMPT.items() if not reason.strip()]
+    assert empty == [], f"exempted with no stated reason: {empty}"
+    too_short = [
+        site for site, reason in _EXEMPT.items() if len(reason.strip()) < 25
+    ]
+    assert too_short == [], (
+        f"exemption reason too short to be a reason: {too_short}"
+    )
 
 
 def test_no_exemption_survives_its_site_becoming_wired():
@@ -510,29 +579,74 @@ def test_a_raising_logger_cannot_change_what_load_ruleset_returns(tmp_path, monk
     assert rs.rules[0].patterns == ["00:00:00:00:00:00"]
 
 
-def test_a_resolved_key_collision_is_a_KNOWN_BLIND_SPOT_and_fails_closed(tmp_path):
-    """⚠️ Pinned as a LIMIT, with the measurement that sets its severity.
+def test_a_resolved_key_collision_is_now_DETECTED_not_a_blind_spot(tmp_path):
+    """⭐ This test used to pin the opposite, and said so: "if this ever fails
+    because a loader ACCEPTS the collision, the detector must start resolving
+    keys." A cold read then showed raw-text identity was wrong in BOTH
+    directions, so it now does.
 
-    The detector keys on raw scalar text, so YAML 1.1 spellings that resolve to
-    the same Python key (`on`/`true`/`yes`, `null`/`~`) collapse in `safe_load`
-    without being reported. A reviewer graded this HIGH; measuring the actual
-    loaders downgrades it: pydantic's `extra="forbid"` rejects the resulting
-    non-str key, so both files that matter fail CLOSED and loudly rather than
-    silently obeying the wrong value.
-
-    If this test ever fails because a loader ACCEPTS the collision, the blind
-    spot has become reachable and the detector must start resolving keys.
+    `on:` and `true:` are different text and the SAME Python key under YAML 1.1
+    -- `safe_load` keeps one and discards the other, which is exactly what this
+    module exists to report and it used to miss.
     """
     body = "on: 1\ntrue: 2\n"
     p = _write(tmp_path, body)
     assert len(yaml.safe_load(body)) == 1, "PyYAML no longer collapses these"
-    assert find_duplicate_keys(p) == [], "detector changed; update this limit"
-    # TypeError today (pydantic rejecting a non-str key under extra="forbid").
-    # Named concretely so that a change to a SILENT acceptance fails here
-    # rather than being absorbed by a blind `Exception`.
-    with pytest.raises((TypeError, ValueError)):
-        load_config(str(p))
+    (dupe,) = find_duplicate_keys(p)
+    assert dupe.occurrence_lines == (1, 2)
 
+
+def test_the_same_text_resolving_to_DIFFERENT_keys_is_not_a_duplicate(tmp_path):
+    """⛔ The other direction, and the worse one: `on:` and `"on":` are the SAME
+    text and DIFFERENT Python keys (`True` and `'on'`). Nothing is discarded.
+    Raw-text identity reported a duplicate here -- this module telling an
+    operator something untrue about their own file, which is precisely the
+    defect class it was built to catch.
+    """
+    body = 'on: first\n"on": second\n'
+    p = _write(tmp_path, body)
+    assert len(yaml.safe_load(body)) == 2, "both keys should survive"
+    assert find_duplicate_keys(p) == []
+
+
+def test_a_recursive_alias_does_not_crash_the_detector(tmp_path):
+    """⛔ Valid YAML that `yaml.compose` represents as a CYCLE. Without a
+    visited-node guard the walk recursed forever, raised RecursionError past
+    `find_duplicate_keys`'s OSError/YAMLError catch, and `lynceus-validate`
+    CRASHED on the file it was asked to report on."""
+    p = _write(tmp_path, "x: &x\n  self: *x\n")
+    assert find_duplicate_keys(p) == []
+
+
+def test_the_validator_reports_rather_than_crashing_on_a_pathological_file(tmp_path):
+    """The end-to-end half. `_duplicate_key_issues` calls the DETECTOR, not the
+    warn-only wrapper, so the wrapper's never-raise contract did not cover it.
+    A validator that dies gives the operator a traceback where they asked for a
+    verdict."""
+    from lynceus.cli.validate import validate_lynceus_yaml
+
+    p = tmp_path / "lynceus.yaml"
+    p.write_text("x: &x\n  self: *x\n", encoding="utf-8")
+    report, _cfg = validate_lynceus_yaml(p)
+    assert report is not None
+
+
+def test_a_nested_duplicate_under_a_DISCARDED_parent_is_not_reported_as_in_force(
+    tmp_path,
+):
+    """⛔ For `outer: {x: 1, x: 2}` followed by a second `outer:`, the whole
+    first mapping is discarded -- so NEITHER `x` is in force. The walk descended
+    into losing occurrences and announced `outer.x` line 3 as "the one in
+    force", sending an operator to edit a line that governs nothing."""
+    body = "outer:\n  x: 1\n  x: 2\nouter:\n  y: 3\n"
+    p = _write(tmp_path, body)
+    loaded = yaml.safe_load(body)
+    assert loaded == {"outer": {"y": 3}}
+    paths_reported = [d.key_path for d in find_duplicate_keys(p)]
+    assert "outer" in paths_reported
+    assert "outer.x" not in paths_reported, (
+        f"reported a key inside a discarded mapping: {paths_reported}"
+    )
 
 def test_the_scan_sees_a_bare_safe_load_bound_by_from_yaml_import(tmp_path):
     """⚠️ The scan matched only the `yaml.safe_load` ATTRIBUTE form, so
@@ -773,3 +887,33 @@ def test_a_ui_write_launders_the_duplicate_but_no_longer_silently(tmp_path, capl
         "ac:de:48" in r.getMessage() or "entries[0].pattern" in r.getMessage()
         for r in caplog.records
     ), [r.getMessage() for r in caplog.records]
+
+
+def test_the_validator_survives_a_detector_that_raises_anything(tmp_path, monkeypatch):
+    """⭐ Added because a PLANT SURVIVED, and the survivor was informative.
+
+    Narrowing `_duplicate_key_issues`'s catch broke no test, because the cycle
+    guard added upstream means the recursive-alias case never reaches it any
+    more. Two independent fixes covered one input, so the wrapper looked
+    load-bearing and was actually untested.
+
+    It still matters: `_duplicate_key_issues` calls the DETECTOR directly, not
+    the warn-only wrapper that owns the never-propagate contract, so it is the
+    one duplicate-key caller with no protection of its own. This pins it
+    against ANY exception rather than against the one input that used to
+    produce one.
+    """
+    import lynceus.cli.validate as V
+    from lynceus.cli.validate import validate_lynceus_yaml
+
+    def explode(_path):
+        raise RecursionError("something pathological")
+
+    monkeypatch.setattr(V, "find_duplicate_keys", explode)
+    p = tmp_path / "lynceus.yaml"
+    p.write_text("heartbeat_enabled: true\n", encoding="utf-8")
+    report, _cfg = validate_lynceus_yaml(p)
+    assert report is not None
+    assert any("duplicate" in i.message for i in report.issues), [
+        i.message for i in report.issues
+    ]
