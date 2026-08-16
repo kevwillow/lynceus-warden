@@ -792,6 +792,14 @@ _WATCHLIST_CSV_HEADER = [
     #: cause is per-row and INDEPENDENT of the type-level verdict, so a row can
     #: carry both and a single enum would hide whichever check ran second.
     "override_suppressed",
+    #: ⭐ Finding 42, appended for the same reason. `severity` above is what the
+    #: importer baked in; this is what an alert will actually carry once the
+    #: runtime override layer has re-applied. This export exists for offline
+    #: triage, and triage is sorting by severity — so it was carrying the one
+    #: number the operator will never receive.
+    #: ⚠️ EMPTY for a row whose alerts are suppressed entirely: that row has no
+    #: severity to receive, and `override_suppressed` above is what says why.
+    "effective_severity",
 ]
 
 

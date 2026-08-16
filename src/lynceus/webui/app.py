@@ -51,12 +51,18 @@ from lynceus.webui.clock import (
 from lynceus.webui.csp import CSPMiddleware
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.liveness import (
+    configured_remap_axes,
+    effective_severity,
+    has_configured_remap,
     is_pattern_type_live,
     is_pattern_type_snoozed,
     is_row_suppressed_by_overrides,
+    load_overrides,
     oui_prefix_never_matches,
     override_suppression_axes,
     runtime_suppressions,
+    severity_remap,
+    suppression_axes_of,
     watchlist_liveness,
 )
 from lynceus.webui.pagination import build_pagination, parse_pagination
@@ -983,7 +989,13 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
     # was just refused needs somewhere that explains why -- and one whose clock
     # is wrong should not have to be refused first to find out.
     clock_state = clock_behind_recorded_history(db, int(time.time()))
-    suppressions = runtime_suppressions(config)
+    settings_overrides = load_overrides(config)
+    suppressions = suppression_axes_of(settings_overrides)
+    # ⭐ Named beside the silence list, and for the same reason: this page tells
+    # the operator what their overrides file is doing. It listed the selectors
+    # that SILENCE and said nothing about the three that REMAP, so a severity
+    # the runtime rewrites had no page anywhere admitting it.
+    configured_remaps = configured_remap_axes(settings_overrides)
 
     # ⭐ Liveness is graded against the card's OWN counts, not a second query.
     # The note says "3 of these cannot fire" directly beneath the breakdown
@@ -1057,6 +1069,7 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
         "watchlist_liveness": liveness,
         "clock_state": clock_state,
         "runtime_suppressions": suppressions,
+        "configured_remaps": configured_remaps,
         "severity_overrides": {
             "path": str(overrides_path),
             "exists": overrides_path.exists(),
@@ -4274,7 +4287,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
             db=db,
             now_ts=int(time.time()),
         )
-        row_suppressions = runtime_suppressions(app.state.config)
+        # ⚠️ Loaded ONCE and shared: the suppression axes and the severity remap
+        # read the same file, and two loads per render could disagree if the
+        # operator saved the file between them.
+        overrides = load_overrides(app.state.config)
+        row_suppressions = suppression_axes_of(overrides)
 
         return app.state.templates.TemplateResponse(
             request=request,
@@ -4309,6 +4326,33 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     r.id for r in rows
                     if oui_prefix_never_matches(r.pattern_type, r.pattern)
                 },
+                # ⭐ Finding 42. The severity column is the triage surface, and
+                # it was rendering the value the importer baked in rather than
+                # the one the runtime layer will actually send. Free here --
+                # vendor, category and argus_record_id are already loaded, and
+                # the overrides file is already read for the suppression marks.
+                "severity_remaps": {
+                    r.id: remap
+                    for r in rows
+                    if (
+                        remap := severity_remap(
+                            r.severity,
+                            r.vendor,
+                            r.device_category,
+                            r.argus_record_id,
+                            row_suppressions,
+                            overrides,
+                        )
+                    )
+                },
+                # ⚠️ Shown only when the operator is FILTERING by severity and a
+                # remap is configured. The filter is SQL over the stored column
+                # and cannot be made remap-aware without scanning the whole
+                # table, so the honest move is to say which value it matched
+                # rather than to quietly answer a different question.
+                "severity_filter_is_stored_only": bool(
+                    sev_clean and has_configured_remap(overrides)
+                ),
                 "inert_pattern_types": liveness["inert_types"],
                 "snoozed_pattern_types": liveness["suppressed_types"],
             },
@@ -4405,6 +4449,18 @@ def create_app(config: Config, db: Database) -> FastAPI:
             # per-ROW and INDEPENDENT of the type-level verdict, so a row can
             # carry both and one enum cannot say so. Values: yes / no.
             "override_suppressed",
+            # ⭐ Finding 42, and APPENDED for the same reason as the two above.
+            # `severity` is what the importer baked in; this is what the runtime
+            # layer will actually send. They differ whenever a remap axis
+            # matches the row -- and this export exists for offline triage,
+            # which is sorting by severity.
+            #
+            # ⚠️ EMPTY for a suppressed row, not the remapped value. A
+            # suppressed row produces no alert, so it has no severity to
+            # receive; `override_suppressed=yes` is the column that says why.
+            # Writing a severity there would invite exactly the misreading this
+            # column exists to fix.
+            "effective_severity",
         ]
 
         def _iso_utc(ts) -> str:
@@ -4422,7 +4478,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
             db=db,
             now_ts=int(time.time()),
         )
-        csv_suppressions = runtime_suppressions(app.state.config)
+        csv_overrides = load_overrides(app.state.config)
+        csv_suppressions = suppression_axes_of(csv_overrides)
 
         def _can_fire(pattern_type: str) -> str:
             """The TYPE-level verdict: no = fix rules.yaml, snoozed = lift it
@@ -4495,6 +4552,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
                             csv_suppressions,
                         )
                         else "no",
+                        effective_severity(
+                            row.get("severity") or "",
+                            row.get("vendor"),
+                            row.get("device_category"),
+                            row.get("argus_record_id"),
+                            csv_suppressions,
+                            csv_overrides,
+                        )
+                        or "",
                     ]
                 )
                 yield buf.getvalue()
@@ -4562,6 +4628,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
             db=db,
             now_ts=int(time.time()),
         )
+        # Read once; the suppression axes and the severity remap are two
+        # questions about the same file.
+        overrides = load_overrides(app.state.config)
+        suppressions = suppression_axes_of(overrides)
         return app.state.templates.TemplateResponse(
             request=request,
             name="watchlist_detail.html",
@@ -4576,10 +4646,22 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "entry_is_snoozed": is_pattern_type_snoozed(
                     entry["pattern_type"], liveness
                 ),
+                # ⭐ Finding 42, with the axis and the key named: this page is
+                # where an operator lands asking why an alert did not look the
+                # way they expected, so it carries the cause rather than the
+                # list page's marker.
+                "severity_remap": severity_remap(
+                    entry["severity"],
+                    row.get("vendor"),
+                    row.get("device_category"),
+                    row.get("argus_record_id"),
+                    suppressions,
+                    overrides,
+                ),
                 "override_suppression_axes": override_suppression_axes(
                     row.get("vendor"),
                     row.get("device_category"),
-                    runtime_suppressions(app.state.config),
+                    suppressions,
                 ),
                 "oui_never_matches_reason": oui_prefix_never_matches(
                     row.get("pattern_type"), row.get("pattern")

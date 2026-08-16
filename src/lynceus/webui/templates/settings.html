@@ -442,6 +442,31 @@
         if none are marked there, nothing you have stored is affected.
       </small></p>
     {% endif %}
+    {# ⭐ The REMAP selectors, beside the silence list and deliberately separate
+       from it: these do not stop an alert, they change what it says. This page
+       named the keys that silence and said nothing about the three that
+       rewrite severity, so a watchlist row alerting at a severity other than
+       the one stored against it had no page anywhere admitting it (Finding 42).
+       ⚠️ Selectors, never a count of affected rows -- the same refusal the
+       block above documents. #}
+    {% if configured_remaps.configured and (configured_remaps.categories or configured_remaps.vendors or configured_remaps.rows) %}
+      <p><small class="dim">
+        🎚️ <strong>Your severity overrides rewrite the severity of some
+        alerts.</strong>
+        {% if configured_remaps.categories %}
+          Categories: {% for k, v in configured_remaps.categories.items() %}<code>{{ k }}</code>&rarr;<code>{{ v }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+        {% endif %}
+        {% if configured_remaps.vendors %}
+          Vendors: {% for k, v in configured_remaps.vendors.items() %}<code>{{ k }}</code>&rarr;<code>{{ v }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+        {% endif %}
+        {% if configured_remaps.rows %}
+          Rows: {% for k, v in configured_remaps.rows.items() %}<code>{{ k }}</code>&rarr;<code>{{ v }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+        {% endif %}
+        The severity stored against a watchlist entry is what the importer
+        computed; these are applied on top of it when the alert is sent. Entries
+        where the two differ show both on the watchlist.
+      </small></p>
+    {% endif %}
     {% if clock_state.behind %}
       <p><small class="dim">
         🕐 <strong>This machine's clock reads behind events already recorded
