@@ -788,6 +788,10 @@ _WATCHLIST_CSV_HEADER = [
     "last_verified_unix",
     "notes",
     "can_fire",
+    #: ⭐ Its OWN column rather than a fifth `can_fire` value: the override
+    #: cause is per-row and INDEPENDENT of the type-level verdict, so a row can
+    #: carry both and a single enum would hide whichever check ran second.
+    "override_suppressed",
 ]
 
 

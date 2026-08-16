@@ -506,6 +506,13 @@ def test_healthz_json_response_shape_stability(tmp_path):
             "snoozed_rows",
             "inert_pattern_types",
             "snoozed_pattern_types",
+            # The THIRD silencing cause and the only per-row one: a
+            # suppress_vendors / suppress_categories entry in the severity
+            # overrides. Reported as the configured LISTS, never a row count --
+            # counting means scanning the whole watchlist per poll. See
+            # webui/liveness.runtime_suppressions.
+            "override_suppressed_vendors",
+            "override_suppressed_categories",
         }
         assert set(body["checks"]["ruleset"].keys()) == {
             "status",

@@ -257,6 +257,98 @@ def watchlist_liveness(
     }
 
 
+def runtime_suppressions(config: Config) -> dict:
+    """The vendors and device categories the severity overrides silence.
+
+    ⭐ A THIRD way a stored watchlist entry produces no alert, and unlike the
+    other two it is **per row**, not per pattern_type. ``rules``'s
+    ``_apply_runtime_overrides`` returns ``None`` for a match whose manufacturer
+    is in ``suppress_vendors`` or whose category is in ``suppress_categories``,
+    and every delegation branch then emits nothing.
+
+    Measured, one `mac` entry with vendor "AcmeCorp" / category "tracker",
+    matching device observed:
+
+        no overrides file                  -> 1 alert
+        suppress_vendors: [acmecorp]       -> 0 alerts
+        suppress_categories: [tracker]     -> 0 alerts
+
+    ...and the liveness report said ``live_count=1`` in all three. That is
+    Finding 39, and it is live on any install using overrides today.
+
+    ⚠️ Vendor comparison is ``strip().lower()`` because that is exactly what
+    ``_apply_runtime_overrides`` does. Category comparison is NOT normalised,
+    for the same reason — it compares the raw value. Matching the engine's
+    normalisation is the whole point: a marker that used different rules would
+    flag rows the engine does not suppress and miss rows it does, which is worse
+    than saying nothing.
+
+    ⛔ Returns the LISTS, never a row count. Counting suppressed rows would mean
+    scanning the whole watchlist (17k+ rows on an Argus install) on every
+    ``/settings`` and ``/healthz.json`` hit, and there is no indexed vendor
+    filter to do it cheaply. Rows are marked where they are already loaded
+    instead — which is also the more useful answer, because it says WHICH.
+    """
+    empty = {"configured": False, "vendors": (), "categories": ()}
+    path = getattr(config, "severity_overrides_path", None)
+    if not path:
+        return empty
+    try:
+        overrides = rules_mod.load_runtime_severity_overrides(path)
+    except Exception as exc:  # noqa: BLE001 — the loader is documented as benign
+        logger.warning("runtime suppressions: overrides unreadable (%s)", exc)
+        return empty
+    if overrides is None:
+        return empty
+    return {
+        "configured": True,
+        "vendors": tuple(sorted(overrides.suppress_vendors)),
+        "categories": tuple(sorted(overrides.suppress_categories)),
+    }
+
+
+def override_suppression_reason(
+    vendor: str | None, device_category: str | None, suppressions: dict
+) -> str | None:
+    """Which axis silences this entry — ``"vendor"``, ``"category"`` or None.
+
+    ⚠️ Returns the REASON, not a bool, because the UI has to name the axis that
+    actually matched. Printing every populated metadata field as though it
+    matched tells an operator to go and remove a category suppression that had
+    nothing to do with it.
+
+    ⚠️ Takes the two VALUES, not a row. An earlier version took "a row" and read
+    it with ``row.get(...)`` behind a ``hasattr(row, "get")`` guard — and the two
+    call sites hand over two different shapes (``WatchlistRow`` NamedTuple vs
+    dict). The NamedTuple has no ``.get``, so the guard turned a type mismatch
+    into a silent "not suppressed": one page marked rows correctly, the other
+    marked nothing, and nothing raised. A guard that converts "I cannot read
+    this" into "the answer is no" is indistinguishable from a correct negative.
+
+    ⚠️ ``is not None``, not truthiness, because that is exactly what
+    ``_apply_runtime_overrides`` tests. Measured: the loader admits ``""`` into
+    ``suppress_categories``, and the engine suppresses a row whose category is
+    ``""`` — a truthiness check here would skip it and mark the row live while
+    every alert it produces is discarded. Vendor is still ``strip().lower()``;
+    category is still compared raw. Matching the engine's exact semantics is the
+    whole job.
+    """
+    if not suppressions.get("configured"):
+        return None
+    if vendor is not None and vendor.strip().lower() in suppressions["vendors"]:
+        return "vendor"
+    if device_category is not None and device_category in suppressions["categories"]:
+        return "category"
+    return None
+
+
+def is_row_suppressed_by_overrides(
+    vendor: str | None, device_category: str | None, suppressions: dict
+) -> bool:
+    """Whether this entry's alerts are dropped by a severity override."""
+    return override_suppression_reason(vendor, device_category, suppressions) is not None
+
+
 def is_pattern_type_live(pattern_type: str, liveness: dict) -> bool:
     """Whether a single entry's type can fire, for per-row rendering.
 

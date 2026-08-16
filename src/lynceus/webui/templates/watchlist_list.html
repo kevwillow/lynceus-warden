@@ -130,6 +130,14 @@
                 <span class="badge-inert" title="no enabled rule in rules.yaml delegates to this pattern type, so this entry cannot fire">inert</span>
               {% elif e.pattern_type in snoozed_pattern_types %}
                 <span class="badge-snoozed-type" title="the rule matches, but you snoozed this rule_type from the rules page; alerts are dropped until it expires">snoozed</span>
+              {% endif %}
+              {# ⭐ Per-ROW, and checked INDEPENDENTLY of the type-level badges
+                 above rather than as another {% elif %}: a severity override
+                 silences this one entry by its vendor/category, which is a
+                 different cause from anything the pattern_type can express, so
+                 an entry can genuinely carry both. #}
+              {% if e.id in suppressed_ids %}
+                <span class="badge-snoozed-type" title="a suppress_vendors / suppress_categories entry in your severity overrides drops this row's alerts">override</span>
               {% endif %}</td>
               <td><span class="badge-{{ e.severity }}">{{ e.severity }}</span></td>
               <td>{{ e.description or "" }}</td>
