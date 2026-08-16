@@ -138,6 +138,9 @@
                  an entry can genuinely carry both. #}
               {% if e.id in suppressed_ids %}
                 <span class="badge-snoozed-type" title="a suppress_vendors / suppress_categories entry in your severity overrides drops this row's alerts">override</span>
+              {% endif %}
+              {% if e.id in never_match_ids %}
+                <span class="badge-inert" title="this OUI prefix is reserved or locally administered, so this row can never match">never</span>
               {% endif %}</td>
               <td><span class="badge-{{ e.severity }}">{{ e.severity }}</span></td>
               <td>{{ e.description or "" }}</td>
