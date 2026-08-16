@@ -480,6 +480,92 @@ def test_allowlist_future_expiry_no_warning(tmp_path):
     assert report.issues == ()
 
 
+def test_a_malformed_sibling_entry_leaves_the_primary_report_clean(tmp_path):
+    """The primary's report must describe the PRIMARY file.
+
+    Measured before the fix: a valid `allowlist.yaml` beside a sibling holding
+    one bad entry reported the PRIMARY as invalid, carrying the sibling's log
+    line and the claim "would empty the allowlist at startup". Nothing was
+    emptied -- the poller loads primary=2 ui=1 in exactly this state -- and the
+    operator is sent to edit the file that was correct.
+
+    Both halves are asserted, because "the primary is clean" alone would still
+    pass if the sibling's real problem stopped being reported at all.
+    """
+    primary = tmp_path / "allowlist.yaml"
+    _write(
+        primary,
+        (
+            "entries:\n"
+            "  - pattern: 'aa:bb:cc:dd:ee:ff'\n"
+            "    pattern_type: mac\n"
+            "  - pattern: 'ac:de:48:00:11:22'\n"
+            "    pattern_type: mac\n"
+        ),
+    )
+    sibling = v.derive_ui_path(primary)
+    _write(
+        sibling,
+        (
+            "entries:\n"
+            "  - pattern: 'aa:bb:cc:dd:ee:f1'\n"
+            "    pattern_type: mac\n"
+            "  - pattern: 'ac:de:48:11:22:33'\n"
+            "    pattern_type: NOT_A_TYPE\n"
+        ),
+    )
+
+    primary_report = v.validate_allowlist_yaml(primary)
+    assert primary_report.valid, (
+        "a valid primary was reported invalid because of its sibling: "
+        f"{[i.message for i in primary_report.issues]}"
+    )
+    assert not any(
+        str(sibling) in i.message for i in primary_report.issues
+    ), "the primary's report names the sibling file"
+
+    # ...and the sibling's own report still catches it, precisely.
+    sibling_report = v.validate_allowlist_ui_yaml(sibling)
+    assert not sibling_report.valid
+    assert any("pattern_type" in i.message for i in sibling_report.issues)
+
+
+def test_the_primary_entry_count_excludes_the_sibling(tmp_path):
+    """`N entries valid` must count the file the line is about.
+
+    The primary loader used to be `load_allowlist`, which merges the sibling,
+    so a 2-entry file next to a 3-entry sibling reported "5 entries valid" --
+    beside the sibling's own "3 entries valid". Five entries rendered as eight.
+    """
+    primary = tmp_path / "allowlist.yaml"
+    _write(
+        primary,
+        (
+            "entries:\n"
+            "  - pattern: 'aa:bb:cc:dd:ee:ff'\n"
+            "    pattern_type: mac\n"
+            "  - pattern: 'ac:de:48:00:11:22'\n"
+            "    pattern_type: mac\n"
+        ),
+    )
+    sibling = v.derive_ui_path(primary)
+    _write(
+        sibling,
+        (
+            "entries:\n"
+            "  - pattern: 'aa:bb:cc:dd:ee:f1'\n"
+            "    pattern_type: mac\n"
+            "  - pattern: 'aa:bb:cc:dd:ee:f2'\n"
+            "    pattern_type: mac\n"
+            "  - pattern: 'aa:bb:cc:dd:ee:f3'\n"
+            "    pattern_type: mac\n"
+        ),
+    )
+
+    assert v.validate_allowlist_yaml(primary).summary == "2 entries valid"
+    assert v.validate_allowlist_ui_yaml(sibling).summary == "3 entries valid"
+
+
 def test_allowlist_ui_missing_is_ok(tmp_path):
     p = tmp_path / "allowlist_ui.yaml"
     report = v.validate_allowlist_ui_yaml(p)
