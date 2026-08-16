@@ -805,6 +805,11 @@ _WATCHLIST_CSV_HEADER = [
     #: ⚠️ EMPTY for a row whose alerts are suppressed entirely: that row has no
     #: severity to receive, and `override_suppressed` above is what says why.
     "effective_severity",
+    #: ⭐ The FIFTH silencing mechanism, for the rows where it has one answer.
+    #: Values: yes / no / **n/a**. `n/a` is not "no": a row that can match many
+    #: devices has some of them allowlisted and some not, so a single verdict
+    #: would be false for part of the set. `mac` rows name one device.
+    "allowlist_suppressed",
 ]
 
 
