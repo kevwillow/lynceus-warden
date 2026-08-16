@@ -269,6 +269,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as an error with exit 1. Files are loaded, not refused — one stray line should
   not drop every other rule you wrote.
 
+  ⚠️ The same check now covers `allowlist_ui.yaml`, the file the web UI writes.
+  It had been left out on the assumption that a daemon-managed file is not
+  hand-edited — measured, a duplicate there moves a suppression exactly as it
+  does in the file you curate yourself, and it is **worse**: the UI rewrites
+  that file on every click, so one "Allowlist this device" leaves only the
+  winning address behind. The line you actually typed disappears and the file
+  reads as though you had always chosen the other one. The warning is emitted
+  before that rewrite happens.
+
 - **`watchful` reported a device as last seen at the moment you clicked a
   button.** Resetting an escalated entry walks its count back — and, because the
   same column is also the recurrence debounce and the 90-day auto-archive clock,

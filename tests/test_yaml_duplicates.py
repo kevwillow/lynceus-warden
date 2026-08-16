@@ -274,13 +274,6 @@ def test_load_runtime_severity_overrides_warns_only_on_a_duplicate(
 # this scan hardcoded three helper names, missed that the allowlist's is called
 # `_warn_on_duplicate_keys`, and reported a WIRED loader as unwired.
 _EXEMPT: dict[str, str] = {
-    "lynceus/allowlist.py::_load_ui_entries": (
-        "daemon-managed sibling, not hand-edited; the operator-curated "
-        "primary is wired"
-    ),
-    "lynceus/allowlist.py::_read_ui_yaml": (
-        "same daemon-managed sibling, read-modify-write path"
-    ),
     "lynceus/cli/validate.py::_try_load_yaml": (
         "validate reports duplicates itself via _duplicate_key_issues, "
         "as an ERROR, per validator"
@@ -405,6 +398,30 @@ def test_no_exemption_is_stale():
     a guarantee about nothing."""
     sites = _safe_load_sites()
     assert [s for s in _EXEMPT if s not in sites] == []
+
+
+def test_no_exemption_survives_its_site_becoming_wired():
+    """⛔ The other direction, and it is the one that let a wrong exemption sit
+    unchallenged. `_EXEMPT` is only consulted for UNWIRED sites, so once a site
+    gains a reporter its exemption stops being read and stops being checked --
+    a stale justification that outlives the thing it justified, and the next
+    reader takes it as a live statement about the code.
+
+    Both `allowlist.py` UI-sibling entries were exempted on the reason
+    "daemon-managed, not hand-edited". Measured, that was false: a duplicate
+    there moves the suppression exactly as it does in the primary, and one UI
+    write then LAUNDERS it -- the address the operator meant disappears from
+    the file and only the stray survives. They are wired now, so their
+    exemptions must be gone.
+    """
+    still_exempt_but_wired = [
+        site for site, wired in _safe_load_sites().items()
+        if wired and site in _EXEMPT
+    ]
+    assert still_exempt_but_wired == [], (
+        "these are wired now, so their exemption text is a stale claim about "
+        f"code that no longer needs it: {still_exempt_but_wired}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -658,3 +675,101 @@ def test_the_allowlist_reporter_now_delegates_to_the_shared_one(tmp_path, caplog
         al._warn_on_duplicate_keys(p)  # must not raise
     finally:
         al.logger = original
+
+
+# --- the UI sibling: an exemption I wrote, and never measured ---------------
+#
+# ⛔ #130 exempted these two loaders on the reason "daemon-managed sibling, not
+# hand-edited". That was an assumption about operator behaviour, written into a
+# guard whose entire purpose is to demand a REASON -- and the file is plain
+# YAML in the config directory beside one this project has already proven
+# people hand-edit. Measured, all three claims below were false.
+
+
+def _ui_with_dup(tmp_path):
+    """A valid primary beside a sibling carrying a stray second `pattern:`.
+
+    `ac:de:48` is a genuine universally-administered OUI. `de:ad:be`/`aa:bb:cc`
+    have the locally-administered bit set and are discarded before matching --
+    a fixture that does not populate what the code reads is how five confident
+    wrong findings got made here.
+    """
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    ui = tmp_path / "allowlist_ui.yaml"
+    ui.write_text(
+        "entries:\n"
+        '  - pattern: "ac:de:48:00:11:22"\n'
+        '    pattern: "ac:de:48:99:99:99"\n'
+        "    pattern_type: mac\n"
+        "    note: kev phone\n",
+        encoding="utf-8",
+    )
+    return primary, ui
+
+
+def test_a_duplicate_in_the_ui_sibling_warns_at_daemon_load(tmp_path, caplog):
+    from lynceus.allowlist import load_allowlist
+
+    primary, _ui = _ui_with_dup(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        load_allowlist(str(primary))
+    assert any(
+        "entries[0].pattern" in r.getMessage() for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+def test_a_clean_ui_sibling_warns_nothing(tmp_path, caplog):
+    """The control -- half the guard, and the half that fails if the reporter
+    is wired unconditionally."""
+    from lynceus.allowlist import load_allowlist
+
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    ui = tmp_path / "allowlist_ui.yaml"
+    ui.write_text(
+        'entries:\n  - pattern: "ac:de:48:00:11:22"\n    pattern_type: mac\n',
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING):
+        load_allowlist(str(primary))
+    assert [r for r in caplog.records if "duplicate key" in r.getMessage()] == []
+
+
+def test_a_ui_write_launders_the_duplicate_but_no_longer_silently(tmp_path, caplog):
+    """⛔ Why this path was WORSE than the primary's, not merely equal to it.
+
+    In the primary a duplicate stays in the file, so an operator reading it can
+    still see the stray line. Here `_read_ui_yaml` round-trips through
+    `yaml.safe_dump`, so ONE "Allowlist this device" click rewrites the file
+    with only the winner: the address the operator actually meant is GONE and
+    the file reads as though they had always chosen the other one. The daemon
+    destroys its own evidence.
+
+    The laundering is pinned as behaviour rather than fixed -- rewriting is
+    what makes a UI write REPAIR a damaged file, which is load-bearing. What
+    changed is that it can no longer happen without a record naming both lines.
+    """
+    from lynceus.allowlist import AllowlistEntry, add_ui_entry
+
+    _primary, ui = _ui_with_dup(tmp_path)
+    before = ui.read_text(encoding="utf-8")
+    assert "ac:de:48:00:11:22" in before and "ac:de:48:99:99:99" in before
+
+    with caplog.at_level(logging.WARNING):
+        add_ui_entry(
+            ui,
+            AllowlistEntry(
+                pattern="aa:11:22:33:44:55", pattern_type="mac", note="unrelated"
+            ),
+        )
+    after = ui.read_text(encoding="utf-8")
+
+    # the laundering itself, pinned so a future change to it is deliberate
+    assert "ac:de:48:00:11:22" not in after, "intended address survived; update this pin"
+    assert "ac:de:48:99:99:99" in after
+    # and the record that must exist BEFORE the evidence goes
+    assert any(
+        "ac:de:48" in r.getMessage() or "entries[0].pattern" in r.getMessage()
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
