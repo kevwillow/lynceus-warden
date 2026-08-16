@@ -47,7 +47,7 @@ import yaml
 from pydantic import ValidationError
 
 from .. import __version__, paths
-from ..allowlist import Allowlist, derive_ui_path, load_allowlist
+from ..allowlist import Allowlist, _load_primary, derive_ui_path
 from ..cli.import_argus import DEFAULT_CATEGORY_SEVERITIES
 from ..config import Config, load_config
 from ..rules import (
@@ -795,7 +795,28 @@ def _validate_allowlist_file(
                 data = parsed if isinstance(parsed, dict) else {}
                 allowlist = Allowlist(**data)
             else:
-                allowlist = load_allowlist(str(path))
+                # ⛔ This used to call `load_allowlist`, which loads the primary
+                # AND merges the daemon-managed sibling. A report about ONE file
+                # was therefore computed from two, and both consequences told the
+                # operator something untrue about a file that was fine:
+                #
+                #   2-entry primary + 3-entry valid sibling -> this report said
+                #   "5 entries valid" for a file holding 2, beside the sibling's
+                #   own "3 entries valid". Five entries rendered as eight.
+                #
+                #   2-entry VALID primary + one malformed sibling entry -> the
+                #   sibling's ERROR log was captured below and promoted onto this
+                #   file, so `allowlist.yaml` came back invalid, with "would empty
+                #   the allowlist at startup". Measured against the poller: it
+                #   loaded primary=2 ui=1 and emptied nothing. The operator is
+                #   told their curated file is broken and sent to edit the one
+                #   file that had nothing wrong with it -- while the sibling that
+                #   really did drop a suppression is a separate line further down.
+                #
+                # `_load_primary` is the loader `load_allowlist` uses for this
+                # file, minus the merge. The sibling is not skipped: it has its
+                # own report, and that report named the bad entry exactly.
+                allowlist = _load_primary(path)
         except FileNotFoundError:
             issues.append(
                 Issue(
@@ -828,10 +849,14 @@ def _validate_allowlist_file(
     finally:
         capture.detach(_allow_logger)
 
-    # For the primary file, load_allowlist swallows Pydantic / yaml
-    # errors at the inner _load_primary boundary and returns an empty
-    # Allowlist with an ERROR log line. Promote that ERROR-log to an
-    # ERROR issue so the operator sees it at validate time.
+    # For the primary file, `_load_primary` swallows Pydantic / yaml errors
+    # (lenient mode) and returns an empty Allowlist with an ERROR log line.
+    # Promote that ERROR-log to an ERROR issue so the operator sees it at
+    # validate time. The consequence named below is measured, not assumed:
+    # `Poller._load_allowlist` catches AllowlistParseError at startup, sets
+    # `self.allowlist = Allowlist()` and logs CRITICAL "SUPPRESSION DISABLED".
+    # ⚠️ It is true of THIS file only, which is why the capture above is now
+    # scoped to a loader that reads no other file.
     if not is_ui_sibling:
         for record in capture.records:
             if record.levelno >= logging.ERROR:
