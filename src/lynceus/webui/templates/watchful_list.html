@@ -91,8 +91,17 @@
                 {% else %}
                   <span class="badge-watchful-tracking">tracking</span>
                 {% endif %}
+                {% if row.escalation_delivery == 'suppressed' %}
+                  <span class="badge-watchful-nosend" title="The watchful_recurrence rule type was snoozed when this entry crossed the threshold, so the escalation alert was never written and you were never notified. The entry cannot escalate again unless you reset it.">never sent</span>
+                {% elif row.escalation_delivery == 'undelivered' %}
+                  <span class="badge-watchful-undelivered" title="The escalation alert was written but delivery has not succeeded. The poller retries when the device is seen again.">not delivered</span>
+                {% endif %}
                 {% if e.flagged_for_investigation %}
-                  <span class="badge-watchful-flagged" role="img" title="flagged for investigation" aria-label="flagged for investigation">&#x1F50D;</span>
+                  {% if e.confirmed_safe %}
+                    <small class="dim">was flagged for investigation</small>
+                  {% else %}
+                    <span class="badge-watchful-flagged" role="img" title="flagged for investigation" aria-label="flagged for investigation">&#x1F50D;</span>
+                  {% endif %}
                 {% endif %}
                 {% if e.confirmed_safe %}
                   <span class="badge-watchful-safe" role="img" title="confirmed not suspicious" aria-label="confirmed not suspicious">&check;</span>

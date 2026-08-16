@@ -235,6 +235,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Watchful no longer calls every recorded escalation delivered.** A recurrence
+  that crossed its threshold while the `watchful_recurrence` rule type was
+  snoozed is deliberately consumed: the row records its escalation so it cannot
+  repeatedly fire, but no alert is written and the operator is never notified.
+  Both watchful surfaces now say **never sent** for that state, and distinguish
+  it from **not delivered**, where an alert row exists but notification has not
+  yet succeeded. A confirmed-safe entry that was previously flagged now says it
+  *was* flagged, rather than presenting both dispositions as current facts.
+
 - **`/healthz.json`'s watchlist numbers looked like they added up, and stopped
   doing so the first time you snoozed the wrong thing.** `live_rows`,
   `inert_rows` and `snoozed_rows` are independent flags, not a partition: a
