@@ -3123,11 +3123,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return "tracking"
 
     def _escalation_delivery(entry: WatchfulRecurrence) -> str | None:
-        """Did the escalation this entry records actually REACH the operator?
+        """What does the recorded escalation's alert lookup establish?
 
         Returns None for an entry that has not escalated, else one of:
 
-          "delivered"    the escalation alert exists and is stamped notified
+          "delivered"    the escalation alert exists and the notifier reported
+                         success
           "undelivered"  the alert row exists and has never been delivered --
                          the send failed; poller retries are driven by seeing
                          the device again
@@ -3135,6 +3136,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
                          rule_type snooze was active at the threshold crossing,
                          so the poller consumed the escalation deliberately and
                          the operator was never told
+          "unknown"      the alert lookup failed, so delivery state could not
+                         be determined
+
+        End-recipient delivery is not observable here; ``notified_at`` records
+        that the notifier reported success.
 
         ⭐ "suppressed" is decidable rather than inferred: alerts are never
         pruned (no DELETE FROM alerts anywhere, no retention knob), so a missing
@@ -3151,15 +3157,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
             )
         except Exception:
             # This is diagnostic state. A failed lookup must not cost the page.
-            return None
+            return "unknown"
         if alert is None:
             return "suppressed"
         if alert["notified_at"] is None:
             return "undelivered"
         return "delivered"
 
-    def _last_activity_is_the_reset(entry: WatchfulRecurrence) -> bool:
-        """Is this row's ``last_seen_at`` the operator's reset click?
+    def _is_unsighted_reset_generation(entry: WatchfulRecurrence) -> bool:
+        """This row is a reset generation in which no counted sighting has
+        happened yet.
 
         Three writers set that column and only one of them is an
         observation: a counted sighting
@@ -3176,10 +3183,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
         The reset is derivable from the row: it forces
         ``sighting_count`` to 1, so ``reset_count > 0 and
-        sighting_count == 1`` means no counted sighting has landed
-        since, and the stored value therefore IS the reset instant. A
-        never-reset row also has ``sighting_count == 1``, which is why
-        this is a conjunction and not either half.
+        sighting_count == 1`` means this is a reset generation in
+        which no counted sighting has landed yet. A never-reset row
+        also has ``sighting_count == 1``, which is why this is a
+        conjunction and not either half.
 
         ⛔ Deliberately NOT extended to the clock-repair clamp: that
         write leaves the row byte-identical to one whose device was
@@ -3290,7 +3297,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "entry": e,
                 "state_label": _entry_state(e),
                 "escalation_delivery": _escalation_delivery(e),
-                "last_activity_is_the_reset": _last_activity_is_the_reset(e),
+                "is_unsighted_reset_generation": _is_unsighted_reset_generation(e),
             }
             for e in entries
         ]
@@ -3361,7 +3368,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "entry": entry,
                 "state_label": _entry_state(entry),
                 "escalation_delivery": _escalation_delivery(entry),
-                "last_activity_is_the_reset": _last_activity_is_the_reset(entry),
+                "is_unsighted_reset_generation": _is_unsighted_reset_generation(entry),
                 "now_ts": int(time.time()),
                 "flash": flash,
             },
