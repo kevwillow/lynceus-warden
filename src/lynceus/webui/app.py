@@ -54,6 +54,7 @@ from lynceus.webui.liveness import (
     is_pattern_type_live,
     is_pattern_type_snoozed,
     is_row_suppressed_by_overrides,
+    oui_prefix_never_matches,
     override_suppression_axes,
     runtime_suppressions,
     watchlist_liveness,
@@ -4304,6 +4305,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
                         r.vendor, r.device_category, row_suppressions
                     )
                 },
+                "never_match_ids": {
+                    r.id for r in rows
+                    if oui_prefix_never_matches(r.pattern_type, r.pattern)
+                },
                 "inert_pattern_types": liveness["inert_types"],
                 "snoozed_pattern_types": liveness["suppressed_types"],
             },
@@ -4575,6 +4580,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     row.get("vendor"),
                     row.get("device_category"),
                     runtime_suppressions(app.state.config),
+                ),
+                "oui_never_matches_reason": oui_prefix_never_matches(
+                    row.get("pattern_type"), row.get("pattern")
                 ),
             },
         )

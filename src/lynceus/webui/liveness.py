@@ -73,6 +73,7 @@ import sqlite3
 from typing import TYPE_CHECKING
 
 from lynceus import rules as rules_mod
+from lynceus.rules import _is_reserved_oui_mac
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from lynceus.config import Config
@@ -113,6 +114,26 @@ NON_DELEGATING_RULE_TYPES: frozenset[str] = frozenset(
 # operator told "enable the rule" for imei_tac would be sent somewhere with
 # nothing to find.
 DEAD_BY_MODEL: frozenset[str] = frozenset({"imei_tac"})
+
+
+def oui_prefix_never_matches(pattern_type: str, pattern: str | None) -> str | None:
+    """Reason this row can never match regardless of the ruleset, or None.
+
+    Applies only to pattern_type == "oui". Returns the human reason string from
+    rules._is_reserved_oui_mac, or None when the row can match.
+    """
+    if pattern_type != "oui" or not pattern:
+        return None
+    is_reserved, reason = _is_reserved_oui_mac(pattern)
+    if not is_reserved:
+        return None
+    # ⚠️ The VERDICT decides, never the reason's truthiness. `return reason if
+    # is_reserved else None` couples them, so a future `(True, None)` or
+    # `(True, "")` would silently answer "this row can match" -- a guard that
+    # reports "no" when it cannot describe its own finding. Unreachable today
+    # (every True branch of _is_reserved_oui_mac carries a non-empty string),
+    # and pinned by a test so it stays that way.
+    return reason or "reserved or locally-administered prefix"
 
 
 def live_pattern_types(ruleset: Ruleset) -> frozenset[str]:

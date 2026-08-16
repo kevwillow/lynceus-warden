@@ -54,6 +54,14 @@
         {% endif %}
       </small></p>
     {% endif %}
+    {% if oui_never_matches_reason %}
+      <p><small class="dim">
+        <span class="badge-inert">never</span>
+        <strong>This entry can never match.</strong>
+        Editing <code>rules.yaml</code> will not change that for this row: its
+        OUI prefix is <code>{{ oui_never_matches_reason }}</code>.
+      </small></p>
+    {% endif %}
     {% if entry_is_snoozed %}
       <p><small class="dim">
         <span class="badge-snoozed-type">snoozed</span>
