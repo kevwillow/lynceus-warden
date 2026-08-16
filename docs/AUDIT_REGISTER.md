@@ -2589,10 +2589,63 @@ correction) and because it skips.
 That is the pattern worth carrying out of Round 14: when a suspicion about behaviour dies, check
 whether the thing that *should* have detected it was ever able to.
 
-🟡 **Residual, small and named:** `config.py` and `rules.py` still load with a plain
-`yaml.safe_load`. #122 covers them at the **validator** surface (all five files), so an operator
-running `lynceus-validate` is protected; a **daemon-side** warning for those two files is the
-remaining gap.
+🟡 **Residual — ✅ CLOSED by #130 (`68f5bb7`), and it was NOT small.** The text here originally read
+*"Residual, **small** and named: `config.py` and `rules.py` still load with a plain `yaml.safe_load`
+… a daemon-side warning for those two files is the remaining gap."* ⛔ **I wrote that, and it was
+wrong within the hour it was written.** It is Finding 49 below: **six loaders** (three daemon, three
+CLI) across five modules, with the **dead-man's switch** among the values a stray line can flip.
+**"Small" was a guess wearing the clothes of a measurement** — the scope had been reasoned about,
+never measured, and the word travelled anyway.
+
+## Round 15 — the same duplicate-key mechanism, everywhere the operator does not type a command, 2026-08-16
+
+### 🔴 Finding 49 — a duplicate key silently changed what the daemon ENFORCES, everywhere except the allowlist — FIXED by #130 (`68f5bb7`)
+
+Finding 47 fixed `allowlist.yaml` at the loader and all five files at `lynceus-validate`. **Every
+other loader was left on a plain `yaml.safe_load`** — deliberately, and in writing, in
+`validate.py:_duplicate_key_issues`'s own docstring. This is the gap on the paths an operator never
+runs by hand. Measured on `7eb96b8`, one stray line per case, **every one fail-OPEN**:
+
+| file | duplicate key | value in force | what the daemon said |
+|---|---|---|---|
+| `rules.yaml` | top-level `rules:` | **first block discarded whole** (2 rules → 1) | `"1 active rules"` |
+| `rules.yaml` | `enabled:` | rule off, despite `enabled: true` above it | `"0 active rules (1 disabled)"` |
+| `rules.yaml` | `patterns:` | watched addresses swapped | `"1 active rules"` — **byte-identical to the correct file** |
+| `severity_overrides.yaml` | `suppress_vendors:` | a vendor silenced | five counts, none looking wrong |
+| `lynceus.yaml` | `heartbeat_enabled:` | **dead-man's switch disarmed** | **nothing, ever** |
+
+⭐ **The organising fact, and it is why "the daemon already logs a count" was not a defence: every
+startup signal this project emits narrates a COUNT.** A duplicate that changes a **value inside a
+preserved structure** moves no count at all. The `patterns:` case prints a startup line identical to
+the correct file's. `heartbeat_enabled` is worse — `poller.py:1252` returns early on every tick
+without logging, so **the one feature whose entire purpose is to speak when nothing else can is
+disarmed in silence.**
+
+🪤 **The most plausible hand-edit is also the worst.** Appending a second top-level `rules:` block,
+rather than extending the first, is the natural thing to do to a file whose top-level key is a list.
+It discards every rule above it and reports the survivors as if they were everything.
+
+⛔ **Three CLI loaders matter for a reason the runtime ones do not** — they bake the wrong value in at
+**write** time, so a restart does not correct it: `import_argus.load_override_config` (the severity is
+already in the watchlist), `seed_watchlist.seed_from_yaml` (Finding 47 pointed the other way — there a
+duplicate *silenced* a device, here it *watches* one nobody named), and `setup/core._existing_mapping`,
+whose answer `--reconfigure` carries forward **as though the operator had chosen it** (Finding 36 is
+what happens when that function is wrong).
+
+⭐ **The fix takes the lesson from #122's own near-miss, and this is the transferable part.** #122's
+helper sat inside `_load_primary`'s `except Exception`, where a raise from the **diagnostic** was
+reported as *"could not be parsed"* and became a valid file loading as **zero entries** with the
+poller announcing `SUPPRESSION DISABLED`. Here the swallow-everything property is implemented once
+and asserted where it bites: `test_a_broken_detector_cannot_change_what_load_ruleset_returns` pins
+the loader's **return value** with the detector throwing `MemoryError` — not merely that nothing
+propagated. ⇒ **A diagnostic must not be able to change the answer it is diagnosing.**
+
+✅ **Acceptance criterion:** every `yaml.safe_load` site in `src/lynceus` is either wired to
+`warn_duplicate_keys` or carries a **written exemption**, and a new loader cannot join silently.
+Three guards, and it takes all three — `test_the_scan_finds_the_loaders_it_is_supposed_to_grade` (the
+instrument's own control, because **a vacuous sweep has shipped in this repo before**),
+`test_every_yaml_loader_is_wired_or_exempt_with_a_reason`, and `test_no_exemption_is_stale`.
+⭐ The first is the one that matters: it is the difference between a sweep and a claim about a sweep.
 
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
@@ -2789,8 +2842,11 @@ below describes, running in the other direction:**
   write and the stamp. ⛔ The obvious dedup is the **unsafe** direction (it suppresses the genuine
   escalation of a RESET entry); closing it honestly needs a generation-keyed escalation record, i.e.
   a migration.
-- 🟡 **A daemon-side duplicate-key warning for `config.py` and `rules.py`** (Round 14 residual). Both
-  still use a bare `yaml.safe_load`; #122 covers them at the `lynceus-validate` surface only.
+- ~~🟡 **A daemon-side duplicate-key warning for `config.py` and `rules.py`** (Round 14 residual).~~
+  ✅ **CLOSED by #130 (`68f5bb7`) — see Finding 49.** ⛔ **Struck through rather than deleted, because
+  the half-life is the lesson:** this bullet was written into this list at 15:0x and was false by
+  15:2x, in the same session, by another session's merge. It was also **understated** while it stood
+  — "small", when the same mechanism silently disarms the dead-man's switch.
 - ⚠️ **`/watchful/{entry_id}/reset` was never exercised** by Round 13's form-field sweep — it renders
   only on an already-escalated entry. **Unexamined, not cleared**, and the distinction is the point.
 - ⚠️ **Round 12 named three things it could not see and they are still unseen:** the retention prunes
@@ -2803,6 +2859,13 @@ were already fixed, and on 2026-08-16 it was missing five items that were genuin
 the biggest one. The first kind wastes a session's work; the second kind loses it. **A "Still open"
 list is a claim with an expiry date, and it needs re-deriving from the rounds above, not editing in
 place.**
+
+⇒ **And the expiry is shorter than anyone writes it for.** One bullet above was added and closed
+**inside the same hour, by a parallel session's merge that landed while this file was being
+written**. With several sessions running, "still open" means *open at the moment of writing* and
+nothing more. **Re-derive it, and never quote it to decide what to work on without re-reading `main`
+first** — that is how two sessions end up building the same fix, which has already happened three
+times on this project.
 
 ### 🪤 This section was itself stale, and said so in its own text
 
