@@ -504,6 +504,10 @@ def test_healthz_json_response_shape_stability(tmp_path):
             "live_rows",
             "inert_rows",
             "snoozed_rows",
+            # The counts are independent flags; pin the exported overlap so
+            # consumers can verify their arithmetic is not a partition.
+            "double_counted_rows",
+            "both_inert_and_snoozed_pattern_types",
             "inert_pattern_types",
             "snoozed_pattern_types",
             # The THIRD silencing cause and the only per-row one: a

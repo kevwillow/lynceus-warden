@@ -235,6 +235,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`/healthz.json`'s watchlist numbers looked like they added up, and stopped
+  doing so the first time you snoozed the wrong thing.** `live_rows`,
+  `inert_rows` and `snoozed_rows` are independent flags, not a partition: a
+  pattern type that is *both* inert and snoozed has its rows counted twice. The
+  payload never said so — and the sum happens to equal the total on an install
+  with no snooze **and** on a snoozed type that is still live, so a dashboard
+  that stacks the three validates fine and only breaks later. Measured on a
+  three-row watchlist: `1 + 2 + 2 = 5` against a total of `3`.
+
+  The payload now carries `double_counted_rows` and
+  `both_inert_and_snoozed_pattern_types`, which makes
+  `live + inert + snoozed - double_counted_rows == total_rows` something a
+  consumer can check rather than infer. Like the three counts beside it, the new
+  number is `null` — never `0` — when liveness is unknown, because a zero there
+  would be a claim nothing established.
+
 - **A duplicate key in a hand-edited config file silently changed what the
   daemon enforced.** `yaml.safe_load` keeps the LAST of a duplicate mapping key
   with no error and no warning, so the value you read at the top of your file
