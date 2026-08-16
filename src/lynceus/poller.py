@@ -181,12 +181,18 @@ def _emit_watchful_escalation(
     notifier: Notifier,
     entry: WatchfulRecurrence,
     now_ts: int,
-) -> None:
+) -> bool:
     """Emit the synthetic ``watchful_recurrence`` escalation alert.
 
-    Called once at the first threshold-cross for an entry (the
-    ``db.escalate_watchful_recurrence`` idempotency guard ensures
-    "fire once per escalation"). Independent of the entry's own
+    ⛔ Returns True once the alert ROW EXISTS, False if the write failed. The
+    caller stamps ``escalated_at`` only on True, so a failed write leaves the
+    entry unescalated and the next sighting retries. Deliberately NOT keyed on
+    delivery: once the row exists, ``_retry_watchful_escalation`` can find it
+    and re-send, which is exactly what #74 built it for.
+
+    Called at the first threshold-cross for an entry (the caller's
+    ``escalated_at is None`` test is the "fire once per escalation"
+    guard). Independent of the entry's own
     ``snooze_expires_at``: per OQ-3 that field gates the original
     alert pipeline only, not the escalation alert. Subject to the
     per-rule_type snooze on ``watchful_recurrence``, which the
@@ -224,11 +230,14 @@ def _emit_watchful_escalation(
         )
     except Exception as e:
         logger.warning(
-            "Failed to write watchful escalation alert for %s: %s",
+            "Failed to write watchful escalation alert for %s: %s -- the entry "
+            "stays unescalated so the next sighting retries this write. It is "
+            "NOT recorded as escalated, because an entry marked escalated with "
+            "no alert row is a lost escalation nothing re-drives.",
             entry.mac,
             e,
         )
-        return
+        return False
     # Display-only at-a-glance device type for the escalation ntfy, mirroring
     # the main alert path (85eb163). Unlike that path there is no observation
     # in scope here, so device_type is read off the persisted devices row and
@@ -258,6 +267,10 @@ def _emit_watchful_escalation(
         body=message + type_suffix,
         now_ts=now_ts,
     )
+    # The ROW exists, which is what the caller's stamp is a claim about. A
+    # failed SEND is the retry path's business, not a reason to leave the entry
+    # unescalated and re-emit a duplicate row on the next sighting.
+    return True
 
 
 def _deliver_watchful_escalation(
@@ -662,57 +675,110 @@ def process_observation(
     if watchful_entry is not None:
         outcome = db.record_watchful_sighting(watchful_entry.id, now_ts)
         if outcome is not None:
-            # Threshold detection. escalate_watchful_recurrence
-            # is idempotent (no-op if escalated_at already
-            # set), which drives the design doc's "fire once
-            # per escalation" rule without a separate
-            # first-crossing guard here.
+            # Threshold detection.
+            #
+            # ⛔ `escalated_at` is STAMPED ONLY ONCE THE ALERT ROW EXISTS, and
+            # the ordering is the whole fix. It used to be stamped first, with
+            # `escalate_watchful_recurrence`'s idempotency standing in for a
+            # first-crossing guard -- so a `db.add_alert` that raised (sqlite
+            # "database is locked" is reachable here: the web UI is a separate
+            # process writing this same file) left the entry marked escalated
+            # with no alert row. `escalate_watchful_recurrence` fires once per
+            # entry, and `_retry_watchful_escalation` returns early when it
+            # cannot find the row, so NOTHING re-drove it. Measured, on a
+            # FOREVER watchful snooze where the escalation is the only signal
+            # that can arrive, across 8 further days of daily sightings:
+            #
+            #   healthy DB          esc rows 1  delivered 1  heartbeat: healthy
+            #   DELIVERY fails(#74) esc rows 1  delivered 0  heartbeat: UNHEALTHY
+            #   the WRITE fails     esc rows 0  delivered 0  heartbeat: healthy
+            #
+            # ⚠️ The last row is the defect: it is byte-identical to the healthy
+            # install on the operator's only health channel. #74's failure mode
+            # leaves an undelivered ROW, which `count_undelivered_alerts` sees;
+            # this one leaves nothing to count. The single most important
+            # message this product sends -- that someone appears to be
+            # following you -- was lost silently and permanently.
+            #
+            # ⭐ Same principle the main alert path already applies one gate
+            # down ("dedup on DELIVERY, not on row existence") and that #74
+            # applied to the stamp: do not record the state that suppresses the
+            # retry until the thing it claims happened actually happened.
+            #
+            # ⚠️ `outcome.counted` is deliberately NOT part of this condition.
+            # Counting is debounced to once per 24h; the escalation is due
+            # whenever the count has reached the threshold and the entry has not
+            # escalated yet. Requiring `counted` made the earliest possible
+            # recovery the next COUNTED sighting, i.e. up to 24h away, when the
+            # device is in front of the sensor every poll. `escalated_at is
+            # None` is the guard that keeps this firing once.
             if (
-                outcome.counted
-                and outcome.entry.sighting_count
+                outcome.entry.sighting_count
                 >= Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD
+                and outcome.entry.escalated_at is None
             ):
-                escalated = db.escalate_watchful_recurrence(
-                    watchful_entry.id, now_ts
+                # First crossing. Subject only to the
+                # per-rule_type snooze on watchful_recurrence
+                # (per design doc: detection runs;
+                # notification doesn't, while the snooze
+                # is active).
+                rt_snooze = db.is_rule_type_snoozed(
+                    "watchful_recurrence", now_ts
                 )
-                if escalated is not None:
-                    # First crossing. Subject only to the
-                    # per-rule_type snooze on watchful_recurrence
-                    # (per design doc: detection runs;
-                    # notification doesn't, while the snooze
-                    # is active).
-                    rt_snooze = db.is_rule_type_snoozed(
-                        "watchful_recurrence", now_ts
+                if rt_snooze is None:
+                    # Stamp only if the row was written. A False here means
+                    # the write failed, so the entry stays unescalated and
+                    # the next sighting retries the whole emit.
+                    if _emit_watchful_escalation(
+                        db, notifier, outcome.entry, now_ts
+                    ):
+                        db.escalate_watchful_recurrence(
+                            watchful_entry.id, now_ts
+                        )
+                else:
+                    # ⛔ The snooze CONSUMES the escalation -- stamp it, per
+                    # the design doc's "detection runs, notification does
+                    # not". That stamp is also what keeps "no alert row"
+                    # unambiguous: without it, a snoozed escalation and a
+                    # failed write are indistinguishable afterwards, and
+                    # any recovery built on "escalated but no row" would
+                    # resurrect the alert the operator deliberately
+                    # silenced the moment their snooze expired.
+                    db.escalate_watchful_recurrence(
+                        watchful_entry.id, now_ts
                     )
-                    if rt_snooze is None:
-                        _emit_watchful_escalation(
-                            db, notifier, escalated, now_ts
-                        )
-                    else:
-                        logger.debug(
-                            "watchful escalation suppressed by "
-                            "rule_type snooze: mac=%s",
-                            obs.mac,
-                        )
-                        # ⛔ Count it. The ordinary rule_type-snooze branch
-                        # increments this counter and the escalation branch did
-                        # not, so the hourly suppression summary — the line an
-                        # operator greps to see what their snoozes are actually
-                        # catching — silently omitted the highest-severity
-                        # suppression the product can make. Measured: an
-                        # escalation reached and suppressed, summary reports {}.
-                        if rule_type_suppression_counter is not None:
-                            rule_type_suppression_counter["watchful_recurrence"] = (
-                                rule_type_suppression_counter.get(
-                                    "watchful_recurrence", 0
-                                )
-                                + 1
+                    logger.debug(
+                        "watchful escalation suppressed by "
+                        "rule_type snooze: mac=%s",
+                        obs.mac,
+                    )
+                    # ⛔ Count it. The ordinary rule_type-snooze branch
+                    # increments this counter and the escalation branch did
+                    # not, so the hourly suppression summary — the line an
+                    # operator greps to see what their snoozes are actually
+                    # catching — silently omitted the highest-severity
+                    # suppression the product can make. Measured: an
+                    # escalation reached and suppressed, summary reports {}.
+                    if rule_type_suppression_counter is not None:
+                        rule_type_suppression_counter["watchful_recurrence"] = (
+                            rule_type_suppression_counter.get(
+                                "watchful_recurrence", 0
                             )
+                            + 1
+                        )
             elif watchful_entry.escalated_at is not None:
-                # ⭐ Already escalated. If that escalation never actually
-                # REACHED the operator, this is the only thing that will drive
-                # a retry -- `escalate_watchful_recurrence` fires once per
-                # entry, so the first-crossing branch above is gone for good.
+                # ⭐ Already escalated, meaning the alert ROW EXISTS (the branch
+                # above stamps only after a successful write). If that
+                # escalation never actually REACHED the operator, this is the
+                # only thing that will drive a re-send -- the first-crossing
+                # branch above is guarded on `escalated_at is None` and so is
+                # gone for good once stamped.
+                #
+                # ⚠️ A FAILED WRITE is the other case and it does NOT come here:
+                # it leaves `escalated_at` NULL, so the branch above retries the
+                # write itself. Keeping those two recoveries separate is what
+                # stops a snoozed escalation -- also stamped, also without a row
+                # until the snooze is checked -- from being resurrected here.
                 #
                 # Deliberately outside the `outcome.counted` test: counting is
                 # debounced to once per 24h, and a bounded four attempts spread
