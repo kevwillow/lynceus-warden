@@ -35,6 +35,7 @@ from lynceus.patterns import (
     normalize_pattern,
     parse_mac_range_pattern,
 )
+from lynceus.yaml_duplicates import find_duplicate_keys
 
 logger = logging.getLogger(__name__)
 
@@ -466,6 +467,43 @@ def _load_ui_entries(ui_path: Path) -> list[AllowlistEntry]:
     return _validate_ui_entries(data, ui_path)
 
 
+def _warn_on_duplicate_keys(primary_path: Path) -> None:
+    """WARN for each duplicate key in the operator-curated primary file.
+
+    ``yaml.safe_load`` keeps the LAST duplicate, silently. Measured on a
+    hand-edited file with a stray second ``pattern:`` line:
+
+        entries:
+          - pattern: "ac:de:48:00:11:22"   <- the device they meant
+            pattern: "ac:de:48:99:99:99"   <- the stray line
+            pattern_type: mac
+            note: kev phone
+
+        stored pattern                 ac:de:48:99:99:99  (note: 'kev phone')
+        is_allowed(ac:de:48:00:11:22)  False  <- the device they MEANT alerts
+        is_allowed(ac:de:48:99:99:99)  True   <- one they never named is silent
+
+    So the entry count is right, the file is valid, every surface says fine,
+    and the suppression covers a device the operator never wrote down. A
+    duplicate top-level ``entries:`` key is the same mechanism one level up:
+    the first block is discarded whole.
+
+    ⚠️ WARN rather than reject, deliberately. A duplicate key is not grounds
+    to drop every other suppression in the file -- that is the all-or-nothing
+    failure `_validate_ui_entries` exists to undo. `lynceus-validate` reports
+    the same finding as an ERROR with line numbers, which is the loud surface;
+    this line is for the operator who never runs it.
+    """
+    for dupe in find_duplicate_keys(primary_path):
+        logger.warning(
+            "allowlist primary file %s: %s. The entry loaded is not the one "
+            "written on line %d.",
+            primary_path,
+            dupe.describe(),
+            dupe.first_line,
+        )
+
+
 def _load_primary(
     primary_path: Path, *, raise_on_parse_error: bool = False
 ) -> Allowlist:
@@ -496,6 +534,7 @@ def _load_primary(
     try:
         with open(primary_path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
+        _warn_on_duplicate_keys(primary_path)
         return Allowlist(**data)
     except Exception as exc:
         logger.error(

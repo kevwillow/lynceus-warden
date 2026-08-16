@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from lynceus.cli import validate as v
 
@@ -478,6 +479,123 @@ def test_allowlist_future_expiry_no_warning(tmp_path):
     report = v.validate_allowlist_yaml(p, now_ts=1800000000)
     assert report.valid
     assert report.issues == ()
+
+
+def test_a_duplicate_key_in_an_entry_is_an_error_naming_both_lines(tmp_path):
+    """The case that costs a suppression.
+
+    Measured before the fix, with `is_allowed` rather than a parsed dict:
+    a stray second `pattern:` line left the intended device alerting and
+    silenced one the operator never named, while this tool said
+    "OK (1 entry valid)" and exited 0.
+    """
+    p = tmp_path / "allowlist.yaml"
+    _write(
+        p,
+        (
+            "entries:\n"
+            "  - pattern: 'ac:de:48:00:11:22'\n"
+            "    pattern: 'ac:de:48:99:99:99'\n"
+            "    pattern_type: mac\n"
+            "    note: kev phone\n"
+        ),
+    )
+    report = v.validate_allowlist_yaml(p)
+    assert not report.valid
+    dupes = [i for i in report.issues if "duplicate key" in i.message]
+    assert len(dupes) == 1, [i.message for i in report.issues]
+    # Both lines, so the operator can see which value is in force and which
+    # one they meant. Line 2 is the intended pattern, line 3 the stray.
+    assert "entries[0].pattern" in dupes[0].message
+    assert "line 2" in dupes[0].message
+    assert "line 3" in dupes[0].message
+    assert dupes[0].line == 3
+
+
+def test_a_duplicate_top_level_entries_key_is_an_error(tmp_path):
+    """Two blocks typed, one loaded -- the first is discarded whole."""
+    p = tmp_path / "allowlist.yaml"
+    _write(
+        p,
+        (
+            "entries:\n"
+            "  - pattern: 'aa:bb:cc:dd:ee:ff'\n"
+            "    pattern_type: mac\n"
+            "entries:\n"
+            "  - pattern: '3c:5a:b4'\n"
+            "    pattern_type: oui\n"
+        ),
+    )
+    report = v.validate_allowlist_yaml(p)
+    assert not report.valid
+    assert any("duplicate key 'entries'" in i.message for i in report.issues)
+
+
+def _duplicate_first_key(body: str) -> str:
+    """Re-emit the file's first top-level key with its OWN value.
+
+    Deriving the duplicate from the fixture keeps the file semantically
+    identical, so the only new complaint is the duplicate itself -- rather
+    than a second error from a value invented for the test.
+    """
+    parsed = yaml.safe_load(body)
+    first = next(iter(parsed))
+    return body + yaml.safe_dump({first: parsed[first]}, sort_keys=False)
+
+
+_DUPLICATE_KEY_FIXTURES = {
+    "validate_lynceus_yaml": ("lynceus.yaml", _valid_lynceus_yaml),
+    "validate_rules_yaml": ("rules.yaml", _valid_rules_yaml),
+    "validate_severity_overrides_yaml": (
+        "severity_overrides.yaml",
+        _valid_severity_overrides_yaml,
+    ),
+    "validate_allowlist_yaml": ("allowlist.yaml", _valid_allowlist_yaml),
+    "validate_allowlist_ui_yaml": ("allowlist_ui.yaml", _valid_allowlist_yaml),
+}
+
+
+def test_the_duplicate_key_fixture_map_covers_every_validator():
+    """The map above must be DERIVED-complete, not hand-kept.
+
+    A sixth config file would otherwise be added with no duplicate-key check
+    and nothing would say so -- the exact shape of the /settings drift that
+    rendered 8 of 10 pattern types, where a docstring asked a human to
+    remember and it had already not been remembered twice.
+    """
+    discovered = {
+        name
+        for name in vars(v)
+        if name.startswith("validate_") and name.endswith("_yaml")
+    }
+    assert discovered == set(_DUPLICATE_KEY_FIXTURES), (
+        "validators without a duplicate-key fixture: "
+        f"{sorted(discovered - set(_DUPLICATE_KEY_FIXTURES))}; "
+        f"stale fixtures: {sorted(set(_DUPLICATE_KEY_FIXTURES) - discovered)}"
+    )
+
+
+@pytest.mark.parametrize("validator_name", sorted(_DUPLICATE_KEY_FIXTURES))
+def test_every_validator_reports_a_duplicate_key(validator_name, tmp_path):
+    """Every operator-authored file this tool reads gets the check.
+
+    `config.py` and `rules.py` load their files with the same silent
+    `yaml.safe_load`; covering them here reaches all five files at the
+    operator's surface without changing any daemon-side loader.
+    """
+    filename, fixture = _DUPLICATE_KEY_FIXTURES[validator_name]
+    path = tmp_path / filename
+    _write(path, _duplicate_first_key(fixture()))
+
+    report = getattr(v, validator_name)(path)
+    if isinstance(report, tuple):  # validate_lynceus_yaml returns (report, cfg)
+        report = report[0]
+
+    assert any("duplicate key" in i.message for i in report.issues), (
+        f"{validator_name} did not report a duplicate key: "
+        f"{[i.message for i in report.issues]}"
+    )
+    assert not report.valid
 
 
 def test_a_malformed_sibling_entry_leaves_the_primary_report_clean(tmp_path):

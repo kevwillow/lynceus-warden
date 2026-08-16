@@ -54,6 +54,7 @@ from ..rules import (
     load_ruleset,
     load_runtime_severity_overrides,
 )
+from ..yaml_duplicates import find_duplicate_keys
 
 # Known top-level keys in severity_overrides.yaml. Includes BOTH the
 # import-time set (vendor_overrides, geographic_filter,
@@ -178,6 +179,38 @@ def _yaml_parse_error_line(exc: yaml.YAMLError) -> int | None:
     return mark.line + 1
 
 
+def _duplicate_key_issues(path: Path) -> list[Issue]:
+    """ERROR per duplicate mapping key in ``path``.
+
+    ``yaml.safe_load`` keeps the LAST duplicate silently, so the value an
+    operator reads at the top of their file need not be the value in force.
+    Measured on `allowlist.yaml`: a stray second ``pattern:`` line moved a
+    suppression onto a device that was never written down, and this tool
+    reported `OK (1 entry valid)`, exit 0.
+
+    ERROR rather than WARNING because the operator cannot see the problem by
+    reading the file -- both lines are right there and look intentional -- and
+    because exit 1 is what makes it stop a pre-commit hook or a CI config check.
+
+    ⚠️ Every file this validator reads gets this, not just the allowlist. The
+    identical exposure exists in `config.py` (lynceus.yaml) and `rules.py`
+    (rules.yaml, severity_overrides.yaml), whose loaders are equally silent;
+    checking here covers all five files at the operator's surface without
+    changing how any daemon-side loader behaves.
+    `test_every_validator_reports_a_duplicate_key` iterates the validators so a
+    sixth config file cannot quietly skip this.
+    """
+    return [
+        Issue(
+            severity="error",
+            message=dupe.describe(),
+            file=path,
+            line=dupe.winning_line,
+        )
+        for dupe in find_duplicate_keys(path)
+    ]
+
+
 def _try_load_yaml(path: Path) -> tuple[Any, Issue | None]:
     """Open and ``yaml.safe_load`` ``path``. Returns ``(data, error_issue)``.
 
@@ -247,6 +280,8 @@ def validate_lynceus_yaml(path: Path) -> tuple[FileReport, Config | None]:
             summary="unparseable",
             issues=tuple(issues),
         ), None
+
+    issues.extend(_duplicate_key_issues(path))
 
     try:
         cfg = load_config(str(path))
@@ -348,6 +383,8 @@ def validate_rules_yaml(path: Path) -> FileReport:
             file=path, exists=True, valid=False, summary="unparseable", issues=tuple(issues)
         )
 
+    issues.extend(_duplicate_key_issues(path))
+
     try:
         ruleset = load_ruleset(str(path))
     except ValidationError as exc:
@@ -401,9 +438,19 @@ def validate_rules_yaml(path: Path) -> FileReport:
                 hint="Add at least one rule entry, or unset rules_path in lynceus.yaml.",
             )
         )
-    summary = f"{rule_count} rule(s) valid"
+    # ⚠️ `valid` is derived, not hardcoded True, and that is new. Before the
+    # duplicate-key check above, every path that appended an ERROR to `issues`
+    # returned early with `valid=False`, so this return could only ever be
+    # reached clean and the literal was accurate. The check made this the first
+    # place an ERROR can coexist with the final return -- and the three sibling
+    # validators all derive the flag here, so a hardcoded True would have made
+    # `rules.yaml` the one file that could report an error and call itself
+    # valid. The CLI's exit code reads `issues`, not this flag, so the operator
+    # exit status was never wrong; a consumer trusting `.valid` would have been.
+    valid = not any(i.severity == "error" for i in issues)
+    summary = f"{rule_count} rule(s) valid" if valid else "validation failed"
     return FileReport(
-        file=path, exists=True, valid=True, summary=summary, issues=tuple(issues)
+        file=path, exists=True, valid=valid, summary=summary, issues=tuple(issues)
     )
 
 
@@ -434,6 +481,8 @@ def validate_severity_overrides_yaml(path: Path) -> FileReport:
         return FileReport(
             file=path, exists=True, valid=False, summary="unparseable", issues=tuple(issues)
         )
+
+    issues.extend(_duplicate_key_issues(path))
 
     if parsed is None:
         return FileReport(
@@ -779,6 +828,8 @@ def _validate_allowlist_file(
         return FileReport(
             file=path, exists=True, valid=False, summary="unparseable", issues=tuple(issues)
         )
+
+    issues.extend(_duplicate_key_issues(path))
 
     # Capture loader log records (allowlist loader is lenient on parse
     # / validation errors — logs ERROR/WARNING and returns empty).

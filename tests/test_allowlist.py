@@ -746,3 +746,52 @@ def test_writer_does_not_touch_primary_file(tmp_path):
     assert primary.read_text(encoding="utf-8") == primary_text
     # And its mtime did not move.
     assert primary.stat().st_mtime == primary_mtime_before
+
+
+def test_a_duplicate_key_in_the_primary_warns_and_names_the_losing_line(tmp_path, caplog):
+    """The daemon loads the file and warns; it does not refuse it.
+
+    Refusing would drop every other suppression in the file over one stray
+    line -- the all-or-nothing failure `_validate_ui_entries` exists to undo.
+    The operator keeps their suppressions and is told which one is not what
+    they wrote.
+    """
+    p = tmp_path / "allowlist.yaml"
+    p.write_text(
+        "entries:\n"
+        "  - pattern: 'ac:de:48:00:11:22'\n"
+        "    pattern: 'ac:de:48:99:99:99'\n"
+        "    pattern_type: mac\n"
+        "    note: kev phone\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="lynceus.allowlist"):
+        al = load_allowlist(str(p))
+
+    # Loaded, not refused.
+    assert len(al.entries) == 1
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("duplicate key" in m for m in warnings), warnings
+    # The line the operator wrote and lost, so the message is actionable.
+    assert any("line 2" in m for m in warnings), warnings
+
+
+def test_a_clean_primary_file_warns_about_nothing(tmp_path, caplog):
+    """The control: the same load path over a file with no duplicates must
+    be silent, or the warning above proves nothing."""
+    p = tmp_path / "allowlist.yaml"
+    p.write_text(
+        "entries:\n"
+        "  - pattern: 'ac:de:48:00:11:22'\n"
+        "    pattern_type: mac\n"
+        "  - pattern: 'ac:de:48:99:99:99'\n"
+        "    pattern_type: mac\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="lynceus.allowlist"):
+        al = load_allowlist(str(p))
+
+    assert len(al.entries) == 2
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
