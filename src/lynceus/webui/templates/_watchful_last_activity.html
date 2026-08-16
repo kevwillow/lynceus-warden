@@ -24,11 +24,13 @@
     <strong>clock repair</strong>, so a value here is not always a time the device was seen.
     {%- if in_list %}
       It is also what this list is <strong>ordered</strong> by and what the <strong>recent</strong>
-      filter selects on, so a reset lifts a row to the top of the page and into the shorter windows.
+      filter selects on, so a reset changes where a row sorts and which windows it appears in.
+      A reset also clears the escalation, so under the <strong>escalated</strong> filter the row
+      leaves the list rather than moving within it.
     {%- endif %}
   </small></p>
 {% endmacro %}
 
 {% macro reset_marker() %}
-  <small class="dim watchful-last-activity-reset" title="This timestamp is the operator's reset, not a sighting. The reset overwrites last_seen_at (which is also the 90-day auto-archive clock), so this row no longer records when the device was actually last seen.">(operator reset &mdash; not a sighting)</small>
+  <small class="dim watchful-last-activity-reset" title="This row's last activity is the operator's reset -- or, if the clock was corrected afterwards, that correction -- and not a sighting. Either way it overwrites last_seen_at, which is also the 90-day auto-archive clock, so this row no longer records when the device was actually last seen.">(operator reset &mdash; not a sighting)</small>
 {% endmacro %}

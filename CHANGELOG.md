@@ -269,11 +269,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   The column is now called **last activity** on both pages, which is what it has
   always been — a counted sighting, an operator reset, or a clock repair — and
-  a row whose timestamp is a reset says so beside the time. The page states the
-  three sources rather than implying the value is always an observation. The
-  underlying write is deliberately unchanged: an entry last counted 89 days ago
-  that you reset today would otherwise be auto-archived tomorrow, silently
-  closing a watch you had just chosen to keep.
+  a row whose timestamp is one of those rather than a sighting says so beside
+  the time. If the clock is corrected after a reset, the correction overwrites
+  the timestamp again, and the note says that too rather than blaming the reset
+  for a time it no longer set. The page states the three sources rather than
+  implying the value is always an observation. The underlying write is
+  deliberately unchanged: an entry last counted 89 days ago that you reset today
+  would otherwise be auto-archived tomorrow, silently closing a watch you had
+  just chosen to keep.
+
+  Two nearby sentences were wrong for the same reason and are corrected with it.
+  The page said an entry escalates **on its fourth sighting**; a reset puts the
+  count back to one *without* a sighting, so a reset entry escalates on its
+  **third** sighting afterwards — the page now says both. And resetting an entry
+  does not simply move it up the list: it clears the escalation, so on the
+  `escalated` filter — the view you are most likely to be on when you click
+  reset — the row leaves the list entirely.
 
 - **A repeated line in a config file was silently obeyed, and it could point a
   suppression at the wrong device.** YAML resolves a repeated key by keeping the
