@@ -1802,11 +1802,51 @@ artefact it lands in, and ask what the **consumer** of that artefact does with i
 cases and is recorded as such — the CLI flag surface is now swept, not merely unexamined — but on
 its own it would have licensed "no findings" on a surface carrying one.
 
+⚠️ **The same caution applied to my own sweep claim, and it needed the same correction.** I reported
+the vacuous-guard sweep of this track as "swept and clean" having measured **5 manifests**, while the
+scan that fed it had surfaced **8 loop candidates**; 3 were dismissed by reading rather than by
+measuring. All 8 have since been measured — emptying each collection and running the file that
+claims to guard it, including `TOTAL_STEPS = 0` and `DELEGATION_RULES` against
+`test_setup_web_severity_rules.py`, which the first pass never ran — and all 8 are genuinely caught.
+**The claim was true; it was not yet true when I made it.**
+
 ⚠️ **And one of the tests for the fix initially graded the HOST, not the code.** The pre-existing
 `sysfs` fixture patched only `_SYS_CLASS_NET`, so the new branch read the machine's real
 `/sys/class/bluetooth`: green on a host with no controller, different on one with an `hci0`. Both
 fixtures now patch both trees. Same family as the worktree-import trap — **a harness that resolves
 part of its own environment silently grades something you did not choose.**
+
+### ⛔ …and #90 shipped the SAME defect in the mirror direction. I filed this as "nothing residual".
+
+**Corrected 2026-08-16 by the session that wrote the entry.** #90 taught the warning to name the
+*other* kind when an interface is absent from the tree its `--interface-type` implies. But the two
+trees are not symmetrical: `/sys/class/bluetooth` holds only controllers, so a hit there does prove
+`bt` — while **`/sys/class/net` holds ethernet, loopback, bridges, VLANs, tunnels and every veth a
+container ever made**, so a hit there proves nothing about wifi.
+
+**Re-measured at `be65b8f` itself**, not taken from the later PR's account:
+
+```
+--interface eth0 --interface-type bt
+  -> "The name is right and the kind is wrong -- pass --interface-type wifi."
+```
+
+`eth0` is a wired NIC. Following that advice yields `source=eth0:type=linuxwifi`, a source Kismet
+cannot capture with — **recommended in the tool's own voice.** That is precisely the failure Finding
+38 exists to describe: a confident diagnosis that walks the operator into "configured, capturing
+nothing". Fixed in **PR #96** (`f0e6e9b`): the wifi suggestion now requires positive proof (the
+cfg80211 `wireless` attribute), and a wired NIC is told what is actually wrong with it.
+
+⇒ **The lesson is not "check the mirror case".** It is that #90's own framing —
+*two causes with opposite fixes must not share one sentence* — was applied in one direction and not
+the other, by the person who had just written that sentence. **A fix built on a principle should be
+audited against its own principle before it is called complete.**
+
+⚠️ **And "Nothing residual" was an overclaim of exactly the shape this register spent the day
+correcting elsewhere** (Finding 36's, and the FIXED-claims audit that followed). It survived because
+I wrote it in the same hour I wrote the fix, when the fix was the freshest thing I had and the least
+examined. ⇒ **Do not write the disposition line in the same sitting as the fix.** Nothing else on
+this page was wrong for that reason; this line was.
 
 ### 🔴 Finding 39 — a severity override silences a watchlist row, and nothing beside that row says so
 
@@ -2360,7 +2400,10 @@ me. **An explanation that fits is not evidence; check the artefact before publis
   relocated their allowlist and re-runs `--reconfigure` is still repointed at a freshly scaffolded
   empty one, and every device they had suppressed starts alerting. That is decision 8 under
   "Reserved for Kev" — **deciding it closes the finding; nothing else will.**
-- ✅ **Finding 38** — the interface-kind misdiagnosis, fixed in PR #90 (`be65b8f`). Nothing residual.
+- ⚠️ **Finding 38** — the interface-kind misdiagnosis, fixed in PR #90 (`be65b8f`) **and then again
+  in PR #96 (`f0e6e9b`), because #90 shipped the same defect in the mirror direction.** This line
+  read "Nothing residual" and that was **false when I wrote it** — see the correction under Finding
+  38 itself.
 - ✅ **Finding 21** — a config rewrite leaving the secrets world-readable, fixed in PR #28
   (`7571d57`). Verified on `main` 2026-08-15; was misfiled under "Still open" until then.
 - ✅ **Finding 22** — a Kismet re-run widening an operator's own hardening, fixed in PR #25
