@@ -563,6 +563,8 @@ tr.row-acked    { opacity: 0.55; }
    subtle red as row-sev-high; archived rows dim like row-acked; tracking
    (the baseline majority row) is intentionally left untinted. */
 .badge-watchful-escalated { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-watchful-nosend    { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+.badge-watchful-undelivered { background: var(--lyn-badge-neutral-bg); color: var(--lyn-badge-neutral-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .badge-watchful-tracking  { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .badge-watchful-archived  { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .badge-watchful-flagged   { background: var(--lyn-badge-neutral-bg);  color: var(--lyn-badge-neutral-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }

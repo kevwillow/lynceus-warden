@@ -3122,6 +3122,42 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return "escalated"
         return "tracking"
 
+    def _escalation_delivery(entry: WatchfulRecurrence) -> str | None:
+        """Did the escalation this entry records actually REACH the operator?
+
+        Returns None for an entry that has not escalated, else one of:
+
+          "delivered"    the escalation alert exists and is stamped notified
+          "undelivered"  the alert row exists and has never been delivered --
+                         the send failed; poller retries are driven by seeing
+                         the device again
+          "suppressed"   NO alert row exists. The `watchful_recurrence`
+                         rule_type snooze was active at the threshold crossing,
+                         so the poller consumed the escalation deliberately and
+                         the operator was never told
+
+        ⭐ "suppressed" is decidable rather than inferred: alerts are never
+        pruned (no DELETE FROM alerts anywhere, no retention knob), so a missing
+        row means it was never written.
+
+        ⚠️ One indexed lookup per rendered row, bounded by the page size, not by
+        the table -- the full-table scan #111 refused is a different shape.
+        """
+        if entry.escalated_at is None:
+            return None
+        try:
+            alert = db.get_recent_alert_for_rule_and_mac(
+                "watchful_recurrence", entry.mac, int(entry.escalated_at),
+            )
+        except Exception:
+            # This is diagnostic state. A failed lookup must not cost the page.
+            return None
+        if alert is None:
+            return "suppressed"
+        if alert["notified_at"] is None:
+            return "undelivered"
+        return "delivered"
+
     def _last_activity_is_the_reset(entry: WatchfulRecurrence) -> bool:
         """Is this row's ``last_seen_at`` the operator's reset click?
 
@@ -3253,6 +3289,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             {
                 "entry": e,
                 "state_label": _entry_state(e),
+                "escalation_delivery": _escalation_delivery(e),
                 "last_activity_is_the_reset": _last_activity_is_the_reset(e),
             }
             for e in entries
@@ -3323,6 +3360,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "active": "watchful",
                 "entry": entry,
                 "state_label": _entry_state(entry),
+                "escalation_delivery": _escalation_delivery(entry),
                 "last_activity_is_the_reset": _last_activity_is_the_reset(entry),
                 "now_ts": int(time.time()),
                 "flash": flash,
