@@ -103,6 +103,24 @@
         {% endif %}
       </small></p>
     {% endif %}
+    {# ⛔ Its own block. This cause sits UPSTREAM of everything else on this
+       page: the poller checks the allowlist before it consults a rule, so an
+       allowlisted device raises nothing whatever the ruleset says. #}
+    {% if allowlist_entry %}
+      <p><small class="dim">
+        <span class="badge-snoozed-type">allowlisted</span>
+        <strong>This entry's device is on the allowlist, so nothing it does
+        raises an alert.</strong>
+        The allowlist entry is <code>{{ allowlist_entry.pattern }}</code>
+        (<code>{{ allowlist_entry.pattern_type }}</code>){% if allowlist_entry.expires_at %},
+        which expires at
+        <time>{{ allowlist_entry.expires_at | unix_to_utc_human }}</time>{% else %},
+        and it is permanent{% endif %}. Remove it on the
+        <a href="/allowlist">allowlist page</a> to bring this entry back.
+        The allowlist is checked before any rule is consulted, so this applies
+        whatever the notes below say.
+      </small></p>
+    {% endif %}
     {% if oui_never_matches_reason %}
       <p><small class="dim">
         <span class="badge-inert">never</span>

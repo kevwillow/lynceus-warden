@@ -186,6 +186,15 @@
               {% endif %}
               {% if e.id in never_match_ids %}
                 <span class="badge-inert" title="this OUI prefix is reserved or locally administered, so this row can never match">never</span>
+              {% endif %}
+              {# ⭐ The fifth silencing mechanism, and shown only on `mac` rows
+                 because only those name one device. A row that can match many
+                 devices has no single answer, and inventing one would be the
+                 same defect as every other cause reported here.
+                 ⛔ Its own {% if %}, like the others: a row can be allowlisted
+                 AND snoozed AND inert. #}
+              {% if e.id in allowlisted_ids %}
+                <span class="badge-snoozed-type" title="an allowlist entry covers this MAC, so the poller suppresses its alerts before any rule is consulted">allowlisted</span>
               {% endif %}</td>
               {# ⭐ Finding 42. The badge is the severity the alert will ACTUALLY
                  carry; the stored value stays visible beside it, struck

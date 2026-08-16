@@ -11,10 +11,14 @@ mechanism                    reported?   why / why not
 no delegating rule (inert)   yes         per pattern_type, from the ruleset
 rule_type snoozed            yes         per pattern_type, from the DB
 severity override            yes         per ROW, from watchlist_metadata
-allowlist match              **no**      suppresses by DEVICE, not by row --
-                                         one watchlist row can match many
-                                         devices, so there is no honest
-                                         per-row answer to render
+allowlist match              **partly**  suppresses by DEVICE, not by row. A
+                                         row that can match many devices
+                                         (`oui`, `mac_range`, `ssid`, ...) has
+                                         no honest per-row answer -- but a
+                                         `mac` row names exactly ONE device,
+                                         so for those the question does have
+                                         one. Reported for `mac` rows only;
+                                         see `allowlist_suppresses_mac_row`
 clock-disagreement at write  **no**      `webui/clock.py` is a WRITE-TIME
                                          guard, not a row state: nothing
                                          records that an existing
@@ -587,6 +591,28 @@ def severity_remap(
     }
 
 
+
+
+def allowlist_answerable_for(pattern_type: str) -> bool:
+    """Whether "is this ROW silenced by the allowlist?" has a single answer.
+
+    ⭐ The limits table above used to say the allowlist cause is unreportable
+    per row, full stop, and the reasoning was right for the type it was reasoned
+    about: one `oui` or `ssid_pattern` row matches many devices, some
+    allowlisted and some not, so any single verdict would be false for part of
+    the set.
+
+    ⛔ It is not right for `mac`. That row names exactly ONE device, so the
+    question has exactly one answer, and it is the pattern_type an operator
+    creates from this UI and the one the shipped ruleset actually delegates to.
+    The blanket limit therefore hid the answer precisely where it existed.
+
+    ⚠️ Measured end to end through ``poller.process_observation``, not derived
+    from the poller's predicate — a hard `mac` allowlist entry took a matching
+    device from 2 alerts to 0, while an EXPIRED entry, an entry for another MAC
+    and a SOFT `ble_local_name` entry all left it at 2.
+    """
+    return pattern_type == "mac"
 
 
 def has_configured_remap(overrides) -> bool:

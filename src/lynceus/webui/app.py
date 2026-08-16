@@ -51,6 +51,7 @@ from lynceus.webui.clock import (
 from lynceus.webui.csp import CSPMiddleware
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.liveness import (
+    allowlist_answerable_for,
     configured_remap_axes,
     effective_severity,
     has_configured_remap,
@@ -1132,6 +1133,56 @@ def _match_mac_in_entries(
         if entry.pattern_type == "mac_range" and mac_in_mac_range(mac, entry.pattern):
             return entry
     return None
+
+
+def _merged_allowlist_entries(config: Config) -> list:
+    """Primary + UI allowlist entries, in the order ``is_allowed`` sees them.
+
+    ⚠️ Loads YAML, so callers gate on actually needing it — the same posture
+    ``_load_actioned_patterns`` documents for the /alerts filter. Missing or
+    unconfigured files return an empty list rather than raising: a page must
+    not 500 because the operator has not created an allowlist yet.
+    """
+    if not config.allowlist_path:
+        return []
+    primary_path = Path(config.allowlist_path)
+    try:
+        primary_entries = list(allowlist_mod._load_primary(primary_path).entries)
+    except FileNotFoundError:
+        primary_entries = []
+    return primary_entries + list(
+        allowlist_mod._load_ui_entries(derive_ui_path(primary_path))
+    )
+
+
+def _allowlisted_row_ids(config: Config, rows, now_ts: int) -> set[int]:
+    """Ids of the `mac` watchlist rows an active HARD allowlist entry silences.
+
+    ⛔ `mac` rows only — for anything that can match many devices there is no
+    single answer, and inventing one would be a new instance of the defect this
+    subsystem keeps finding. ``liveness.allowlist_answerable_for`` is the
+    predicate, so the rule lives in one place.
+
+    ⚠️ ``_match_mac_in_entries`` matches exactly ``mac`` / ``oui`` /
+    ``mac_range`` — which is ``allowlist.HARD_ALLOWLIST_PATTERN_TYPES``, the set
+    that may silence an explicit watchlist hit. A SOFT entry must NOT mark a
+    row: since #82 a device-chosen value cannot suppress a watchlist hit, so
+    marking it would report a silence that does not happen. Pinned by
+    ``test_a_soft_allowlist_entry_does_not_mark_the_row``.
+    """
+    mac_rows = [
+        r for r in rows if allowlist_answerable_for(r.pattern_type) and r.pattern
+    ]
+    if not mac_rows:
+        return set()
+    entries = _merged_allowlist_entries(config)
+    if not entries:
+        return set()
+    return {
+        r.id
+        for r in mac_rows
+        if _match_mac_in_entries(entries, r.pattern, now_ts) is not None
+    }
 
 
 def _load_actioned_patterns(
@@ -4326,6 +4377,14 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     r.id for r in rows
                     if oui_prefix_never_matches(r.pattern_type, r.pattern)
                 },
+                # ⭐ The FIFTH silencing mechanism, reported for the rows where
+                # it has a single answer. `liveness.allowlist_answerable_for`
+                # carries the reasoning and the measurement; the loader is
+                # called once per request and only when a `mac` row is actually
+                # on the page, so a watchlist with none stays YAML-cost-free.
+                "allowlisted_ids": _allowlisted_row_ids(
+                    app.state.config, rows, int(time.time())
+                ),
                 # ⭐ Finding 42. The severity column is the triage surface, and
                 # it was rendering the value the importer baked in rather than
                 # the one the runtime layer will actually send. Free here --
@@ -4472,6 +4531,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
             # Writing a severity there would invite exactly the misreading this
             # column exists to fix.
             "effective_severity",
+            # ⭐ The fifth silencing mechanism, for the rows where it has one
+            # answer. Values: yes / no / n/a.
+            #
+            # ⛔ `n/a` is not a hedge and not "no". A row that can match many
+            # devices (oui, mac_range, ssid, ...) has some matching devices
+            # allowlisted and some not, so `no` would be false for part of the
+            # set it describes. `mac` rows name exactly one device and get a
+            # real answer; everything else says the question does not resolve
+            # per row. Same reasoning as `can_fire`'s `unknown`.
+            "allowlist_suppressed",
         ]
 
         def _iso_utc(ts) -> str:
@@ -4491,6 +4560,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
         )
         csv_overrides = load_overrides(app.state.config)
         csv_suppressions = suppression_axes_of(csv_overrides)
+        # Loaded ONCE for the whole export rather than per row: this route
+        # streams, and a per-row load would re-parse the allowlist YAML for
+        # every one of a 17k-row watchlist.
+        csv_allowlist = _merged_allowlist_entries(app.state.config)
+        csv_now = int(time.time())
+
+        def _allowlist_suppressed(pattern_type: str, pattern: str) -> str:
+            if not allowlist_answerable_for(pattern_type) or not pattern:
+                return "n/a"
+            return "yes" if _match_mac_in_entries(csv_allowlist, pattern, csv_now) else "no"
 
         def _can_fire(pattern_type: str) -> str:
             """The TYPE-level verdict: no = fix rules.yaml, snoozed = lift it
@@ -4587,6 +4666,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                             csv_overrides,
                         )
                         or "",
+                        _allowlist_suppressed(
+                            row.get("pattern_type") or "", row.get("pattern") or ""
+                        ),
                     ]
                 )
                 yield buf.getvalue()
@@ -4691,6 +4773,18 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 ),
                 "oui_never_matches_reason": oui_prefix_never_matches(
                     row.get("pattern_type"), row.get("pattern")
+                ),
+                # ⭐ The entry itself, not a bool: the operator needs to know
+                # WHICH allowlist line to remove, and whether it expires.
+                "allowlist_entry": (
+                    _match_mac_in_entries(
+                        _merged_allowlist_entries(app.state.config),
+                        row["pattern"],
+                        int(time.time()),
+                    )
+                    if allowlist_answerable_for(row.get("pattern_type") or "")
+                    and row.get("pattern")
+                    else None
                 ),
             },
         )
