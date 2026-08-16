@@ -1917,7 +1917,7 @@ REMAPPED (device_category_severity) -> "ac:de:48:11:22:02  mac  low  …"
 **The list distinguishes them** — a silenced row shows `override` where its severity would be; a
 remapped row shows its severity. ⬜ **Concern refuted, recorded so nobody re-derives it.**
 
-### 🟡 Finding 42 — `/watchlist` shows a severity the runtime will override
+### ✅ Finding 42 — `/watchlist` showed a severity the runtime had already re-decided — FIXED by #125 (`2d11643`)
 
 ⛔ **I wrote this off.** The line here originally read: *"One unrelated fidelity note, NOT a defect
 and not investigated further: the list shows a remapped row's stored severity, not the severity it
@@ -1940,8 +1940,36 @@ severity column is the triage surface.
 
 ⛔ **NOT a mechanical fix.** "Just render the remapped value" is wrong — the stored value is real and
 the runtime layer sits on top of it, so an honest rendering shows **both**, or marks the stored one
-as superseded. That is a UI decision. Unclaimed; probe at
-`internal/session2-harnesses/sev_remap_probe.py`.
+as superseded. That is a UI decision. Probe at `internal/session2-harnesses/sev_remap_probe.py`.
+
+#### ✅ Disposition — FIXED by #125 (`2d11643`), written in by session 1 on 2026-08-16
+
+Re-measured by its author against the **MERGED** tree with the **ORIGINAL** probe
+(`internal/session2-harnesses/f42_rendered_probe.py`), not with the fix's own tests, and the probe's
+control still worked. That order is the rule this file adopted after Finding 41 — see *Closed since
+the audit*.
+
+⭐ **The entry above recorded ONE axis and ONE surface. It is three of each**, and that widening is
+the substance of the fix rather than a detail of it:
+
+| | recorded here | actually |
+|---|---|---|
+| remapping axes | `device_category_severity` | + `vendor_severity`, + `pattern_overrides` |
+| surfaces rendering the stored column | `/watchlist` | + `/watchlist/{id}`, + `/watchlist.csv` |
+
+**Both values are now shown** — effective severity as the badge, the stored value struck through
+beside it, and the axis and key that decided it named on the detail page. ⛔ **Rendering only the
+effective value would have moved the same defect one surface along**: the stored column is real,
+`/watchlist.csv` exports it and the `?severity=` filter is SQL over it.
+
+⚠️ **The `?severity=` filter still filters on the STORED value, and now says so** rather than being
+silently redefined. Making it remap-aware needs the full-table scan #111 refused on cost. A declared
+limit, not a residual defect.
+
+**Acceptance criterion (met):** a row whose stored severity is remapped by **any** of the three axes
+shows the effective severity on all three surfaces with the stored value marked superseded, while a
+row with no override is unchanged. Both halves — without the second, "always render the override"
+passes trivially.
 
 ### 🪤 Twice now I have dismissed something as "not a defect" and been corrected by measurement
 
@@ -2350,6 +2378,222 @@ findings. Do not cite them as defects without measuring who can actually reach t
   makes `database is locked` reachable was *simulated* by raising, not reproduced.
 - **Finding 41's DB/poller half remains open** and is unchanged by this round.
 
+## ⛔ How Findings 45–48 got their numbers — a rule this file now owns
+
+**Two sessions independently proposed "Finding 43" and "Finding 44" for four different findings**,
+while Round 12 above was landing 43 and 44 into this file. Session 2 caught its own collision and
+self-corrected; session 3's board text, its handoff and its 15:10 summary **all still say 43 and 44
+and are wrong**. Assigned here, by the owner of this file, at write time:
+
+| proposal | PR | assigned |
+|---|---|---|
+| inert/snoozed reported as a partition | #126 | **Finding 45** |
+| the fifth mechanism is reportable for `mac` rows | #127 | **Finding 46** |
+| a duplicate YAML key moves a suppression | #122 | **Finding 47** ⬅ proposed as 43 |
+| the validator described two files as one | #121 | **Finding 48** ⬅ proposed as 44 |
+
+⭐ **The rule, which is session 2's and is adopted verbatim: a finding number in a proposal is not
+free until it is written down here.** Whoever writes this file re-reads the highest number **at write
+time** and assigns; it is never inherited from the note that proposed it. Three sessions have now
+paid for that lesson in the same night.
+
+⚠️ **Round order below is by finding number, not by merge date.** Round 14's PRs (#121, #122) merged
+*before* Round 13's (#125–#128). This file has never been chronological — Finding 42 sits above 40
+and 41 — and ascending numbers is the more useful property in a reference document. Do not read
+adjacency here as sequence.
+
+## Round 13 — the watchlist's truthfulness surfaces, 2026-08-16
+
+**Session 2's track: #125 → #126 → #127 → #128.** Every finding re-measured against the **merged**
+tree with its original probe, controls confirmed still working. Finding 42's ✅ disposition is written
+in place above, under Round 11, rather than duplicated here.
+
+### 🔴 Finding 45 — two watchlist surfaces named opposite causes for the same row — FIXED by #126 (`dc00cd8`)
+
+**The surfaces reported *inert* and *snoozed* as a partition, after #116 had fixed the model to let
+them co-occur.** One row, one click apart:
+
+```
+model            inert_types=('ble_uuid',)  suppressed_types=('ble_uuid',)
+/watchlist       row badge: inert          -> "edit rules.yaml"
+/watchlist/{id}  snoozed ONLY, verbatim: "Nothing in rules.yaml needs changing."  <- FALSE
+/watchlist.csv   can_fire=no, the snooze appeared nowhere
+```
+
+⛔ **Two contradictory diagnoses of one row, each naming a fix that alone restores nothing.** Edit
+`rules.yaml` and the snooze still silences it; lift the snooze and no rule delegates to the type.
+Same class as Finding 39 and the round-11 work: the operator is sent to fix the wrong file.
+
+🪤 **The detail template still carried the comment that justified the chain** — *"mutually exclusive
+by construction: liveness intersects the snooze set with the LIVE types"* — **describing code #116
+had deleted.** [[a-fix-can-falsify-prose-three-files-away]] again, and the comment read as
+authority. 🪤 `_can_fire`'s own docstring already stated the rule it was breaking.
+
+⚠️ **A limit recorded, not a contract changed:** `/healthz.json`'s `live_rows` + `inert_rows` +
+`snoozed_rows` **overlap and must not be summed** — a type that is both is counted twice. That is
+correct for independent flags and wrong for anything treating them as a partition. Both type LISTS
+are exported beside the counts so a consumer can intersect them, and `watchlist_liveness`'s docstring
+now says so.
+
+**Acceptance criterion:** a row that is BOTH inert and snoozed names both causes on all three
+surfaces, AND a row that is only one of the two names only that one. Both halves — without the
+second, "always print both" passes trivially while inventing a snooze that does not exist.
+
+### 🟡 Finding 46 — the fifth silencing mechanism was reportable for `mac` rows all along — NARROWED by #127 (`776959f`)
+
+`liveness.py` stated that an allowlist match **cannot** be reported per row, because the allowlist
+suppresses by DEVICE and a watchlist row is a PATTERN. True for `oui`, `mac_range`, `ssid`,
+`ssid_pattern`, `ble_*` and `drone_id_prefix`. **False for `mac`, which names exactly one device** —
+and `mac` is the type this UI creates and one of the three the shipped ruleset delegates to.
+
+Measured through `poller.process_observation`, not through the renderer:
+
+```
+hard `mac` allowlist entry          0 alerts   <- silenced, and nothing said so
+expired entry                       2 alerts
+entry for a different MAC           2 alerts
+SOFT `ble_local_name` entry         2 alerts
+no entries at all                   2 alerts
+```
+
+⭐ **The SOFT control is what fixed the marker's shape**, and it is the transferable part: under #82 a
+**device-chosen** value must not mark a row, or an attacker broadcasting an allowlisted name would
+paint the operator's own watchlist as suppressed. The control was not decoration — it changed the
+fix.
+
+**Acceptance criterion:** a `mac` row covered by a HARD allowlist entry is reported as suppressed by
+the allowlist, while the same row under a SOFT (device-chosen) entry, an expired entry, or an entry
+for another MAC is **not** so marked.
+
+### ⭐ Rig round 2 — the composed cold read, and the three traps it caught in this session's own work
+
+The three merged PRs were handed to codex `gpt-5.6-sol` with `liveness.py` and the full
+`11893cc..776959f` diff inline, and one instruction: **state, per finding, exactly what would refute
+you.** **12 findings → 6 reproduced, 1 refuted by measurement, 5 already-documented limits — and five
+of the six were introduced by that same session, that same night.** All six fixed in #128
+(`7eb96b8`). Raw output at `internal/session2-harnesses/rig_out.md`.
+
+⛔ **The three worth carrying, because each is a fix that reads as complete and is not:**
+
+1. **A HALF-scoped sentence.** #126 conditioned *"Nothing in `rules.yaml` needs changing"* and left
+   the clause in front of it — *"the rules still match, the alerts are dropped until the snooze
+   expires"* — rendering unconditionally, false in every clause for a type nothing delegates to.
+   ⇒ **Scope the whole sentence; a conditional wrapped around the second half is a fix that reads as
+   one.**
+2. **The exact defect #116 exists to prevent, re-committed three PRs later.** The allowlist block
+   named ONE covering entry when a MAC can be covered by an exact entry AND an `oui` entry at once —
+   `override_suppression_axes` was made a tuple in #116 for precisely this. ⇒ **After fixing "reports
+   one of several independent causes", grep the subsystem for the next place that returns the first
+   match.**
+3. **A fix for a claim that was itself a claim.** `sole_axis` answered a **COUNT** where the question
+   was a **VALUE**: two axes can match and removing the winner can still land back on the stored
+   severity (stored `high`, `pattern_overrides` → `low`, `vendor_severity` → `high`). Now computed by
+   walking the engine's precedence one step down.
+
+⬜ **The reviewer's TOP finding was REFUTED by measurement** — an unreadable overrides file leaves the
+poller applying nothing either, so the UI and the engine agree. ⭐ **Following the refuted thread
+found a real one anyway:** `/settings`'s overrides card read `paths.default_overrides_path("user")`
+unconditionally and ignored `config.severity_overrides_path`, so an operator was shown the existence
+of a file nothing reads and invited to create one there. Four states now — missing /
+exists-but-nothing-configured / exists / **unreadable**.
+
+## Round 14 — the allowlist YAML round-trip under hand-editing, 2026-08-16
+
+**Session 3's track: #121 → #122 → #124.** Four jobs, **two ended in refutations**, and in both of
+those what was actually wrong was the **guard** — transcribed, skipped by default, or resting on a
+number nothing held still.
+
+### 🔴 Finding 47 — a duplicate key in a hand-edited config file is silently obeyed, and in `allowlist.yaml` it points a suppression at a device nobody named — FIXED by #122 (`3a22b95`)
+
+*State:* `yaml.safe_load` keeps the **LAST** duplicate key, with no error and no warning (PyYAML
+6.0.3, measured). Every loader in this project uses it. In `allowlist.yaml` a stray second `pattern:`
+line inside an entry leaves the entry reading exactly as intended — note and all — while the address
+actually in force is the second one.
+
+*Measured end to end through `is_allowed`, not through a parsed dict:*
+
+```
+stored pattern                 ac:de:48:99:99:99   (note still reads 'kev phone')
+is_allowed(ac:de:48:00:11:22)  False   <- the device they MEANT still alerts
+is_allowed(ac:de:48:99:99:99)  True    <- one they never named is silenced
+lynceus-validate               OK (1 entry valid), exit 0
+```
+
+⇒ **Direction: fail-OPEN**, and doubly wrong — the intended device keeps alerting *and* an unnamed
+one goes quiet. A duplicate top-level `entries:` key is the same mechanism one level up (two blocks
+typed, the first discarded whole).
+
+🪤 **Why nothing ever checked:** `tests/test_setup_wizard.py` justified its own no-duplicate guard
+with *"the duplicate would break `yaml.safe_load` with a 'duplicate key' error and the daemon would
+fail to start."* **Measured false.** The guard was right and its rationale was wrong — and
+*"duplicates are self-detecting"* is a perfectly good explanation for why nobody looked.
+[[prose-not-code-is-often-the-defect]], living inside a test.
+
+*Fixed by:* `lynceus.yaml_duplicates`, wired to the allowlist loader (WARN, keeps the file) and to
+`lynceus-validate` (ERROR with the key path and both line numbers, exit 1). ⭐ **The validator check
+covers all five config files**, so `config.py`'s and `rules.py`'s identical exposure is reached at
+the operator's surface without touching either loader.
+
+✅ **Acceptance criterion:** a hand-edited `allowlist.yaml` carrying a duplicate `pattern:` inside an
+entry (a) logs a WARNING at daemon load naming the line whose value was lost, **and** (b) makes
+`lynceus-validate` exit 1 with an ERROR naming the key path and both line numbers. Closed only when
+BOTH hold, and proven by re-running the ORIGINAL `is_allowed` measurement above — **not** #122's
+tests.
+
+⚠️ **Deliberately NOT closed by #122, and it is a decision rather than a gap:** the daemon still
+LOADS the file (warn, not refuse). Refusing would drop every other suppression over one stray line —
+the all-or-nothing failure `_validate_ui_entries` exists to undo. **If it should refuse, that is
+Kev's call.**
+
+### 🟡 Finding 48 — `lynceus-validate` blamed the operator's curated allowlist for a fault in the daemon-managed sibling — FIXED by #121 (`7c17f28`)
+
+*State:* `validate_allowlist_yaml` loaded the primary file with `load_allowlist`, which **merges**
+`allowlist_ui.yaml` — so a report about one file was computed from two.
+
+| state | operator was told | true |
+|---|---|---|
+| valid primary + 1 malformed sibling entry | `allowlist.yaml` **invalid**, "would empty the allowlist at startup", exit 1 | poller loads `primary=2 ui=1`; **nothing is emptied**; the valid file is blamed |
+| 2-entry primary + 3-entry sibling | primary "**5** entries valid" + sibling "3 entries valid" | five entries, rendered as eight |
+
+*Cause:* the ERROR-log promotion attached to the **module-wide** `lynceus.allowlist` logger, so it
+captured the sibling's records too. *Fixed* with `_load_primary` — the same loader minus the merge.
+⚠️ **"would empty the allowlist at startup" was KEPT for genuine primary failures** — checked in
+`poller.py`, not assumed.
+
+✅ **Acceptance criterion:** with a valid primary beside a sibling holding one malformed entry,
+`validate_allowlist_yaml(primary).valid` is True and none of its issues name the sibling path, **while
+`validate_allowlist_ui_yaml(sibling)` still reports the bad entry.** Both halves — otherwise "the
+primary is clean" passes trivially the moment the sibling stops being reported at all.
+
+### ⬜ REFUTED — the importer has no unaccounted drop path. The GUARD was the defect. (#124, `30e9008`)
+
+**Recorded as a refutation because that is the honest result**, and because the suspicion will
+otherwise be re-raised. Measured across **14 row shapes** — placeholder OUI, unknown type,
+normalization failure, in-import duplicate, peer collision, empty identifier, `ble_uuid`, `mac_range`
+— **14 rows in, 14 rows accounted for**, and `render()` prints every counter. The suspicion does not
+survive measurement.
+
+🟡 **What IS wrong there is the guard.** The project's only reconciliation check lived inside
+`test_cross_repo_live_argus_csv_imports_without_errors` and:
+
+1. **transcribed** its counter list, omitting `operator_preserved` and `dropped_placeholder_oui`; and
+2. **`pytest.skip`s** unless a live Argus CSV sits beside the repo — so it has effectively never run
+   in CI.
+
+On a CSV carrying one placeholder-OUI row the transcribed sum reports a **mismatch of 1 — a false
+failure**. It has never fired only because the bundled snapshot has ZERO `00:00:00` rows (#86's
+correction) and because it skips.
+⇒ [[iterate-the-derived-set-dont-transcribe-it]], in the very guard that exists to prove accounting.
+
+⭐ **Two of that round's four jobs ended in refutations, and both times the guard was the defect.**
+That is the pattern worth carrying out of Round 14: when a suspicion about behaviour dies, check
+whether the thing that *should* have detected it was ever able to.
+
+🟡 **Residual, small and named:** `config.py` and `rules.py` still load with a plain
+`yaml.safe_load`. #122 covers them at the **validator** surface (all five files), so an operator
+running `lynceus-validate` is protected; a **daemon-side** warning for those two files is the
+remaining gap.
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -2515,11 +2759,50 @@ hardened regardless of reachability.
 ⚠️ **Audited 2026-08-15 and four entries were removed as already closed** — see the note below this
 list. Everything here has been checked against `main` on that date; a bullet with no date has not.
 
-- **The watchlist report's provenance-cross-link claim** (`webui/app.py:3766`,
-  `watchlist_detail.html:97`) — unverified, lower severity. Genuinely open: nobody has measured it.
+⛔ **RE-AUDITED 2026-08-16 at `7eb96b8` — and read what that sentence covers, because it is narrow.**
+What was checked: that every open item known to the three tracks running that day appears here, and
+that the file/line anchors below still point at what they name. **What was NOT checked: the substance
+of any bullet.** Nothing here was re-measured. This is a completeness pass over the list, not a
+verification pass over its claims — [[label-context-with-what-you-ran-not-what-you-concluded]], which
+this file learned the hard way one section down.
+
+**From the original audit — carried forward, none re-measured:**
+
+- **The watchlist report's provenance-cross-link claim** — unverified, lower severity. Genuinely
+  open: nobody has measured it. 🪤 **Its line anchors have ROTTED and are corrected here**: the entry
+  cited `webui/app.py:3766`, which after #125–#128 is co-observation pair code and has nothing to do
+  with provenance. Cite the file and the symbol, never the line — this file has now been bitten by a
+  line number twice.
 - **The ntfy DEBUG topic leak** — a maintainer decision, not a defect. See the correction above.
 - **`py/clear-text-storage-sensitive-data` on the Windows branch** — needs DPAPI or an explicit
   DACL. Not a patch; a Windows-only design item.
+
+**Open as of 2026-08-16, and absent from this list until now — which is exactly the failure the note
+below describes, running in the other direction:**
+
+- 🔴 **Finding 41's DB/poller half — NOT STARTED and UNCLAIMED.** #106 narrowed the web-UI write
+  only. An install where *every* row was written by the same behind clock has no ahead-row to compare
+  against, so the check never fires; pinned as
+  `test_an_install_with_no_ahead_rows_is_a_known_blind_spot`. What closing it would take is written
+  into Finding 41's own entry. **This is the single largest open item in the file.**
+- 🟡 **Finding 44 — registered, NOT patched.** One duplicate escalation is reachable between the row
+  write and the stamp. ⛔ The obvious dedup is the **unsafe** direction (it suppresses the genuine
+  escalation of a RESET entry); closing it honestly needs a generation-keyed escalation record, i.e.
+  a migration.
+- 🟡 **A daemon-side duplicate-key warning for `config.py` and `rules.py`** (Round 14 residual). Both
+  still use a bare `yaml.safe_load`; #122 covers them at the `lynceus-validate` surface only.
+- ⚠️ **`/watchful/{entry_id}/reset` was never exercised** by Round 13's form-field sweep — it renders
+  only on an already-escalated entry. **Unexamined, not cleared**, and the distinction is the point.
+- ⚠️ **Round 12 named three things it could not see and they are still unseen:** the retention prunes
+  and the clock-trust holds (both live in `poll_once`, which that instrument never reached), and
+  **concurrency** — every measurement on that track was single-threaded, and the poller/web-UI race
+  that makes `database is locked` reachable was *simulated by raising*, not reproduced.
+
+⇒ **This list drifted in BOTH directions within two days**: on 2026-08-15 it held four bullets that
+were already fixed, and on 2026-08-16 it was missing five items that were genuinely open — including
+the biggest one. The first kind wastes a session's work; the second kind loses it. **A "Still open"
+list is a claim with an expiry date, and it needs re-deriving from the rounds above, not editing in
+place.**
 
 ### 🪤 This section was itself stale, and said so in its own text
 
