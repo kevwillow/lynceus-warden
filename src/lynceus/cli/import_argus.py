@@ -28,6 +28,7 @@ from ..patterns import (
     normalize_pattern,
     parse_mac_range_pattern,
 )
+from ..yaml_duplicates import warn_duplicate_keys
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +290,10 @@ def load_override_config(path: str | None) -> OverrideConfig:
             f"cannot read override file {path}: {exc}. "
             f"Check filesystem permissions."
         ) from exc
+    # This file bakes severities into rows at WRITE time, so a duplicate here
+    # is not corrected by a later restart the way a runtime-layer one is --
+    # the wrong value is already in the watchlist and only a re-import moves it.
+    warn_duplicate_keys(p, logger=logger, subject="override file")
     # argus_schema_version_accept_list: operator-tunable. Three valid
     # shapes in YAML:
     #   - key absent          → built-in default ("25", "26")

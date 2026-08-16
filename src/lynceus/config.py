@@ -10,6 +10,8 @@ from urllib.parse import urlsplit
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from lynceus.yaml_duplicates import warn_duplicate_keys
+
 logger = logging.getLogger(__name__)
 
 # Loopback IP, not "localhost". Deterministic across /etc/hosts edits and
@@ -411,6 +413,13 @@ def load_config(path: str) -> Config:
         raise FileNotFoundError(path)
     with open(p, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    # ⚠️ The sharpest case here leaves no trace anywhere else. A duplicate
+    # `heartbeat_enabled:` returns the dead-man's switch to its default
+    # (False), and `poller.py:1252` then returns early on every tick without
+    # logging -- so the one feature whose entire purpose is to speak when
+    # nothing else can is disarmed in silence. Nothing counts it, so no
+    # count-based startup line can show it.
+    warn_duplicate_keys(p, logger=logger, subject="config file")
     if "db_path" not in data:
         # Backward compat for legacy lynceus.yaml files that predate
         # the wizard's explicit db_path: render. Without this, the

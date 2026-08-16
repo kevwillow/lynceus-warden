@@ -9,9 +9,16 @@ reason to pin the real behaviour beside the detector that exists because of it.
 
 from __future__ import annotations
 
+import ast
+import logging
+import pathlib
+
+import pytest
 import yaml
 
-from lynceus.yaml_duplicates import find_duplicate_keys
+from lynceus.config import load_config
+from lynceus.rules import load_ruleset, load_runtime_severity_overrides
+from lynceus.yaml_duplicates import find_duplicate_keys, warn_duplicate_keys
 
 
 def _write(tmp_path, body: str):
@@ -110,3 +117,238 @@ def test_the_message_names_both_lines_and_which_one_wins(tmp_path):
     msg = dupe.describe()
     assert "line 1" in msg and "line 2" in msg
     assert "LAST" in msg
+
+
+# ---------------------------------------------------------------------------
+# warn_duplicate_keys -- the shared daemon-side reporter
+#
+# #122 wired duplicate detection into the ALLOWLIST loader and into
+# `lynceus-validate`. Every other loader was left on a plain `yaml.safe_load`,
+# deliberately and in writing. Measured on `7eb96b8`, that left five ways for a
+# hand-edit to change what the daemon enforces with nothing anywhere saying so.
+#
+# ⭐ The organising fact, and the reason "the daemon already logs a count" is
+# NOT a defence: every startup signal this project emits narrates a COUNT
+# (`Poller.__init__` logs "N active rules"; the override loader logs five
+# totals). A duplicate that changes a VALUE inside a preserved structure moves
+# no count at all -- a stray second `patterns:` line swaps the watched
+# addresses and the startup line is byte-identical to the correct file's.
+# ---------------------------------------------------------------------------
+
+
+def test_warn_duplicate_keys_says_nothing_about_a_clean_file(tmp_path, caplog):
+    """The control. Without it, a reporter that warned unconditionally would
+    look identical on every treatment case below."""
+    p = _write(tmp_path, "a: 1\nb: 2\n")
+    with caplog.at_level(logging.DEBUG):
+        warn_duplicate_keys(p, logger=logging.getLogger("t"), subject="thing")
+    assert caplog.records == []
+
+
+def test_warn_duplicate_keys_names_the_key_path_and_both_lines(tmp_path, caplog):
+    p = _write(tmp_path, "alpha: 1\nbeta: 2\nalpha: 3\n")
+    with caplog.at_level(logging.DEBUG):
+        warn_duplicate_keys(p, logger=logging.getLogger("t"), subject="thing")
+    (rec,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+    msg = rec.getMessage()
+    assert "alpha" in msg and "line 1" in msg and "line 3" in msg
+
+
+def test_a_broken_detector_cannot_raise_out_of_the_reporter(tmp_path, caplog, monkeypatch):
+    """⛔ THE REGRESSION GUARD, and it is the one that matters.
+
+    #122's own allowlist helper sat inside `_load_primary`'s `except
+    Exception`, so a raise from the DIAGNOSTIC was reported as "could not be
+    parsed" and, under `raise_on_parse_error`, became an `AllowlistParseError`
+    -- a valid file loading as zero entries and the poller announcing
+    SUPPRESSION DISABLED. `find_duplicate_keys` absorbs OSError and YAMLError,
+    but `yaml.compose` can still raise past both (RecursionError, MemoryError).
+    """
+    import lynceus.yaml_duplicates as mod
+
+    def explode(_path):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(mod, "find_duplicate_keys", explode)
+    p = _write(tmp_path, "a: 1\na: 2\n")
+    with caplog.at_level(logging.DEBUG):
+        warn_duplicate_keys(p, logger=logging.getLogger("t"), subject="thing")
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("skipped" in r.getMessage() for r in caplog.records)
+
+
+def test_a_broken_detector_cannot_change_what_load_ruleset_returns(
+    tmp_path, monkeypatch
+):
+    """The property above, asserted where it actually bites: the loader's
+    RETURN VALUE, not just the absence of an exception."""
+    import lynceus.yaml_duplicates as mod
+
+    body = (
+        "rules:\n"
+        "  - name: r\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        '    patterns: ["de:ad:be:ef:00:01"]\n'
+    )
+    p = tmp_path / "rules.yaml"
+    p.write_text(body, encoding="utf-8")
+    healthy = load_ruleset(str(p))
+
+    monkeypatch.setattr(
+        mod, "find_duplicate_keys", lambda _p: (_ for _ in ()).throw(MemoryError())
+    )
+    with_broken_detector = load_ruleset(str(p))
+    assert [r.name for r in with_broken_detector.rules] == [r.name for r in healthy.rules]
+    assert [r.patterns for r in with_broken_detector.rules] == [
+        r.patterns for r in healthy.rules
+    ]
+
+
+# --- the three daemon loaders, each with its control ------------------------
+
+
+def _rules(dup: bool) -> str:
+    tail = '    patterns: ["00:00:00:00:00:00"]\n' if dup else ""
+    return (
+        "rules:\n"
+        "  - name: known_bad_mac\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        '    patterns: ["de:ad:be:ef:00:01"]\n' + tail
+    )
+
+
+@pytest.mark.parametrize("dup", [False, True])
+def test_load_ruleset_warns_only_when_a_duplicate_is_present(tmp_path, caplog, dup):
+    p = tmp_path / "rules.yaml"
+    p.write_text(_rules(dup), encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        rs = load_ruleset(str(p))
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert bool(warned) is dup
+    if dup:
+        # The count is UNCHANGED -- one rule either way. This is precisely the
+        # case no count-based startup line can surface.
+        assert len(rs.rules) == 1
+        assert rs.rules[0].patterns == ["00:00:00:00:00:00"]
+        assert "patterns" in warned[0].getMessage()
+
+
+@pytest.mark.parametrize("dup", [False, True])
+def test_load_config_warns_only_when_a_duplicate_is_present(tmp_path, caplog, dup):
+    body = "heartbeat_enabled: true\n" + ("heartbeat_enabled: false\n" if dup else "")
+    p = tmp_path / "lynceus.yaml"
+    p.write_text(body, encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        cfg = load_config(str(p))
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert bool(warned) is dup
+    # The dead-man's switch, disarmed, with nothing else anywhere to say so:
+    # `poller.py` returns early on every tick without logging when this is off.
+    assert cfg.heartbeat_enabled is not dup
+
+
+@pytest.mark.parametrize("dup", [False, True])
+def test_load_runtime_severity_overrides_warns_only_on_a_duplicate(
+    tmp_path, caplog, dup
+):
+    body = 'suppress_vendors: []\n' + ('suppress_vendors: ["acme"]\n' if dup else "")
+    p = tmp_path / "severity_overrides.yaml"
+    p.write_text(body, encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        ov = load_runtime_severity_overrides(str(p))
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert bool(warned) is dup
+    assert ("acme" in ov.suppress_vendors) is dup
+
+
+# --- the coverage guard -----------------------------------------------------
+
+# Every function in `src/lynceus` that calls `yaml.safe_load`, classified.
+# A site is either WIRED to a duplicate-key reporter or listed here WITH THE
+# REASON it does not need one. A new loader is in neither set and fails.
+#
+# ⚠️ Derived, not transcribed: the wired side is discovered by walking the AST
+# for any call whose name contains "duplicate", because the first version of
+# this scan hardcoded three helper names, missed that the allowlist's is called
+# `_warn_on_duplicate_keys`, and reported a WIRED loader as unwired.
+_EXEMPT: dict[str, str] = {
+    "lynceus/allowlist.py::_load_ui_entries": (
+        "daemon-managed sibling, not hand-edited; the operator-curated "
+        "primary is wired"
+    ),
+    "lynceus/allowlist.py::_read_ui_yaml": (
+        "same daemon-managed sibling, read-modify-write path"
+    ),
+    "lynceus/cli/validate.py::_try_load_yaml": (
+        "validate reports duplicates itself via _duplicate_key_issues, "
+        "as an ERROR, per validator"
+    ),
+    "lynceus/cli/export_config.py::_resolved_config_paths": (
+        "read-only path reporting; the file it reads is wired at load_config"
+    ),
+    "lynceus/cli/export_config.py::_resolved_state_paths": "read-only path reporting",
+    "lynceus/cli/quickstart.py::_read_ui_port_from_config": (
+        "machine-written port override, not an operator-authored file"
+    ),
+    "lynceus/cli/quickstart.py::_write_port_override_config": "machine-written port override",
+    "lynceus/setup/core.py::carry_forward_settings": (
+        "parses the renderer's OWN output, which is generated, not hand-edited"
+    ),
+}
+
+
+def _safe_load_sites() -> dict[str, bool]:
+    """Map "<module>::<function>" -> is it wired to a duplicate reporter."""
+    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "lynceus"
+    sites: dict[str, bool] = {}
+    for f in sorted(root.rglob("*.py")):
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            names, loads = set(), False
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call):
+                    fn = sub.func
+                    nm = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+                    if nm:
+                        names.add(nm)
+                    if isinstance(fn, ast.Attribute) and fn.attr == "safe_load":
+                        loads = True
+            if loads:
+                rel = f.relative_to(root.parent).as_posix()
+                sites[f"{rel}::{node.name}"] = any("duplicate" in n.lower() for n in names)
+    return sites
+
+
+def test_the_scan_finds_the_loaders_it_is_supposed_to_grade():
+    """The instrument's own control. A scan that silently matched nothing
+    would make the guard below pass vacuously -- this project has shipped a
+    0-of-3 vacuous sweep before."""
+    sites = _safe_load_sites()
+    assert len(sites) >= 12, sites
+    assert sites.get("lynceus/rules.py::load_ruleset") is True
+    assert sites.get("lynceus/allowlist.py::_load_primary") is True
+
+
+def test_every_yaml_loader_is_wired_or_exempt_with_a_reason():
+    """⛔ A new `yaml.safe_load` on an operator-authored file must not be able
+    to join the codebase silently. #122 fixed one loader; the class had five
+    more, and the note recording that lived in a gitignored file."""
+    unclassified = [
+        site for site, wired in _safe_load_sites().items()
+        if not wired and site not in _EXEMPT
+    ]
+    assert unclassified == [], (
+        "these call yaml.safe_load but neither report duplicates nor carry a "
+        f"documented exemption: {unclassified}"
+    )
+
+
+def test_no_exemption_is_stale():
+    """An exemption naming a site that no longer exists is a comment claiming
+    a guarantee about nothing."""
+    sites = _safe_load_sites()
+    assert [s for s in _EXEMPT if s not in sites] == []
