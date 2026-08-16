@@ -66,10 +66,14 @@
        says nothing either (`entry_is_live` is True when liveness is unknown —
        marking a row dead on the strength of a broken config file would be a
        worse lie than the silence). #}
-    {# 🔕 Checked BEFORE the inert branch, and they are mutually exclusive by
-       construction: liveness intersects the snooze set with the LIVE types, so
-       a type cannot be both. If it could, inert would have to win — it is the
-       more fundamental cause and unsnoozing would not revive the entry. #}
+    {# 🪤 This comment used to say the two were "mutually exclusive by
+       construction: liveness intersects the snooze set with the LIVE types" —
+       a description of code #116 DELETED. The intersection is gone, a type can
+       be both, and the `{% elif %}` chain that sentence justified reported only
+       the snooze while the list page reported only the inertness. Two
+       contradictory diagnoses of one row, one click apart.
+       ⇒ Independent blocks now, and the sentences inside each one are
+       conditioned on the other cause rather than assuming it away. #}
 {# ⛔ Its own block, NOT another branch of the inert/snoozed chain. This cause
    is per-row and independent: an entry can be perfectly live at the type level
    and still have every alert dropped because of its vendor. #}
@@ -110,13 +114,31 @@
     {% if entry_is_snoozed %}
       <p><small class="dim">
         <span class="badge-snoozed-type">snoozed</span>
-        <strong>This entry matches, but its alerts are being dropped.</strong>
+        {# ⚠️ "matches" is claimed only when the type is actually delegated. For
+           a type that is ALSO inert no enabled rule consults this row, so
+           "the rule still runs and still matches this pattern" was false in
+           every clause — and "Nothing in rules.yaml needs changing" was the
+           opposite of the truth. #}
+        {% if entry_is_live %}
+          <strong>This entry matches, but its alerts are being dropped.</strong>
+        {% else %}
+          <strong>You have also snoozed this entry's rule type.</strong>
+        {% endif %}
         You snoozed the <code>{{ entry.pattern_type }}</code> rule type from the
-        <a href="/rules">rules page</a>. The rule still runs and still matches
-        this pattern; the alert is suppressed until the snooze expires. Nothing
-        in <code>rules.yaml</code> needs changing.
+        <a href="/rules">rules page</a>.
+        {% if entry_is_live %}
+          The rule still runs and still matches this pattern; the alert is
+          suppressed until the snooze expires. Nothing in
+          <code>rules.yaml</code> needs changing.
+        {% else %}
+          Lifting that snooze on its own will <strong>not</strong> restore
+          alerting for this entry — the note below is a separate cause and both
+          have to be dealt with.
+        {% endif %}
       </small></p>
-    {% elif not entry_is_live %}
+    {% endif %}
+    {# ⛔ Its own `{% if %}`, not an `{% elif %}` of the snooze above. #}
+    {% if not entry_is_live %}
       <p><small class="dim">
         <span class="badge-inert">inert</span>
         <strong>This entry cannot currently fire.</strong>
@@ -131,6 +153,10 @@
           Enabling the delegating rule for this type in <code>rules.yaml</code>
           changes what alerts for every device, so it is a deployment decision
           rather than a setting.
+        {% endif %}
+        {% if entry_is_snoozed %}
+          And enabling it on its own will <strong>not</strong> restore alerting
+          either, because the snooze above is still in force.
         {% endif %}
       </small></p>
     {% endif %}

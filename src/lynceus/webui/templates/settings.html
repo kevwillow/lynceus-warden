@@ -485,8 +485,20 @@
         You silenced
         {% for pt in watchlist_liveness.suppressed_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
         from the <a href="/rules">rules page</a>; the rules still match, the
-        alerts are dropped until the snooze expires. Nothing in
-        <code>rules.yaml</code> needs changing — lift it on /rules.
+        alerts are dropped until the snooze expires.
+        {# ⚠️ Claimed only when NO snoozed type is also inert. "the rules still
+           match" and "nothing in rules.yaml needs changing" are both false for
+           a type with no enabled delegating rule, and this note had no way of
+           knowing which it was looking at. #}
+        {% if not watchlist_liveness.both_types %}
+          Nothing in <code>rules.yaml</code> needs changing — lift it on /rules.
+        {% else %}
+          ⚠️ But
+          {% for pt in watchlist_liveness.both_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+          {% if watchlist_liveness.both_types | length == 1 %}is{% else %}are{% endif %}
+          <strong>also inert</strong>, so lifting the snooze alone will not
+          restore alerting for those.
+        {% endif %}
       </small></p>
     {% endif %}
     {# ⚠️ The limit of the claim, stated rather than implied. An entry NOT

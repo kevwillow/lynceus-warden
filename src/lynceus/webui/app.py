@@ -4449,6 +4449,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
             # per-ROW and INDEPENDENT of the type-level verdict, so a row can
             # carry both and one enum cannot say so. Values: yes / no.
             "override_suppressed",
+            # ⭐ Its own column for the same reason `override_suppressed` has
+            # one, and `_can_fire`'s docstring had already written the rule down
+            # while the enum went on breaking it: a row can be inert AND
+            # snoozed, `can_fire` reports whichever check ran first, and an
+            # operator told `no` fixes rules.yaml and still hears nothing.
+            # Values: yes / no / unknown.
+            #
+            # ⚠️ `can_fire == "snoozed"` still implies `type_snoozed == "yes"`.
+            # That redundancy is deliberate: changing `can_fire`'s value set
+            # would break consumers to fix a hole an additive column closes.
+            "type_snoozed",
             # ⭐ Finding 42, and APPENDED for the same reason as the two above.
             # `severity` is what the importer baked in; this is what the runtime
             # layer will actually send. They differ whenever a remap axis
@@ -4506,6 +4517,20 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 return "snoozed"
             return "yes"
 
+        def _type_snoozed(pattern_type: str) -> str:
+            """The snooze flag, INDEPENDENT of the verdict above.
+
+            ⛔ `_can_fire` answers `no` for a type that is inert AND snoozed,
+            because inert is checked first — so the snooze disappeared from the
+            export entirely and an operator acting on `no` would edit
+            `rules.yaml` and still hear nothing. That is exactly the failure
+            `_can_fire`'s own docstring describes for the override cause; the
+            same fix applies here.
+            """
+            if not csv_liveness["known"]:
+                return "unknown"
+            return "yes" if pattern_type in csv_liveness["suppressed_types"] else "no"
+
         def _row_generator():
             buf = io.StringIO()
             writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
@@ -4552,6 +4577,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                             csv_suppressions,
                         )
                         else "no",
+                        _type_snoozed(row.get("pattern_type") or ""),
                         effective_severity(
                             row.get("severity") or "",
                             row.get("vendor"),

@@ -736,7 +736,14 @@ def test_a_rule_type_consulting_two_matchers_maps_to_two_pattern_types():
 
 SNOOZE_RULE_TYPE = "watchlist_mac"  # the rule_type serving LIVE_TYPE
 SNOOZED_NOTE = "matches, but its alerts are being dropped"
-SNOOZED_BANNER = "matching but silenced"
+#: 🪤 This was "matching but silenced", and the wording was a CLAIM the banner
+#: had not checked: it asserted the rule matches, which is true for a snoozed
+#: type that delegates and false for one that is also inert (no enabled rule
+#: consults the row at all). The banner only ever read the snooze table.
+#: Re-worded to say what it actually knows; the "matches" claim survives on the
+#: DETAIL page, where `entry_is_live` gates it —
+#: `tests/test_webui_cause_cooccurrence.py` pins both directions.
+SNOOZED_BANNER = "silenced by a rule_type snooze"
 
 
 def _snooze_via_the_ui(client, rule_type: str = SNOOZE_RULE_TYPE) -> None:
