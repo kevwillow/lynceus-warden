@@ -2343,6 +2343,33 @@ amended:** I diagnosed a confident wrong finding with a confident wrong cause, i
 the same hour — and the wrong cause was *more* satisfying because it blamed a document rather than
 me. **An explanation that fits is not evidence; check the artefact before publishing the diagnosis.**
 
+### ✅ …so I tested the corrected diagnosis instead of asserting it too
+
+⚠️ The paragraph above replaced one confident causal story with another. **A second explanation that
+fits is still not evidence.** So it was run as a controlled A/B — same model, same effort, same
+291-line context, **one line changed**:
+
+| arm | the heading over the pasted grep | Finding 31 verdict |
+|---|---|---|
+| original | `the OTHER writers that bypass add_watchlist …` | **PARTIAL** — false |
+| **control** (re-run of the original) | *unchanged* | **PARTIAL** — reproduces |
+| **treatment** | `output of: grep -rn "INSERT INTO watchlist" src/lynceus/` | ✅ **CLOSED** — correct |
+
+⭐ **The control is the arm that makes this mean anything.** Had the false finding not reproduced, the
+treatment coming back clean would have been run-to-run variance read as a result — the exact shape of
+the three invalid controls recorded in round 10.
+
+⇒ **And the mechanism is visible in the control's own words:** *"the inline material still identifies
+a seeder/direct `INSERT` in `db.py` that bypasses `add_watchlist`."* It is reading **`db.py:2704`,
+which IS `add_watchlist`**, as a bypassing writer — because the heading said those lines were
+bypasses. The treatment instead reasoned from the evidence: *"the supplied `INSERT` inventory no
+longer shows an independent seeder insert."*
+
+⚠️ **Honest n:** two runs of the control, one of the treatment. Small, and these models are
+non-deterministic — but the effect is large, reproduced, and the causal mechanism is quoted verbatim
+in the output rather than inferred. **Stated as a measured result with its sample size, not as a
+law.**
+
 - ✅ **`--min-confidence` range validation** — enforced at parse time (`_confidence_percent`, values
   outside 0–100 fail with exit 2), so a typo can no longer import nothing and exit 0. Was the
   behaviour change flagged "Kev's call"; done deliberately as the operational-trap fix it described.
