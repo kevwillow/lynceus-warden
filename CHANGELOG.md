@@ -235,6 +235,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A repeated line in a config file was silently obeyed, and it could point a
+  suppression at the wrong device.** YAML resolves a repeated key by keeping the
+  last one, without complaining. Nothing in Lynceus noticed, so a hand-edited
+  file could read one way at the top and behave another way entirely.
+
+  It matters most in `allowlist.yaml`. A stray second `pattern:` line inside an
+  entry — a duplicated line during an edit, a half-finished copy-paste — leaves
+  the entry looking exactly as intended, note and all, while the address in
+  force is the second one. Measured: the device you meant to allowlist **keeps
+  alerting**, a device you never named is **silently suppressed**, and
+  `lynceus-validate` called the file `OK (1 entry valid)`. A repeated top-level
+  `entries:` key does the same thing to a whole block: everything above it is
+  discarded and the count looks right.
+
+  Lynceus now warns on load, naming the line whose value was lost, and
+  `lynceus-validate` reports it as an error with the key and both line numbers
+  so you can see which value is actually in force. The daemon still loads the
+  file — one stray line should not cost you every other suppression in it.
+
+  The check runs over every config file the validator reads, not just the
+  allowlist. Your existing files are unaffected unless they already contain a
+  repeated key, in which case they were not doing what they appeared to.
+
 - **`lynceus-validate` could report your allowlist file as broken when the
   problem was in the file next to it.** Lynceus keeps two allowlist files: the
   one you write and curate, and a sibling it manages itself for entries added
