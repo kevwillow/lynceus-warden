@@ -3703,6 +3703,55 @@ class Database:
                 )
         return repaired
 
+    def find_impossible_rule_type_snoozes(self) -> list[tuple[str, int, int]]:
+        """Snoozes claiming to predate this database's own first migration.
+
+        Returns ``[(rule_type, added_at, duration_seconds), ...]``.
+
+        ⭐ **This is an ORDERING fact, not a clock judgement**, which is why it
+        works where clock reasoning does not. A row cannot have been written
+        before the schema that holds it existed. Finding 41 recorded a
+        post-hoc repair as *"believed impossible -- an ``added_at`` in the past
+        is indistinguishable from an ordinary old row"*. It is distinguishable
+        for one population, and this is the discriminator.
+
+        ⚠️ **The blind spot, which must be published beside it:**
+        ``schema_migrations.applied_at`` is stamped ``int(time.time())`` by the
+        SAME host clock. So this catches an install whose clock was RIGHT when
+        the database was created and later moved BACKWARD -- a dead RTC
+        battery, the common shape. It is **silent** on an install whose clock
+        was wrong from the very first migration, because the floor is then
+        wrong by the same amount. That is the RTC-less-Pi residual Finding 41
+        names, and nothing here closes it.
+
+        ⛔ ``MIN(applied_at)`` deliberately, not the version that created
+        ``rule_type_snoozes``. Hardcoding a migration number has broken five
+        call sites across four files on this project before, and the minimum is
+        strictly CONSERVATIVE: it sits at or below the table's own creation, so
+        it can only flag FEWER rows, never more. A false positive here would
+        tell an operator their snooze was discarded when it was not.
+
+        ⛔ **Never raises.** A diagnostic that can change what its caller does
+        is the defect this project has now shipped twice -- once emptying an
+        allowlist, once taking the daemon down at startup. On any failure this
+        reports nothing and the caller's behaviour is exactly unchanged.
+        """
+        try:
+            row = self._conn.execute("SELECT MIN(applied_at) FROM schema_migrations").fetchone()
+            if row is None or row[0] is None:
+                return []
+            floor = int(row[0])
+            return [
+                (str(rt), int(added), int(exp) - int(added))
+                for rt, added, exp in self._conn.execute(
+                    "SELECT rule_type, added_at, expires_at FROM rule_type_snoozes "
+                    "WHERE added_at < ?",
+                    (floor,),
+                )
+            ]
+        except Exception:  # noqa: BLE001 -- see above; a report must never decide
+            return []
+
     def cleanup_expired_rule_type_snoozes(self, now_ts: int) -> int:
         """Physically delete snoozes whose ``expires_at <= now_ts``.
 

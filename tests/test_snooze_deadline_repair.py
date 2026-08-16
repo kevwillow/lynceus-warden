@@ -692,3 +692,147 @@ def test_a_recent_tick_is_still_healthy(db):
     """And the other twin: normal operation must not become a fault."""
     healthy, _ = _hb(db, NOW + 3500, NOW + 3600)
     assert healthy is True
+
+
+# ---------------------------------------------------------------------------
+# Finding 41, the BACKWARD half. The repair above keys on `added_at > now_ts`,
+# so it is structurally blind to a snooze written while the clock read BEHIND:
+# that row arrives with `expires_at` already past, the purge deletes it, and the
+# operator's "24 hours" was ZERO with nothing logged above DEBUG.
+#
+# ⭐ The discriminator is an ORDERING fact, not a clock judgement: a row cannot
+# predate its own database's first migration. That is what makes it usable where
+# the register recorded post-hoc detection as "believed impossible".
+#
+# ⛔ These tests pin REPORTING and explicitly pin NON-resurrection. A snooze
+# suppresses alerting, so the safe direction is the one it already fails in.
+# ---------------------------------------------------------------------------
+
+YEAR = 365 * DAY
+
+
+def _set_floor(db, ts):
+    """Pin the migration floor. Test DBs migrate at real wall-clock time while
+    NOW is a 2023 constant, so an uncontrolled floor would decide these cases
+    by when the suite happened to run."""
+    with db._conn:
+        db._conn.execute("UPDATE schema_migrations SET applied_at = ?", (ts,))
+
+
+def test_an_impossible_snooze_is_reported_but_NOT_resurrected(db):
+    """The finding: reported, and still purged. Both halves matter."""
+    _set_floor(db, NOW)
+    db.add_rule_type_snooze(
+        "ble_uuid", expires_at=NOW - 6 * YEAR + DAY, added_at=NOW - 6 * YEAR
+    )
+
+    found = db.find_impossible_rule_type_snoozes()
+    assert [(rt, dur) for rt, _added, dur in found] == [("ble_uuid", DAY)], found
+
+    db.cleanup_expired_rule_type_snoozes(NOW)
+    assert _rows(db) == {}, "the row was resurrected -- that would start suppressing"
+    assert db.is_rule_type_snoozed("ble_uuid", now_ts=NOW) is None
+
+
+def test_an_ordinary_expired_snooze_is_purged_WITHOUT_being_reported(db):
+    """⛔ The control the whole change rests on.
+
+    If this reported, every stale row on every install would produce a warning
+    telling the operator their clock is broken. The report would be noise and
+    the real case would be lost in it."""
+    _set_floor(db, NOW - YEAR)
+    db.add_rule_type_snooze("watchlist_hit", expires_at=NOW - DAY, added_at=NOW - 2 * DAY)
+
+    assert db.find_impossible_rule_type_snoozes() == []
+    assert db.cleanup_expired_rule_type_snoozes(NOW) == 1
+
+
+def test_a_healthy_snooze_is_neither_reported_nor_purged(db):
+    _set_floor(db, NOW - YEAR)
+    db.add_rule_type_snooze("ble_uuid", expires_at=NOW + DAY, added_at=NOW)
+
+    assert db.find_impossible_rule_type_snoozes() == []
+    assert db.cleanup_expired_rule_type_snoozes(NOW) == 0
+    assert db.is_rule_type_snoozed("ble_uuid", now_ts=NOW) is not None
+
+
+def test_the_reported_duration_is_the_operator_s_intent_not_a_clock_reading(db):
+    """`expires_at - added_at` is stamped by ONE clock, so the delta survives
+    that clock being wrong. It is what lets the message say "the 24h snooze"."""
+    _set_floor(db, NOW)
+    db.add_rule_type_snooze(
+        "ssid_pattern", expires_at=NOW - 6 * YEAR + 6 * HOUR, added_at=NOW - 6 * YEAR
+    )
+    assert db.find_impossible_rule_type_snoozes()[0][2] == 6 * HOUR
+
+
+def test_the_floor_is_the_MINIMUM_not_a_hardcoded_migration_version(db):
+    """Hardcoding the version that created the table has broken five call sites
+    across four files here before. A later migration must not raise the floor
+    and start flagging rows written before it."""
+    _set_floor(db, NOW - YEAR)
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (9_999, NOW + YEAR),
+        )
+    db.add_rule_type_snooze("ble_uuid", expires_at=NOW - DAY, added_at=NOW - 2 * DAY)
+
+    assert db.find_impossible_rule_type_snoozes() == [], (
+        "the floor tracked a LATER migration; every pre-upgrade row is now 'impossible'"
+    )
+
+
+def test_a_broken_detector_cannot_change_what_the_purge_does(db):
+    """⛔ This project has shipped a diagnostic that changed its caller's answer
+    twice -- once emptying an allowlist, once taking the daemon down at startup.
+    The property is pinned on the RETURN VALUE, not on 'nothing propagated'.
+
+    `sqlite3.Connection.execute` is read-only, so the connection itself is
+    swapped rather than monkeypatched -- the failure is injected where the
+    helper actually reaches, not somewhere convenient."""
+    _set_floor(db, NOW - YEAR)
+    db.add_rule_type_snooze("watchlist_hit", expires_at=NOW - DAY, added_at=NOW - 2 * DAY)
+
+    class _Broken:
+        def execute(self, *a, **k):
+            raise MemoryError("detector is broken")
+
+    real = db._conn
+    db._conn = _Broken()
+    try:
+        assert db.find_impossible_rule_type_snoozes() == []
+    finally:
+        db._conn = real
+
+    assert db.cleanup_expired_rule_type_snoozes(NOW) == 1
+
+
+def test_the_impossibility_report_runs_BEFORE_the_purge():
+    """The purge destroys the evidence, so order is correctness, not taste.
+
+    ⛔ Parsed, not grepped. The first version of this test used `str.index`, and
+    a planted defect that replaced the call with `for ... in []:  # db.find_...`
+    SURVIVED it -- the needle still matched, in the comment left behind. A guard
+    that matches a spelling passes on any change that keeps the spelling.
+    """
+    import ast as _ast
+
+    src = (
+        Path(__file__).resolve().parents[1] / "src" / "lynceus" / "poller.py"
+    ).read_text(encoding="utf-8")
+
+    def call_lines(name):
+        return [
+            n.lineno
+            for n in _ast.walk(_ast.parse(src))
+            if isinstance(n, _ast.Call)
+            and isinstance(n.func, _ast.Attribute)
+            and n.func.attr == name
+        ]
+
+    report = call_lines("find_impossible_rule_type_snoozes")
+    purge = call_lines("cleanup_expired_rule_type_snoozes")
+    assert len(report) == 1, f"expected exactly one report call, found {report}"
+    assert len(purge) == 1, f"expected exactly one purge call, found {purge}"
+    assert report[0] < purge[0], "the report runs after the purge; it can never fire"

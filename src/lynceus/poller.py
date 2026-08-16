@@ -1813,6 +1813,35 @@ def poll_once(
                 )
         except Exception as e:
             logger.warning("watchful baseline repair failed: %s", e)
+        # ⛔ BEFORE the purge, and that order is the whole point: the purge is
+        # what destroys the evidence. Finding 41's backward case -- a snooze
+        # written while the clock read behind, then NTP corrects it -- arrives
+        # here with `expires_at` already in the past, so `cleanup` deletes it
+        # and the operator's "24 hours" was ZERO. The repair above cannot see
+        # it: that one keys on `added_at > now_ts`, the FORWARD shape.
+        #
+        # ⭐ We do not resurrect the row, and that is deliberate. A snooze
+        # SUPPRESSES alerting, so the safe direction is the one it already
+        # fails in -- the device keeps alerting. Re-basing would silently start
+        # suppressing a rule type on the strength of a row whose real age is
+        # unknowable. What was actually wrong is that it happened SILENTLY;
+        # that is the half fixed here. Pinned by
+        # `test_an_impossible_snooze_is_reported_but_NOT_resurrected`.
+        try:
+            for rule_type, added_at, duration in db.find_impossible_rule_type_snoozes():
+                logger.warning(
+                    "the %ds snooze you set for %s was written by a clock "
+                    "reading %s -- earlier than this database's own first "
+                    "migration, so that reading was wrong. Its deadline has "
+                    "already passed on the corrected clock and the snooze is "
+                    "being discarded WITHOUT having suppressed anything. Set "
+                    "it again if you still want it.",
+                    duration,
+                    rule_type,
+                    _dt.datetime.fromtimestamp(added_at, tz=_dt.UTC).isoformat(),
+                )
+        except Exception as e:  # pragma: no cover -- the helper already swallows
+            logger.warning("rule_type_snoozes impossibility check failed: %s", e)
         try:
             purged = db.cleanup_expired_rule_type_snoozes(now_ts)
             if purged > 0:
