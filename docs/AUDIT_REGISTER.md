@@ -2985,6 +2985,130 @@ the entry tracked after `auto_archive_watchful_recurrence` runs, **AND** a genui
 whose `last_seen_at` is ≥ 90 days old on a *correct* clock — is still archived. Both halves; without
 the second, "never archive after a reset" passes trivially and the retention behaviour is lost.
 
+## Round 16 — concurrency, and two classes I had closed in one place only, 2026-08-16
+
+**Concurrency is no longer UNSWEPT.** Round 12 recorded that every measurement on this project was
+single-threaded; session 3 measured it and handed the `db.py` half over.
+
+### 🔴 Finding 52 — a request that FAILED leaves its write committed — CONTAINED, not architecturally fixed
+
+The web process runs **42 sync route handlers on Starlette's THREADPOOL** against **one**
+`app.state.db`, i.e. **one `sqlite3.Connection`** opened `check_same_thread=False`. `sqlite3`
+transaction state is per-**CONNECTION**, not per-thread, so one thread's `with self._conn:` exit
+commits **everything pending on that connection**, including another thread's half-finished work.
+Reproduced with a barrier that asserts the interleaving actually happened:
+
+```
+A: BEGIN, INSERT 'A', then raise -> A's block rolls back
+B: (concurrently) INSERT 'B', exits its block -> COMMIT
+rows afterwards: ['A', 'B']      <- A rolled back and its write SURVIVED
+```
+
+⛔ **Both directions are reachable:** a suppression written by a FAILED request persists
+(**fail-OPEN**), and symmetrically A's rollback can discard B's committed-looking write
+(**fail-CLOSED** — the operator is told a watchlist row exists and it does not).
+
+✅ **Contained by a reentrant lock** held across every one of `db.py`'s **34** transaction blocks.
+Measured with the control that decides it — the OLD pattern still corrupts, the new one does not,
+and the barrier fired in both:
+
+```
+CONTROL  `with self._conn:`               rows ['A','B']   A's failed write survived: True
+FIXED    `with self._lock, self._conn:`   rows ['B']       A's failed write survived: False
+```
+
+🪤 **Session 3's original probe cannot see this fix, and reading it after the change would say
+"still broken".** It reproduces C-1 through `with db._conn:` — the RAW connection — which bypasses
+every `Database` method, so its output is unchanged by anything `db.py` does. **A harness must be
+able to report a fix**; that one is a correct demonstration of a `sqlite3` property and not a
+regression test. Mine drives the guarded pattern instead and carries the unlocked control.
+
+⚠️ **CONTAINMENT, and the limit is the finding's residual.** A per-block lock fixes transaction
+*ownership*. It does **not** give application-level atomicity — this interleaving still misbehaves:
+
+```
+A: lock; read "suppression present"; unlock
+B: lock; delete the suppression; commit; unlock
+A: acting on the stale read, skips creating the alert
+```
+
+⇒ **Still open: read→decide→write.** Closing it needs request-scoped connections and explicit units
+of work — **a decision, not a patch**, and it is shared by all three tracks.
+⚠️ Migrations and `rollback_to` write outside these blocks; both are admin-time, before traffic, and
+deliberately out of scope. ⚠️ Three `async def` handlers touch the DB, so a contended lock briefly
+blocks the event loop; transactions here are short and the trade is deliberate.
+
+**Acceptance criterion:** a barrier test in which one thread's transaction fails while another
+commits leaves ONLY the successful thread's row, **and** the guard asserting no bare
+`with self._conn:` remains in `db.py`. Both halves — the first alone passes the moment someone adds
+an unguarded block somewhere else.
+
+### 🟡 Finding 53 — I added a compare-and-swap to ONE repair and left its two siblings without it
+
+#142 fixed a stale-read overwrite in `repair_future_dated_rule_type_snoozes`. An M3 inventory of
+every transaction block then found **the same shape in the two sibling repairs**, which I had not
+looked at:
+
+| repair | had CAS after #142 |
+|---|---|
+| `repair_future_dated_rule_type_snoozes` | ✅ (that was #142) |
+| `repair_future_dated_watchful_snoozes` | ❌ |
+| `repair_future_dated_watchful_baselines` | ❌ |
+
+Both `SELECT … fetchall()` outside the transaction and then `UPDATE … WHERE id = ?` with no
+predicate on the values read. ⛔ **Finding 52's lock does NOT cover these** — the poller and the web
+UI are **separate processes**, so they hold separate connections and no in-process lock can
+serialise them.
+
+The baseline case is the sharper one: `last_seen_at` is the **sole lifecycle clock** for an
+unactioned watchful entry, so a stale-read overwrite can move a row the operator just reset straight
+into the archive window — **Finding 51's harm arriving from the other side**. Both now carry a CAS
+and neither reports a repair it did not make, because that return value drives an operator-facing
+WARNING.
+
+⇒ ⭐ **[[grep-for-the-next-first-match]] for the third time on this project, and this time it was
+mine.** After fixing "an UPDATE keyed only on its primary key", the very next action should have been
+to grep for the other UPDATEs keyed only on their primary key.
+
+### 🟡 Finding 54 — an unreadable `probe_ssids` value is silently overwritten, and the loss is indistinguishable from "never probed"
+
+`merge_device_probe_ssids` decodes the stored JSON list. A corrupt blob **or one that is merely the
+wrong SHAPE** yields `[]`, and the `UPDATE` on the next line writes that back. Measured, with a
+control that discriminates:
+
+```
+CONTROL valid list            ["home-wifi"] -> ["home-wifi","cafe"]   original survives: True
+corrupt JSON                  {not json     -> ["cafe"]               original survives: False
+valid JSON, wrong shape dict  {"ssid":"x"}  -> ["cafe"]               original survives: False
+valid JSON, wrong shape str   "home-wifi"   -> ["cafe"]               original survives: False
+wrong shape + NO new ssids    {"ssid":"x"}  -> NULL                   original survives: False
+```
+
+⚠️ **The wrong-shape cases never reach the `except` at all** — they decode fine and simply are not
+lists. A report describing this as *"a bare except"* is describing the wrong mechanism, and the
+handler is in fact `except (json.JSONDecodeError, TypeError, ValueError)`.
+
+✅ **Fixed by logging, deliberately not by preserving.** Keeping an unreadable blob would strand the
+column forever; the defect was that the replacement was **SILENT** and left corruption
+indistinguishable from the legitimate "this device has never probed anything". A WARNING now names
+the MAC and the value. **Acceptance criterion:** an unusable stored value logs a WARNING naming the
+device, **and** a valid value logs nothing — without the second half, "always warn" passes.
+
+### 🪤 The prose defect this round, and it is the signature one
+
+`poll_once`'s docstring said *"a device matching **any** allowlist entry is suppressed, **regardless
+of any watchlist rules** it would have matched."* True when written; **false since #82**, which split
+allowlist entries into HARD (radio-level) and SOFT (device-chosen) precisely so an attacker could not
+suppress themselves by broadcasting an allowlisted name. The carve-out lives in
+`process_observation` and the docstring never learned about it — for the whole hard/soft rollout.
+Now corrected and pinned by a test that fails if the unconditional claim returns.
+
+⬜ **REFUTED, so nobody re-derives it:** a reviewer also called the same docstring's *"order-preserving
+and de-duplicating"* claim false because existing duplicates are not removed. The full sentence reads
+*"existing SSIDs come first, then any new strings **not already present**"* — it describes de-duping
+the NEW values against the existing ones, which is exactly what the code does. **Overstated, not a
+defect.**
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -3180,6 +3304,11 @@ below describes, running in the other direction:**
   silent, and this is the RTC-less-Pi residual the entry always named. ⭐ Also recorded there: the
   clock-trust hold is **not** a mitigation for this defect, so the earlier framing of the purge as
   the harm was wrong.
+- 🔴 **Finding 52's RESIDUAL — read→decide→write is still unprotected.** The lock fixes transaction
+  ownership, not application atomicity: a thread can read state, another can change it, and the first
+  acts on the stale read. Closing it needs request-scoped connections and explicit units of work —
+  **a decision shared by all three tracks, not a patch.** ⚠️ Also still open: **C-2**, the
+  allowlist YAML lost update (`add_ui_entry` read-modify-write), which is session 3's.
 - 🟡 **Finding 51 — the `db.py` half is FIXED; the ROUTE half is open and is session 2's.**
   `reset_watchful_recurrence` now clamps `last_seen_at` so a reset cannot move an entry backwards
   into the archive window (measured: all behind-clock cases now survive). Still open:
