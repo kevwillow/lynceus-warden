@@ -451,6 +451,14 @@ def _load_ui_entries(ui_path: Path) -> list[AllowlistEntry]:
     Malformed entries → WARNING and skipped individually; the rest are kept.
     The daemon must not crash because the UI sibling got corrupted, and it must
     not throw away good suppressions because of one bad neighbour.
+
+    ⛔ Duplicate keys are reported here too, and the reason this file was once
+    exempted was an assumption rather than a measurement: *"daemon-managed, not
+    operator-managed"*. It is plain YAML in the config directory beside a file
+    this project has already proven operators hand-edit. Measured, a duplicate
+    `pattern:` here does exactly what it does in the primary -- the device the
+    operator meant keeps alerting, one they never named is silenced, and the
+    note still reads what they wrote.
     """
     if not ui_path.exists():
         return []
@@ -464,6 +472,7 @@ def _load_ui_entries(ui_path: Path) -> list[AllowlistEntry]:
             exc,
         )
         return []
+    warn_duplicate_keys(ui_path, logger=logger, subject="allowlist UI file")
     return _validate_ui_entries(data, ui_path)
 
 
@@ -694,6 +703,16 @@ def _read_ui_yaml(ui_path: Path) -> dict:
             exc,
         )
         data = {}
+    # ⛔ Reported BEFORE the round-trip below, because the round-trip destroys
+    # the evidence. Measured: a UI file carrying a duplicate `pattern:` names
+    # both addresses, so an operator reading it can still see the stray line.
+    # One "Allowlist this device" click later, `yaml.safe_dump` has written
+    # back only the winner -- the address they actually meant is GONE from the
+    # file and it reads as though they had always chosen the other one. That
+    # makes this path strictly worse than the primary's, where the duplicate
+    # stays visible forever, and it is why "daemon-managed, so it does not
+    # matter" was the wrong call: the laundering is done BY the daemon.
+    warn_duplicate_keys(ui_path, logger=logger, subject="allowlist UI file")
     if not isinstance(data.get("entries"), list):
         data["entries"] = []
     # ⛔ Validate through the SAME path the reader uses, then re-serialise.
