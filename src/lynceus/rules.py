@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from lynceus.kismet import DeviceObservation, normalize_mac, normalize_uuid
 from lynceus.patterns import normalize_pattern
+from lynceus.yaml_duplicates import warn_duplicate_keys
 
 if TYPE_CHECKING:
     from lynceus.db import Database
@@ -482,6 +483,10 @@ def load_runtime_severity_overrides(
             type(raw).__name__,
         )
         return None
+    # Deliberately OUTSIDE the try above, and after the mapping check: this is
+    # a diagnostic about a file that has already loaded, so it must not sit
+    # anywhere a raise could be mistaken for "could not read".
+    warn_duplicate_keys(p, logger=logger, subject="severity overrides file")
     runtime_kwargs: dict = {}
     if isinstance(raw.get("device_category_severity"), dict):
         runtime_kwargs["device_category_severity"] = raw["device_category_severity"]
@@ -651,11 +656,24 @@ def load_runtime_severity_overrides(
 
 
 def load_ruleset(path: str) -> Ruleset:
+    """Load the detection ruleset.
+
+    ⚠️ The duplicate-key warning is not decoration. Every startup signal this
+    daemon emits about its rules narrates a COUNT -- ``Poller.__init__`` logs
+    ``"N active rules"`` -- and a duplicate key that changes a VALUE inside a
+    preserved structure passes through all of them unchanged. Measured: a
+    stray second ``patterns:`` line swaps the watched addresses and the
+    startup line is byte-identical to the one for the correct file. The one
+    duplicate that DOES move the count is the most plausible hand-edit of all
+    -- appending a second top-level ``rules:`` block, which discards the first
+    block whole and reports the survivors as if they were everything.
+    """
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(path)
     with open(p, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    warn_duplicate_keys(p, logger=logger, subject="rules file")
     return Ruleset(**data)
 
 

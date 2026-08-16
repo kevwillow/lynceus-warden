@@ -17,6 +17,7 @@ from ..db import Database
 from ..patterns import normalize_pattern
 from ..seeds.ble_uuids import TRACKER_UUIDS
 from ..seeds.threat_ouis import THREAT_OUIS
+from ..yaml_duplicates import warn_duplicate_keys
 
 # Frozen at migration 001 until 2026-08-14: this listed 4 of the 10 types the
 # schema admits, so the YAML seeder silently skipped rows of the other 6.
@@ -176,6 +177,10 @@ def seed_from_yaml(db: Database, yaml_path: str) -> tuple[int, int]:
     """
     with open(yaml_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    # A duplicate `pattern:` inside a seed entry writes a watchlist row for a
+    # device nobody named -- the same shape as the allowlist defect #122 fixed,
+    # pointed the other way: there it silenced a device, here it watches one.
+    warn_duplicate_keys(yaml_path, logger=logger, subject="watchlist seed file")
     entries = data.get("entries", []) or []
 
     inserted = 0

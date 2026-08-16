@@ -27,6 +27,7 @@ silence at the next restart.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -113,3 +114,44 @@ def find_duplicate_keys(path: Path) -> list[DuplicateKey]:
     if node is not None:
         _walk(node, (), out)
     return out
+
+
+def warn_duplicate_keys(
+    path: Path | str, *, logger: logging.Logger, subject: str
+) -> None:
+    """WARN once per duplicate mapping key in ``path``. **Never raises.**
+
+    ``subject`` names the file for the operator, e.g. ``"rules file"``.
+
+    ⛔ **Swallowing every failure is the contract, not tidiness**, and this
+    module owns it so the property is implemented and tested ONCE instead of
+    re-derived at each call site. The allowlist's own version of this helper
+    shipped inside ``_load_primary``'s ``except Exception``, where any raise
+    from the diagnostic was reported as *"could not be parsed"* and, under
+    ``raise_on_parse_error``, became an ``AllowlistParseError`` -- so at
+    startup a **valid** file loaded as **zero entries** and the poller logged
+    SUPPRESSION DISABLED. A helper whose only job is to add a warning must
+    never be able to change what the caller loads.
+
+    ``find_duplicate_keys`` already absorbs OSError and YAMLError, but
+    ``yaml.compose`` on a pathological file can still raise past both
+    (RecursionError on deep nesting, MemoryError), which is why the catch here
+    is broad rather than narrow.
+
+    ⚠️ This re-reads a file the caller has already parsed. That second read is
+    deliberate: ``yaml.safe_load`` has by then collapsed the duplicate and
+    cannot be asked which key it discarded.
+    """
+    try:
+        dupes = find_duplicate_keys(Path(path))
+    except Exception as exc:  # noqa: BLE001 -- see above; never propagate
+        logger.debug("duplicate-key check skipped for %s (%s)", path, exc)
+        return
+    for dupe in dupes:
+        logger.warning(
+            "%s %s: %s. The value you read at the top of the file is not the "
+            "value in force.",
+            subject,
+            path,
+            dupe.describe(),
+        )

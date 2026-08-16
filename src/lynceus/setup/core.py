@@ -38,6 +38,7 @@ from lynceus import paths
 from lynceus.config import BleBridgeConfig, Config
 from lynceus.kismet import KismetClient
 from lynceus.setup.models import ApplyReport, ApplyStep, ArgusChoice, ProgressSink
+from lynceus.yaml_duplicates import warn_duplicate_keys
 
 logger = logging.getLogger(__name__)
 
@@ -717,6 +718,11 @@ def _existing_mapping(path: Path) -> tuple[dict, str | None]:
         return {}, None
     if not isinstance(loaded, dict):
         return {}, f"{path} is not a YAML mapping; carried nothing forward"
+    # ⚠️ `--reconfigure` CARRIES FORWARD what this returns, so a duplicate is
+    # not merely misread here -- the losing value is dropped and the winning
+    # one is rewritten into the new file as though the operator had chosen it.
+    # Finding 36 is what happens when this function's answer is wrong.
+    warn_duplicate_keys(path, logger=logger, subject="config file")
     return loaded, None
 
 
