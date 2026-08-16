@@ -726,8 +726,11 @@ def test_an_impossible_snooze_is_reported_but_NOT_resurrected(db):
         "ble_uuid", expires_at=NOW - 6 * YEAR + DAY, added_at=NOW - 6 * YEAR
     )
 
-    found = db.find_impossible_rule_type_snoozes()
-    assert [(rt, dur) for rt, _added, dur in found] == [("ble_uuid", DAY)], found
+    found = db.find_impossible_rule_type_snoozes(NOW)
+    # the MIDDLE element is what the poller renders as "it is stamped <X>".
+    # Slicing it out let an impl that returned `expires_at` there pass while
+    # showing the operator the wrong timestamp -- the diagnostic's whole point.
+    assert found == [("ble_uuid", NOW - 6 * YEAR, DAY)], found
 
     db.cleanup_expired_rule_type_snoozes(NOW)
     assert _rows(db) == {}, "the row was resurrected -- that would start suppressing"
@@ -743,7 +746,7 @@ def test_an_ordinary_expired_snooze_is_purged_WITHOUT_being_reported(db):
     _set_floor(db, NOW - YEAR)
     db.add_rule_type_snooze("watchlist_hit", expires_at=NOW - DAY, added_at=NOW - 2 * DAY)
 
-    assert db.find_impossible_rule_type_snoozes() == []
+    assert db.find_impossible_rule_type_snoozes(NOW) == []
     assert db.cleanup_expired_rule_type_snoozes(NOW) == 1
 
 
@@ -751,7 +754,7 @@ def test_a_healthy_snooze_is_neither_reported_nor_purged(db):
     _set_floor(db, NOW - YEAR)
     db.add_rule_type_snooze("ble_uuid", expires_at=NOW + DAY, added_at=NOW)
 
-    assert db.find_impossible_rule_type_snoozes() == []
+    assert db.find_impossible_rule_type_snoozes(NOW) == []
     assert db.cleanup_expired_rule_type_snoozes(NOW) == 0
     assert db.is_rule_type_snoozed("ble_uuid", now_ts=NOW) is not None
 
@@ -763,7 +766,7 @@ def test_the_reported_duration_is_the_operator_s_intent_not_a_clock_reading(db):
     db.add_rule_type_snooze(
         "ssid_pattern", expires_at=NOW - 6 * YEAR + 6 * HOUR, added_at=NOW - 6 * YEAR
     )
-    assert db.find_impossible_rule_type_snoozes()[0][2] == 6 * HOUR
+    assert db.find_impossible_rule_type_snoozes(NOW)[0][2] == 6 * HOUR
 
 
 def test_the_floor_is_the_MINIMUM_not_a_hardcoded_migration_version(db):
@@ -778,7 +781,7 @@ def test_the_floor_is_the_MINIMUM_not_a_hardcoded_migration_version(db):
         )
     db.add_rule_type_snooze("ble_uuid", expires_at=NOW - DAY, added_at=NOW - 2 * DAY)
 
-    assert db.find_impossible_rule_type_snoozes() == [], (
+    assert db.find_impossible_rule_type_snoozes(NOW) == [], (
         "the floor tracked a LATER migration; every pre-upgrade row is now 'impossible'"
     )
 
@@ -801,7 +804,7 @@ def test_a_broken_detector_cannot_change_what_the_purge_does(db):
     real = db._conn
     db._conn = _Broken()
     try:
-        assert db.find_impossible_rule_type_snoozes() == []
+        assert db.find_impossible_rule_type_snoozes(NOW) == []
     finally:
         db._conn = real
 
@@ -836,3 +839,122 @@ def test_the_impossibility_report_runs_BEFORE_the_purge():
     assert len(report) == 1, f"expected exactly one report call, found {report}"
     assert len(purge) == 1, f"expected exactly one purge call, found {purge}"
     assert report[0] < purge[0], "the report runs after the purge; it can never fire"
+
+
+# ---------------------------------------------------------------------------
+# Regressions from a cold cross-model read of the MERGED change (#135).
+# Every one was reproduced in internal/session1-harnesses/verify_sol_f41.py
+# before it was believed, and every one is a defect in my own fix.
+# ---------------------------------------------------------------------------
+
+
+def test_a_snooze_STILL_IN_FORCE_is_never_reported_as_discarded(db):
+    """⛔ The report had no expiry condition, so it named rows that were live.
+
+    The daemon told the operator a snooze *"has already passed"* and *"is being
+    discarded"* about one they could watch working, and repeated it every poll.
+    """
+    _set_floor(db, NOW)
+    # written before the floor, but its deadline is still in the future
+    db.add_rule_type_snooze("ssid_pattern", expires_at=NOW + DAY, added_at=NOW - YEAR)
+
+    assert db.find_impossible_rule_type_snoozes(NOW) == []
+    assert db.cleanup_expired_rule_type_snoozes(NOW) == 0
+    assert db.is_rule_type_snoozed("ssid_pattern", now_ts=NOW) is not None
+
+
+def test_a_clock_AHEAD_at_install_does_not_condemn_a_healthy_snooze(db):
+    """⛔ The counter-example to "MIN is conservative, so no false positives".
+
+    A database migrated while the clock read AHEAD (bad RTC or timezone at
+    provisioning) stamps a floor in the FUTURE, so every legitimate later write
+    sits below it. Being a subset of a faulty heuristic is not soundness.
+    """
+    _set_floor(db, NOW + 10 * YEAR)  # migrations ran on a fast clock
+    db.add_rule_type_snooze("ble_uuid", expires_at=NOW + DAY, added_at=NOW)
+
+    assert db.find_impossible_rule_type_snoozes(NOW) == []
+    assert db.is_rule_type_snoozed("ble_uuid", now_ts=NOW) is not None
+
+
+def test_the_report_does_not_repeat_once_the_row_is_gone(db):
+    """Nothing marks a row reported, so the bound comes from scoping the report
+    to exactly the rows the purge then deletes. Without that it warned forever."""
+    _set_floor(db, NOW)
+    db.add_rule_type_snooze("ble_uuid", expires_at=NOW - YEAR + DAY, added_at=NOW - YEAR)
+
+    assert len(db.find_impossible_rule_type_snoozes(NOW)) == 1
+    db.cleanup_expired_rule_type_snoozes(NOW)
+    assert db.find_impossible_rule_type_snoozes(NOW) == []
+
+
+def test_the_warning_does_not_re_acquire_the_claims_it_had_to_retract():
+    """⛔ Every other test here calls the helper directly, so replacing the
+    poller's logging block with `pass` left them all green -- a cold read found
+    exactly that. This guards the OPERATOR-VISIBLE TEXT instead.
+
+    ⚠️ Labelled honestly: this is a SOURCE check, not proof the line executes.
+    The ordering test above covers reachability. What it does prove is that the
+    three claims the code cannot establish do not come back -- and they are the
+    reason this message had to be rewritten at all:
+      * that the clock "was wrong" (the schema stamp shares that clock)
+      * that the snooze suppressed NOTHING (it is in force until correction)
+      * that a row still IN FORCE is "being discarded"
+    """
+    src = (
+        Path(__file__).resolve().parents[1] / "src" / "lynceus" / "poller.py"
+    ).read_text(encoding="utf-8")
+    block = src[src.index("find_impossible_rule_type_snoozes") :][:2000].lower()
+
+    assert "disagree" in block, "the message no longer frames this as a disagreement"
+    assert "without having suppressed anything" not in block, (
+        "the message claims the snooze suppressed nothing; it may have been in "
+        "force for the entire period before the clock was corrected"
+    )
+    assert "so that reading was wrong" not in block, (
+        "the message asserts which clock was wrong; the schema stamp comes from "
+        "the same clock, so the code cannot establish that"
+    )
+
+
+def test_the_helper_is_called_with_the_polls_own_now_ts():
+    """The expiry scope is only real if the caller passes the tick's clock."""
+    import ast as _ast
+
+    src = (
+        Path(__file__).resolve().parents[1] / "src" / "lynceus" / "poller.py"
+    ).read_text(encoding="utf-8")
+    calls = [
+        n
+        for n in _ast.walk(_ast.parse(src))
+        if isinstance(n, _ast.Call)
+        and isinstance(n.func, _ast.Attribute)
+        and n.func.attr == "find_impossible_rule_type_snoozes"
+    ]
+    assert len(calls) == 1, f"expected one call, found {len(calls)}"
+    assert [a.id for a in calls[0].args if isinstance(a, _ast.Name)] == ["now_ts"], (
+        "the report is not scoped to this tick's clock, so it can name rows the "
+        "purge will not touch"
+    )
+
+
+def test_the_discriminator_is_added_at_NOT_expires_at(db):
+    """⛔ Without this case, an impl keying on `expires_at < floor` passes the
+    ENTIRE suite -- and it would flag every expired snooze ever written, which
+    is the exact log-flood the scoping was added to prevent.
+
+    The split only shows up on a row whose `added_at` is below the floor while
+    its `expires_at` is ABOVE it, and which has nonetheless expired by now.
+    Found by an adversarial read of these tests, not by the tests themselves.
+    """
+    floor = NOW
+    _set_floor(db, floor)
+    db.add_rule_type_snooze("ble_uuid", expires_at=floor + DAY, added_at=floor - 1)
+
+    now = floor + 2 * DAY  # the row has expired by now, but expires_at > floor
+    found = db.find_impossible_rule_type_snoozes(now)
+
+    assert found == [("ble_uuid", floor - 1, DAY + 1)], (
+        "an impl keying on expires_at rather than added_at reports nothing here, "
+        "and reports every ordinary expired snooze in production"
+    )

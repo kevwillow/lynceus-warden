@@ -3703,10 +3703,28 @@ class Database:
                 )
         return repaired
 
-    def find_impossible_rule_type_snoozes(self) -> list[tuple[str, int, int]]:
-        """Snoozes claiming to predate this database's own first migration.
+    def find_impossible_rule_type_snoozes(self, now_ts: int) -> list[tuple[str, int, int]]:
+        """Expired snoozes whose ``added_at`` predates this database's own first migration.
 
         Returns ``[(rule_type, added_at, duration_seconds), ...]``.
+
+        ⛔ **`expires_at <= now_ts` is REQUIRED and is not a tidiness filter.**
+        Without it this reported rows that were still IN FORCE, while the
+        caller's message told the operator their snooze *"has already passed"*
+        and *"is being discarded"* -- **both false, about a snooze they could
+        watch working.** Scoping the query to exactly the rows the purge is
+        about to delete makes the message true about the row's fate, and means
+        each row is reported once rather than on every poll cycle forever.
+        Found by a cold cross-model read of the merged change; reproduced in
+        `internal/session1-harnesses/verify_sol_f41.py` before it was believed.
+
+        ⚠️ **This is a DISAGREEMENT between the row and the schema history, not
+        a proof about the clock.** ``applied_at`` is stamped by the same host
+        clock (see below), so a database migrated while the clock read AHEAD
+        gives a floor above legitimate later writes. The caller must phrase it
+        as a disagreement and must not assert which side is wrong, nor that the
+        snooze suppressed nothing -- it may well have been in force for the
+        whole period before the clock was corrected.
 
         ⭐ **This is an ORDERING fact, not a clock judgement**, which is why it
         works where clock reasoning does not. A row cannot have been written
@@ -3725,11 +3743,19 @@ class Database:
         names, and nothing here closes it.
 
         ⛔ ``MIN(applied_at)`` deliberately, not the version that created
-        ``rule_type_snoozes``. Hardcoding a migration number has broken five
-        call sites across four files on this project before, and the minimum is
-        strictly CONSERVATIVE: it sits at or below the table's own creation, so
-        it can only flag FEWER rows, never more. A false positive here would
-        tell an operator their snooze was discarded when it was not.
+        ``rule_type_snoozes``: hardcoding a migration number has broken five
+        call sites across four files on this project before.
+
+        ⛔ **It is NOT "conservative", and the docstring said it was.** The
+        original text here claimed the minimum "can only flag FEWER rows, never
+        more", i.e. no false positives. That is false, and the counter-example
+        is ordinary: a database migrated while the clock read AHEAD (bad RTC or
+        timezone at provisioning) stamps a floor in the future, so every
+        legitimate later write sits below it. Measured -- a healthy 24h snooze
+        flagged, active, and not purged. **Being a subset of a faulty heuristic
+        does not make a heuristic sound.** The `expires_at <= now_ts` scope
+        above is what keeps that case from producing a false message, not the
+        choice of MIN.
 
         ⛔ **Never raises.** A diagnostic that can change what its caller does
         is the defect this project has now shipped twice -- once emptying an
@@ -3745,8 +3771,8 @@ class Database:
                 (str(rt), int(added), int(exp) - int(added))
                 for rt, added, exp in self._conn.execute(
                     "SELECT rule_type, added_at, expires_at FROM rule_type_snoozes "
-                    "WHERE added_at < ?",
-                    (floor,),
+                    "WHERE added_at < ? AND expires_at <= ?",
+                    (floor, now_ts),
                 )
             ]
         except Exception:  # noqa: BLE001 -- see above; a report must never decide

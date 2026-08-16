@@ -1827,15 +1827,27 @@ def poll_once(
         # unknowable. What was actually wrong is that it happened SILENTLY;
         # that is the half fixed here. Pinned by
         # `test_an_impossible_snooze_is_reported_but_NOT_resurrected`.
+        # ⚠️ Phrased as a DISAGREEMENT, and every word of that is load-bearing.
+        # An earlier version of this message asserted three things the code had
+        # not established: that the clock "was wrong" (the schema stamp comes
+        # from the same clock, so either side may be the wrong one), that the
+        # snooze suppressed NOTHING (it is in force for the whole period before
+        # the clock is corrected), and that the row was expired at all (the
+        # query had no expiry condition, so rows still in force were reported
+        # as discarded). All three were found by a cold read of the merged
+        # change. An error string asserting a cause the code never established
+        # is the same defect class as prose promising a guard that does not
+        # exist -- see AUDIT_REGISTER's rule on checks that cannot distinguish
+        # two causes.
         try:
-            for rule_type, added_at, duration in db.find_impossible_rule_type_snoozes():
+            for rule_type, added_at, duration in db.find_impossible_rule_type_snoozes(now_ts):
                 logger.warning(
-                    "the %ds snooze you set for %s was written by a clock "
-                    "reading %s -- earlier than this database's own first "
-                    "migration, so that reading was wrong. Its deadline has "
-                    "already passed on the corrected clock and the snooze is "
-                    "being discarded WITHOUT having suppressed anything. Set "
-                    "it again if you still want it.",
+                    "the %ds snooze for %s is being discarded: it is stamped %s, "
+                    "earlier than this database's own first migration, so the "
+                    "row and the schema history disagree about when it was "
+                    "written and at least one of the two clocks was wrong. Its "
+                    "deadline has passed on the current clock. Set it again if "
+                    "you still want it, and check this host's time source.",
                     duration,
                     rule_type,
                     _dt.datetime.fromtimestamp(added_at, tz=_dt.UTC).isoformat(),

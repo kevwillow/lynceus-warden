@@ -2162,9 +2162,10 @@ wrong by the same amount on an install that was never right. **That half of Find
 OPEN** — this closes the dead-RTC population, not the RTC-less-Pi one.
 
 ⛔ **`MIN(applied_at)`, not the version that created the table.** Hardcoding a migration number has
-broken five call sites across four files here before; the minimum is also strictly **conservative**,
-sitting at or below the table's own creation, so it can only flag fewer rows. A false positive would
-tell an operator their snooze was discarded when it was not.
+broken five call sites across four files here before.
+⚠️ **This paragraph also called the minimum "strictly conservative … it can only flag fewer rows",
+and that was FALSE** — see the correction below. A subset of an unsound heuristic is still unsound:
+the floor itself can sit in the future.
 
 ✅ **Reported, NOT resurrected, and that is the design decision.** A snooze SUPPRESSES alerting, so
 the safe direction is the one it already fails in — the device keeps alerting. Re-basing would
@@ -2183,6 +2184,46 @@ has been recorded here.
 **5 plants, 5 killed by the expected test** (`internal/session1-harnesses/plant_f41.py`), sources
 verified **byte-identical to baseline** afterwards by content comparison rather than `git status` —
 the work was uncommitted, so `git status` could never have told plant residue from the change itself.
+
+#### ⛔ CORRECTION — a cold read of THIS fix found three real defects in it, and killed my "conservative" claim
+
+**All three reproduced before being believed** (`internal/session1-harnesses/verify_sol_f41.py`), then
+fixed. The paragraph above claiming `MIN(applied_at)` is *"strictly conservative … so it can only flag
+fewer rows"* and that *"a false positive would tell an operator their snooze was discarded when it was
+not"* — **that false positive is exactly what it did.**
+
+| # | defect | measured |
+|---|---|---|
+| 1 | **The floor can sit in the FUTURE.** A database migrated while the clock read AHEAD (bad RTC or timezone at provisioning) stamps `applied_at` above every legitimate later write. | healthy 24h snooze: `flagged=True, active=True, purged=0` |
+| 2 | **The query had no expiry condition at all**, so rows still IN FORCE were reported. The message told the operator a snooze *"has already passed"* and *"is being discarded"* — **about one they could watch working.** | `flagged=True active_at_now=True purged=0` |
+| 3 | **Unbounded repetition.** Nothing marked a row reported, so any flagged row the purge did not remove was warned about **every poll cycle, forever.** | 4 consecutive cycles: `[1, 1, 1, 1]` |
+
+⇒ **Fixed by scoping the report to exactly the rows the purge is about to delete**
+(`added_at < floor AND expires_at <= now_ts`). That makes the message true about the row's fate, ends
+the repetition without needing any "already reported" state, and removes the live-row false positive.
+All three now measure `NOT REPRODUCED`.
+
+⛔ **The message asserted three things the code had not established**, and this is the same class the
+register already carries a rule about: that the clock *"was wrong"* (the schema stamp comes from that
+same clock, so either side may be the wrong one), that the snooze suppressed **nothing** (it is in
+force for the whole period before the correction), and that the row was expired at all. **Rewritten as
+a DISAGREEMENT between the row and the schema history**, naming neither side as the wrong one.
+
+⬜ **One finding REFUTED by measurement:** "a single malformed row hides every valid one" — the
+`added_at` column is `NOT NULL`, so the row described cannot exist. Recorded so it is not re-raised.
+🟡 **One left as a stated decision:** `added_at == floor` exactly is not flagged (strict `<`).
+
+🪤 **And two of my own TESTS were beatable, found by a separate adversarial read of the suite:**
+an implementation keying on **`expires_at < floor`** instead of `added_at` passed **all 34 tests** —
+it would report every expired snooze ever written, the exact log-flood the scoping prevents — and the
+returned tuple's middle element, which the poller renders as *"it is stamped X"*, was **sliced out of
+the assertion**, so an implementation surfacing the wrong timestamp passed. Both now pinned;
+the `expires_at` implementation was planted and **only** the new test failed, which is what proves
+nothing else was covering it.
+
+⇒ ⭐ **The transferable one: this fix was gated 6/0/0, had 5/5 plants killed, and was still wrong in
+three ways.** Planting proves a guard catches the failure you modelled. It cannot tell you the
+predicate is unsound, because the plants are written by the same person who wrote the predicate.
 
 ## Rig round 1 — a cold cross-model read of the day's own work, 2026-08-16
 
@@ -2825,6 +2866,48 @@ heartbeat's undelivered count returns to what it was before the escalation, **AN
 undelivered alert on a healthy entry still raises it. The second half is not optional — without it,
 "stop counting" passes trivially by counting nothing.
 
+### 🔴 Finding 51 — a "reset" on a behind clock ARCHIVES the watchful entry the operator just said they were still watching
+
+⛔ **This is the FAIL-CLOSED direction, and Finding 41's whole family has been graded fails-OPEN until
+now.** Every earlier instance ends with the device still alerting, which is noisy but safe. This one
+**drops the tracking of a possible follower**, silently, on the operator's own click.
+
+**Mechanism.** Five web routes consult `refuse_if_clock_behind` before writing a deadline
+(`app.py:2791, 2951, 4020, 4092, 4324`). **`watchful_reset_post` (`app.py:3039`) does not** — it calls
+`db.reset_watchful_recurrence(entry_id, now_ts=int(time.time()))` straight through. `last_seen_at` is
+the **sole lifecycle clock** for unactioned watchful entries, and
+`auto_archive_watchful_recurrence` archives anything ≥ 90 days stale. So a reset performed while the
+clock reads behind writes a `last_seen_at` that is already ancient, and the next poll archives it.
+
+Measured (`internal/session1-harnesses/f41_reset_archive_probe.py`), on an escalated entry — which is
+the only state where the reset form renders, so the precondition is satisfied rather than routed
+around:
+
+```
+CONTROL correct clock        archived=0   entry still tracked=True
+clock behind by 100 days     archived=1   entry still tracked=False
+clock behind by 6 years      archived=1   entry still tracked=False
+```
+
+⇒ **The operator clicks the button that means *"I am still watching this device"* and the effect is
+that the system stops watching it.** No warning, and `/watchful` simply no longer lists it.
+
+⚠️ **Reachability is narrower than the other instances and must be stated:** the reset form renders
+only on an **escalated** entry, so the operator must already have had a recurrence escalation. That
+makes it rarer — and worse when it happens, because an escalated entry is by definition the one the
+product most wants kept.
+
+🟡 **REGISTERED, NOT PATCHED — the write is in `webui/app.py`, another session's write set**, and the
+fix is a choice between two places: add the existing `refuse_if_clock_behind` gate to the reset route
+(consistent with the other five, refuses loudly), or clamp inside `reset_watchful_recurrence`
+(`db.py`) so no caller can archive-by-reset. ⛔ **Do not "fix" it by widening the archive window** —
+that would delay archiving for every healthy entry to paper over one bad write.
+
+**Acceptance criterion:** a reset performed with a `now_ts` far behind the entry's own history leaves
+the entry tracked after `auto_archive_watchful_recurrence` runs, **AND** a genuinely stale entry — one
+whose `last_seen_at` is ≥ 90 days old on a *correct* clock — is still archived. Both halves; without
+the second, "never archive after a reset" passes trivially and the retention behaviour is lost.
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -3020,6 +3103,11 @@ below describes, running in the other direction:**
   silent, and this is the RTC-less-Pi residual the entry always named. ⭐ Also recorded there: the
   clock-trust hold is **not** a mitigation for this defect, so the earlier framing of the purge as
   the harm was wrong.
+- 🔴 **Finding 51 — registered, NOT patched, and it is the only FAIL-CLOSED member of Finding 41's
+  family.** A reset performed on a behind clock archives the watchful entry the operator just said
+  they were still watching. `watchful_reset_post` is the one duration-adjacent web write with no
+  `refuse_if_clock_behind` gate. ⛔ Fix belongs in `webui/app.py` (the gate) or
+  `reset_watchful_recurrence` (a clamp) — **not** in the archive window.
 - 🟡 **Finding 50 — registered, NOT patched.** An operator reset cancels the retry of an undelivered
   escalation and leaves a permanent, unclearable line in the heartbeat's *"written but never
   delivered"* count. ⛔ The obvious fix — windowing the counter — is the **unsafe** direction: it
