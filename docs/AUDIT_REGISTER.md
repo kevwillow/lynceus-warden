@@ -1971,6 +1971,14 @@ shows the effective severity on all three surfaces with the stored value marked 
 row with no override is unchanged. Both halves — without the second, "always render the override"
 passes trivially.
 
+✅ **Re-measured independently at `330d2ee` by the register's own author**, not accepted from the
+fix's author, because *"(met)"* written on someone else's report is the exact move this file's
+disposition rule exists to stop. `f42_rendered_probe.py`, repointed at a fresh worktree (it asserts
+the `lynceus` it imported comes from that tree): all three axes render `low` and emit `low` on all
+three surfaces, **and the control — no overrides file — renders `high` and emits `high`.** The
+control is the half that matters: it shows the probe can still print a *different* answer, so
+"agree" is a result rather than a constant.
+
 ### 🪤 Twice now I have dismissed something as "not a defect" and been corrected by measurement
 
 The other was the `d47d7e0b` clock finding, which I nearly closed on a PR title. ⇒ **"Not
@@ -2439,6 +2447,17 @@ now says so.
 surfaces, AND a row that is only one of the two names only that one. Both halves — without the
 second, "always print both" passes trivially while inventing a snooze that does not exist.
 
+✅ **Both halves verified at `330d2ee` by the register's own author.** `cooccur_probe.py` drives the
+co-occurring row: the list banner carries all three pills (`inert`, `snoozed`, `both`) and the detail
+page explains both causes and states that fixing one alone restores nothing. The **second** half is
+what the single-cause tests hold —
+`test_a_snoozed_but_delegated_type_keeps_the_original_wording`,
+`test_an_inert_but_unsnoozed_type_says_nothing_about_a_snooze`, and
+`test_the_list_banner_names_the_co_occurrence_only_when_it_exists` — **55 passed** with
+`test_yaml_duplicates.py` alongside. ⭐ That suite also opens with
+`test_this_suite_is_testing_the_tree_it_lives_in`, which is the control this project learned to
+demand after three separate wrong-tree results.
+
 ### 🟡 Finding 46 — the fifth silencing mechanism was reportable for `mac` rows all along — NARROWED by #127 (`776959f`)
 
 `liveness.py` stated that an allowlist match **cannot** be reported per row, because the allowlist
@@ -2635,17 +2654,65 @@ what happens when that function is wrong).
 ⭐ **The fix takes the lesson from #122's own near-miss, and this is the transferable part.** #122's
 helper sat inside `_load_primary`'s `except Exception`, where a raise from the **diagnostic** was
 reported as *"could not be parsed"* and became a valid file loading as **zero entries** with the
-poller announcing `SUPPRESSION DISABLED`. Here the swallow-everything property is implemented once
-and asserted where it bites: `test_a_broken_detector_cannot_change_what_load_ruleset_returns` pins
-the loader's **return value** with the detector throwing `MemoryError` — not merely that nothing
-propagated. ⇒ **A diagnostic must not be able to change the answer it is diagnosing.**
+poller announcing `SUPPRESSION DISABLED`. Here the swallow-everything property is asserted where it
+bites: `test_a_broken_detector_cannot_change_what_load_ruleset_returns` pins the loader's **return
+value** with the detector throwing `MemoryError` — not merely that nothing propagated.
+⇒ **A diagnostic must not be able to change the answer it is diagnosing.**
+
+⚠️ **This paragraph originally also said the property was "implemented ONCE". It was not, until
+`330d2ee`** — see the correction below, which is left in full because the way the false sentence got
+here matters more than the sentence.
 
 ✅ **Acceptance criterion:** every `yaml.safe_load` site in `src/lynceus` is either wired to
 `warn_duplicate_keys` or carries a **written exemption**, and a new loader cannot join silently.
 Three guards, and it takes all three — `test_the_scan_finds_the_loaders_it_is_supposed_to_grade` (the
 instrument's own control, because **a vacuous sweep has shipped in this repo before**),
 `test_every_yaml_loader_is_wired_or_exempt_with_a_reason`, and `test_no_exemption_is_stale`.
-⭐ The first is the one that matters: it is the difference between a sweep and a claim about a sweep.
+
+#### ⛔ CORRECTION — that criterion was NOT met when I wrote it, and I wrote the overclaim myself
+
+**Met at `330d2ee` (#133). NOT met at `68f5bb7`, which is the SHA the paragraph above was published
+against.** The sentence *"a new loader cannot join silently"* was false, and the line that followed
+it — *"the first is the one that matters: it is the difference between a sweep and a claim about a
+sweep"* — praised an instrument that had a **bypass in it**. Both are deleted rather than softened.
+
+A cold cross-model read of #130 (codex `gpt-5.6-sol`, high effort, *"state per finding exactly what
+would refute you"*) found five real defects, **four of them in the guards themselves**. ⛔ **Five
+planted defects had already been caught by those same guards** — fifth round running on this project
+that **planting proves only the failure its author imagined.** Reproduced independently here on
+`68f5bb7` before #133 landed:
+
+| # | defect | how it slipped the guard |
+|---|---|---|
+| 1 | a key repeated **three** times named the wrong winner (`a:1/a:2/a:3` reported line 2, `safe_load` keeps line 3) | the guard transcribed the expected line instead of asking `safe_load` |
+| 2 | `warn_duplicate_keys`, documented **"Never raises"**, could raise — the `try` wrapped the detection call, the **emit loop sat outside it** | `logger.warning` is not inert; a bad handler took the daemon down at startup on a file it had already parsed |
+| 3 | the scan was **blind to `from yaml import safe_load`** | it matched only `ast.Attribute`; a bare `safe_load(path)` is an `ast.Name` — **a straight bypass of the anti-rot mechanism** |
+| 4 | **"wired" was any called name containing `duplicate`** — an unrelated `deduplicate_cache()` certified a loader as protected | the fix for a *transcribed* list was a *loose* list; ⇒ **the answer to a transcribed list is a DERIVED one, not a loose one** |
+| 5 | the three CLI loaders had **no behavioural tests**, only the AST assertion | **an AST guard proves a call exists; it cannot prove it fires on the file the loader read** |
+
+**Verified by me on `330d2ee`, by reading the code rather than the PR body:** `_yaml_import_aliases`
+now walks `ast.ImportFrom` and the site scan handles the `ast.Name` form; `_reporter_names()` derives
+the reporter set by walking the tree and `sites[…] = bool(names & reporters)` is a set intersection,
+carrying its own control (`assert "deduplicate_cache" not in reporters`); and the emit loop now sits
+**inside** the `try`, with a nested reporter-of-last-resort. `tests/test_yaml_duplicates.py` and
+`tests/test_webui_cause_cooccurrence.py`: **55 passed** at that SHA.
+
+🪤 **And the mistake that is mine, not #130's: I transcribed a PR's self-description into this file
+as established fact.** The entry above says the never-raise property is *"implemented once"* — I took
+that from #130's body. It was **false when I wrote it**: `allowlist.py::_warn_on_duplicate_keys` kept
+its own copy, **which carried defect 2 as well**. It delegates to `yaml_duplicates.warn_duplicate_keys`
+as of #133, so the sentence is true now — but it was not true when this file asserted it.
+⇒ **A PR body is the author's account of their own work. It is evidence, not a measurement**, and the
+register is the wrong place to launder one into the other. Same class as the disposition rule this
+file already carries: re-run the finding's ORIGINAL measurement, not the fix's own tests.
+
+⬜ **Graded DOWN after measurement, recorded so nobody re-derives them:** the reviewer's
+**resolved-key collision** (`on:` vs `true:`, YAML 1.1 booleans — `safe_load` collapses them and the
+raw-text detector reports nothing) was called HIGH and is real, but measured through the actual
+loaders pydantic's `extra="forbid"` rejects the resulting non-str key, so both files that matter
+**fail CLOSED and loudly**. Pinned as a limit *with* that measurement, in a test that fails if a
+loader ever starts ACCEPTING it. **Double-parse memory** and the **TOCTOU second read** are documented
+limits, not defects, on config-sized files read once at startup.
 
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
