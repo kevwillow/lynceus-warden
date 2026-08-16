@@ -1739,11 +1739,20 @@ def poll_once(
         # snooze written on a BACKWARD-jumped clock has exactly that shape.
         try:
             for rule_type, duration in db.repair_future_dated_rule_type_snoozes(now_ts):
+                # ⚠️ "for the Nds the operator asked for" was an overclaim and is
+                # now stated precisely. The re-base restarts the window from NOW,
+                # so if real time already elapsed under the wrong clock the total
+                # suppression EXCEEDS what was asked (24h written on a +91d clock,
+                # corrected 12h later => 36h of silence). Nothing stored can fix
+                # that: both timestamps came from the wrong clock, so the elapsed
+                # real time is not recoverable. Saying "runs for Nds FROM NOW" is
+                # the strongest true statement available. See AUDIT_REGISTER.
                 logger.warning(
                     "rule_type snooze for %s was created on a clock that read "
-                    "ahead of this one; re-based onto the current clock so it "
-                    "runs for the %ds the operator asked for, not until the "
-                    "wrong deadline",
+                    "ahead of this one; re-based to run for %ds FROM NOW rather "
+                    "than until the wrong deadline. If time already passed under "
+                    "the wrong clock the total silence will exceed what you asked "
+                    "for -- lift it manually if that matters",
                     rule_type,
                     duration,
                 )
@@ -1839,8 +1848,20 @@ def poll_once(
         # is the same defect class as prose promising a guard that does not
         # exist -- see AUDIT_REGISTER's rule on checks that cannot distinguish
         # two causes.
+        # ⚠️ Field access, not positional unpacking. Swapping two names here
+        # rendered a 1970 timestamp to the operator while every test passed.
+        # ⚠️ And the formatting is per-row inside its own try: a single
+        # unrenderable `added_at` (an out-of-range epoch from a corrupted or
+        # wildly wrong clock) used to raise out of the whole loop, so every
+        # REMAINING impossible snooze was purged with no warning at all.
         try:
-            for rule_type, added_at, duration in db.find_impossible_rule_type_snoozes(now_ts):
+            for snooze in db.find_impossible_rule_type_snoozes(now_ts):
+                try:
+                    stamped = _dt.datetime.fromtimestamp(
+                        snooze.added_at, tz=_dt.UTC
+                    ).isoformat()
+                except (OverflowError, OSError, ValueError):
+                    stamped = f"an unrenderable epoch value ({snooze.added_at})"
                 logger.warning(
                     "the %ds snooze for %s is being discarded: it is stamped %s, "
                     "earlier than this database's own first migration, so the "
@@ -1848,9 +1869,9 @@ def poll_once(
                     "written and at least one of the two clocks was wrong. Its "
                     "deadline has passed on the current clock. Set it again if "
                     "you still want it, and check this host's time source.",
-                    duration,
-                    rule_type,
-                    _dt.datetime.fromtimestamp(added_at, tz=_dt.UTC).isoformat(),
+                    snooze.duration_seconds,
+                    snooze.rule_type,
+                    stamped,
                 )
         except Exception as e:  # pragma: no cover -- the helper already swallows
             logger.warning("rule_type_snoozes impossibility check failed: %s", e)

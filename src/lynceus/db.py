@@ -140,6 +140,23 @@ class WatchlistRow(NamedTuple):
     argus_record_id: str | None
 
 
+class ImpossibleSnooze(NamedTuple):
+    """A snooze whose ``added_at`` predates its own database's first migration.
+
+    ⛔ **Named rather than a bare tuple, and that is a correctness fix.** The
+    poller renders ``added_at`` into the operator-facing WARNING as *"it is
+    stamped X"*. While this was a 3-tuple, swapping the unpacking order at the
+    call site -- ``for rule_type, duration, added_at in ...`` -- passed every
+    test in the suite while showing the operator a 1970 timestamp derived from
+    a duration. Positional mistakes are not detectable by tests that only check
+    the values; naming the fields makes the mistake unrepresentable.
+    """
+
+    rule_type: str
+    added_at: int
+    duration_seconds: int
+
+
 class RuleStats(NamedTuple):
     """Per-rule fire counts + last-fired timestamp for a time window.
 
@@ -3588,12 +3605,32 @@ class Database:
                 # chose would be worse than letting it lapse.
                 if duration <= 0:
                     continue
-                self._conn.execute(
+                # ⛔ COMPARE-AND-SWAP on the values we actually read, not just
+                # on the primary key. The SELECT above runs outside this
+                # transaction, and `add_rule_type_snooze` is INSERT OR REPLACE
+                # in a SEPARATE PROCESS -- so between the read and this write
+                # the operator can replace the row. Keyed only on `rule_type`,
+                # this UPDATE then stamped the FRESH row with the STALE row's
+                # duration: a new 1h snooze silently became 24h, i.e. 23 extra
+                # hours of suppression nobody asked for. That is the dangerous
+                # direction, because a suppressed alert is a follower not
+                # reported. Found by a cold read of the composed subsystem.
+                cur = self._conn.execute(
                     "UPDATE rule_type_snoozes SET added_at = ?, expires_at = ? "
-                    "WHERE rule_type = ?",
-                    (now_ts, now_ts + duration, row["rule_type"]),
+                    "WHERE rule_type = ? AND added_at = ? AND expires_at = ?",
+                    (
+                        now_ts,
+                        now_ts + duration,
+                        row["rule_type"],
+                        int(row["added_at"]),
+                        int(row["expires_at"]),
+                    ),
                 )
-                repaired.append((str(row["rule_type"]), duration))
+                # rowcount 0 means the row changed under us; the operator's
+                # newer write wins and we must NOT report a repair we did not
+                # make -- the return value drives an operator-facing WARNING.
+                if cur.rowcount:
+                    repaired.append((str(row["rule_type"]), duration))
         return repaired
 
     def repair_future_dated_watchful_snoozes(self, now_ts: int) -> list[tuple[str, int]]:
@@ -3703,7 +3740,7 @@ class Database:
                 )
         return repaired
 
-    def find_impossible_rule_type_snoozes(self, now_ts: int) -> list[tuple[str, int, int]]:
+    def find_impossible_rule_type_snoozes(self, now_ts: int) -> list[ImpossibleSnooze]:
         """Expired snoozes whose ``added_at`` predates this database's own first migration.
 
         Returns ``[(rule_type, added_at, duration_seconds), ...]``.
@@ -3714,7 +3751,16 @@ class Database:
         and *"is being discarded"* -- **both false, about a snooze they could
         watch working.** Scoping the query to exactly the rows the purge is
         about to delete makes the message true about the row's fate, and means
-        each row is reported once rather than on every poll cycle forever.
+        each row is normally reported once rather than on every poll cycle
+        forever.
+
+        ⚠️ **"Once" is not a guarantee, and the earlier wording claimed it
+        was.** The bound comes from the purge deleting the row immediately
+        afterwards; report and purge are two statements, not one transaction.
+        If the DELETE fails (locked, read-only, I/O error) or the process stops
+        between them, the row survives and is reported again next tick. Making
+        that airtight needs durable reported-state or an atomic
+        ``DELETE … RETURNING``; it is bounded-in-practice, not by construction.
         Found by a cold cross-model read of the merged change; reproduced in
         `internal/session1-harnesses/verify_sol_f41.py` before it was believed.
 
@@ -3768,7 +3814,7 @@ class Database:
                 return []
             floor = int(row[0])
             return [
-                (str(rt), int(added), int(exp) - int(added))
+                ImpossibleSnooze(str(rt), int(added), int(exp) - int(added))
                 for rt, added, exp in self._conn.execute(
                     "SELECT rule_type, added_at, expires_at FROM rule_type_snoozes "
                     "WHERE added_at < ? AND expires_at <= ?",
@@ -4188,8 +4234,31 @@ class Database:
 
             escalated_at    -> NULL
             sighting_count  -> 1
-            last_seen_at    -> now_ts
+            last_seen_at    -> MAX(last_seen_at, now_ts)
             reset_count     -> reset_count + 1
+
+        ⛔ **``last_seen_at`` is clamped so a reset can never move an entry
+        BACKWARDS, and that is a safety property, not tidiness.** It is the
+        SOLE lifecycle clock for an unactioned entry:
+        ``auto_archive_watchful_recurrence`` archives anything >= 90 days
+        stale by this column. The web route that calls this
+        (``watchful_reset_post``) is the one duration-adjacent write with no
+        ``refuse_if_clock_behind`` gate, so a reset performed while the host
+        clock reads behind used to write an ancient ``last_seen_at`` and the
+        next poll archived the entry. Measured: `archived=1, tracked=False`
+        against a control that survives. **The operator clicks the button
+        meaning "I am still watching this device" and the system stopped
+        watching it** -- and unlike the rest of Finding 41's family that is the
+        FAIL-CLOSED direction, because what is dropped is the tracking of a
+        possible follower. Registered as Finding 51.
+
+        ⚠️ **The clamp bounds the damage; it does not restore intent.** On a
+        behind clock the entry keeps whatever staleness it already had, so an
+        entry that was ALREADY past the archive window still archives. Nothing
+        local can do better: if the clock is wrong there is no trustworthy
+        "now" to move it to, and inventing one would be the same defect in the
+        other direction. Refusing the write outright belongs at the route, next
+        to the other five.
 
         Returns the post-update ``WatchfulRecurrence`` or raises
         ``ValueError`` if the entry does not exist or is not
@@ -4206,7 +4275,8 @@ class Database:
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET "
                 "escalated_at = NULL, sighting_count = 1, "
-                "last_seen_at = ?, reset_count = reset_count + 1 "
+                "last_seen_at = MAX(last_seen_at, ?), "
+                "reset_count = reset_count + 1 "
                 "WHERE id = ? "
                 "AND escalated_at IS NOT NULL "
                 "AND archived_at IS NULL",

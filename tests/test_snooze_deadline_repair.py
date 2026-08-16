@@ -958,3 +958,125 @@ def test_the_discriminator_is_added_at_NOT_expires_at(db):
         "an impl keying on expires_at rather than added_at reports nothing here, "
         "and reports every ordinary expired snooze in production"
     )
+
+
+# ---------------------------------------------------------------------------
+# Round 2 of the cold read: defects in the CORRECTION, plus a pre-existing
+# race in the forward repair that the composed read surfaced.
+# ---------------------------------------------------------------------------
+
+
+class _RacingConn:
+    """Delegates to the real connection, but fires `on_select` once, straight
+    after the repair's SELECT has been materialised and BEFORE its UPDATE.
+
+    That interleaving IS the defect. My first attempt at this test performed the
+    competing write before calling the repair -- so the repair's own SELECT
+    returned nothing, there was no race to lose, and the test passed with the
+    compare-and-swap removed. A planted defect is what exposed it.
+    """
+
+    _NEEDLE = "SELECT rule_type, added_at, expires_at FROM rule_type_snoozes"
+
+    class _Rows(list):
+        def fetchall(self):
+            return list(self)
+
+    def __init__(self, real, on_select):
+        self._real = real
+        self._on_select = on_select
+        self._fired = False
+
+    def execute(self, sql, params=()):
+        cur = self._real.execute(sql, params)
+        if not self._fired and sql.startswith(self._NEEDLE):
+            rows = self._Rows(cur.fetchall())
+            self._fired = True
+            self._on_select()
+            return rows
+        return cur
+
+    def __enter__(self):
+        return self._real.__enter__()
+
+    def __exit__(self, *a):
+        return self._real.__exit__(*a)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_the_forward_repair_does_not_clobber_a_snooze_written_under_it(db):
+    """⛔ A pre-existing TOCTOU, found by reading the subsystem rather than a diff.
+
+    The repair SELECTs outside its transaction and used to UPDATE keyed only on
+    `rule_type`. `add_rule_type_snooze` is INSERT OR REPLACE **in a separate
+    process**, so an operator replacing the row between the read and the write
+    got the OLD row's duration stamped onto their NEW snooze: a fresh 1h became
+    24h. 23 extra hours of suppression nobody asked for, and suppression is the
+    direction that hides a follower.
+    """
+    future = NOW + 91 * DAY
+    db.add_rule_type_snooze("ble_uuid", expires_at=future + DAY, added_at=future)
+
+    def operator_replaces_it():
+        # the separate web process, landing between the SELECT and the UPDATE
+        db._real_conn.execute(
+            "INSERT OR REPLACE INTO rule_type_snoozes(rule_type, expires_at, added_at) "
+            "VALUES ('ble_uuid', ?, ?)",
+            (NOW + HOUR, NOW),
+        )
+        db._real_conn.commit()
+
+    db._real_conn = db._conn
+    db._conn = _RacingConn(db._real_conn, operator_replaces_it)
+    try:
+        repaired = db.repair_future_dated_rule_type_snoozes(NOW)
+    finally:
+        db._conn = db._real_conn
+
+    added, expires = _rows(db)["ble_uuid"]
+    assert (added, expires) == (NOW, NOW + HOUR), (
+        "the repair overwrote the operator's newer snooze with the stale duration"
+    )
+    assert repaired == [], (
+        "the repair reported a change it did not make; that string reaches the operator"
+    )
+
+
+def test_a_row_exactly_ON_the_floor_second_is_not_reported(db):
+    """The `<` boundary, pinned as a decision rather than left to drift.
+
+    Equality means "written in the same second the schema was stamped", which is
+    not evidence of a wrong clock. Flagging it would tell an operator their
+    snooze was discarded for having been quick.
+    """
+    _set_floor(db, NOW)
+    db.add_rule_type_snooze("mac", expires_at=NOW - HOUR, added_at=NOW)
+    assert db.find_impossible_rule_type_snoozes(NOW) == []
+
+
+def test_a_row_expiring_exactly_AT_now_is_reported(db):
+    """The other boundary, and it must match the purge.
+
+    `cleanup_expired_rule_type_snoozes` deletes on `expires_at <= now_ts`. If the
+    report used `<` it would stay silent about a row the purge deletes in the
+    same tick -- the exact silence this whole change exists to end.
+    """
+    _set_floor(db, NOW)
+    db.add_rule_type_snooze("mac", expires_at=NOW, added_at=NOW - YEAR)
+    assert [s.rule_type for s in db.find_impossible_rule_type_snoozes(NOW)] == ["mac"]
+    assert db.cleanup_expired_rule_type_snoozes(NOW) == 1
+
+
+def test_the_report_is_field_addressed_so_a_positional_swap_cannot_compile(db):
+    """⛔ Swapping the unpacking order at the call site rendered a 1970 timestamp
+    to the operator while every value-checking test passed. Names make it
+    unrepresentable; this pins the names themselves."""
+    _set_floor(db, NOW)
+    db.add_rule_type_snooze("ble_uuid", expires_at=NOW - YEAR + DAY, added_at=NOW - YEAR)
+
+    (found,) = db.find_impossible_rule_type_snoozes(NOW)
+    assert found.rule_type == "ble_uuid"
+    assert found.added_at == NOW - YEAR
+    assert found.duration_seconds == DAY

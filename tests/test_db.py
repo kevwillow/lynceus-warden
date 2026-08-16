@@ -3753,6 +3753,44 @@ def test_reset_watchful_recurrence_walks_back_from_escalated(db):
     assert row.reset_count == 1
 
 
+def test_reset_never_moves_last_seen_at_BACKWARDS(db):
+    """Finding 51. `last_seen_at` is the SOLE lifecycle clock for an unactioned
+    entry -- `auto_archive_watchful_recurrence` archives at 90 days stale by
+    this column -- and `watchful_reset_post` is the one duration-adjacent web
+    write with no `refuse_if_clock_behind` gate.
+
+    So a reset on a behind clock used to stamp an ancient `last_seen_at` and the
+    next poll archived the entry: the operator clicks "I am still watching this
+    device" and the system stops watching it. FAIL-CLOSED, unlike the rest of
+    Finding 41's family.
+    """
+    entry_id = _insert_watchful(
+        db, last_seen_at=1_000_000, sighting_count=4, escalated_at=2000
+    )
+    # the host clock reads six years behind when the operator clicks reset
+    result = db.reset_watchful_recurrence(entry_id, now_ts=1_000_000 - 6 * 365 * 86400)
+
+    assert result.last_seen_at == 1_000_000, (
+        "the reset moved the entry backwards into the archive window"
+    )
+    # the rest of the walk-back still happens -- the clamp is not a refusal
+    assert result.escalated_at is None
+    assert result.sighting_count == 1
+    assert result.reset_count == 1
+
+
+def test_reset_STILL_advances_last_seen_at_on_a_sane_clock(db):
+    """The other half, and it is not optional: clamping to `last_seen_at`
+    unconditionally would freeze the column and quietly break the debounce the
+    reset exists to restart. Without this, "never move backwards" passes
+    trivially by never moving at all."""
+    entry_id = _insert_watchful(
+        db, last_seen_at=1000, sighting_count=4, escalated_at=2000
+    )
+    result = db.reset_watchful_recurrence(entry_id, now_ts=5000)
+    assert result.last_seen_at == 5000
+
+
 def test_reset_watchful_recurrence_increments_reset_count_each_call(db):
     """Second reset (e.g., entry re-escalated and operator reset again)
     bumps reset_count from 1 to 2, not back to 1."""
