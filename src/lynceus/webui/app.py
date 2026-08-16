@@ -3103,6 +3103,43 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return "escalated"
         return "tracking"
 
+    def _last_activity_is_the_reset(entry: WatchfulRecurrence) -> bool:
+        """Is this row's ``last_seen_at`` the operator's reset click?
+
+        Three writers set that column and only one of them is an
+        observation: a counted sighting
+        (``record_watchful_sighting``), the operator's reset
+        (``reset_watchful_recurrence``, which sets
+        ``last_seen_at = now_ts`` and ``sighting_count = 1``), and a
+        clock-repair clamp
+        (``repair_future_dated_watchful_last_seen``). Rendering all
+        three as "last seen" told the operator a device had just been
+        seen when what had just happened was their own button press --
+        and the same column is the list's ``ORDER BY`` and the column
+        the ``?window=`` filter clamps, so the click also moved the row
+        to the top of the triage view and into "last 1h".
+
+        The reset is derivable from the row: it forces
+        ``sighting_count`` to 1, so ``reset_count > 0 and
+        sighting_count == 1`` means no counted sighting has landed
+        since, and the stored value therefore IS the reset instant. A
+        never-reset row also has ``sighting_count == 1``, which is why
+        this is a conjunction and not either half.
+
+        ⛔ Deliberately NOT extended to the clock-repair clamp: that
+        write leaves the row byte-identical to one whose device was
+        seen at the repair instant, so no predicate here can see it.
+        It is named in the page copy instead. A marker implying
+        "everything unmarked is a sighting" would be the same false
+        claim one layer along.
+
+        ⚠️ The db-layer overwrite is correct and must stay:
+        ``last_seen_at`` is also the 90-day auto-archive clock, so a
+        reset that left it alone would archive an entry the operator
+        had just chosen to keep watching.
+        """
+        return entry.reset_count > 0 and entry.sighting_count == 1
+
     def _build_weekly_digest(now_ts: int, n_weeks: int) -> list[dict]:
         """Group recent escalations by ISO week, most recent first.
 
@@ -3194,7 +3231,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # template doesn't have to recompute the same NULL-checks for
         # the action-button visibility test.
         decorated = [
-            {"entry": e, "state_label": _entry_state(e)} for e in entries
+            {
+                "entry": e,
+                "state_label": _entry_state(e),
+                "last_activity_is_the_reset": _last_activity_is_the_reset(e),
+            }
+            for e in entries
         ]
 
         digest = _build_weekly_digest(now_ts, WATCHFUL_DIGEST_WEEKS)
@@ -3262,6 +3304,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "active": "watchful",
                 "entry": entry,
                 "state_label": _entry_state(entry),
+                "last_activity_is_the_reset": _last_activity_is_the_reset(entry),
                 "now_ts": int(time.time()),
                 "flash": flash,
             },

@@ -1,0 +1,34 @@
+{# The `last activity` column, described in ONE place.
+
+   `watchful_recurrence.last_seen_at` is written by three different things and
+   only one of them is an observation: a counted sighting, the operator's reset
+   (which sets last_seen_at = now alongside sighting_count = 1), and the
+   clock-repair clamp. Both surfaces used to render it as "last seen", so a
+   reset click made a device that had not been observed for a month read as
+   seen "just now" -- and, because this column is also the list's ORDER BY and
+   the column ?window= filters on, moved it to the top of the triage view and
+   into "last 1h".
+
+   ⛔ The db-layer write is correct and is not the thing to fix: last_seen_at is
+   also the 90-day auto-archive clock, so a reset that left it alone would
+   archive an entry the operator had just chosen to keep watching.
+
+   Two macros so neither surface carries its own copy of the explanation --
+   a second copy is a second manifest, and this file's history is three
+   surfaces drifting apart. #}
+
+{% macro last_activity_note(in_list=false) %}
+  <p><small class="dim watchful-last-activity-note">
+    <strong>last activity</strong> is this row&rsquo;s recurrence clock rather than a sighting log:
+    it is set by a counted sighting, by an <strong>operator reset</strong>, or by a
+    <strong>clock repair</strong>, so a value here is not always a time the device was seen.
+    {%- if in_list %}
+      It is also what this list is <strong>ordered</strong> by and what the <strong>recent</strong>
+      filter selects on, so a reset lifts a row to the top of the page and into the shorter windows.
+    {%- endif %}
+  </small></p>
+{% endmacro %}
+
+{% macro reset_marker() %}
+  <small class="dim watchful-last-activity-reset" title="This timestamp is the operator's reset, not a sighting. The reset overwrites last_seen_at (which is also the 90-day auto-archive clock), so this row no longer records when the device was actually last seen.">(operator reset &mdash; not a sighting)</small>
+{% endmacro %}

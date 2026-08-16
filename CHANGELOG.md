@@ -235,6 +235,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`watchful` reported a device as last seen at the moment you clicked a
+  button.** Resetting an escalated entry walks its count back — and, because the
+  same column is also the recurrence debounce and the 90-day auto-archive clock,
+  the reset stamps `last_seen_at` with the current time. Both watchful pages
+  rendered that column as **last seen**, so a device nobody had observed for
+  four weeks read as seen *just now*, purely because you had triaged it.
+
+  It was not only a label. That column is what `/watchful` is ordered by and
+  what the **recent** filter selects on, so the same click lifted the row above
+  genuinely-recent devices and into `last 1h`. Measured against a device whose
+  newest actual sighting was 27 days old: the page moved from `27d ago` to
+  `just now`, the row moved from second place to first, and it appeared under a
+  one-hour window it did not belong in.
+
+  The column is now called **last activity** on both pages, which is what it has
+  always been — a counted sighting, an operator reset, or a clock repair — and
+  a row whose timestamp is a reset says so beside the time. The page states the
+  three sources rather than implying the value is always an observation. The
+  underlying write is deliberately unchanged: an entry last counted 89 days ago
+  that you reset today would otherwise be auto-archived tomorrow, silently
+  closing a watch you had just chosen to keep.
+
 - **A repeated line in a config file was silently obeyed, and it could point a
   suppression at the wrong device.** YAML resolves a repeated key by keeping the
   last one, without complaining. Nothing in Lynceus noticed, so a hand-edited

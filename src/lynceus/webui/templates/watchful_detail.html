@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}watchful entry #{{ entry.id }} &mdash; lynceus{% endblock %}
 {% block content %}
+  {% from "_watchful_last_activity.html" import last_activity_note, reset_marker with context %}
   {% include "_topnav.html" %}
   <p><a href="/watchful">&larr; back to watchful</a></p>
   <h2>watchful entry #{{ entry.id }}</h2>
@@ -39,15 +40,17 @@
       <time datetime="{{ entry.first_seen_at | unix_to_iso }}" title="{{ entry.first_seen_at | unix_to_utc_human }}">
         {{ entry.first_seen_at | relative_time(now_ts=now_ts) }}
       </time>
-      &middot; <strong>last seen:</strong>
+      &middot; <strong>last activity:</strong>
       <time datetime="{{ entry.last_seen_at | unix_to_iso }}" title="{{ entry.last_seen_at | unix_to_utc_human }}">
         {{ entry.last_seen_at | relative_time(now_ts=now_ts) }}
       </time>
+      {% if last_activity_is_the_reset %}{{ reset_marker() }}{% endif %}
       &middot; <strong>created:</strong>
       <time datetime="{{ entry.created_at | unix_to_iso }}" title="{{ entry.created_at | unix_to_utc_human }}">
         {{ entry.created_at | relative_time(now_ts=now_ts) }}
       </time>
     </p>
+    {{ last_activity_note() }}
     <p>
       <strong>escalated:</strong>
       {% if entry.escalated_at %}
