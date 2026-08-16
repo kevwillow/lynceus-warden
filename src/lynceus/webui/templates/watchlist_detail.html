@@ -28,24 +28,30 @@
 {# ⛔ Its own block, NOT another branch of the inert/snoozed chain. This cause
    is per-row and independent: an entry can be perfectly live at the type level
    and still have every alert dropped because of its vendor. #}
-    {% if override_suppression_reason %}
+    {% if override_suppression_axes %}
       <p><small class="dim">
         <span class="badge-snoozed-type">override</span>
         <strong>This entry matches, but a severity override drops its alerts.</strong>
-        {# ⚠️ Names ONLY the axis that actually matched. Printing every populated
-           metadata field as though it matched sends the operator to remove a
-           category suppression that had nothing to do with it. #}
-        {% if override_suppression_reason == "vendor" %}
-          Its vendor <code>{{ metadata.vendor }}</code> is listed under
-          <code>suppress_vendors</code> in your severity overrides,
+        {# ⚠️ EVERY matching axis, not the first. A row can be listed under both
+           suppress_vendors and suppress_categories, and removing only one
+           leaves the other silencing it -- so naming one would offer a next
+           step that does not restore alerting. #}
+        {% for axis in override_suppression_axes %}
+          {% if axis == "vendor" %}
+            Its vendor <code>{{ metadata.vendor }}</code> is listed under
+            <code>suppress_vendors</code>{% if not loop.last %}, and{% else %}.{% endif %}
+          {% else %}
+            Its category <code>{{ metadata.device_category }}</code> is listed under
+            <code>suppress_categories</code>{% if not loop.last %}, and{% else %}.{% endif %}
+          {% endif %}
+        {% endfor %}
+        So the rule matches and the alert is discarded.
+        {% if override_suppression_axes | length > 1 %}
+          ⚠️ <strong>Both</strong> apply — removing only one will not bring this
+          entry back.
         {% else %}
-          Its category <code>{{ metadata.device_category }}</code> is listed under
-          <code>suppress_categories</code> in your severity overrides,
+          Removing it there clears this particular blocker.
         {% endif %}
-        so the rule matches and the alert is discarded.
-        {# ⚠️ "removes this blocker", not "you will hear about it again" -- the
-           same entry may ALSO be inert or snoozed, which this does not fix. #}
-        Removing it there clears this particular blocker.
       </small></p>
     {% endif %}
     {% if entry_is_snoozed %}

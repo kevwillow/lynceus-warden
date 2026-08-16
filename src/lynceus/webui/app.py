@@ -54,7 +54,7 @@ from lynceus.webui.liveness import (
     is_pattern_type_live,
     is_pattern_type_snoozed,
     is_row_suppressed_by_overrides,
-    override_suppression_reason,
+    override_suppression_axes,
     runtime_suppressions,
     watchlist_liveness,
 )
@@ -2658,7 +2658,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # bad duration or an unknown rule_type must be reported as what it is;
         # answering a malformed request with "your clock is wrong" tells the
         # caller nothing about the mistake they actually made.
-        clock_refusal = refuse_if_clock_behind(db, int(time.time()))
+        clock_refusal = refuse_if_clock_behind(
+            db, int(time.time()), _SNOOZE_DURATIONS[snooze_duration]
+        )
         if clock_refusal:
             raise HTTPException(status_code=400, detail=clock_refusal)
 
@@ -2816,7 +2818,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # bad duration or an unknown rule_type must be reported as what it is;
         # answering a malformed request with "your clock is wrong" tells the
         # caller nothing about the mistake they actually made.
-        clock_refusal = refuse_if_clock_behind(db, int(time.time()))
+        clock_refusal = refuse_if_clock_behind(db, int(time.time()), seconds)
         if clock_refusal:
             raise HTTPException(status_code=400, detail=clock_refusal)
 
@@ -3842,7 +3844,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # bad duration or an unknown rule_type must be reported as what it is;
         # answering a malformed request with "your clock is wrong" tells the
         # caller nothing about the mistake they actually made.
-        clock_refusal = refuse_if_clock_behind(db, int(time.time()))
+        clock_refusal = refuse_if_clock_behind(db, int(time.time()), seconds)
         if clock_refusal:
             raise HTTPException(status_code=400, detail=clock_refusal)
 
@@ -3914,7 +3916,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # bad duration or an unknown rule_type must be reported as what it is;
         # answering a malformed request with "your clock is wrong" tells the
         # caller nothing about the mistake they actually made.
-        clock_refusal = refuse_if_clock_behind(db, int(time.time()))
+        clock_refusal = refuse_if_clock_behind(
+            db, int(time.time()), _SNOOZE_DURATIONS[snooze_duration]
+        )
         if clock_refusal:
             raise HTTPException(status_code=400, detail=clock_refusal)
 
@@ -4144,7 +4148,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # bad duration or an unknown rule_type must be reported as what it is;
         # answering a malformed request with "your clock is wrong" tells the
         # caller nothing about the mistake they actually made.
-        clock_refusal = refuse_if_clock_behind(db, now_ts)
+        clock_refusal = refuse_if_clock_behind(db, now_ts, duration_seconds)
         if clock_refusal:
             raise HTTPException(status_code=400, detail=clock_refusal)
 
@@ -4567,7 +4571,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "entry_is_snoozed": is_pattern_type_snoozed(
                     entry["pattern_type"], liveness
                 ),
-                "override_suppression_reason": override_suppression_reason(
+                "override_suppression_axes": override_suppression_axes(
                     row.get("vendor"),
                     row.get("device_category"),
                     runtime_suppressions(app.state.config),

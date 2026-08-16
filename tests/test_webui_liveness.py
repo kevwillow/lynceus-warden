@@ -883,10 +883,25 @@ def test_an_expired_snooze_stops_being_reported(tmp_path):
     assert after["live_types"] == (LIVE_TYPE,)
 
 
-def test_a_snooze_on_an_inert_type_does_not_offer_unsnooze_as_the_fix(tmp_path):
-    """⚠️ Inert wins over snoozed, deliberately. Lifting a snooze on a type
-    whose delegating rule is commented out changes nothing — reporting it as
-    "snoozed" would offer a fix that does not work."""
+def test_a_type_that_is_BOTH_inert_and_snoozed_reports_BOTH(tmp_path):
+    """⭐ This test used to assert the OPPOSITE, and the opposite was wrong.
+
+    It read `test_a_snooze_on_an_inert_type_does_not_offer_unsnooze_as_the_fix`
+    and pinned "inert wins", on the reasoning that unsnoozing an inert type
+    changes nothing. That reasoning has an exact inverse which is equally true:
+    **fixing the delegation changes nothing either, because the snooze is still
+    there.** Whichever cause you hide, the remediation you offer is incomplete.
+
+    ⇒ They are INDEPENDENT FLAGS, not states in a partition. Both are reported,
+    because the operator has to do both.
+
+    🪤 **A planted defect certified the old behaviour.** Plant N1/O4 mutated the
+    intersection and watched this test fail, which "proved" the guard worked —
+    a plant validates the model the test encodes, so an incorrect model gets
+    pinned just as firmly as a correct one. Found by a cold read of the composed
+    subsystem, not by any plant. See
+    [[four-ways-a-planted-defect-proves-nothing]].
+    """
     import time as _time
 
     cfg, db, app = _client(
@@ -901,8 +916,12 @@ def test_a_snooze_on_an_inert_type_does_not_offer_unsnooze_as_the_fix(tmp_path):
     finally:
         db.close()
 
-    assert liveness["inert_types"] == (INERT_TYPE,)
-    assert liveness["suppressed_types"] == ()
+    assert liveness["inert_types"] == (INERT_TYPE,), "the inert cause was dropped"
+    assert liveness["suppressed_types"] == (INERT_TYPE,), (
+        "the snooze cause was dropped; an operator who fixes rules.yaml would "
+        "still hear nothing and would not know why"
+    )
+    assert liveness["live_types"] == ()
 
 
 def test_liveness_without_a_db_reports_no_snoozes_rather_than_failing(tmp_path):
