@@ -48,7 +48,7 @@ import yaml
 from .. import __version__, paths
 from ..allowlist import derive_ui_path
 from ..config import Config
-from ..redact import REDACTED_PLACEHOLDER, redact_yaml_config
+from ..redact import REDACTED_PLACEHOLDER, RedactionFailure, redact_yaml_config
 from ..yaml_duplicates import warn_duplicate_keys
 
 logger = logging.getLogger(__name__)
@@ -283,7 +283,26 @@ def _read_config_entry(
         )
 
     if redact:
-        new_text, redacted_fields = redact_yaml_config(filename, raw_text)
+        try:
+            new_text, redacted_fields = redact_yaml_config(filename, raw_text)
+        except RedactionFailure as exc:
+            # ⛔ Omit the file rather than ship it. This archive's documented
+            # third purpose is "sharing a sanitized snapshot with the
+            # maintainer", so a file the redactor could not prove clean is the
+            # one thing that must not travel. It rides the same `error=` path
+            # as an unreadable file: recorded in the manifest, printed to
+            # stderr, non-zero exit -- the operator is told, and the receiver
+            # can see the file is absent instead of trusting a masked-looking
+            # one that still carries a live credential.
+            return FileEntry(
+                arcname=arcname,
+                source=source,
+                payload=None,
+                size_bytes=0,
+                sha256="",
+                redacted=False,
+                error=f"RedactionFailure: {exc}",
+            )
     else:
         new_text, redacted_fields = raw_text, []
     payload = new_text.encode("utf-8")
