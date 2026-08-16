@@ -795,3 +795,47 @@ def test_a_clean_primary_file_warns_about_nothing(tmp_path, caplog):
 
     assert len(al.entries) == 2
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def test_a_failing_duplicate_check_cannot_disable_suppression(tmp_path, monkeypatch, caplog):
+    """The diagnostic must never change the load outcome.
+
+    `_warn_on_duplicate_keys` re-reads a file the loader has already parsed,
+    from inside `_load_primary`'s `except Exception`. A raise there would be
+    reported as "could not be parsed" and, under `raise_on_parse_error`,
+    become an `AllowlistParseError` -- which at startup means the poller
+    installs an empty allowlist and logs SUPPRESSION DISABLED. A helper whose
+    only job is to add a warning would then have silently turned every
+    suppression off.
+
+    Both callers are asserted, because the lenient one returning entries would
+    not tell you anything about the poller's fail-safe path, which is the one
+    that disables suppression.
+    """
+    import lynceus.allowlist as al_mod
+
+    p = tmp_path / "allowlist.yaml"
+    p.write_text(
+        "entries:\n"
+        "  - pattern: 'ac:de:48:00:11:22'\n"
+        "    pattern_type: mac\n",
+        encoding="utf-8",
+    )
+
+    def _boom(_path):
+        raise RecursionError("pathological nesting")
+
+    monkeypatch.setattr(al_mod, "find_duplicate_keys", _boom)
+
+    with caplog.at_level(logging.DEBUG, logger="lynceus.allowlist"):
+        assert len(load_allowlist(str(p)).entries) == 1
+        # The poller's fail-safe path: must still load, not raise.
+        merged, primary_count, _ui = al_mod._load_allowlist_with_counts(
+            str(p), raise_on_parse_error=True
+        )
+    assert primary_count == 1
+    assert len(merged.entries) == 1
+    # And it must not masquerade as a parse failure.
+    assert not any(
+        "could not be parsed" in r.getMessage() for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]

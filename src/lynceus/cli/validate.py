@@ -197,8 +197,11 @@ def _duplicate_key_issues(path: Path) -> list[Issue]:
     (rules.yaml, severity_overrides.yaml), whose loaders are equally silent;
     checking here covers all five files at the operator's surface without
     changing how any daemon-side loader behaves.
-    `test_every_validator_reports_a_duplicate_key` iterates the validators so a
-    sixth config file cannot quietly skip this.
+    Two tests hold that together, and it takes both:
+    `test_the_duplicate_key_fixture_map_covers_every_validator` derives the
+    validator set from this module and fails if one has no fixture, so a sixth
+    config file cannot quietly skip the check;
+    `test_every_validator_reports_a_duplicate_key` then exercises each one.
     """
     return [
         Issue(

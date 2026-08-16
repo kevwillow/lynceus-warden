@@ -493,8 +493,26 @@ def _warn_on_duplicate_keys(primary_path: Path) -> None:
     failure `_validate_ui_entries` exists to undo. `lynceus-validate` reports
     the same finding as an ERROR with line numbers, which is the loud surface;
     this line is for the operator who never runs it.
+
+    ⛔ Swallows its own failures, and that is load-bearing rather than tidy.
+    This is a DIAGNOSTIC: it re-reads a file the caller has already parsed, and
+    it runs inside `_load_primary`'s `except Exception` where any raise would
+    be reported as "could not be parsed" and, under `raise_on_parse_error`,
+    become an `AllowlistParseError` -- which at startup means the poller sets
+    an empty allowlist and logs SUPPRESSION DISABLED. A helper whose only job
+    is to add a warning must never be able to turn a loadable file into a
+    disabled one. `yaml.compose` on a pathological file can still raise past
+    the OSError/YAMLError that `find_duplicate_keys` handles (RecursionError
+    on deep nesting, MemoryError), so the broad catch is the point.
     """
-    for dupe in find_duplicate_keys(primary_path):
+    try:
+        dupes = find_duplicate_keys(primary_path)
+    except Exception as exc:  # noqa: BLE001 -- see above; never propagate
+        logger.debug(
+            "duplicate-key check skipped for %s (%s)", primary_path, exc
+        )
+        return
+    for dupe in dupes:
         logger.warning(
             "allowlist primary file %s: %s. The entry loaded is not the one "
             "written on line %d.",
