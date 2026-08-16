@@ -1937,6 +1937,37 @@ def test_confidence_at_threshold_does_not_downgrade():
     assert sev == "high"
 
 
+def test_the_default_confidence_threshold_is_seventy():
+    """⛔ A LITERAL, because every other test feeds the constant in as the input
+    and compares against the constant as the expectation — so both sides move
+    with it and the default can drift with nothing noticing.
+
+    Measured: changing `DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD` from 70 to 60
+    left **558 passed, 0 failed** across the 11 files that touch the importer.
+    A silent drift downward stops rows scoring 60-69 being downgraded, so a
+    low-confidence surveillance-device row alerts at its full severity; a drift
+    upward downgrades rows that should have alerted. Neither is visible.
+    """
+    assert DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD == 70
+
+
+@pytest.mark.parametrize(
+    ("confidence", "expected"),
+    [(69, "med"), (70, "high")],
+)
+def test_the_downgrade_boundary_sits_between_69_and_70(confidence, expected):
+    """The boundary stated in literals on BOTH sides. The pin above catches a
+    changed constant; this catches a changed comparison (`<` becoming `<=`),
+    which would move the boundary while leaving the constant at 70."""
+    sev = resolve_severity(
+        manufacturer=None,
+        device_category="alpr",
+        confidence=confidence,
+        overrides=OverrideConfig(),
+    )
+    assert sev == expected
+
+
 def test_confidence_threshold_zero_disables_downgrade():
     sev = resolve_severity(
         manufacturer=None,
@@ -3900,14 +3931,37 @@ def test_argus_schema_version_accept_list_empty_disables_check(tmp_path, db, cap
 
 
 def test_load_override_config_argus_schema_version_default(tmp_path):
-    """YAML without the key falls back to the built-in default
-    ["25", "26"]."""
+    """YAML without the key falls back to the built-in default.
+
+    ⚠️ This docstring used to say that default was ``["25", "26"]``. It has been
+    ``25``-``33`` for some time — the stale-prose defect, sitting inside the
+    test whose job is to guard the value.
+    """
     p = tmp_path / "overrides.yaml"
     p.write_text(yaml.safe_dump({}), encoding="utf-8")
     cfg = load_override_config(str(p))
     assert cfg.argus_schema_version_accept_list == list(
         DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST
     )
+
+
+def test_the_default_schema_version_accept_list_is_pinned():
+    """⛔ The list itself, as a LITERAL. The test above compares the loader's
+    fallback to the same constant it falls back to, so both sides move together
+    and a version can be dropped silently.
+
+    Measured across all 11 test files that touch the importer:
+
+        drop "33"  ->  1 failed    (a fixture happens to pin that version)
+        drop "32"  ->  558 passed, 0 failed
+
+    `"32"` appears as a literal in no test at all — 25-31, 33 and 34 do. A
+    version that nothing names can be removed and the only symptom is a real
+    Argus export at that schema being refused in the field.
+    """
+    assert list(DEFAULT_ARGUS_SCHEMA_VERSION_ACCEPT_LIST) == [
+        "25", "26", "27", "28", "29", "30", "31", "32", "33",
+    ]
 
 
 def test_load_override_config_argus_schema_version_explicit_null(tmp_path):
