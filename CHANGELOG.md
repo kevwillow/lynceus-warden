@@ -254,6 +254,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   file still says "would empty the allowlist at startup", because for that file
   it is true — the daemon does start with suppression disabled and logs it.
 
+- **"This device keeps following you" is no longer lost for good if the database
+  is busy at the moment it is written.** When a device you asked Lynceus to watch
+  reaches the recurrence threshold, it sends the most important message this tool
+  produces. That message is written down first, then delivered — and a failure to
+  *write* it was previously shrugged off, while the entry was already marked as
+  escalated. Nothing ever tried again: the retry that exists for a failed
+  *delivery* looks for the written record, and there wasn't one.
+
+  ⚠️ It was invisible, which is what made it serious. A failed delivery shows up
+  on your heartbeat as "1 alert written but never delivered". A failed write left
+  nothing to count, so the heartbeat said **"Still watching."** — the same thing
+  it says when everything is fine. Measured on a device under a "forever" snooze,
+  where the recurrence warning is the only signal left: seen every day for eight
+  more days, told nothing, health reported good throughout.
+
+  Lynceus now marks the entry as escalated only once the record exists, so a
+  database that was briefly busy means the next sighting tries again — within
+  minutes, not the next day — rather than the warning disappearing.
+
+  ⛔ Not retroactive. An entry already left in that state by an earlier version
+  cannot be told apart from one you deliberately silenced, so it stays silent.
+
 - **A watchlist entry Lynceus could never act on is now refused when you add it,
   instead of being accepted and quietly ignored.** Some vendor prefixes cannot
   belong to a real device — placeholder and broadcast addresses, and the range

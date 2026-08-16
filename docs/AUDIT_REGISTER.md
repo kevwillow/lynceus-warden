@@ -2300,6 +2300,46 @@ row, delivered. All three measured; four planted defects — the original orderi
 fire-once guard, dropping the snooze branch's stamp, and reporting a failed write as success — each
 fail the suite, with unique anchors and a clean tree verified after every plant.
 
+### 🟡 Finding 44 — the escalation row and its stamp are two transactions, so one duplicate is reachable
+
+**REGISTERED, NOT PATCHED — closing it is a schema decision, not an obvious fix.**
+Found by handing Finding 43's own fix to a cold cross-model read; confirmed by measurement.
+
+`_emit_watchful_escalation` writes the alert row, delivers it, and the caller then stamps
+`escalated_at`. A failure **between** those two writes leaves a delivered row with no stamp, and the
+next sighting takes the first-crossing branch again — **one duplicate escalation**.
+
+Measured, with the stamp raising `database is locked` once after a successful row write:
+
+```
+before: the raise ESCAPED process_observation, abandoning every remaining hit
+        on that device -- with the escalation alert already delivered
+after:  guarded; 2 escalation rows across 9 days of sightings, >=1 delivered,
+        the entry recovers its stamp and stops re-emitting
+```
+
+⭐ **Why it is not deduplicated here.** The obvious guard — "skip the write if an escalation row
+already exists for this MAC" — **suppresses the genuine escalation of a RESET entry**, because
+`reset_watchful_recurrence` clears `escalated_at` and the count but leaves the old alert row behind.
+That is the unsafe direction: a device the operator restarted watching would never escalate again.
+Closing this honestly needs an escalation record keyed to the entry **generation** (`reset_count` is
+already on the row), i.e. a migration.
+
+⚠️ **Direction: NOISY, and deliberately chosen.** One duplicate "this device appears to be following
+you" against dropping the rest of the tick's alerts. The bound matters more than the duplicate —
+re-emitting on every poll would train the operator to ignore the highest-severity thing this product
+sends — so the bound, not the absence, is what is pinned:
+`test_a_stamp_that_fails_after_the_row_lands_costs_at_most_one_duplicate`.
+
+**Acceptance criterion:** an escalation is emitted at most once per entry generation, proven with a
+failure injected between the row write and the stamp, AND a reset entry still escalates afterward.
+The second half is what a naive dedup breaks, so it is not optional.
+
+⛔ **Related, and NOT addressed by anything here:** the cold read also raised concurrent-poller
+duplication and poller/web-UI reset and archive races. **Reachability was not established** — this
+round measured a single-threaded poller only — so they are recorded as unverified leads rather than
+findings. Do not cite them as defects without measuring who can actually reach them.
+
 ### ⛔ What this round could NOT see — stated so a partial sweep is not read as a complete one
 
 - **The retention prunes and the clock-trust holds were NOT swept.** They are in `poll_once`, not
