@@ -235,6 +235,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A watchlist entry Lynceus could never act on is now refused when you add it,
+  instead of being accepted and quietly ignored.** Some vendor prefixes cannot
+  belong to a real device — placeholder and broadcast addresses, and the range
+  reserved for addresses a device makes up for itself. Lynceus has always
+  discarded sightings on those prefixes, because a match there is never the
+  device you are looking for. But nothing stopped you *adding* one to your
+  watchlist: the entry saved, appeared in the list beside working ones, and
+  silently never fired.
+
+  Adding one now fails immediately and says why, so you find out while you are
+  looking at the screen rather than by never being warned about something.
+
+  ⚠️ This is a deliberate refusal, not a validation tidy-up: it rejects a write
+  that used to succeed. The bundled threat data is unaffected — all of it uses
+  real vendor prefixes, checked before the refusal was written. Hand-seeding a
+  file that contains such a prefix will now skip that line and tell you, rather
+  than importing an entry that watches nothing.
+
 - **A typo in your config could stop Lynceus starting after you re-ran setup.**
   The wizard had just learned to keep the settings it does not ask you about,
   which is what you want — except that it kept *everything* it did not
