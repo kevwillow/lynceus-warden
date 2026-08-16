@@ -203,6 +203,26 @@ def _duplicate_key_issues(path: Path) -> list[Issue]:
     config file cannot quietly skip the check;
     `test_every_validator_reports_a_duplicate_key` then exercises each one.
     """
+    # ⛔ Wrapped, because this calls the DETECTOR directly rather than the
+    # warn-only wrapper that owns the never-propagate contract. A recursive
+    # alias -- valid YAML -- made `_walk` recurse until RecursionError, and
+    # `lynceus-validate` CRASHED on the file it was asked to report on. A
+    # validator that dies instead of reporting is worse than one that misses
+    # something: the operator gets a traceback where they asked for a verdict.
+    try:
+        dupes = find_duplicate_keys(path)
+    except Exception as exc:  # noqa: BLE001 -- report, never crash the run
+        return [
+            Issue(
+                severity="warning",
+                message=(
+                    f"could not check for duplicate keys ({exc.__class__.__name__}); "
+                    "the rest of this file was still validated"
+                ),
+                file=path,
+                line=None,
+            )
+        ]
     return [
         Issue(
             severity="error",
@@ -210,7 +230,7 @@ def _duplicate_key_issues(path: Path) -> list[Issue]:
             file=path,
             line=dupe.winning_line,
         )
-        for dupe in find_duplicate_keys(path)
+        for dupe in dupes
     ]
 
 

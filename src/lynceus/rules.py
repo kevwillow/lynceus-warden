@@ -23,10 +23,19 @@ _OUI_RE = re.compile(r"^[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}$")
 
 
 # Reserved / non-routable OUI prefixes that the argus_oui rule must
-# never match against. The watchlist DB can legitimately carry rows
-# with these patterns (the bundled Argus snapshot uses 00:00:00 as a
-# placeholder for CCTV-vendor rows where no real OUI is known --
-# ~40 rows in default_watchlist.csv), but real-world MACs that begin
+# never match against.
+#
+# ⚠️ This comment used to say the bundled snapshot carries "~40 rows" with
+# pattern=00:00:00. Measured 2026-08-16 against the shipped
+# data/default_watchlist.csv: 41,508 rows, ZERO of them 00:00:00. #86 corrected
+# the same false number in import_argus.py and in its own copy; this was a
+# THIRD copy nobody grepped for. The guard below is still needed -- more than
+# the old number implied, not less -- so a reviewer who checks the count and
+# stops there must not remove it.
+#
+# The watchlist DB can legitimately carry rows
+# with these patterns (nothing stops an import writing one), but
+# real-world MACs that begin
 # with one of these prefixes are categorically not the device the
 # operator wants to be alerted on:
 #

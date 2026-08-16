@@ -34,6 +34,7 @@ import hashlib
 import importlib.metadata
 import io
 import json
+import logging
 import os
 import sys
 import tarfile
@@ -48,6 +49,9 @@ from .. import __version__, paths
 from ..allowlist import derive_ui_path
 from ..config import Config
 from ..redact import REDACTED_PLACEHOLDER, redact_yaml_config
+from ..yaml_duplicates import warn_duplicate_keys
+
+logger = logging.getLogger(__name__)
 
 # Scope choices. ``auto`` resolves via paths.resolve_existing_config(),
 # matching the auto-detection lynceus-quickstart already uses. The
@@ -175,6 +179,12 @@ def _resolved_config_paths(
     if lynceus_yaml.exists():
         try:
             data = yaml.safe_load(lynceus_yaml.read_text(encoding="utf-8")) or {}
+            # ⚠️ "read-only path reporting" was the exemption written for this
+            # site, and read-only is not the same as consequence-free: the
+            # values parsed here SELECT which files the export reports and
+            # bundles. A duplicate `rules_path:` silently exports a different
+            # file from the one the operator is reading at the top of theirs.
+            warn_duplicate_keys(lynceus_yaml, logger=logger, subject="config file")
             cfg = Config(**data)
             if cfg.rules_path:
                 rules = Path(cfg.rules_path)
@@ -211,6 +221,7 @@ def _resolved_state_paths(scope: ResolvedScope) -> list[Path]:
     if lynceus_yaml.exists():
         try:
             data = yaml.safe_load(lynceus_yaml.read_text(encoding="utf-8")) or {}
+            warn_duplicate_keys(lynceus_yaml, logger=logger, subject="config file")
             cfg = Config(**data)
             if cfg.db_path and cfg.db_path != "lynceus.db":
                 # Honor the operator-configured DB path. The "lynceus.db"
