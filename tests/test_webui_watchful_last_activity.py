@@ -199,7 +199,12 @@ def test_a_counted_sighting_since_the_reset_clears_the_marker(tmp_path):
     and the column IS an observation again -- a marker that stuck would be the
     same class of false claim pointing the other way."""
     app, db = _build(tmp_path)
-    eid = _insert(db, last_seen_at=2000, sighting_count=2, reset_count=1)
+    reset_ts = 2000
+    eid = _insert(db, last_seen_at=1000, sighting_count=4, escalated_at=1500)
+    db.reset_watchful_recurrence(eid, now_ts=reset_ts)
+    outcome = db.record_watchful_sighting(eid, observed_at=reset_ts + 25 * 3600)
+    assert outcome is not None and outcome.counted
+    assert db.get_watchful_recurrence(eid).sighting_count == 2
     with TestClient(app) as client:
         for name, html in _pages(client, eid).items():
             assert "watchful-last-activity-reset" not in html, (
@@ -276,18 +281,100 @@ def test_the_clock_repair_provenance_is_stated_rather_than_silently_covered(tmp_
     db.close()
 
 
+def test_a_clock_repair_after_a_reset_does_not_get_attributed_to_the_reset(tmp_path):
+    """A clock repair preserves the reset-shaped counts but overwrites its time."""
+    app, db = _build(tmp_path)
+    now = 1_000_000
+    eid = _insert(
+        db, last_seen_at=now - 27 * 24 * 3600, sighting_count=4,
+        escalated_at=now - 24 * 3600,
+    )
+    db.reset_watchful_recurrence(eid, now_ts=now + 91 * 24 * 3600)
+    repaired = db.repair_future_dated_watchful_baselines(now)
+    assert len(repaired) == 1
+    row = db.get_watchful_recurrence(eid)
+    assert row.reset_count > 0 and row.sighting_count == 1
+    with TestClient(app) as client:
+        for name, html in _pages(client, eid).items():
+            assert "watchful-last-activity-reset" in html, (
+                f"{name} does not render the reset-shaped marker"
+            )
+            assert "This timestamp is the operator's reset" not in html, (
+                f"{name} attributes the repaired timestamp solely to the reset"
+            )
+            assert "clock was corrected" in html, (
+                f"{name} does not admit the clock correction"
+            )
+    db.close()
+
+
+_CARDINAL = {3: "three", 4: "four", 5: "five", 6: "six"}
+_ORDINAL = {2: "second", 3: "third", 4: "fourth", 5: "fifth"}
+
+
+def test_the_escalation_copy_matches_what_the_threshold_actually_does(tmp_path):
+    """⛔ The page said an entry "escalates ... on its fourth sighting".
+
+    A reset sets ``sighting_count = 1`` WITHOUT a sighting, so a reset
+    generation crosses the threshold on its THIRD subsequent counted sighting.
+    Measured before this guard existed: post-reset counted sightings take the
+    count to 2, 3, 4 -- crossed at #3, while the page said fourth.
+
+    ⭐ Both numbers are DERIVED from
+    ``Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD``, not transcribed, so
+    changing the threshold fails this test and forces the copy to change with
+    it. Transcribing "four"/"third" here would pin the sentence to itself.
+    """
+    threshold = Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD
+    app, db = _build(tmp_path)
+
+    # The behavioural half: drive a real reset generation and find the sighting
+    # on which the threshold is actually crossed.
+    day = 24 * 3600
+    base = 1_000_000
+    eid = _insert(db, last_seen_at=base, sighting_count=threshold,
+                  escalated_at=base, created_at=base, first_seen_at=base)
+    db.reset_watchful_recurrence(eid, now_ts=base + day)
+    crossed_on = None
+    for n in range(1, threshold + 3):
+        db.record_watchful_sighting(eid, observed_at=base + (1 + n) * day)
+        row = db.get_watchful_recurrence(eid)
+        if crossed_on is None and row.sighting_count >= threshold:
+            crossed_on = n
+    assert crossed_on == threshold - 1, (
+        f"a reset generation crossed on sighting {crossed_on}, not {threshold - 1}"
+    )
+
+    with TestClient(app) as client:
+        text = _prose(client.get("/watchful").text).lower()
+    assert f"reaches {_CARDINAL[threshold]}" in text, (
+        "the page does not state the counted-sighting total the code uses"
+    )
+    assert f"{_ORDINAL[crossed_on]} sighting" in text, (
+        "the page does not state when a RESET entry escalates"
+    )
+    # ⛔ The exact false form this replaced. Without this the copy could drift
+    # back to a bare "on its fourth sighting" and both assertions above would
+    # still pass, because "fourth" never appears in them.
+    assert f"on its {_ORDINAL[threshold]} sighting" not in text, (
+        "the page is back to claiming a fresh entry's ordinal for every entry"
+    )
+    db.close()
+
+
 def test_the_page_says_the_column_is_what_the_recency_filter_uses(tmp_path):
-    """The same column is the ORDER BY and the ?window= filter, which is why a
-    reset moves a row to the top of the list and into 'last 1h'. An operator
-    reading a triage list is owed that, not just a corrected label."""
+    """The same column is the ORDER BY and the ?window= filter, so a reset
+    changes where a row sorts and which windows include it."""
     app, db = _build(tmp_path)
     eid = _insert(db, last_seen_at=2000, sighting_count=4)
     with TestClient(app) as client:
         note = _note_text(client.get("/watchful").text).lower()
         assert note, "/watchful renders no last-activity note at all"
-        assert "order" in note and "recent" in note, (
-            "the note does not connect the column to the ordering and the recency filter"
-        )
+        # A keyword pair is satisfiable by negated copy, which is why the phrases are asserted.
+        assert "ordered" in note
+        assert "recent" in note
+        assert "leaves the list" in note
+        assert "lifts a row to the top" not in note
         # The detail page has no list to order and no window filter, so it
         # carries the provenance sentence WITHOUT that clause. Asserted so the
         # two callers cannot silently converge on one copy that is wrong for

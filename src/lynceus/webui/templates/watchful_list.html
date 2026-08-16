@@ -7,8 +7,10 @@
   <h2>watchful</h2>
   <p><small>
     Devices you've asked lynceus to keep an eye on. Recurrences are tracked
-    silently; an entry escalates to a high-severity recurrence alert on its
-    fourth sighting (with a &ge;24h gap between counted sightings).
+    silently; an entry escalates to a high-severity recurrence alert once its
+    counted-sighting total reaches four (with a &ge;24h gap between counted
+    sightings). An operator reset puts that total back to one without a
+    sighting, so a reset entry escalates on its third sighting afterwards.
   </small></p>
   {{ last_activity_note(in_list=true) }}
 
