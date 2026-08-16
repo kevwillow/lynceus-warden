@@ -508,6 +508,9 @@ def test_healthz_json_response_shape_stability(tmp_path):
             # consumers can verify their arithmetic is not a partition.
             "double_counted_rows",
             "both_inert_and_snoozed_pattern_types",
+            # Separate from `liveness_known`: the RULESET and the snooze table
+            # fail independently and have different fixes.
+            "snoozes_known",
             "inert_pattern_types",
             "snoozed_pattern_types",
             # The THIRD silencing cause and the only per-row one: a

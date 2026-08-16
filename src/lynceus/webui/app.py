@@ -1582,14 +1582,23 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
         #     live_rows + inert_rows + snoozed_rows - double_counted_rows == total_rows
         # `null` when liveness is unknown, matching the three counts above:
         # a number here would be a claim nothing established.
+        # ⛔ `snoozes_known` as well as `known`. The overlap is the INTERSECTION
+        # of the inert set with the snoozed set, so it is unknown if EITHER
+        # side is. Reporting 0 while `snoozed_rows` is null would be this
+        # entry's own defect one field along: a scalar saying "unknown" beside
+        # a number asserting "none".
         "double_counted_rows": (
             sum(
                 int(by_pattern_type.get(pattern_type, 0))
                 for pattern_type in liveness["both_types"]
             )
-            if liveness["known"]
+            if liveness["known"] and liveness.get("snoozes_known", True)
             else None
         ),
+        # Whether the rule_type snooze table could be read at all. Separate
+        # from `liveness_known`, which is about the RULESET: an unreadable
+        # snooze table and an unreadable rules file have different fixes.
+        "snoozes_known": bool(liveness.get("snoozes_known", True)),
         "both_inert_and_snoozed_pattern_types": list(liveness["both_types"]),
         "inert_pattern_types": list(liveness["inert_types"]),
         "snoozed_pattern_types": list(liveness["suppressed_types"]),

@@ -235,6 +235,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Watchlist liveness no longer claims that no snoozes exist when only the
+  ruleset is unreadable.** Rule-type snoozes are read independently and remain
+  visible with their row count and expiry while the LIVE/INERT verdict is
+  unknown. A failed snooze-table read is now reported as unknown rather than
+  as zero; only the missing-table case retained for legacy installations is
+  treated as no configured snoozes.
+
 - **Watchful no longer calls every recorded escalation delivered.** A recurrence
   that crossed its threshold while the `watchful_recurrence` rule type was
   snoozed is deliberately consumed: the row records its escalation so it cannot

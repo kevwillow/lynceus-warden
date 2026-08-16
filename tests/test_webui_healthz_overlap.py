@@ -146,3 +146,46 @@ def test_the_overlap_is_null_not_zero_when_liveness_is_unknown(tmp_path):
         assert watchlist["double_counted_rows"] is None
     finally:
         db.close()
+
+
+def test_the_overlap_is_null_when_the_ruleset_cannot_be_read(tmp_path):
+    bad_rules = tmp_path / "bad.yaml"
+    bad_rules.write_text("rules: [[[not yaml", encoding="utf-8")
+    db, app = _build_app(tmp_path, rules_path=str(bad_rules))
+    try:
+        with TestClient(app) as client:
+            watchlist = _watchlist_check(client)
+        assert watchlist["double_counted_rows"] is None
+        assert watchlist["both_inert_and_snoozed_pattern_types"] == []
+    finally:
+        db.close()
+
+
+def test_the_overlap_is_null_when_the_snooze_table_cannot_be_read(tmp_path):
+    """⛔ Caught before this PR landed: the fix for "a failed snooze read is a
+    verified zero" left `double_counted_rows: 0` sitting beside
+    `snoozed_rows: null` — this entry's own defect one field along.
+
+    The overlap is the INTERSECTION of the inert set with the snoozed set, so
+    it is unknown if EITHER side is.
+    """
+    import sqlite3
+
+    db, app = _build_app(tmp_path)
+
+    def boom(now_ts):
+        raise sqlite3.OperationalError("database is locked")
+
+    db.list_active_rule_type_snoozes = boom
+    try:
+        with TestClient(app) as client:
+            watchlist = _watchlist_check(client)
+        assert watchlist["snoozes_known"] is False
+        assert watchlist["snoozed_rows"] is None
+        assert watchlist["double_counted_rows"] is None, (
+            "the overlap reports a number while the snooze half of it is unknown"
+        )
+        # ...and the RULESET is still known: the two failures are separate.
+        assert watchlist["liveness_known"] is True
+    finally:
+        db.close()
