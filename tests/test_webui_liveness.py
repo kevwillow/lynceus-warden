@@ -271,6 +271,56 @@ def test_every_rule_type_is_classified_as_delegating_or_not():
     )
 
 
+def test_no_pattern_type_has_two_delegating_rule_types():
+    """⛔ A guard for a shape the map does not have YET, because the code that
+    would break is already written and its own comment says the semantics were
+    never decided.
+
+    ``snoozed_pattern_types`` walks ``RULE_TYPE_DELEGATES_TO`` and does::
+
+        out[pattern_type] = max(out.get(pattern_type, 0), expires_at)
+
+    which marks a pattern_type suppressed when **ANY** rule_type serving it is
+    snoozed. Nothing has ever exercised the difference, because today every
+    pattern_type has exactly one delegator. The comment there records that a
+    previous version claimed the opposite ("silenced only while EVERY one is
+    snoozed") and that ``max()`` never established it.
+
+    ⚠️ Since #137 the blast radius is wider than a badge: ``snoozed_types``
+    feeds ``both_types``, which ``/healthz.json`` now exports as
+    ``double_counted_rows`` and ``both_inert_and_snoozed_pattern_types``. An
+    over-reported suppression would silently break the published invariant
+    ``live + inert + snoozed - double_counted_rows == total_rows``.
+
+    ⭐ A comment asking a future author to be careful is not a mechanism — this
+    project has that lesson twice over. This fails the moment the map gains the
+    shape, which is the moment the decision has to be made.
+
+    If you are here because this test failed: decide deliberately whether a
+    pattern_type served by several rule_types is suppressed when ANY of them is
+    snoozed or only when EVERY one is, implement it in
+    ``snoozed_pattern_types``, test BOTH directions, and then update this
+    guard to permit the shape you chose.
+    """
+    seen: dict[str, list[str]] = {}
+    for rule_type, pattern_types in RULE_TYPE_DELEGATES_TO.items():
+        for pattern_type in pattern_types:
+            seen.setdefault(pattern_type, []).append(rule_type)
+
+    duplicated = {pt: rts for pt, rts in seen.items() if len(rts) > 1}
+    assert not duplicated, (
+        "a pattern_type is now served by more than one delegating rule_type: "
+        f"{ {pt: sorted(rts) for pt, rts in duplicated.items()} }. "
+        "`snoozed_pattern_types` marks a type suppressed when ANY of its "
+        "delegators is snoozed, which was never a decided semantic, and "
+        "/healthz.json now publishes an invariant derived from it. Read this "
+        "test's docstring before changing either."
+    )
+    # ⛔ Fails in the OTHER direction too: a map that has stopped mapping
+    # anything would satisfy the assertion above vacuously.
+    assert seen, "RULE_TYPE_DELEGATES_TO serves no pattern types at all"
+
+
 def test_every_admitted_pattern_type_is_served_or_declared_dead(tmp_path):
     """Derived from the live CHECK constraint. A pattern_type admitted by the
     schema that no rule_type serves and that is not declared DEAD_BY_MODEL is
