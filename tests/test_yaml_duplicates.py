@@ -274,6 +274,24 @@ def test_load_runtime_severity_overrides_warns_only_on_a_duplicate(
 # this scan hardcoded three helper names, missed that the allowlist's is called
 # `_warn_on_duplicate_keys`, and reported a WIRED loader as unwired.
 _EXEMPT: dict[str, str] = {
+    # ⭐ These three were caught by this very guard, on CI, in the PR that added
+    # them -- the mechanism working on its author. They parse content that has
+    # ALREADY been read, to verify a redaction rather than to load config, and a
+    # duplicate key is not merely irrelevant there but WANTED: the verifier must
+    # see the same collapsed value the daemon would, or it would vouch for a
+    # secret the loader will actually use.
+    "lynceus/redact.py::_secret_values_surviving": (
+        "verifies an already-redacted string; must see the same collapsed "
+        "value the daemon's loader would, not the pre-collapse text"
+    ),
+    "lynceus/redact.py::_secret_values_in": (
+        "learns the effective secret values from content already read; "
+        "resolving duplicates the way safe_load does is the point"
+    ),
+    "lynceus/redact.py::_redact_semantically": (
+        "re-parses content already read in order to scrub it; the caller "
+        "warns about duplicates in that file at its own load site"
+    ),
     "lynceus/cli/validate.py::_try_load_yaml": (
         "validate reports duplicates itself via _duplicate_key_issues, "
         "as an ERROR, per validator"

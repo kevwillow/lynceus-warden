@@ -6,6 +6,7 @@ import pytest
 
 from lynceus.redact import (
     REDACTED_PLACEHOLDER,
+    RedactionFailure,
     redact_ntfy_topic,
     redact_topic_in_url,
     redact_yaml_config,
@@ -247,14 +248,23 @@ def test_redact_yaml_preserves_comments_and_blank_lines():
 def test_redact_yaml_indented_lookalike_not_redacted():
     # Schema forbids nested kismet_api_key, but a nested key in a comment
     # block or a manual mistake must not be silently mistaken for a top-
-    # level secret. Top-level only — indented lines pass through.
+    # level secret. The line must pass through unchanged.
+    #
+    # ⚠️ This fixture is NOT valid YAML ("mapping values are not allowed
+    # here") — measured, not assumed. It used to assert `fields == []`, which
+    # the manifest renders as "considered and clean". That is a claim about a
+    # file nothing can parse, and it is the same claim this module was found to
+    # be making elsewhere: reporting a verification it had not performed. The
+    # file still exports (backing up a BROKEN config is a documented
+    # capability); it now says so instead of vouching for it.
     body = (
         "kismet_url: http://127.0.0.1:2501\n"
         "  kismet_api_key: not-a-real-field\n"
     )
     redacted, fields = redact_yaml_config("lynceus.yaml", body)
     assert redacted == body
-    assert fields == []
+    assert "kismet_api_key" not in fields
+    assert fields == ["<unverified: file does not parse>"]
 
 
 def test_redact_yaml_strips_ntfy_url_userinfo():
@@ -305,3 +315,132 @@ def test_redact_yaml_multiple_fields_reported_in_file_order():
     )
     _, fields = redact_yaml_config("lynceus.yaml", body)
     assert fields == ["kismet_api_key", "ntfy_topic", "ntfy_auth_token"]
+
+
+# ---------------------------------------------------------------------------
+# The export bundle's documented third purpose is "sharing a sanitized snapshot
+# with the maintainer for support". A cold read of that surface found TEN of
+# ELEVEN YAML spellings of the same credential surviving redaction — and four
+# of them were REPORTED in `redacted_fields` as though they had been removed.
+#
+# ⭐ The docstring disclosed the block-scalar limitation honestly. What it did
+# not disclose is that the limitation was announced as a SUCCESS: a manifest
+# saying `redaction_applied: true` over a live Kismet token is worse than one
+# saying nothing, because the operator hands the archive over on the strength
+# of it. The fix is not a better regex — it is refusing to claim what has not
+# been verified.
+# ---------------------------------------------------------------------------
+
+_SECRET = "SUPERSECRET123"
+
+
+@pytest.mark.parametrize(
+    "label,content",
+    [
+        ("plain", f"kismet_api_key: {_SECRET}\n"),
+        ("indented under a parent", f"capture:\n  kismet_api_key: {_SECRET}\n"),
+        ("quoted key", f'"kismet_api_key": {_SECRET}\n'),
+        ("flow mapping", f"{{kismet_api_key: {_SECRET}}}\n"),
+        ("block scalar", f"kismet_api_key: |\n  {_SECRET}\n"),
+        ("folded scalar", f"kismet_api_key: >\n  {_SECRET}\n"),
+        ("value on the next line", f"kismet_api_key:\n  {_SECRET}\n"),
+        ("anchor parks it under an innocent key",
+         f"cred: &c {_SECRET}\nkismet_api_key: *c\n"),
+        ("second document", f"---\na: 1\n---\nkismet_api_key: {_SECRET}\n"),
+        ("kismet_url userinfo", f"kismet_url: https://a:{_SECRET}@k.local/\n"),
+        ("ntfy_url token in the query", f"ntfy_url: https://ntfy.sh/t?token={_SECRET}\n"),
+        ("password containing @", f"ntfy_url: https://a:p{_SECRET}@ss@n.example/t\n"),
+        # ⚠️ The DISCRIMINATING case, added because a plant survived without it.
+        # The one above puts the secret BEFORE the first '@', so splitting at
+        # the first or the last '@' both remove it and the test could not tell
+        # a correct implementation from the bug it was written for. Here the
+        # secret sits AFTER the first '@': split-at-first leaves it as the new
+        # netloc, rsplit-at-last drops it.
+        ("secret after the first @ in userinfo",
+         f"ntfy_url: https://user:p@{_SECRET}@n.example/t\n"),
+    ],
+)
+def test_no_yaml_spelling_of_a_credential_survives_the_export(label, content):
+    """The assertion is on the OUTPUT BYTES, not on the reported field list.
+
+    Reporting is exactly what was wrong: four of these forms named the field in
+    `redacted_fields` while the token sat in the file. A test that asserted the
+    field list would have passed on every one of them.
+    """
+    try:
+        out, _fields = redact_yaml_config("lynceus.yaml", content)
+    except RedactionFailure:
+        return  # refusing to emit the file is a correct outcome
+    assert _SECRET not in out, f"{label}: credential survived redaction"
+
+
+@pytest.mark.parametrize(
+    "label,content",
+    [
+        ("no secrets at all", "db_path: /var/lib/lynceus/lynceus.db\n"),
+        ("a URL with nothing to strip", "ntfy_url: https://ntfy.sh/mytopic\n"),
+        ("an explicitly cleared field", "kismet_api_key: null\n"),
+    ],
+)
+def test_a_clean_file_is_not_reported_as_redacted(label, content):
+    """The controls, and they are half the guard. Without them a redactor that
+    masked everything unconditionally — or claimed every field — would pass the
+    parametrised test above. `null` matters on its own: disguising an UNSET
+    credential as a redacted one tells the receiver a secret existed."""
+    out, fields = redact_yaml_config("lynceus.yaml", content)
+    assert fields == [], f"{label}: claimed a redaction that did not happen"
+    assert out == content, f"{label}: rewrote a file with nothing to redact"
+
+
+def test_the_anchor_case_names_the_innocent_key_that_held_the_secret(tmp_path):
+    """Scrubbing by VALUE as well as by key name, so the operator is told where
+    the credential actually was."""
+    out, fields = redact_yaml_config(
+        "lynceus.yaml", f"cred: &c {_SECRET}\nkismet_api_key: *c\n"
+    )
+    assert _SECRET not in out
+    assert "cred" in fields and "kismet_api_key" in fields
+
+
+def test_a_file_that_cannot_be_proven_clean_is_refused_not_shipped():
+    """`RedactionFailure` is an exception rather than a warning on purpose:
+    every other outcome in that module ends with a file inside a shareable
+    archive, so a failure that merely logged would be a failure that shipped."""
+    import lynceus.redact as R
+
+    original = R._redact_semantically
+    try:
+        R._redact_semantically = lambda *_a, **_k: None  # force the fallback to fail
+        with pytest.raises(RedactionFailure):
+            redact_yaml_config("lynceus.yaml", f"kismet_api_key: |\n  {_SECRET}\n")
+    finally:
+        R._redact_semantically = original
+
+
+def test_a_new_secret_bearing_config_field_cannot_be_forgotten():
+    """⛔ `_SECRET_FIELDS` was maintained by a comment saying "Keep in sync with
+    config.Config". A comment asking a future author to remember is not a
+    mechanism — this project has already been bitten by that exact shape twice
+    (the `/settings` pattern-type list, the reconciliation counter list).
+
+    Any Config field whose NAME reads like a credential must be either redacted
+    or explicitly recorded here as reviewed-and-not-a-secret.
+    """
+    from lynceus.config import Config
+    from lynceus.redact import _SECRET_FIELDS, _URL_FIELDS
+
+    suspicious = [
+        name
+        for name in Config.model_fields
+        if any(t in name.lower() for t in ("key", "token", "secret", "password", "topic", "auth"))
+    ]
+    reviewed_not_secret: set[str] = set()
+    unhandled = [
+        n
+        for n in suspicious
+        if n not in _SECRET_FIELDS and n not in _URL_FIELDS and n not in reviewed_not_secret
+    ]
+    assert unhandled == [], (
+        "these Config fields look credential-bearing but are neither redacted "
+        f"nor recorded as reviewed: {unhandled}"
+    )
