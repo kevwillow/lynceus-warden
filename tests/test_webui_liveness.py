@@ -690,7 +690,9 @@ def test_healthz_reports_unknown_liveness_as_null_not_as_a_count(tmp_path):
         "nothing established"
     )
     assert check["inert_rows"] is None
-    assert check["snoozed_rows"] is None
+    # Snoozes are a separate DB fact, so an unreadable ruleset does not make
+    # their established zero unknown.
+    assert check["snoozed_rows"] == 0
     assert check["inert_pattern_types"] == []
     assert check["snoozed_pattern_types"] == []
     # The presence half: the rows themselves are still counted and reported.
@@ -979,6 +981,118 @@ def test_a_type_that_is_BOTH_inert_and_snoozed_reports_BOTH(tmp_path):
         "still hear nothing and would not know why"
     )
     assert liveness["live_types"] == ()
+
+
+@pytest.fixture()
+def malformed_ruleset_snoozed_liveness(tmp_path):
+    """A real UI-created snooze remains readable when only rules.yaml breaks."""
+    import time as _time
+
+    bad_rules = tmp_path / "bad.yaml"
+    bad_rules.write_text("rules: [[[not yaml", encoding="utf-8")
+    cfg, db, app = _client(
+        tmp_path,
+        rules_path=str(bad_rules),
+        entries=[(LIVE_TYPE, "3c:5a:b4:dd:ee:01")],
+    )
+    try:
+        with TestClient(app) as client:
+            _snooze_via_the_ui(client)
+        now = int(_time.time())
+        yield now, watchlist_liveness(
+            cfg, db.watchlist_pattern_type_counts(), db=db, now_ts=now
+        )
+    finally:
+        db.close()
+
+
+def test_an_active_snooze_is_reported_even_when_the_ruleset_cannot_be_read(
+    malformed_ruleset_snoozed_liveness,
+):
+    now, liveness = malformed_ruleset_snoozed_liveness
+
+    assert liveness["known"] is False
+    assert liveness["snoozes_known"] is True
+    assert liveness["suppressed_types"] == (LIVE_TYPE,)
+    assert liveness["suppressed_count"] == 1
+    assert liveness["suppressed_until"][LIVE_TYPE] > now
+
+
+def test_the_inert_intersection_stays_empty_when_liveness_is_unknown(
+    malformed_ruleset_snoozed_liveness,
+):
+    _, liveness = malformed_ruleset_snoozed_liveness
+
+    assert liveness["both_types"] == ()
+
+
+def test_a_missing_snooze_table_still_reports_no_snoozes(tmp_path, monkeypatch):
+    cfg, db, _ = _client(
+        tmp_path,
+        rules_path=str(SHIPPED_RULES),
+        entries=[(LIVE_TYPE, "3c:5a:b4:dd:ee:01")],
+    )
+
+    def missing_table(_now_ts):
+        raise sqlite3.OperationalError("no such table: rule_type_snoozes")
+
+    monkeypatch.setattr(db, "list_active_rule_type_snoozes", missing_table)
+    try:
+        liveness = watchlist_liveness(
+            cfg, db.watchlist_pattern_type_counts(), db=db, now_ts=1
+        )
+    finally:
+        db.close()
+
+    assert liveness["snoozes_known"] is True
+    assert liveness["suppressed_count"] == 0
+    assert liveness["suppressed_types"] == ()
+
+
+def test_a_locked_snooze_table_is_reported_as_unknown_not_as_zero(tmp_path, monkeypatch):
+    cfg, db, _ = _client(
+        tmp_path,
+        rules_path=str(SHIPPED_RULES),
+        entries=[(LIVE_TYPE, "3c:5a:b4:dd:ee:01")],
+    )
+
+    def locked_table(_now_ts):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "list_active_rule_type_snoozes", locked_table)
+    try:
+        liveness = watchlist_liveness(
+            cfg, db.watchlist_pattern_type_counts(), db=db, now_ts=1
+        )
+    finally:
+        db.close()
+
+    assert liveness["snoozes_known"] is False
+    assert liveness["suppressed_count"] is None
+    assert liveness["suppressed_types"] == ()
+
+
+def test_an_unreadable_snooze_table_does_not_claim_the_ruleset_is_unreadable(
+    tmp_path, monkeypatch
+):
+    cfg, db, _ = _client(
+        tmp_path,
+        rules_path=str(SHIPPED_RULES),
+        entries=[(LIVE_TYPE, "3c:5a:b4:dd:ee:01")],
+    )
+
+    def locked_table(_now_ts):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "list_active_rule_type_snoozes", locked_table)
+    try:
+        liveness = watchlist_liveness(
+            cfg, db.watchlist_pattern_type_counts(), db=db, now_ts=1
+        )
+    finally:
+        db.close()
+
+    assert liveness["known"] is True
 
 
 def test_liveness_without_a_db_reports_no_snoozes_rather_than_failing(tmp_path):

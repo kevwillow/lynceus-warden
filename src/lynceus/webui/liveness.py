@@ -169,9 +169,8 @@ def live_pattern_types(ruleset: Ruleset) -> frozenset[str]:
     return frozenset(live)
 
 
-def snoozed_pattern_types(db: Database, now_ts: int) -> dict[str, int]:
-    """``{pattern_type: snooze expiry}`` for every type an active rule_type
-    snooze is currently silencing.
+def snoozed_pattern_types(db: Database, now_ts: int) -> tuple[dict[str, int], bool]:
+    """``({pattern_type: snooze expiry}, known)`` for active rule_type snoozes.
 
     ⭐ A snooze is a SECOND way a stored entry produces no alert, and it is a
     completely different thing from being inert. The rule fires normally — the
@@ -197,7 +196,9 @@ def snoozed_pattern_types(db: Database, now_ts: int) -> dict[str, int]:
         # the watchlist pages. No snoozes readable = report none, which is the
         # same answer the pre-snooze releases gave.
         logger.warning("watchlist liveness: rule_type snoozes unreadable (%s)", exc)
-        return {}
+        if "no such table" in str(exc).lower():
+            return {}, True
+        return {}, False
 
     out: dict[str, int] = {}
     for rule_type, expires_at in by_rule_type.items():
@@ -213,7 +214,7 @@ def snoozed_pattern_types(db: Database, now_ts: int) -> dict[str, int]:
             # A cold read caught it. If such a type is ever added, decide the
             # semantics deliberately and test it, rather than inheriting this.
             out[pattern_type] = max(out.get(pattern_type, 0), expires_at)
-    return out
+    return out, True
 
 
 def watchlist_liveness(
@@ -233,7 +234,9 @@ def watchlist_liveness(
     verdict need not supply them; omitting them reports **no** snoozes, which
     is what every release before them reported.
 
-    Returns a dict with a deliberate **three-state** ``known`` flag:
+    Returns a dict with a deliberate **three-state** ``known`` flag for the
+    LIVE/INERT verdict only. The snooze verdict is independent of the ruleset
+    and is always reported, with its separate ``snoozes_known`` flag.
 
     ``known=True``   the ruleset loaded; ``live`` / ``inert`` are trustworthy.
     ``known=False``  no ``rules_path`` is configured, or the file failed to
@@ -272,6 +275,18 @@ def watchlist_liveness(
     ⇒ Read ``live_count`` as *delegated and unsnoozed*, never as a promise.
     """
     total = sum(int(v) for v in pattern_type_counts.values())
+    # Only types the operator ACTUALLY HAS are reported. A warning about a type
+    # nobody stored is noise, and a caution shown on every install is one an
+    # operator learns to scroll past.
+    stored = {pt for pt, n in pattern_type_counts.items() if int(n) > 0}
+    snoozed_until: dict[str, int] = {}
+    snoozes_known = True
+    if db is not None and now_ts is not None:
+        snoozed_by_type, snoozes_known = snoozed_pattern_types(db, now_ts)
+        snoozed_until = {
+            pt: exp for pt, exp in snoozed_by_type.items() if pt in stored
+        }
+    suppressed = set(snoozed_until)
     # ⛔ `None`, not `total`. This said `live_count: total` and it was a
     # CONTRADICTION shipped as a reassurance: `/healthz.json` returned
     # `liveness_known: false` beside `live_rows: <every row you have>`, and a
@@ -284,15 +299,22 @@ def watchlist_liveness(
     # assertion beside it. Both are asserted now.
     unknown = {
         "known": False,
+        "snoozes_known": snoozes_known,
         "total": total,
         "live_count": None,
         "inert_count": None,
-        "suppressed_count": None,
+        "suppressed_count": (
+            sum(int(pattern_type_counts[pt]) for pt in suppressed)
+            if snoozes_known
+            else None
+        ),
         "live_types": (),
         "inert_types": (),
-        "suppressed_types": (),
+        "suppressed_types": tuple(sorted(suppressed)) if snoozes_known else (),
+        # both_types must stay empty in the unknown path: it is the
+        # intersection with the INERT set, which is not known.
         "both_types": (),
-        "suppressed_until": {},
+        "suppressed_until": dict(sorted(snoozed_until.items())) if snoozes_known else {},
         "dead_by_model_types": (),
         "reason": None,
     }
@@ -311,32 +333,9 @@ def watchlist_liveness(
         return {**unknown, "reason": f"the rules file could not be read ({exc})"}
 
     live_types = live_pattern_types(ruleset)
-    # Only types the operator ACTUALLY HAS are reported. A warning about a type
-    # nobody stored is noise, and a caution shown on every install is one an
-    # operator learns to scroll past.
-    stored = {pt for pt, n in pattern_type_counts.items() if int(n) > 0}
     inert = stored - live_types
-
-    snoozed_until: dict[str, int] = {}
-    if db is not None and now_ts is not None:
-        # ⛔ Applied to everything STORED, not intersected with `live_types`.
-        #
-        # 🪤 It was intersected, on the reasoning that "unsnoozing an inert type
-        # changes nothing, so inert wins". That reasoning has an exact inverse
-        # which is just as true: **fixing the delegation changes nothing either,
-        # because the snooze is still there.** Collapsing to one cause offers a
-        # remediation that does not restore alerting, whichever one you pick.
-        #
-        # ⇒ They are INDEPENDENT FLAGS, not states in a partition. A type can be
-        # both, and both have to be said, because the operator has to do both.
-        # I had a planted defect asserting the old behaviour was correct -- a
-        # plant certifies the model the test encodes, so it happily pinned this.
-        snoozed_until = {
-            pt: exp
-            for pt, exp in snoozed_pattern_types(db, now_ts).items()
-            if pt in stored
-        }
-    suppressed = set(snoozed_until)
+    # ⛔ Snoozes apply to everything STORED, not only to `live_types`: inert
+    # and snoozed are independent flags with separate remediations.
     # "Firing" means nothing known to THIS function silences it: the type is
     # delegated AND not snoozed. ⚠️ It still cannot account for the per-row
     # causes (a severity override, an allowlist match) -- see the docstring.
@@ -344,13 +343,18 @@ def watchlist_liveness(
 
     return {
         "known": True,
+        "snoozes_known": snoozes_known,
         "total": total,
         "live_count": sum(int(pattern_type_counts[pt]) for pt in firing),
         "inert_count": sum(int(pattern_type_counts[pt]) for pt in inert),
-        "suppressed_count": sum(int(pattern_type_counts[pt]) for pt in suppressed),
+        "suppressed_count": (
+            sum(int(pattern_type_counts[pt]) for pt in suppressed)
+            if snoozes_known
+            else None
+        ),
         "live_types": tuple(sorted(firing)),
         "inert_types": tuple(sorted(inert)),
-        "suppressed_types": tuple(sorted(suppressed)),
+        "suppressed_types": tuple(sorted(suppressed)) if snoozes_known else (),
         # ⭐ The intersection, DERIVED here once rather than recomputed in each
         # template that needs it. #116 made these two independent flags in this
         # module and left every surface rendering them as an `{% elif %}` chain,
@@ -359,7 +363,7 @@ def watchlist_liveness(
         # apart, each naming a fix that alone restores nothing. Exposing the
         # intersection is what lets a surface say "both" instead of choosing.
         "both_types": tuple(sorted(inert & suppressed)),
-        "suppressed_until": dict(sorted(snoozed_until.items())),
+        "suppressed_until": dict(sorted(snoozed_until.items())) if snoozes_known else {},
         "dead_by_model_types": tuple(sorted(inert & DEAD_BY_MODEL)),
         "reason": None,
     }
