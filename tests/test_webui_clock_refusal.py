@@ -779,7 +779,7 @@ def test_the_reset_refusal_describes_a_reset_and_not_a_suppression(tmp_path):
         "the consequence is the archive window, and it is named so the operator "
         "can tell whether it matters to this entry"
     )
-    assert "stays escalated and tracked" in page, (
+    assert "stays escalated" in page, (
         "without this the operator reads a refusal as 'the entry was dropped' "
         "and the refusal becomes scarier than the defect"
     )
@@ -837,3 +837,69 @@ def test_an_unknown_action_raises_rather_than_explaining_the_wrong_cause(tmp_pat
             refuse_if_clock_behind(db, int(time.time()), action="watchful-reset")
     finally:
         db.close()
+
+
+def test_the_refusal_does_not_promise_the_entry_will_survive_the_wait(tmp_path):
+    """⛔ The first version of this message said the entry *"stays escalated and
+    tracked meanwhile, so nothing is lost by waiting"*. Measured on the tree
+    that shipped it, that was false for exactly the entries this gate exists
+    for: one already past the quiet window is archived by ordinary housekeeping
+    while the operator goes to fix the clock, and an archived entry cannot be
+    reset at all.
+
+    Both halves are driven here rather than described, so restoring the shorter
+    sentence fails.
+    """
+    cfg, db, app = _app(tmp_path, alert_offset=30 * DAY, watchful_stale_days=95)
+    try:
+        with TestClient(app) as client:
+            refused = _reset(client)
+            # The operator goes to check the clock. The poller housekeeps
+            # meanwhile -- nothing exotic, this is the ordinary quiet-window
+            # sweep, and the entry is already 95 days quiet.
+            archived_count = db.auto_archive_watchful_recurrence(int(time.time()))
+            retry = _reset(client)
+        row = db.get_watchful_recurrence(WATCHFUL_ENTRY_ID)
+        page = _prose(refused.text)
+    finally:
+        db.close()
+
+    assert refused.status_code == 400
+    assert archived_count == 1, "the fixture is not exercising the at-risk entry"
+    assert row.archived_at is not None
+    assert retry.status_code == 400, (
+        "the premise has changed: an archived entry can now be reset, so the "
+        "warning below may no longer be needed"
+    )
+
+    assert "nothing is lost by waiting" not in page, (
+        "the message promises a survival it cannot deliver for this entry"
+    )
+    assert "can still be archived while the clock is wrong" in page, (
+        "the operator is not warned that waiting can cost them the entry"
+    )
+    assert "an archived entry cannot be reset" in page, (
+        "without this the warning has no consequence attached and reads as noise"
+    )
+
+
+def test_an_entry_INSIDE_the_window_really_does_survive_the_wait(tmp_path):
+    """⭐ The control for the test above, and the reason the message still says
+    the entry is not dismissed. If housekeeping archived every refused entry,
+    the warning would be an understatement rather than a correction — and the
+    honest message would be a different one again."""
+    cfg, db, app = _app(tmp_path, alert_offset=30 * DAY, watchful_stale_days=89)
+    try:
+        with TestClient(app) as client:
+            refused = _reset(client)
+            archived_count = db.auto_archive_watchful_recurrence(int(time.time()))
+        row = db.get_watchful_recurrence(WATCHFUL_ENTRY_ID)
+        page = _prose(refused.text)
+    finally:
+        db.close()
+
+    assert refused.status_code == 400
+    assert archived_count == 0
+    assert row.archived_at is None, "an entry inside the window must survive"
+    assert row.escalated_at is not None, "and must still be escalated"
+    assert "is not dismissed and nothing is deleted" in page

@@ -45,6 +45,7 @@ from lynceus.db import (
 from lynceus.patterns import mac_in_mac_range
 from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.clock import (
+    CLOCK_BEHIND_TOLERANCE_SECONDS,
     clock_behind_recorded_history,
     refuse_if_clock_behind,
 )
@@ -565,6 +566,30 @@ def unix_to_iso(ts) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+#: How far AHEAD of this clock a stored timestamp may sit and still count as
+#: "now".
+#:
+#: ⭐ **It is the poller's own clamp, and that is measured, not a matching
+#: taste.** ``poller.record_observation`` takes the capture source's
+#: ``last_seen`` — Kismet's clock, a different machine's — and only rewrites it
+#: when it exceeds ``now_ts + CLOCK_JUMP_TOLERANCE_SECONDS``. So anything inside
+#: that band was **deliberately stored as "close enough to now" by the writer**,
+#: and a display that flagged it would be this UI disagreeing with the daemon
+#: about what counts as a clock problem. That is the exact failure
+#: ``CLOCK_BEHIND_TOLERANCE_SECONDS`` documents itself as existing to prevent,
+#: and the two are already pinned equal by a test — so this reuses that constant
+#: rather than inventing a third number.
+#:
+#: ⚠️ **Asymmetric on purpose.** The PAST side keeps its own 60-second "just
+#: now" bucket, untouched: that is a display convention, not a skew allowance,
+#: and widening it would silently rewrite 21 existing call sites.
+FUTURE_SKEW_SECONDS = CLOCK_BEHIND_TOLERANCE_SECONDS
+
+#: The past-side "just now" bucket. Unchanged from before this module gained a
+#: future branch; see the asymmetry note above.
+JUST_NOW_SECONDS = 60
+
+
 def unix_to_utc_human(ts) -> str:
     """Format a unix epoch int as 'YYYY-MM-DD HH:MM UTC' for human display."""
     if ts is None or ts == "":
@@ -576,11 +601,35 @@ def unix_to_utc_human(ts) -> str:
 def relative_time(ts, *, now_ts: int | None = None) -> str:
     """Format a unix epoch int as a human-readable relative time.
 
-    Buckets: <60s → "just now"; <60min → "{N}m ago"; <24h →
-    "{N}h ago"; else → "{N}d ago". Future timestamps (ts > now_ts)
-    collapse to "just now" rather than negative output — defensive
-    against clock skew on the operator's machine vs the DB's
-    timestamps. None / empty → "—" (the column placeholder).
+    Buckets: within 60s either way → "just now"; <60min → "{N}m ago";
+    <24h → "{N}h ago"; else → "{N}d ago". None / empty → "—" (the
+    column placeholder).
+
+    ⛔ **A timestamp genuinely AHEAD of this clock renders as an absolute
+    instant, not as "just now".** It used to collapse to "just now" at any
+    distance, justified as *"defensive against clock skew"*. Measured, that
+    made two different claims false:
+
+        /rules,   a rule_type snooze with 6h left  "snoozed (until just now)"
+        /devices, a device silence with 6h left    "silenced (until just now)"
+
+    An ``expires_at`` is in the future for **every** suppression still in
+    force, so the badge said the suppression was over precisely while it was
+    working — and suppression is the direction that hides a follower. The same
+    collapse let a poll tick stamped ahead of a behind clock read as a live
+    daemon (see ``poll_tick_liveness``).
+
+    ⚠️ The skew defence is real and is KEPT, bounded: ``sightings.ts`` carries
+    Kismet's clock, i.e. a different machine's, so a value a few seconds ahead
+    is ordinary. Sixty seconds of it is skew; six hours of it is not, and
+    calling six hours "just now" is not defensive, it is wrong.
+
+    ⭐ Absolute rather than "in 6h", for two reasons: the templates read
+    ``snoozed (until {{ ... }})``, where "until in 6h" is not English; and the
+    client-side sibling ``lynceus.js:formatStamp`` already made exactly this
+    call for exactly this case ("Future timestamps: render as fully-qualified
+    absolute (don't say 'in 3 hours')"). Two formatters disagreeing about the
+    same question is how a UI ends up asserting two things at once.
 
     ``now_ts`` is taken from the template context when called as a
     filter via ``{{ ts | relative_time(now_ts) }}``; falls back to
@@ -592,7 +641,11 @@ def relative_time(ts, *, now_ts: int | None = None) -> str:
     if now_ts is None:
         now_ts = int(time.time())
     delta = int(now_ts) - int(ts)
-    if delta < 60:
+    if delta < 0:
+        if -delta <= FUTURE_SKEW_SECONDS:
+            return "just now"
+        return unix_to_utc_human(ts)
+    if delta < JUST_NOW_SECONDS:
         return "just now"
     if delta < 3600:
         return f"{delta // 60}m ago"
@@ -1416,6 +1469,55 @@ def _read_last_tick_stats(db: Database) -> dict | None:
     }
 
 
+def poll_tick_liveness(tick: dict | None, config: Config, *, now_ts: int) -> dict:
+    """Is the daemon polling? ``{"staleness_known", "is_stale", "ahead_by_seconds"}``.
+
+    ⛔ **The third state exists because a tick stamped AHEAD of this clock says
+    nothing about whether the daemon is alive, and used to say it is.** The old
+    test was ``now_ts - completed_at > 2 * interval``, which is False for every
+    negative delta, so a tick from the future scored healthy — and the home page
+    rendered it "just now" through the same collapse. Measured through the real
+    surfaces (`internal/session2-harnesses/poller_liveness_probe.py`):
+
+        CONTROL  dead 365d, clock correct     home "365d ago"   is_stale True
+                 dead 365d, clock behind 400d home "just now"   is_stale False
+                 dead   2d, clock behind   3d home "just now"   is_stale False
+
+    An RTC-less Pi that boots before NTP is exactly that state, and it is this
+    project's target hardware. The heartbeat is off by default, so the home
+    page's relative time is the operator's only liveness signal — and the
+    product's promise is that silence means nothing is out there.
+
+    ⚠️ Neither "stale" nor "fresh" is asserted in that case, because neither is
+    established: the clock may be behind now, or that tick may have been stamped
+    by a fast clock. Reported the way this codebase already reports an
+    undecidable liveness verdict (``watchlist_liveness``'s ``known`` flag,
+    ``/healthz.json``'s ``liveness_known``) — a ``*_known`` flag beside a
+    ``None``, never a False that reads as a clean bill.
+
+    ⚠️ Never-polled keeps its documented answer (``is_stale`` False, known):
+    there is no tick to be stale, and the home page carries the "waiting for
+    first poll" signal. Flagging a fresh install would be a startup-window false
+    positive.
+    """
+    if tick is None:
+        return {"staleness_known": True, "is_stale": False, "ahead_by_seconds": 0}
+
+    ahead_by = int(tick["completed_at"]) - int(now_ts)
+    if ahead_by > FUTURE_SKEW_SECONDS:
+        return {
+            "staleness_known": False,
+            "is_stale": None,
+            "ahead_by_seconds": ahead_by,
+        }
+    stale_threshold = max(1, config.poll_interval_seconds) * 2
+    return {
+        "staleness_known": True,
+        "is_stale": (int(now_ts) - int(tick["completed_at"])) > stale_threshold,
+        "ahead_by_seconds": 0,
+    }
+
+
 #: What an anonymous caller is told when the database check fails. Deliberately
 #: says nothing about *why* -- see ``_check_db``. Kept non-empty because the
 #: published shape contract promises a non-empty string on error.
@@ -1470,7 +1572,14 @@ def _check_poller(db: Database, config: Config, *, now_ts: int) -> dict:
     that should have polled but didn't. Never-polled state reports
     is_stale=False (the home-page card carries the "waiting for first
     poll" signal; flagging stale on fresh installs would just produce
-    a startup-window false positive). Overall status is NOT flipped —
+    a startup-window false positive).
+
+    ⛔ ``is_stale`` is ``None`` — never ``False`` — when ``staleness_known``
+    is False, i.e. the tick is stamped ahead of this clock and the verdict is
+    undecidable. It used to be ``False`` there, which reported a daemon dead
+    for a year as healthy. Both keys come from ``poll_tick_liveness``, shared
+    with the home page and the HTML health page so the three cannot diverge.
+    ``ahead_by_seconds`` is 0 unless that applies. Overall status is NOT flipped —
     matches the _check_watchlist ``stale`` convention; monitoring tools
     that want to page on stale poll-ticks read the boolean directly."""
     last_poll_at = db.latest_poll_ts()
@@ -1481,17 +1590,15 @@ def _check_poller(db: Database, config: Config, *, now_ts: int) -> dict:
         return (now_ts - int(value)) if value is not None else None
 
     tick = _read_last_tick_stats(db)
+    liveness = poll_tick_liveness(tick, config, now_ts=now_ts)
     if tick is not None:
-        stale_threshold = max(1, config.poll_interval_seconds) * 2
-        seconds_since_tick = now_ts - tick["completed_at"]
-        is_stale = seconds_since_tick > stale_threshold
         poll_tick = {
             "completed_at": tick["completed_at"],
             "admitted": tick["admitted"],
             "dropped_source_allowlist": tick["dropped_source_allowlist"],
             "dropped_min_rssi": tick["dropped_min_rssi"],
             "dropped_unparseable": tick["dropped_unparseable"],
-            "is_stale": is_stale,
+            **liveness,
         }
     else:
         poll_tick = {
@@ -1500,7 +1607,7 @@ def _check_poller(db: Database, config: Config, *, now_ts: int) -> dict:
             "dropped_source_allowlist": 0,
             "dropped_min_rssi": 0,
             "dropped_unparseable": 0,
-            "is_stale": False,
+            **liveness,
         }
 
     return {
@@ -1773,11 +1880,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         health = db.healthcheck()
         now_ts = int(time.time())
         tick = _read_last_tick_stats(db)
-        if tick is not None:
-            stale_threshold = max(1, config.poll_interval_seconds) * 2
-            is_stale = (now_ts - tick["completed_at"]) > stale_threshold
-        else:
-            is_stale = False
+        # ⚠️ This handler used to carry its own copy of the staleness test --
+        # a third one, beside `_check_poller`'s and the home page's implicit
+        # "relative_time says it is recent". Three copies of one predicate is
+        # how two surfaces end up disagreeing about whether the daemon is
+        # alive; there is one now.
+        tick_liveness = poll_tick_liveness(tick, config, now_ts=now_ts)
         return app.state.templates.TemplateResponse(
             request=request,
             name="healthz.html",
@@ -1785,7 +1893,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "health": health,
                 "version": __version__,
                 "last_tick": tick,
-                "tick_is_stale": is_stale,
+                "tick_liveness": tick_liveness,
                 "now_ts": now_ts,
             },
         )
@@ -1894,6 +2002,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "rules": enabled_rules,
             "rules_state": rules_state,
         }
+        # Hoisted: the context needs the tick twice, once as the counters and
+        # once to decide whether its timestamp can be read as liveness at all.
+        last_tick = _read_last_tick_stats(db)
         return app.state.templates.TemplateResponse(
             request=request,
             name="index.html",
@@ -1913,7 +2024,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "recent_alerts": recent_alerts,
                 "recent_devices": db.list_devices(limit=25),
                 "last_poll": db.latest_poll_ts(),
-                "last_tick": _read_last_tick_stats(db),
+                "last_tick": last_tick,
+                "tick_liveness": poll_tick_liveness(
+                    last_tick, config, now_ts=now_int
+                ),
                 "tiles": tiles,
                 "now_ts": now_int,
                 "kismet_status": kismet_status,

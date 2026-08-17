@@ -235,6 +235,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A snooze that still had six hours to run said "until just now", and a dead
+  daemon said it had polled "just now".** Both come from one rule in the display
+  code: any timestamp *ahead* of the machine's clock was written as "just now",
+  originally as a defence against small clock differences between lynceus and
+  Kismet. The defence is worth having — those two can be seconds apart — but it
+  was applied at any distance, and two kinds of field are routinely far ahead.
+
+  An expiry is in the future for **every suppression that is still in force**, so
+  `/rules`, `/devices` and `/watchful` all announced that a snooze, a device
+  silence or a watched entry's quiet period had ended at the exact moment it was
+  working. You could not tell how much quiet you had left, and "until just now"
+  reads like it has run out.
+
+  A poll timestamp is only ahead when the clock has moved backwards — and that is
+  precisely when nothing can be concluded about the daemon. Measured: with the
+  daemon dead for a year and the clock reading behind, the home page said the
+  last poll was "just now" and `/healthz.json` reported `is_stale: false`. That is
+  the state a Raspberry Pi with no battery-backed clock is in every time it boots
+  before the network corrects it, and the heartbeat is off by default, so that one
+  line is often the only thing telling you the daemon is alive.
+
+  Now: a timestamp more than a minute ahead is shown as the actual instant
+  ("2026-08-18 03:56 UTC") rather than as "now" — matching what the browser-side
+  formatter already did — and the poll-tick reading has a third state. Instead of
+  choosing between "fresh" and "stale" when it can support neither, the home page
+  and `/healthz` say the clock disagrees and that liveness cannot be read from
+  that timestamp, and `/healthz.json` reports `is_stale: null` beside a new
+  `staleness_known: false`. Small differences are still absorbed, so nothing
+  changes on a machine whose clock is fine.
+
 - **"Reset" on a device you had just said you were still watching could quietly
   stop watching it.** The reset button on `/watchful` means "I have seen this
   escalation, it looks benign, keep tracking". It works by stamping the entry as
@@ -254,9 +284,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The other five places a wrong clock could spoil a write already refuse it and
   explain why. This one now does too — with a message written for a reset rather
   than for a snooze, because nothing here expires and the snooze wording would
-  have sent you hunting for a suppression that does not exist. The entry stays
-  escalated and tracked while you check the clock, so refusing costs you
-  nothing.
+  have sent you hunting for a suppression that does not exist. The entry is not
+  dismissed and nothing is deleted while you check the clock — but if it was
+  already at the end of its 90 days, ordinary housekeeping can archive it while
+  you are away, and an archived entry cannot be reset. So the refusal says to go
+  and fix the clock, rather than to wait for it.
 
 - **A device you allowlisted could quietly stay un-allowlisted, and you were
   told it had worked.** Allowlisting a device reads the daemon-managed

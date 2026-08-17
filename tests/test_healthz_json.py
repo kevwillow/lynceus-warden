@@ -462,6 +462,14 @@ def test_healthz_json_response_shape_stability(tmp_path):
         # poller_state writes in poll_once plus the derived is_stale
         # flag. Future releases extend (never remove) per the public-
         # contract commitment.
+        #
+        # ⭐ `staleness_known` / `ahead_by_seconds` are a DELIBERATE addition,
+        # recorded here rather than waved through, and `is_stale` gained a
+        # THIRD value. It used to be False when the tick was stamped ahead of
+        # this clock, which reported a daemon dead for a year as healthy; it is
+        # None there now. ⚠️ A consumer branching on truthiness is unaffected
+        # (None is falsy, as False was) — but one that wants the difference now
+        # has `staleness_known` to read, which it did not before.
         assert set(body["checks"]["poller"]["poll_tick"].keys()) == {
             "completed_at",
             "admitted",
@@ -469,6 +477,8 @@ def test_healthz_json_response_shape_stability(tmp_path):
             "dropped_min_rssi",
             "dropped_unparseable",
             "is_stale",
+            "staleness_known",
+            "ahead_by_seconds",
         }
         # ⭐ The six liveness keys are a DELIBERATE addition, recorded here
         # rather than waved through. `total_rows` keeps its exact old meaning

@@ -14,6 +14,7 @@ suppression semantics).
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -81,8 +82,24 @@ def test_temporary_snooze_shows_remaining_time_badge(tmp_path):
     with TestClient(app) as client:
         html = client.get("/devices").text
     assert "badge-snoozed" in html
-    # Temporary => the "(until ...)" expiry phrasing with a relative time.
+    # Temporary => the "(until ...)" expiry phrasing.
     assert "silenced (until" in html
+
+    # ⛔ This test is named ..._shows_remaining_time_badge and until now asserted
+    # only the words "silenced (until", never what followed them. What followed
+    # them was **"just now"** — for a silence with 24 hours left — because
+    # `relative_time` collapsed every future timestamp. The badge said the
+    # silence was over while it was suppressing alerts, and this test was green
+    # over it the whole time. A name is not an assertion.
+    expiry = re.search(r"silenced \(until\s*(?:<[^>]+>\s*)*([^<]+?)\s*</time>", html)
+    assert expiry, f"the expiry is no longer rendered inside a <time>: {html[:400]}"
+    shown = expiry.group(1)
+    assert "just now" not in shown, (
+        f"a silence with 24h left is rendered {shown!r} — reads as OVER while in force"
+    )
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d UTC", shown), (
+        f"expected the absolute expiry instant, got {shown!r}"
+    )
 
 
 @pytest.mark.webui
