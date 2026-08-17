@@ -84,23 +84,36 @@ def _called_names(node: ast.AST) -> set[str]:
     return out
 
 
-def _mutators() -> dict[str, ast.FunctionDef]:
+def _mutators() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     """DERIVE the set of UI-file mutators from the source, never transcribe it.
 
     A hand-copied list looks derived and is not: it cannot see the fifth
     mutator somebody adds next month, which is precisely how this project has
     twice shipped a fix that covered only the first match.
+
+    ⚠️ `AsyncFunctionDef` is included deliberately. A cold read of an earlier
+    version of this guard pointed out that walking only `FunctionDef` made an
+    `async def` mutator invisible to the derivation — it would not have been
+    reported as unguarded, it would not have been seen at all. Measured before
+    fixing: a synthetic `async def` mutator was not in the derived set.
     """
     tree = ast.parse(ALLOWLIST_SRC.read_text(encoding="utf-8"))
-    found = {}
+    found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     for node in tree.body:
-        if not isinstance(node, ast.FunctionDef):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         if node.name == _WRITE_CALL:
             continue  # the write helper itself is not a mutator
         if _WRITE_CALL in _called_names(node):
             found[node.name] = node
     return found
+
+
+def _first_arg_name(call: ast.Call) -> str | None:
+    """The variable a call's first positional argument names, if it is a name."""
+    if call.args and isinstance(call.args[0], ast.Name):
+        return call.args[0].id
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -204,9 +217,18 @@ def test_a_click_during_the_pollers_repair_is_not_discarded(tmp_path):
         except Exception:
             pass
         finally:
+            os.close(w_ready)
             os._exit(0)
 
-    os.read(r_ready, 1)
+    # ⛔ Close the parent's copy of the write end, or a child that dies without
+    # signalling leaves no reader at EOF and this test HANGS instead of
+    # failing. Measured on the earlier version: the parent blocked forever.
+    os.close(w_ready)
+    ready = os.read(r_ready, 1)
+    assert ready == b"x", (
+        "the child poller never signalled; it died before reading the file, "
+        "so no race was set up and this test proves nothing"
+    )
 
     # ⛔ The click runs on a thread and the poller is released on a TIMER, not
     # when the click returns: once the lock is real the click blocks, so
@@ -312,21 +334,47 @@ def test_every_ui_file_mutator_holds_the_write_lock():
 
     unguarded: list[str] = []
     for name, node in mutators.items():
-        locked_calls: set[int] = set()
+        # Map each locked call to the PATH its `with` statement locked. A lock
+        # on some other path is not exclusion on this one.
+        # ⚠️ Checking only that `_ui_write_lock` appears somewhere in the
+        # `with` was the earlier version of this guard, and a cold read killed
+        # it: measured, a mutator rewritten to lock `Path('/tmp/unrelated')`
+        # passed. The argument has to be compared, not just the call name.
+        locked_calls: dict[int, str | None] = {}
         for n in ast.walk(node):
-            if isinstance(n, ast.With) and _LOCK_CALL in _called_names(
-                ast.Module(body=list(n.items), type_ignores=[])
-            ):
-                for inner in ast.walk(n):
-                    if isinstance(inner, ast.Call):
-                        locked_calls.add(id(inner))
+            if not isinstance(n, ast.With):
+                continue
+            locked_path: str | None = None
+            is_lock = False
+            for item in n.items:
+                ctx = item.context_expr
+                if isinstance(ctx, ast.Call) and isinstance(ctx.func, ast.Name) \
+                        and ctx.func.id == _LOCK_CALL:
+                    is_lock = True
+                    locked_path = _first_arg_name(ctx)
+            if not is_lock:
+                continue
+            for inner in ast.walk(n):
+                if isinstance(inner, ast.Call):
+                    locked_calls[id(inner)] = locked_path
+
         for n in ast.walk(node):
             if not isinstance(n, ast.Call):
                 continue
             f = n.func
             fname = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
-            if fname in _READ_CALLS | {_WRITE_CALL} and id(n) not in locked_calls:
-                unguarded.append(f"{name}:{fname}@line{n.lineno}")
+            if fname not in _READ_CALLS | {_WRITE_CALL}:
+                continue
+            if id(n) not in locked_calls:
+                unguarded.append(f"{name}:{fname}@line{n.lineno} (no lock)")
+                continue
+            target = _first_arg_name(n)
+            held = locked_calls[id(n)]
+            if target is not None and held != target:
+                unguarded.append(
+                    f"{name}:{fname}@line{n.lineno} "
+                    f"(operates on {target!r} but the lock holds {held!r})"
+                )
 
     assert not unguarded, (
         "read-modify-write outside the cross-process write lock: "
@@ -339,30 +387,63 @@ def test_every_ui_file_mutator_holds_the_write_lock():
 # --------------------------------------------------------------------------
 
 
+class _WatchStub:
+    """Minimal stand-in carrying only what the poller's watch actually reads.
+
+    ⚠️ This drives `Poller._current_allowlist_mtimes` itself. An earlier version
+    of these two tests asserted proxies — that the yaml's mtime moved, and that
+    two paths were unequal — and a cold read correctly pointed out that both
+    would pass even if the poller ignored the UI file entirely. Calling the
+    real method is the difference between checking the claim and checking
+    something adjacent to it.
+    """
+
+    def __init__(self, primary: Path, ui: Path) -> None:
+        self._allowlist_primary_path = primary
+        self._allowlist_ui_path = ui
+
+
 def test_the_poller_still_sees_a_locked_write(tmp_path):
     """A lock that stopped the poller reloading would trade a lost suppression
-    for a stale one. The mtime watch must still fire after a locked write."""
-    ui = tmp_path / "allowlist_ui.yaml"
-    ui.write_text("entries: []\n", encoding="utf-8")
-    before = ui.stat().st_mtime
-    time.sleep(0.01)
-    add_ui_entry(ui, _entry(M1))
-    assert ui.stat().st_mtime != before, (
-        "the UI file's mtime did not move, so the poller's per-tick reload "
-        "watch would never notice the operator's click"
-    )
+    for a stale one, so the poller's OWN watch must report the change."""
+    from lynceus.poller import Poller
 
-
-def test_the_lock_file_does_not_trip_the_pollers_reload_watch(tmp_path):
-    """The poller stats the two allowlist paths. The lock file must not be one
-    of them, or every write would look like two changes."""
-    ui = tmp_path / "allowlist_ui.yaml"
     primary = tmp_path / "allowlist.yaml"
+    ui = tmp_path / "allowlist_ui.yaml"
     primary.write_text("entries: []\n", encoding="utf-8")
     ui.write_text("entries: []\n", encoding="utf-8")
+    stub = _WatchStub(primary, ui)
+
+    before = Poller._current_allowlist_mtimes(stub)
+    time.sleep(0.01)
     add_ui_entry(ui, _entry(M1))
+    after = Poller._current_allowlist_mtimes(stub)
+
+    assert after != before, (
+        "the poller's own mtime watch did not register the operator's click, "
+        "so the lock traded a lost suppression for a stale one"
+    )
+    assert after[ui] != before[ui], "the change was not seen on the UI file"
+
+
+def test_the_lock_file_is_not_in_the_pollers_watch_set(tmp_path):
+    """Derived from the poller's real watch set, not asserted about paths.
+
+    If the lock file were watched, every UI write would look like two changes
+    and the poller would reload twice per click.
+    """
+    from lynceus.poller import Poller
+
+    primary = tmp_path / "allowlist.yaml"
+    ui = tmp_path / "allowlist_ui.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    ui.write_text("entries: []\n", encoding="utf-8")
+    add_ui_entry(ui, _entry(M1))  # creates the lock file
+
     assert ui_lock_path(ui).exists(), "expected the lock file to have been created"
-    assert ui_lock_path(ui) not in (primary, ui)
+    watched = set(Poller._current_allowlist_mtimes(_WatchStub(primary, ui)))
+    assert watched == {primary, ui}, f"unexpected watch set: {watched}"
+    assert ui_lock_path(ui) not in watched
 
 
 # --------------------------------------------------------------------------

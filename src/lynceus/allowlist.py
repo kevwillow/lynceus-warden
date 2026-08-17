@@ -708,8 +708,17 @@ def _ui_write_lock(ui_path: Path) -> Iterator[None]:
 
     ⛔ **A ``threading.Lock`` cannot fix this.** The repair runs in the POLLER
     and the clicks run in the web process — different processes, so an
-    in-process lock serialises neither. Hence ``fcntl.flock``, which is held by
-    the kernel against the open file and released even if the holder is killed.
+    in-process lock serialises neither. Hence ``fcntl.flock``, which the kernel
+    holds against the open file description rather than the process, so an
+    ordinary crash or ``SIGKILL`` releases it when the descriptor is closed.
+
+    ⚠️ Stated precisely because the obvious phrasing is wrong: that is release
+    on *descriptor* close, not on *holder* death. A process that forks while
+    holding this lock shares the open file description with its child, and the
+    lock survives the original holder's death for as long as the child lives.
+    Measured. Nothing here forks while holding it — the mutators are called
+    from request handlers and the poll loop — but a future caller that did
+    would not get the guarantee this sentence used to promise.
 
     ⛔ **The lock is NOT taken on ``ui_path`` itself, and that is load-bearing.**
     ``_atomic_write_yaml`` finishes with ``os.replace``, which swaps the INODE
