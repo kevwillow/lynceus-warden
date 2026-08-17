@@ -463,6 +463,9 @@ def test_every_timestamp_column_is_classified(db):
         "alert_actions.ts": "audit trail; never compared to a clock",
         "alerts.note_updated_at": "display only",
         "alerts.notified_at": "NULL-tested for delivery; value never compared",
+        "alerts.notify_abandoned_at":
+            "NULL-tested to exclude operator-actioned rows from the "
+            "undelivered counter; the value itself is never compared",
         "alerts.ts":
             "written by the gated poller; retention keys on sightings.ts",
         "evidence_snapshots.captured_at":

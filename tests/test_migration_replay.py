@@ -129,6 +129,7 @@ REPLAY_RAISES_OPERATIONAL = {
     24: "duplicate column name: notified_at",
     25: "table heartbeats already exists",
     26: "table watchful_escalations already exists",
+    27: "duplicate column name: notify_abandoned_at",
 }
 
 # watchlist table-rebuild migrations. Replay is silent on an empty watchlist and

@@ -2968,7 +2968,38 @@ loaders pydantic's `extra="forbid"` rejects the resulting non-str key, so both f
 loader ever starts ACCEPTING it. **Double-parse memory** and the **TOCTOU second read** are documented
 limits, not defects, on config-sized files read once at startup.
 
-### 🟡 Finding 50 — an operator reset cancels the retry of an escalation that was never delivered, and leaves a complaint nothing can clear
+### 🔴 Finding 50 — an operator reset cancels the retry of an escalation that was never delivered, and leaves a complaint nothing can clear — ✅ FIXED (migration 027)
+
+**Closed with a THIRD delivery state, not by making the counter quieter.** Migration 027 adds
+`alerts.notify_abandoned_at`; `reset_watchful_recurrence` stamps it, **in the same transaction as
+the reset**, on that generation's undelivered escalation, and `count_undelivered_alerts` excludes it.
+Both halves of the acceptance criterion are proven: after the reset the count returns to its
+pre-escalation value, **AND** a genuinely undelivered alert on an entry the operator never touched
+still raises it and keeps raising it. 8 planted defects, 8 killed by the expected test.
+
+⭐ **It is deliberately NOT `notified_at`.** Stamping delivery would assert ntfy succeeded when
+nothing established that — the class #74 and #146 exist to prevent. "The operator saw it in the UI
+and acted" and "the notifier delivered it" are different facts and get different columns.
+⚠️ The licence for "actioned" is a claim about the UI: the reset control renders **only** on an
+escalated entry. If it is ever rendered elsewhere, that claim must be re-argued.
+
+⛔ **Most of the plants attack the suppression being too WIDE, not too narrow**, because this fix
+*removes* rows from a safety counter. `Q2` is the register's own named unsafe direction — a windowed
+counter — and `Q3` marks every undelivered escalation rather than the one row the operator actioned.
+A guard census (`test_only_the_reset_path_abandons_an_alert`) pins that the column has exactly **one**
+writer, since a second one is how a counter that exists to break silence quietly stops counting.
+
+⚠️ **Not backfilled and not defaulted:** every pre-existing undelivered row stays counted. A legacy
+lookup handles installs that escalated *before* migration 026, which have no ledger row and are
+precisely the population carrying a permanent complaint today.
+
+⬜ **The retry-vs-acknowledgement disagreement is NOT resolved here and does not need to be.** Both
+readings agreed the counter was wrong; only the counter is changed. Whether a reset should also keep
+retrying delivery remains a product question for Kev.
+
+Original registration follows, unchanged.
+
+### (original registration) Finding 50 — an operator reset cancels the retry of an escalation that was never delivered
 
 **Found by session 2, who did not fix it (outside their write set) and wrote it up with BOTH possible
 dispositions rather than the one they preferred. Re-measured here before registering** —

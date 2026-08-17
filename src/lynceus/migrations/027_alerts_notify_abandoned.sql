@@ -1,0 +1,49 @@
+-- A third delivery state: "written, undelivered, and ABANDONED by operator
+-- action". Closes Finding 50.
+--
+-- The defect. `_retry_watchful_escalation` re-drives an escalation the operator
+-- was never told about, and its first test is `if escalated_at is None: return`.
+-- `reset_watchful_recurrence` sets `escalated_at = NULL`. So an operator reset
+-- silently removes the retry path with up to 3 of 4 attempts unspent, and
+-- nothing can ever spend them: the documented give-up state is
+-- `attempts >= NOTIFY_MAX_ATTEMPTS`, which that row never reaches. The row
+-- stays `notified_at IS NULL` forever, and `count_undelivered_alerts()` is
+-- called with no window by both the heartbeat and /settings -- so every such
+-- reset adds a PERMANENT, UNCLEARABLE line to "N alert(s) written but never
+-- delivered", on the one surface whose entire value depends on the operator
+-- still reading it.
+--
+-- ⛔ The unsafe direction, named because it is the obvious one. Making the
+-- counter windowed (`since_ts`) so the line ages out would ALSO hide a
+-- genuinely broken ntfy topic -- which is the exact silence that counter exists
+-- to break. The counter must keep complaining forever about a real delivery
+-- failure. Only the rows the operator has demonstrably ACTIONED may stop being
+-- counted, and they need their own state to say so.
+--
+-- ⭐ Why this is not `notified_at`. Stamping the delivery timestamp would assert
+-- that ntfy delivered the alert, which is false and unverifiable -- the whole
+-- class of defect #74 and #146 exist to prevent. "The operator saw it in the web
+-- UI and acted on it" and "the notifier delivered it" are different facts and
+-- get different columns. Anything auditing delivery still sees the truth: the
+-- row is undelivered, and it is undelivered-and-abandoned.
+--
+-- ⚠️ Reachability of the claim, stated rather than assumed: the reset form
+-- renders ONLY on an escalated entry, so an operator clicking it was looking at
+-- that escalation in the UI. That is what licenses "actioned". It is a claim
+-- about the UI, and if the reset control is ever rendered anywhere else this
+-- column's meaning has to be re-argued.
+--
+-- ⛔ Deliberately NOT backfilled and NOT defaulted. Every existing undelivered
+-- row stays counted. A backfill would silence complaints about deliveries that
+-- genuinely failed, which is the one direction this counter must never move on
+-- its own.
+--
+-- Written by exactly one path today (`reset_watchful_recurrence`), in the same
+-- transaction as the reset, so the entry state and the alert's abandonment
+-- cannot disagree. `test_only_the_reset_path_abandons_an_alert` pins that,
+-- because a second writer is how a safety counter quietly stops counting.
+--
+-- No index: `count_undelivered_alerts` already scans on `notified_at IS NULL`
+-- via idx_alerts_undelivered, and this column only narrows that result.
+
+ALTER TABLE alerts ADD COLUMN notify_abandoned_at INTEGER;
