@@ -54,6 +54,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_SOURCE = REPO_ROOT / "src/lynceus/webui/app.py"
 DAY = 86_400
 MAC = "aa:bb:cc:dd:ee:ff"
+#: A second device, so the escalated watchful entry the reset route needs does
+#: not collide with the alert the /alerts routes act on.
+WATCHFUL_MAC = "aa:bb:cc:dd:ee:01"
+WATCHFUL_ENTRY_ID = 1
 
 
 def test_this_suite_is_testing_the_tree_it_lives_in():
@@ -65,13 +69,33 @@ def test_this_suite_is_testing_the_tree_it_lives_in():
 
 
 def _prose(html: str) -> str:
-    return " ".join(re.sub(r"<!--.*?-->", " ", html, flags=re.S).split())
+    """The VISIBLE text of a page: comments dropped, tags dropped, whitespace
+    collapsed.
+
+    ⚠️ Tags are dropped for two reasons, and the second one has bitten this
+    repo twice. A needle spanning ``<code>``/``<strong>`` reports a surface
+    silent when it is speaking; and matching RAW html lets a phrase that
+    survives only inside a ``title=`` attribute satisfy an assertion about
+    what the operator can READ. Both are properties of the helper, so both are
+    fixed here rather than in each needle.
+    """
+    text = re.sub(r"<!--.*?-->", " ", html, flags=re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return " ".join(text.split())
 
 
-def _app(tmp_path, *, alert_offset: int = 0):
+def _app(tmp_path, *, alert_offset: int = 0, watchful_stale_days: int = 1):
     """A live app whose newest recorded alert sits ``alert_offset`` seconds
     ahead of the real clock. Positive offset = this process reads BEHIND
-    recorded history, which is the condition under test."""
+    recorded history, which is the condition under test.
+
+    ⚠️ Also seeds watchful entry 1, ESCALATED, on a SECOND mac. The reset route
+    is one of the writes under test and it renders only on an escalated entry —
+    a real domain precondition, satisfied rather than routed around. It has to
+    be a second mac: building it from alert 1 would make ``/alerts/1/watch``
+    a duplicate, which answers 200-with-a-template instead of the 303 the
+    behavioural cases below read as "allowed".
+    """
     allowlist = tmp_path / "allow.yaml"
     allowlist.write_text("entries: []\n", encoding="utf-8")
     cfg = Config(
@@ -87,6 +111,20 @@ def _app(tmp_path, *, alert_offset: int = 0):
     db.add_alert(
         ts=now + alert_offset, rule_name="argus_mac", mac=MAC, message="m", severity="high"
     )
+
+    seen = now - watchful_stale_days * DAY
+    db.upsert_device(
+        mac=WATCHFUL_MAC, device_type="wifi", oui_vendor="V", is_randomized=0, now_ts=seen
+    )
+    db.insert_sighting(mac=WATCHFUL_MAC, ts=seen, rssi=-50, ssid="n", location_id="default")
+    watch_alert = db.add_alert(
+        ts=seen, rule_name="argus_mac", mac=WATCHFUL_MAC, message="m", severity="high"
+    )
+    entry_id = db.create_watchful_from_alert(
+        alert_id=watch_alert, snooze_duration_seconds=None, now_ts=seen
+    )
+    db.escalate_watchful_recurrence(entry_id, escalated_at=seen)
+    assert entry_id == WATCHFUL_ENTRY_ID, f"fixture drift: watchful entry is {entry_id}"
     return cfg, db, create_app(cfg, db)
 
 
@@ -239,20 +277,83 @@ def test_the_tolerance_matches_the_pollers(tmp_path):
 
 # --------------------------------------------------------------------------
 # 2. Which routes must be guarded — DERIVED from the source, not listed.
+#
+# ⭐ There are TWO ways a web write can be spoiled by a behind clock, and until
+# Finding 51 this section only knew about one of them:
+#
+#   a. it stores ``now + duration`` as an absolute deadline  (the five snoozes)
+#   b. it stamps a column that a destructive, now-relative deadline is
+#      computed FROM                                         (the reset)
+#
+# (b) was invisible here because the derivation asked "does this handler read a
+# duration constant?", and a reset reads none — so the old assertion did not
+# merely miss the reset route, it actively asserted the reset route must NOT be
+# guarded. Both halves are now derived, (b) out of `db.py` itself.
 # --------------------------------------------------------------------------
 
 _DURATION_CONSTANTS = {"_SNOOZE_DURATIONS", "_RULE_TYPE_SNOOZE_DURATION_SECONDS"}
+DB_SOURCE = REPO_ROOT / "src/lynceus/db.py"
+
+
+def _lifecycle_deadline_columns() -> set[str]:
+    """Columns that ``db.py`` computes a DESTRUCTIVE, now-relative deadline from.
+
+    A method qualifies when it both derives a cutoff as ``now_ts - self.<CONST>``
+    and uses it in a statement that deletes or archives; the column is whichever
+    one that statement compares against the cutoff. Today that is exactly
+    ``auto_archive_watchful_recurrence`` → ``last_seen_at``, but nothing here
+    knows that: a second such deadline is picked up the moment it is written.
+    """
+    tree = ast.parse(DB_SOURCE.read_text(encoding="utf-8"))
+    columns: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if not re.search(r"now_ts - self\.[A-Z_]+", ast.unparse(node)):
+            continue
+        for lit in ast.walk(node):
+            if not (isinstance(lit, ast.Constant) and isinstance(lit.value, str)):
+                continue
+            sql = " ".join(lit.value.split())
+            if not re.search(r"\bDELETE\b|archived_at\s*=", sql, re.I):
+                continue
+            columns.update(re.findall(r"(\w+) <= \?", sql))
+    return columns
+
+
+def _lifecycle_clock_writers() -> set[str]:
+    """``db.py`` methods that STAMP one of those columns from a bound parameter.
+
+    ⚠️ Bound parameter, not any assignment: ``sighting_count = sighting_count +
+    1`` is arithmetic on stored state and no clock can spoil it. What matters is
+    a value this process's clock supplied.
+    """
+    columns = _lifecycle_deadline_columns()
+    tree = ast.parse(DB_SOURCE.read_text(encoding="utf-8"))
+    writers: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for lit in ast.walk(node):
+            if not (isinstance(lit, ast.Constant) and isinstance(lit.value, str)):
+                continue
+            sql = " ".join(lit.value.split())
+            if "?" not in sql or not re.search(r"\bSET\b", sql, re.I):
+                continue
+            if any(re.search(rf"\bSET\b.*\b{c}\s*=", sql, re.I) for c in columns):
+                writers.add(node.name)
+    return writers
 
 
 def _post_handlers() -> dict[str, dict]:
-    """Every ``@app.post`` handler, with whether it reads a duration constant
-    and whether it calls the clock guard.
+    """Every ``@app.post`` handler, with why it must be guarded and whether it is.
 
-    ⭐ Derived, so a NEW snooze route is covered the moment it is written. A
-    hand-listed set of guarded routes would be a manifest, and a manifest of
-    "the routes we remembered" is exactly what this project keeps finding
-    already-stale.
+    ⭐ Derived, so a NEW snooze route — or a new route stamping the lifecycle
+    clock — is covered the moment it is written. A hand-listed set of guarded
+    routes would be a manifest, and a manifest of "the routes we remembered" is
+    exactly what this project keeps finding already-stale.
     """
+    writers = _lifecycle_clock_writers()
     tree = ast.parse(APP_SOURCE.read_text(encoding="utf-8"))
     out: dict[str, dict] = {}
     for node in ast.walk(tree):
@@ -268,17 +369,58 @@ def _post_handlers() -> dict[str, dict]:
         if not posts:
             continue
         names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+        db_calls = {
+            n.func.attr
+            for n in ast.walk(node)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "db"
+        }
+        duration_bearing = bool(names & _DURATION_CONSTANTS)
+        stamps_lifecycle_clock = bool(db_calls & writers)
         out[node.name] = {
             "route": posts[0].args[0].value if posts[0].args else "?",
-            "duration_bearing": bool(names & _DURATION_CONSTANTS),
+            "duration_bearing": duration_bearing,
+            "stamps_lifecycle_clock": stamps_lifecycle_clock,
+            "must_be_guarded": duration_bearing or stamps_lifecycle_clock,
             "guarded": "refuse_if_clock_behind" in ast.unparse(node.body),
         }
     return out
 
 
-def test_every_duration_bearing_route_is_guarded_and_no_other_one_is():
-    """Both directions. A missing guard silently stores a dead deadline; a
-    spurious one blocks an operator from an action a wrong clock cannot spoil.
+def test_the_lifecycle_clock_derivation_is_not_vacuous():
+    """⭐ The control for the derivation above, and it is not decoration.
+
+    Both halves are regex-over-AST. If either silently stopped matching, every
+    handler would score ``stamps_lifecycle_clock: False``, the assertion below
+    would collapse back to the duration-only set it had before Finding 51 —
+    and it would then fail by declaring the reset route's guard *spurious*,
+    i.e. point at the fix instead of at the broken instrument.
+    """
+    columns = _lifecycle_deadline_columns()
+    assert columns, (
+        "no destructive now-relative deadline found in db.py; the derivation "
+        "has stopped matching, not the deadline stopped existing"
+    )
+    assert "last_seen_at" in columns, (
+        f"the 90-day watchful auto-archive keys on last_seen_at; derived {columns}"
+    )
+
+    writers = _lifecycle_clock_writers()
+    assert "reset_watchful_recurrence" in writers, (
+        f"the operator reset stamps the lifecycle clock; derived {writers}"
+    )
+    # ⚠️ Named because a reader will ask. Both are poller-side today, and that
+    # is precisely why the check is on the METHOD rather than on a route list:
+    # wiring either into a web handler must inherit the guard automatically.
+    assert {"record_watchful_sighting", "repair_future_dated_watchful_baselines"} <= writers
+
+
+def test_every_clock_stamped_route_is_guarded_and_no_other_one_is():
+    """Both directions. A missing guard silently stores a dead deadline, or
+    quietly buys less tracking than the operator asked for; a spurious one
+    blocks an operator from an action a wrong clock cannot spoil.
     """
     handlers = _post_handlers()
 
@@ -286,14 +428,20 @@ def test_every_duration_bearing_route_is_guarded_and_no_other_one_is():
         f"only found {len(handlers)} @app.post handlers; the AST derivation has "
         f"probably stopped matching"
     )
-    duration = {n for n, h in handlers.items() if h["duration_bearing"]}
+    must = {n for n, h in handlers.items() if h["must_be_guarded"]}
     guarded = {n for n, h in handlers.items() if h["guarded"]}
 
-    assert len(duration) >= 5, f"expected at least 5 duration-bearing routes, got {duration}"
-    assert duration == guarded, (
-        f"duration-bearing but UNGUARDED (will store a dead deadline): "
-        f"{sorted(duration - guarded)}; guarded but carries no duration "
-        f"(blocks an operator for nothing): {sorted(guarded - duration)}"
+    assert len({n for n, h in handlers.items() if h["duration_bearing"]}) >= 5, (
+        f"expected at least 5 duration-bearing routes, got {sorted(must)}"
+    )
+    assert {n for n, h in handlers.items() if h["stamps_lifecycle_clock"]} == {
+        "watchful_reset_post"
+    }, "the set of routes stamping the lifecycle clock has changed"
+    assert must == guarded, (
+        f"clock-stamped but UNGUARDED (stores a dead deadline, or silently "
+        f"shortens a watch): {sorted(must - guarded)}; guarded but stamps "
+        f"nothing a clock can spoil (blocks an operator for nothing): "
+        f"{sorted(guarded - must)}"
     )
 
 
@@ -319,12 +467,13 @@ def test_the_allowlist_add_expiry_is_absolute_and_so_needs_no_guard():
 #: route -> form payload. ⚠️ A transcription, and legitimate ONLY because
 #: ``test_the_behavioural_cases_cover_every_derived_route`` fails when it
 #: diverges from the AST-derived set above.
-DURATION_ROUTES = [
+GUARDED_ROUTES = [
     ("/alerts/1/snooze", {"snooze_duration": "24h"}),
     ("/alerts/1/watch", {"snooze_duration": "24h"}),
     (f"/devices/{MAC}/snooze", {"snooze_duration": "24h"}),
     (f"/devices/{MAC}/watch", {"snooze_duration": "24h"}),
     ("/rules/watchlist_mac/snooze", {"duration_seconds": "86400"}),
+    (f"/watchful/{WATCHFUL_ENTRY_ID}/reset", {}),
 ]
 
 PERMANENT_ROUTES = [
@@ -335,11 +484,11 @@ PERMANENT_ROUTES = [
 
 def test_the_behavioural_cases_cover_every_derived_route():
     """The guard that makes the transcription above legitimate."""
-    derived = {n for n, h in _post_handlers().items() if h["duration_bearing"]}
+    derived = {n for n, h in _post_handlers().items() if h["must_be_guarded"]}
 
-    assert len(DURATION_ROUTES) == len(derived), (
-        f"{len(derived)} duration-bearing routes are derived from the source but "
-        f"{len(DURATION_ROUTES)} are exercised below — add the new one"
+    assert len(GUARDED_ROUTES) == len(derived), (
+        f"{len(derived)} clock-stamped routes are derived from the source but "
+        f"{len(GUARDED_ROUTES)} are exercised below — add the new one"
     )
 
 
@@ -358,7 +507,7 @@ def test_a_clock_behind_history_refuses_every_duration_write(tmp_path):
     cfg, db, app = _app(tmp_path, alert_offset=30 * DAY)
     try:
         with TestClient(app) as client:
-            codes = _post_all(client, DURATION_ROUTES)
+            codes = _post_all(client, GUARDED_ROUTES)
     finally:
         db.close()
 
@@ -386,7 +535,7 @@ def test_a_correct_clock_refuses_nothing(tmp_path):
     cfg, db, app = _app(tmp_path, alert_offset=0)
     try:
         with TestClient(app) as client:
-            codes = _post_all(client, DURATION_ROUTES + PERMANENT_ROUTES)
+            codes = _post_all(client, GUARDED_ROUTES + PERMANENT_ROUTES)
     finally:
         db.close()
 
@@ -503,5 +652,188 @@ def test_a_duration_LONGER_than_the_gap_is_allowed(tmp_path):
         # ⚠️ The duration-blind call keeps the old conservative behaviour, so an
         # un-updated caller cannot silently start allowing dead writes.
         assert refuse_if_clock_behind(db, now) is not None
+    finally:
+        db.close()
+
+
+# --------------------------------------------------------------------------
+# 5. Finding 51's route half — the reset, whose loss is a property of the ROW.
+#
+# `reset_watchful_recurrence` stamps `last_seen_at`, the sole lifecycle clock
+# for an unactioned entry, and `auto_archive_watchful_recurrence` archives
+# anything that column says is 90 days quiet. Measured through the real POST
+# route on the tree WITHOUT this gate (gitignored:
+# `internal/session2-harnesses/f51_route_verify.py`), days of continued
+# tracking granted by a click meaning "I am still watching this device":
+#
+#     correct clock, 89d stale     90.0d      <- control
+#     behind  30d,   89d stale     60.0d
+#     behind 100d,   89d stale      1.0d
+#     behind 100d,   95d stale     ARCHIVED   the entry is dropped outright
+#     behind 100d,    1d stale     89.0d      the cost of refusing: harmless
+#
+# ⛔ Session 1's `MAX(last_seen_at, ?)` clamp is what stops rows 3 and 5 being
+# *worse*; it does not restore the intent, and row 4 still archives. The clamp
+# bounds the damage silently, the gate is what tells the operator.
+# --------------------------------------------------------------------------
+
+
+def _reset(client, entry_id: int = WATCHFUL_ENTRY_ID):
+    client.get("/")
+    token = client.cookies.get("lynceus_csrf")
+    return client.request(
+        "POST",
+        f"/watchful/{entry_id}/reset",
+        data={"_csrf": token},
+        follow_redirects=False,
+    )
+
+
+def test_a_reset_on_a_behind_clock_is_refused_AND_writes_nothing(tmp_path):
+    """Half one of the acceptance criterion.
+
+    ⚠️ The status code is the weaker half. A 400 that had already stamped the
+    row would be the worst of both — the operator told the write failed while
+    the watch was quietly shortened — so every column the reset touches is
+    compared before and after.
+    """
+    cfg, db, app = _app(tmp_path, alert_offset=30 * DAY, watchful_stale_days=89)
+    try:
+        before = db.get_watchful_recurrence(WATCHFUL_ENTRY_ID)
+        with TestClient(app) as client:
+            response = _reset(client)
+        after = db.get_watchful_recurrence(WATCHFUL_ENTRY_ID)
+    finally:
+        db.close()
+
+    assert before.escalated_at is not None, (
+        "fixture control: the entry must really be escalated, or the route "
+        "would have refused it for a reason that is not the clock"
+    )
+    assert response.status_code == 400
+    assert after.last_seen_at == before.last_seen_at
+    assert after.escalated_at == before.escalated_at
+    assert after.sighting_count == before.sighting_count
+    assert after.reset_count == before.reset_count
+
+
+def test_a_reset_on_a_correct_clock_still_resets(tmp_path):
+    """Half two, and the half that stops half one passing trivially: a route
+    that refused every reset would satisfy the first test perfectly.
+
+    ⚠️ Asserts the STATE, not the 303. A redirect proves the handler returned;
+    it does not prove the quiet clock restarted, which is the entire content of
+    the operator's click.
+    """
+    cfg, db, app = _app(tmp_path, alert_offset=0, watchful_stale_days=89)
+    try:
+        before = db.get_watchful_recurrence(WATCHFUL_ENTRY_ID)
+        with TestClient(app) as client:
+            response = _reset(client)
+        after = db.get_watchful_recurrence(WATCHFUL_ENTRY_ID)
+        granted = (
+            after.last_seen_at
+            + Database.WATCHFUL_RECURRENCE_ARCHIVE_QUIET_SECONDS
+            - int(time.time())
+        )
+    finally:
+        db.close()
+
+    assert response.status_code == 303
+    assert after.escalated_at is None
+    assert after.sighting_count == 1
+    assert after.reset_count == before.reset_count + 1
+    assert granted > Database.WATCHFUL_RECURRENCE_ARCHIVE_QUIET_SECONDS - DAY, (
+        f"the reset must restart the full quiet window; granted {granted / DAY:.1f}d "
+        f"of {Database.WATCHFUL_RECURRENCE_ARCHIVE_QUIET_SECONDS / DAY:.0f}d"
+    )
+
+
+def test_the_reset_refusal_describes_a_reset_and_not_a_suppression(tmp_path):
+    """⛔ The five snooze routes explain a DEADLINE THAT EXPIRES. A reset stores
+    no deadline and nothing expires, so reusing that sentence would send the
+    operator hunting for a snooze that does not exist — and a warning naming
+    the wrong cause gets followed, gets nowhere, and gets dismissed the next
+    time it is right.
+
+    ⚠️ Asserted against the RENDERED page's visible text, so a message that
+    reached the exception but not the operator would fail here.
+    """
+    cfg, db, app = _app(tmp_path, alert_offset=30 * DAY, watchful_stale_days=89)
+    try:
+        with TestClient(app) as client:
+            response = _reset(client)
+    finally:
+        db.close()
+
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("text/html")
+    page = _prose(response.text)
+
+    quiet_days = Database.WATCHFUL_RECURRENCE_ARCHIVE_QUIET_SECONDS // DAY
+    assert "hours EARLIER than" in page, "the operator is not told how far off it is"
+    assert "the two disagree about what time it is" in page, (
+        "the message asserts the clock is wrong; the check cannot know that"
+    )
+    assert f"auto-archived {quiet_days} days" in page, (
+        "the consequence is the archive window, and it is named so the operator "
+        "can tell whether it matters to this entry"
+    )
+    assert "stays escalated and tracked" in page, (
+        "without this the operator reads a refusal as 'the entry was dropped' "
+        "and the refusal becomes scarier than the defect"
+    )
+    assert "timedatectl" in page, "the operator is not told how to fix it"
+
+    assert "deleted as expired" not in page, "that is the SNOOZE consequence"
+    assert "suppression" not in page.lower(), (
+        "a reset suppresses nothing; the snooze wording must not leak in"
+    )
+
+
+def test_the_reset_gate_is_deliberately_duration_BLIND(tmp_path):
+    """⭐ Pins the design decision a future reader will want to "improve".
+
+    Passing ``duration_seconds=WATCHFUL_RECURRENCE_ARCHIVE_QUIET_SECONDS`` looks
+    like the precise thing to do — it is what the reset buys — and it is
+    measurably wrong. The operator's loss is ``min(entry_staleness, behind_by)``,
+    a property of the ROW, so no duration argument can express it: at a 30-day
+    gap an 89-day-stale entry keeps 60 of its 90 days, and the duration-bearing
+    call waves it straight through.
+
+    The counterfactual is driven here rather than described, so this fails if
+    someone adds the argument.
+    """
+    cfg, db, app = _app(tmp_path, alert_offset=30 * DAY, watchful_stale_days=89)
+    try:
+        with TestClient(app) as client:
+            response = _reset(client)
+        counterfactual = refuse_if_clock_behind(
+            db,
+            int(time.time()),
+            Database.WATCHFUL_RECURRENCE_ARCHIVE_QUIET_SECONDS,
+            action="watchful_reset",
+        )
+    finally:
+        db.close()
+
+    assert counterfactual is None, (
+        "the premise of this test has changed: a duration-bearing call no "
+        "longer allows a 30-day gap"
+    )
+    assert response.status_code == 400, (
+        "the route allowed a reset that costs the operator a third of the "
+        "window — it is passing a duration it must not pass"
+    )
+
+
+def test_an_unknown_action_raises_rather_than_explaining_the_wrong_cause(tmp_path):
+    """A typo'd action must not silently fall back to the suppression wording:
+    that is the failure the parameter exists to prevent, delivered by the thing
+    meant to prevent it."""
+    cfg, db, _app_unused = _app(tmp_path, alert_offset=30 * DAY)
+    try:
+        with pytest.raises(ValueError, match="action must be one of"):
+            refuse_if_clock_behind(db, int(time.time()), action="watchful-reset")
     finally:
         db.close()
