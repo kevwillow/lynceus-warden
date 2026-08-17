@@ -296,10 +296,38 @@ _EXEMPT: dict[str, str] = {
         "validate reports duplicates itself via _duplicate_key_issues, "
         "as an ERROR, per validator"
     ),
+    # ⛔ NOT JUSTIFIED -- these two are a KNOWN GAP, recorded rather than
+    # excused. Their previous reasons ("machine-written port override, not an
+    # operator-authored file") described the wrong file: the machine-written
+    # override is what `_write_port_override_config` RETURNS, while the
+    # `yaml.safe_load` in both functions reads `config_path` -- the operator's
+    # hand-edited `lynceus.yaml`. quickstart itself says so, warning about
+    # "the operator may have edited the system file" and about ~/.config
+    # shadowing /etc.
+    #
+    # Measured on a config carrying a duplicate `heartbeat_enabled:` and a
+    # duplicate `ui_bind_port:` (probe: internal/session3-harnesses/
+    # exemption_audit_probe.py):
+    #   _read_ui_port_from_config  -> returned the LAST duplicate, 0 records
+    #                                 logged at INFO+
+    #   _write_port_override_config -> the temp config handed to the UI process
+    #                                 kept only `heartbeat_enabled: false`; the
+    #                                 operator's `true` is gone and nothing said
+    #                                 so. The daemon does the laundering, which
+    #                                 is the same shape as #138.
+    #
+    # Bounded by quickstart being a dev/demo launcher ("Production deployments
+    # should use systemd"), which is why this is recorded and handed off rather
+    # than fixed here: `cli/quickstart.py` is outside this session's write set.
+    # See internal/SESSION_BOARD.md, 2026-08-17.
     "lynceus/cli/quickstart.py::_read_ui_port_from_config": (
-        "machine-written port override, not an operator-authored file"
+        "KNOWN GAP, not a justification: reads the operator's lynceus.yaml and "
+        "silently takes the last duplicate. Needs wiring; see board 2026-08-17"
     ),
-    "lynceus/cli/quickstart.py::_write_port_override_config": "machine-written port override",
+    "lynceus/cli/quickstart.py::_write_port_override_config": (
+        "KNOWN GAP, not a justification: reads the operator's lynceus.yaml and "
+        "rewrites it laundered for the UI process. Needs wiring; see board"
+    ),
     "lynceus/setup/core.py::carry_forward_settings": (
         "parses the renderer's OWN output, which is generated, not hand-edited"
     ),
