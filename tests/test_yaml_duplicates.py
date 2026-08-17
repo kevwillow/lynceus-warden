@@ -275,7 +275,16 @@ def test_load_runtime_severity_overrides_warns_only_on_a_duplicate(
 # `_warn_on_duplicate_keys`, and reported a WIRED loader as unwired.
 _EXEMPT: dict[str, str] = {
     # ⭐ These three were caught by this very guard, on CI, in the PR that added
-    # them -- the mechanism working on its author. They parse content that has
+    # them -- the mechanism working on its author.
+    #
+    # ✅ DRIVEN 2026-08-18, not merely re-read, because an exemption I have not
+    # driven is not one I can vouch for. On a config with a duplicate secret key:
+    # both lines are redacted (the line rewriter keys on the key NAME, not on the
+    # collapsed value); and when the LOSING duplicate's value escapes into another
+    # field, `redact_yaml_config` FAILS CLOSED with RedactionFailure and the file
+    # is excluded rather than shipped. `_redact_semantically`'s second-hand claim
+    # that "the caller warns" is true: export_config.py calls warn_duplicate_keys
+    # at :187 and :224. They parse content that has
     # ALREADY been read, to verify a redaction rather than to load config, and a
     # duplicate key is not merely irrelevant there but WANTED: the verifier must
     # see the same collapsed value the daemon would, or it would vouch for a
@@ -295,38 +304,6 @@ _EXEMPT: dict[str, str] = {
     "lynceus/cli/validate.py::_try_load_yaml": (
         "validate reports duplicates itself via _duplicate_key_issues, "
         "as an ERROR, per validator"
-    ),
-    # ⛔ NOT JUSTIFIED -- these two are a KNOWN GAP, recorded rather than
-    # excused. Their previous reasons ("machine-written port override, not an
-    # operator-authored file") described the wrong file: the machine-written
-    # override is what `_write_port_override_config` RETURNS, while the
-    # `yaml.safe_load` in both functions reads `config_path` -- the operator's
-    # hand-edited `lynceus.yaml`. quickstart itself says so, warning about
-    # "the operator may have edited the system file" and about ~/.config
-    # shadowing /etc.
-    #
-    # Measured on a config carrying a duplicate `heartbeat_enabled:` and a
-    # duplicate `ui_bind_port:` (probe: internal/session3-harnesses/
-    # exemption_audit_probe.py):
-    #   _read_ui_port_from_config  -> returned the LAST duplicate, 0 records
-    #                                 logged at INFO+
-    #   _write_port_override_config -> the temp config handed to the UI process
-    #                                 kept only `heartbeat_enabled: false`; the
-    #                                 operator's `true` is gone and nothing said
-    #                                 so. The daemon does the laundering, which
-    #                                 is the same shape as #138.
-    #
-    # Bounded by quickstart being a dev/demo launcher ("Production deployments
-    # should use systemd"), which is why this is recorded and handed off rather
-    # than fixed here: `cli/quickstart.py` is outside this session's write set.
-    # See internal/SESSION_BOARD.md, 2026-08-17.
-    "lynceus/cli/quickstart.py::_read_ui_port_from_config": (
-        "KNOWN GAP, not a justification: reads the operator's lynceus.yaml and "
-        "silently takes the last duplicate. Needs wiring; see board 2026-08-17"
-    ),
-    "lynceus/cli/quickstart.py::_write_port_override_config": (
-        "KNOWN GAP, not a justification: reads the operator's lynceus.yaml and "
-        "rewrites it laundered for the UI process. Needs wiring; see board"
     ),
     "lynceus/setup/core.py::carry_forward_settings": (
         "parses the renderer's OWN output, which is generated, not hand-edited"

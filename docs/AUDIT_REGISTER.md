@@ -2285,6 +2285,31 @@ corrected-ahead clock may silently double the retention window) and `_check_poll
 (which decides whether the home page says the daemon is alive). ⛔ **Neither has been measured by
 anyone.** Raw report at `internal/session1-harnesses/REPORT_M3D.md`.
 
+> ✅ **CORRECTION, 2026-08-17 (session 3) — the retention half of that lead is REFUTED, measured.**
+> The prunes do **not** double the retention window in either direction. Driven through
+> `prune_old_sightings` with 40 daily sightings and `retention_days=30`, the oldest surviving row was
+> **30.00 days**, and a second call the same day is a no-op, so the effective window is
+> `retention_days` **+ at most one prune cadence (one day)** — never `2 × retention_days`.
+>
+> What is real is the OPPOSITE direction, and it was already found and fixed on 2026-08-14: a clock
+> that is **AHEAD** deletes rows *inside* the window (+7d → 6 extra rows, +30d → 29, +365d → all 30),
+> while a clock **BEHIND** under-deletes and so fails safe. That is gated by `clock_trusted` in
+> `poll_once`, and the gate is properly proven by
+> `test_clock_jump_anchor.py::test_poll_once_gates_both_prunes_on_the_flag`, a parametrised
+> take-effect pair (prunes run when trusted, do not when not).
+>
+> ⛔ **Do not "fix" this inside `retention.py`.** `test_clock_jump_anchor.py`'s module docstring
+> already records why a data-anchored clamp, a volume bound and a cutoff-plausibility bound each
+> refuse a *legitimate* prune of a wholly-stale table, and why any elapsed-since-last-prune bound is
+> computed from the same corrupt clock and so is circular.
+>
+> 🔴 **The residual that IS open**, and it is Finding 41's blind spot rather than a new one:
+> `ClockAnchor` anchors at daemon start, so a clock **already wrong-and-ahead when it anchored**
+> shows drift ≈ 0 forever and is trusted — prunes then run against it. The bounded-hold path (accept
+> the jump after `CLOCK_JUMP_MAX_HOLDS`) is deliberate and logged at ERROR naming the consequence.
+> Probe: `internal/session3-harnesses/retention_direction_probe.py`.
+> **`_check_poller`'s staleness test remains unmeasured — that half of the lead still stands.**
+
 ## Rig round 1 — a cold cross-model read of the day's own work, 2026-08-16
 
 Findings 33–40 and their guards were handed to codex (`gpt-5.6-sol` for the two behavioural
@@ -3352,6 +3377,13 @@ below describes, running in the other direction:**
   (`prune_old_evidence` / `prune_old_sightings`) may silently double the retention window after a
   clock correction, and **`_check_poller`'s staleness test** decides whether the home page claims the
   daemon is alive. Both sit in Round 12's UNSWEPT list. Cite as leads, never as findings.
+  - ✅ **MEASURED 2026-08-17 (session 3): the retention half is REFUTED — the window does not
+    double.** Oldest surviving row measured **30.00 days** on a 30-day policy; the effective window
+    is `retention_days` + at most one prune cadence. The real exposure is the opposite direction (a
+    clock AHEAD deletes *inside* the window), which was already found and gated on 2026-08-14 and is
+    proven by a parametrised take-effect pair. Full correction beside the original entry above;
+    probe `internal/session3-harnesses/retention_direction_probe.py`.
+    ⚠️ **`_check_poller`'s staleness test is still unmeasured** — that half of the lead stands.
 - 🟡 **Finding 50 — registered, NOT patched.** An operator reset cancels the retry of an undelivered
   escalation and leaves a permanent, unclearable line in the heartbeat's *"written but never
   delivered"* count. ⛔ The obvious fix — windowing the counter — is the **unsafe** direction: it

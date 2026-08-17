@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import pathlib
 import signal
 import socket
 import subprocess
@@ -735,3 +736,78 @@ def test_main_system_flag_prints_system_scope_label(
     out = capsys.readouterr().out
     assert str(system_path) in out
     assert "system scope" in out
+
+
+# --- duplicate keys in the operator's config --------------------------------
+#
+# ⛔ Both loaders below read the OPERATOR'S hand-edited `lynceus.yaml`. They were
+# exempted from the duplicate-key coverage guard on the reasoning that they parse
+# a "machine-written port override" -- which named the wrong file: the
+# machine-written override is what `_write_port_override_config` RETURNS.
+#
+# `yaml.safe_load` keeps the LAST duplicate silently, so before this wiring a
+# duplicate key here was invisible. These are behavioural, not structural: the
+# coverage guard proves a reporter is CALLED, which a call that reports nothing
+# would also satisfy.
+
+_DUPE_CONFIG = """\
+kismet_url: http://localhost:2501
+ui_bind_port: 8080
+heartbeat_enabled: true
+heartbeat_enabled: false
+ui_bind_port: 9999
+"""
+
+
+def test_reading_the_ui_port_warns_about_a_duplicate_key(tmp_path, caplog):
+    cfg = tmp_path / "lynceus.yaml"
+    cfg.write_text(_DUPE_CONFIG, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        port = quickstart._read_ui_port_from_config(str(cfg))
+
+    # The value is still safe_load's (last wins) -- this fix reports, it does
+    # not change which value the daemon uses.
+    assert port == 9999
+    text = caplog.text
+    assert "ui_bind_port" in text, f"the duplicate was not reported: {text!r}"
+    assert "heartbeat_enabled" in text, (
+        "only the port duplicate was reported; the reporter must name every "
+        f"duplicate in the file, not just the one this function reads: {text!r}"
+    )
+
+
+def test_writing_the_port_override_warns_before_it_launders_the_file(tmp_path, caplog):
+    """The temp copy goes to the UI process with the duplicate already collapsed.
+
+    The warning has to come from the SOURCE file: after `safe_dump` the losing
+    value is gone and nothing can report what was discarded.
+    """
+    cfg = tmp_path / "lynceus.yaml"
+    cfg.write_text(_DUPE_CONFIG, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        tmp = quickstart._write_port_override_config(str(cfg), 7777)
+
+    try:
+        written = pathlib.Path(tmp).read_text(encoding="utf-8")
+        # The laundering itself is unchanged and deliberate: one value survives.
+        assert written.count("heartbeat_enabled") == 1
+        assert "ui_bind_port: 7777" in written
+        # ...but it is no longer silent.
+        assert "heartbeat_enabled" in caplog.text, (
+            f"the operator's discarded value was never reported: {caplog.text!r}"
+        )
+    finally:
+        pathlib.Path(tmp).unlink(missing_ok=True)
+
+
+def test_an_unreadable_config_does_not_raise_from_the_diagnostic(tmp_path, caplog):
+    """A reporter must never change what the caller loads.
+
+    `_read_ui_port_from_config` returns the default for an unreadable file; the
+    duplicate scan is placed after that early return so it cannot turn a
+    missing file into a different failure.
+    """
+    missing = tmp_path / "nope.yaml"
+    assert quickstart._read_ui_port_from_config(str(missing)) == quickstart.DEFAULT_UI_PORT
