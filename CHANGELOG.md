@@ -235,6 +235,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **"Reset" on a device you had just said you were still watching could quietly
+  stop watching it.** The reset button on `/watchful` means "I have seen this
+  escalation, it looks benign, keep tracking". It works by stamping the entry as
+  last seen *now* — and that same timestamp is the only clock deciding when an
+  untouched entry is auto-archived after 90 quiet days. So if the machine's
+  clock read behind real time when you clicked, the entry was stamped into the
+  past: it got less continued tracking than the button promised, and an entry
+  already near the 90-day mark was archived outright at the next housekeeping
+  pass. Measured, for 90 days asked: 60 days, 1 day, and none at all — with the
+  page reporting success every time.
+
+  Same battery-less Raspberry Pi clock as the snooze entry below, but the
+  direction is worse. A snooze that dies early leaves you noisier than you
+  chose; a watch that ends early leaves you quieter, and quiet is what this tool
+  asks you to trust.
+
+  The other five places a wrong clock could spoil a write already refuse it and
+  explain why. This one now does too — with a message written for a reset rather
+  than for a snooze, because nothing here expires and the snooze wording would
+  have sent you hunting for a suppression that does not exist. The entry stays
+  escalated and tracked while you check the clock, so refusing costs you
+  nothing.
+
 - **A "snooze this for 24 hours" could last no time at all, and nothing told
   you.** A snooze is stored as a deadline — the moment it expires — not as a
   length of time. If the machine's clock was wrong when you set one, that

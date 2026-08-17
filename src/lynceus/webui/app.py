@@ -3050,6 +3050,33 @@ def create_app(config: Config, db: Database) -> FastAPI:
         result = _load_watchful_for_action(entry_id, request)
         if not isinstance(result, WatchfulRecurrence):
             return result
+
+        # ⛔ Finding 51's route half. This is the sixth clock-stamped write and
+        # the only one that is not a snooze: `reset_watchful_recurrence` writes
+        # `last_seen_at`, the SOLE lifecycle clock for an unactioned entry, and
+        # `auto_archive_watchful_recurrence` archives anything that column says
+        # is 90 days quiet. So a reset written against a behind clock buys less
+        # continued tracking than the operator asked for, and an entry already
+        # near the limit is archived outright -- the exact opposite of what the
+        # button means, and the FAIL-CLOSED direction: what gets dropped is the
+        # tracking of a possible follower.
+        #
+        # ⚠️ Deliberately passes no `duration_seconds`. The loss is
+        # `min(entry_staleness, behind_by)` -- a property of the ROW, which no
+        # duration argument can express. Measured in `refuse_if_clock_behind`'s
+        # docstring; session 1's `MAX(last_seen_at, ?)` clamp bounds the damage
+        # but does not restore the intent, so both are wanted.
+        #
+        # ⚠️ Placed AFTER `_load_watchful_for_action`, matching the five snooze
+        # routes: a bad or unknown entry must be reported as what it is. The
+        # not-escalated precondition stays in `db.py` where the other routes'
+        # state preconditions also live.
+        clock_refusal = refuse_if_clock_behind(
+            db, int(time.time()), action="watchful_reset"
+        )
+        if clock_refusal:
+            raise HTTPException(status_code=400, detail=clock_refusal)
+
         try:
             db.reset_watchful_recurrence(entry_id, now_ts=int(time.time()))
         except ValueError as exc:

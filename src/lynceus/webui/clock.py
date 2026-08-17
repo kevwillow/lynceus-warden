@@ -142,10 +142,23 @@ def clock_behind_recorded_history(db: Database, now_ts: int) -> dict:
     }
 
 
+#: The consequence clause is chosen by the CALLER, because the consequence is
+#: not the same for every write this gate protects. A snooze stores a deadline
+#: that expires early; a watchful reset stamps a lifecycle clock and quietly
+#: buys less tracking than the operator asked for. ⛔ **One sentence covering
+#: both would name the wrong cause for one of them**, and a warning naming the
+#: wrong cause gets followed, gets nowhere, and gets dismissed next time.
+_ACTIONS = ("suppression", "watchful_reset")
+
+
 def refuse_if_clock_behind(
-    db: Database, now_ts: int, duration_seconds: int | None = None
+    db: Database,
+    now_ts: int,
+    duration_seconds: int | None = None,
+    *,
+    action: str = "suppression",
 ) -> str | None:
-    """Message explaining why a duration-bearing write must not proceed, or
+    """Message explaining why a clock-stamped write must not proceed, or
     ``None`` when it may.
 
     ⭐ ``duration_seconds`` makes the refusal PRECISE, and its absence was an
@@ -166,9 +179,38 @@ def refuse_if_clock_behind(
     argument keeps the old conservative behaviour (refuse whenever the clock
     disagrees), which is why it defaults to None rather than being required.
 
+    ⛔ **``action="watchful_reset"`` deliberately passes NO duration, and that is
+    a measurement, not an oversight.** A reset stamps ``last_seen_at = MAX(
+    last_seen_at, now)`` and the entry is auto-archived a fixed quiet period
+    after that column, so what the operator loses is
+    ``min(entry_staleness, behind_by)`` -- it depends on the ROW, not only on
+    the clock, and no single ``duration_seconds`` can express it. Measured
+    through the real POST route on the tree without this gate (gitignored:
+    `internal/session2-harnesses/f51_route_verify.py`; its db-layer twin is
+    `f51_reset_gate_probe.py`) — days of tracking granted for a click meaning
+    "I am still watching this device", with the page reporting success in every
+    row:
+
+        correct clock, 89d stale     90.0d      <- control
+        behind  30d,   89d stale     60.0d      a 90d duration would ALLOW this
+        behind 100d,   89d stale      1.0d
+        behind 100d,   95d stale     ARCHIVED   the entry is dropped outright
+        behind 100d,    1d stale     89.0d      the cost of refusing: harmless
+
+    So this refuses the whole class rather than the cases a duration argument
+    happens to catch. The last row is the price and it is accepted for the same
+    reason the rest of the module accepts its false positives: the refusal is
+    recoverable and visible, and the entry stays escalated and tracked while the
+    operator fixes the clock, so nothing is dropped by waiting.
+
     Callers raise ``HTTPException(400, detail=...)``; the message names the
     delta, the evidence and the fix.
     """
+    if action not in _ACTIONS:
+        # ⛔ Not a silent fallback to the suppression wording. An unknown action
+        # would then be explained to the operator in terms of a deadline that
+        # write never had -- the exact failure this parameter exists to prevent.
+        raise ValueError(f"action must be one of {_ACTIONS}, got {action!r}")
     state = clock_behind_recorded_history(db, now_ts)
     if not state["behind"]:
         return None
@@ -178,23 +220,39 @@ def refuse_if_clock_behind(
         # write that works.
         return None
     hours = behind_by / 3600.0
-    # ⚠️ Phrased as a DISAGREEMENT, not "your clock is wrong": the check cannot
-    # tell whether this clock is behind or that record was stamped ahead, and an
-    # error asserting more than the code knows sends an operator to fix the
-    # wrong thing.
+    # ⚠️ Phrased as a DISAGREEMENT for both actions: the check cannot tell
+    # whether this clock is behind or that record was stamped ahead.
+    disagreement = (
+        f"This machine's clock reads {hours:.1f} hours EARLIER than "
+        f"{state['source']}, so the two disagree about what time it is. "
+    )
+    remedy = (
+        "Check the clock (NTP / `timedatectl`); if it is correct, the stale "
+        "record clears as it ages out of retention. "
+    )
+    if action == "watchful_reset":
+        quiet_days = db.WATCHFUL_RECURRENCE_ARCHIVE_QUIET_SECONDS // 86400
+        return (
+            f"{disagreement}A reset stamps this entry as last seen NOW, and an "
+            f"entry is auto-archived {quiet_days} days after that timestamp. "
+            f"Written against the earlier clock the reset therefore grants up "
+            f"to {hours:.1f} hours less continued tracking than it appears to, "
+            f"and an entry already close to that limit is archived outright — "
+            f"the opposite of what this button means. Refusing rather than "
+            f"quietly watching for less time than you asked for. {remedy}The "
+            f"entry stays escalated and tracked meanwhile, so nothing is lost "
+            f"by waiting."
+        )
     scope = (
         f"a {duration_seconds // 3600}-hour suppression set now"
         if duration_seconds
         else "a suppression set now"
     )
     return (
-        f"This machine's clock reads {hours:.1f} hours EARLIER than "
-        f"{state['source']}, so the two disagree about what time it is. "
-        f"{scope} would be stored with a deadline on the near side of that "
-        f"gap: it would expire the moment the clock is corrected, and then be "
-        f"deleted as expired. Refusing rather than accepting a setting that "
-        f"will not survive. Check the clock (NTP / `timedatectl`); if it is "
-        f"correct, the stale record clears as it ages out of retention. A "
-        f"longer duration than the gap would survive, and permanent allowlist "
-        f"entries are unaffected — they carry no deadline."
+        f"{disagreement}{scope} would be stored with a deadline on the near "
+        f"side of that gap: it would expire the moment the clock is corrected, "
+        f"and then be deleted as expired. Refusing rather than accepting a "
+        f"setting that will not survive. {remedy}A longer duration than the gap "
+        f"would survive, and permanent allowlist entries are unaffected — they "
+        f"carry no deadline."
     )
