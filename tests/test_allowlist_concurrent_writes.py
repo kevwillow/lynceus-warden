@@ -36,6 +36,8 @@ from __future__ import annotations
 import ast
 import fcntl
 import os
+import select
+import signal
 import sys
 import threading
 import time
@@ -54,6 +56,7 @@ from lynceus.allowlist import (  # noqa: E402
     repair_future_dated_ui_entries,
     ui_lock_path,
 )
+from lynceus.poller import Poller as _Poller  # noqa: E402
 
 M1 = "ac:de:48:00:00:01"
 M2 = "ac:de:48:00:00:02"
@@ -70,6 +73,35 @@ _LOCK_CALL = "_ui_write_lock"
 
 def _entry(mac: str, note: str = "click", **kw: object) -> AllowlistEntry:
     return AllowlistEntry(pattern=mac, pattern_type="mac", note=note, **kw)
+
+
+def _read_or_die(fd: int, timeout: float) -> bytes:
+    """`os.read` bounded by a deadline, because an unbounded one HANGS CI.
+
+    ⛔ Every blocking call in a forked test is a place the suite can stop
+    instead of fail. A hang costs the whole job's wall clock and reports
+    nothing about the defect; a timeout reports a failure with a message.
+    """
+    ready, _, _ = select.select([fd], [], [], timeout)
+    if not ready:
+        raise AssertionError(
+            f"timed out after {timeout}s waiting on the other process; "
+            "it neither signalled nor exited"
+        )
+    return os.read(fd, 1)
+
+
+def _wait_or_die(pid: int, timeout: float) -> tuple[int, int]:
+    """`waitpid` bounded the same way, then reaped for real."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            return done, status
+        time.sleep(0.01)
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    raise AssertionError(f"child {pid} did not exit within {timeout}s; killed it")
 
 
 def _called_names(node: ast.AST) -> set[str]:
@@ -99,7 +131,12 @@ def _mutators() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     """
     tree = ast.parse(ALLOWLIST_SRC.read_text(encoding="utf-8"))
     found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
-    for node in tree.body:
+    # ⚠️ ast.walk, NOT tree.body. An earlier version iterated top-level nodes
+    # only, so a mutator defined inside a class or nested in another function
+    # was not reported as unguarded -- it was not seen AT ALL, which is the
+    # worse failure for a guard whose whole claim is that nothing slips
+    # through. Measured on a synthetic `class C: async def add(...)`.
+    for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         if node.name == _WRITE_CALL:
@@ -109,11 +146,46 @@ def _mutators() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     return found
 
 
-def _first_arg_name(call: ast.Call) -> str | None:
-    """The variable a call's first positional argument names, if it is a name."""
-    if call.args and isinstance(call.args[0], ast.Name):
-        return call.args[0].id
-    return None
+def _alias_roots(fn: ast.AST) -> dict[str, str]:
+    """Map `p` -> `ui_path` for simple `p = ui_path` assignments in ``fn``.
+
+    Without this the path check rejects correct code that binds the path to a
+    local name first. Cycle-guarded, and only single-name-to-single-name
+    assignments are followed -- anything cleverer is left unresolved, which
+    fails CLOSED below rather than being waved through.
+    """
+    direct: dict[str, str] = {}
+    for n in ast.walk(fn):
+        if (
+            isinstance(n, ast.Assign)
+            and len(n.targets) == 1
+            and isinstance(n.targets[0], ast.Name)
+            and isinstance(n.value, ast.Name)
+        ):
+            direct[n.targets[0].id] = n.value.id
+    resolved: dict[str, str] = {}
+    for name in direct:
+        seen, cur = {name}, direct[name]
+        while cur in direct and cur not in seen:
+            seen.add(cur)
+            cur = direct[cur]
+        resolved[name] = cur
+    return resolved
+
+
+def _path_names(call: ast.Call, aliases: dict[str, str]) -> set[str]:
+    """Every variable name this call is passed, positionally or by keyword.
+
+    ⚠️ Keywords are included deliberately. Reading only ``args[0]`` made the
+    check FAIL OPEN: `_atomic_write_yaml(path=ui_path, ...)` produced "no name
+    I can see", the comparison was skipped, and a write under a lock on an
+    unrelated path passed. Measured.
+    """
+    names = set()
+    for node in [*call.args, *(kw.value for kw in call.keywords)]:
+        if isinstance(node, ast.Name):
+            names.add(aliases.get(node.id, node.id))
+    return names
 
 
 # --------------------------------------------------------------------------
@@ -203,28 +275,33 @@ def test_a_click_during_the_pollers_repair_is_not_discarded(tmp_path):
 
     pid = os.fork()
     if pid == 0:  # child == the poller
+        # ⛔ Exit status carries the outcome. Swallowing the child's exception
+        # and exiting 0 made "the repair never ran" indistinguishable from "the
+        # repair ran": the parent's click then succeeded on its own and both
+        # assertions passed with no race having happened.
+        status = 0
         try:
             real_load = al._load_ui_entries
 
             def gated_load(p):
                 out = real_load(p)
                 os.write(w_ready, b"x")  # "I have read the file"
-                os.read(r_go, 1)         # hold the window open
+                _read_or_die(r_go, 10)   # hold the window open, but not forever
                 return out
 
             al._load_ui_entries = gated_load
             repair_future_dated_ui_entries(ui, now)
-        except Exception:
-            pass
+        except BaseException:
+            status = 1
         finally:
             os.close(w_ready)
-            os._exit(0)
+            os._exit(status)
 
     # ⛔ Close the parent's copy of the write end, or a child that dies without
     # signalling leaves no reader at EOF and this test HANGS instead of
     # failing. Measured on the earlier version: the parent blocked forever.
     os.close(w_ready)
-    ready = os.read(r_ready, 1)
+    ready = _read_or_die(r_ready, 10)
     assert ready == b"x", (
         "the child poller never signalled; it died before reading the file, "
         "so no race was set up and this test proves nothing"
@@ -244,10 +321,26 @@ def test_a_click_during_the_pollers_repair_is_not_discarded(tmp_path):
     time.sleep(0.4)
     blocked = not done.is_set()
     os.write(w_go, b"x")
-    os.waitpid(pid, 0)
+    _, status = _wait_or_die(pid, 20)
     t.join(timeout=30)
+    assert done.is_set(), "the click never completed after the poller released"
 
     text = ui.read_text(encoding="utf-8")
+    # ⛔ The repair must actually have run. Without this the test passes when
+    # the child dies after signalling: the lock is released early, the click
+    # succeeds on its own, and nothing was ever contended for.
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, (
+        f"the poller child failed (status={status}); the repair never completed, "
+        "so the race this test claims to set up did not happen"
+    )
+    assert f"{now}" in text or "click-during-repair" in text
+    entries = al._load_ui_entries(ui)
+    rebased = [e for e in entries if e.pattern == M1 and e.added_at == now]
+    assert rebased, (
+        "the poller's repair did not re-base the future-dated entry, so its "
+        "write never landed and the click did not have to survive anything"
+    )
+
     assert M2 in text, (
         "the operator's click was discarded by the poller's repair: " + repr(text)
     )
@@ -340,23 +433,24 @@ def test_every_ui_file_mutator_holds_the_write_lock():
         # `with` was the earlier version of this guard, and a cold read killed
         # it: measured, a mutator rewritten to lock `Path('/tmp/unrelated')`
         # passed. The argument has to be compared, not just the call name.
-        locked_calls: dict[int, str | None] = {}
+        aliases = _alias_roots(node)
+        locked_calls: dict[int, set[str]] = {}
         for n in ast.walk(node):
             if not isinstance(n, ast.With):
                 continue
-            locked_path: str | None = None
+            locked_paths: set[str] = set()
             is_lock = False
             for item in n.items:
                 ctx = item.context_expr
                 if isinstance(ctx, ast.Call) and isinstance(ctx.func, ast.Name) \
                         and ctx.func.id == _LOCK_CALL:
                     is_lock = True
-                    locked_path = _first_arg_name(ctx)
+                    locked_paths |= _path_names(ctx, aliases)
             if not is_lock:
                 continue
             for inner in ast.walk(n):
                 if isinstance(inner, ast.Call):
-                    locked_calls[id(inner)] = locked_path
+                    locked_calls[id(inner)] = locked_paths
 
         for n in ast.walk(node):
             if not isinstance(n, ast.Call):
@@ -368,12 +462,18 @@ def test_every_ui_file_mutator_holds_the_write_lock():
             if id(n) not in locked_calls:
                 unguarded.append(f"{name}:{fname}@line{n.lineno} (no lock)")
                 continue
-            target = _first_arg_name(n)
             held = locked_calls[id(n)]
-            if target is not None and held != target:
+            targets = _path_names(n, aliases)
+            # ⛔ FAIL CLOSED. If the locked path is not among the names this
+            # call is given -- including when neither can be resolved to a
+            # plain name -- it is reported. An earlier version skipped the
+            # comparison whenever it could not read a name, which let a
+            # keyword-argument write under an unrelated lock pass.
+            if not (held & targets):
                 unguarded.append(
                     f"{name}:{fname}@line{n.lineno} "
-                    f"(operates on {target!r} but the lock holds {held!r})"
+                    f"(operates on {sorted(targets) or 'an unresolvable expression'} "
+                    f"but the lock holds {sorted(held) or 'an unresolvable expression'})"
                 )
 
     assert not unguarded, (
@@ -388,52 +488,73 @@ def test_every_ui_file_mutator_holds_the_write_lock():
 
 
 class _WatchStub:
-    """Minimal stand-in carrying only what the poller's watch actually reads.
+    """Minimal state object running the poller's REAL reload methods.
 
-    ⚠️ This drives `Poller._current_allowlist_mtimes` itself. An earlier version
-    of these two tests asserted proxies — that the yaml's mtime moved, and that
-    two paths were unequal — and a cold read correctly pointed out that both
-    would pass even if the poller ignored the UI file entirely. Calling the
-    real method is the difference between checking the claim and checking
+    ⚠️ The methods are bound from `Poller` rather than reimplemented, so this
+    exercises the shipped code path and cannot drift from it. Only the four
+    attributes those methods touch are supplied.
+
+    An earlier version of these tests asserted proxies — that the yaml's mtime
+    moved, and that two paths were unequal — and a cold read correctly pointed
+    out that both would pass even if the poller noticed the change and then
+    ignored it. Driving `_maybe_reload_allowlist` and reading the allowlist it
+    installs is the difference between checking the claim and checking
     something adjacent to it.
     """
+
+    _current_allowlist_mtimes = _Poller._current_allowlist_mtimes
+    _maybe_reload_allowlist = _Poller._maybe_reload_allowlist
 
     def __init__(self, primary: Path, ui: Path) -> None:
         self._allowlist_primary_path = primary
         self._allowlist_ui_path = ui
+        self._allowlist_mtimes: dict[Path, float] = {}
+        self.allowlist = None
 
 
-def test_the_poller_still_sees_a_locked_write(tmp_path):
+def test_the_poller_actually_reloads_after_a_locked_write(tmp_path):
     """A lock that stopped the poller reloading would trade a lost suppression
-    for a stale one, so the poller's OWN watch must report the change."""
-    from lynceus.poller import Poller
+    for a stale one, so drive the poller's REAL reload and read the result.
 
+    ⚠️ This used to assert only that the UI file's mtime moved. A cold read
+    pointed out that a poller which noticed the change and then ignored it
+    would pass that test while the section claimed reloading was established.
+    `_maybe_reload_allowlist` is the function that decides, so it is the one
+    called here, and the assertion is on the allowlist it installs.
+    """
     primary = tmp_path / "allowlist.yaml"
     ui = tmp_path / "allowlist_ui.yaml"
     primary.write_text("entries: []\n", encoding="utf-8")
     ui.write_text("entries: []\n", encoding="utf-8")
     stub = _WatchStub(primary, ui)
 
-    before = Poller._current_allowlist_mtimes(stub)
-    time.sleep(0.01)
-    add_ui_entry(ui, _entry(M1))
-    after = Poller._current_allowlist_mtimes(stub)
+    stub._maybe_reload_allowlist()          # prime the mtime cache
+    assert stub.allowlist is not None
+    assert not any(
+        e.pattern == M1 for e in stub.allowlist.entries
+    ), "control failed: the entry was present before it was added"
 
-    assert after != before, (
-        "the poller's own mtime watch did not register the operator's click, "
-        "so the lock traded a lost suppression for a stale one"
+    time.sleep(0.01)
+    add_ui_entry(ui, _entry(M1))                  # the operator's click
+    stub._maybe_reload_allowlist()          # the next poll tick
+
+    assert any(e.pattern == M1 for e in stub.allowlist.entries), (
+        "the poller did not pick up the suppression the operator just made; "
+        "the write lock traded a lost entry for a stale one"
     )
-    assert after[ui] != before[ui], "the change was not seen on the UI file"
 
 
 def test_the_lock_file_is_not_in_the_pollers_watch_set(tmp_path):
     """Derived from the poller's real watch set, not asserted about paths.
 
-    If the lock file were watched, every UI write would look like two changes
-    and the poller would reload twice per click.
+    ⚠️ The rationale here used to say a watched lock file would make every
+    write look like two changes. Measured, that is wrong: acquiring `flock` on
+    an EXISTING file does not move its mtime, so it would add a spurious change
+    only on the write that first creates it. The reason to check is simpler and
+    still holds -- the poller must watch the two allowlist files and nothing
+    else, so that what trips a reload stays something the operator can reason
+    about.
     """
-    from lynceus.poller import Poller
-
     primary = tmp_path / "allowlist.yaml"
     ui = tmp_path / "allowlist_ui.yaml"
     primary.write_text("entries: []\n", encoding="utf-8")
@@ -441,7 +562,7 @@ def test_the_lock_file_is_not_in_the_pollers_watch_set(tmp_path):
     add_ui_entry(ui, _entry(M1))  # creates the lock file
 
     assert ui_lock_path(ui).exists(), "expected the lock file to have been created"
-    watched = set(Poller._current_allowlist_mtimes(_WatchStub(primary, ui)))
+    watched = set(_WatchStub(primary, ui)._current_allowlist_mtimes())
     assert watched == {primary, ui}, f"unexpected watch set: {watched}"
     assert ui_lock_path(ui) not in watched
 
