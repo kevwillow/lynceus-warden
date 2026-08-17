@@ -23,7 +23,15 @@
                   title="{{ last_tick.completed_at | unix_to_utc_human }}">
               {{ last_tick.completed_at | relative_time(now_ts=now_ts) }}
             </time>
-            {% if tick_is_stale %}
+            {# The three states are deliberate. "stale" and nothing are both
+               VERDICTS; a tick stamped ahead of this clock supports neither,
+               and reporting nothing there is what let a daemon dead for a year
+               read as healthy. #}
+            {% if not tick_liveness.staleness_known %}
+              &middot; <span class="status-pill status-pill-warn">clock disagrees</span>
+              &middot; that timestamp is ahead of this machine&#39;s clock, so
+              whether the daemon is still polling cannot be told from it
+            {% elif tick_liveness.is_stale %}
               &middot; <span class="badge-high">stale</span>
             {% endif %}
           </td>

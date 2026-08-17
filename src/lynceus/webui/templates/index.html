@@ -52,10 +52,30 @@
     <span class="status-item">
       <strong>last poll:</strong>
       {% if last_tick %}
+        {# ⛔ A tick stamped AHEAD of this clock says nothing about whether the
+           daemon is polling, and this line used to say it was alive: the
+           relative_time collapse rendered it "just now" no matter how long the
+           daemon had been dead. This is the operator's only liveness signal on
+           a default install (the heartbeat is off by default), so it says
+           "cannot tell" rather than picking the reassuring answer. #}
+        {% if not tick_liveness.staleness_known %}
+          <span class="status-pill status-pill-warn">clock disagrees</span>
+          &middot; stamped
+          {# ⚠️ Whitespace control, not decoration: without the `-` the text node
+             inside <time> ends in a newline and the browser renders "UTC ," with
+             a space before the comma. #}
+          <time datetime="{{ last_tick.completed_at | unix_to_iso }}"
+                title="{{ last_tick.completed_at | unix_to_utc_human }}">
+            {{- last_tick.completed_at | relative_time(now_ts=now_ts) -}}
+          </time>,
+          ahead of this machine&#39;s clock &mdash; whether the daemon is still
+          polling cannot be told from it
+        {% else %}
         <time datetime="{{ last_tick.completed_at | unix_to_iso }}"
               title="{{ last_tick.completed_at | unix_to_utc_human }}">
           {{ last_tick.completed_at | relative_time(now_ts=now_ts) }}
         </time>
+        {% endif %}
         &middot; <strong>admitted:</strong> {{ last_tick.admitted }}
         &middot; <strong>dropped:</strong> {{ last_tick.dropped_total }}
         {% if last_tick.dropped_total > 0 %}

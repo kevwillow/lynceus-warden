@@ -200,8 +200,22 @@ def refuse_if_clock_behind(
     So this refuses the whole class rather than the cases a duration argument
     happens to catch. The last row is the price and it is accepted for the same
     reason the rest of the module accepts its false positives: the refusal is
-    recoverable and visible, and the entry stays escalated and tracked while the
-    operator fixes the clock, so nothing is dropped by waiting.
+    recoverable and visible.
+
+    ⛔ **"Recoverable" is not "free", and the first version of this message said
+    it was.** It told the operator the entry *"stays escalated and tracked
+    meanwhile, so nothing is lost by waiting"*. Measured, with a control, on the
+    tree that shipped it:
+
+        entry 89d stale, clock behind 100d   refused -> clock fixed -> retry 303
+        entry 95d stale, clock behind 100d   refused -> clock fixed -> retry 400,
+                                             ARCHIVED by the poller in between
+
+    An entry already past the quiet window is archived by ordinary housekeeping
+    while the operator goes to fix the clock, and an archived entry cannot be
+    reset at all — so the reassurance was false for exactly the entries most at
+    risk, which is the population this gate exists for. The message now names
+    that instead of promising against it. ⇒ Do not restore the shorter sentence.
 
     Callers raise ``HTTPException(400, detail=...)``; the message names the
     delta, the evidence and the fix.
@@ -240,8 +254,11 @@ def refuse_if_clock_behind(
             f"and an entry already close to that limit is archived outright — "
             f"the opposite of what this button means. Refusing rather than "
             f"quietly watching for less time than you asked for. {remedy}The "
-            f"entry stays escalated and tracked meanwhile, so nothing is lost "
-            f"by waiting."
+            f"entry is not dismissed and nothing is deleted — it stays "
+            f"escalated meanwhile. But an entry already at the end of its "
+            f"{quiet_days}-day window can still be archived while the clock is "
+            f"wrong, and an archived entry cannot be reset, so fix the clock "
+            f"rather than waiting for it."
         )
     scope = (
         f"a {duration_seconds // 3600}-hour suppression set now"
