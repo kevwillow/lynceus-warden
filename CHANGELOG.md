@@ -235,6 +235,78 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A "snooze this for 24 hours" could last no time at all, and nothing told
+  you.** A snooze is stored as a deadline — the moment it expires — not as a
+  length of time. If the machine's clock was wrong when you set one, that
+  deadline was wrong by the same amount, and a clock reading *behind* real time
+  produced a deadline that had already passed. The snooze did nothing from the
+  moment you set it, then was cleaned up as ordinary expired junk. Measured: you
+  asked for 24 hours and got zero.
+
+  This is the state a Raspberry Pi with no battery-backed clock is in on every
+  boot until the network corrects it. Lynceus already refused such a snooze at
+  the web form when it could tell the clock was wrong, but it cannot tell on a
+  fresh install with nothing recorded yet to compare against. The daemon now
+  also notices afterwards, using something that does not depend on the clock: a
+  snooze cannot have been created before the database that stores it existed.
+  When it finds one it says so and names the timestamp, instead of deleting it
+  in silence.
+
+  It reports rather than reinstates. A snooze *suppresses* alerts, so quietly
+  restoring one on a machine with an unreliable clock could silence a device you
+  would rather hear about. You are told, and you decide.
+
+  ⚠️ A machine whose clock has been wrong since the day it was set up still
+  cannot be caught this way — there is nothing correct on it to compare against.
+  That limit is written down rather than papered over.
+
+- **A background repair could stretch a snooze you had just shortened.** When
+  the daemon finds a snooze written by a clock running fast, it rewrites the
+  deadline to run for the length you originally asked for. If you changed that
+  snooze in the web interface in the moment between the daemon reading it and
+  rewriting it, the daemon wrote the *old* length over your new one. Measured: a
+  fresh one-hour snooze silently became twenty-four — nearly a day of extra
+  silence nobody asked for. The daemon now checks the entry has not changed
+  underneath it and leaves it alone if it has.
+
+  The same flaw was in two sibling repairs covering watched devices. In one, it
+  could overwrite the "last seen" time that decides when an unattended entry is
+  retired — so an entry you had just said you were *still* watching could be
+  archived instead. All three are fixed the same way.
+
+- **Clicking "reset" on a watched device could stop it being watched.** Reset
+  means *"I have seen this, keep watching"*. It stamps the entry with the
+  current time, and that stamp is the only thing deciding when an unattended
+  entry is retired after 90 days. On a machine whose clock was reading behind,
+  reset wrote a timestamp that was already ancient and the next cycle retired
+  the entry. Measured: the device you had just said you were still watching
+  stopped being watched. Reset can no longer move an entry backwards in time.
+
+- **An action that failed could leave part of its work behind.** The web
+  interface handles several requests at once and they shared a single connection
+  to the database. Because of how that connection tracks work in progress, one
+  request finishing could also save a *different* request's half-finished work.
+  Measured: a request that failed, and reported failure, had its change kept
+  anyway — and the reverse was equally possible, a request reporting success
+  having its change discarded when an unrelated one failed.
+
+  Either direction matters here: a suppression you never completed could stick,
+  or a watchlist entry you were told had been created could be missing. Requests
+  are now serialised so one cannot end another's work.
+
+  ⚠️ This stops requests interfering with each other's *saving*. It does not make
+  a whole multi-step action atomic — two clicks at the same instant can still
+  each act on a value the other just changed. Fixing that is a deeper change to
+  how the web interface talks to the database and is not attempted here.
+
+- **A device's remembered network names could be wiped without a word.** Lynceus
+  stores the Wi-Fi network names a device has asked for. If that stored value was
+  damaged, or simply not in the shape expected, it was read as an empty list and
+  written back as one — silently converting damage into the perfectly ordinary
+  state "this device has never asked for a network", with no way to tell the two
+  apart afterwards. It now says so in the log, naming the device, before
+  replacing the value.
+
 - **Watchlist liveness no longer claims that no snoozes exist when only the
   ruleset is unreadable.** Rule-type snoozes are read independently and remain
   visible with their row count and expiry while the LIVE/INERT verdict is
