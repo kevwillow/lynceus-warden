@@ -265,6 +265,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `staleness_known: false`. Small differences are still absorbed, so nothing
   changes on a machine whose clock is fine.
 
+- **`lynceus-quickstart` read your config without telling you a setting had been
+  typed twice.** If the same key appears twice in `lynceus.yaml`, YAML keeps the
+  last one and discards the first without complaint — so the line you were
+  looking at while you edited need not be the line in force. Every other place
+  that reads your config already warns about this; the two quickstart loaders
+  did not, having been marked as reading a machine-generated file when they
+  actually read yours.
+
+  The second one mattered more. When you pass `--port-ui`, quickstart writes a
+  temporary copy of your config for the dashboard process, and writing it out
+  collapses the duplicate for good: measured, a config with `heartbeat_enabled`
+  set twice produced a copy keeping only the second value, with no record that
+  the first had ever existed. Both now name the duplicated key and the two line
+  numbers before anything is rewritten. Which value wins is unchanged — this
+  reports, it does not decide for you.
+
 - **"Reset" on a device you had just said you were still watching could quietly
   stop watching it.** The reset button on `/watchful` means "I have seen this
   escalation, it looks benign, keep tracking". It works by stamping the entry as

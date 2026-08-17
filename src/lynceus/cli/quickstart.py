@@ -28,6 +28,7 @@ from urllib.request import urlopen
 import yaml
 
 from .. import __version__, paths
+from ..yaml_duplicates import warn_duplicate_keys
 
 logger = logging.getLogger(__name__)
 
@@ -436,19 +437,44 @@ def supervise(
 
 
 def _read_ui_port_from_config(config_path: str) -> int:
+    """Read ``ui_bind_port`` from the OPERATOR'S config file.
+
+    ⛔ This reads the operator's hand-edited ``lynceus.yaml``, not a
+    machine-written file. It was exempted from the duplicate-key coverage guard
+    on the reasoning that it parses a "machine-written port override" -- which
+    described the wrong file: the machine-written override is what
+    ``_write_port_override_config`` RETURNS. Measured on a config carrying a
+    duplicate ``ui_bind_port:``, this silently returned the LAST one with
+    nothing logged at any level.
+    """
     try:
         with open(config_path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except OSError:
         return DEFAULT_UI_PORT
+    # ⚠️ Deliberately OUTSIDE the `try` above. A diagnostic that can be caught
+    # by the caller's error handling is how a valid allowlist once loaded as
+    # zero entries; `warn_duplicate_keys` never raises, and it is placed where
+    # it could not matter if it did.
+    warn_duplicate_keys(Path(config_path), logger=logger, subject="config file")
     return int(data.get("ui_bind_port", DEFAULT_UI_PORT))
 
 
 def _write_port_override_config(config_path: str, port: int) -> str:
     """Write a temp YAML copy of the config with ui_bind_port overridden.
-    Returns the temp file path; caller is responsible for cleanup."""
+    Returns the temp file path; caller is responsible for cleanup.
+
+    ⛔ The temp copy is handed to the UI process, and ``yaml.safe_dump`` writes
+    back only the surviving value of any duplicate key. Measured: a config with
+    ``heartbeat_enabled:`` twice produced a temp config keeping only the loser,
+    with the operator's other value gone and nothing reported -- the daemon
+    doing the laundering, which is the shape #138 named. The warning below is
+    emitted against the SOURCE file, before the collapse, because after
+    ``safe_dump`` the evidence no longer exists.
+    """
     with open(config_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    warn_duplicate_keys(Path(config_path), logger=logger, subject="config file")
     data["ui_bind_port"] = port
     fd, tmp = tempfile.mkstemp(suffix=".yaml", prefix="lynceus-quickstart-")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
