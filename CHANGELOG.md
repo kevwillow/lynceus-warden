@@ -281,6 +281,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still notices your change immediately; that was checked, since a fix that
   traded a lost entry for a stale one would be no better.
 
+- **A device could tell you twice that it appears to be following you.** The
+  recurrence escalation — the highest-priority thing lynceus sends — is written
+  in two steps: the alert is recorded and sent, and then the watched entry is
+  marked as having escalated. If the database was busy at that exact moment, the
+  second step could fail while the first had already happened. The next time
+  that device was seen, the entry still looked like it had never escalated, so
+  the whole thing fired again.
+
+  One duplicate is not the end of the world; being trained to ignore this
+  particular alert is. It is the one message where a shrug is the wrong
+  response, and the fastest way to earn a shrug is to send it twice for the same
+  detection.
+
+  ⛔ The obvious fix was the dangerous one. "Don't send it if there is already an
+  escalation for this device" also silences the device you *deliberately went
+  back to watching*: resetting a watched entry clears its count but leaves the
+  old alert behind, so that device could never escalate again — and suppression
+  is the direction that hides someone following you. Lynceus now records each
+  escalation against the *generation* of the watch, incremented every time you
+  reset one, and records it in the same single write as the alert itself, so the
+  two can no longer disagree. A reset therefore still escalates; a database blip
+  no longer duplicates.
+
+  ⚠️ One case is not repaired retroactively, and it is stated rather than
+  quietly skipped: an entry already sitting in that half-finished state when you
+  upgrade can still produce its one duplicate, once, before the new bookkeeping
+  takes hold. The alternative was to guess which past escalations had actually
+  been sent, and a guess written into a permanent record is worse than a single
+  duplicate alert.
+
 - **A "snooze this for 24 hours" could last no time at all, and nothing told
   you.** A snooze is stored as a deadline — the moment it expires — not as a
   length of time. If the machine's clock was wrong when you set one, that

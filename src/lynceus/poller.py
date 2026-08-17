@@ -176,19 +176,67 @@ BLE_BRIDGE_JOIN_TIMEOUT_SECONDS = 10.0
 logger = logging.getLogger(__name__)
 
 
+def _watchful_generation_escalated_at(
+    db: Database, entry_id: int, generation: int, mac: str
+) -> int | None:
+    """When this entry generation emitted its escalation alert, if it did.
+
+    ⚠️ A failure degrades to None -- the ordinary emit path -- on purpose.
+    The real dedup guard is the UNIQUE constraint inside
+    ``Database.add_watchful_escalation_alert``, so a failed read here costs a
+    redundant emit ATTEMPT that the constraint then turns into a no-op, and
+    never a duplicate alert row. Raising instead would abandon every remaining
+    hit on this device for the sake of a lookup that correctness does not rest
+    on, which is the trade this whole finding exists to avoid making.
+    """
+    try:
+        return db.watchful_generation_escalated_at(entry_id, generation)
+    except Exception as e:
+        logger.warning(
+            "Could not read the watchful escalation ledger for %s: %s -- "
+            "falling through to the ordinary emit path, where the UNIQUE "
+            "constraint still prevents a duplicate.",
+            mac,
+            e,
+        )
+        return None
+
+
 def _emit_watchful_escalation(
     db: Database,
     notifier: Notifier,
     entry: WatchfulRecurrence,
     now_ts: int,
-) -> bool:
+) -> int | None:
     """Emit the synthetic ``watchful_recurrence`` escalation alert.
 
-    ⛔ Returns True once the alert ROW EXISTS, False if the write failed. The
-    caller stamps ``escalated_at`` only on True, so a failed write leaves the
-    entry unescalated and the next sighting retries. Deliberately NOT keyed on
-    delivery: once the row exists, ``_retry_watchful_escalation`` can find it
-    and re-send, which is exactly what #74 built it for.
+    ⛔ Returns the instant the caller must stamp into ``escalated_at``, or
+    ``None`` if the write failed -- in which case the entry stays unescalated
+    and the next sighting retries. Deliberately NOT keyed on delivery: once the
+    row exists, ``_retry_watchful_escalation`` can find it and re-send, which
+    is exactly what #74 built it for.
+
+    ⭐ It returns a TIMESTAMP rather than a bool because the value differs
+    between its two success cases, and getting that wrong loses the escalation
+    permanently. The row was written now (stamp ``now_ts``), or it was written
+    by an EARLIER crossing whose stamp failed (stamp that earlier instant, read
+    back from the ledger). ``_retry_watchful_escalation`` passes
+    ``escalated_at`` to ``get_recent_alert_for_rule_and_mac`` as ``since_ts``,
+    which filters ``ts >= since_ts``, so stamping ``now_ts`` over an older
+    alert row makes that row invisible to the retry for good.
+
+    ⛔ Both mean the escalation was RECORDED once. They do NOT mean the
+    operator was told -- an earlier draft of this docstring said they did, and
+    row existence and successful delivery are different states, which is the
+    exact conflation #74 exists to prevent. Delivery is tracked on the alert
+    row (``notified_at`` / ``notify_attempts``) and re-driven by
+    ``_retry_watchful_escalation``, which the recovery path invokes as soon as
+    it has restored the stamp.
+
+    The generation is the entry's ``reset_count``, so a RESET entry is a
+    generation with no row and escalates normally -- the half that a "skip if
+    an alert row exists for this MAC" dedup would have broken, by silencing a
+    device the operator deliberately restarted watching.
 
     Called at the first threshold-cross for an entry (the caller's
     ``escalated_at is None`` test is the "fire once per escalation"
@@ -219,14 +267,14 @@ def _emit_watchful_escalation(
         "Recurrence threshold reached."
     )
     try:
-        alert_id = db.add_alert(
+        alert_id = db.add_watchful_escalation_alert(
+            entry.id,
+            entry.reset_count,
             ts=now_ts,
-            rule_name="watchful_recurrence",
             mac=entry.mac,
             message=message,
             severity="high",
             matched_watchlist_id=entry.matched_watchlist_id,
-            rule_type="watchful_recurrence",
         )
     except Exception as e:
         logger.warning(
@@ -237,7 +285,46 @@ def _emit_watchful_escalation(
             entry.mac,
             e,
         )
-        return False
+        return None
+    if alert_id is None:
+        # ⭐ This generation already emitted an escalation and the stamp is
+        # what did not land (Finding 44). Write nothing and send nothing --
+        # the returned instant is what gets `escalated_at` stamped, and the
+        # stamp is the precondition `_retry_watchful_escalation` needs before
+        # it will re-drive DELIVERY of the row that already exists. Delivering
+        # here instead would re-send the same escalation without the attempt
+        # accounting that path keeps.
+        #
+        # ⚠️ Only reachable when the caller's pre-check was UNAVAILABLE, since
+        # a working pre-check handles this case before we are called. The
+        # timestamp must still come from the ledger: `now_ts` would be the
+        # permanent-loss bug described above, reached by the degraded path
+        # instead of the ordinary one.
+        emitted_at = _watchful_generation_escalated_at(
+            db, entry.id, entry.reset_count, entry.mac
+        )
+        if emitted_at is None:
+            # The constraint says the row exists but the ledger cannot be read
+            # to say when. Refuse to stamp rather than stamp a value known to
+            # be wrong: the entry stays unescalated, nothing is emitted (the
+            # constraint sees to that), and the next sighting recovers properly
+            # once the database is readable again. Fail-open and self-healing,
+            # against a stamp that would silently make the alert undeliverable.
+            logger.warning(
+                "Watchful escalation for %s is already recorded for "
+                "generation %d but its ledger row could not be read; leaving "
+                "the entry unescalated so the next sighting can recover it.",
+                entry.mac,
+                entry.reset_count,
+            )
+            return None
+        logger.info(
+            "Watchful escalation for %s was already emitted for generation %d; "
+            "recovering the escalated stamp instead of emitting a duplicate.",
+            entry.mac,
+            entry.reset_count,
+        )
+        return emitted_at
     # Display-only at-a-glance device type for the escalation ntfy, mirroring
     # the main alert path (85eb163). Unlike that path there is no observation
     # in scope here, so device_type is read off the persisted devices row and
@@ -270,7 +357,10 @@ def _emit_watchful_escalation(
     # The ROW exists, which is what the caller's stamp is a claim about. A
     # failed SEND is the retry path's business, not a reason to leave the entry
     # unescalated and re-emit a duplicate row on the next sighting.
-    return True
+    #
+    # `now_ts` is the alert row's own `ts`, so the stamp and the row agree and
+    # the retry's `ts >= escalated_at` lookup matches it.
+    return now_ts
 
 
 def _deliver_watchful_escalation(
@@ -717,52 +807,118 @@ def process_observation(
                 >= Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD
                 and outcome.entry.escalated_at is None
             ):
-                # First crossing. Subject only to the
-                # per-rule_type snooze on watchful_recurrence
-                # (per design doc: detection runs;
-                # notification doesn't, while the snooze
-                # is active).
-                rt_snooze = db.is_rule_type_snoozed(
-                    "watchful_recurrence", now_ts
+                # ⭐ Finding 44: `escalated_at IS NULL` alone cannot tell "this
+                # generation has never escalated" from "it escalated and the
+                # stamp did not land". Migration 026's ledger can, so ask it
+                # BEFORE consulting the snooze -- a recovery is not a
+                # suppression, and counting it as one would put the
+                # highest-severity thing this product sends into the hourly
+                # snooze summary for an escalation the snooze never touched.
+                emitted_at = _watchful_generation_escalated_at(
+                    db, watchful_entry.id, outcome.entry.reset_count, obs.mac
                 )
-                if rt_snooze is None:
-                    # Stamp only if the row was written. A False here means
-                    # the write failed, so the entry stays unescalated and
-                    # the next sighting retries the whole emit.
-                    if _emit_watchful_escalation(
+                # Only a genuine first crossing consults the snooze. Reading it
+                # on the recovery path would be a wasted query whose answer is
+                # never used.
+                rt_snooze = (
+                    None
+                    if emitted_at is not None
+                    else db.is_rule_type_snoozed("watchful_recurrence", now_ts)
+                )
+                if emitted_at is not None:
+                    # Recovery: the alert row exists, nothing new is emitted,
+                    # and the stamp is what re-enables the delivery retry path.
+                    #
+                    # ⛔ Stamped with the ORIGINAL escalation instant, never
+                    # `now_ts`, and this is the difference between a recovered
+                    # escalation and a permanently lost one. The retry path
+                    # feeds `escalated_at` to `get_recent_alert_for_rule_and_mac`
+                    # as `since_ts`, which filters `ts >= since_ts`. A stamp
+                    # written at recovery time sits DAYS after the alert row's
+                    # own `ts`, so the lookup would never match that row again
+                    # and the escalation could never be delivered -- with the
+                    # entry looking fully escalated on every surface.
+                    #
+                    # ⭐ And the retry is driven HERE, in the same observation,
+                    # rather than left to the next sighting. The branch below
+                    # is an `elif`, so without this call a crash between the
+                    # committed write and the send costs an extra sighting
+                    # before the operator is told -- and if the device is never
+                    # seen again, they are not told at all. Pre-fix that case
+                    # re-emitted a duplicate, which was noisy but reached them.
+                    try:
+                        recovered = db.escalate_watchful_recurrence(
+                            watchful_entry.id, emitted_at
+                        )
+                    except Exception as e:
+                        recovered = None
+                        logger.warning(
+                            "Could not recover the escalated stamp for %s "
+                            "(the escalation itself was already emitted and "
+                            "is not re-sent): %s",
+                            obs.mac,
+                            e,
+                        )
+                    if recovered is not None:
+                        _retry_watchful_escalation(
+                            db, notifier, recovered, now_ts
+                        )
+                elif rt_snooze is None:
+                    # First crossing, and not suppressed. Subject only to the
+                    # per-rule_type snooze on watchful_recurrence (per design
+                    # doc: detection runs; notification doesn't, while the
+                    # snooze is active).
+                    # Stamp only if the row was written. A None here means the
+                    # write failed, so the entry stays unescalated and the next
+                    # sighting retries the whole emit. The value is the instant
+                    # to stamp -- `now_ts` for a fresh write, the ORIGINAL
+                    # escalation instant when the constraint caught a repeat
+                    # that the pre-check was unavailable to spot.
+                    stamp_at = _emit_watchful_escalation(
                         db, notifier, outcome.entry, now_ts
-                    ):
-                        # ⚠️ RESIDUAL, registered as Finding 44 rather than
-                        # patched here. The row write and this stamp are two
-                        # transactions, so a failure BETWEEN them leaves a row
-                        # with no stamp, and the next sighting takes the
-                        # first-crossing branch again -- one duplicate
-                        # escalation. Closing that needs an escalation record
-                        # keyed to the entry GENERATION (`reset_count`), i.e. a
-                        # migration: deduplicating on "an escalation row exists
-                        # for this MAC" would suppress the genuine escalation of
-                        # a RESET entry, which is the unsafe direction.
+                    )
+                    if stamp_at is not None:
+                        # ⭐ Finding 44 is CLOSED here, and this comment used to
+                        # say the opposite. The row write and this stamp are
+                        # still two transactions and a failure BETWEEN them
+                        # still leaves a row with no stamp -- what changed is
+                        # that the row write now also reserves
+                        # (entry_id, reset_count) in `watchful_escalations`, in
+                        # the SAME transaction. So the next sighting re-takes
+                        # this branch, finds the reservation, and recovers the
+                        # stamp instead of emitting a second "this device
+                        # appears to be following you". Cost is zero duplicates,
+                        # not the one this used to be bounded at.
                         #
-                        # ⛔ Guarded so bookkeeping cannot cost the rest of the
-                        # observation -- the same rule the notify counter and
-                        # the notified stamp already follow on the main path. An
-                        # unguarded raise here abandons every remaining hit on
-                        # this device, and the alert has ALREADY been delivered
-                        # by this point. The trade is one possible duplicate
-                        # "this device is following you" against dropping the
-                        # rest of the tick, and a duplicate is the safe
-                        # direction.
+                        # ⛔ Still guarded, and the reason is unchanged:
+                        # bookkeeping must not cost the rest of the observation,
+                        # the same rule the notify counter and the notified
+                        # stamp already follow on the main path. An unguarded
+                        # raise here abandons every remaining hit on this
+                        # device, and the alert has ALREADY been delivered by
+                        # this point. What the guard now costs is a delayed
+                        # stamp rather than a duplicate alert.
                         try:
-                            db.escalate_watchful_recurrence(
-                                watchful_entry.id, now_ts
+                            stamped = db.escalate_watchful_recurrence(
+                                watchful_entry.id, stamp_at
                             )
                         except Exception as e:
+                            stamped = None
                             logger.warning(
                                 "Delivered the watchful escalation for %s but "
-                                "failed to stamp the entry as escalated (it may "
-                                "be re-sent once): %s",
+                                "failed to stamp the entry as escalated (the "
+                                "next sighting recovers the stamp): %s",
                                 obs.mac,
                                 e,
+                            )
+                        # A no-op on a fresh emit -- the row was just marked
+                        # delivered, so the retry returns on its first check.
+                        # It matters when `stamp_at` came from the ledger: that
+                        # row may never have been sent, and this is what tells
+                        # the operator without waiting for another sighting.
+                        if stamped is not None:
+                            _retry_watchful_escalation(
+                                db, notifier, stamped, now_ts
                             )
                 else:
                     # ⛔ The snooze CONSUMES the escalation -- stamp it, per
