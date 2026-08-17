@@ -215,6 +215,7 @@ def test_migrations_dir_lists_both_files(db):
         "023_devices_ble_device_class.sql",
         "024_alerts_notified_at.sql",
         "025_heartbeats.sql",
+        "026_watchful_escalations.sql",
     ]
     assert names == _EXPECTED_MIGRATIONS, (
         "the forward-migration manifest is out of date.\n"
@@ -4182,18 +4183,47 @@ def test_every_transaction_block_takes_the_lock(tmp_path):
     """⛔ The containment is only real if EVERY block uses it. One bare
     `with self._conn:` reopens the hole for whatever it guards, and a new one
     is exactly what a future change would add without noticing."""
+    # ⛔ This was a substring count (`src.count("with self._conn:")`) and it
+    # was a guard that matched a SPELLING rather than a construct: a DOCSTRING
+    # explaining the nested-transaction hazard contains that exact text, so
+    # documenting the rule broke the test enforcing it. Counting source text
+    # cannot tell code from prose. The AST can, so it does.
+    #
+    # ⚠️ The failure direction of the old form was a false POSITIVE, which is
+    # the benign one -- but the same weakness runs the other way: a comment
+    # reading `with self._lock, self._conn:` inflated `guarded` and could have
+    # covered for a real block that was removed.
+    import ast
     from pathlib import Path as _P
 
     src = (_P(__file__).resolve().parents[1] / "src" / "lynceus" / "db.py").read_text(
         encoding="utf-8"
     )
-    guarded = src.count("with self._lock, self._conn:")
-    # NOT `count(...) - guarded`: "with self._lock, self._conn:" does not contain
-    # the substring "with self._conn:", so subtracting double-counted and the
-    # assertion read `-34 == 0`. The guard caught its own arithmetic.
-    bare = src.count("with self._conn:")
+
+    def _is_self_attr(node, name):
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == name
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        )
+
+    guarded, bare = 0, []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.With):
+            continue
+        items = [item.context_expr for item in node.items]
+        if not any(_is_self_attr(e, "_conn") for e in items):
+            continue
+        if any(_is_self_attr(e, "_lock") for e in items):
+            guarded += 1
+        else:
+            bare.append(node.lineno)
+
     assert guarded >= 30, f"the pattern has drifted; only {guarded} guarded blocks found"
-    assert bare == 0, f"{bare} transaction block(s) still bypass the lock"
+    assert not bare, (
+        f"{len(bare)} transaction block(s) bypass the lock, at db.py lines {bare}"
+    )
 
 
 def test_a_failed_write_cannot_survive_on_another_threads_commit(tmp_path):

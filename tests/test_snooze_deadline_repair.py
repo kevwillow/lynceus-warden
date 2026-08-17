@@ -479,8 +479,26 @@ def test_every_timestamp_column_is_classified(db):
         "watchful_recurrence.archived_at": "NULL-tested; value never compared",
         "watchful_recurrence.created_at":
             "PROVENANCE marker the snooze repair keys on; must not be clamped",
+        # ⛔ This note used to read "compared only in
+        # list_recent_watchful_escalations, a display listing" and that was
+        # ALREADY FALSE before migration 026: `_retry_watchful_escalation`
+        # passes it to `get_recent_alert_for_rule_and_mac` as `since_ts`, which
+        # filters `ts >= since_ts`. Believing the old note is precisely how a
+        # first cut of the Finding 44 fix came to stamp this column with the
+        # RECOVERY time, putting the alert row permanently beyond the retry.
+        #
+        # ⭐ Still RECORD_ONLY rather than REPAIRED, and the reason is the
+        # useful part: the comparison is against `alerts.ts`, another STORED
+        # value written from the same `now_ts` in the same transaction -- not
+        # against a live clock. A wrong clock moves both together and the
+        # comparison still holds, which is what makes it clock-independent.
+        # Repairing or clamping either one ALONE is what would break it.
         "watchful_recurrence.escalated_at":
-            "compared only in list_recent_watchful_escalations, a display listing",
+            "compared against alerts.ts in the escalation retry lookup, never "
+            "against a live clock; the two are written together",
+        "watchful_escalations.created_at":
+            "PROVENANCE of the escalation emit; copied into escalated_at and "
+            "must keep matching alerts.ts -- must not be clamped",
         "watchful_recurrence.first_seen_at": "display only; the debounce uses last_seen_at",
         "watchlist_metadata.created_at": "display only",
         "watchlist_metadata.updated_at": "display only",

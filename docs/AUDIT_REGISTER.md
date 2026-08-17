@@ -2499,10 +2499,42 @@ row, delivered. All three measured; four planted defects — the original orderi
 fire-once guard, dropping the snooze branch's stamp, and reporting a failed write as success — each
 fail the suite, with unique anchors and a clean tree verified after every plant.
 
-### 🟡 Finding 44 — the escalation row and its stamp are two transactions, so one duplicate is reachable
+### 🔴 Finding 44 — the escalation row and its stamp are two transactions, so one duplicate is reachable — ✅ FIXED (migration 026)
 
-**REGISTERED, NOT PATCHED — closing it is a schema decision, not an obvious fix.**
-Found by handing Finding 43's own fix to a cold cross-model read; confirmed by measurement.
+**Closed by the generation-keyed escalation ledger. Both halves of the acceptance criterion are
+proven, and the disposition is written from the MEASUREMENT, not from the PR body.**
+
+`watchful_escalations(entry_id, generation)` carries a `UNIQUE` constraint, where `generation` is the
+entry's `reset_count`. The alert INSERT and the reservation INSERT are **one transaction**, so "an
+escalation was emitted for this generation" and "the alert row exists" cannot disagree — the previous
+pair of writes could disagree, and the duplicate is what that disagreement looked like. A crossing
+whose stamp failed now finds the reservation and recovers the stamp; a **reset** advances the
+generation and escalates normally. 10 planted defects, 10 killed **by the expected test**, tree
+verified byte-identical by content after each.
+
+⛔ **The fix's FIRST CUT SHIPPED A WORSE DEFECT THAN THE ONE IT CLOSED, and only a cold read found
+it.** The recovery path stamped `escalated_at = now_ts`. `_retry_watchful_escalation` passes
+`escalated_at` to `get_recent_alert_for_rule_and_mac` as its `since_ts`, and that query filters
+`ts >= since_ts` — so a stamp written days after the alert row's own `ts` put the row **permanently
+out of the retry's reach**, with every surface showing the entry as escalated. Pre-fix that same case
+re-emitted a duplicate: noisy, but it reached the operator. **I had traded a duplicate for a silent
+permanent loss — the exact direction this finding's own text warns against.** Now stamped with the
+ledger's `created_at` and the retry is driven in the same observation.
+⇒ **A fix aimed at a fail-OPEN defect is exactly where a fail-CLOSED one gets introduced**, because
+every instinct while writing it is pushing toward "emit less".
+
+⚠️ **NOT backfilled, and the cost is stated rather than hidden.** An install already sitting in the
+failed-stamp state at upgrade has no reservation, so its next crossing still costs the one duplicate,
+once. A backfill from `escalated_at IS NOT NULL` cannot distinguish an emitted escalation from a
+**snooze-consumed** one, so it would write rows asserting alerts that were never sent, permanently.
+
+⚠️ **Not covered:** two processes racing the same crossing is prevented by the UNIQUE constraint but
+is **not tested** — only the poller emits escalations, so no second writer exists today. If one is
+ever added, that test is owed.
+
+Original registration follows, unchanged.
+
+**Found by handing Finding 43's own fix to a cold cross-model read; confirmed by measurement.**
 
 `_emit_watchful_escalation` writes the alert row, delivers it, and the caller then stamps
 `escalated_at`. A failure **between** those two writes leaves a delivered row with no stamp, and the

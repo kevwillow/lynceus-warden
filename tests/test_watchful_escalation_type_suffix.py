@@ -28,10 +28,25 @@ def db(db_path):
     d.close()
 
 
-def _entry(mac, *, matched_watchlist_id):
-    """Minimal escalated WatchfulRecurrence row for the emitter."""
+def _entry(db, mac, *, matched_watchlist_id):
+    """Minimal escalated WatchfulRecurrence for the emitter, backed by a REAL
+    row.
+
+    ⛔ ``id`` used to be the literal 1, with no row behind it. Migration 026's
+    ledger has ``entry_id INTEGER NOT NULL REFERENCES watchful_recurrence(id)``
+    and ``PRAGMA foreign_keys`` is ON, so the escalation write now fails for an
+    entry that does not exist -- which is correct, and which these tests were
+    quietly relying on not being checked. The other fields stay synthetic
+    because this file is about the ntfy SUFFIX, not the lifecycle.
+    """
+    src = db.add_alert(
+        ts=NOW, rule_name="watchlisted mac", mac=mac, message="seen",
+        severity="high", rule_type="watchlist_mac",
+    )
+    entry_id = db.create_watchful_from_alert(src, None, NOW)
+    assert entry_id is not None, "fixture failed: no watchful entry created"
     return WatchfulRecurrence(
-        id=1,
+        id=entry_id,
         mac=mac,
         created_at=NOW,
         first_seen_at=NOW - 86_400 * 5,
@@ -66,7 +81,7 @@ def test_escalation_ntfy_includes_radio_and_category(db):
     wid = _seed_match(db, device_category="drone")
     notifier = RecordingNotifier()
 
-    _emit_watchful_escalation(db, notifier, _entry(mac, matched_watchlist_id=wid), NOW)
+    _emit_watchful_escalation(db, notifier, _entry(db, mac, matched_watchlist_id=wid), NOW)
 
     assert _message(notifier).endswith(" | radio: ble | category: drone")
 
@@ -77,7 +92,7 @@ def test_escalation_ntfy_category_placeholder_when_no_match(db):
     notifier = RecordingNotifier()
 
     # Non-Argus watchful entry: matched_watchlist_id is None -> category absent.
-    _emit_watchful_escalation(db, notifier, _entry(mac, matched_watchlist_id=None), NOW)
+    _emit_watchful_escalation(db, notifier, _entry(db, mac, matched_watchlist_id=None), NOW)
 
     assert _message(notifier).endswith(" | radio: wifi | category: —")
 
@@ -94,7 +109,7 @@ def test_escalation_ntfy_radio_placeholder_when_device_lookup_empty(db, monkeypa
 
     monkeypatch.setattr(db, "get_device", lambda _mac: None)
 
-    _emit_watchful_escalation(db, notifier, _entry(mac, matched_watchlist_id=wid), NOW)
+    _emit_watchful_escalation(db, notifier, _entry(db, mac, matched_watchlist_id=wid), NOW)
 
     assert _message(notifier).endswith(" | radio: — | category: drone")
 
@@ -111,7 +126,7 @@ def test_escalation_sends_gracefully_when_lookup_raises(db, monkeypatch):
     monkeypatch.setattr(db, "get_device", _boom)
 
     # Lookup raises -> placeholders, escalation still composes & sends, no error.
-    _emit_watchful_escalation(db, notifier, _entry(mac, matched_watchlist_id=wid), NOW)
+    _emit_watchful_escalation(db, notifier, _entry(db, mac, matched_watchlist_id=wid), NOW)
 
     assert _message(notifier).endswith(" | radio: — | category: —")
 
@@ -124,7 +139,7 @@ def test_escalation_db_alert_message_has_no_suffix(db):
     wid = _seed_match(db, device_category="drone")
     notifier = RecordingNotifier()
 
-    _emit_watchful_escalation(db, notifier, _entry(mac, matched_watchlist_id=wid), NOW)
+    _emit_watchful_escalation(db, notifier, _entry(db, mac, matched_watchlist_id=wid), NOW)
 
     row = db._conn.execute(
         "SELECT message FROM alerts WHERE rule_name = 'watchful_recurrence'"

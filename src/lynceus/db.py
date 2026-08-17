@@ -876,21 +876,55 @@ class Database:
         # ruleset and isn't recoverable retroactively. Always
         # passed from poller.py for new alerts.
         with self._lock, self._conn:
-            cur = self._conn.execute(
-                "INSERT INTO alerts(ts, rule_name, mac, message, severity, "
-                "matched_watchlist_id, rule_type) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    ts,
-                    rule_name,
-                    mac,
-                    message,
-                    severity,
-                    matched_watchlist_id,
-                    rule_type,
-                ),
+            return self._insert_alert_row(
+                ts=ts,
+                rule_name=rule_name,
+                mac=mac,
+                message=message,
+                severity=severity,
+                matched_watchlist_id=matched_watchlist_id,
+                rule_type=rule_type,
             )
-            return cur.lastrowid
+
+    def _insert_alert_row(
+        self,
+        *,
+        ts: int,
+        rule_name: str,
+        mac: str | None,
+        message: str,
+        severity: str,
+        matched_watchlist_id: int | None,
+        rule_type: str | None,
+    ) -> int:
+        """The bare alerts INSERT, with NO transaction of its own.
+
+        ⛔ The caller MUST already hold ``self._lock`` and be inside
+        ``with self._conn:``. Split out of ``add_alert`` so
+        ``add_watchful_escalation_alert`` can write an alert row and its
+        generation reservation in ONE transaction (Finding 44).
+
+        ⚠️ Do not "simplify" that caller by having it call ``add_alert``
+        instead. ``sqlite3``'s connection context manager COMMITS when the
+        block exits, so a nested ``with self._conn:`` commits the outer
+        block's partial work -- which would reinstate exactly the
+        two-transaction split this exists to remove.
+        """
+        cur = self._conn.execute(
+            "INSERT INTO alerts(ts, rule_name, mac, message, severity, "
+            "matched_watchlist_id, rule_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                ts,
+                rule_name,
+                mac,
+                message,
+                severity,
+                matched_watchlist_id,
+                rule_type,
+            ),
+        )
+        return cur.lastrowid
 
     def _lookup_simple_watchlist_match(
         self, pattern_type: str, pattern: str
@@ -4113,6 +4147,129 @@ class Database:
                 (entry_id,),
             ).fetchone()
         return _row_to_watchful_recurrence(row) if row is not None else None
+
+    # ------------------------------------------------------------------
+    # Generation-keyed escalation ledger (migration 026, Finding 44)
+    #
+    # `watchful_escalations` records that an escalation ALERT ROW was
+    # emitted for one (entry, generation) pair, where the generation is the
+    # entry's `reset_count`. It exists because the row write and the
+    # `escalated_at` stamp are two transactions and a failure between them
+    # used to cost one duplicate escalation.
+    # ------------------------------------------------------------------
+
+    def watchful_generation_escalated_at(
+        self, entry_id: int, generation: int
+    ) -> int | None:
+        """When did this generation emit its escalation alert, if it did?
+
+        Returns the reservation's ``created_at`` -- the instant the escalation
+        alert row was written -- or ``None`` if this generation has not
+        escalated. Read-only. The poller consults this at a threshold crossing
+        to tell "this entry has never escalated" from "it escalated and the
+        stamp did not land", which ``escalated_at IS NULL`` alone cannot
+        distinguish.
+
+        ⛔ It returns the TIMESTAMP and not a bool, and that is a correctness
+        requirement rather than a convenience. The recovery path stamps this
+        value into ``escalated_at``, and ``_retry_watchful_escalation`` feeds
+        ``escalated_at`` to ``get_recent_alert_for_rule_and_mac`` as its
+        ``since_ts``, which filters ``ts >= since_ts``. Stamping the RECOVERY
+        time instead would put the stamp days after the alert row's own ``ts``,
+        the lookup would never match that row again, and the escalation would
+        become permanently undeliverable -- silently. The original timestamp
+        keeps the stamp meaning what it says: when this generation escalated.
+
+        ⚠️ This is NOT the dedup guard -- ``add_watchful_escalation_alert``'s
+        UNIQUE constraint is. A separate SELECT could always be overtaken
+        between the read and the write by the web UI, which is a different
+        PROCESS and so not covered by ``self._lock``.
+        """
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            raise ValueError("entry_id must be an int")
+        if not isinstance(generation, int) or isinstance(generation, bool):
+            raise ValueError("generation must be an int")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT created_at FROM watchful_escalations "
+                "WHERE entry_id = ? AND generation = ? LIMIT 1",
+                (entry_id, generation),
+            ).fetchone()
+        return int(row["created_at"]) if row is not None else None
+
+    def add_watchful_escalation_alert(
+        self,
+        entry_id: int,
+        generation: int,
+        *,
+        ts: int,
+        mac: str,
+        message: str,
+        severity: str,
+        matched_watchlist_id: int | None = None,
+    ) -> int | None:
+        """Reserve the generation and write the escalation alert, atomically.
+
+        Returns the new ``alerts.id``, or ``None`` when this generation has
+        already emitted an escalation -- in which case NOTHING is written and
+        the caller must not deliver anything. The caller still stamps
+        ``escalated_at``: a ``None`` here means the row exists and only the
+        stamp is missing, and re-driving the DELIVERY of that existing row is
+        ``_retry_watchful_escalation``'s job, which needs the stamp.
+
+        ⭐ The reservation is inserted FIRST and the alert row second, and the
+        order is load-bearing. ``sqlite3``'s context manager commits on a
+        clean exit, so catching the IntegrityError and returning would COMMIT
+        anything already written in the block -- with the alert INSERT first,
+        that is precisely the duplicate alert row this method exists to
+        prevent. Reserving first makes the losing path write nothing at all.
+
+        ⚠️ ``PRAGMA foreign_keys`` is ON, so a bad ``entry_id`` raises
+        IntegrityError too. The existence re-check distinguishes the two: a
+        genuine dedup hit has a row for this pair, a broken reference does
+        not, and only the first is an ordinary outcome. Swallowing both would
+        report "already escalated" for an entry that does not exist, and the
+        escalation would be silently dropped -- the failure direction this
+        whole finding is about.
+        """
+        if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            raise ValueError("entry_id must be an int")
+        if not isinstance(generation, int) or isinstance(generation, bool):
+            raise ValueError("generation must be an int")
+        if not isinstance(ts, int) or isinstance(ts, bool):
+            raise ValueError("ts must be an int (epoch seconds)")
+        with self._lock, self._conn:
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO watchful_escalations"
+                    "(entry_id, generation, alert_id, created_at) "
+                    "VALUES (?, ?, NULL, ?)",
+                    (entry_id, generation, ts),
+                )
+            except sqlite3.IntegrityError:
+                already = self._conn.execute(
+                    "SELECT 1 FROM watchful_escalations "
+                    "WHERE entry_id = ? AND generation = ? LIMIT 1",
+                    (entry_id, generation),
+                ).fetchone()
+                if already is None:
+                    raise
+                return None
+            reservation_id = cur.lastrowid
+            alert_id = self._insert_alert_row(
+                ts=ts,
+                rule_name="watchful_recurrence",
+                mac=mac,
+                message=message,
+                severity=severity,
+                matched_watchlist_id=matched_watchlist_id,
+                rule_type="watchful_recurrence",
+            )
+            self._conn.execute(
+                "UPDATE watchful_escalations SET alert_id = ? WHERE id = ?",
+                (alert_id, reservation_id),
+            )
+        return alert_id
 
     def auto_archive_watchful_recurrence(self, now_ts: int) -> int:
         """Archive watchful entries that haven't been counted in 90d.

@@ -65,10 +65,20 @@ class RecordingNotifier(Notifier):
 
 
 class _LockedOnEscalationWrite:
-    """Proxy whose ``add_alert`` raises for the escalation write only.
+    """Proxy whose escalation alert write raises.
 
     ``fail_first_n=None`` fails forever; an int fails that many times and then
     lets the write through, which is the transient-blip case.
+
+    ⛔ The seam is ``add_watchful_escalation_alert``, not ``add_alert``. It
+    moved when migration 026 made the alert row and its generation reservation
+    one transaction (Finding 44), and this proxy silently stopped firing --
+    every test here still passed its interesting assertions because the
+    escalation simply succeeded. What caught it was ``assert proxy.blocked``,
+    which every test in this file makes before asserting anything else.
+    ⇒ **A plant that stops firing must be an ERROR, not a pass.** Do not remove
+    those assertions to "simplify" a test; they are the only thing standing
+    between a renamed seam and a file of tests that measure nothing.
     """
 
     def __init__(self, db, fail_first_n: int | None = None):
@@ -76,13 +86,36 @@ class _LockedOnEscalationWrite:
         self._fail_first_n = fail_first_n
         self.blocked = 0
 
-    def add_alert(self, **kw):
-        if kw.get("rule_type") == "watchful_recurrence" and (
-            self._fail_first_n is None or self.blocked < self._fail_first_n
-        ):
+    def add_watchful_escalation_alert(self, entry_id, generation, **kw):
+        if self._fail_first_n is None or self.blocked < self._fail_first_n:
             self.blocked += 1
             raise RuntimeError("database is locked")
-        return self._db.add_alert(**kw)
+        return self._db.add_watchful_escalation_alert(
+            entry_id, generation, **kw
+        )
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+
+class _StampFailsOnceProxy:
+    """Proxy whose FIRST ``escalate_watchful_recurrence`` raises.
+
+    This is the Finding 44 window: the alert row lands, the stamp does not.
+    Module-level because three tests need it; the earlier inline copy inside
+    ``test_a_stamp_that_fails_after_the_row_lands_costs_no_duplicate`` is left
+    where it is so that test stays readable on its own.
+    """
+
+    def __init__(self, db):
+        self._db = db
+        self.blocked = 0
+
+    def escalate_watchful_recurrence(self, entry_id_, ts):
+        if self.blocked == 0:
+            self.blocked += 1
+            raise RuntimeError("database is locked")
+        return self._db.escalate_watchful_recurrence(entry_id_, ts)
 
     def __getattr__(self, name):
         return getattr(self._db, name)
@@ -143,7 +176,8 @@ def _sightings(db, config, ruleset, notifier, *, days, start_day=1):
 
 def _escalation_rows(db):
     return db._conn.execute(
-        "SELECT id, notified_at FROM alerts WHERE rule_type='watchful_recurrence'"
+        "SELECT id, ts, notified_at FROM alerts "
+        "WHERE rule_type='watchful_recurrence' ORDER BY id"
     ).fetchall()
 
 
@@ -241,21 +275,27 @@ def test_recovery_happens_on_the_NEXT_POLL_not_the_next_counted_day(watched):
     assert db.get_watchful_recurrence(entry_id).escalated_at is not None
 
 
-def test_a_stamp_that_fails_after_the_row_lands_costs_at_most_one_duplicate(watched):
-    """The other side of the window, from the cold read — and the residual is
-    REAL, so this pins the bound rather than claiming there is no window.
+def test_a_stamp_that_fails_after_the_row_lands_costs_no_duplicate(watched):
+    """FINDING 44, first half of the acceptance criterion: an escalation is
+    emitted at most once per entry generation, proven with a failure injected
+    between the row write and the stamp.
 
-    The row write and the `escalated_at` stamp are two transactions. A failure
-    between them leaves a row with no stamp, and the next sighting takes the
-    first-crossing branch again. That costs ONE duplicate escalation (Finding
-    44: closing it needs a generation-keyed escalation record, i.e. a
-    migration).
+    ⭐ This test used to be called `..._costs_at_most_one_duplicate` and
+    asserted `len(rows) <= 2`, because that WAS the behaviour: the row write
+    and the stamp are two transactions, so a failure between them left a row
+    with no stamp and the next sighting re-took the first-crossing branch.
+    Migration 026 makes the row write reserve `(entry_id, reset_count)` in the
+    same transaction, so the re-take now finds the reservation and recovers the
+    stamp instead of emitting again. The bound is exactly 1, not "at most 2".
 
-    ⛔ What must NOT happen, and is what this actually guards: the failure
-    escaping `process_observation` and abandoning the rest of the tick, the
-    operator not being told at all, or the duplication being UNBOUNDED — one
-    extra warning is tolerable, a new "this device is following you" every poll
-    for a week trains the operator to ignore the alert that matters."""
+    ⛔ The three things that must NOT happen are unchanged: the failure escaping
+    `process_observation` and abandoning the rest of the tick, the operator not
+    being told at all, or the duplication being unbounded. `== 1` covers the
+    last two and is checked below alongside the first.
+
+    ⚠️ The conjunction's SECOND half — that a reset entry still escalates — is
+    `test_a_reset_entry_escalates_again_after_a_recovered_stamp`. Without it
+    this test passes trivially for a dedup that never escalates anything."""
     db, config, ruleset, entry_id = watched
 
     class _StampFailsOnce:
@@ -279,16 +319,23 @@ def test_a_stamp_that_fails_after_the_row_lands_costs_at_most_one_duplicate(watc
     # The row landed even though the stamp did not.
     assert len(_escalation_rows(db)) == 1, "precondition: the row should exist"
 
-    # Six more days of sightings: the duplication must not keep growing.
+    # Six more days of sightings: no duplicate at all, and no growth.
     _sightings(proxy, config, ruleset, notifier, days=6, start_day=next_day)
     rows = _escalation_rows(db)
-    assert len(rows) <= 2, (
+    assert len(rows) == 1, (
         f"a failed STAMP produced {len(rows)} escalation rows across 9 days of "
-        "sightings; the window costs at most ONE duplicate, so this is "
-        "re-emitting on every sighting"
+        "sightings; the generation ledger (migration 026) must make this "
+        "exactly 1 -- 2 is the pre-fix behaviour, more is re-emitting on "
+        "every sighting"
     )
     assert any(r["notified_at"] is not None for r in rows), (
         "the operator was never told, which is the failure this must not have"
+    )
+    # ⛔ Row count alone is not the claim. An implementation that re-SENT the
+    # existing row on every recovery would satisfy every assertion above while
+    # the operator's phone buzzed once per sighting for a week.
+    assert len(notifier.sent) == 1, (
+        f"the operator was told {len(notifier.sent)} times about one detection"
     )
     assert db.get_watchful_recurrence(entry_id).escalated_at is not None, (
         "the entry never recovered its escalated stamp, so it stays eligible "
@@ -345,3 +392,536 @@ def test_a_snoozed_escalation_is_consumed_and_never_resurrected(watched):
         "the escalation the operator snoozed was resurrected after expiry"
     )
     assert notifier.sent == [], "a suppressed escalation was delivered later"
+
+
+# ---------------------------------------------------------------------------
+# Finding 44 — the generation-keyed escalation ledger (migration 026).
+#
+# The acceptance criterion is a CONJUNCTION and both halves live here:
+#   1. at most one escalation per entry generation, proven with a failure
+#      injected between the row write and the stamp
+#        -> test_a_stamp_that_fails_after_the_row_lands_costs_no_duplicate
+#   2. a RESET entry still escalates afterwards
+#        -> test_a_reset_entry_escalates_again_after_a_recovered_stamp
+#
+# ⛔ The second half is not optional and it is not decoration. The obvious
+# dedup — "skip the write if an escalation alert row already exists for this
+# MAC" — passes half 1 perfectly and silences a device the operator
+# deliberately restarted watching. Suppression is the direction that hides a
+# follower, so a fix that only satisfies half 1 is worse than the defect.
+# ---------------------------------------------------------------------------
+
+
+def _ledger_rows(db):
+    return db._conn.execute(
+        "SELECT entry_id, generation, alert_id FROM watchful_escalations "
+        "ORDER BY generation"
+    ).fetchall()
+
+
+def _cross_threshold(db, config, ruleset, notifier, entry_id, *, start_day):
+    """Drive counted sightings until the entry is over the escalation
+    threshold, and return the next unused day.
+
+    ⚠️ The number of sightings is DERIVED from the threshold constant, not
+    transcribed. A hardcoded 3 would keep passing if the threshold moved and
+    would then be measuring an entry that never crossed.
+    """
+    needed = Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD - (
+        db.get_watchful_recurrence(entry_id).sighting_count
+    )
+    assert needed > 0, (
+        "the entry is already at or over the threshold, so this helper would "
+        "drive zero sightings and prove nothing"
+    )
+    return _sightings(
+        db, config, ruleset, notifier, days=needed, start_day=start_day
+    )
+
+
+def test_a_reset_entry_escalates_again_after_a_recovered_stamp(watched):
+    """FINDING 44, second half of the acceptance criterion — and the half that
+    a naive dedup breaks.
+
+    The hardest ordering deliberately: the first escalation goes through the
+    RECOVERY path (its stamp fails, the next sighting recovers it without
+    emitting), so generation 0 is reserved AND the entry carries a
+    reset-eligible `escalated_at`. The operator then resets, which is them
+    saying "I have seen this, start the count again". The device keeps
+    following them, the threshold is crossed a second time, and the escalation
+    MUST arrive.
+
+    ⛔ If this ever fails, the dedup has started keying on something that does
+    not move when the operator resets, and a device the operator chose to keep
+    watching can never escalate again."""
+    db, config, ruleset, entry_id = watched
+    proxy = _StampFailsOnceProxy(db)
+    notifier = RecordingNotifier()
+
+    next_day = _cross_threshold(
+        proxy, config, ruleset, notifier, entry_id, start_day=1
+    )
+    assert proxy.blocked == 1, "the plant never fired: no stamp was attempted"
+    # Recovery poll: the stamp lands, still exactly one escalation.
+    next_day = _sightings(
+        proxy, config, ruleset, notifier, days=1, start_day=next_day
+    )
+    assert len(_escalation_rows(db)) == 1, (
+        "precondition: the recovery emitted a duplicate, so this test would "
+        "not be measuring the reset"
+    )
+    entry = db.get_watchful_recurrence(entry_id)
+    assert entry.escalated_at is not None, (
+        "precondition: the stamp never recovered, so the reset below would be "
+        "rejected and this test would pass for the wrong reason"
+    )
+    assert [tuple(r) for r in _ledger_rows(db)] == [
+        (entry_id, 0, _escalation_rows(db)[0]["id"])
+    ], "precondition: generation 0 is not reserved, or not linked to its row"
+
+    # The operator resets: "I have seen it; start counting again."
+    reset_ts = T0 + next_day * DAY
+    after = db.reset_watchful_recurrence(entry_id, reset_ts)
+    assert after.reset_count == 1, "the reset did not advance the generation"
+    assert after.escalated_at is None
+
+    # It keeps following them, and the threshold is crossed a second time.
+    _cross_threshold(
+        proxy, config, ruleset, notifier, entry_id, start_day=next_day + 1
+    )
+
+    rows = _escalation_rows(db)
+    assert len(rows) == 2, (
+        f"a RESET entry escalated {len(rows) - 1} more times, expected 1. The "
+        "dedup is suppressing the genuine escalation of an entry the operator "
+        "deliberately restarted watching -- the unsafe direction, and the "
+        "reason this needed a generation and not a per-MAC check"
+    )
+    assert rows[1]["notified_at"] is not None, (
+        "the second escalation was written but never delivered to the operator"
+    )
+    assert len(notifier.sent) == 2, (
+        f"expected exactly two deliveries across both generations, got "
+        f"{len(notifier.sent)} -- one per genuine escalation and no re-sends"
+    )
+    assert [(r["entry_id"], r["generation"]) for r in _ledger_rows(db)] == [
+        (entry_id, 0),
+        (entry_id, 1),
+    ], "the ledger did not record one reservation per generation"
+
+
+def test_a_snoozed_crossing_reserves_nothing_so_the_two_states_stay_distinct(
+    watched,
+):
+    """The ledger records EMISSION, not consumption.
+
+    A crossing suppressed by the rule_type snooze writes no alert row, so it
+    must write no reservation either. Reserving there would make the ledger
+    assert an alert was emitted that the operator's snooze deliberately
+    stopped, and any future reader of this table would inherit that claim."""
+    db, config, ruleset, entry_id = watched
+    db.add_rule_type_snooze(
+        "watchful_recurrence", expires_at=T0 + 5 * DAY, added_at=T0
+    )
+    assert db.is_rule_type_snoozed("watchful_recurrence", T0 + DAY) is not None, (
+        "fixture failed: the snooze the gate reads is not active"
+    )
+    notifier = RecordingNotifier()
+    _cross_threshold(db, config, ruleset, notifier, entry_id, start_day=1)
+
+    assert db.get_watchful_recurrence(entry_id).escalated_at is not None, (
+        "control: the crossing never happened, so 'reserved nothing' below "
+        "would pass for the wrong reason"
+    )
+    assert _escalation_rows(db) == [], "control: the snooze did not suppress"
+    assert _ledger_rows(db) == [], (
+        "a snooze-consumed crossing reserved a generation, so the ledger now "
+        "claims an escalation alert was emitted that was never sent"
+    )
+
+
+def test_a_recovered_stamp_is_not_counted_as_a_snooze_suppression(watched):
+    """Honesty of the hourly suppression summary.
+
+    The recovery path re-stamps an entry whose escalation was already emitted.
+    That is not a suppression and must not appear in the counter an operator
+    greps to see what their snoozes are catching -- least of all as the
+    highest-severity suppression the product can report, for an escalation the
+    snooze never touched.
+
+    ⛔ The snooze is added AFTER the escalation is emitted and BEFORE the
+    recovery poll, and that ordering is the whole test. A first draft ran with
+    no snooze at all, so the counter stayed empty whether the ledger was
+    consulted before the snooze or after it, and the test could not fail. The
+    ordering here is the only arrangement where the two possible orderings of
+    that branch give different answers."""
+    db, config, ruleset, entry_id = watched
+    proxy = _StampFailsOnceProxy(db)
+    notifier = RecordingNotifier()
+    counter: dict[str, int] = {}
+
+    def _observe(ts):
+        process_observation(
+            _obs(ts), proxy, config, ts,
+            effective_location_id="home", effective_location_label="Home",
+            ensured_locations=set(), processed_counter=[0],
+            admitted_counter=[0], ruleset=ruleset, clock_trusted=True,
+            allowlist=Allowlist(), notifier=notifier,
+            rule_type_suppression_counter=counter,
+        )
+
+    needed = Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD - 1
+    for d in range(1, needed + 1):
+        _observe(T0 + d * DAY)
+    assert proxy.blocked == 1, "the plant never fired: no stamp was attempted"
+    assert len(_escalation_rows(db)) == 1, "precondition: nothing was emitted"
+    assert counter == {}, "precondition: the crossing was already suppressed"
+
+    # NOW the operator snoozes the rule_type. The escalation above already
+    # happened; only its stamp is missing.
+    recovery_ts = T0 + (needed + 1) * DAY
+    db.add_rule_type_snooze(
+        "watchful_recurrence", expires_at=recovery_ts + 5 * DAY, added_at=T0
+    )
+    assert db.is_rule_type_snoozed("watchful_recurrence", recovery_ts), (
+        "fixture failed: the snooze is not active at the recovery poll, so "
+        "this test cannot tell the two branch orderings apart"
+    )
+
+    # The recovery poll, with that snooze active.
+    _observe(recovery_ts)
+    assert db.get_watchful_recurrence(entry_id).escalated_at is not None, (
+        "precondition: the stamp was never recovered, so there was no "
+        "recovery to mis-count"
+    )
+    assert counter.get("watchful_recurrence", 0) == 0, (
+        "the recovery was counted as a rule_type snooze suppression, so the "
+        f"summary reports {counter} for an escalation that was emitted and "
+        "delivered before that snooze existed"
+    )
+    assert len(_escalation_rows(db)) == 1, (
+        "the recovery emitted a second escalation despite the ledger"
+    )
+
+
+def test_a_failed_alert_insert_leaves_no_reservation(watched):
+    """⛔ The FAIL-CLOSED direction of the Finding 44 fix, and it is worse than
+    the defect it replaces.
+
+    A reservation that survived a failed alert INSERT would burn the
+    generation: `escalated_at` stays NULL so the entry keeps crossing, and
+    every crossing then finds the reservation and "recovers" a stamp for an
+    escalation that was never written or sent. The operator is never told, and
+    unlike the duplicate this fix removes, nothing ever heals it.
+
+    The two writes are one transaction precisely so this cannot happen. This
+    drives the second one into the ground and checks the first rolled back."""
+    db, config, ruleset, entry_id = watched
+    boom = RuntimeError("database is locked")
+
+    def _explode(**kw):
+        raise boom
+
+    original = db._insert_alert_row
+    db._insert_alert_row = _explode
+    try:
+        with pytest.raises(RuntimeError):
+            db.add_watchful_escalation_alert(
+                entry_id, 0, ts=T0 + DAY, mac=MAC,
+                message="seen 4 times", severity="high",
+            )
+    finally:
+        db._insert_alert_row = original
+
+    assert _ledger_rows(db) == [], (
+        "the reservation survived a failed alert insert, so generation 0 is "
+        "burned: the entry can never escalate again and nothing will heal it"
+    )
+    assert _escalation_rows(db) == [], "an alert row was written after all"
+
+    # And the generation is still available, which is the point.
+    alert_id = db.add_watchful_escalation_alert(
+        entry_id, 0, ts=T0 + 2 * DAY, mac=MAC,
+        message="seen 4 times", severity="high",
+    )
+    assert alert_id is not None, (
+        "the retry after a rolled-back failure was refused, so the rollback "
+        "left something behind"
+    )
+    assert [(r["entry_id"], r["generation"]) for r in _ledger_rows(db)] == [
+        (entry_id, 0)
+    ]
+
+
+def test_a_bad_entry_id_is_not_reported_as_already_escalated(watched):
+    """The IntegrityError disambiguation, which is the other silent-drop risk.
+
+    ``PRAGMA foreign_keys`` is ON, so a nonexistent ``entry_id`` raises
+    IntegrityError exactly as a duplicate generation does. Swallowing both
+    would return None -- "already escalated" -- for an entry that does not
+    exist, and the escalation would be dropped with no error anywhere."""
+    db, config, ruleset, entry_id = watched
+    missing = entry_id + 9999
+    assert db.get_watchful_recurrence(missing) is None, (
+        "fixture failed: the id chosen for 'missing' actually exists"
+    )
+    with pytest.raises(Exception) as caught:
+        db.add_watchful_escalation_alert(
+            missing, 0, ts=T0 + DAY, mac=MAC,
+            message="seen 4 times", severity="high",
+        )
+    assert "FOREIGN KEY" in str(caught.value).upper(), (
+        f"expected the foreign-key failure to surface, got {caught.value!r}"
+    )
+
+
+def test_the_unique_constraint_alone_prevents_the_duplicate(watched):
+    """⭐ Proves the claim the code makes about itself, which nothing else here
+    was proving.
+
+    `_watchful_generation_already_emitted` is documented as an optimisation
+    whose failure "degrades to the ordinary emit path, where the UNIQUE
+    constraint still prevents a duplicate". Every other test in this file
+    exercises the pre-check, which short-circuits before the constraint is ever
+    reached -- so a plant that removed the constraint entirely
+    (`INSERT OR REPLACE`) left the whole suite GREEN. The claim was true and
+    untested, which is the state a comment is most dangerous in.
+
+    Here the pre-check RAISES, so the poller falls through to the emit path and
+    the constraint is the only thing standing between the operator and a second
+    "this device appears to be following you"."""
+    db, config, ruleset, entry_id = watched
+
+    class _NoLedgerReads(_StampFailsOnceProxy):
+        """Stamp fails once (the Finding 44 window), and the ledger PRE-CHECK
+        is unreadable while ``ledger_down`` is set."""
+
+        def __init__(self, inner):
+            super().__init__(inner)
+            self.precheck_attempts = 0
+            self.ledger_down = True
+
+        def watchful_generation_escalated_at(self, entry_id_, generation):
+            self.precheck_attempts += 1
+            if self.ledger_down:
+                raise RuntimeError("database is locked")
+            return self._db.watchful_generation_escalated_at(
+                entry_id_, generation
+            )
+
+    proxy = _NoLedgerReads(db)
+    notifier = RecordingNotifier()
+
+    next_day = _cross_threshold(
+        proxy, config, ruleset, notifier, entry_id, start_day=1
+    )
+    assert proxy.blocked == 1, "the plant never fired: no stamp was attempted"
+    assert len(_escalation_rows(db)) == 1, "precondition: nothing was emitted"
+
+    # The recovery poll, with the pre-check unavailable.
+    next_day = _sightings(
+        proxy, config, ruleset, notifier, days=1, start_day=next_day
+    )
+    assert proxy.precheck_attempts > 0, (
+        "the pre-check was never consulted, so this test never reached the "
+        "degraded path it exists to measure"
+    )
+    assert len(_escalation_rows(db)) == 1, (
+        "with the ledger pre-check failing, the UNIQUE constraint did not stop "
+        "the duplicate -- so the comment claiming it would is false"
+    )
+    # ⭐ And the entry is deliberately left UNSTAMPED here. The constraint says
+    # a row exists but the ledger cannot say WHEN, and stamping `now_ts` over
+    # an older alert row is the permanent-loss bug
+    # `test_a_crash_between_the_committed_write_and_the_send_still_reaches_the_operator`
+    # exists for. Refusing is fail-open: nothing is emitted, nothing is lost,
+    # and the next readable poll recovers it.
+    assert db.get_watchful_recurrence(entry_id).escalated_at is None, (
+        "the entry was stamped from a ledger that could not be read, so the "
+        "stamp is a guess -- and a guess later than the alert row's ts makes "
+        "the escalation permanently undeliverable"
+    )
+
+    # The database recovers; the very next poll heals the entry.
+    proxy.ledger_down = False
+    _sightings(proxy, config, ruleset, notifier, days=1, start_day=next_day)
+    assert len(_escalation_rows(db)) == 1, "the self-heal emitted a duplicate"
+    entry = db.get_watchful_recurrence(entry_id)
+    assert entry.escalated_at == _escalation_rows(db)[0]["ts"], (
+        "the recovered stamp does not match the alert row it refers to, so "
+        "the retry lookup cannot find that row"
+    )
+
+
+def test_a_crash_between_the_committed_write_and_the_send_still_reaches_the_operator(
+    watched,
+):
+    """⛔ THE FAIL-CLOSED REGRESSION the generation ledger introduced, found by
+    a cold cross-model read of this very diff and reproduced before being
+    believed.
+
+    The alert row and its reservation commit, and the process dies before the
+    notifier is called. The row exists, `notified_at` is NULL, `escalated_at`
+    is NULL. On the next sighting the ledger says "already emitted", so the
+    recovery path runs -- and the first cut of that path did two things wrong:
+
+      1. it stamped `escalated_at = now_ts`. `_retry_watchful_escalation`
+         passes `escalated_at` to `get_recent_alert_for_rule_and_mac` as
+         `since_ts`, which filters `ts >= since_ts`. A stamp days after the
+         alert row's own `ts` makes that row invisible to the retry FOREVER --
+         the escalation is permanently undeliverable while every surface shows
+         the entry as escalated;
+      2. it did not drive the retry at all, and the branch that does is an
+         `elif`, so delivery waited for a further sighting that may never come.
+
+    Before the ledger existed this case was noisy but safe: the next sighting
+    re-emitted and delivered. Trading a duplicate for a silent permanent loss
+    is the exact direction Finding 44 says not to go."""
+    db, config, ruleset, entry_id = watched
+    notifier = RecordingNotifier()
+
+    import lynceus.poller as poller_mod
+
+    real_deliver = poller_mod._deliver_watchful_escalation
+    died = {"count": 0}
+
+    def _die_before_sending(*a, **kw):
+        died["count"] += 1
+        raise RuntimeError("process died after the commit, before the send")
+
+    poller_mod._deliver_watchful_escalation = _die_before_sending
+    try:
+        with pytest.raises(RuntimeError):
+            _cross_threshold(
+                db, config, ruleset, notifier, entry_id, start_day=1
+            )
+    finally:
+        poller_mod._deliver_watchful_escalation = real_deliver
+
+    assert died["count"] == 1, "the plant never fired: delivery was not reached"
+    rows = _escalation_rows(db)
+    assert len(rows) == 1, "precondition: the alert row did not commit"
+    assert rows[0]["notified_at"] is None, "precondition: it was delivered anyway"
+    assert db.get_watchful_recurrence(entry_id).escalated_at is None, (
+        "precondition: the entry was stamped, so this is not the crash window"
+    )
+    assert notifier.sent == [], "precondition: the operator was already told"
+    original_ts = rows[0]["ts"]
+
+    # The very next poll must reach the operator.
+    _observe_at(db, config, ruleset, notifier, T0 + 40 * DAY)
+
+    assert len(_escalation_rows(db)) == 1, "the recovery emitted a duplicate"
+    assert len(notifier.sent) == 1, (
+        f"the operator was told {len(notifier.sent)} times on the next poll; "
+        "the escalation must arrive exactly once"
+    )
+    entry = db.get_watchful_recurrence(entry_id)
+    assert entry.escalated_at == original_ts, (
+        f"escalated_at was stamped {entry.escalated_at} but the alert row is "
+        f"at {original_ts}. The retry looks up `ts >= escalated_at`, so a "
+        "later stamp makes this escalation permanently undeliverable"
+    )
+    assert _escalation_rows(db)[0]["notified_at"] is not None, (
+        "the alert row is still unmarked, so the heartbeat will report it as "
+        "undelivered forever"
+    )
+
+
+def test_the_unique_constraint_actually_exists_in_the_schema(watched):
+    """The manifest test proves a FILENAME exists and the replay census proves
+    the migration raises "table already exists". Neither proves the table has
+    the UNIQUE constraint the whole dedup rests on -- an implementation could
+    drop it and pass both, then let two writers each insert a reservation.
+
+    Asserted against sqlite's own metadata rather than the migration text, so
+    a constraint that failed to apply is caught rather than one that was merely
+    typed."""
+    db, _config, _ruleset, _entry_id = watched
+    indexes = db._conn.execute(
+        "PRAGMA index_list('watchful_escalations')"
+    ).fetchall()
+    unique_cols = []
+    for idx in indexes:
+        if not idx["unique"]:
+            continue
+        cols = [
+            r["name"]
+            for r in db._conn.execute(f"PRAGMA index_info('{idx['name']}')")
+        ]
+        unique_cols.append(cols)
+    assert ["entry_id", "generation"] in unique_cols, (
+        "watchful_escalations has no UNIQUE(entry_id, generation); the dedup "
+        f"has no database-level guard at all. Unique indexes present: "
+        f"{unique_cols}"
+    )
+
+
+def test_a_failure_while_linking_the_alert_rolls_back_the_whole_write(watched):
+    """The third statement is inside the transaction too.
+
+    ⚠️ `test_a_failed_alert_insert_leaves_no_reservation` fails BEFORE the
+    alert INSERT, so it cannot see a refactor that commits the reservation and
+    the alert early and only then links them. That shape leaves a committed
+    reservation whose `alert_id` is NULL -- and because the recovery path
+    checks row EXISTENCE, it would treat the generation as complete. This
+    injects the failure at the link instead."""
+    db, _config, _ruleset, entry_id = watched
+    real_conn = db._conn
+
+    class _FailOnTheLink:
+        """⚠️ `sqlite3.Connection.execute` is read-only, so the injection has
+        to be a delegating proxy. It must forward `__enter__`/`__exit__` to the
+        REAL connection or the rollback under test never happens and the test
+        passes for the wrong reason."""
+
+        def __enter__(self):
+            return real_conn.__enter__()
+
+        def __exit__(self, *exc):
+            return real_conn.__exit__(*exc)
+
+        def execute(self, sql, *a, **kw):
+            if sql.strip().startswith("UPDATE watchful_escalations SET alert_id"):
+                raise RuntimeError("database is locked")
+            return real_conn.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+    db._conn = _FailOnTheLink()
+    try:
+        with pytest.raises(RuntimeError):
+            db.add_watchful_escalation_alert(
+                entry_id, 0, ts=T0 + DAY, mac=MAC,
+                message="seen 4 times", severity="high",
+            )
+    finally:
+        db._conn = real_conn
+
+    assert _ledger_rows(db) == [], (
+        "the reservation survived a failure at the link step, so the "
+        "generation is burned and the entry can never escalate"
+    )
+    assert _escalation_rows(db) == [], (
+        "the alert row survived while its reservation did not, so the two "
+        "writes are not actually one transaction"
+    )
+
+
+def test_the_connection_uses_implicit_transactions(watched):
+    """The atomicity of every test above rests on one connection setting.
+
+    `sqlite3.Connection` as a context manager COMMITS or ROLLS BACK; it does
+    not itself BEGIN. Under `isolation_level=None` (autocommit) each statement
+    commits on its own, so the reservation would survive a failed alert INSERT
+    and burn the generation silently. Nothing else in this file would notice,
+    because they all run on a connection built the right way.
+
+    Pinned here rather than assumed, so a future change to how `Database`
+    connects fails loudly next to the code that depends on it."""
+    db, _config, _ruleset, _entry_id = watched
+    assert db._conn.isolation_level is not None, (
+        "the connection is in autocommit mode; the escalation write is no "
+        "longer atomic and a failed alert INSERT will burn the generation"
+    )
