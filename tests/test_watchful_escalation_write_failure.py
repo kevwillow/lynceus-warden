@@ -111,11 +111,16 @@ class _StampFailsOnceProxy:
         self._db = db
         self.blocked = 0
 
-    def escalate_watchful_recurrence(self, entry_id_, ts):
+    def escalate_watchful_recurrence(self, entry_id_, ts, **kw):
+        # ⚠️ `**kw` is load-bearing: the stamp gained an `expected_reset_count`
+        # compare-and-swap, and a proxy with the old signature raises
+        # TypeError, which the caller's `except Exception` swallows as "the
+        # stamp failed". The plant then appears to fire while measuring
+        # nothing.
         if self.blocked == 0:
             self.blocked += 1
             raise RuntimeError("database is locked")
-        return self._db.escalate_watchful_recurrence(entry_id_, ts)
+        return self._db.escalate_watchful_recurrence(entry_id_, ts, **kw)
 
     def __getattr__(self, name):
         return getattr(self._db, name)
@@ -303,11 +308,11 @@ def test_a_stamp_that_fails_after_the_row_lands_costs_no_duplicate(watched):
             self._db = inner
             self.blocked = 0
 
-        def escalate_watchful_recurrence(self, entry_id_, ts):
+        def escalate_watchful_recurrence(self, entry_id_, ts, **kw):
             if self.blocked == 0:
                 self.blocked += 1
                 raise RuntimeError("database is locked")
-            return self._db.escalate_watchful_recurrence(entry_id_, ts)
+            return self._db.escalate_watchful_recurrence(entry_id_, ts, **kw)
 
         def __getattr__(self, name):
             return getattr(self._db, name)
@@ -925,3 +930,160 @@ def test_the_connection_uses_implicit_transactions(watched):
         "the connection is in autocommit mode; the escalation write is no "
         "longer atomic and a failed alert INSERT will burn the generation"
     )
+
+
+# ---------------------------------------------------------------------------
+# Post-merge corrections to #152, all three found by a cold cross-model read of
+# the MERGED diff and each reproduced before being believed
+# (internal/session1-harnesses/f44_coldread_probe.py).
+# ---------------------------------------------------------------------------
+
+
+def test_a_stale_generation_stamp_is_refused(watched):
+    """⛔ THE FAIL-CLOSED ONE. A stamp keyed only on `id` can land on a
+    generation that never emitted, and that generation can then NEVER escalate.
+
+    Reachable because `process_observation` runs concurrently in two places:
+    the poll loop and the `ble-bridge` thread, which holds its OWN `Database`
+    on its own connection ("WAL second writer"), so the per-instance lock does
+    not serialise them. Two handlers mid-crossing for generation g, plus an
+    operator reset to g+1, and the slower stamp lands on g+1.
+
+    ⚠️ The CONTROL is the pre-fix SQL run on a second connection. If it ever
+    stops stamping, this test has stopped being able to tell the two apart."""
+    db, config, ruleset, entry_id = watched
+    notifier = RecordingNotifier()
+    _cross_threshold(db, config, ruleset, notifier, entry_id, start_day=1)
+    entry = db.get_watchful_recurrence(entry_id)
+    assert entry.escalated_at is not None, "precondition: never escalated"
+    stale_generation, stale_stamp = entry.reset_count, entry.escalated_at
+
+    db.reset_watchful_recurrence(entry_id, T0 + 40 * DAY)
+    after = db.get_watchful_recurrence(entry_id)
+    assert after.reset_count == stale_generation + 1
+    assert after.escalated_at is None
+
+    # CONTROL: the pre-fix statement still stamps, so the test discriminates.
+    db._conn.execute(
+        "UPDATE watchful_recurrence SET escalated_at = ? "
+        "WHERE id = ? AND escalated_at IS NULL AND archived_at IS NULL",
+        (stale_stamp, entry_id),
+    )
+    assert db.get_watchful_recurrence(entry_id).escalated_at is not None, (
+        "the control did not reproduce the pre-fix behaviour, so a pass below "
+        "proves nothing"
+    )
+    db._conn.execute(
+        "UPDATE watchful_recurrence SET escalated_at = NULL WHERE id = ?",
+        (entry_id,),
+    )
+
+    # TREATMENT: the compare-and-swap refuses the stale generation.
+    assert db.escalate_watchful_recurrence(
+        entry_id, stale_stamp, expected_reset_count=stale_generation
+    ) is None, "a stamp for a superseded generation was accepted"
+    assert db.get_watchful_recurrence(entry_id).escalated_at is None, (
+        "generation "
+        f"{after.reset_count} was marked escalated by a handler that decided "
+        f"about generation {stale_generation}; it emitted no alert of its own "
+        "and can now never escalate"
+    )
+
+    # And the current generation still escalates normally.
+    _cross_threshold(db, config, ruleset, notifier, entry_id, start_day=41)
+    assert len(_escalation_rows(db)) == 2, (
+        "the current generation could not escalate after the stale stamp was "
+        "refused"
+    )
+
+
+def test_an_unreadable_ledger_never_reaches_the_snooze_branch(watched):
+    """⛔ The other permanent-undeliverability route, reached through the
+    DEGRADED path rather than the ordinary one.
+
+    The snooze-consumption branch stamps `now_ts` without consulting the
+    ledger. If the ledger read merely FAILED -- rather than returning "no row"
+    -- and a snooze happens to be active, that branch stamps a time later than
+    the pending alert's `ts`, and the retry's `ts >= escalated_at` filter can
+    never find that row again.
+
+    Refusing to stamp is the safe answer: nothing is emitted (the UNIQUE
+    constraint sees to that), nothing is lost, and the next readable poll
+    recovers properly."""
+    db, config, ruleset, entry_id = watched
+    notifier = RecordingNotifier(deliver=False)  # ntfy down: row stays pending
+
+    proxy = _StampFailsOnceProxy(db)
+    day = _cross_threshold(proxy, config, ruleset, notifier, entry_id,
+                           start_day=1)
+    rows = _escalation_rows(db)
+    assert proxy.blocked == 1 and len(rows) == 1, "precondition failed"
+    assert db.get_watchful_recurrence(entry_id).escalated_at is None, (
+        "precondition: already recovered, so the branch under test is "
+        "unreachable"
+    )
+    alert_ts = rows[0]["ts"]
+
+    db.add_rule_type_snooze("watchful_recurrence",
+                            expires_at=T0 + (day + 30) * DAY, added_at=T0)
+
+    class _LedgerUnreadable:
+        def __init__(self, inner):
+            self._db = inner
+            self.reads = 0
+
+        def watchful_generation_escalated_at(self, *a, **kw):
+            self.reads += 1
+            raise RuntimeError("database is locked")
+
+        def __getattr__(self, name):
+            return getattr(self._db, name)
+
+    blind = _LedgerUnreadable(db)
+    _sightings(blind, config, ruleset, notifier, days=1, start_day=day)
+    assert blind.reads > 0, "the ledger read was never attempted"
+
+    stamp = db.get_watchful_recurrence(entry_id).escalated_at
+    assert stamp is None or stamp <= alert_ts, (
+        f"escalated_at was stamped {stamp}, later than the pending alert at "
+        f"{alert_ts}. The retry looks up `ts >= escalated_at`, so that "
+        "escalation can never be delivered"
+    )
+    assert len(_escalation_rows(db)) == 1, "a duplicate was emitted"
+
+
+def test_three_generations_each_escalate_exactly_once(watched):
+    """⚠️ Two generations is not enough to pin the keying.
+
+    `generation = min(entry.reset_count, 1)` passes every 0-then-1 test in this
+    file while permanently suppressing generation 2. Drive emit -> reset ->
+    emit -> reset -> emit and require three distinct reservations, three alert
+    rows and three deliveries."""
+    db, config, ruleset, entry_id = watched
+    notifier = RecordingNotifier()
+    day = 1
+    for expected_generation in range(3):
+        assert (
+            db.get_watchful_recurrence(entry_id).reset_count
+            == expected_generation
+        ), "the entry is not on the generation this iteration expects"
+        day = _cross_threshold(db, config, ruleset, notifier, entry_id,
+                               start_day=day)
+        assert len(_escalation_rows(db)) == expected_generation + 1, (
+            f"generation {expected_generation} did not emit its escalation"
+        )
+        if expected_generation < 2:
+            db.reset_watchful_recurrence(entry_id, T0 + day * DAY)
+            day += 1
+
+    rows = _escalation_rows(db)
+    assert len(rows) == 3, f"expected 3 escalations, got {len(rows)}"
+    assert all(r["notified_at"] is not None for r in rows), (
+        "an escalation was written but never delivered"
+    )
+    assert len(notifier.sent) == 3, (
+        f"expected exactly 3 deliveries, got {len(notifier.sent)}"
+    )
+    assert [(r["entry_id"], r["generation"]) for r in _ledger_rows(db)] == [
+        (entry_id, 0), (entry_id, 1), (entry_id, 2)
+    ], "the ledger did not record one reservation per generation"
