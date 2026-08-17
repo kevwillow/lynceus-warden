@@ -18,10 +18,13 @@ first one — see its docstring for why the distinction is load-bearing.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import logging
 import os
 import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
@@ -681,6 +684,64 @@ def _atomic_write_yaml(path: Path, payload: dict) -> None:
         raise
 
 
+def ui_lock_path(ui_path: Path) -> Path:
+    """Path of the advisory lock guarding read-modify-write on ``ui_path``.
+
+    ⛔ A SEPARATE file, and that is the whole point — see ``_ui_write_lock``.
+    """
+    return ui_path.with_name(ui_path.name + ".lock")
+
+
+@contextlib.contextmanager
+def _ui_write_lock(ui_path: Path) -> Iterator[None]:
+    """Serialise read-modify-write of the UI allowlist ACROSS PROCESSES.
+
+    Every mutator here is read → modify → ``os.replace``. Two of them running
+    at once both read the same starting state and the second write discards the
+    first one's change. Measured on the real functions, with a sequential
+    control that keeps both:
+
+    - two concurrent ``add_ui_entry`` calls → one suppression **silently gone**,
+      and both callers were told they succeeded;
+    - the poller's ``repair_future_dated_ui_entries`` racing one UI click →
+      the operator's click **discarded**, with no operator concurrency at all.
+
+    ⛔ **A ``threading.Lock`` cannot fix this.** The repair runs in the POLLER
+    and the clicks run in the web process — different processes, so an
+    in-process lock serialises neither. Hence ``fcntl.flock``, which is held by
+    the kernel against the open file and released even if the holder is killed.
+
+    ⛔ **The lock is NOT taken on ``ui_path`` itself, and that is load-bearing.**
+    ``_atomic_write_yaml`` finishes with ``os.replace``, which swaps the INODE
+    behind the path. A writer that locked the old inode still holds a lock on a
+    file no longer reachable by name, so the next writer opens the NEW inode and
+    acquires it immediately — two writers inside the critical section at once.
+    Measured: locking the data file gives mutual exclusion that a single write
+    silently dissolves. The lock file is never replaced, so it stays stable.
+
+    ⚠️ Scope, stated rather than implied: this serialises the mutators in THIS
+    module. It does not make ``load_allowlist`` take the lock — readers do not
+    need it, because ``os.replace`` already guarantees a reader sees either the
+    whole old file or the whole new one. It also does not protect the
+    operator-curated primary file, which the daemon never writes.
+
+    ⚠️ POSIX-only, matching the project's declared
+    ``Operating System :: POSIX :: Linux``. There is deliberately no silent
+    no-op fallback: a lock that quietly does nothing would report success while
+    losing exactly the writes this exists to keep.
+    """
+    lock_path = ui_lock_path(ui_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        # Closing the descriptor releases the flock; doing it in `finally`
+        # means a raising mutator cannot strand the lock and wedge the poller.
+        os.close(fd)
+
+
 def _read_ui_yaml(ui_path: Path) -> dict:
     """Read the current UI-file contents, returning a ``{"entries": [...]}`` dict.
 
@@ -737,13 +798,20 @@ def add_ui_entry(ui_path: Path, entry: AllowlistEntry) -> None:
     """Append ``entry`` to the daemon-managed UI file.
 
     File is created on first call. Existing entries are preserved.
-    Write is atomic (tmpfile + ``os.replace``). Concurrent UI writes
-    are last-write-wins by file mtime — acceptable given the UI cadence
-    is operator-driven (manual button clicks).
+    Write is atomic (tmpfile + ``os.replace``) and the whole
+    read-modify-write is serialised across processes by ``_ui_write_lock``.
+
+    ⛔ This used to say concurrent writes were "last-write-wins by file mtime —
+    acceptable given the UI cadence is operator-driven (manual button clicks)".
+    Measured, that was not a trade-off, it was a lost suppression: two clicks
+    close together kept ONE, and both requests reported success. No request
+    rate is needed — a double-click, two browser tabs, or the poller's repair
+    landing on the same file is enough.
     """
-    data = _read_ui_yaml(ui_path)
-    data["entries"].append(entry.model_dump(mode="json", exclude_none=True))
-    _atomic_write_yaml(ui_path, data)
+    with _ui_write_lock(ui_path):
+        data = _read_ui_yaml(ui_path)
+        data["entries"].append(entry.model_dump(mode="json", exclude_none=True))
+        _atomic_write_yaml(ui_path, data)
 
 
 def repair_future_dated_ui_entries(
@@ -779,35 +847,45 @@ def repair_future_dated_ui_entries(
         raise ValueError("now_ts must be an int (epoch seconds)")
     if not ui_path.exists():
         return []
-    entries = _load_ui_entries(ui_path)
-    repaired: list[tuple[str, int]] = []
-    rebuilt: list[AllowlistEntry] = []
-    for e in entries:
-        duration = None
-        if (
-            e.added_at is not None
-            and e.expires_at is not None
-            and e.added_at > now_ts
-        ):
-            duration = e.expires_at - e.added_at
-        if duration is not None and duration > 0:
-            rebuilt.append(
-                e.model_copy(
-                    update={"added_at": now_ts, "expires_at": now_ts + duration}
+    # ⛔ Held across the read AND the write. This runs in the POLLER while the
+    # web process is serving clicks: measured, a click landing inside this
+    # window was discarded by the repair's write, needing no operator
+    # concurrency whatsoever.
+    with _ui_write_lock(ui_path):
+        entries = _load_ui_entries(ui_path)
+        repaired: list[tuple[str, int]] = []
+        rebuilt: list[AllowlistEntry] = []
+        for e in entries:
+            duration = None
+            if (
+                e.added_at is not None
+                and e.expires_at is not None
+                and e.added_at > now_ts
+            ):
+                duration = e.expires_at - e.added_at
+            if duration is not None and duration > 0:
+                rebuilt.append(
+                    e.model_copy(
+                        update={"added_at": now_ts, "expires_at": now_ts + duration}
+                    )
                 )
-            )
-            repaired.append((e.pattern, duration))
-        else:
-            rebuilt.append(e)
-    if not repaired:
-        # ⚠️ Do not rewrite the file when nothing changed. This runs every poll
-        # tick, and a needless write would churn the disk on a Pi and defeat the
-        # "an intact file is untouched" guarantee the corruption tests assert.
-        return []
-    _atomic_write_yaml(
-        ui_path,
-        {"entries": [e.model_dump(mode="json", exclude_none=True) for e in rebuilt]},
-    )
+                repaired.append((e.pattern, duration))
+            else:
+                rebuilt.append(e)
+        if not repaired:
+            # ⚠️ Do not rewrite the file when nothing changed. This runs every
+            # poll tick, and a needless write would churn the disk on a Pi and
+            # defeat the "an intact file is untouched" guarantee the corruption
+            # tests assert.
+            return []
+        _atomic_write_yaml(
+            ui_path,
+            {
+                "entries": [
+                    e.model_dump(mode="json", exclude_none=True) for e in rebuilt
+                ]
+            },
+        )
     return repaired
 
 
@@ -830,16 +908,19 @@ def remove_ui_entry(
     """
     if not ui_path.exists():
         return False
-    data = _read_ui_yaml(ui_path)
-    before = len(data["entries"])
-    data["entries"] = [
-        e
-        for e in data["entries"]
-        if not (e.get("pattern") == pattern and e.get("pattern_type") == pattern_type)
-    ]
-    if len(data["entries"]) == before:
-        return False
-    _atomic_write_yaml(ui_path, data)
+    with _ui_write_lock(ui_path):
+        data = _read_ui_yaml(ui_path)
+        before = len(data["entries"])
+        data["entries"] = [
+            e
+            for e in data["entries"]
+            if not (
+                e.get("pattern") == pattern and e.get("pattern_type") == pattern_type
+            )
+        ]
+        if len(data["entries"]) == before:
+            return False
+        _atomic_write_yaml(ui_path, data)
     return True
 
 
@@ -868,15 +949,16 @@ def bulk_remove_ui_entries(
     """
     if not keys or not ui_path.exists():
         return 0
-    data = _read_ui_yaml(ui_path)
-    before = len(data["entries"])
-    key_set = set(keys)
-    data["entries"] = [
-        e
-        for e in data["entries"]
-        if (e.get("pattern"), e.get("pattern_type")) not in key_set
-    ]
-    removed = before - len(data["entries"])
-    if removed > 0:
-        _atomic_write_yaml(ui_path, data)
+    with _ui_write_lock(ui_path):
+        data = _read_ui_yaml(ui_path)
+        before = len(data["entries"])
+        key_set = set(keys)
+        data["entries"] = [
+            e
+            for e in data["entries"]
+            if (e.get("pattern"), e.get("pattern_type")) not in key_set
+        ]
+        removed = before - len(data["entries"])
+        if removed > 0:
+            _atomic_write_yaml(ui_path, data)
     return removed

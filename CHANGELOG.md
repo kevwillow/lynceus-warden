@@ -258,6 +258,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   escalated and tracked while you check the clock, so refusing costs you
   nothing.
 
+- **A device you allowlisted could quietly stay un-allowlisted, and you were
+  told it had worked.** Allowlisting a device reads the daemon-managed
+  allowlist file, adds your entry, and writes the whole file back. When two of
+  those overlapped, both read the same starting file and the second write
+  discarded the first one's entry. Measured: two clicks close together, one
+  suppression kept, one gone, and *both* requests reported success. A
+  double-click or two open browser tabs is enough — no unusual activity is
+  needed.
+
+  The worse case needed no double-click at all. The daemon repairs entries
+  written while the clock was wrong, and does it with the same read-then-write
+  against the same file from a *different process*. Measured: a single click
+  landing inside that window was discarded outright. Since the file it silently
+  reverted is the list of devices you have chosen not to be warned about, the
+  failure was invisible in exactly the direction that matters — you would find
+  out from an alert you thought you had already silenced.
+
+  Every path that rewrites that file now holds a lock across the whole
+  read-and-write, and the lock is held between processes rather than within
+  one, because the daemon and the web UI are not the same process. The daemon
+  still notices your change immediately; that was checked, since a fix that
+  traded a lost entry for a stale one would be no better.
+
 - **A "snooze this for 24 hours" could last no time at all, and nothing told
   you.** A snooze is stored as a deadline — the moment it expires — not as a
   length of time. If the machine's clock was wrong when you set one, that
