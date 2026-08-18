@@ -624,6 +624,36 @@ def age_since(reference_ts, *, now_ts: int) -> int | None:
     return max(0, delta)
 
 
+def stored_int(value) -> int | None:
+    """Parse a value read out of the database, or ``None`` if it cannot be read.
+
+    ⛔ **A bare ``int()`` on a stored column crashes the page that reads it.**
+    Measured on a database carrying ONE ``import_runs.imported_at`` of
+    ``"not-an-int"``:
+
+        route            before        after
+        /                HTTP 500      200, watchlist "unknown"
+        /settings        HTTP 500      200
+        /healthz.json    503           503 (isolated by #161, reported not fatal)
+
+    The home page is the operator's primary surface and, on a default install
+    with the heartbeat off, their liveness signal. One damaged row took it out
+    entirely -- and #161's per-check isolation covered `/healthz.json` only,
+    which is containment of one surface, not a fix of the mechanism.
+
+    ⚠️ ``None`` here means "could not be read", which the callers already have a
+    state for: `status: "unknown"` / `staleness_known: False`. It deliberately
+    does NOT mean zero -- an unreadable timestamp reported as the epoch would
+    render as "imported in 1970", a confident wrong answer.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def age_days_since(reference_ts, *, now_ts: int) -> int | None:
     """``age_since`` in whole days. ``None`` propagates -- see there."""
     seconds = age_since(reference_ts, now_ts=now_ts)
@@ -963,12 +993,20 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
             "pattern_type_counts": pattern_type_counts,
             "warn_days": warn_days,
         }
-    reference_ts = latest["exported_at"] or latest["imported_at"]
+    imported_at = stored_int(latest["imported_at"])
+    exported_at = stored_int(latest["exported_at"])
+    # ⚠️ `is not None`, not `or`: an export stamped at epoch 0 is falsy, and the
+    # `or` silently fell through to the import time instead -- the same shape as
+    # the heartbeat bug where a delivery at epoch 0 read as never delivered.
+    reference_ts = exported_at if exported_at is not None else imported_at
     # ⛔ `age_days` is None when the reference is stamped AHEAD of this clock,
     # and the status is then "unknown" rather than "fresh". The old
     # `max(0, ...)` read a future export as "imported today", which is the most
     # reassuring answer available and the one nothing had established.
-    age_days = age_days_since(reference_ts, now_ts=now_ts)
+    # It is None for an UNREADABLE reference too, for the same reason.
+    age_days = (
+        None if reference_ts is None else age_days_since(reference_ts, now_ts=now_ts)
+    )
     return {
         "has_import": True,
         "status": (
@@ -978,15 +1016,11 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
             if age_days > warn_days
             else "fresh"
         ),
-        "imported_at": int(latest["imported_at"]),
-        "exported_at": (
-            int(latest["exported_at"]) if latest["exported_at"] is not None else None
-        ),
+        "imported_at": imported_at,
+        "exported_at": exported_at,
         "age_days": age_days,
         "source": latest["source"],
-        "record_count": (
-            int(latest["record_count"]) if latest["record_count"] is not None else None
-        ),
+        "record_count": stored_int(latest["record_count"]),
         "pattern_type_counts": pattern_type_counts,
         "warn_days": warn_days,
     }
@@ -1027,23 +1061,20 @@ def _watchlist_freshness_summary(
         return empty
     if latest is None:
         return empty
-    reference_ts = latest["exported_at"] or latest["imported_at"]
-    age_days = age_days_since(reference_ts, now_ts=now_ts)
+    imported_at = stored_int(latest["imported_at"])
+    exported_at = stored_int(latest["exported_at"])
+    reference_ts = exported_at if exported_at is not None else imported_at
+    age_days = (
+        None if reference_ts is None else age_days_since(reference_ts, now_ts=now_ts)
+    )
     return {
         "has_import": True,
-        # ⛔ None, not False, when the reference is ahead of this clock: the
-        # verdict is not established, and False is the reassuring guess.
+        # ⛔ None, not False, when the reference is ahead of this clock OR could
+        # not be read: the verdict is not established, and False is the
+        # reassuring guess.
         "staleness_known": age_days is not None,
-        "record_count": (
-            int(latest["record_count"])
-            if latest["record_count"] is not None
-            else None
-        ),
-        "exported_at": (
-            int(latest["exported_at"])
-            if latest["exported_at"] is not None
-            else None
-        ),
+        "record_count": stored_int(latest["record_count"]),
+        "exported_at": exported_at,
         "is_stale": None if age_days is None else age_days > warn_days,
     }
 
@@ -1854,7 +1885,7 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
     total_rows = sum(by_pattern_type.values())
     latest = db.get_latest_import_run()
     if latest is not None and latest.get("imported_at") is not None:
-        imported_at = int(latest["imported_at"])
+        imported_at = stored_int(latest["imported_at"])
         last_imported_at_iso: str | None = unix_to_iso(imported_at) or None
         days_since_import: int | None = age_days_since(imported_at, now_ts=now_ts)
     else:

@@ -235,6 +235,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **One damaged row in the watchlist import history could take down the home
+  page.** Lynceus records when your watchlist was last imported. If that stored
+  time was damaged and could not be read back as a number, the code that reads
+  it stopped with an error rather than coping — and because the home page and
+  the settings page both read it, both answered `500 Internal Server Error`.
+  The home page is where you look to see whether anything is being watched at
+  all, so a single unreadable value took away the whole view.
+
+  All three places that read those stored times now cope with a value they
+  cannot parse, and say so: the watchlist reads as "unknown" rather than as
+  fresh, and the health endpoint reports that the staleness could not be
+  determined instead of guessing. An unreadable time is never substituted with
+  zero, which would have rendered as "imported in 1970".
+
+  Also fixed alongside it: an export timestamped at exactly the epoch was
+  treated as missing and silently replaced by the import time, so the freshness
+  you were shown was measured from the wrong clock. Zero is a value.
+
 - **A stored value lynceus could not read was reported as "nothing happened".**
   The home page and `/healthz` tell you when the daemon last completed a poll.
   That time is recorded in the database, and if the recorded value was damaged

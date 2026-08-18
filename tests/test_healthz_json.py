@@ -668,6 +668,19 @@ def test_healthz_json_seconds_since_uses_request_clock(tmp_path, monkeypatch):
 
 
 def _corrupt_watchlist_timestamp(db: Database) -> None:
+    """⚠️ SUPERSEDED AS A TRIGGER, kept for what it now proves.
+
+    This used to make `_check_watchlist` raise, which is how the isolation below
+    was originally demonstrated. It no longer raises: the bare `int()` was the
+    real defect and reading an unparseable stored value now yields "unknown"
+    rather than an exception, on this and on the two page surfaces that share it.
+
+    ⛔ The isolation property did NOT stop mattering when its trigger went away,
+    so the tests below now FORCE a check to raise instead of relying on an input
+    that happened to raise. That is the stronger test: it pins the property
+    ("one raising check must not delete the report") rather than one accident
+    that produced it.
+    """
     db._conn.execute(
         "INSERT INTO import_runs (imported_at, record_count) VALUES (?, ?)",
         ("not-an-int", 5),
@@ -675,11 +688,21 @@ def _corrupt_watchlist_timestamp(db: Database) -> None:
     db._conn.commit()
 
 
+def _make_a_check_raise(monkeypatch) -> None:
+    """Force `_check_watchlist` to raise, whatever its inputs happen to do."""
+    def boom(*a, **kw):
+        raise RuntimeError("synthetic check failure with a secret: hunter2")
+
+    monkeypatch.setattr(app_mod, "_check_watchlist", boom)
+
+
 @pytest.mark.webui
-def test_one_unreadable_row_does_not_take_down_the_whole_health_report(tmp_path):
+def test_one_unreadable_row_does_not_take_down_the_whole_health_report(
+    tmp_path, monkeypatch
+):
     app, db = _make_app(tmp_path)
     try:
-        _corrupt_watchlist_timestamp(db)
+        _make_a_check_raise(monkeypatch)
         with TestClient(app, raise_server_exceptions=False) as client:
             r = client.get("/healthz.json")
         assert r.status_code != 500, (
@@ -705,18 +728,43 @@ def test_one_unreadable_row_does_not_take_down_the_whole_health_report(tmp_path)
 
 
 @pytest.mark.webui
-def test_a_failed_check_does_not_leak_internals_to_an_anonymous_caller(tmp_path):
+def test_a_failed_check_does_not_leak_internals_to_an_anonymous_caller(
+    tmp_path, monkeypatch
+):
     """`/healthz.json` is unauthenticated; loopback binding is the only control
     and `ui_allow_remote: true` removes it. Same reasoning as `_check_db`'s
     generic detail — the exception text belongs in the server log, not the body."""
     app, db = _make_app(tmp_path)
     try:
+        _make_a_check_raise(monkeypatch)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get("/healthz.json")
+        assert "hunter2" not in r.text, "the exception text was echoed to an anonymous caller"
+        assert "Traceback" not in r.text and "RuntimeError" not in r.text, r.text[:200]
+        assert r.json()["checks"]["watchlist"]["detail"], "an error must carry a non-empty detail"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_an_unreadable_import_timestamp_is_now_reported_not_raised(tmp_path):
+    """The input that used to trigger the isolation above, and what it does now.
+
+    It no longer raises, so the endpoint answers 200 — but it must not answer
+    "fine". The staleness is reported as NOT KNOWN, which is this file's idiom
+    for an undecidable verdict, and by existing convention does not flip the
+    overall status.
+    """
+    app, db = _make_app(tmp_path)
+    try:
         _corrupt_watchlist_timestamp(db)
         with TestClient(app, raise_server_exceptions=False) as client:
             r = client.get("/healthz.json")
-        assert "not-an-int" not in r.text, "the bad value was echoed to an anonymous caller"
-        assert "Traceback" not in r.text and "ValueError" not in r.text, r.text[:200]
-        assert r.json()["checks"]["watchlist"]["detail"], "an error must carry a non-empty detail"
+        assert r.status_code == 200, r.text[:200]
+        w = r.json()["checks"]["watchlist"]
+        assert w["status"] == "ok", "the check itself succeeded"
+        assert w["staleness_known"] is False, "claimed to know a staleness it cannot"
+        assert w["stale"] is None, "asserted a verdict the damaged value cannot support"
     finally:
         db.close()
 
