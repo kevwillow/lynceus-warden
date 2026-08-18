@@ -82,6 +82,29 @@ at 8% for over 5 minutes with `jbd2/nvme0n1p2-8` (the ext4 journal) blocked in
 
 | | |
 |---|---|
+| SHA | **`acd8ace`** (2026-08-18) |
+| local `pytest -q`, Linux, Python 3.11 | **4225 passed, 2 skipped, 47 deselected** — 39m03s |
+| `ruff check .` | clean |
+
+Measured in a **throwaway worktree at a committed SHA**, `git status` clean, on
+the local tree (not the clone). Both skips print a reason and are expected here:
+`test_packaging.py:19` (python not on PATH) and `test_setup_wizard.py:2018`
+(a real `/sys/class/bluetooth` is present). **Skip count 2 — check WHICH tests.**
+
+⚠️ The wall-clock is not comparable to earlier entries: this box was running
+another project's delegate fleet throughout, at load 7–36. See the I/O-pressure
+trap above before reading 39m as a regression.
+
+⛔ **The entry below sat here from 2026-08-02 to 2026-08-18 while the suite grew
+by 717 tests**, so anything checking "did we drop below the baseline" was
+comparing against a number that had been meaningless for two weeks. A stale
+baseline does not fail loudly; it silently stops being able to detect anything.
+⇒ **Re-measure when you notice the gap, not when something breaks.**
+
+### Previous baseline (superseded 2026-08-18)
+
+| | |
+|---|---|
 | SHA | **`63aa497`** |
 | CI, Python 3.11 | **3523 passed, 1 skipped, 47 deselected** — 4m26s |
 | CI, Python 3.12 | **3523 passed, 1 skipped, 47 deselected** — 4m22s |
