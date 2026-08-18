@@ -2553,9 +2553,43 @@ failed-stamp state at upgrade has no reservation, so its next crossing still cos
 once. A backfill from `escalated_at IS NOT NULL` cannot distinguish an emitted escalation from a
 **snooze-consumed** one, so it would write rows asserting alerts that were never sent, permanently.
 
-⚠️ **Not covered:** two processes racing the same crossing is prevented by the UNIQUE constraint but
-is **not tested** — only the poller emits escalations, so no second writer exists today. If one is
-ever added, that test is owed.
+⛔ **RETRACTED, and it was mine, written the same hour as the fix.** I wrote here that "only the
+poller emits escalations, so no second writer exists today". **False.** `process_observation` has
+**two** callers — `poller.py` and `bridges/ble.py`, the latter inside a `ble-bridge` **thread** that
+opens its **own** `Database` (*"OWN connection on its own path — WAL second writer"*). The
+per-instance `RLock` does not serialise them. ⇒ [[audit-a-fix-against-its-own-principle]]: a
+disposition written beside its own fix inherits the fix's blind spots. The claim cost one grep.
+
+### 🔴 Finding 44a — two ways #152 could LOSE an escalation, both fail-closed — ✅ FIXED (#155)
+
+**Found by a cold cross-model read of the MERGED #152 diff, both reproduced with controls before
+being believed** (`internal/session1-harnesses/f44_coldread_probe.py`). Neither shipped in a release.
+
+1. **A stale-generation stamp suppresses the next generation permanently.**
+   `escalate_watchful_recurrence` was keyed on `id` + `escalated_at IS NULL` only. With two
+   concurrent `process_observation` callers, a handler that decided about generation *g* can stamp
+   generation *g+1* after an operator reset. That generation emitted no alert of its own, and the
+   first-crossing branch requires `escalated_at IS NULL`, so **it can never escalate again.** Fixed
+   with a compare-and-swap on `reset_count`. Control (the pre-fix statement on a second connection)
+   still stamps, so the test discriminates.
+   ⭐ **Third site of the Finding 53 shape** — `SELECT` outside, `UPDATE` keyed only on `id`.
+   [[grep-for-the-next-first-match]] again, and this time on my own fresh fix.
+2. **An unreadable ledger fell into the snooze-consumption branch**, which stamps `now_ts` without
+   consulting the ledger — putting the stamp *after* a pending alert's `ts`, which the retry's
+   `ts >= escalated_at` filter can then never match. Same permanent-undeliverability as the bug
+   #152 already fixed, reached through the DEGRADED path. Fixed by distinguishing "no row" from
+   "could not read" and always taking the emit path in the latter case, where the UNIQUE constraint
+   is authoritative.
+
+⬜ **GRADED DOWN after measurement, recorded so it is not re-derived:** the cold read also argued
+that driving the retry inside the recovery observation can no-op under the delivery backoff, turning
+a noisy path silent. The backoff after one failed attempt is **300 s** and is computed from the
+alert's own `ts`, so any later poll clears it; polls are minutes apart and sightings days apart. It
+is a bounded latency, not a loss, and the attempt accounting it preserves is the reason #74 exists.
+
+⚠️ **Also corrected:** the timestamp census claimed `escalated_at` and `alerts.ts` are *"written
+together"*. They are written in **separate transactions** — which is the entire reason Finding 44
+exists. Both carry the same source instant and the 026 ledger preserves it across the gap.
 
 Original registration follows, unchanged.
 

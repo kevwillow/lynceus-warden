@@ -4107,9 +4107,36 @@ class Database:
         )
 
     def escalate_watchful_recurrence(
-        self, entry_id: int, escalated_at: int
+        self,
+        entry_id: int,
+        escalated_at: int,
+        *,
+        expected_reset_count: int | None = None,
     ) -> WatchfulRecurrence | None:
         """Set ``escalated_at`` on the entry if currently NULL.
+
+        ⛔ ``expected_reset_count`` makes this a COMPARE-AND-SWAP over the entry
+        GENERATION, and it is not optional hygiene. ``process_observation`` runs
+        concurrently in two places -- the poll loop and the ``ble-bridge``
+        thread, which holds its **own** ``Database`` on its own connection
+        ("WAL second writer"), so ``self._lock`` does not serialise them. Two
+        handlers can therefore both be mid-crossing for generation *g* while the
+        web process resets the entry to *g+1*. Keyed only on ``id``, the slower
+        handler's stamp then lands on generation *g+1*, which has emitted no
+        alert of its own -- and because the first-crossing branch requires
+        ``escalated_at IS NULL``, that generation's genuine escalation is
+        suppressed **permanently**. Measured with an interleaving probe against
+        a control that survives: ``internal/session1-harnesses/``
+        ``f44_coldread_probe.py``.
+
+        ⭐ Same defect shape as Finding 53, where two watchful repairs did
+        ``SELECT`` outside the transaction and then ``UPDATE`` keyed only on
+        ``id``. That fix added a CAS to the repairs; this is the next
+        first-match, and the stamp is the third site of the same pattern.
+
+        Callers that know which generation they decided about MUST pass it. The
+        default of ``None`` preserves the old behaviour for the one caller that
+        genuinely has no generation in hand (tests constructing state directly).
 
         Returns the post-update row when the transition fired (the
         caller emits the escalation alert in that case), or
@@ -4128,14 +4155,23 @@ class Database:
             raise ValueError("entry_id must be an int")
         if not isinstance(escalated_at, int) or isinstance(escalated_at, bool):
             raise ValueError("escalated_at must be an int (epoch seconds)")
+        if expected_reset_count is not None and (
+            not isinstance(expected_reset_count, int)
+            or isinstance(expected_reset_count, bool)
+        ):
+            raise ValueError("expected_reset_count must be an int or None")
+        sql = (
+            "UPDATE watchful_recurrence SET escalated_at = ? "
+            "WHERE id = ? "
+            "AND escalated_at IS NULL "
+            "AND archived_at IS NULL"
+        )
+        params: list = [escalated_at, entry_id]
+        if expected_reset_count is not None:
+            sql += " AND reset_count = ?"
+            params.append(expected_reset_count)
         with self._lock, self._conn:
-            cur = self._conn.execute(
-                "UPDATE watchful_recurrence SET escalated_at = ? "
-                "WHERE id = ? "
-                "AND escalated_at IS NULL "
-                "AND archived_at IS NULL",
-                (escalated_at, entry_id),
-            )
+            cur = self._conn.execute(sql, params)
             if cur.rowcount == 0:
                 return None
             row = self._conn.execute(

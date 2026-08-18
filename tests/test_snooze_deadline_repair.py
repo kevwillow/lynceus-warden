@@ -489,13 +489,21 @@ def test_every_timestamp_column_is_classified(db):
         #
         # ⭐ Still RECORD_ONLY rather than REPAIRED, and the reason is the
         # useful part: the comparison is against `alerts.ts`, another STORED
-        # value written from the same `now_ts` in the same transaction -- not
-        # against a live clock. A wrong clock moves both together and the
-        # comparison still holds, which is what makes it clock-independent.
-        # Repairing or clamping either one ALONE is what would break it.
+        # value -- not against a live clock. A wrong clock moves both by the
+        # same amount and the comparison still holds. Repairing or clamping
+        # either one ALONE is what would break it.
+        #
+        # ⛔ An earlier version of this note said the two are "written
+        # together". They are NOT: they are written in SEPARATE transactions,
+        # which is the entire reason Finding 44 exists. What is true is that
+        # both carry the SAME source instant, and migration 026's ledger is
+        # what preserves it across the gap. The distinction matters because the
+        # previous false note in this very dict is what let a recovery path
+        # ship stamping the wrong timestamp.
         "watchful_recurrence.escalated_at":
             "compared against alerts.ts in the escalation retry lookup, never "
-            "against a live clock; the two are written together",
+            "against a live clock; both carry the same source instant, which "
+            "the 026 ledger preserves across the two transactions",
         "watchful_escalations.created_at":
             "PROVENANCE of the escalation emit; copied into escalated_at and "
             "must keep matching alerts.ts -- must not be clamped",

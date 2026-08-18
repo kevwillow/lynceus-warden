@@ -281,6 +281,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   numbers before anything is rewritten. Which value wins is unchanged — this
   reports, it does not decide for you.
 
+- **Two ways a "someone is following you" warning could have gone silent, both
+  introduced by the fix that stopped it being sent twice.** Neither had shipped
+  in a release; both were found by handing the merged change to an independent
+  model to attack, and both were reproduced before being changed.
+
+  The first needs an unlucky moment. Lynceus watches for devices in two places
+  at once — the main scan loop and the Bluetooth listener — and they run
+  independently. If both were partway through raising the same escalation when
+  you pressed *reset* on that device, the slower one could mark the *restarted*
+  watch as "already escalated". That watch had never actually warned you about
+  anything, and because a watch only escalates once, it never would.
+
+  The second needs a database hiccup at the wrong instant: if lynceus could not
+  read its record of which warnings it had already raised, and the alert type
+  happened to be snoozed, it would file the pending warning under a timestamp
+  that its own retry could never look up again. The warning would sit in the
+  database, undelivered, forever.
+
+  Both are closed, and both now fail in the direction that costs noise rather
+  than silence: an escalation the daemon cannot confidently account for is left
+  to be retried, not quietly marked done.
+
 - **"Reset" on a device you had just said you were still watching could quietly
   stop watching it.** The reset button on `/watchful` means "I have seen this
   escalation, it looks benign, keep tracking". It works by stamping the entry as

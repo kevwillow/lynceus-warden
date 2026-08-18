@@ -176,12 +176,24 @@ BLE_BRIDGE_JOIN_TIMEOUT_SECONDS = 10.0
 logger = logging.getLogger(__name__)
 
 
+# Distinguishes "this generation has not escalated" (None) from "the ledger
+# could not be read" (this sentinel). Collapsing the two let a failed read fall
+# into the SNOOZE-consumption branch, which stamps `now_ts` without consulting
+# the ledger -- stranding an already-pending alert behind the retry's
+# `ts >= escalated_at` filter, permanently. Measured in f44_coldread_probe.py.
+_LEDGER_UNREADABLE = object()
+
+
 def _watchful_generation_escalated_at(
     db: Database, entry_id: int, generation: int, mac: str
-) -> int | None:
+):
     """When this entry generation emitted its escalation alert, if it did.
 
-    ⚠️ A failure degrades to None -- the ordinary emit path -- on purpose.
+    Returns the emit instant, ``None`` if this generation has not escalated, or
+    ``_LEDGER_UNREADABLE`` if the lookup failed.
+
+    ⚠️ A failure degrades to the ordinary emit path -- never the snooze
+    branch -- on purpose.
     The real dedup guard is the UNIQUE constraint inside
     ``Database.add_watchful_escalation_alert``, so a failed read here costs a
     redundant emit ATTEMPT that the constraint then turns into a no-op, and
@@ -199,7 +211,7 @@ def _watchful_generation_escalated_at(
             mac,
             e,
         )
-        return None
+        return _LEDGER_UNREADABLE
 
 
 def _emit_watchful_escalation(
@@ -300,9 +312,10 @@ def _emit_watchful_escalation(
         # timestamp must still come from the ledger: `now_ts` would be the
         # permanent-loss bug described above, reached by the degraded path
         # instead of the ordinary one.
-        emitted_at = _watchful_generation_escalated_at(
+        ledger = _watchful_generation_escalated_at(
             db, entry.id, entry.reset_count, entry.mac
         )
+        emitted_at = None if ledger is _LEDGER_UNREADABLE else ledger
         if emitted_at is None:
             # The constraint says the row exists but the ledger cannot be read
             # to say when. Refuse to stamp rather than stamp a value known to
@@ -814,16 +827,27 @@ def process_observation(
                 # suppression, and counting it as one would put the
                 # highest-severity thing this product sends into the hourly
                 # snooze summary for an escalation the snooze never touched.
-                emitted_at = _watchful_generation_escalated_at(
-                    db, watchful_entry.id, outcome.entry.reset_count, obs.mac
+                generation = outcome.entry.reset_count
+                ledger = _watchful_generation_escalated_at(
+                    db, watchful_entry.id, generation, obs.mac
                 )
+                emitted_at = None if ledger is _LEDGER_UNREADABLE else ledger
                 # Only a genuine first crossing consults the snooze. Reading it
                 # on the recovery path would be a wasted query whose answer is
                 # never used.
+                #
+                # ⛔ An UNREADABLE ledger must also skip it, and this is a
+                # correctness requirement rather than an optimisation. The
+                # snooze branch stamps `now_ts` without consulting the ledger,
+                # so if a row is already pending at an earlier `ts` the retry's
+                # `ts >= escalated_at` filter can never find it again -- the
+                # permanent-undeliverability bug, reached through the degraded
+                # path instead of the ordinary one. Falling through to the emit
+                # path instead puts the UNIQUE constraint back in authority.
                 rt_snooze = (
-                    None
-                    if emitted_at is not None
-                    else db.is_rule_type_snoozed("watchful_recurrence", now_ts)
+                    db.is_rule_type_snoozed("watchful_recurrence", now_ts)
+                    if (emitted_at is None and ledger is not _LEDGER_UNREADABLE)
+                    else None
                 )
                 if emitted_at is not None:
                     # Recovery: the alert row exists, nothing new is emitted,
@@ -848,7 +872,9 @@ def process_observation(
                     # re-emitted a duplicate, which was noisy but reached them.
                     try:
                         recovered = db.escalate_watchful_recurrence(
-                            watchful_entry.id, emitted_at
+                            watchful_entry.id,
+                            emitted_at,
+                            expected_reset_count=generation,
                         )
                     except Exception as e:
                         recovered = None
@@ -900,7 +926,9 @@ def process_observation(
                         # stamp rather than a duplicate alert.
                         try:
                             stamped = db.escalate_watchful_recurrence(
-                                watchful_entry.id, stamp_at
+                                watchful_entry.id,
+                                stamp_at,
+                                expected_reset_count=generation,
                             )
                         except Exception as e:
                             stamped = None
@@ -930,7 +958,9 @@ def process_observation(
                     # resurrect the alert the operator deliberately
                     # silenced the moment their snooze expired.
                     db.escalate_watchful_recurrence(
-                        watchful_entry.id, now_ts
+                        watchful_entry.id,
+                        now_ts,
+                        expected_reset_count=generation,
                     )
                     logger.debug(
                         "watchful escalation suppressed by "
