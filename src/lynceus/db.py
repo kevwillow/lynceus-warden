@@ -4347,20 +4347,49 @@ class Database:
             raise ValueError("ts must be an int (epoch seconds)")
         with self._lock, self._conn:
             try:
+                # ⛔ INSERT ... SELECT, not VALUES: the reservation is
+                # conditional on the entry STILL being at this generation and
+                # still unescalated. Without that condition a handler holding a
+                # stale read emits for a generation the operator has already
+                # moved past. The sharp case is a generation CONSUMED BY A
+                # SNOOZE: it is stamped (so a reset is legal) but has no ledger
+                # row (the ledger records EMISSION, and a snoozed crossing
+                # emits nothing), so the UNIQUE constraint does not catch the
+                # stale insert. Measured: an escalation the operator had both
+                # SNOOZED and RESET was written and delivered, which is exactly
+                # what `test_a_snoozed_escalation_is_consumed_and_never_
+                # resurrected` exists to forbid.
+                #
+                # `archived_at IS NULL` rides along for the same reason: the
+                # web UI is a separate PROCESS and can dismiss the entry while
+                # a handler is mid-crossing.
                 cur = self._conn.execute(
                     "INSERT INTO watchful_escalations"
                     "(entry_id, generation, alert_id, created_at) "
-                    "VALUES (?, ?, NULL, ?)",
-                    (entry_id, generation, ts),
+                    "SELECT ?, ?, NULL, ? FROM watchful_recurrence "
+                    "WHERE id = ? AND reset_count = ? "
+                    "AND escalated_at IS NULL AND archived_at IS NULL",
+                    (entry_id, generation, ts, entry_id, generation),
                 )
+                if cur.rowcount == 0:
+                    # The generation moved, was consumed, or the entry was
+                    # archived. Emit nothing and write nothing. The caller's
+                    # ledger lookup finds no row for this generation either, so
+                    # it leaves the entry unescalated and the next crossing
+                    # decides afresh on current state.
+                    return None
             except sqlite3.IntegrityError:
-                already = self._conn.execute(
-                    "SELECT 1 FROM watchful_escalations "
-                    "WHERE entry_id = ? AND generation = ? LIMIT 1",
-                    (entry_id, generation),
-                ).fetchone()
-                if already is None:
-                    raise
+                # ⭐ Necessarily the UNIQUE(entry_id, generation) collision, so
+                # this generation has already emitted. It used to re-SELECT to
+                # tell that from a FOREIGN KEY failure on a nonexistent entry,
+                # because the reservation was an `INSERT ... VALUES` and both
+                # arrived as IntegrityError. The `INSERT ... SELECT` above
+                # cannot reference a row that does not exist -- a missing entry
+                # yields ZERO ROWS and returns above -- so the foreign key can
+                # no longer fire here and that re-check became unreachable.
+                # Removed rather than left in place: a guard that cannot fail
+                # is a claim nobody is checking, and its stated justification
+                # had stopped being true.
                 return None
             reservation_id = cur.lastrowid
             alert_id = self._insert_alert_row(

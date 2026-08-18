@@ -235,6 +235,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A device you had snoozed *and* then reset could still send you the alert.**
+  When the recurrence alert type is snoozed, lynceus deliberately runs the
+  detection but sends nothing — and it records that the escalation was used up,
+  so it cannot come back when the snooze expires. That record is what the reset
+  button then acts on. But because a snoozed escalation writes no alert, there
+  was nothing on file to stop a scan already in flight from writing and sending
+  that same escalation moments after you reset it.
+
+  So the one alert you had silenced twice over — once by snoozing it, once by
+  resetting it — could still arrive. The escalation is now only recorded if the
+  device is still on the watch generation the scan was actually about, so a
+  reset, a dismissal, or a snooze that has already consumed it all stop it.
+
 - **One sighting of a device could be counted twice, bringing forward a warning
   you had not earned.** Lynceus only counts a watched device once per 24 hours,
   so that "seen on four separate days" means what it says. But it watches

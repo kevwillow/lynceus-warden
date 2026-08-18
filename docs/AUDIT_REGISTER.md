@@ -2560,6 +2560,106 @@ opens its **own** `Database` (*"OWN connection on its own path — WAL second wr
 per-instance `RLock` does not serialise them. ⇒ [[audit-a-fix-against-its-own-principle]]: a
 disposition written beside its own fix inherits the fix's blind spots. The claim cost one grep.
 
+### 🔴 Finding 57 — a snooze-consumed generation had no ledger row, so a stale handler could resurrect it — ✅ FIXED
+
+**The one escape hatch the UNIQUE constraint alone does not close, and it lands on the invariant the
+suite already had a test for.**
+
+Migration 026's ledger records **emission**, so a crossing consumed by the `watchful_recurrence`
+rule_type snooze deliberately writes **no ledger row** — it emits nothing. But it *does* stamp
+`escalated_at`. That combination is exactly what a reset needs (`escalated_at IS NOT NULL`), so:
+
+1. generation *g* crosses while snoozed → stamped, no alert row, **no reservation**;
+2. the operator resets → *g+1*, `escalated_at` NULL — legal;
+3. a handler still holding the pre-reset view emits for *g*. The UNIQUE constraint has nothing to
+   collide with, so the row is written **and delivered**.
+
+Measured (`internal/session1-harnesses/` probe, then pinned as
+`test_a_stale_generation_cannot_emit_after_a_snooze_consumed_reset`):
+
+```
+gen 0 snooze-consumed   escalated_at=1700086400  ledger=0  alerts=0
+after reset             reset_count=1            escalated_at=None
+stale emit for gen 0    returned=1700172800      alerts=1  delivered=1   ⛔
+after the fix           returned=None            alerts=0  delivered=0
+```
+
+⇒ **The operator was sent "this device appears to be following you" for a generation they had both
+SNOOZED and RESET** — the resurrection that
+`test_a_snoozed_escalation_is_consumed_and_never_resurrected` exists one aisle over to forbid.
+
+**Fix:** the reservation is now `INSERT ... SELECT ... WHERE id = ? AND reset_count = ? AND
+escalated_at IS NULL AND archived_at IS NULL` rather than `INSERT ... VALUES`. A superseded,
+consumed or archived entry yields **zero rows**, so nothing is written and nothing is sent.
+
+⭐ **Two consequences worth carrying, both about my own earlier work:**
+- **A guard of mine became unfailable and I removed it rather than leave it.** The old code
+  re-SELECTed after `IntegrityError` to tell a UNIQUE collision from a FOREIGN KEY failure, because
+  `INSERT ... VALUES` produced both. `INSERT ... SELECT` cannot reference a row that does not exist,
+  so the FK can no longer fire and the re-check was unreachable. Its **plant survived**, which is
+  what surfaced it. ⇒ A guard that cannot fail is a claim nobody is checking.
+- **A test that pinned the MECHANISM had to be rewritten to pin the GUARANTEE.**
+  `test_a_bad_entry_id_is_not_reported_as_already_escalated` required a specific exception *type*;
+  the property that matters — nothing written, nothing delivered, no timestamp handed back — is
+  unchanged and is what it asserts now.
+
+⚠️ **Found by an M3 sweep of the poller, and the sweep's own interleaving was REFUTED**: it assumed a
+reset could land mid-crossing, which it cannot (`reset_watchful_recurrence` requires
+`escalated_at IS NOT NULL`, and a mid-crossing entry has NULL). The snooze-consumed variant is the
+one that survives that refutation. ⇒ Reproduce the mechanism, not the report.
+
+⛔ **NOT SWEPT, stated so this is not read as complete coverage:** `process_observation` itself.
+Its packet was handed to M3 twice (once at 79 KB, once split to 41 KB) and returned an **empty
+file** both times, and codex was rate-limited until 2026-08-20, so there was no second channel to
+swap to. The function is unaudited for this defect shape.
+
+### 🟡 Finding 56 — the impossible-deadline reporter covers ONE of the four deadline backends
+
+**MEASURED, NOT PATCHED. Registered so the reachability work is not re-derived a fourth time.**
+This is handoff JOB 3, and the handoff's instruction was "measure reachability before building"
+because the answer changes whether it is a fix or a documented limit. It is measured now.
+
+The poller drives four forward clock repairs. Only `rule_type_snoozes` has a companion
+**backward** reporter (`find_impossible_rule_type_snoozes`, #135/#139), which uses the ordering
+discriminator *a row cannot predate its own database's first migration*
+(`added_at < MIN(schema_migrations.applied_at)`).
+
+Measured on `acd8ace` (`internal/session1-harnesses/f41_other_backends_probe.py`, run against a
+fresh worktree — see the stale-tree warning below):
+
+```
+watchful snooze backend, operator asks for 24h:
+  CONTROL correct clock             repaired=0   operator gets 24.0h of 24.0h   floor-detectable=False
+  forward-jumped (+91d)             repaired=1   operator gets 24.0h of 24.0h   floor-detectable=False
+  BACKWARD (-6y), clock now right   repaired=0   operator gets  0.0h of 24.0h   floor-detectable=True
+```
+
+⇒ **The backward case delivers ZERO of the 24 hours asked for, is SILENT, and IS detectable by the
+same discriminator that already covers `rule_type_snoozes`.** So this is a fix, not a documented
+limit — which is the thing that had to be established before building anything.
+
+⚠️ **Grading, stated so it is not inflated:** `snooze_expires_at` gates the ORIGINAL alert pipeline
+for that MAC, so the failure is **fail-OPEN** — the device keeps alerting. It is a *visibility*
+defect (the operator believes they have silenced something for a day and have not), not a lost
+warning. That is the same grading Finding 41 already carries, and it is why this sat behind
+Findings 44 and 50.
+
+⛔ **The fourth backend is different and must not be lumped in.** `repair_future_dated_ui_entries`
+is the YAML allowlist, which has no `schema_migrations` row to compare against, so the ordering
+discriminator does not exist for it. `_watchful_baselines` keys on `last_seen_at`, which is
+deliberately CLAMPED and re-written, so it is not a provenance marker either — for a watchful entry
+the provenance is `created_at`. Any fix must key on provenance columns, not on the deadline column.
+
+**Acceptance criterion (a conjunction, both halves required):** a watchful snooze whose entry's
+`created_at` predates the database's first migration and whose `snooze_expires_at` has passed is
+reported to the operator as a disagreement, **AND** a healthy snooze on a correct clock — and one on
+a database migrated while the clock read AHEAD — is NOT reported. The second half is not optional:
+`MIN(applied_at)` is stamped by the same host clock, so a future-dated floor puts every legitimate
+row below it, and #135 shipped exactly that false positive before #139 scoped it.
+
+⚠️ **Unchanged residual:** an install whose clock has been wrong since its FIRST migration is
+invisible to all of this, because the floor is wrong by the same amount.
+
 ### 🔴 Finding 55 — one observation could be counted TWICE, fabricating a "you are being followed" — ✅ FIXED
 
 **The 24h sighting debounce is a read-modify-write with two writers.**
