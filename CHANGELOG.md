@@ -235,6 +235,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **One sighting of a device could be counted twice, bringing forward a warning
+  you had not earned.** Lynceus only counts a watched device once per 24 hours,
+  so that "seen on four separate days" means what it says. But it watches
+  through two independent paths — the main scan loop and the Bluetooth listener
+  — and each keeps its own connection to the database. When both handled the
+  same sighting at the same moment, each could check the 24-hour rule against
+  the same starting point, each conclude the sighting counted, and both increment
+  the tally. Measured: one sighting, counter moved by two.
+
+  ⛔ This is the failure direction that matters most here. It does not lose a
+  warning; it *manufactures* one, by reaching the escalation threshold on fewer
+  real recurrences than you were promised. A "this device appears to be following
+  you" alert that turns out to be arithmetic is the fastest way to make you stop
+  believing the next one, and that alert cannot be un-sent.
+
+  The counting step now refuses to apply a decision made from a value another
+  writer has already changed, and likewise will not bump a device you closed
+  from another tab while the sighting was in flight.
+
 - **A "reset" on a device left a complaint about it that nothing could ever
   clear.** When lynceus tries to warn you that a device keeps following you and
   the notification does not get through, it keeps retrying — up to four times,
