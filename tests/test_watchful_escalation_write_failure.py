@@ -44,7 +44,7 @@ from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.kismet import DeviceObservation
 from lynceus.notify import Notifier
-from lynceus.poller import process_observation
+from lynceus.poller import _emit_watchful_escalation, process_observation
 from lynceus.rules import Rule, Ruleset
 
 MAC = "ac:de:48:11:22:33"  # universally-administered; a locally-administered OUI
@@ -658,26 +658,32 @@ def test_a_failed_alert_insert_leaves_no_reservation(watched):
     ]
 
 
-def test_a_bad_entry_id_is_not_reported_as_already_escalated(watched):
-    """The IntegrityError disambiguation, which is the other silent-drop risk.
+def test_a_bad_entry_id_writes_nothing_and_escalates_nothing(watched):
+    """A generation that cannot be reserved must never look like a success.
 
-    ``PRAGMA foreign_keys`` is ON, so a nonexistent ``entry_id`` raises
-    IntegrityError exactly as a duplicate generation does. Swallowing both
-    would return None -- "already escalated" -- for an entry that does not
-    exist, and the escalation would be dropped with no error anywhere."""
+    ⛔ This test used to require a FOREIGN KEY error to surface, because the
+    reservation was an `INSERT ... VALUES` and a nonexistent `entry_id` was the
+    only way to get 0 rows. It is now an `INSERT ... SELECT` conditioned on the
+    entry still being at this generation, so "no such entry" and "the
+    generation moved on" both arrive the same way: **zero rows inserted**.
+
+    The property that actually matters is unchanged and is what is asserted
+    here -- nothing is written, nothing is delivered, and the caller is NOT
+    handed a timestamp it would stamp. Requiring a specific exception TYPE was
+    pinning the mechanism rather than the guarantee.
+    """
     db, config, ruleset, entry_id = watched
     missing = entry_id + 9999
     assert db.get_watchful_recurrence(missing) is None, (
         "fixture failed: the id chosen for 'missing' actually exists"
     )
-    with pytest.raises(Exception) as caught:
-        db.add_watchful_escalation_alert(
-            missing, 0, ts=T0 + DAY, mac=MAC,
-            message="seen 4 times", severity="high",
-        )
-    assert "FOREIGN KEY" in str(caught.value).upper(), (
-        f"expected the foreign-key failure to surface, got {caught.value!r}"
+    result = db.add_watchful_escalation_alert(
+        missing, 0, ts=T0 + DAY, mac=MAC,
+        message="seen 4 times", severity="high",
     )
+    assert result is None, f"a nonexistent entry produced an alert id: {result!r}"
+    assert _escalation_rows(db) == [], "an alert row was written for no entry"
+    assert _ledger_rows(db) == [], "a reservation was written for no entry"
 
 
 def test_the_unique_constraint_alone_prevents_the_duplicate(watched):
@@ -1087,3 +1093,55 @@ def test_three_generations_each_escalate_exactly_once(watched):
     assert [(r["entry_id"], r["generation"]) for r in _ledger_rows(db)] == [
         (entry_id, 0), (entry_id, 1), (entry_id, 2)
     ], "the ledger did not record one reservation per generation"
+
+
+def test_a_stale_generation_cannot_emit_after_a_snooze_consumed_reset(watched):
+    """⛔ The escape hatch the UNIQUE constraint alone does NOT close.
+
+    A generation consumed by the rule_type snooze is STAMPED (so a reset is
+    legal) but has NO ledger row -- the ledger records EMISSION, and a snoozed
+    crossing emits nothing. So for that generation the constraint has nothing
+    to collide with, and a handler still holding the pre-reset view can emit
+    and DELIVER an escalation for a generation the operator both snoozed and
+    reset.
+
+    Measured before the fix: `alerts=1 delivered=1`. That directly defeats
+    `test_a_snoozed_escalation_is_consumed_and_never_resurrected`, one aisle
+    over.
+
+    Found by an M3 sweep of the poller; the sweep's own interleaving was
+    refuted (a reset needs `escalated_at IS NOT NULL`, which a mid-crossing
+    entry does not have) and this is the one variant that survives that
+    refutation."""
+    db, _config, _ruleset, entry_id = watched
+    notifier = RecordingNotifier()
+
+    # Generation 0 consumed by a snooze: stamped, no alert row, no ledger row.
+    db.escalate_watchful_recurrence(entry_id, T0 + DAY, expected_reset_count=0)
+    assert _escalation_rows(db) == [], "precondition: a snoozed crossing emits nothing"
+    assert _ledger_rows(db) == [], "precondition: and reserves nothing"
+
+    # The operator resets -- legal, because escalated_at IS NOT NULL.
+    db.reset_watchful_recurrence(entry_id, T0 + 2 * DAY)
+    moved = db.get_watchful_recurrence(entry_id)
+    assert moved.reset_count == 1 and moved.escalated_at is None
+
+    # A handler still holding the PRE-reset view emits for generation 0.
+    stale = moved._replace(reset_count=0, escalated_at=None)
+    stamp = _emit_watchful_escalation(db, notifier, stale, T0 + 2 * DAY)
+
+    assert stamp is None, (
+        f"the stale handler was told to stamp {stamp}; generation 0 is gone"
+    )
+    assert _escalation_rows(db) == [], (
+        "an escalation was written for a generation the operator had both "
+        "snoozed and reset"
+    )
+    assert notifier.sent == [], (
+        f"the operator was sent {notifier.sent} for a generation they snoozed "
+        "and then reset"
+    )
+    assert db.get_watchful_recurrence(entry_id).escalated_at is None, (
+        "the current generation was stamped by a handler that decided about "
+        "an older one"
+    )
