@@ -1975,31 +1975,59 @@ def _check_ruleset(config: Config) -> dict:
     operators rarely poll /healthz.json at sub-second cadence). When the
     loader raises (missing file, parse error, validation error), the
     check stays ``status: ok`` per the prompt's contract — only the DB
-    check controls top-level status. ``active_rules`` falls to 0 so the
-    monitoring tool can see the file is broken via a separate signal
-    (a non-zero ``rules_path_configured`` paired with zero
-    ``active_rules`` is the canonical "wired but broken" pattern)."""
+    check controls top-level status.
+
+    ⛔ **``rules_loaded`` exists because the documented discriminator did not
+    discriminate.** This docstring used to say that "a non-zero
+    ``rules_path_configured`` paired with zero ``active_rules`` is the canonical
+    'wired but broken' pattern". Measured, that is false: a legitimately EMPTY
+    rules file produces byte-identical output to an unparseable one —
+
+        valid file, 1 rule   {'active_rules': 1, 'rules_path_configured': True}
+        rules: []            {'active_rules': 0, 'rules_path_configured': True}
+        unparseable yaml     {'active_rules': 0, 'rules_path_configured': True}
+
+    — so a consumer following the instruction pages on an empty ruleset and
+    stays silent about a corrupt one. ⚠️ In this product a ruleset that failed
+    to load means **no alert can fire at all**, which is the silence-means-safe
+    direction.
+
+    ⭐ The information already existed: the home page computes
+    ``rules_state`` as ``"unset" | "ok" | "unreadable"`` from the same load. The
+    HUMAN surface distinguished the two states and the MACHINE surface did not.
+    ``rules_loaded`` publishes it, matching the ``*_known`` convention this file
+    already uses for ``liveness_known`` / ``snoozes_known`` / ``staleness_known``:
+    a flag beside the number saying whether the number means anything.
+
+    ``rules_loaded`` is False when the path is unset (nothing to load) or when
+    the load raised; True when the file parsed, including when it parsed to zero
+    rules.
+    """
     if not config.rules_path:
         return {
             "status": "ok",
             "active_rules": 0,
             "rules_path_configured": False,
+            "rules_loaded": False,
         }
+    loaded = True
     try:
         ruleset = rules_mod.load_ruleset(config.rules_path)
         active = sum(1 for r in ruleset.rules if r.enabled)
     except Exception as exc:  # noqa: BLE001 — broken-but-configured is observable
         logger.warning(
             "/healthz.json: rules_path=%r failed to load (%s); "
-            "reporting active_rules=0",
+            "reporting active_rules=0 with rules_loaded=false",
             config.rules_path,
             exc,
         )
         active = 0
+        loaded = False
     return {
         "status": "ok",
         "active_rules": int(active),
         "rules_path_configured": True,
+        "rules_loaded": loaded,
     }
 
 

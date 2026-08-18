@@ -235,6 +235,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A monitoring tool could not tell a broken rules file from an empty one.**
+  `/healthz.json` reported `active_rules: 0` for both — a `rules.yaml` that
+  failed to parse, and one that legitimately contains no enabled rules. The two
+  payloads were identical, and the field documentation told you to treat
+  "configured, zero rules" as the broken signal, which an empty file also
+  matches. So a tool following that advice alerts on the harmless case and stays
+  silent on the one that matters: a ruleset that failed to load means **no alert
+  can fire at all**.
+
+  The endpoint now reports `rules_loaded`, so the three states — no path set,
+  file loaded, file broken — are distinguishable. The home page already made
+  this distinction; only the machine-readable surface did not.
+
+
 - **A stored value lynceus could not read was reported as "nothing happened".**
   The home page and `/healthz` tell you when the daemon last completed a poll.
   That time is recorded in the database, and if the recorded value was damaged

@@ -290,6 +290,84 @@ def test_check_watchlist_respects_config_threshold(tmp_path):
 # ---- _check_ruleset -------------------------------------------------------
 
 
+def _ruleset_config(tmp_path, body: str):
+    from lynceus.config import Config
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(body, encoding="utf-8")
+    return Config(
+        db_path=str(tmp_path / "s.db"),
+        rules_path=str(rules),
+        allowlist_path=str(tmp_path / "a.yaml"),
+    )
+
+
+_VALID_ONE_RULE = (
+    "rules:\n"
+    "  - name: r\n"
+    "    rule_type: watchlist_mac\n"
+    "    severity: high\n"
+    "    enabled: true\n"
+)
+
+
+def test_an_empty_ruleset_and_a_broken_one_are_distinguishable(tmp_path):
+    """⛔ They used to be byte-identical on this endpoint.
+
+    The docstring told consumers that `rules_path_configured` true with
+    `active_rules == 0` is the canonical "wired but broken" pattern. Measured,
+    a legitimately EMPTY rules file satisfies that too — so a monitoring tool
+    following the instruction pages on an empty ruleset and stays silent about
+    a corrupt one.
+
+    ⚠️ In this product a ruleset that failed to load means **no alert can fire
+    at all**, which is the silence-means-safe direction.
+
+    ⭐ The information already existed: the home page computes `rules_state`
+    as "unset" | "ok" | "unreadable" from the same load. The HUMAN surface
+    distinguished these and the MACHINE surface did not.
+    """
+    empty = _check_ruleset(_ruleset_config(tmp_path / "e", "rules: []\n"))
+    broken = _check_ruleset(_ruleset_config(tmp_path / "b", "rules: [ nope\n"))
+
+    assert empty != broken, "an empty ruleset is indistinguishable from a broken one"
+    assert empty["rules_loaded"] is True
+    assert broken["rules_loaded"] is False
+    # Both still report zero enabled rules, and both stay status ok — only the
+    # DB check drives top-level status, which is a deliberate contract.
+    assert empty["active_rules"] == broken["active_rules"] == 0
+    assert empty["status"] == broken["status"] == "ok"
+    assert empty["rules_path_configured"] is broken["rules_path_configured"] is True
+
+
+def test_a_working_ruleset_reports_loaded(tmp_path):
+    """⭐ The control. A `rules_loaded` that were always False would satisfy the
+    broken half of the test above perfectly."""
+    ok = _check_ruleset(_ruleset_config(tmp_path / "v", _VALID_ONE_RULE))
+
+    assert ok["rules_loaded"] is True
+    assert ok["active_rules"] == 1
+
+
+def test_an_unset_rules_path_is_not_reported_as_loaded(tmp_path):
+    """⚠️ The third state. "No path configured" is not "the file loaded"; a
+    consumer gating on `rules_loaded` must not read an unconfigured install as
+    a working ruleset."""
+    from lynceus.config import Config
+
+    cfg = Config(
+        db_path=str(tmp_path / "s.db"),
+        rules_path="",
+        allowlist_path=str(tmp_path / "a.yaml"),
+    )
+    unset = _check_ruleset(cfg)
+
+    assert unset["rules_path_configured"] is False
+    assert unset["rules_loaded"] is False
+    assert unset["active_rules"] == 0
+
+
 @pytest.mark.webui
 def test_check_ruleset_unset_path(tmp_path):
     config = Config(db_path=str(tmp_path / "ui.db"))
@@ -299,6 +377,11 @@ def test_check_ruleset_unset_path(tmp_path):
         "status": "ok",
         "active_rules": 0,
         "rules_path_configured": False,
+        # ⭐ Deliberate addition. `rules_loaded` is False here for the reason
+        # this key exists at all: "no path configured" is a different state
+        # from "the file loaded", and a consumer gating on it must not read an
+        # unconfigured install as a working ruleset.
+        "rules_loaded": False,
     }
 
 
@@ -551,10 +634,16 @@ def test_healthz_json_response_shape_stability(tmp_path):
             "override_suppressed_vendors",
             "override_suppressed_categories",
         }
+        # ⭐ `rules_loaded` is a DELIBERATE addition, recorded here rather than
+        # waved through. Without it an EMPTY rules file and an UNPARSEABLE one
+        # were byte-identical on this endpoint — and the docstring told
+        # consumers to use `rules_path_configured && active_rules == 0` as the
+        # "wired but broken" signal, which an empty file also satisfies.
         assert set(body["checks"]["ruleset"].keys()) == {
             "status",
             "active_rules",
             "rules_path_configured",
+            "rules_loaded",
         }
         assert set(body["checks"]["alerts"].keys()) == {
             "status",
