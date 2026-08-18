@@ -128,6 +128,16 @@ def test_housekeeping_is_skipped_when_the_clock_is_untrusted(monkeypatch, db):
     for call in (
         "db.cleanup_expired_rule_type_snoozes(now_ts)",
         "db.auto_archive_watchful_recurrence(now_ts)",
+        # ⛔ Finding 56's backward reporter. It asks whether a snooze's deadline
+        # "has passed on the current clock" -- a judgement made against
+        # `now_ts` -- so on a clock the daemon has already decided not to trust
+        # that conclusion is unfounded, and the warning would tell the operator
+        # to check their time source on the strength of the very reading in
+        # doubt. Added here because the FIRST cut of it sat outside the gate and
+        # this test is what caught that; its `except` had also swallowed the
+        # purge below into the handler, so the purge only ran when the reporter
+        # RAISED. No behavioural test in the suite noticed either.
+        "_report_impossible_watchful_snoozes(db, now_ts)",
     ):
         assert call in body, f"{call} vanished — this test is now checking nothing"
         before = body.split(call)[0]

@@ -292,6 +292,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for a long time and checked by nothing. It is now a test.
 
 
+- **A "snooze this device for a day" could have delivered nothing, and said
+  nothing about it.** Lynceus already notices when the machine's clock has
+  jumped *forward* and a snooze was written with an impossible future deadline.
+  It had no equivalent for the clock running *behind*, which is the case that
+  hurts: the deadline is written in the past, so the snooze is over before it
+  starts. You asked for 24 hours and got none, and nothing anywhere said so.
+
+  It now notices, using something that does not depend on the clock being right:
+  a watched device cannot have been recorded before the database that stores it
+  existed. When the two disagree it says so, names the device and the duration
+  you asked for, and tells you to check the machine's time source.
+
+  It reports rather than repairs — it will not silently re-apply a suppression
+  on a machine whose clock you cannot trust — and it says it **once** per
+  device rather than on every poll, because a warning that repeats forever is
+  one you learn to scroll past. It also stays quiet about a snooze that is
+  still working, one you set for "forever", and one on a machine whose clock
+  was running *ahead* when it was first set up, all of which would otherwise
+  look identical to the real fault.
+
+  ⚠️ One case still cannot be caught, and is written down rather than papered
+  over: a machine whose clock has been wrong since the day it was set up has
+  nothing correct on it to compare against.
+
 - **A heartbeat delivered while the clock read 1970 was reported as never
   delivered at all.** A Raspberry Pi without a battery-backed clock boots to a
   bogus date, and the daemon can send its first heartbeat before the network

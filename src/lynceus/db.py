@@ -158,6 +158,25 @@ class ImpossibleSnooze(NamedTuple):
     duration_seconds: int
 
 
+class ImpossibleWatchfulSnooze(NamedTuple):
+    """A watchful snooze whose entry was created before its own database was.
+
+    Named for the same reason as ``ImpossibleSnooze`` above: the poller renders
+    these fields into an operator-facing warning, and a positional mistake there
+    is invisible to tests that only check values.
+
+    ``entry_id`` is carried so the caller can report each row **once**. The
+    sibling gets that bound for free -- the purge deletes the rule_type row
+    immediately afterwards -- and watchful entries are never purged, so the
+    caller has to remember instead.
+    """
+
+    entry_id: int
+    mac: str
+    created_at: int
+    duration_seconds: int
+
+
 class RuleStats(NamedTuple):
     """Per-rule fire counts + last-fired timestamp for a time window.
 
@@ -3937,6 +3956,83 @@ class Database:
                 for rt, added, exp in self._conn.execute(
                     "SELECT rule_type, added_at, expires_at FROM rule_type_snoozes "
                     "WHERE added_at < ? AND expires_at <= ?",
+                    (floor, now_ts),
+                )
+            ]
+        except Exception:  # noqa: BLE001 -- see above; a report must never decide
+            return []
+
+    def find_impossible_watchful_snoozes(
+        self, now_ts: int
+    ) -> list[ImpossibleWatchfulSnooze]:
+        """Expired watchful snoozes on entries created before this database was.
+
+        The second of the four deadline backends to get a BACKWARD reporter
+        (Finding 56). ``repair_future_dated_watchful_snoozes`` catches a clock
+        that jumped FORWARD; nothing saw the backward case, and the backward
+        case is the one that silently delivers **none** of the snooze the
+        operator asked for. Measured, for a 24h snooze on a clock 6 years
+        behind that was later corrected: `operator gets 0.0h of 24.0h`, with
+        no message anywhere.
+
+        Same ordering discriminator as ``find_impossible_rule_type_snoozes``,
+        and it works here for the same reason: a row cannot have been written
+        before the schema that holds it existed. The provenance column is
+        ``created_at`` -- **not** ``snooze_expires_at`` and **not**
+        ``last_seen_at``, both of which are deliberately re-written and clamped
+        and so carry no information about when the row was born.
+
+        ⛔ **A NULL ``snooze_expires_at`` means snoozed FOREVER** (``poller.py``:
+        ``snooze_active = snooze_expires_at is None or snooze_expires_at >
+        now_ts``), **not "no snooze"**. A forever-snooze has no deadline to be
+        wrong about, and reporting one would tell the operator their working
+        suppression had failed.
+
+        ⚠️ The explicit ``IS NOT NULL`` below is **redundant and cannot fail on
+        its own** -- SQLite's ``NULL <= x`` is NULL, never true, so the deadline
+        comparison already excludes forever-snoozes. It is kept as a statement
+        of intent and as cover for anyone making that comparison NULL-tolerant
+        (a ``COALESCE`` would report every forever-snooze on the install), and
+        it is called out as redundant here so nobody reads it as load-bearing.
+        Its plant SURVIVED, which is how this was noticed.
+
+        ⛔ **``snooze_expires_at <= now_ts`` is REQUIRED for the same reason
+        #139 had to add it to the sibling.** A snooze written on a behind clock
+        can still be IN FORCE if its duration outruns the error -- the operator
+        is getting less than they asked for, but they are getting something,
+        and telling them it "has already passed" would be false about a
+        suppression they can watch working.
+
+        ⚠️ Inherits every caveat of the sibling, and they are not repeated
+        lightly: this is a DISAGREEMENT between the row and the schema history,
+        not proof about which clock was wrong; ``applied_at`` is stamped by the
+        same host clock, so a database migrated while the clock read AHEAD puts
+        the floor above legitimate later writes (the caller must phrase it as a
+        disagreement); and an install whose clock has been wrong since its
+        FIRST migration is invisible to all of this.
+
+        ⛔ **Never raises.** A diagnostic that can change what its caller does is
+        a defect this project has shipped twice. On any failure this reports
+        nothing and the caller behaves exactly as before.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT MIN(applied_at) FROM schema_migrations"
+            ).fetchone()
+            if row is None or row[0] is None:
+                return []
+            floor = int(row[0])
+            return [
+                ImpossibleWatchfulSnooze(
+                    int(eid), str(mac), int(created), int(exp) - int(created)
+                )
+                for eid, mac, created, exp in self._conn.execute(
+                    "SELECT id, mac, created_at, snooze_expires_at "
+                    "FROM watchful_recurrence "
+                    "WHERE created_at < ? "
+                    "AND snooze_expires_at IS NOT NULL "
+                    "AND snooze_expires_at <= ? "
+                    "AND archived_at IS NULL",
                     (floor, now_ts),
                 )
             ]

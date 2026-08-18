@@ -1109,3 +1109,191 @@ def test_the_report_is_field_addressed_so_a_positional_swap_cannot_compile(db):
     assert found.rule_type == "ble_uuid"
     assert found.added_at == NOW - YEAR
     assert found.duration_seconds == DAY
+
+
+# ---------------------------------------------------------------------------
+# FINDING 56 — the BACKWARD reporter for the WATCHFUL snooze backend.
+#
+# `repair_future_dated_watchful_snoozes` catches a clock that jumped FORWARD.
+# Nothing saw the backward case, and the backward case is the one that silently
+# delivers NONE of the snooze the operator asked for. Measured, 24h asked for on
+# a clock 6 years behind that was later corrected: `operator gets 0.0h of 24.0h`,
+# with no message anywhere.
+#
+# ⛔ Acceptance criterion is a CONJUNCTION, and the second half is not optional:
+# `MIN(applied_at)` is stamped by the SAME host clock, so a database migrated
+# while the clock read AHEAD puts the floor above every legitimate later write.
+# #135 shipped exactly that false positive and #139 had to scope it away. Three
+# separate shapes must NOT be reported, and each gets a test below.
+# ---------------------------------------------------------------------------
+
+
+def test_an_impossible_watchful_snooze_is_reported(db):
+    """The finding. The entry predates its own database, and its deadline has
+    passed on the current clock -- so the operator asked for a day and got
+    nothing, silently."""
+    db.ensure_location("home", "Home")
+    _set_floor(db, NOW)
+    entry_id = _watchful(db, "aa:bb:cc:dd:ee:01", DAY, NOW - 6 * YEAR)
+
+    found = db.find_impossible_watchful_snoozes(NOW)
+    assert len(found) == 1, found
+    row = found[0]
+    # ⚠️ Field access, not positional. The poller renders `created_at` as
+    # "it is stamped X"; swapping it with `duration_seconds` showed a 1970
+    # timestamp on the sibling while every test passed.
+    assert row.entry_id == entry_id
+    assert row.mac == "aa:bb:cc:dd:ee:01"
+    assert row.created_at == NOW - 6 * YEAR
+    assert row.duration_seconds == DAY, (
+        "the reported duration must be the operator's INTENT (expires - created, "
+        "both stamped by one clock), not a reading of the wrong clock"
+    )
+
+
+def test_a_healthy_watchful_snooze_is_not_reported(db):
+    """⛔ The control the whole change rests on. If this reported, every install
+    would be told its clock is broken and the real case would be lost in it."""
+    db.ensure_location("home", "Home")
+    _set_floor(db, NOW - YEAR)
+    _watchful(db, "aa:bb:cc:dd:ee:02", DAY, NOW - 2 * DAY)
+    assert db.find_impossible_watchful_snoozes(NOW) == []
+
+
+def test_a_snooze_still_IN_FORCE_is_not_reported(db):
+    """⛔ #139's lesson, ported. A snooze written on a behind clock can still be
+    in force if its duration outruns the error: the operator is getting less
+    than they asked for, but they can watch it working. Telling them it "has
+    already passed" would be false about a live suppression."""
+    db.ensure_location("home", "Home")
+    _set_floor(db, NOW)
+    _watchful(db, "aa:bb:cc:dd:ee:03", 30 * DAY, NOW - DAY)
+    assert db.find_impossible_watchful_snoozes(NOW) == [], (
+        "an in-force snooze was reported as having passed"
+    )
+
+
+def test_a_FOREVER_snooze_is_not_reported(db):
+    """⛔ NULL `snooze_expires_at` means snoozed FOREVER, not "no snooze" --
+    `poller.py` reads `snooze_active = snooze_expires_at is None or ...`. A
+    forever-snooze has no deadline to be wrong about, and reporting one would
+    tell the operator their working suppression had failed."""
+    db.ensure_location("home", "Home")
+    _set_floor(db, NOW)
+    entry_id = _watchful(db, "aa:bb:cc:dd:ee:04", None, NOW - 6 * YEAR)
+    assert db.get_watchful_recurrence(entry_id).snooze_expires_at is None, (
+        "fixture failed: this entry is not a forever-snooze"
+    )
+    assert db.find_impossible_watchful_snoozes(NOW) == []
+
+
+def test_a_floor_stamped_by_a_clock_that_read_AHEAD_reports_nothing(db):
+    """⛔ THE FALSE POSITIVE #135 SHIPPED. `applied_at` comes from the same host
+    clock, so a database migrated while the clock read ahead puts the floor
+    above every legitimate later write. The `snooze_expires_at <= now` scope is
+    what keeps that from producing a message, not the choice of MIN."""
+    db.ensure_location("home", "Home")
+    _set_floor(db, NOW + YEAR)
+    _watchful(db, "aa:bb:cc:dd:ee:05", DAY, NOW)  # healthy, still in force
+    assert db.find_impossible_watchful_snoozes(NOW) == [], (
+        "a future-dated floor flagged a healthy, in-force snooze"
+    )
+
+
+def test_an_archived_entry_is_not_reported(db):
+    """The operator has already closed this one; a warning about it is noise
+    about a row they cannot act on."""
+    db.ensure_location("home", "Home")
+    _set_floor(db, NOW)
+    entry_id = _watchful(db, "aa:bb:cc:dd:ee:06", DAY, NOW - 6 * YEAR)
+    assert db.find_impossible_watchful_snoozes(NOW), "precondition: not reportable"
+    db.dismiss_watchful_recurrence(entry_id, NOW)
+    assert db.find_impossible_watchful_snoozes(NOW) == []
+
+
+def test_the_watchful_floor_is_the_MINIMUM_not_a_hardcoded_version(db):
+    """Same trap as the sibling: hardcoding the migration that created the table
+    has broken five call sites across four files here before."""
+    db.ensure_location("home", "Home")
+    _set_floor(db, NOW - YEAR)
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (9_999, NOW + YEAR),
+        )
+    _watchful(db, "aa:bb:cc:dd:ee:07", DAY, NOW - 2 * DAY)
+    assert db.find_impossible_watchful_snoozes(NOW) == [], (
+        "the floor tracked a LATER migration; every pre-upgrade row is now "
+        "'impossible'"
+    )
+
+
+def test_the_finder_never_raises(db):
+    """⛔ A diagnostic that can change what its caller does is a defect this
+    project has shipped twice -- once emptying an allowlist, once taking the
+    daemon down at startup."""
+    db._conn.execute("DROP TABLE watchful_recurrence")
+    assert db.find_impossible_watchful_snoozes(NOW) == []
+
+
+def test_each_impossible_watchful_snooze_is_reported_at_most_once(db, caplog):
+    """⛔ THE BOUND, and it is the half a naive port of the sibling gets wrong.
+
+    The rule_type reporter is bounded for free: the purge deletes the row
+    immediately afterwards. Watchful entries are NEVER purged, so without a
+    durable memory the same warning is re-emitted on every poll cycle forever --
+    the unbounded-repetition defect #139 already had to fix once, and the shape
+    that trains an operator to ignore the channel."""
+    import logging
+
+    from lynceus.poller import _report_impossible_watchful_snoozes
+
+    db.ensure_location("home", "Home")
+    _set_floor(db, NOW)
+    _watchful(db, "aa:bb:cc:dd:ee:08", DAY, NOW - 6 * YEAR)
+
+    def _emitted():
+        return [
+            r for r in caplog.records
+            if "watchful snooze for" in r.getMessage()
+        ]
+
+    with caplog.at_level(logging.WARNING, logger="lynceus.poller"):
+        _report_impossible_watchful_snoozes(db, NOW)
+        first = len(_emitted())
+        for _ in range(5):
+            _report_impossible_watchful_snoozes(db, NOW)
+        total = len(_emitted())
+
+    assert first == 1, f"the first cycle emitted {first} warnings, expected 1"
+    assert total == 1, (
+        f"six poll cycles emitted {total} warnings for ONE entry; the warning "
+        "repeats forever and the operator learns to ignore it"
+    )
+
+
+def test_a_SECOND_impossible_entry_is_still_reported_after_the_first(db, caplog):
+    """⛔ The other half of the bound, and without it "report once" passes
+    trivially by reporting once ever and then going silent."""
+    import logging
+
+    from lynceus.poller import _report_impossible_watchful_snoozes
+
+    db.ensure_location("home", "Home")
+    _set_floor(db, NOW)
+    _watchful(db, "aa:bb:cc:dd:ee:09", DAY, NOW - 6 * YEAR)
+
+    with caplog.at_level(logging.WARNING, logger="lynceus.poller"):
+        _report_impossible_watchful_snoozes(db, NOW)
+        _watchful(db, "aa:bb:cc:dd:ee:0a", 2 * DAY, NOW - 6 * YEAR)
+        _report_impossible_watchful_snoozes(db, NOW)
+        macs = [
+            r.getMessage() for r in caplog.records
+            if "watchful snooze for" in r.getMessage()
+        ]
+
+    assert len(macs) == 2, f"expected both entries reported once each, got {macs}"
+    assert any("aa:bb:cc:dd:ee:0a" in m for m in macs), (
+        "the memory silenced a NEW impossible entry, so the reporter has gone "
+        f"deaf after its first report: {macs}"
+    )
