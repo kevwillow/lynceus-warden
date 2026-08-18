@@ -510,6 +510,15 @@ def test_healthz_json_response_shape_stability(tmp_path):
             "last_imported_at",
             "days_since_import",
             "stale",
+            # ⭐ `staleness_known` is a DELIBERATE addition, recorded here rather
+            # than waved through, and `stale` gained a THIRD value. It used to
+            # be False when the import reference was stamped AHEAD of this
+            # clock, because `days_since_import` was clamped with `max(0, ...)`
+            # — a future-dated Argus export read as "imported today" and
+            # therefore fresh. It is None there now.
+            # ⚠️ A consumer branching on truthiness is unaffected (None is
+            # falsy, as False was); one that wants the difference now has a key.
+            "staleness_known",
             "liveness_known",
             "live_rows",
             "inert_rows",

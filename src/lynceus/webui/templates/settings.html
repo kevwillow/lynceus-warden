@@ -292,8 +292,14 @@
     {% if watchlist_stats.total == 0 %}
       {% if watchlist_freshness.has_import %}
         <p class="wizard-error"><small>
-          Last import ran {{ watchlist_freshness.age_days }}
-          {% if watchlist_freshness.age_days == 1 %}day{% else %}days{% endif %} ago:
+          Last import ran
+          {%- if watchlist_freshness.age_days is not none %}
+            {{ watchlist_freshness.age_days }}
+            {%- if watchlist_freshness.age_days == 1 %} day{% else %} days{% endif %} ago:
+          {%- else %}
+            at a time this machine cannot place (the source is dated ahead of
+            its clock):
+          {%- endif %}
           0 records admitted{% if watchlist_freshness.record_count and watchlist_freshness.record_count > 0 %}
             out of {{ watchlist_freshness.record_count }} in the source
           {% endif %}.
@@ -332,10 +338,21 @@
     {% if watchlist_freshness.has_import %}
       <p>
         status:
+        {# ⛔ THREE branches. This was `fresh` / else-`stale`, so the new
+           "unknown" status would have rendered as a confident "stale" -- the
+           mirror of the defect being fixed, asserting a verdict from the other
+           end. Neither word is honest when the reference is stamped ahead of
+           this clock. #}
         {% if watchlist_freshness.status == "fresh" %}
           <span class="badge-status-ok">fresh (within {{ watchlist_freshness.warn_days }} days)</span>
-        {% else %}
+        {% elif watchlist_freshness.status == "stale" %}
           <span class="badge-status-error">stale (older than {{ watchlist_freshness.warn_days }} days)</span>
+        {% else %}
+          <span class="badge-status-warn">cannot tell</span>
+          <small>the source timestamp is ahead of this machine&#39;s clock, so
+          the age of this data is not established. Argus stamps
+          <code>exported_at</code> with ITS clock, so this can happen with a
+          perfectly good local one &mdash; compare the two hosts.</small>
         {% endif %}
       </p>
       <dl class="metadata-grid">
@@ -350,7 +367,13 @@
         <dt>imported locally</dt>
         <dd>{{ watchlist_freshness.imported_at | unix_to_utc_human }}</dd>
         <dt>age</dt>
-        <dd>{{ watchlist_freshness.age_days }} days</dd>
+        <dd>
+          {% if watchlist_freshness.age_days is not none %}
+            {{ watchlist_freshness.age_days }} days
+          {% else %}
+            <em>(not established &mdash; the source is dated ahead of this clock)</em>
+          {% endif %}
+        </dd>
         <dt>source</dt>
         <dd>
           {% if watchlist_freshness.source %}
