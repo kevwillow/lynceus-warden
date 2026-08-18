@@ -2196,6 +2196,12 @@ def log_watchlist_staleness(
     clock is a strict lower bound on the data's age (data can be
     older than imported_at but never newer).
 
+    ⚠️ That fallback is about a MISSING ``exported_at``. A *present*
+    one that is dated ahead of this clock is a different case and is
+    reported as an unknown age at WARNING — see the comment at the
+    age arithmetic. Kept in lockstep with ``/settings`` by
+    ``tests/test_watchlist_age_lockstep.py``.
+
     Failures (db error, sqlite contention) downgrade to a single
     WARNING line; the poller continues. Observability-only by
     design — a broken staleness signal must NOT block startup.
@@ -2224,13 +2230,35 @@ def log_watchlist_staleness(
         return
 
     # Prefer Argus-side exported_at; fall back to imported_at when the
-    # meta line was unparseable. ``age_seconds`` ≥ 0 in practice; a
-    # negative value would mean the timestamp is in the future
-    # (clock skew). We clamp to >= 0 for the days arithmetic but
-    # surface the raw timestamp for forensic clarity.
+    # meta line was unparseable.
+    #
+    # ⛔ **This used to clamp a negative age to zero**, with the reasoning that
+    # the raw timestamp was still printed for forensic clarity. That reasoning
+    # is replaced, not extended: `exported_at` carries the ARGUS host's clock,
+    # so a future-dated export needs no local clock fault -- and clamping made a
+    # watchlist a YEAR old log `most recent Argus import 0 days ago` at **INFO**,
+    # i.e. no warning at all, with the honest number nowhere in the line an
+    # operator greps for. The printed timestamp does not help someone scanning
+    # journalctl for WARNINGs.
+    #
+    # ⚠️ It is also a LOCKSTEP requirement, and that is why this changed here.
+    # `_watchlist_freshness_card`'s docstring says this log line and /settings
+    # are "deliberately kept in lockstep so an operator who sees a WARNING in
+    # journalctl can open /settings and see the same numbers without
+    # reconciling". /settings stopped clamping; if this did not, the two would
+    # say `0 days / fresh` and `cannot tell` about the same watchlist.
+    # `tests/test_watchlist_age_lockstep.py` now checks that agreement.
+    #
+    # Tolerance, not zero: `exported_at` legitimately sits seconds ahead when
+    # the two hosts' clocks differ normally. `CLOCK_JUMP_TOLERANCE_SECONDS` is
+    # this module's existing notion of "close enough to now".
     reference_ts = latest["exported_at"] or latest["imported_at"]
-    age_seconds = max(0, now_ts - int(reference_ts))
-    age_days = age_seconds // 86400
+    ahead_by = int(reference_ts) - now_ts
+    age_days = (
+        None
+        if ahead_by > CLOCK_JUMP_TOLERANCE_SECONDS
+        else max(0, now_ts - int(reference_ts)) // 86400
+    )
     exported_at = latest["exported_at"]
     exported_iso = (
         _dt.datetime.fromtimestamp(int(exported_at), tz=_dt.UTC).strftime("%Y-%m-%d")
@@ -2238,7 +2266,20 @@ def log_watchlist_staleness(
         else "unknown"
     )
 
-    if age_days > warn_days:
+    if age_days is None:
+        # ⛔ WARNING, not INFO. The staleness signal is the thing that has
+        # failed, and an operator scanning for WARNINGs must not scroll past a
+        # watchlist whose age nothing has established.
+        logger.warning(
+            "watchlist: %d rows total, but the age of the most recent Argus "
+            "import cannot be established: it is dated %s, which is ahead of "
+            "this machine's clock. Argus stamps that field with ITS clock, so "
+            "compare the two hosts. Until they agree, treat the watchlist as "
+            "of unknown age rather than fresh.",
+            row_count,
+            exported_iso,
+        )
+    elif age_days > warn_days:
         logger.warning(
             "watchlist: %d rows total, most recent Argus import %d days "
             "ago (exported %s); consider 'lynceus-import-argus "

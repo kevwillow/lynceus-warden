@@ -259,6 +259,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already exists for a different cause, and sending you to check the clock over
   a damaged stored value would waste the trip and teach you to ignore it.
 
+- **The daemon's startup line still called a year-old watchlist "0 days ago",
+  after the web UI stopped.** `/settings` and the line lynceus logs at startup
+  are meant to say the same thing, so that a warning you see in `journalctl`
+  matches what you find when you open the page. When the web UI was taught that
+  a watchlist dated in the future has no knowable age, the startup line was left
+  clamping it to zero — so for the same watchlist, at the same moment, the page
+  said "cannot tell" and the log said "most recent Argus import 0 days ago", at
+  INFO, with no warning at all.
+
+  The log line now says the age cannot be established, and says it as a
+  **warning**: the thing that has failed is the staleness signal itself, and
+  someone scanning for warnings must not scroll past it. Ordinary clock
+  differences between the two machines still read as a zero-day-old import on
+  both sides, exactly as before.
+
+  The claim that the two surfaces stay in lockstep had been written in a comment
+  for a long time and checked by nothing. It is now a test.
+
+
 - **A heartbeat delivered while the clock read 1970 was reported as never
   delivered at all.** A Raspberry Pi without a battery-backed clock boots to a
   bogus date, and the daemon can send its first heartbeat before the network

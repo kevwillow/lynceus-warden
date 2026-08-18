@@ -915,13 +915,22 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
       row. When False, every other field below is None / 0 and the
       template renders a "no Argus import metadata recorded" line.
     - ``status``: ``"fresh"`` | ``"stale"`` | ``"unknown"``. Drives
-      the badge color. ``"unknown"`` only when ``has_import`` is
-      False.
+      the badge color. ``"unknown"`` in TWO cases, distinguished by
+      ``has_import``: no import recorded at all (``has_import``
+      False), or an import whose reference timestamp is ahead of
+      this clock so its age is not established (``has_import`` True,
+      ``age_days`` None). ⚠️ This sentence previously said "only
+      when ``has_import`` is False" and stopped being true when the
+      second case was added.
     - ``imported_at`` / ``exported_at``: int UTC seconds, or None.
       Rendered via the existing ``unix_to_utc_human`` Jinja filter.
     - ``age_days``: int days computed against ``exported_at`` when
-      present, else ``imported_at``. Identical fallback rule to the
-      log line — both surfaces must agree.
+      present, else ``imported_at``; **None** when that reference is
+      ahead of this clock, because "how old is this" has no answer
+      for a future timestamp. Identical fallback rule AND identical
+      unknown rule as the log line — both surfaces must agree, and
+      ``tests/test_watchlist_age_lockstep.py`` now checks that they
+      do rather than leaving it as an instruction to future authors.
     - ``source``: free-form string from ``import_runs.source``
       (absolute path or ``owner/repo@ref``); rendered verbatim
       with no decoration so a forensic copy-paste from /settings
