@@ -22,6 +22,9 @@ operator to check hardware when the real fault was one transient ntfy blip.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from lynceus.config import Config
@@ -300,9 +303,17 @@ def test_interval_of_zero_is_rejected(db):
 #
 # 🪤 Both of these caught a real bug while this feature was being written: the
 # first draft used a `ts_to_local` filter and a `badge-status-warn` class,
-# NEITHER of which exists. An undefined Jinja filter and an undefined CSS class
-# both fail silently -- the documented classless-Pico trap in this repo. A card
-# that renders nothing looks identical to a card that is simply absent.
+# NEITHER of which existed at the time. An undefined Jinja filter and an
+# undefined CSS class both fail silently -- the documented classless-Pico trap
+# in this repo. A card that renders nothing looks identical to a card that is
+# simply absent.
+#
+# ⚠️ UPDATED: `badge-status-warn` now EXISTS -- it was added with the heartbeat
+# freshness states, which needed a middle tier for "nothing has been established
+# here". The assertion below therefore no longer names it. Naming one forbidden
+# class pinned the historical mistake rather than the invariant, and would have
+# blocked any future legitimate use of that tier; what actually matters is that
+# every class this card emits HAS a rule, which is now checked derivedly.
 
 
 @pytest.mark.webui
@@ -326,8 +337,30 @@ def test_settings_renders_the_heartbeat_card(tmp_path):
         assert "heartbeat" in body
         assert "every 12h" in body, "interval not rendered — filter or key wrong"
         assert "armed" in body
-        # The literal names of things that must exist for this to render at all.
-        assert "badge-status-warn" not in body, "undefined CSS class would render unstyled"
+        # ⭐ DERIVED, not a forbidden-name list: every badge class this card
+        # actually emits must have a CSS rule. That is the invariant the old
+        # `"badge-status-warn" not in body` assertion was reaching for, stated
+        # so that adding a legitimate tier does not fail it.
+        css = (
+            Path(__file__).resolve().parents[1]
+            / "src/lynceus/webui/static/lynceus.css"
+        ).read_text(encoding="utf-8")
+        emitted = set(re.findall(r'class="(badge-status-[a-z-]+)"', body))
+        assert emitted, "the card emits no status badge at all"
+        # 🪤 A BOUNDARY, not a substring. The first version tested
+        # `f".{c}" not in css`, and a plant that renamed the rule to
+        # `.badge-status-warnXX` sailed straight through it -- the needle is a
+        # PREFIX of the string it has to distinguish. Same shape this repo has
+        # recorded before; the plant is the only reason it was caught.
+        undefined = sorted(
+            c for c in emitted
+            if not re.search(rf"\.{re.escape(c)}\s*[{{,]", css)
+        )
+        assert not undefined, (
+            f"the card emits {undefined} with no CSS rule; an undefined class "
+            f"renders unstyled and silently, which is indistinguishable from "
+            f"the card being absent"
+        )
     finally:
         d.close()
 

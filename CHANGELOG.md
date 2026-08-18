@@ -269,6 +269,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   answers along with the broken one. The reason a check failed goes to the
   server log rather than the response, because that endpoint is unauthenticated.
 
+- **The dead-man's switch could stop and the page that watches it stayed green.**
+  The heartbeat exists so that silence means something: with it armed, lynceus
+  pushes a periodic "still watching", and a heartbeat that *stops* arriving is
+  itself the warning. `/settings` is where you check that guarantee is real —
+  and it was answering a different question. It reported whether the heartbeat
+  was enabled, and whether any had ever failed to send. It never asked when the
+  last one actually arrived. Measured: a heartbeat on a 24-hour interval whose
+  last delivery was **400 days** earlier still showed a green "on".
+
+  The "never delivered" counter does not cover it, and that is the heart of the
+  problem: it counts heartbeats the daemon composed and failed to send. A daemon
+  that has stopped composes nothing, so that counter reads zero and the page
+  falls through to the healthy line. **The failure you most need to see is the
+  one that leaves every counter at zero.**
+
+  The card now has the two states it was missing. If nothing has arrived for
+  more than two intervals it says **stopped**, names how long it has been, and
+  says what to check. If the last delivery is stamped *ahead* of this machine's
+  clock — the RTC-less Raspberry Pi case again — it says the clock disagrees and
+  that liveness cannot be read from that timestamp, rather than guessing. One
+  missed beat is still reported as healthy: that is a transient delivery
+  failure, which the existing counter already reports separately and which has a
+  different fix.
+
+  The "none delivered yet" state changed too, for the same reason. It used to be
+  green. That is right on a fresh install and wrong on one where you enabled the
+  heartbeat months ago and it has never once fired — and the page genuinely
+  cannot tell those apart, because the config records that the heartbeat is on
+  and never when you turned it on. So it now says so, and gives you the one test
+  it cannot run itself: if you enabled this more than an interval ago, it is not
+  working.
+
+
 - **A "reset" on a device left a complaint about it that nothing could ever
   clear.** When lynceus tries to warn you that a device keeps following you and
   the notification does not get through, it keeps retrying — up to four times,

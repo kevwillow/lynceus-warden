@@ -1059,7 +1059,12 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
     # Surfaced beside the other health facts, because an operator whose snooze
     # was just refused needs somewhere that explains why -- and one whose clock
     # is wrong should not have to be refused first to find out.
-    clock_state = clock_behind_recorded_history(db, int(time.time()))
+    # ⚠️ One clock read for everything below that compares against "now".
+    # Three separate `int(time.time())` calls in one page render can straddle a
+    # second boundary and make two cards disagree about the same instant.
+    settings_now_ts = int(time.time())
+    heartbeat_last_delivered = db.latest_delivered_heartbeat_ts()
+    clock_state = clock_behind_recorded_history(db, settings_now_ts)
     settings_overrides = load_overrides(config)
     suppressions = suppression_axes_of(settings_overrides)
     # ⭐ Named beside the silence list, and for the same reason: this page tells
@@ -1132,13 +1137,20 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
         "heartbeat": {
             "enabled": config.heartbeat_enabled,
             "interval_hours": config.heartbeat_interval_hours,
-            "last_delivered_at": db.latest_delivered_heartbeat_ts(),
+            "last_delivered_at": heartbeat_last_delivered,
             "undelivered": db.count_undelivered_heartbeats(),
+            # ⛔ "delivered at least once, ever" is what this card used to
+            # answer. A switch 400 intervals overdue rendered green.
+            **heartbeat_liveness(
+                heartbeat_last_delivered, config, now_ts=settings_now_ts
+            ),
         },
         "watchlist_stats": _watchlist_origin_breakdown(db),
         "watchlist_freshness": freshness_card,
         "watchlist_liveness": liveness,
         "clock_state": clock_state,
+        # The same instant every card on this page compares against.
+        "now_ts": settings_now_ts,
         "runtime_suppressions": suppressions,
         "configured_remaps": configured_remaps,
         "severity_overrides": {
@@ -1469,6 +1481,48 @@ def _read_last_tick_stats(db: Database) -> dict | None:
     }
 
 
+def clock_stamped_freshness(
+    stamp: int | None, *, now_ts: int, stale_after_seconds: int
+) -> dict:
+    """Three-state freshness for a timestamp THIS host wrote: `{"staleness_known",
+    "is_stale", "ahead_by_seconds"}`.
+
+    ⛔ **The third state exists because a stamp AHEAD of this clock says nothing
+    about whether the writer is alive, and the two-state version said it was.**
+    A test of the form `now_ts - stamp > threshold` is False for every negative
+    delta, so a stamp from the future scored healthy -- which reported a daemon
+    dead for a year as fine. Neither "stale" nor "fresh" is asserted there,
+    because neither is established: the clock may be behind now, or that stamp
+    may have been written by a fast clock.
+
+    ⭐ **One predicate, several surfaces, deliberately.** `/healthz` (HTML) once
+    carried its own copy of the poll-tick arithmetic, `_check_poller` a second
+    and the home page an implicit third -- which is how two surfaces came to
+    disagree about whether the daemon was alive. The heartbeat card then turned
+    out to have NO copy at all, which is the same bug arrived at from the other
+    end. Callers differ only in `stale_after_seconds`.
+
+    ⚠️ `stamp is None` is reported known-and-fresh, not unknown: "nothing has
+    been written yet" is a state the callers' own surfaces already render
+    ("waiting for first poll", "none delivered yet"), and flagging a fresh
+    install would be a startup-window false positive.
+    """
+    if stamp is None:
+        return {"staleness_known": True, "is_stale": False, "ahead_by_seconds": 0}
+    ahead_by = int(stamp) - int(now_ts)
+    if ahead_by > FUTURE_SKEW_SECONDS:
+        return {
+            "staleness_known": False,
+            "is_stale": None,
+            "ahead_by_seconds": ahead_by,
+        }
+    return {
+        "staleness_known": True,
+        "is_stale": (int(now_ts) - int(stamp)) > stale_after_seconds,
+        "ahead_by_seconds": 0,
+    }
+
+
 def poll_tick_liveness(tick: dict | None, config: Config, *, now_ts: int) -> dict:
     """Is the daemon polling? ``{"staleness_known", "is_stale", "ahead_by_seconds"}``.
 
@@ -1500,22 +1554,44 @@ def poll_tick_liveness(tick: dict | None, config: Config, *, now_ts: int) -> dic
     first poll" signal. Flagging a fresh install would be a startup-window false
     positive.
     """
-    if tick is None:
-        return {"staleness_known": True, "is_stale": False, "ahead_by_seconds": 0}
+    return clock_stamped_freshness(
+        None if tick is None else tick["completed_at"],
+        now_ts=now_ts,
+        stale_after_seconds=max(1, config.poll_interval_seconds) * 2,
+    )
 
-    ahead_by = int(tick["completed_at"]) - int(now_ts)
-    if ahead_by > FUTURE_SKEW_SECONDS:
-        return {
-            "staleness_known": False,
-            "is_stale": None,
-            "ahead_by_seconds": ahead_by,
-        }
-    stale_threshold = max(1, config.poll_interval_seconds) * 2
-    return {
-        "staleness_known": True,
-        "is_stale": (int(now_ts) - int(tick["completed_at"])) > stale_threshold,
-        "ahead_by_seconds": 0,
-    }
+
+def heartbeat_liveness(
+    last_delivered_at: int | None, config: Config, *, now_ts: int
+) -> dict:
+    """Is the DEAD-MAN'S SWITCH still firing? Same three states as the poll tick.
+
+    ⛔ **`/settings` reported a heartbeat that had not arrived in over a year as
+    a green "on", and nothing anywhere else checked either.** The card's own
+    text says the heartbeat is what distinguishes *"nothing is out there"* from
+    *"the daemon died"* -- and it answered **"delivered at least once, ever"**.
+    Measured on the tree before this
+    (`internal/session2-harnesses/heartbeat_surface_probe.py`):
+
+        CONTROL delivered 0d ago,   clock correct        [on]  last delivered just now
+                delivered 400d ago, clock correct        [on]  last delivered 400d ago
+                delivered 400d ago, clock behind 500d    [on]  last delivered 2025-07-14 UTC
+
+    Every row green, for a switch 400 times overdue on a 24-hour interval.
+    ⚠️ `undelivered` does not cover it: that counts heartbeats **composed but
+    not delivered**, and a daemon that has stopped composes nothing -- so the
+    count is 0 and the card falls through to the healthy branch. The failure the
+    operator most needs to see is the one that leaves every counter at zero.
+
+    ⚠️ Two intervals, not one, matching the poll tick for the same reason: a
+    single missed beat is a transient delivery failure, which `undelivered`
+    already reports separately. Two means the switch has stopped.
+    """
+    return clock_stamped_freshness(
+        last_delivered_at,
+        now_ts=now_ts,
+        stale_after_seconds=max(1, config.heartbeat_interval_hours) * 3600 * 2,
+    )
 
 
 #: What an anonymous caller is told when the database check fails. Deliberately

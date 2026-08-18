@@ -195,13 +195,47 @@
             <small>heartbeat{{ '' if heartbeat.undelivered == 1 else 's' }} never
             delivered &mdash; the proof-of-life you are relying on is NOT
             arriving. Check the topic and auth token.</small>
+          {# ⛔ These two states come BEFORE the healthy one, and both used to be
+             absent. This card is the only thing that answers "is my
+             proof-of-life actually arriving?", and it answered "it arrived at
+             least once, ever" -- a switch 400 intervals overdue rendered green.
+             `undelivered` does not cover it: a daemon that has stopped composes
+             nothing, so that counter stays 0 and the page falls through here. #}
+          {% elif heartbeat.last_delivered_at and not heartbeat.staleness_known %}
+            <span class="badge-status-warn">clock disagrees</span>
+            <small>last delivered
+            {{ heartbeat.last_delivered_at | relative_time(now_ts=now_ts) }},
+            which is ahead of this machine&#39;s clock &mdash; whether the
+            heartbeat is still arriving cannot be told from it. Check the clock
+            (NTP / <code>timedatectl</code>).</small>
+          {% elif heartbeat.last_delivered_at and heartbeat.is_stale %}
+            <span class="badge-status-error">stopped</span>
+            <small>expected every {{ heartbeat.interval_hours }}h, but the last
+            one arrived
+            {{ heartbeat.last_delivered_at | relative_time(now_ts=now_ts) }}
+            &mdash; the proof-of-life you are relying on has STOPPED. Silence is
+            ambiguous again: check the daemon is running and that ntfy still
+            accepts the topic.</small>
           {% elif heartbeat.last_delivered_at %}
             <span class="badge-status-ok">on</span>
             <small>every {{ heartbeat.interval_hours }}h; last delivered
-            {{ heartbeat.last_delivered_at | relative_time }}</small>
+            {{ heartbeat.last_delivered_at | relative_time(now_ts=now_ts) }}</small>
           {% else %}
-            <span class="badge-status-ok">armed</span>
-            <small>every {{ heartbeat.interval_hours }}h &mdash; none delivered yet</small>
+            {# ⛔ NOT the ok tier, and this is the sibling of the "stopped" state
+               above. Nothing has been proven here: no heartbeat has ever been
+               composed OR delivered. On a fresh install that is correct and
+               temporary; on an install where this was enabled months ago it
+               means the switch has never once fired, and the two are
+               INDISTINGUISHABLE from stored state -- the config file records
+               that the heartbeat is on, never when it was turned on. So the
+               page states the condition the OPERATOR can check instead of
+               picking the reassuring reading for them. #}
+            <span class="badge-status-warn">armed, unproven</span>
+            <small>expected every {{ heartbeat.interval_hours }}h &mdash; none
+            has arrived yet. If you enabled this more than
+            {{ heartbeat.interval_hours }}h ago, it is not working: check the
+            daemon restarted after the config change, and that ntfy accepts the
+            topic.</small>
           {% endif %}
         </dd>
       </dl>
