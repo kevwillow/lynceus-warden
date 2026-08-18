@@ -235,6 +235,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A stored value lynceus could not read was reported as "nothing happened".**
+  The home page and `/healthz` tell you when the daemon last completed a poll.
+  That time is recorded in the database, and if the recorded value was damaged
+  and could not be read back, lynceus treated it exactly as it treats a machine
+  that has never polled at all: it said the daemon was fine and it was waiting
+  for the first poll. A daemon that had been dead for a year looked like a fresh
+  install. On a default setup that line is your only sign the daemon is alive,
+  because the heartbeat is off unless you turn it on.
+
+  The same read also threw away the counts sitting beside it. One damaged
+  timestamp reported "0 admitted, 0 dropped" while the real numbers — 42 seen,
+  7 dropped — were undamaged and readable.
+
+  Now an unreadable timestamp is reported as what it is: the page says the
+  recorded time could not be read and that nothing can be concluded from it
+  about whether the daemon is polling. The counts beside it survive, because
+  they were never the damaged part. A count that *is* unreadable is shown as
+  unavailable rather than as zero, since "nothing was dropped" and "I could not
+  tell" are different answers.
+
+  ⚠️ The message deliberately does not say the clock disagrees. That warning
+  already exists for a different cause, and sending you to check the clock over
+  a damaged stored value would waste the trip and teach you to ignore it.
+
 - **A heartbeat delivered while the clock read 1970 was reported as never
   delivered at all.** A Raspberry Pi without a battery-backed clock boots to a
   bogus date, and the daemon can send its first heartbeat before the network

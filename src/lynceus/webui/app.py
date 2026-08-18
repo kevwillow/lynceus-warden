@@ -1505,26 +1505,47 @@ def _read_last_tick_stats(db: Database) -> dict | None:
     completed_raw = db.get_state("last_tick_completed_at")
     if completed_raw is None:
         return None
+    stamp_readable = True
     try:
-        completed_at = int(completed_raw)
+        completed_at: int | None = int(completed_raw)
     except (TypeError, ValueError):
-        return None
+        # ⛔ Present but unreadable is NOT "never polled", and returning None
+        # here said it was. Measured: a stored `last_tick_completed_at` of
+        # "not-an-int" produced `staleness_known: True, is_stale: False` -- a
+        # daemon dead for a year reported as a fresh install waiting for its
+        # first poll, with `admitted: 0` beside it while the real counters
+        # (42 admitted, 7 dropped) sat readable in the database.
+        completed_at = None
+        stamp_readable = False
+
+    counters_known = True
 
     def _read_int(key: str) -> int:
+        nonlocal counters_known
         raw = db.get_state(key)
         if raw is None:
+            # Absent is a real zero: poll_once writes all five together, so a
+            # missing counter means no tick has written it yet.
             return 0
         try:
             return int(raw)
         except (TypeError, ValueError):
+            # ⛔ Present-but-unreadable again. The number returned is a
+            # placeholder to keep the published shape and the templates'
+            # arithmetic intact; `counters_known` is what says it is not a
+            # measurement. Never render the number without checking the flag.
+            counters_known = False
             return 0
 
     dropped_source_allowlist = _read_int("last_tick_dropped_source_allowlist")
     dropped_min_rssi = _read_int("last_tick_dropped_min_rssi")
     dropped_unparseable = _read_int("last_tick_dropped_unparseable")
+    admitted = _read_int("last_tick_admitted")
     return {
         "completed_at": completed_at,
-        "admitted": _read_int("last_tick_admitted"),
+        "stamp_readable": stamp_readable,
+        "counters_known": counters_known,
+        "admitted": admitted,
         "dropped_source_allowlist": dropped_source_allowlist,
         "dropped_min_rssi": dropped_min_rssi,
         "dropped_unparseable": dropped_unparseable,
@@ -1535,7 +1556,11 @@ def _read_last_tick_stats(db: Database) -> dict | None:
 
 
 def clock_stamped_freshness(
-    stamp: int | None, *, now_ts: int, stale_after_seconds: int
+    stamp: int | None,
+    *,
+    now_ts: int,
+    stale_after_seconds: int,
+    stamp_known: bool = True,
 ) -> dict:
     """Three-state freshness for a timestamp THIS host wrote: `{"staleness_known",
     "is_stale", "ahead_by_seconds"}`.
@@ -1560,6 +1585,11 @@ def clock_stamped_freshness(
     ("waiting for first poll", "none delivered yet"), and flagging a fresh
     install would be a startup-window false positive.
     """
+    if not stamp_known:
+        # A stamp we could not read supports no verdict at all -- the same
+        # answer as an ahead-of-clock stamp, for the same reason, and
+        # deliberately NOT the never-written answer below.
+        return {"staleness_known": False, "is_stale": None, "ahead_by_seconds": 0}
     if stamp is None:
         return {"staleness_known": True, "is_stale": False, "ahead_by_seconds": 0}
     ahead_by = int(stamp) - int(now_ts)
@@ -1611,6 +1641,7 @@ def poll_tick_liveness(tick: dict | None, config: Config, *, now_ts: int) -> dic
         None if tick is None else tick["completed_at"],
         now_ts=now_ts,
         stale_after_seconds=max(1, config.poll_interval_seconds) * 2,
+        stamp_known=True if tick is None else tick.get("stamp_readable", True),
     )
 
 
@@ -1765,6 +1796,12 @@ def _check_poller(db: Database, config: Config, *, now_ts: int) -> dict:
     if tick is not None:
         poll_tick = {
             "completed_at": tick["completed_at"],
+            # ⚠️ `counters_known` is False when a stored counter was present but
+            # unreadable. The numbers below stay ints so the published shape and
+            # every consumer's arithmetic keep working, but a consumer that
+            # reports them without checking this flag is reporting "0 dropped"
+            # for "could not tell".
+            "counters_known": tick["counters_known"],
             "admitted": tick["admitted"],
             "dropped_source_allowlist": tick["dropped_source_allowlist"],
             "dropped_min_rssi": tick["dropped_min_rssi"],
@@ -1774,6 +1811,8 @@ def _check_poller(db: Database, config: Config, *, now_ts: int) -> dict:
     else:
         poll_tick = {
             "completed_at": None,
+            # Never polled: these zeros ARE established -- nothing has run.
+            "counters_known": True,
             "admitted": 0,
             "dropped_source_allowlist": 0,
             "dropped_min_rssi": 0,

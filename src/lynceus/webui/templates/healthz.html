@@ -19,6 +19,14 @@
         <tr>
           <th scope="row">completed</th>
           <td>
+            {# ⛔ stamp_readable is checked FIRST: an unreadable stored value and
+               an ahead-of-clock stamp both set staleness_known=False, but they
+               have different causes and therefore need different sentences. #}
+            {% if not last_tick.stamp_readable %}
+              <span class="status-pill status-pill-warn">unreadable</span>
+              &middot; the stored timestamp of the last tick could not be read,
+              so whether the daemon is still polling cannot be told from it
+            {% else %}
             <time datetime="{{ last_tick.completed_at | unix_to_iso }}"
                   title="{{ last_tick.completed_at | unix_to_utc_human }}">
               {{ last_tick.completed_at | relative_time(now_ts=now_ts) }}
@@ -34,12 +42,19 @@
             {% elif tick_liveness.is_stale %}
               &middot; <span class="badge-high">stale</span>
             {% endif %}
+            {% endif %}{# stamp_readable #}
           </td>
         </tr>
+        {% if not last_tick.counters_known %}
+        {# The stored counters were present but unreadable. Printing the
+           placeholder zeros would assert "nothing was dropped". #}
+        <tr><th scope="row">counters</th><td>unavailable &mdash; the stored values could not be read</td></tr>
+        {% else %}
         <tr><th scope="row">admitted</th><td>{{ last_tick.admitted }}</td></tr>
         <tr><th scope="row">dropped (allowlist mismatch)</th><td>{{ last_tick.dropped_source_allowlist }}</td></tr>
         <tr><th scope="row">dropped (below signal threshold)</th><td>{{ last_tick.dropped_min_rssi }}</td></tr>
         <tr><th scope="row">dropped (unrecognized device type)</th><td>{{ last_tick.dropped_unparseable }}</td></tr>
+        {% endif %}
       </table>
     </div>
   {% else %}
