@@ -641,6 +641,13 @@ details > summary { cursor: pointer; }
 .badge-privacy-warning { background: var(--lyn-badge-warning-bg);  color: var(--lyn-badge-warning-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; font-weight: 600; }
 .badge-status-ok       { background: var(--lyn-badge-positive-bg); color: var(--lyn-badge-positive-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .badge-status-error    { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+/* The middle tier, and it exists for one state: a clock-stamped freshness
+   verdict that cannot be made. Neither positive (nothing has been
+   established) nor negative (nothing is known to be broken) is honest
+   there, and rendering it as either is what let a dead-man's switch show
+   green. Same vars as .badge-privacy-warning, so the tier reads the same
+   wherever it appears. */
+.badge-status-warn     { background: var(--lyn-badge-warning-bg);  color: var(--lyn-badge-warning-fg);  padding: 2px 6px; border-radius: 4px; font-size: 0.85em; font-weight: 600; }
 /* A watchlist entry that is stored and counted but that no enabled rule
    delegates to, so it can never fire. The WARNING tier, not the negative one:
    nothing is broken and no data is lost -- the entry simply does not do what
