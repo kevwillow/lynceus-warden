@@ -148,33 +148,14 @@ def test_the_heartbeat_uses_ITS_OWN_interval_not_the_pollers(tmp_path):
         db.close()
 
 
-def test_one_staleness_threshold_per_surface_and_no_duplicates():
-    """⛔ `/healthz` (HTML) once carried its own copy of the poll-tick
-    arithmetic, `_check_poller` a second and the home page an implicit third —
-    which is how two surfaces came to disagree about whether the daemon was
-    alive. The heartbeat card then turned out to have NO copy, the same bug from
-    the other end. Each threshold belongs in exactly one place.
-    """
-    source = (REPO_ROOT / "src/lynceus/webui/app.py").read_text(encoding="utf-8")
-    poll = [
-        line.strip()
-        for line in source.splitlines()
-        if "poll_interval_seconds" in line and "* 2" in line
-    ]
-    beat = [
-        line.strip()
-        for line in source.splitlines()
-        if "heartbeat_interval_hours" in line and "* 2" in line
-    ]
-    assert len(poll) == 1, f"poll-tick threshold appears {len(poll)}x: {poll}"
-    assert len(beat) == 1, f"heartbeat threshold appears {len(beat)}x: {beat}"
-
-
-# --------------------------------------------------------------------------
-# 2. What the operator is actually told.
-# --------------------------------------------------------------------------
-
-
+# ⚠️ `test_one_staleness_threshold_per_surface_and_no_duplicates` used to live
+# here and asserted, by name, that the poll-tick and heartbeat thresholds each
+# appear once. It has been replaced by
+# `test_webui_future_timestamps.py::test_every_staleness_threshold_lives_in_exactly_one_place`,
+# which DERIVES the set of thresholds instead of naming two — and which
+# subsumed this one exactly, so keeping both meant one rule asserted in two
+# files. That is the duplication these guards exist to prevent, committed in
+# the guards themselves.
 def test_a_heartbeat_that_has_stopped_is_not_reported_as_on(tmp_path):
     cfg, db = _app(tmp_path)
     now = int(time.time())

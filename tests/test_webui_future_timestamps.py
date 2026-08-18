@@ -423,22 +423,37 @@ def test_healthz_json_reports_the_dead_daemon_as_undecidable(tmp_path):
     assert sane_tick["ahead_by_seconds"] == 0
 
 
-def test_the_three_surfaces_share_one_predicate(tmp_path):
-    """⛔ `/healthz` (HTML) carried its OWN copy of the staleness arithmetic,
-    `_check_poller` carried a second, and the home page carried an implicit
-    third in "whatever relative_time renders". Three copies of one predicate is
-    how two surfaces end up disagreeing about whether the daemon is alive.
+def test_every_staleness_threshold_lives_in_exactly_one_place():
+    """⛔ `/healthz` (HTML) once carried its own copy of the poll-tick
+    arithmetic, `_check_poller` a second and the home page an implicit third —
+    which is how two surfaces came to disagree about whether the daemon was
+    alive. Each threshold belongs in exactly one place.
 
-    Asserted structurally: no `poll_interval_seconds` arithmetic may exist in
-    `app.py` outside the one helper.
+    ⭐ **DERIVED over every threshold, not a hand-listed pair.** This replaces
+    two guards — one here and one in `test_webui_heartbeat_freshness.py` — that
+    each hardcoded one config knob. The second strictly subsumed the first, so
+    one rule was asserted twice in two files: the same duplication-breeds-
+    divergence problem these guards exist to prevent, committed in the guards
+    themselves. A third knob is covered the moment it is written.
     """
     source = (REPO_ROOT / "src/lynceus/webui/app.py").read_text(encoding="utf-8")
-    uses = [
-        line.strip()
-        for line in source.splitlines()
-        if "poll_interval_seconds" in line and "* 2" in line
-    ]
-    assert len(uses) == 1, (
-        f"the 2x-poll-interval staleness test appears {len(uses)} times; it "
-        f"belongs only in poll_tick_liveness: {uses}"
+    knobs = re.findall(r"max\(1,\s*config\.(\w+)\)", source)
+
+    # ⚠️ Non-vacuity FIRST. A regex that stopped matching would make every
+    # assertion below trivially true, i.e. report "no duplication" — the most
+    # reassuring possible answer from a broken instrument.
+    assert knobs, (
+        "the derivation found no staleness threshold at all in app.py; the "
+        "pattern has stopped matching, not the thresholds stopped existing"
     )
+    assert set(knobs) >= {"poll_interval_seconds", "heartbeat_interval_hours"}, (
+        f"a known threshold knob is no longer derived: {sorted(set(knobs))}"
+    )
+
+    duplicated = sorted({k for k in knobs if knobs.count(k) > 1})
+    assert not duplicated, (
+        f"these staleness thresholds are computed in more than one place: "
+        f"{duplicated}. Two copies of one predicate is how two surfaces end up "
+        f"disagreeing; put it behind a single helper."
+    )
+
