@@ -1642,13 +1642,28 @@ class Database:
         return int(row["n"]) if row else 0
 
     def count_undelivered_alerts(self, *, since_ts: int | None = None) -> int:
-        """Alerts written but never successfully notified.
+        """Alerts written, never successfully notified, and not abandoned.
 
-        Surfaced on /settings so a broken ntfy topic or auth token is visible
-        as a number rather than as silence -- which is the one thing an
-        operator of this tool must never have to guess at.
+        Surfaced on /settings and in the heartbeat so a broken ntfy topic or
+        auth token is visible as a number rather than as silence -- which is
+        the one thing an operator of this tool must never have to guess at.
+
+        ⛔ ``notify_abandoned_at IS NULL`` is the ONLY narrowing, and it is a
+        suppression on a safety counter, so it is scoped as tightly as it can
+        be: exactly one path writes that column (a watchful reset, migration
+        027, Finding 50), on exactly the escalation the operator was looking at
+        when they clicked. Everything else keeps counting forever.
+
+        ⛔ Both callers pass no ``since_ts`` and that is deliberate. Windowing
+        this counter would make a genuinely broken ntfy topic age quietly out of
+        the report, which is the exact silence it exists to break. The parameter
+        exists for callers that want a bounded question; do not "fix" a
+        persistent complaint by reaching for it.
         """
-        sql = "SELECT COUNT(*) AS n FROM alerts WHERE notified_at IS NULL"
+        sql = (
+            "SELECT COUNT(*) AS n FROM alerts "
+            "WHERE notified_at IS NULL AND notify_abandoned_at IS NULL"
+        )
         params: list = []
         if since_ts is not None:
             sql += " AND ts >= ?"
@@ -4307,6 +4322,64 @@ class Database:
             )
         return alert_id
 
+    def _abandon_watchful_escalation_alert(
+        self,
+        entry_id: int,
+        *,
+        generation: int,
+        mac: str,
+        escalated_at: int,
+        now_ts: int,
+    ) -> int | None:
+        """Mark this generation's UNDELIVERED escalation alert as abandoned.
+
+        Finding 50. Returns the alert id that was marked, or ``None`` when there
+        was nothing to mark. ⛔ The caller MUST already hold ``self._lock`` and
+        be inside ``with self._conn:`` -- the mark and the reset are one
+        transaction so the entry state and the alert's abandonment cannot
+        disagree.
+
+        ⭐ Two ways to name the row, and the fallback is the one that serves
+        upgrading installs:
+
+        1. the migration-026 ledger's ``alert_id`` for (entry, generation) --
+           exact, and immune to any reasoning about timestamps;
+        2. failing that, the same lookup ``_retry_watchful_escalation`` uses:
+           newest ``watchful_recurrence`` alert for this MAC at or after
+           ``escalated_at``. Installs that escalated BEFORE 026 landed have no
+           ledger row, and they are precisely the ones carrying a permanent
+           complaint today.
+
+        ⚠️ ``notified_at IS NULL`` is in the UPDATE, so a DELIVERED escalation is
+        never touched. Marking one would be a lie in the safe-looking direction:
+        it would read as "abandoned" on a row the operator actually received,
+        and would make the abandoned set stop meaning what it says.
+        """
+        row = self._conn.execute(
+            "SELECT alert_id FROM watchful_escalations "
+            "WHERE entry_id = ? AND generation = ? AND alert_id IS NOT NULL",
+            (entry_id, generation),
+        ).fetchone()
+        alert_id = int(row["alert_id"]) if row is not None else None
+        if alert_id is None:
+            legacy = self._conn.execute(
+                "SELECT id FROM alerts "
+                "WHERE rule_name = 'watchful_recurrence' AND mac = ? "
+                "AND ts >= ? AND notified_at IS NULL "
+                "ORDER BY ts DESC, id DESC LIMIT 1",
+                (mac, escalated_at),
+            ).fetchone()
+            alert_id = int(legacy["id"]) if legacy is not None else None
+        if alert_id is None:
+            return None
+        cur = self._conn.execute(
+            "UPDATE alerts SET notify_abandoned_at = ? "
+            "WHERE id = ? AND notified_at IS NULL "
+            "AND notify_abandoned_at IS NULL",
+            (now_ts, alert_id),
+        )
+        return alert_id if cur.rowcount == 1 else None
+
     def auto_archive_watchful_recurrence(self, now_ts: int) -> int:
         """Archive watchful entries that haven't been counted in 90d.
 
@@ -4500,6 +4573,23 @@ class Database:
             last_seen_at    -> MAX(last_seen_at, now_ts)
             reset_count     -> reset_count + 1
 
+        ⛔ **And this generation's escalation alert, if it was never delivered,
+        is marked ABANDONED in the same transaction** (migration 027, Finding
+        50). Clearing ``escalated_at`` is what removes the retry path --
+        ``_retry_watchful_escalation`` returns immediately on
+        ``escalated_at is None`` -- so up to 3 of 4 delivery attempts are left
+        unspent with nothing that can ever spend them. Without the mark, the row
+        stays ``notified_at IS NULL`` forever and every reset adds a
+        **permanent, unclearable** line to the heartbeat's *"N alert(s) written
+        but never delivered"*, on the one surface whose value depends on the
+        operator still reading it.
+
+        ⚠️ **Abandoned is not delivered.** ``notified_at`` stays NULL, because
+        stamping it would assert ntfy delivered the alert and nothing here
+        established that. What licenses "abandoned" is narrower and is a claim
+        about the UI: the reset control renders only on an ESCALATED entry, so
+        the operator was looking at that escalation when they clicked.
+
         ⛔ **``last_seen_at`` is clamped so a reset can never move an entry
         BACKWARDS, and that is a safety property, not tidiness.** It is the
         SOLE lifecycle clock for an unactioned entry:
@@ -4535,6 +4625,16 @@ class Database:
         if not isinstance(now_ts, int) or isinstance(now_ts, bool):
             raise ValueError("now_ts must be an int (epoch seconds)")
         with self._lock, self._conn:
+            # Read the pre-reset state FIRST: `escalated_at` and `reset_count`
+            # both change below, and both are needed to name the escalation
+            # alert this reset is abandoning.
+            before = self._conn.execute(
+                "SELECT mac, escalated_at, reset_count "
+                "FROM watchful_recurrence "
+                "WHERE id = ? AND escalated_at IS NOT NULL "
+                "AND archived_at IS NULL",
+                (entry_id,),
+            ).fetchone()
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET "
                 "escalated_at = NULL, sighting_count = 1, "
@@ -4548,6 +4648,14 @@ class Database:
             if cur.rowcount == 0:
                 raise ValueError(
                     f"watchful entry {entry_id} is not in the escalated state"
+                )
+            if before is not None:
+                self._abandon_watchful_escalation_alert(
+                    entry_id,
+                    generation=int(before["reset_count"]),
+                    mac=str(before["mac"]),
+                    escalated_at=int(before["escalated_at"]),
+                    now_ts=now_ts,
                 )
             row = self._conn.execute(
                 "SELECT id, mac, created_at, first_seen_at, last_seen_at, "

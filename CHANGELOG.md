@@ -235,6 +235,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A "reset" on a device left a complaint about it that nothing could ever
+  clear.** When lynceus tries to warn you that a device keeps following you and
+  the notification does not get through, it keeps retrying — up to four times,
+  spaced out, driven by seeing the device again. But pressing *reset* on that
+  device cancelled the retry with three attempts unspent, and nothing else could
+  ever spend them. The alert stayed recorded as "written but never delivered",
+  and the heartbeat and settings page went on reporting it forever.
+
+  That is corrosive on the one surface whose entire value is that you still read
+  it. A permanent complaint you cannot act on is training to ignore the place
+  where real problems appear.
+
+  ⛔ The obvious fix was the wrong one. Making that count only cover the last few
+  days would clear the line — and would equally hide a genuinely broken ntfy
+  topic, which is the exact silence the count exists to break. Instead there is
+  now a third state. An alert can be delivered, undelivered, or *undelivered and
+  abandoned because you actioned it* — and only the third stops being counted.
+  It is deliberately not recorded as "delivered": nothing here established that
+  the notification arrived, and saying so would corrupt the one record that
+  tells you whether your notifications work at all.
+
+  A device you never touched keeps complaining for as long as its alert is
+  undelivered, which is the point.
+
 - **A snooze that still had six hours to run said "until just now", and a dead
   daemon said it had polled "just now".** Both come from one rule in the display
   code: any timestamp *ahead* of the machine's clock was written as "just now",

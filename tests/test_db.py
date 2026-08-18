@@ -216,6 +216,7 @@ def test_migrations_dir_lists_both_files(db):
         "024_alerts_notified_at.sql",
         "025_heartbeats.sql",
         "026_watchful_escalations.sql",
+        "027_alerts_notify_abandoned.sql",
     ]
     assert names == _EXPECTED_MIGRATIONS, (
         "the forward-migration manifest is out of date.\n"
