@@ -326,3 +326,39 @@ def test_the_never_fired_state_yields_once_a_heartbeat_arrives(tmp_path):
 
     assert "unproven" not in card
     assert re.match(r"^on\b", card), f"a delivered heartbeat is not healthy: {card!r}"
+
+
+def test_a_delivery_stamped_at_epoch_zero_is_not_reported_as_never_delivered(tmp_path):
+    """⛔ A FALSY-but-present timestamp, and the template threw away a correct
+    verdict because of it.
+
+    `{% elif heartbeat.last_delivered_at and heartbeat.is_stale %}` short-circuits
+    on `0`, so a heartbeat delivered at epoch 0 fell through to "none has arrived
+    yet" — about a heartbeat that HAD been delivered, and in the milder tier. The
+    predicate had it right (`is_stale: True`); only the guard was wrong.
+
+    ⚠️ Not hypothetical on this project's hardware: an RTC-less Pi boots to a
+    bogus clock and the daemon can deliver before NTP corrects it.
+
+    Same class as `{% if is_stale %}` sending a `None` down the green branch —
+    truthiness applied to a value whose falsy member is meaningful.
+    """
+    cfg, db = _app(tmp_path)
+    hid = db.insert_heartbeat(ts=0, healthy=True, message="alive")
+    db.mark_heartbeat_notified(hid, now_ts=0)
+    try:
+        stamp = db.latest_delivered_heartbeat_ts()
+        verdict = heartbeat_liveness(stamp, cfg, now_ts=int(time.time()))
+        with TestClient(create_app(cfg, db)) as client:
+            card = _card(client.get("/settings").text)
+    finally:
+        db.close()
+
+    assert stamp == 0 and not stamp, "premise: the stamp is present AND falsy"
+    assert verdict["is_stale"] is True, "premise: the model already had it right"
+
+    assert "stopped" in card, f"the correct verdict was discarded by the guard: {card!r}"
+    assert "none has arrived yet" not in card, (
+        "a heartbeat that WAS delivered is reported as never delivered"
+    )
+    assert "unproven" not in card

@@ -235,6 +235,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A heartbeat delivered while the clock read 1970 was reported as never
+  delivered at all.** A Raspberry Pi without a battery-backed clock boots to a
+  bogus date, and the daemon can send its first heartbeat before the network
+  corrects it. When that timestamp landed exactly on the Unix epoch, the
+  settings card treated "zero" as "nothing" and showed the milder "none has
+  arrived yet" — about a heartbeat that had in fact been delivered, and whose
+  age the code had already worked out correctly. It now says **stopped**, which
+  is what a delivery from 1970 means.
+
+
 - **A device you had snoozed *and* then reset could still send you the alert.**
   When the recurrence alert type is snoozed, lynceus deliberately runs the
   detection but sends nothing — and it records that the escalation was used up,

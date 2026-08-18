@@ -195,20 +195,30 @@
             <small>heartbeat{{ '' if heartbeat.undelivered == 1 else 's' }} never
             delivered &mdash; the proof-of-life you are relying on is NOT
             arriving. Check the topic and auth token.</small>
+          {# ⛔ `is not none`, NOT truthiness, on all three of these guards.
+             A delivered heartbeat stamped at epoch 0 is FALSY, so
+             `last_delivered_at and is_stale` short-circuited and the card fell
+             through to "none has arrived yet" -- about a heartbeat that had in
+             fact been delivered, and in the milder tier. The predicate was
+             right (`is_stale: True`); the template threw the answer away.
+             ⚠️ Epoch 0 is not hypothetical on this project's target hardware:
+             an RTC-less Pi boots to a bogus clock and the daemon can deliver
+             before NTP corrects it. Same class as `{% if is_stale %}` sending
+             a None down the green branch, one value along. #}
           {# ⛔ These two states come BEFORE the healthy one, and both used to be
              absent. This card is the only thing that answers "is my
              proof-of-life actually arriving?", and it answered "it arrived at
              least once, ever" -- a switch 400 intervals overdue rendered green.
              `undelivered` does not cover it: a daemon that has stopped composes
              nothing, so that counter stays 0 and the page falls through here. #}
-          {% elif heartbeat.last_delivered_at and not heartbeat.staleness_known %}
+          {% elif heartbeat.last_delivered_at is not none and not heartbeat.staleness_known %}
             <span class="badge-status-warn">clock disagrees</span>
             <small>last delivered
             {{ heartbeat.last_delivered_at | relative_time(now_ts=now_ts) }},
             which is ahead of this machine&#39;s clock &mdash; whether the
             heartbeat is still arriving cannot be told from it. Check the clock
             (NTP / <code>timedatectl</code>).</small>
-          {% elif heartbeat.last_delivered_at and heartbeat.is_stale %}
+          {% elif heartbeat.last_delivered_at is not none and heartbeat.is_stale %}
             <span class="badge-status-error">stopped</span>
             <small>expected every {{ heartbeat.interval_hours }}h, but the last
             one arrived
@@ -216,7 +226,7 @@
             &mdash; the proof-of-life you are relying on has STOPPED. Silence is
             ambiguous again: check the daemon is running and that ntfy still
             accepts the topic.</small>
-          {% elif heartbeat.last_delivered_at %}
+          {% elif heartbeat.last_delivered_at is not none %}
             <span class="badge-status-ok">on</span>
             <small>every {{ heartbeat.interval_hours }}h; last delivered
             {{ heartbeat.last_delivered_at | relative_time(now_ts=now_ts) }}</small>
