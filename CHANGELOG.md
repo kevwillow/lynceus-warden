@@ -248,6 +248,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   device is still on the watch generation the scan was actually about, so a
   reset, a dismissal, or a snooze that has already consumed it all stop it.
 
+- **A watchlist dated in the future was reported as brand new, so the "your data
+  is old" warning never appeared.** Lynceus tells you when your Argus watchlist
+  has gone stale. To do that it works out how old the data is — and if the
+  answer came out negative, it used zero instead. Zero means "imported today",
+  which means fresh, which means no warning, forever.
+
+  ⚠️ **This does not need your clock to be wrong.** The date it measures from is
+  the one Argus stamped on the export, using *Argus's* clock. Two machines, two
+  clocks; if the exporting one runs ahead, your perfectly good Raspberry Pi
+  reads its own watchlist as newer than the present and stops telling you it is
+  a year out of date.
+
+  Measured on a watchlist imported 365 days ago whose export was dated 30 days
+  ahead: `/settings` said **fresh**, the home page said **fresh**, and
+  `/healthz.json` said **stale** — three surfaces, two verdicts, one watchlist,
+  at the same instant.
+
+  All three now say the same thing, and where the age cannot be worked out they
+  say that rather than guessing: "cannot tell — the source timestamp is ahead of
+  this machine's clock", with a note that Argus stamps that field so the two
+  hosts are worth comparing. Ordinary second-or-two differences between the
+  machines still read as a zero-day-old import, exactly as before.
+
+  The same fix covers two monitoring fields, `seconds_since_poll` and
+  `seconds_since_observation`, which went *negative* in the same situation. Any
+  alert of the form "warn me when this exceeds an hour" silently never fires on
+  a negative number, so a daemon that had been dead for a year looked fine to
+  anything watching those two.
+
+
 - **One sighting of a device could be counted twice, bringing forward a warning
   you had not earned.** Lynceus only counts a watched device once per 24 hours,
   so that "seen on four separate days" means what it says. But it watches

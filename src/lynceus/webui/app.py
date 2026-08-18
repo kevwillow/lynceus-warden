@@ -590,6 +590,46 @@ FUTURE_SKEW_SECONDS = CLOCK_BEHIND_TOLERANCE_SECONDS
 JUST_NOW_SECONDS = 60
 
 
+def age_since(reference_ts, *, now_ts: int) -> int | None:
+    """Whole seconds since ``reference_ts``, or ``None`` when it is AHEAD of this
+    clock by more than ordinary skew.
+
+    ⛔ **Not ``max(0, now - ref)``, and that clamp was a live defect on three
+    surfaces.** Clamping a negative delta to zero turns "this timestamp is in
+    the future" into "this happened just now", which every downstream staleness
+    test then reads as FRESH. Measured, watchlist imported 365 days ago with an
+    Argus export dated 30 days ahead:
+
+        /settings card   status=fresh   age_days=0     <- the clamp
+        home summary     is_stale=False                <- the clamp
+        /healthz.json    stale=True     days=365       <- keyed on a different ts
+
+    Two surfaces called it fresh and one called it stale, for the same watchlist
+    at the same instant.
+
+    ⚠️ **This needs no local clock fault to reach.** The watchlist's reference is
+    ``exported_at``, which carries the Argus host's clock -- a *different
+    machine's* -- so a future-dated export is the ordinary cross-host case, not
+    an exotic one.
+
+    ``None`` rather than a negative number, because "how old is this" has no
+    answer when the thing is stamped in the future, and a negative age silently
+    satisfies every ``age > threshold`` test in the codebase.
+    """
+    if reference_ts is None:
+        return None
+    delta = int(now_ts) - int(reference_ts)
+    if delta < -FUTURE_SKEW_SECONDS:
+        return None
+    return max(0, delta)
+
+
+def age_days_since(reference_ts, *, now_ts: int) -> int | None:
+    """``age_since`` in whole days. ``None`` propagates -- see there."""
+    seconds = age_since(reference_ts, now_ts=now_ts)
+    return None if seconds is None else seconds // 86400
+
+
 def unix_to_utc_human(ts) -> str:
     """Format a unix epoch int as 'YYYY-MM-DD HH:MM UTC' for human display."""
     if ts is None or ts == "":
@@ -915,10 +955,20 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
             "warn_days": warn_days,
         }
     reference_ts = latest["exported_at"] or latest["imported_at"]
-    age_days = max(0, (now_ts - int(reference_ts)) // 86400)
+    # ⛔ `age_days` is None when the reference is stamped AHEAD of this clock,
+    # and the status is then "unknown" rather than "fresh". The old
+    # `max(0, ...)` read a future export as "imported today", which is the most
+    # reassuring answer available and the one nothing had established.
+    age_days = age_days_since(reference_ts, now_ts=now_ts)
     return {
         "has_import": True,
-        "status": "stale" if age_days > warn_days else "fresh",
+        "status": (
+            "unknown"
+            if age_days is None
+            else "stale"
+            if age_days > warn_days
+            else "fresh"
+        ),
         "imported_at": int(latest["imported_at"]),
         "exported_at": (
             int(latest["exported_at"]) if latest["exported_at"] is not None else None
@@ -969,9 +1019,12 @@ def _watchlist_freshness_summary(
     if latest is None:
         return empty
     reference_ts = latest["exported_at"] or latest["imported_at"]
-    age_days = max(0, (now_ts - int(reference_ts)) // 86400)
+    age_days = age_days_since(reference_ts, now_ts=now_ts)
     return {
         "has_import": True,
+        # ⛔ None, not False, when the reference is ahead of this clock: the
+        # verdict is not established, and False is the reassuring guess.
+        "staleness_known": age_days is not None,
         "record_count": (
             int(latest["record_count"])
             if latest["record_count"] is not None
@@ -982,7 +1035,7 @@ def _watchlist_freshness_summary(
             if latest["exported_at"] is not None
             else None
         ),
-        "is_stale": age_days > warn_days,
+        "is_stale": None if age_days is None else age_days > warn_days,
     }
 
 
@@ -1699,7 +1752,13 @@ def _check_poller(db: Database, config: Config, *, now_ts: int) -> dict:
     last_observation_at = row[0] if row and row[0] is not None else None
 
     def _delta(value: int | None) -> int | None:
-        return (now_ts - int(value)) if value is not None else None
+        # ⛔ `age_since`, not a bare subtraction. A stamp ahead of this clock
+        # produced a NEGATIVE "seconds since", and every consumer test is of the
+        # form `seconds_since_poll > threshold`, which a negative silently
+        # satisfies -- so a daemon dead for a year read as fine to anything
+        # alerting on these two fields. Measured: -34,560,000 against a control
+        # of +34,560,000.
+        return age_since(value, now_ts=now_ts)
 
     tick = _read_last_tick_stats(db)
     liveness = poll_tick_liveness(tick, config, now_ts=now_ts)
@@ -1749,13 +1808,22 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
     if latest is not None and latest.get("imported_at") is not None:
         imported_at = int(latest["imported_at"])
         last_imported_at_iso: str | None = unix_to_iso(imported_at) or None
-        days_since_import: int | None = max(0, (now_ts - imported_at) // 86400)
+        days_since_import: int | None = age_days_since(imported_at, now_ts=now_ts)
     else:
         last_imported_at_iso = None
         days_since_import = None
-    stale = bool(
-        days_since_import is not None
-        and days_since_import > config.watchlist_staleness_warn_days
+    # ⛔ Three-valued, matching every other liveness verdict in this file. The
+    # old `bool(...)` collapsed BOTH "no import at all" and "the import is
+    # stamped in the future" to False, i.e. to "not stale" -- a clean bill from
+    # two states that establish nothing.
+    staleness_known = latest is None or days_since_import is not None
+    stale: bool | None = (
+        None
+        if days_since_import is None and latest is not None
+        else bool(
+            days_since_import is not None
+            and days_since_import > config.watchlist_staleness_warn_days
+        )
     )
     # ⭐ "Your watchlist has 12 entries" is a lie if seven of them cannot fire.
     # An entry whose pattern_type has no enabled delegating rule is stored,
@@ -1773,6 +1841,7 @@ def _check_watchlist(db: Database, config: Config, *, now_ts: int) -> dict:
         "last_imported_at": last_imported_at_iso,
         "days_since_import": days_since_import,
         "stale": stale,
+        "staleness_known": staleness_known,
         # ⛔ null, not 0, when liveness is unknown. A number here is a claim,
         # and `live_rows: <total>` beside `liveness_known: false` was a claim
         # nothing had established -- a consumer graphing live_rows without

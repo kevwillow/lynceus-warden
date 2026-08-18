@@ -128,11 +128,17 @@
             {{ watchlist_freshness.exported_at | unix_to_iso }}
           </time>
         {% endif %}
+        {# ⛔ THREE branches, and `is_stale` is now None-able. `{% if
+           is_stale %}` alone sent None down the else, which printed a green
+           "fresh" over data whose age is not established -- the defect this
+           change exists to remove, surviving into the home page. #}
         {% if watchlist_freshness.is_stale %}
           {# badge-status-error, not a status-pill: it is the class /settings
              uses for the same signal, and test_webui_home_freshness.py asserts
              this exact class name for the stale state. #}
           &middot; <span class="badge-status-error">stale</span>
+        {% elif watchlist_freshness.is_stale is none %}
+          &middot; <span class="status-pill status-pill-warn">age unknown</span>
         {% else %}
           &middot; <span class="status-pill status-pill-ok">fresh</span>
         {% endif %}
