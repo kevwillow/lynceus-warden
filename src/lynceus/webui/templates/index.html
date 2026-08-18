@@ -58,7 +58,15 @@
            daemon had been dead. This is the operator's only liveness signal on
            a default install (the heartbeat is off by default), so it says
            "cannot tell" rather than picking the reassuring answer. #}
-        {% if not tick_liveness.staleness_known %}
+        {# ⛔ Checked BEFORE the clock branch: both set staleness_known=False, and
+           they have DIFFERENT CAUSES. An operator told "clock disagrees" for a
+           corrupt stored value would go and check NTP, find nothing wrong, and
+           dismiss the warning. Two causes must not share one sentence. #}
+        {% if not last_tick.stamp_readable %}
+          <span class="status-pill status-pill-warn">unreadable</span>
+          &middot; the recorded time of the last poll could not be read, so
+          whether the daemon is still polling cannot be told from it
+        {% elif not tick_liveness.staleness_known %}
           <span class="status-pill status-pill-warn">clock disagrees</span>
           &middot; stamped
           {# ⚠️ Whitespace control, not decoration: without the `-` the text node
@@ -76,6 +84,11 @@
           {{ last_tick.completed_at | relative_time(now_ts=now_ts) }}
         </time>
         {% endif %}
+        {% if not last_tick.counters_known %}
+          {# The stored counters were present but unreadable. Rendering the
+             placeholder zeros here would assert "nothing was dropped". #}
+          &middot; <strong>counts:</strong> unavailable this tick
+        {% else %}
         &middot; <strong>admitted:</strong> {{ last_tick.admitted }}
         &middot; <strong>dropped:</strong> {{ last_tick.dropped_total }}
         {% if last_tick.dropped_total > 0 %}
@@ -93,6 +106,7 @@
           {{ parts | join("; ") }}
           )
         {% endif %}
+        {% endif %}{# counters_known #}
       {% elif last_poll %}
         Last polled
         <time datetime="{{ last_poll | unix_to_iso }}">{{ last_poll | unix_to_iso }}</time>

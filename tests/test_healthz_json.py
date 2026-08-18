@@ -470,6 +470,16 @@ def test_healthz_json_response_shape_stability(tmp_path):
         # None there now. ⚠️ A consumer branching on truthiness is unaffected
         # (None is falsy, as False was) — but one that wants the difference now
         # has `staleness_known` to read, which it did not before.
+        #
+        # ⭐ `counters_known` is a DELIBERATE addition too, recorded here for the
+        # same reason. The four counters are ints for a state that is NOT a
+        # measurement: when a stored counter is present but unparseable they
+        # read 0, which asserts "nothing was dropped" for "could not tell". The
+        # numbers stay ints so this shape and every consumer's arithmetic keep
+        # working; `counters_known` is what says whether they mean anything.
+        # ⚠️ A consumer that reports the counters without reading this flag is
+        # unchanged in behaviour and still wrong in the same way it was before —
+        # the flag is what makes the difference available, not automatic.
         assert set(body["checks"]["poller"]["poll_tick"].keys()) == {
             "completed_at",
             "admitted",
@@ -479,6 +489,7 @@ def test_healthz_json_response_shape_stability(tmp_path):
             "is_stale",
             "staleness_known",
             "ahead_by_seconds",
+            "counters_known",
         }
         # ⭐ The six liveness keys are a DELIBERATE addition, recorded here
         # rather than waved through. `total_rows` keeps its exact old meaning
