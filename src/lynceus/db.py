@@ -4073,6 +4073,17 @@ class Database:
         observation in the same cycle has ``gap == 0`` and is
         rejected as under-debounce.
 
+        ⛔ **That paragraph was true only of a SINGLE writer, and it was
+        written when there was one.** There are two: the poll loop and the
+        ``ble-bridge`` thread, which holds its own ``Database`` on its own
+        connection, so ``self._lock`` does not serialise them. The SELECT above
+        precedes any write and therefore sits outside the write transaction, so
+        both writers could read the same ``last_seen_at``, both compute
+        ``gap >= 24h``, and both increment -- one observation counted twice.
+        The compare-and-swap below is what makes the paragraph true again; the
+        loser now returns ``counted=False``, which is exactly what "organic
+        same-cycle dedup" was always supposed to mean.
+
         Independent of ``escalated_at``: the count keeps
         incrementing after escalation so the /watchful UI (Phase
         2) can show the climbing count, and so a Phase 2
@@ -4102,12 +4113,57 @@ class Database:
                     counted=False,
                     entry=_row_to_watchful_recurrence(row),
                 )
-            self._conn.execute(
+            # ⛔ COMPARE-AND-SWAP on `last_seen_at`, which is the value the
+            # debounce decision above was made from. Without it this method's
+            # own promise -- "the first counted observation in a cycle updates
+            # last_seen_at; any subsequent observation in the same cycle has
+            # gap == 0 and is rejected" -- holds only for a SINGLE writer.
+            # `process_observation` has two: the poll loop and the `ble-bridge`
+            # thread, which holds its OWN `Database` on its own connection, so
+            # `self._lock` does not serialise them. The SELECT above happens
+            # before any write and so sits outside the write transaction, and
+            # both writers can read the same `last_seen_at` and both increment.
+            #
+            # Measured, one observation delivered to both writers
+            # (`internal/session1-harnesses/f41_sighting_debounce_probe.py`):
+            #
+            #   CONTROL   sequential, one connection   counted True, False  +1
+            #   TREATMENT two connections, interleaved counted True, True   +2
+            #
+            # ⚠️ The direction is the serious one. Over-counting reaches the
+            # escalation threshold on fewer real recurrences than the operator
+            # was promised, i.e. a FABRICATED "this device appears to be
+            # following you" -- which `poll_once` calls unrecoverable, because
+            # `escalated_at` is permanent and the operator's trust more so.
+            #
+            # `archived_at IS NULL` is re-asserted for the same reason: the web
+            # UI is a separate PROCESS and can archive the entry between the
+            # SELECT and here, and bumping a row the operator has closed is a
+            # write behind their back.
+            cur = self._conn.execute(
                 "UPDATE watchful_recurrence "
                 "SET last_seen_at = ?, sighting_count = sighting_count + 1 "
-                "WHERE id = ?",
-                (observed_at, entry_id),
+                "WHERE id = ? AND last_seen_at = ? AND archived_at IS NULL",
+                (observed_at, entry_id, int(row["last_seen_at"])),
             )
+            if cur.rowcount == 0:
+                # Another writer counted this cycle first, or archived the
+                # entry. Re-read and report it as the under-debounce no-op it
+                # now is; inventing a count here is the defect.
+                current = self._conn.execute(
+                    "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
+                    "sighting_count, snooze_expires_at, escalated_at, "
+                    "archived_at, source_alert_id, matched_watchlist_id, "
+                    "confirmed_safe, flagged_for_investigation, operator_note, "
+                    "reset_count FROM watchful_recurrence WHERE id = ?",
+                    (entry_id,),
+                ).fetchone()
+                if current is None or current["archived_at"] is not None:
+                    return None
+                return WatchfulSightingOutcome(
+                    counted=False,
+                    entry=_row_to_watchful_recurrence(current),
+                )
             new_row = self._conn.execute(
                 "SELECT id, mac, created_at, first_seen_at, last_seen_at, "
                 "sighting_count, snooze_expires_at, escalated_at, archived_at, "

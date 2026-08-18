@@ -2560,6 +2560,59 @@ opens its **own** `Database` (*"OWN connection on its own path — WAL second wr
 per-instance `RLock` does not serialise them. ⇒ [[audit-a-fix-against-its-own-principle]]: a
 disposition written beside its own fix inherits the fix's blind spots. The claim cost one grep.
 
+### 🔴 Finding 55 — one observation could be counted TWICE, fabricating a "you are being followed" — ✅ FIXED
+
+**The 24h sighting debounce is a read-modify-write with two writers.**
+`record_watchful_sighting` SELECTs `last_seen_at`, computes
+`gap = observed_at - last_seen_at`, and then issues
+`UPDATE ... SET sighting_count = sighting_count + 1 WHERE id = ?`. The WHERE did
+not re-assert `last_seen_at` — the value the decision was made from — and the
+SELECT precedes any write, so it sits **outside** the write transaction.
+
+⛔ **Its own docstring promised the property that fails:** *"Under-debounce
+observations are TRUE no-ops... this is what makes same-cycle dedup organic: the
+first counted observation in a cycle updates `last_seen_at = now_ts`; any
+subsequent observation in the same cycle has `gap == 0` and is rejected."* True
+of ONE writer, and it was written when there was one.
+
+Measured with one observation delivered to both writers
+(`internal/session1-harnesses/f41_sighting_debounce_probe.py`):
+
+```
+CONTROL   sequential, one connection    counted True, False   count +1
+TREATMENT two connections, interleaved  counted True, True    count +2
+after the CAS                           counted False, True   count +1
+```
+
+⚠️ **The direction is the serious one and it is not "just noise".** Over-counting
+reaches the escalation threshold on FEWER real recurrences than the operator was
+promised — a **fabricated** "this device appears to be following you". `poll_once`
+already calls that unrecoverable: *"`escalated_at` is permanent, and the
+operator's trust in the tool is more so."* Fixed with a compare-and-swap on
+`last_seen_at`, plus re-asserting `archived_at IS NULL` so the web process cannot
+have the row bumped after the operator closed it.
+
+⭐ **Found by an M3 sweep of every `UPDATE`-bearing method in `db.py` for this one
+shape.** It reported three candidates; **two were refuted by their own stated
+`REFUTED IF` conditions** — `merge_device_probe_ssids` (the BLE bridge never
+supplies `probe_ssids` and the poller guards on it, so there is one writer) and
+`bulk_acknowledge_alerts` (the whole body is inside `with self._lock, self._conn:`
+and only the single web process calls it). ⇒ **Requiring a refutation condition
+per finding is what made the triage cheap**; 1 of 3 is a good yield precisely
+because the other two died in minutes rather than becoming work.
+
+### ⚠️ Every probe in `internal/session1-harnesses/` was resolving the STALE checkout
+
+`WT = HERE.parents[2]` resolves to the checkout the FILE lives in — the shared
+one, deliberately left alone and therefore **34 commits behind** on 2026-08-17,
+missing migrations 026 and 027. A probe run there measures code that predates the
+fix it is about. ⛔ **The existing `assert lynceus.__file__.startswith(WT)` does
+not catch it:** it proves you imported from the tree you resolved, not that the
+tree is current — which is why this was invisible for so long. All eleven now
+resolve via `_worktree.resolve_worktree()`, which takes the tree from `argv[1]`,
+**prints** it with its SHA, and **refuses to run** on a tree that does not contain
+`origin/main`.
+
 ### 🔴 Finding 44a — two ways #152 could LOSE an escalation, both fail-closed — ✅ FIXED (#155)
 
 **Found by a cold cross-model read of the MERGED #152 diff, both reproduced with controls before
