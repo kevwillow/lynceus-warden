@@ -633,3 +633,83 @@ def test_healthz_json_seconds_since_uses_request_clock(tmp_path, monkeypatch):
         assert body["checks"]["poller"]["seconds_since_poll"] == 3600
     finally:
         db.close()
+
+
+# ---- one bad row must not delete the whole report --------------------------
+#
+# ⛔ Measured before the fix: a single unparseable `import_runs.imported_at`
+# made `_check_watchlist` raise `ValueError` straight out of the handler, and
+# /healthz.json answered `HTTP 500 Internal Server Error` with NO JSON body at
+# all. The db, poller, ruleset, clock and alerts checks were all healthy and
+# went down with it — so the operator polling the endpoint to find out whether
+# the daemon was alive learned nothing, not even which part was broken.
+#
+# The endpoint's whole job is to be readable when something is wrong.
+
+
+def _corrupt_watchlist_timestamp(db: Database) -> None:
+    db._conn.execute(
+        "INSERT INTO import_runs (imported_at, record_count) VALUES (?, ?)",
+        ("not-an-int", 5),
+    )
+    db._conn.commit()
+
+
+@pytest.mark.webui
+def test_one_unreadable_row_does_not_take_down_the_whole_health_report(tmp_path):
+    app, db = _make_app(tmp_path)
+    try:
+        _corrupt_watchlist_timestamp(db)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get("/healthz.json")
+        assert r.status_code != 500, (
+            "one corrupt row 500'd the endpoint; the operator cannot read ANY "
+            "check, including the ones that are healthy"
+        )
+        assert r.status_code == 503, (
+            f"expected 503 (a monitor must still page), got {r.status_code}"
+        )
+        body = r.json()
+        # every check is still present and readable
+        assert set(body["checks"]) == {
+            "db", "poller", "watchlist", "ruleset", "clock", "alerts"
+        }, body["checks"]
+        # the broken one is REPORTED, not hidden
+        assert body["checks"]["watchlist"]["status"] == "error"
+        assert body["status"] == "error"
+        # ...and the healthy ones survived to be read, which is the point
+        assert body["checks"]["db"]["status"] == "ok"
+        assert body["checks"]["poller"]["status"] == "ok"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_a_failed_check_does_not_leak_internals_to_an_anonymous_caller(tmp_path):
+    """`/healthz.json` is unauthenticated; loopback binding is the only control
+    and `ui_allow_remote: true` removes it. Same reasoning as `_check_db`'s
+    generic detail — the exception text belongs in the server log, not the body."""
+    app, db = _make_app(tmp_path)
+    try:
+        _corrupt_watchlist_timestamp(db)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get("/healthz.json")
+        assert "not-an-int" not in r.text, "the bad value was echoed to an anonymous caller"
+        assert "Traceback" not in r.text and "ValueError" not in r.text, r.text[:200]
+        assert r.json()["checks"]["watchlist"]["detail"], "an error must carry a non-empty detail"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_a_healthy_database_still_returns_200_with_every_check_ok(tmp_path):
+    """CONTROL. If this fails, the two tests above prove nothing about isolation."""
+    app, db = _make_app(tmp_path)
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get("/healthz.json")
+        assert r.status_code == 200, r.text[:200]
+        assert r.json()["status"] == "ok"
+        assert all(c["status"] == "ok" for c in r.json()["checks"].values())
+    finally:
+        db.close()

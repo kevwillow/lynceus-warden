@@ -1523,6 +1523,42 @@ def poll_tick_liveness(tick: dict | None, config: Config, *, now_ts: int) -> dic
 #: published shape contract promises a non-empty string on error.
 _DB_ERROR_PUBLIC_DETAIL = "database unavailable; see server log"
 
+#: What an anonymous caller is told when a health check raises. Same reasoning
+#: as ``_DB_ERROR_PUBLIC_DETAIL``: ``/healthz.json`` is unauthenticated, so the
+#: exception text never reaches the response -- it goes to the server log.
+_CHECK_ERROR_PUBLIC_DETAIL = "check failed; see server log"
+
+
+def _safe_check(name: str, fn):
+    """Run one health check, converting an unexpected raise into an ERROR entry.
+
+    ⛔ Without this, ONE corrupt row takes the whole endpoint down and the
+    checks that were fine go down with it. Measured on a database carrying a
+    single unparseable ``import_runs.imported_at``:
+
+        clean db            -> HTTP 200, checks = db, poller, watchlist,
+                               ruleset, clock, alerts
+        one corrupt row     -> HTTP 500, body "Internal Server Error", NO JSON
+
+    `_check_watchlist` does ``int(latest["imported_at"])`` with no guard, so the
+    `ValueError` escaped the handler. The operator polling `/healthz.json` to
+    find out whether the daemon is alive learned nothing at all -- not even that
+    the database, the poller and the clock were healthy, which they were.
+
+    ⚠️ This reports the failure, it does not hide it: a raising check scores
+    ``status: "error"``, so the endpoint still returns 503 and a monitor still
+    pages. What changes is that the other five checks survive to be read.
+
+    ⚠️ Deliberately NOT narrowed to `ValueError`. The point is that one check
+    cannot take down the report; narrowing it to the exception we happened to
+    measure would leave the next one to rediscover this.
+    """
+    try:
+        return fn()
+    except Exception:
+        logger.exception("health check %r raised; reporting it as an error", name)
+        return {"status": "error", "detail": _CHECK_ERROR_PUBLIC_DETAIL}
+
 
 def _check_db(db: Database) -> dict:
     """Return ``{"status": "ok", "detail": None}`` on a healthy connection,
@@ -1926,13 +1962,19 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 },
             )
         now_ts = int(time.time())
+        # ⛔ Each check is isolated: one raising check must not delete the
+        # other five from the report. See ``_safe_check``.
         checks = {
             "db": db_check,
-            "poller": _check_poller(db, config, now_ts=now_ts),
-            "watchlist": _check_watchlist(db, config, now_ts=now_ts),
-            "ruleset": _check_ruleset(config),
-            "clock": _check_clock(db, now_ts=now_ts),
-            "alerts": _check_alerts(db, now_ts=now_ts),
+            "poller": _safe_check(
+                "poller", lambda: _check_poller(db, config, now_ts=now_ts)
+            ),
+            "watchlist": _safe_check(
+                "watchlist", lambda: _check_watchlist(db, config, now_ts=now_ts)
+            ),
+            "ruleset": _safe_check("ruleset", lambda: _check_ruleset(config)),
+            "clock": _safe_check("clock", lambda: _check_clock(db, now_ts=now_ts)),
+            "alerts": _safe_check("alerts", lambda: _check_alerts(db, now_ts=now_ts)),
         }
         overall = (
             "ok" if all(c["status"] == "ok" for c in checks.values()) else "error"

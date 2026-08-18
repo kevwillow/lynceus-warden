@@ -254,6 +254,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   writer has already changed, and likewise will not bump a device you closed
   from another tab while the sighting was in flight.
 
+- **One unreadable row could take the whole health check offline.** `/healthz.json`
+  is what you — or a monitoring tool — ask to find out whether lynceus is still
+  watching. It reports six things: the database, the poller, the watchlist, the
+  ruleset, the clock and alert delivery. If the stored timestamp of your last
+  watchlist import could not be read as a number, the watchlist check raised an
+  error that escaped the whole endpoint: it answered `500 Internal Server Error`
+  with no report at all. The other five checks were fine and went down with it,
+  so the one question you were asking — is it alive? — got no answer.
+
+  Each check is now isolated. A check that fails is reported as failed, beside
+  the ones that still work, and the endpoint still answers `503` so a monitor
+  still raises the alarm. What it no longer does is throw away the healthy
+  answers along with the broken one. The reason a check failed goes to the
+  server log rather than the response, because that endpoint is unauthenticated.
+
 - **A "reset" on a device left a complaint about it that nothing could ever
   clear.** When lynceus tries to warn you that a device keeps following you and
   the notification does not get through, it keeps retrying — up to four times,
