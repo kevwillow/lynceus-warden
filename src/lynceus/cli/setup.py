@@ -724,6 +724,7 @@ def run_enable_alerting_flow(
     db_path: str,
     *,
     input_fn=None,
+    ble_bridge_enabled: bool = False,
 ) -> tuple[Path | None, bool]:
     """Gate + per-type prompts + rules.yaml write.
 
@@ -747,7 +748,22 @@ def run_enable_alerting_flow(
         default=False,
         input_fn=in_fn,
     ):
-        return (None, False)
+        # ⛔ Declining ARGUS alerting is not declining FIND MY alerting -- they
+        # are different questions and this gate only ever asked the first. With
+        # the passive BLE bridge on we still write the file, carrying the
+        # tracker rule and every delegation entry commented out. Returning here
+        # would drop the Find My rule on the floor for an operator who enabled
+        # the bridge, which is the wired-on-one-path-only defect this rule
+        # exists to fix, reappearing in the wizard that is supposed to fix it.
+        if not ble_bridge_enabled:
+            return (None, False)
+        print()
+        print("  Find My tracker alerting is still enabled, because the")
+        print("  passive BLE bridge is on. Writing rules.yaml with the")
+        print("  apple_find_my rule active and every Argus rule commented out.")
+        return _write_rules_yaml(
+            scope, set(), ble_bridge_enabled=True, in_fn=in_fn
+        )
 
     counts = count_watchlist_by_pattern_type(db_path)
     enabled_rule_types: set[str] = set()
@@ -771,9 +787,36 @@ def run_enable_alerting_flow(
         # rules.yaml to write, no rules_path to wire — the operator
         # answered no to alert-firing in practice, so end the flow as if
         # they had answered no at the top-level gate.
-        print("No rule_types enabled; skipping rules.yaml generation.")
-        return (None, False)
+        if not ble_bridge_enabled:
+            print("No rule_types enabled; skipping rules.yaml generation.")
+            return (None, False)
+        print(
+            "No Argus rule_types enabled, but the passive BLE bridge is on; "
+            "writing rules.yaml with Find My tracker alerting active."
+        )
 
+    return _write_rules_yaml(
+        scope,
+        enabled_rule_types,
+        ble_bridge_enabled=ble_bridge_enabled,
+        in_fn=in_fn,
+    )
+
+
+def _write_rules_yaml(
+    scope: str,
+    enabled_rule_types: set[str],
+    *,
+    ble_bridge_enabled: bool,
+    in_fn,
+) -> tuple[Path | None, bool]:
+    """Render and write rules.yaml, honouring the overwrite confirmation.
+
+    Extracted so the two paths that reach a write -- the normal one, and the
+    operator who declined Argus alerting while running the BLE bridge -- share
+    ONE implementation. Duplicating it is how the two drift, and a divergence
+    here is invisible: both branches still write a file, just not the same one.
+    """
     rules_target = paths.default_config_dir(scope) / "rules.yaml"
     if rules_target.exists():
         # --reconfigure alone is NOT authorization to overwrite an
@@ -796,11 +839,20 @@ def run_enable_alerting_flow(
             return (rules_target, False)
 
     rules_target.parent.mkdir(parents=True, exist_ok=True)
-    content = render_rules_yaml(enabled_rule_types)
+    content = render_rules_yaml(
+        enabled_rule_types, ble_bridge_enabled=ble_bridge_enabled
+    )
     _atomic_write(rules_target, content)
     active_names = sorted(
         rt for (_n, rt, _pt, _l, _d) in DELEGATION_RULES if rt in enabled_rule_types
     )
+    # ⚠️ The Find My rule is NOT in DELEGATION_RULES, so it is invisible to the
+    # count above. Reporting "0 active rule(s)" while having just written an
+    # active apple_find_my block would be a false statement to the operator at
+    # the exact moment they are deciding whether the wizard did anything.
+    if ble_bridge_enabled:
+        active_names.append("ble_device_class")
+        active_names.sort()
     print(
         f"Wrote rules.yaml to {rules_target} with "
         f"{len(active_names)} active rule(s): {', '.join(active_names)}."
@@ -1422,7 +1474,10 @@ and enter the topic exactly as written.
     # the config it points at.
     try:
         rules_target, rules_written = run_enable_alerting_flow(
-            scope, db_path_str, input_fn=in_fn
+            scope,
+            db_path_str,
+            input_fn=in_fn,
+            ble_bridge_enabled=bool(answers["ble_bridge_enabled"]),
         )
     except SetupError as exc:
         print(f"Setup failed: {exc}", file=sys.stderr)

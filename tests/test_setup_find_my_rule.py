@@ -331,3 +331,68 @@ def test_apply_config_bridge_on_with_active_delegation_writes_both(tmp_path, mon
     # counting by one here was the original operator-facing half of
     # the bug.
     assert "2 active rule(s)" in write_step.message
+
+
+# --- the CLI wizard path ----------------------------------------------------
+#
+# ⛔ `apply_config` is NOT the write an operator actually sees. The CLI runs its
+# alerting prompts AFTER apply_config returns and writes rules.yaml itself, so a
+# fix applied only to apply_config is overwritten moments later by a file with
+# the Find My rule commented out. That is the wired-on-one-path-only defect this
+# whole change exists to close, and it had a THIRD site nobody had counted.
+
+
+def _cli_flow(monkeypatch, tmp_path, answers, *, ble_bridge_enabled):
+    """Drive the real run_enable_alerting_flow with scripted prompt answers."""
+    from lynceus.cli import setup as cli_setup
+
+    monkeypatch.setattr(
+        cli_setup.paths, "default_config_dir", lambda _scope: tmp_path
+    )
+    replies = iter(answers)
+    return cli_setup.run_enable_alerting_flow(
+        "user",
+        str(tmp_path / "lynceus.db"),
+        input_fn=lambda *_a, **_k: next(replies),
+        ble_bridge_enabled=ble_bridge_enabled,
+    )
+
+
+def test_cli_declining_argus_alerting_still_writes_find_my_when_bridge_on(
+    monkeypatch, tmp_path
+):
+    """Declining ARGUS alerting is not declining FIND MY alerting.
+
+    Two different questions; the gate only ever asked the first. An operator
+    who turned the BLE bridge on and said no to Argus watchlist alerts must
+    still get the tracker rule -- otherwise the wizard half of this feature
+    does nothing for exactly the operator who wanted it.
+    """
+    target, wrote = _cli_flow(
+        monkeypatch, tmp_path, ["n"], ble_bridge_enabled=True
+    )
+    assert wrote is True, "declined Argus + bridge on wrote no rules.yaml"
+    assert target is not None
+    from lynceus.rules import load_ruleset
+
+    rules = load_ruleset(str(target))
+    names = [r.name for r in rules.rules]
+    assert "apple_find_my" in names, (
+        f"the CLI wrote a rules.yaml without the Find My rule: {names}"
+    )
+    # And nothing Argus-shaped leaked in on the back of it.
+    assert names == ["apple_find_my"], f"unexpected extra rules: {names}"
+
+
+def test_cli_declining_argus_alerting_writes_nothing_when_bridge_off(
+    monkeypatch, tmp_path
+):
+    """The inverse, so the fix above cannot be a blanket 'always write'."""
+    target, wrote = _cli_flow(
+        monkeypatch, tmp_path, ["n"], ble_bridge_enabled=False
+    )
+    assert (target, wrote) == (None, False)
+    assert not (tmp_path / "rules.yaml").exists(), (
+        "wrote a rules.yaml for an operator who declined alerting and has no "
+        "BLE bridge -- that is a behavioural change they never asked for"
+    )
