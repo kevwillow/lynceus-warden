@@ -3518,6 +3518,193 @@ and de-duplicating"* claim false because existing duplicates are not removed. Th
 the NEW values against the existing ones, which is exactly what the code does. **Overstated, not a
 defect.**
 
+## Round 18 — `process_observation` swept line by line, and the delivery RETRY had no claim, 2026-08-19
+
+**The largest unaudited surface in the codebase is now swept.** `process_observation`
+(`poller.py:555–1309` at `61efb0a`, 755 lines) was named open in three consecutive handoffs; six M3
+packets across two sessions returned empty on it. It was read by hand instead.
+
+**The class hunted**: a value is READ, a decision is made from it, and a WRITE (or a SEND) happens
+later, with no guarantee the value still holds. `process_observation` has **two callers** — the poll
+loop and `bridges/ble.py:391`, on a `ble-bridge` **thread holding its own `Database` on its own
+connection**, which `Database._lock` does not serialise — so "the poller is single-threaded" is not
+available as a defence here.
+
+### The map — every read→decide→write pair, at `61efb0a` line numbers
+
+| # | pair | verdict |
+|---|---|---|
+| 1 | `583` `get_device` → `584` `is_new` → `588` `upsert_device`; `is_new` consumed at `1042` `evaluate` | ⬜ **refuted** — two writers both see `is_new=True`, but the alert is the only consumer and `add_alert_if_none_since` (F58) collapses it. With `alert_dedup_window_seconds = 0` duplicates are the documented, tested behaviour (`test_with_dedup_disabled_every_detection_writes_its_own_alert`). |
+| 2 | `596` `merge_device_probe_ssids` → `truncated` → log only | ⬜ **refuted** — the decision drives a `logger.warning`, not a write. (The *internal* stale-read there is Finding 54, already registered.) |
+| 3 | `626–645` `obs.last_seen` vs `now_ts` → clamp → `insert_sighting` | ⬜ **refuted** — both values are in-memory parameters; no DB read participates. |
+| 4 | `655` `allowlist.is_allowed` → suppress → `return` | ⬜ **out of class** — in-memory allowlist object, re-read live per bridge flush. Session 3 owns it. |
+| 5 | `793` `get_active_watchful_recurrence_by_mac` → `795` `record_watchful_sighting` | ⬜ **refuted** — the write re-SELECTs *inside* its transaction, returns `None` on a concurrent archive, and CAS-es `last_seen_at`. Guarded by `test_one_observation_cannot_be_counted_by_both_writers`. |
+| 6 | `866` ledger read → decide emit vs recover → `add_watchful_escalation_alert` | ⬜ **refuted** — `UNIQUE(entry_id, generation)` (migration 026) is the authority; a failed read degrades to the emit path by design. |
+| 7 | `793` stale `watchful_entry` → `1000` `elif watchful_entry.escalated_at` → `_retry_watchful_escalation` | 🔴 **REPRODUCED → Finding 61** |
+| 8 | `1050` `resolve_matched_watchlist_id` → alert write with that FK | ⚠️ **UNMEASURED** — a watchlist row deleted between read and write would raise `IntegrityError` into the `except` at `1128`, which re-raises as `RuntimeError` and holds the watermark. That is the designed persist-failure path, so the cost is a held tick, not a lost alert. Not reproduced; recorded so it is not re-derived. |
+| 9 | `1102` `get_recent_alert_for_rule_and_mac` → `1115` `retry_alert = recent` → `1256` attempt → `1265` `notifier.send` | 🔴 **REPRODUCED → Finding 62** |
+| 10 | `_retry_watchful_escalation` `477–541` → `_deliver_watchful_escalation` `395` | 🔴 **REPRODUCED → Finding 63** |
+| 11 | `1104` `is_rule_type_snoozed` → decide skip | ⬜ **refuted** — read→decide only; a snooze expiring mid-tick is benign in both directions. |
+| 12 | `1281` `mark_alert_notified` | ⬜ **refuted** — a write with no participating read. |
+
+⭐ **And the third path to the same mechanism was asked for and refuted.** The heartbeat has the
+identical delivery-retry shape (`record_heartbeat_notify_attempt` → `notifier.send` →
+`mark_heartbeat_notified`, `poller.py:1703–1726`). It is **not** exposed: the only caller is the poll
+loop, `bridges/ble.py` sends no heartbeat, and `webui/` only READS heartbeat state
+(`latest_delivered_heartbeat_ts`, `count_undelivered_heartbeats`). **One writer, so no claim is
+needed** — recorded here so the next sweep does not re-derive it, and so that a future second sender
+knows it must take the claim. `record_heartbeat_notify_attempt` was deliberately left unchanged.
+
+⭐ **Six refutations against three findings, and the refutations are the load-bearing half.** This
+project's audit is credible because 6 of 11 reported findings once failed reproduction and were
+recorded as refuted; the same discipline applies to a sweep's own candidates.
+
+### 🔴 Finding 61 — a reset the operator just performed still re-sent the escalation they cleared
+
+`process_observation` decided one branch from **two different reads of the same row**. `watchful_entry`
+is read at `793`, *before* `record_watchful_sighting`; `outcome.entry` is that row as it is *inside*
+that write's transaction. The threshold branch (`997`) used the fresh one; the retry branch (`1000`)
+used the stale one — and the neighbouring `_emit_watchful_escalation` call already used the fresh one,
+so this was an inconsistency rather than a decision.
+
+An operator **reset** landing between the two reads is where they disagree. Reset clears `escalated_at`
+precisely so the retry stops (*"clearing `escalated_at` is what removes the retry path"* — Finding 50),
+and marks the undelivered escalation `notify_abandoned_at` (migration 027). But
+`get_recent_alert_for_rule_and_mac` does **not** filter that column and `_retry_watchful_escalation`
+checked only `notified_at` and `notify_attempts`. Measured, reset applied at the seam on a genuinely
+separate connection, against a control that resets *first*:
+
+```
+CONTROL   reset first, then observe   escalation sends=0   rows=1  abandoned=1
+TREATMENT reset between the two reads  escalation sends=1   rows=1  abandoned=1
+```
+
+The operator clicked reset on the escalation they were looking at, and the tool told them again —
+from the very row the reset had marked abandoned.
+
+✅ **FIXED in two independent places, and both are load-bearing.** The call site now decides from
+`outcome.entry`; `_retry_watchful_escalation` now refuses an abandoned row. ⛔ **Either alone closes
+the reproduced case**, which is why they were planted separately: plant A (restore the stale read)
+reddens only the call-site guard, plant B (remove the abandoned check) reddens only the mechanism
+guard, and **only A+B together reproduce the probe**. An outcome-only assertion would have passed
+under plant A while appearing to guard it — so the call-site test asserts *which entry the branch
+decided from*, not merely that nothing was sent.
+
+### 🔴 Finding 62 — the dedup gate's RETRY arm re-sent one alert to two writers
+
+Finding 58 closed the read→decide→write race on the **insert** arm with `add_alert_if_none_since`,
+and its docstring says the other arms are *"deliberately untouched"* — correctly, because routing a
+re-send through a conditional INSERT would turn it into a silent skip and reinstate Wave 5
+Finding 12. But the *undelivered, attempts left → reuse the row and retry* arm is **also** a
+read→decide→send: `notified_at IS NULL` and `notify_attempts < NOTIFY_MAX_ATTEMPTS` are read at
+`1102` and nothing re-asserts them at the `notifier.send` at `1265`. Measured, one detection
+delivered to both writers, injection asserted to have fired at both:
+
+```
+CONTROL   sequential, one connection    alerts=1  sent=1  attempts=2
+TREATMENT two connections, interleaved  alerts=1  sent=2  attempts=3
+```
+
+One detection; the operator told twice. **The same harm Finding 58 exists to prevent, reached
+through the arm its fix excluded.** ⇒ [[a-fix-can-close-the-surface-not-the-mechanism]].
+
+### 🔴 Finding 63 — the same mechanism, second site: the watchful escalation retry
+
+`_retry_watchful_escalation` → `_deliver_watchful_escalation` has the identical shape. ⭐ **This is
+not the first-crossing race**, which is closed: migration 026's `UNIQUE(entry_id, generation)`
+reservation is taken when the row is **written**, so it bounds how many escalation rows exist and
+says nothing about how many times an existing row is **delivered**. Measured:
+
+```
+CONTROL   sequential, one connection    escalation sends=1
+TREATMENT two connections, interleaved  escalation sends=2
+```
+
+"This device appears to be following you" is the most serious message this product sends, and the
+operator has no way to tell one sent twice from two real ones.
+
+✅ **FIXED at the mechanism, not per site.** `record_alert_notify_attempt` gained an optional
+`expected_attempts`, making the attempt counter that already bounds the retry into a **compare-and-swap
+claim on the right to send** — no new column, no migration. Both call sites pass what their dedup read
+saw. ⛔ **A lost claim and a raised exception are deliberately distinguishable**: a definite loss skips
+(the winner is sending right now), an *error* still sends, because bookkeeping may never cost a
+notification (`test_bookkeeping_failure_does_not_cost_the_notification`).
+
+⛔ **The opposite direction was tested, not assumed** — this repo has already shipped a
+duplicate-alert fix that made the alert undeliverable. `test_a_lost_claim_does_not_swallow_the_alert_when_the_winner_fails`
+races two writers with the notifier **down**: the loser skips, the winner fails, `notified_at` stays
+NULL, and the next tick still re-sends. Finding 12 is not reinstated.
+
+⇒ ⭐ **[[ask-how-many-paths-reach-the-mechanism]].** Finding 58 was fixed at one site and the same
+shape sat two branches away. The fix here is one primitive in `db.py` applied at both sites, and the
+sweep above is what says there is no third.
+
+### The `db.py` half — every method that both READS and WRITES, triaged
+
+Derived, not transcribed: an AST pass over `db.py` (5820 lines) for methods containing a `SELECT`
+**and** an `UPDATE`/`INSERT`/`DELETE`, with docstrings stripped **by line range**. ⚠️ The first
+version stripped them by text substitution, which silently failed on indentation and produced **4
+false positives** — `resolve_matched_ssid_pattern_for_eval` is read-only and was flagged because its
+prose says *"escape on insert"*. ⇒ [[iterate-the-derived-set-dont-transcribe-it]] cuts both ways: a
+derivation you have not calibrated is not better than a transcription.
+
+**20 methods read and write. 10 re-assert the value they read at the write; 10 do not.** The triage
+turns on **how many writers can reach it**, which for this codebase has one answer:
+
+⭐ **`process_observation` is the ONLY function with two callers holding separate `Database`
+instances.** Everything else — the whole web UI — is one process on one connection, where the
+per-instance `RLock` genuinely does serialise. So the two-writer exposure is exactly *the set of
+read-and-write methods reachable from `process_observation`*, which is six:
+
+| method | re-assertion at the write | verdict |
+|---|---|---|
+| `add_alert_if_none_since` | `NOT EXISTS` inside the INSERT | ⬜ closed (F58) |
+| `record_watchful_sighting` | CAS on `last_seen_at` | ⬜ closed (F55) |
+| `escalate_watchful_recurrence` | `expected_reset_count` | ⬜ closed |
+| `add_watchful_escalation_alert` | `UNIQUE(entry_id, generation)` | ⬜ closed (migration 026) |
+| `record_alert_notify_attempt` | `expected_attempts` | ✅ **closed THIS round (F62/63)** |
+| `merge_device_probe_ssids` | **none** | 🟡 **REPRODUCED → Finding 64** |
+
+⇒ **With Finding 64 open, every read-and-write method on the two-writer path now carries a
+re-assertion except that one.** That is a checkable statement, and it is the closing claim of this
+round.
+
+The other four unprotected methods (`upsert_metadata`, `_set_alert_ack`, `bulk_acknowledge_alerts`,
+`promote_watchful_to_allowlist`, `reset_watchful_recurrence`, `create_watchful_from_alert`) are
+⬜ **refuted for this class**: web-UI-only, one process, one connection. `rollback_to` is an explicit
+`lynceus-validate` CLI action. `record_heartbeat_notify_attempt` is refuted by measurement above.
+
+### 🟡 Finding 64 — two writers merging probe SSIDs silently lose one — ⛔ REPRODUCED, **NOT FIXED**
+
+`merge_device_probe_ssids` (`db.py:761`) reads the stored JSON list, merges the new SSIDs in Python,
+and writes it back `WHERE mac = ?` — **keyed on the primary key only**. `Database` sets no
+`isolation_level`, so Python's `sqlite3` implicitly `BEGIN`s only before DML: the `SELECT` runs in
+**autocommit, outside the UPDATE's transaction**, and `with self._conn:` does not begin eagerly.
+Both writers read the same list; the second write wins whole. Reached from `process_observation:596`
+on both writers whenever `capture.probe_ssids` is on. Measured, injection asserted to have fired at
+both writers:
+
+```
+CONTROL   sequential   ['home-wifi', 'from-poller', 'from-bridge']
+TREATMENT interleaved  ['home-wifi', 'from-poller']        <- 'from-bridge' silently dropped
+```
+
+⚠️ **It LOSES rather than erroring** — no `database is locked` — which is what confirms the read sits
+outside the transaction.
+
+⚠️ **Distinct from Finding 54**, which is about an *unreadable* stored value being overwritten. This
+is a *readable* one being lost.
+
+⛔ **Deliberately left unfixed this round, and here is the reason rather than an excuse.** The
+obvious fix — CAS the UPDATE on the value read — has a fail-closed twin: a losing writer that simply
+returns has *silently not merged*, which is the same silent evidence loss in a new costume. The
+honest fix is a bounded read-CAS-retry loop, and that is a new behaviour on the capture hot path
+that needs its own tests, its own planted defects and a full gate. ⇒ **Next session-2 round.**
+Probe: `internal/session2-harnesses/probe_ssids_lost_update.py`.
+
+⭐ Severity is 🟡, not 🔴: probe SSIDs are corroborating evidence, not an alert. Losing one narrows
+the co-observation corpus; it does not cost the operator a notification.
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
@@ -3580,6 +3767,55 @@ hardened regardless of reachability.
 ## Reserved for Kev — decisions, not defects
 
 ⛔ **Do not decide these unilaterally.** Each changes behaviour for existing deployments.
+
+### 0. ⭐ Finding 52's residual — read→decide→write is unprotected application-wide. **Kev's call, spans all three tracks.**
+
+**Input written 2026-08-19 by session 2, at `61efb0a`. A proposal, not a merge — nothing here has
+been implemented.**
+
+**What is actually true today.** Finding 52's `_lock` fixed *transaction ownership* on one
+connection. It never addressed *application atomicity*: a value read, decided from, and written
+later. Round 18 swept `process_observation` — the largest single instance of the pattern — and found
+**three live cases in one function** (Findings 61–63), each closed with a targeted primitive:
+`add_alert_if_none_since` (F58), a CAS on `last_seen_at` (F55), a CAS on `notify_attempts` (F62/63),
+`expected_reset_count` on the escalation stamp. **Four different bespoke guards for one class.**
+
+**What it costs to keep doing this.** Each new write path must independently rediscover that it has
+two writers. The evidence that this does not happen reliably is in the register: F58 was fixed at one
+site and the identical shape sat two branches away for three weeks (F62), and F53 was "I added a CAS
+to one repair and left its two siblings without it". ⛔ **The sweep is what found these, not the
+guards** — nothing in the codebase makes the pattern fail loudly when a fifth site is added.
+
+**The candidate fix, and its blast radius.** Request-scoped connections plus explicit units of work:
+
+| what changes | scale, measured at `61efb0a` |
+|---|---|
+| `Database` becomes per-request/per-unit rather than one long-lived instance | `db.py` is **5820 lines**; ~42 sync web route handlers share `app.state.db` today |
+| every route handler acquires and releases a unit of work | `webui/` — **session 3's track** |
+| the poll loop and the `ble-bridge` thread each own their unit per observation | `poller.py`, `bridges/ble.py` — session 2's |
+| the four bespoke CAS guards can then be re-expressed as ordinary transactions | but must NOT be removed before the units exist |
+
+**What breaks.** (a) Every test constructing `Database(path)` and holding it — the fixtures in this
+repo do this pervasively. (b) `check_same_thread=False` and the per-instance `RLock` become dead
+weight and their removal is itself a behaviour change. (c) SQLite writer serialisation moves from
+"one connection, one lock" to "many connections, WAL + busy_timeout", so **`database is locked`
+becomes MORE reachable, not less**, until a retry policy exists. (d) The Pi is the target: more
+connections is more memory and more fds on the smallest deployment.
+
+**What happens if nothing is done.** Nothing breaks today — the three findings are closed and the
+sweep is complete for `process_observation`. The cost is ongoing and cumulative: every new write path
+is a coin flip, and the register shows the coin has landed wrong three times.
+
+⚠️ **The trap, and it is measured, not theoretical.** The obvious fix for a lost update is a broader
+lock, and this repo has already shipped a duplicate-alert fix that made the alert **undeliverable**,
+plus a dedup guard on the wrong arm that turned a legitimate re-send into a silent skip (Wave 5
+Finding 12). **Every fix in this class must be tested in the opposite direction**, which is why
+Finding 61's fix ships with a test that races two writers with the notifier *down*.
+
+⭐ **Session 2's recommendation: do NOT do this now.** Take the cheap half first — a single documented
+primitive for "claim before you act" and a test that fails when a new write path skips it — and
+defer request-scoped connections until something needs it that a CAS cannot express. The three
+findings this round were all expressible as a CAS, which is evidence about the shape of the problem.
 
 1. ⭐ **Should the six commented-out delegating rules ship ENABLED?** (Finding 32.) ⚠️ **Price this
    with Finding 40 in hand:** enabling `watchlist_oui` reads as one switch that turns the type on,

@@ -1539,11 +1539,20 @@ class Database:
         "a row exists but nobody has been told" (retry). Keying dedup on row
         EXISTENCE alone was Wave 5 Finding 12 — one failed send silently
         swallowed the alert for the whole window.
+
+        ⛔ ``notify_abandoned_at`` is in the projection for a THIRD state that
+        neither of those covers: written, not delivered, and deliberately
+        stopped being retried (migration 027, Finding 50 — an operator reset).
+        The predicate is deliberately NOT narrowed here. This method also
+        serves the main dedup, where "an abandoned row is not recent" would
+        change which alerts dedup against each other; the abandonment is a
+        fact about DELIVERY, so it is the delivery caller's to act on.
+        ``_retry_watchful_escalation`` is that caller.
         """
         row = self._conn.execute(
             """
             SELECT id, ts, rule_name, mac, message, severity, acknowledged,
-                   notified_at, notify_attempts
+                   notified_at, notify_attempts, notify_abandoned_at
             FROM alerts
             WHERE rule_name = ?
               AND ts >= ?
@@ -1568,7 +1577,9 @@ class Database:
                 (int(now_ts), int(alert_id)),
             )
 
-    def record_alert_notify_attempt(self, alert_id: int) -> int:
+    def record_alert_notify_attempt(
+        self, alert_id: int, *, expected_attempts: int | None = None
+    ) -> int | None:
         """Increment and return this alert's delivery-attempt counter.
 
         Bounds the retry loop: without it a server that is down for the whole
@@ -1586,12 +1597,55 @@ class Database:
         capture loop would turn "your SQLite is old" into "no alert ever
         fires". Both statements share the transaction, so the read cannot
         observe another writer's increment.
+
+        ⛔ ``expected_attempts`` makes this a COMPARE-AND-SWAP, and it is what
+        turns "attempt accounting" into "the right to send". Deciding to
+        deliver is a READ -- ``notified_at IS NULL`` and ``notify_attempts <
+        NOTIFY_MAX_ATTEMPTS``, both off
+        ``get_recent_alert_for_rule_and_mac`` -- and nothing re-asserted it at
+        the send. ``process_observation`` runs in the poll loop AND in the
+        ``ble-bridge`` thread, which holds its own ``Database`` on its own
+        connection, so ``self._lock`` does not serialise them. Both could read
+        the same undelivered row and both send it. Measured, one detection
+        delivered to both writers:
+
+            CONTROL   sequential, one connection    sends=1
+            TREATMENT two connections, interleaved  sends=2
+
+        ⭐ Finding 58 closed exactly this shape on the alert-INSERT arm, with
+        ``add_alert_if_none_since``. Its docstring says the retry arm is
+        "deliberately untouched" -- correctly, because routing a re-send
+        through a conditional INSERT would turn it into a silent skip (Wave 5
+        Finding 12). The retry arm needs the opposite primitive: not "insert
+        only if absent" but "claim only if unclaimed". The counter that
+        already bounds the retry is the natural claim, so the CAS costs no
+        column and no migration.
+
+        Returns the new attempt count, or ``None`` when the claim was LOST --
+        another writer is delivering this row, or it is already delivered.
+        ⚠️ ``None`` is a definite loss, not an error. A caller must still send
+        when this RAISES: bookkeeping may never cost a notification
+        (``test_bookkeeping_failure_does_not_cost_the_notification``), and the
+        two outcomes are deliberately distinguishable.
+
+        With ``expected_attempts`` omitted the behaviour is exactly as before
+        -- an unconditional increment that cannot fail to claim.
         """
         with self._lock, self._conn:
-            self._conn.execute(
-                "UPDATE alerts SET notify_attempts = notify_attempts + 1 WHERE id = ?",
-                (int(alert_id),),
-            )
+            if expected_attempts is None:
+                self._conn.execute(
+                    "UPDATE alerts SET notify_attempts = notify_attempts + 1 "
+                    "WHERE id = ?",
+                    (int(alert_id),),
+                )
+            else:
+                cur = self._conn.execute(
+                    "UPDATE alerts SET notify_attempts = notify_attempts + 1 "
+                    "WHERE id = ? AND notified_at IS NULL AND notify_attempts = ?",
+                    (int(alert_id), int(expected_attempts)),
+                )
+                if cur.rowcount == 0:
+                    return None
             row = self._conn.execute(
                 "SELECT notify_attempts FROM alerts WHERE id = ?",
                 (int(alert_id),),

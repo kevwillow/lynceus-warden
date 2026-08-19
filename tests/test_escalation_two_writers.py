@@ -33,7 +33,7 @@ from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.kismet import DeviceObservation
 from lynceus.notify import Notifier
-from lynceus.poller import process_observation
+from lynceus.poller import WATCHFUL_RETRY_BASE_SECONDS, process_observation
 from lynceus.rules import Rule, Ruleset
 
 MAC = "ac:de:48:11:22:33"
@@ -346,3 +346,117 @@ def test_one_observation_cannot_be_counted_by_both_writers(primed):
         )
     finally:
         db_a.close(), db_b.close()
+
+
+@pytest.fixture
+def escalated_undelivered(primed):
+    """An entry that HAS escalated, whose escalation never reached the operator.
+
+    Built through the real pipeline — the threshold is crossed by a real
+    observation while the notifier is down — so the row, the ledger
+    reservation and `escalated_at` are all in the state the product puts them
+    in, not a hand-written one.
+    """
+    path, config, ruleset, entry_id = primed
+
+    class DropsEscalation(Recorder):
+        def send(self, severity, title, message, priority_override=None) -> bool:
+            if "escalation" in title:
+                return False
+            return super().send(severity, title, message, priority_override)
+
+    db = Database(path)
+    try:
+        process_observation(
+            _obs(T0 + DAY), db, config, T0 + DAY,
+            effective_location_id="home", effective_location_label="Home",
+            ensured_locations=set(), processed_counter=[0], admitted_counter=[0],
+            ruleset=ruleset, clock_trusted=True, allowlist=Allowlist(),
+            notifier=DropsEscalation(),
+        )
+        rows = _escalation_rows(db)
+        assert len(rows) == 1 and rows[0]["notified_at"] is None, (
+            f"fixture failed: wanted one undelivered escalation, got "
+            f"{[dict(r) for r in rows]}"
+        )
+        assert db.get_watchful_recurrence(entry_id).escalated_at is not None, (
+            "fixture failed: the entry was not stamped as escalated"
+        )
+    finally:
+        db.close()
+    return path, config, ruleset, entry_id
+
+
+def test_two_writers_retrying_one_escalation_tell_the_operator_once(
+    escalated_undelivered,
+):
+    """⛔ The first-crossing race is closed; the DELIVERY RETRY was not.
+
+    Migration 026's UNIQUE(entry_id, generation) reservation is taken when the
+    escalation row is WRITTEN, so it bounds how many rows exist — not how many
+    times an existing row is SENT. `_retry_watchful_escalation` decides to
+    re-send from a READ (`notified_at IS NULL`, attempts remaining) that two
+    writers pass together. Measured before the claim existed:
+
+        CONTROL   sequential, one connection    escalation sends=1
+        TREATMENT two connections, interleaved  escalation sends=2
+
+    "This device appears to be following you" is the single most serious
+    message this product sends. Sending it twice for one escalation is the
+    harm, and the operator has no way to tell it from two real ones.
+    """
+    path, config, ruleset, _entry_id = escalated_undelivered
+    later = T0 + DAY + WATCHFUL_RETRY_BASE_SECONDS + 60
+    notifier = Recorder()
+    reached: list = []
+    barrier = threading.Barrier(2, timeout=15)
+
+    class PausedRead(Database):
+        def get_recent_alert_for_rule_and_mac(self, rule_name, mac, since_ts):
+            row = super().get_recent_alert_for_rule_and_mac(rule_name, mac, since_ts)
+            if rule_name == "watchful_recurrence":
+                reached.append(1)
+                barrier.wait()
+            return row
+
+    errors: list = []
+
+    def worker():
+        try:
+            db = PausedRead(path)
+            try:
+                process_observation(
+                    _obs(later), db, config, later,
+                    effective_location_id="home", effective_location_label="Home",
+                    ensured_locations=set(), processed_counter=[0],
+                    admitted_counter=[0], ruleset=ruleset, clock_trusted=True,
+                    allowlist=Allowlist(), notifier=notifier,
+                )
+            finally:
+                db.close()
+        except Exception as exc:  # pragma: no cover - surfaced by the assert
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, f"a writer raised: {errors}"
+    assert len(reached) == 2, (
+        f"the writers did NOT interleave (reached={len(reached)}) -- this test "
+        "would pass vacuously"
+    )
+
+    escalations = [t for t in notifier.sent if "escalation" in t]
+    assert len(escalations) == 1, (
+        f"one escalation was re-sent {len(escalations)} times to the operator"
+    )
+    db = Database(path)
+    try:
+        rows = _escalation_rows(db)
+        assert len(rows) == 1, f"a second escalation ROW appeared: {[dict(r) for r in rows]}"
+        assert rows[0]["notified_at"] is not None, "the winning retry did not stamp delivery"
+    finally:
+        db.close()

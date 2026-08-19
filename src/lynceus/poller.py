@@ -400,6 +400,7 @@ def _deliver_watchful_escalation(
     mac: str,
     body: str,
     now_ts: int,
+    expected_attempts: int = 0,
 ) -> bool:
     """Send one watchful escalation and RECORD whether it actually arrived.
 
@@ -428,8 +429,22 @@ def _deliver_watchful_escalation(
     # Bookkeeping must never cost a notification — same reasoning as the main
     # alert path: losing the counter costs at worst one extra retry, losing the
     # send means the operator is never told.
+    #
+    # ⛔ The attempt is also the CLAIM -- same mechanism as the main alert
+    # path. `_retry_watchful_escalation` decides to re-send from a READ of the
+    # row (`notified_at IS NULL`, attempts left) and two writers can pass that
+    # read together. The first-crossing race is closed by migration 026's
+    # UNIQUE(entry_id, generation) reservation, but that is taken when the row
+    # is WRITTEN and says nothing about how many times an existing row is
+    # DELIVERED. Measured: two writers, one escalation row, TWO "this device
+    # appears to be following you" notifications.
+    claim_lost = False
     try:
-        attempts = db.record_alert_notify_attempt(alert_id)
+        attempts = db.record_alert_notify_attempt(
+            alert_id, expected_attempts=expected_attempts
+        )
+        if attempts is None:
+            claim_lost = True
     except Exception as e:
         logger.warning(
             "Failed to record notify attempt for watchful escalation %s "
@@ -438,6 +453,18 @@ def _deliver_watchful_escalation(
             e,
         )
         attempts = 0
+    if claim_lost:
+        # A definite loss, not an error: another writer is delivering this
+        # escalation, or it already arrived. Returning False is honest -- THIS
+        # call did not deliver it -- and no caller treats that as a reason to
+        # re-emit a row.
+        logger.debug(
+            "watchful escalation %s for %s: a concurrent writer claimed this "
+            "delivery",
+            alert_id,
+            mac,
+        )
+        return False
     try:
         ok = notifier.send(
             severity="high",
@@ -506,6 +533,15 @@ def _retry_watchful_escalation(
         return
     if row is None or row.get("notified_at") is not None:
         return
+    if row.get("notify_abandoned_at") is not None:
+        # ⛔ ABANDONED means the operator RESET this entry while looking at
+        # this escalation (`reset_watchful_recurrence`, Finding 50). The reset
+        # stops the retry by clearing `escalated_at` -- "clearing escalated_at
+        # is what removes the retry path" -- so anything still holding a
+        # pre-reset copy of the entry can drive one send the reset was meant
+        # to prevent. Checking the mark closes that regardless of who is
+        # holding a stale entry, which the caller-side fix alone does not.
+        return
     attempts = int(row.get("notify_attempts") or 0)
     if attempts >= NOTIFY_MAX_ATTEMPTS:
         return
@@ -539,6 +575,9 @@ def _retry_watchful_escalation(
         mac=entry.mac,
         body=str(row["message"]),
         now_ts=now_ts,
+        # The claim must be keyed on the value THIS retry decided from, so a
+        # second writer that read the same row loses it.
+        expected_attempts=attempts,
     )
 
 
@@ -997,7 +1036,19 @@ def process_observation(
                             )
                             + 1
                         )
-            elif watchful_entry.escalated_at is not None:
+            elif outcome.entry.escalated_at is not None:
+                # ⛔ `outcome.entry`, NOT the `watchful_entry` read above. The
+                # `if` decides from the row as it is INSIDE
+                # `record_watchful_sighting`'s transaction and this `elif`
+                # decided from the row as it was BEFORE it -- two sources, one
+                # decision. An operator RESET landing between them is where
+                # they disagree: reset clears `escalated_at` exactly so this
+                # retry stops, and the stale copy drove it anyway. Measured on
+                # a reset applied at the seam, against a control that resets
+                # first: control 0 sends, treatment 1 -- an escalation the
+                # operator had just cleared, re-sent from the row the reset had
+                # marked abandoned.
+                #
                 # ⭐ Already escalated, meaning the alert ROW EXISTS (the branch
                 # above stamps only after a successful write). If that
                 # escalation never actually REACHED the operator, this is the
@@ -1018,7 +1069,7 @@ def process_observation(
                 # No-ops immediately (one indexed lookup) once the alert is
                 # stamped delivered, which is the steady state.
                 _retry_watchful_escalation(
-                    db, notifier, watchful_entry, now_ts
+                    db, notifier, outcome.entry, now_ts
                 )
             # snooze_expires_at on the watchful entry gates
             # the ORIGINAL alert pipeline for this MAC (per
@@ -1252,8 +1303,32 @@ def process_observation(
         # device. Losing the counter costs at worst one extra retry later;
         # losing the send means the operator is never told, which is the exact
         # failure Finding 12 exists to close.
+        #
+        # ⛔ And the attempt is a CLAIM, which is what makes it safe to send.
+        # The dedup decision above is a READ; on the retry arm nothing
+        # re-asserted it at the send, so both writers could read one
+        # undelivered row and both notify. Finding 58 closed that shape on the
+        # INSERT arm only -- deliberately, since a conditional insert would
+        # turn a re-send into a silent skip (Wave 5 Finding 12). The CAS is
+        # the other half: the loser skips this instant, the WINNER is sending
+        # right now, and a failed send leaves `notified_at` NULL so the next
+        # tick retries. Nothing is swallowed for the window.
+        #
+        # `expected_attempts` is what the dedup read saw -- 0 on the fresh arm,
+        # where `add_alert_if_none_since` has already made us the only writer
+        # and the column is `NOT NULL DEFAULT 0` (migration 024).
+        expected_attempts = (
+            int(retry_alert.get("notify_attempts") or 0)
+            if retry_alert is not None
+            else 0
+        )
+        claim_lost = False
         try:
-            attempts = db.record_alert_notify_attempt(new_alert_id)
+            attempts = db.record_alert_notify_attempt(
+                new_alert_id, expected_attempts=expected_attempts
+            )
+            if attempts is None:
+                claim_lost = True
         except Exception as e:
             logger.warning(
                 "Failed to record notify attempt for alert %s (sending anyway): %s",
@@ -1261,6 +1336,17 @@ def process_observation(
                 e,
             )
             attempts = 0
+        if claim_lost:
+            # ⚠️ A LOST CLAIM, never an error -- the two are deliberately
+            # distinguishable, because a raise must still send.
+            logger.debug(
+                "send-skip %s/%s (alert %s: a concurrent writer claimed this "
+                "delivery)",
+                hit.rule_name,
+                hit.mac,
+                new_alert_id,
+            )
+            continue
         try:
             ok = notifier.send(
                 severity=hit.severity,

@@ -261,6 +261,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A notification that had to be re-sent could reach you twice.** When a
+  notification fails to go out — the usual cause is your phone or the ntfy
+  broker being briefly unreachable — lynceus keeps the record and re-sends it
+  the next time it sees the device. Deciding to re-send is a read: *this one
+  was never delivered, and it has attempts left*. Lynceus watches through two
+  independent paths, the main scan loop and the Bluetooth listener, each with
+  its own connection to the database, and both could pass that check at the
+  same moment and both send. Measured: one detection, two notifications. The
+  same applied to the recurrence escalation — the "this device keeps showing
+  up" message, which is the most serious thing lynceus sends and the one you
+  can least afford to see duplicated.
+
+  Making the record's attempt counter into a claim fixes both: a path now has
+  to win the right to send before sending, and the one that loses stands down
+  because the other is already delivering. ⛔ A re-send is still never skipped
+  for any other reason. If the winner's send then fails, nothing is marked
+  delivered and the next pass retries it — a fix for duplicates that quietly
+  cost you a notification would be the worse bug, and there is a test that
+  races both paths with delivery down to prove it did not.
+
+- **Resetting a watched device could still send you the alert you just
+  cleared.** Reset means "I have seen this escalation and I am starting the
+  count over", and it deliberately stops that escalation being re-sent. But the
+  scan loop decided whether to re-send from a copy of the device's record taken
+  a moment *before* the reset landed, so a reset arriving in that window was
+  ignored and the message went out anyway — from the very record the reset had
+  retired.
+
+  The decision now reads the record as it stands after the update, and a
+  retired notification is never re-sent regardless of who is holding an older
+  copy of it. The two are separate defences on purpose: either one alone closes
+  the case that was measured, and each has its own test that fails if only that
+  defence is removed.
+
 - **One device, seen once, could alert you twice.** Lynceus watches through two
   independent paths — the main scan loop and the Bluetooth listener — and each
   keeps its own connection to the database. Before writing an alert it checks
