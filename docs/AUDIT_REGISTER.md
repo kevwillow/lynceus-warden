@@ -2613,7 +2613,95 @@ Its packet was handed to M3 twice (once at 79 KB, once split to 41 KB) and retur
 file** both times, and codex was rate-limited until 2026-08-20, so there was no second channel to
 swap to. The function is unaudited for this defect shape.
 
-### 🟡 Finding 56 — the impossible-deadline reporter covers ONE of the four deadline backends
+### 🔴 Finding 58 — the MAIN alert dedup is a read-then-write, so one detection can alert twice
+
+**MEASURED, NOT PATCHED — deliberately, because it is the hottest path in the product and the fix
+has to preserve three-way retry semantics. Registered so the measurement is not re-derived.**
+
+`process_observation` reads `get_recent_alert_for_rule_and_mac` to decide whether this rule+mac was
+already alerted inside `alert_dedup_window_seconds`, then calls `add_alert`. The read is not
+re-asserted at the write, and the two callers of `process_observation` — the poll loop and the
+`ble-bridge` thread — hold separate `Database` objects on separate connections.
+
+Measured, one detection delivered to both writers, with a control:
+
+```
+CONTROL   sequential, one connection    alerts=1  sent=1
+TREATMENT two connections, interleaved  alerts=2  sent=2   (barrier reached by both)
+```
+
+⇒ **One detection, two alert rows, two ntfy notifications.**
+
+⚠️ **Graded fail-OPEN and ranked accordingly:** the operator is told twice, not never. That is why
+this is registered rather than rushed — every escalation-path sibling (Findings 44a, 55, 57) either
+lost a warning or fabricated one.
+
+⛔ **Reachability is established, not assumed:** Kismet reports BLE devices and the bridge reports
+BLE devices, so the same MAC can be observed by both within one dedup window. The probe drives the
+real `process_observation` on two connections rather than calling `add_alert` directly.
+
+⛔ **Why the obvious fix is not obvious.** The dedup branch is three-way — *delivered* → skip,
+*undelivered with attempts spent* → skip, *undelivered with attempts left* → **reuse the row and
+retry**. A `NOT EXISTS` guard on the INSERT closes the duplicate but must not turn the retry case
+into a silent skip, which would reinstate Wave 5 Finding 12 (a failed send swallowed for the whole
+window). Any fix needs the retry arm tested explicitly.
+
+**Acceptance criterion (a conjunction):** two concurrent handlers of one detection produce exactly
+one alert row and one notification, **AND** an undelivered alert with attempts remaining is still
+retried on the next observation. The second half is not optional — it is the behaviour the dedup
+exists to permit.
+
+### 🔴 Finding 56 — the impossible-deadline reporter covered ONE of four deadline backends — ✅ FIXED (watchful half)
+
+**The watchful-snooze backend now has its BACKWARD reporter.** The measurement below is what
+established this was a fix rather than a documented limit, and it is kept in place.
+
+`find_impossible_watchful_snoozes` uses the same ordering discriminator as its rule_type sibling —
+a row cannot have been written before the schema that holds it existed — keyed on
+`watchful_recurrence.created_at`. ⛔ **Not** `snooze_expires_at` and **not** `last_seen_at`: both are
+deliberately re-written and clamped, so neither carries provenance.
+
+⛔ **THE BOUND IS THE HALF A NAIVE PORT GETS WRONG.** The sibling is bounded for free — the purge
+deletes the rule_type row immediately afterwards. **Watchful entries are never purged**, so a direct
+port would re-emit the same warning on every poll cycle forever, which is #139's unbounded-repetition
+defect (`[1,1,1,1]` per cycle) reintroduced on the one channel that must not be trained into noise.
+Each entry is now reported at most once, remembered durably in `poller_state`. Both directions are
+pinned: `..._reported_at_most_once` and `..._a_SECOND_impossible_entry_is_still_reported`, because
+"report once" otherwise passes trivially by going deaf.
+
+⛔ **A "tidy up the expired snooze" fix would have been catastrophic and was nearly written.**
+`poller.py` reads `snooze_active = snooze_expires_at is None or snooze_expires_at > now_ts` — so
+**NULL means snoozed FOREVER**, not "no snooze". Clearing an expired snooze to bound the reporting
+would have made that suppression permanent. ⇒ [[count-the-readers-before-removing-a-write]].
+
+⚠️ **Three false-positive shapes are each pinned by their own test**, because this class has already
+shipped one: a healthy snooze, a snooze still IN FORCE (its duration outran the clock error — #139's
+exact case), and a floor stamped by a clock that read AHEAD (`applied_at` comes from the same host
+clock, so the floor sits above every legitimate later write — the false positive #135 shipped).
+
+⭐ **Two plants taught more than they proved, both about my own code:**
+- **`snooze_expires_at IS NOT NULL` CANNOT FAIL on its own** — SQLite's `NULL <= x` is never true, so
+  the deadline comparison already excludes forever-snoozes. Its plant SURVIVED. Kept as a statement
+  of intent and as cover for anyone making that comparison NULL-tolerant, and now **documented as
+  redundant** so nobody reads it as load-bearing.
+- **A half-made plant passed the test for the worst possible reason.** Making the predicate
+  NULL-tolerant without also making the arithmetic NULL-safe let the row reach
+  `int(exp) - int(created)`, which raised — and the never-raises guard turned that into the finder
+  returning **nothing at all**. Total silence, scoring as a pass. ⇒ A plant must model the whole
+  change; and a fail-safe diagnostic converts a predicate bug into silence, which is the cost of that
+  design and is stated rather than discovered later.
+
+⬜ **The other two backends still have no backward reporter, and cannot use this discriminator:**
+`repair_future_dated_ui_entries` is the YAML allowlist, which has no `schema_migrations` row to
+compare against; `_watchful_baselines` keys on `last_seen_at`, a clamped column. Closing those needs
+a different mechanism, not a third copy of this one.
+
+⚠️ **Unchanged residual:** an install whose clock has been wrong since its FIRST migration is
+invisible to all of this, because the floor is wrong by the same amount.
+
+Original measurement follows.
+
+### (measurement) Finding 56 — the impossible-deadline reporter covers ONE of the four deadline backends
 
 **MEASURED, NOT PATCHED. Registered so the reachability work is not re-derived a fourth time.**
 This is handoff JOB 3, and the handoff's instruction was "measure reachability before building"

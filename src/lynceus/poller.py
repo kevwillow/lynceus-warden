@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as _dt
+import json
 import logging
 import signal
 import sys
@@ -113,6 +114,21 @@ STATE_KEY_BLE_BRIDGE_STATUS = "ble_bridge_status"
 BLE_BRIDGE_RUNNING = "running"
 BLE_BRIDGE_FAILED = "failed"
 BLE_BRIDGE_STOPPED = "stopped"
+
+#: Entry ids whose impossible watchful snooze has already been reported, as a
+#: JSON list. ⛔ Durable, and that is the point: `find_impossible_watchful_
+#: snoozes` has no purge behind it, so without a memory the same warning would
+#: be re-emitted on EVERY poll cycle forever. #139 already had to fix exactly
+#: that shape ([1,1,1,1] per cycle) on the rule_type reporter -- there the bound
+#: comes free from the row being deleted immediately afterwards; watchful
+#: entries are never deleted.
+STATE_KEY_IMPOSSIBLE_WATCHFUL_REPORTED = "impossible_watchful_reported"
+
+#: How many reported entry ids to remember. Far above any plausible count (each
+#: one needs its own clock incident). ⚠️ If it is ever exceeded the oldest are
+#: forgotten and may be reported again -- a repeated warning, which is the safe
+#: direction; the alternative is a state row that grows without limit.
+IMPOSSIBLE_WATCHFUL_REPORT_MEMORY = 256
 
 STATE_KEY_LAST_TICK_COMPLETED_AT = "last_tick_completed_at"
 STATE_KEY_LAST_TICK_ADMITTED = "last_tick_admitted"
@@ -1605,6 +1621,83 @@ def _send_heartbeat(
     return False
 
 
+def _report_impossible_watchful_snoozes(db: Database, now_ts: int) -> None:
+    """Tell the operator about a watchful snooze that silently did nothing.
+
+    ⛔ Reports each entry AT MOST ONCE, and the memory is durable. The sibling
+    rule_type reporter gets that bound for free because the purge deletes the
+    row immediately afterwards; watchful entries are never purged, so a naive
+    port of it would re-emit the same warning on every poll cycle forever --
+    which is the unbounded-repetition defect #139 already had to fix once, and
+    which trains the operator to ignore the channel.
+
+    ⛔ Phrased as a DISAGREEMENT, never as a verdict about which clock was
+    wrong. `applied_at` is stamped by the same host clock, so a database
+    migrated while the clock read AHEAD puts the floor above legitimate later
+    writes. It also does NOT claim the snooze suppressed nothing: it may have
+    been in force for the whole period before the clock was corrected.
+
+    ⚠️ Never raises, and never changes state the operator can see. In
+    particular it does NOT clear `snooze_expires_at`: NULL there means snoozed
+    **FOREVER**, so "tidying up" an expired snooze would make it permanent.
+    """
+    try:
+        found = db.find_impossible_watchful_snoozes(now_ts)
+    except Exception as e:  # pragma: no cover -- the helper already swallows
+        logger.warning("watchful snooze impossibility lookup failed: %s", e)
+        return
+    if not found:
+        return
+    try:
+        raw = db.get_state(STATE_KEY_IMPOSSIBLE_WATCHFUL_REPORTED)
+        reported = list(json.loads(raw)) if raw else []
+    except Exception:
+        # An unreadable or corrupt memory must not silence the warning; the
+        # safe direction is to report again.
+        reported = []
+    seen = {int(x) for x in reported if isinstance(x, int | str) and str(x).isdigit()}
+
+    fresh = [row for row in found if row.entry_id not in seen]
+    if not fresh:
+        return
+    for row in fresh:
+        # Per-row try: one unrenderable `created_at` (an out-of-range epoch from
+        # a wildly wrong clock) must not raise out of the loop and take every
+        # REMAINING warning with it. #139 fixed exactly that on the sibling.
+        try:
+            stamped = _dt.datetime.fromtimestamp(
+                row.created_at, tz=_dt.UTC
+            ).isoformat()
+        except (OverflowError, OSError, ValueError):
+            stamped = f"an unrenderable epoch value ({row.created_at})"
+        logger.warning(
+            "the %ds watchful snooze for %s may have run short: the entry is "
+            "stamped %s, earlier than this database's own first migration, so "
+            "the row and the schema history disagree about when it was written "
+            "and at least one of the two clocks was wrong. Its deadline has "
+            "passed on the current clock. Set it again if you still want it, "
+            "and check this host's time source.",
+            row.duration_seconds,
+            row.mac,
+            stamped,
+        )
+    try:
+        remembered = (reported + [r.entry_id for r in fresh])[
+            -IMPOSSIBLE_WATCHFUL_REPORT_MEMORY:
+        ]
+        db.set_state(
+            STATE_KEY_IMPOSSIBLE_WATCHFUL_REPORTED, json.dumps(remembered)
+        )
+    except Exception as e:
+        # The warning is already out. Failing to remember costs a repeat next
+        # cycle, which is the safe direction.
+        logger.warning(
+            "could not record which impossible watchful snoozes were "
+            "reported (they may be reported again): %s",
+            e,
+        )
+
+
 def poll_once(
     client: KismetClient,
     db: Database,
@@ -2083,6 +2176,21 @@ def poll_once(
                 )
         except Exception as e:
             logger.warning("rule_type_snoozes cleanup failed: %s", e)
+        # The same BACKWARD check for the WATCHFUL snooze backend (Finding 56).
+        #
+        # ⛔ INSIDE the `clock_trusted` gate, with its siblings, and that is a
+        # correctness requirement rather than tidiness. The check asks whether a
+        # snooze's deadline "has passed on the current clock" -- a judgement
+        # made against `now_ts`. On a clock the daemon has already decided not
+        # to trust, that judgement is unfounded, and the warning it prints tells
+        # the operator to go and check a time source over a conclusion drawn
+        # from the very reading that is in doubt.
+        try:
+            _report_impossible_watchful_snoozes(db, now_ts)
+        except Exception as e:  # pragma: no cover -- the helper already swallows
+            logger.warning(
+                "watchful snooze impossibility check failed: %s", e
+            )
     # Per-poll housekeeping for watchful_recurrence: archive entries
     # whose last_seen_at is >= 90 days stale. Per OQ-3 this is the
     # SOLE lifecycle clock for unactioned watchful entries --
