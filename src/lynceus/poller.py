@@ -382,6 +382,16 @@ def _emit_watchful_escalation(
         mac=entry.mac,
         body=message + type_suffix,
         now_ts=now_ts,
+        # ⛔ REQUIRED, not defaulted, and 0 is a claim rather than a fallback.
+        # `add_watchful_escalation_alert` returns an id ONLY for a row it just
+        # inserted (an existing reservation returns None and never reaches
+        # here), so `notify_attempts` is 0 by construction. A default would let
+        # a future call site inherit a CAS keyed on zero SILENTLY -- and unlike
+        # `record_alert_notify_attempt`, whose omitted `expected_attempts`
+        # means "no CAS at all", omitting it here would mean "CAS against 0",
+        # which is the opposite. Two defaults of different KINDS, one calling
+        # the other, is the trap; making it explicit removes it.
+        expected_attempts=0,
     )
     # The ROW exists, which is what the caller's stamp is a claim about. A
     # failed SEND is the retry path's business, not a reason to leave the entry
@@ -400,7 +410,7 @@ def _deliver_watchful_escalation(
     mac: str,
     body: str,
     now_ts: int,
-    expected_attempts: int = 0,
+    expected_attempts: int,
 ) -> bool:
     """Send one watchful escalation and RECORD whether it actually arrived.
 
@@ -556,9 +566,38 @@ def _retry_watchful_escalation(
     # Derived from `notify_attempts` and the alert's own `ts` so it needs no
     # `last_attempt_at` column and therefore no migration: attempt 2 at +5min,
     # 3 at +15min, 4 at +45min from the escalation.
-    since_alert = now_ts - int(row["ts"])
+    #
+    # ⛔ Finding 65. This arithmetic is only meaningful while the clock has not
+    # moved BACKWARDS since the row was written. A Pi with no RTC -- this
+    # project's stated target -- can boot days AHEAD, stamp the escalation with
+    # that clock, and then be corrected by NTP. `since_alert` is negative from
+    # then on, which is below every `required_wait`, so this gate returns on
+    # every tick for as long as the original skew lasted. Measured with a 7-day
+    # skew, against an identical un-skewed install:
+    #
+    #     CONTROL   no skew         escalation re-sends = 1
+    #     TREATMENT clock corrected  escalation re-sends = 0   (~7 days)
+    #
+    # ⭐ A future `ts` relative to the CURRENT clock means precisely "the clock
+    # moved backwards since the write" -- if it were merely running ahead, both
+    # values would be ahead together and the spacing would work. So in this
+    # state the elapsed-time reasoning is not slightly wrong, it is void, and
+    # suppressing on it is asserting a wait that was never measured.
+    #
+    # Delivering is the conservative direction HERE, which is the opposite of
+    # the watchful COUNTING gate a few hundred lines up -- and deliberately so.
+    # There, a bad clock FABRICATES evidence, so skipping is safe. Here the row
+    # already exists and the operator has already not been told; the only thing
+    # at stake is whether the most serious message this product sends is
+    # delivered or silently held for days.
+    #
+    # ⚠️ Bounded, not fail-open: NOTIFY_MAX_ATTEMPTS still caps the retries, so
+    # a persistently backwards clock costs at worst the remaining attempts
+    # spent sooner rather than an unbounded resend loop.
+    row_ts = int(row["ts"])
+    since_alert = now_ts - row_ts
     required_wait = WATCHFUL_RETRY_BASE_SECONDS * (3 ** (attempts - 1))
-    if attempts >= 1 and since_alert < required_wait:
+    if row_ts <= now_ts and attempts >= 1 and since_alert < required_wait:
         return
 
     if db.is_rule_type_snoozed("watchful_recurrence", now_ts) is not None:

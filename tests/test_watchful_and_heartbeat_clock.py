@@ -685,3 +685,152 @@ def test_the_clamp_cannot_bound_our_own_clock(wdb, minimal_config):
         "the source's absurd timestamp reached the database; the clamp is not "
         "working at all"
     )
+
+
+# --------------------------------------------------------------------------
+# Finding 65 — a clock that moved BACKWARDS since the write blocks the
+# escalation's delivery retry, for as long as the original skew lasted.
+# --------------------------------------------------------------------------
+
+
+class _DropsEscalation:
+    """Delivers everything except the FIRST escalation, so a real undelivered
+    escalation row exists. ⛔ A double that can only succeed cannot test this."""
+
+    def __init__(self):
+        self.escalations = []
+        self._drop = True
+
+    def send(self, severity, title, message, priority_override=None):
+        if "escalation" in title:
+            if self._drop:
+                self._drop = False
+                return False
+            self.escalations.append(title)
+        return True
+
+    def __getattr__(self, name):
+        return self.send
+
+
+def _escalation_retry_run(tmp_path, *, skew):
+    """Escalate with the clock `skew` seconds AHEAD, then retry on a corrected
+    clock. Returns how many escalation re-sends actually reached the operator.
+
+    Both arms are identical apart from the clock at escalation time, so the
+    comparison isolates the skew and nothing else.
+    """
+    from lynceus.db import Database as _Db
+    from lynceus.poller import WATCHFUL_RETRY_BASE_SECONDS
+
+    db = _Db(str(tmp_path / f"esc{skew}.db"))
+    db.ensure_location("home", "Home")
+    config = Config(db_path=str(tmp_path / f"esc{skew}.db"), rules_path="config/rules.yaml")
+    ruleset = _Ruleset()
+    notifier = _DropsEscalation()
+
+    entry_id = _seed_watchful(db, ts=NOW)
+    below = Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD - 1
+    with db._lock, db._conn:
+        db._conn.execute(
+            "UPDATE watchful_recurrence SET sighting_count = ?, last_seen_at = ? "
+            "WHERE id = ?",
+            (below, NOW, entry_id),
+        )
+
+    # Cross the threshold while the clock reads `skew` ahead. The escalation
+    # row is stamped with that clock; its send is dropped.
+    _observe(db, config, ruleset, notifier, ts=NOW + DAY + skew, clock_trusted=True)
+    row = db._conn.execute(
+        "SELECT ts, notified_at FROM alerts WHERE rule_type='watchful_recurrence'"
+    ).fetchone()
+    assert row is not None, "fixture failed: no escalation row was written"
+    assert row["notified_at"] is None, "fixture failed: the escalation was delivered"
+
+    # NTP corrects the clock. Real time is now well behind the row's ts.
+    _observe(
+        db,
+        config,
+        ruleset,
+        notifier,
+        ts=NOW + DAY + WATCHFUL_RETRY_BASE_SECONDS + 60,
+        clock_trusted=True,
+    )
+    db.close()
+    return len(notifier.escalations)
+
+
+def test_a_clock_corrected_after_the_escalation_still_delivers_it(tmp_path):
+    """⛔ FINDING 65, asserted as an A/B against the un-skewed baseline.
+
+    `_retry_watchful_escalation` spaces its attempts using
+    `now_ts - row["ts"]`. A Pi with no RTC -- this project's stated target --
+    can boot days AHEAD, stamp the escalation with that clock, and then be
+    corrected. From then on that difference is NEGATIVE, which is below every
+    `required_wait`, so the gate returns on every tick for as long as the skew
+    lasted. Measured with a 7-day skew:
+
+        CONTROL   no skew         escalation re-sends = 1
+        TREATMENT clock corrected escalation re-sends = 0
+
+    ⚠️ PRE-EXISTING -- reproduced identically on `61efb0a` (before the delivery
+    -claim work) and on `0085487` (after it), so it is not a regression from
+    either.
+
+    "This device appears to be following you" is the most serious message this
+    product sends, and it was being held for a week by arithmetic on a clock
+    nobody could trust.
+    """
+    skewed = _escalation_retry_run(tmp_path, skew=7 * DAY)
+    baseline = _escalation_retry_run(tmp_path, skew=0)
+
+    assert baseline == 1, (
+        f"the CONTROL did not re-send ({baseline}), so this test measures "
+        "something other than the clock skew"
+    )
+    assert skewed == baseline, (
+        f"a clock corrected after the escalation was written changed delivery: "
+        f"{skewed} re-send(s) vs {baseline} without the skew -- the spacing gate "
+        "is suppressing on an elapsed time it cannot measure"
+    )
+
+
+def test_the_retry_spacing_still_holds_on_a_sane_clock(tmp_path):
+    """⛔ THE OPPOSITE DIRECTION. Without this, "ignore the spacing entirely"
+    passes the test above, and a wedged notifier burns all four attempts inside
+    twenty minutes -- which is what the spacing exists to prevent."""
+    from lynceus.db import Database as _Db
+    from lynceus.poller import WATCHFUL_RETRY_BASE_SECONDS
+
+    db = _Db(str(tmp_path / "sane.db"))
+    db.ensure_location("home", "Home")
+    config = Config(db_path=str(tmp_path / "sane.db"), rules_path="config/rules.yaml")
+    ruleset = _Ruleset()
+    notifier = _DropsEscalation()
+
+    entry_id = _seed_watchful(db, ts=NOW)
+    below = Database.WATCHFUL_RECURRENCE_ESCALATION_THRESHOLD - 1
+    with db._lock, db._conn:
+        db._conn.execute(
+            "UPDATE watchful_recurrence SET sighting_count = ?, last_seen_at = ? "
+            "WHERE id = ?",
+            (below, NOW, entry_id),
+        )
+    _observe(db, config, ruleset, notifier, ts=NOW + DAY, clock_trusted=True)
+
+    # One second later, on a perfectly sane clock: far inside the first wait.
+    _observe(db, config, ruleset, notifier, ts=NOW + DAY + 1, clock_trusted=True)
+    assert notifier.escalations == [], (
+        "the retry fired one second after the escalation -- the spacing gate is "
+        "gone, so four attempts would be spent inside a single outage"
+    )
+
+    # Past the wait, it must fire.
+    _observe(
+        db, config, ruleset, notifier,
+        ts=NOW + DAY + WATCHFUL_RETRY_BASE_SECONDS + 60, clock_trusted=True,
+    )
+    assert len(notifier.escalations) == 1, (
+        "the retry never fired even once the wait had genuinely elapsed"
+    )
+    db.close()

@@ -4453,3 +4453,187 @@ def test_the_watchful_baseline_repair_does_not_clobber_a_concurrent_write(db):
     ).fetchone()[0]
     assert got == NOW, "the repair overwrote a concurrently-written baseline"
     assert repaired == [], "reported a repair it did not make"
+
+
+# --------------------------------------------------------------------------
+# Finding 64 — probe_ssids merge is a read-modify-write with TWO writers.
+#
+# `Database` sets no `isolation_level`, so sqlite3 implicitly BEGINs only
+# before DML: the SELECT runs in AUTOCOMMIT, OUTSIDE the UPDATE's transaction,
+# and `with self._conn:` does not begin eagerly. `process_observation` reaches
+# this from the poll loop AND from the `ble-bridge` thread on its own
+# connection, which `Database._lock` does not serialise.
+#
+# ⛔ The fix is a read-CAS-RETRY, not a bare CAS. A bare CAS makes the loser
+# return having silently not merged -- the same evidence loss in a new costume.
+# The second test here is what stops that "fix" passing.
+# --------------------------------------------------------------------------
+
+_F64_MAC = "aa:bb:cc:dd:ee:64"
+
+
+def _f64_seed(db):
+    db.ensure_location("default", "Default")
+    db.upsert_device(mac=_F64_MAC, device_type="wifi", oui_vendor="V",
+                     is_randomized=0, now_ts=1000)
+    db.merge_device_probe_ssids(_F64_MAC, ["home-wifi"])
+
+
+def _f64_stored(path):
+    import json as _json
+    d = Database(path)
+    try:
+        raw = d._conn.execute(
+            "SELECT probe_ssids FROM devices WHERE mac=?", (_F64_MAC,)
+        ).fetchone()[0]
+        return _json.loads(raw) if raw else []
+    finally:
+        d.close()
+
+
+class _F64PausedConn:
+    """Delegates to the real connection, pausing once after the merge's READ.
+
+    ⛔ `sqlite3.Connection.execute` is READ-ONLY and cannot be monkeypatched;
+    wrapping the connection is the seam that works. Pausing at the READ is what
+    makes both writers compute their merge from the same list.
+    """
+
+    def __init__(self, real, barrier, reached):
+        self._real = real
+        self._barrier = barrier
+        self._reached = reached
+        self._armed = True
+
+    def execute(self, sql, *a, **kw):
+        cur = self._real.execute(sql, *a, **kw)
+        if self._armed and sql.strip().upper().startswith("SELECT PROBE_SSIDS"):
+            self._armed = False
+            rows = cur.fetchall()
+            self._reached.append(1)
+            self._barrier.wait()
+
+            class _Cur:
+                def fetchone(self):
+                    return rows[0] if rows else None
+
+                def fetchall(self):
+                    return rows
+
+            return _Cur()
+        return cur
+
+    def __enter__(self):
+        return self._real.__enter__()
+
+    def __exit__(self, *a):
+        return self._real.__exit__(*a)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _f64_race(path, tags):
+    """Run one writer per tag, each on its OWN connection, paused at the read."""
+    import threading
+
+    barrier = threading.Barrier(len(tags), timeout=15)
+    reached: list = []
+    errors: list = []
+
+    class Paused(Database):
+        def __init__(self, p):
+            super().__init__(p)
+            self._conn = _F64PausedConn(self._conn, barrier, reached)
+
+    def worker(tag):
+        try:
+            d = Paused(path)
+            try:
+                d.merge_device_probe_ssids(_F64_MAC, [tag])
+            finally:
+                d.close()
+        except Exception as exc:  # pragma: no cover - surfaced by the assert
+            errors.append((tag, repr(exc)))
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in tags]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not errors, f"a writer raised: {errors}"
+    assert len(reached) == len(tags), (
+        f"the writers did NOT interleave (reached={len(reached)}, wanted "
+        f"{len(tags)}) -- this test would pass vacuously"
+    )
+
+
+def test_two_writers_merging_probe_ssids_do_not_lose_one(db_path, db):
+    """⛔ FINDING 64. Both writers read the same list; the second write won whole.
+
+    Measured before the retry existed, injection asserted at both writers:
+
+        CONTROL   sequential   ['home-wifi', 'from-poller', 'from-bridge']
+        TREATMENT interleaved  ['home-wifi', 'from-poller']
+
+    It LOST rather than raising `database is locked`, which is what confirms the
+    SELECT sits outside the UPDATE's transaction.
+    """
+    _f64_seed(db)
+    db.close()
+
+    _f64_race(db_path, ["from-poller", "from-bridge"])
+
+    stored = _f64_stored(db_path)
+    assert "home-wifi" in stored, "the pre-existing SSID was destroyed"
+    assert "from-poller" in stored and "from-bridge" in stored, (
+        f"a concurrent merge silently dropped an SSID: {stored}"
+    )
+
+
+def test_the_losing_writer_still_merges_rather_than_giving_up(db_path, db):
+    """⛔ THE OPPOSITE DIRECTION, and the reason this is a read-CAS-RETRY.
+
+    A bare compare-and-swap would make the race above 'pass' by having the
+    loser write nothing -- one SSID still missing, now by design instead of by
+    accident. This asserts the loser's OWN value survives, which only a re-read
+    and re-merge on top of the winner's result can achieve.
+
+    Without this test, `if cur.rowcount == 0: return` scores as a fix.
+    """
+    _f64_seed(db)
+    db.close()
+
+    _f64_race(db_path, ["writer-a", "writer-b"])
+
+    stored = _f64_stored(db_path)
+    assert sorted(stored) == sorted(["home-wifi", "writer-a", "writer-b"]), (
+        f"the losing writer's SSID was dropped instead of re-merged: {stored}"
+    )
+
+
+def test_giving_up_reports_what_is_actually_stored_and_says_so(db, caplog, monkeypatch):
+    """⛔ On exhaustion it must NOT claim the merge happened.
+
+    A return value that overstates what was stored is the same silent loss one
+    layer up. Forced by setting the retry bound to zero, so the loop body never
+    runs and the exhaustion path is exercised directly -- the honest way to
+    reach a branch that real contention settles long before.
+    """
+    import logging
+
+    _f64_seed(db)
+    monkeypatch.setattr(Database, "MERGE_PROBE_SSIDS_MAX_ATTEMPTS", 0)
+
+    with caplog.at_level(logging.WARNING, logger="lynceus.db"):
+        stored_count, truncated = db.merge_device_probe_ssids(_F64_MAC, ["never-stored"])
+
+    assert stored_count == 1, (
+        f"it reported {stored_count} stored, but only the pre-existing SSID is "
+        "there -- the return value overstates what landed"
+    )
+    assert truncated is False
+    assert "lost the write race" in caplog.text, (
+        "giving up was SILENT, which is the defect this whole finding is about"
+    )
+    assert "never-stored" in caplog.text, "the warning does not name what was lost"
