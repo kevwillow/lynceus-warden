@@ -41,16 +41,34 @@ line.** Filtering would also hide a genuinely typo'd `ExecStart` path, which is
 the defect most worth catching. The stub paths are read out of the units, so a
 unit that gains a new `Exec*` is covered without editing the workflow.
 
-⚠️ **Coverage lands as measurement; no `--cov-fail-under` is set yet.** The
-threshold is deliberately not carried over from a local run: this box skips the
-Bluetooth-directory test and CI skips the live-Argus one, so the two measure
-slightly different line sets. Set it from the CI job's own number.
+### Coverage baseline
 
-⚠️ **When it is set, it is a ratchet against collapse, not a quality bar.** It
-catches a module dropping out of the run entirely. It says nothing about
-whether the covered lines are covered *well* — this file records several guards
-that matched a spelling rather than a behaviour, and every one of them counts
-as covered.
+⭐ **Measured in CI on 2026-08-19 at `d2a1c3d`: 86.86%** — 1534 of 11675
+statements unreached, across 58 modules. `--cov-fail-under=85`.
+
+The threshold was taken from the CI job rather than a local run on purpose:
+this box skips the Bluetooth-directory test and CI skips the live-Argus one, so
+the two measure slightly different line sets.
+
+Least-covered modules at that commit, which is where new tests buy the most:
+
+| module | covered |
+| --- | --- |
+| `setup/web/steps_kismet.py` | 38% |
+| `cli/bootstrap_kismet.py` | 48% |
+| `_adapter_descriptors.py` | 60% |
+| `webui/server.py` | 68% |
+| `bridges/ble.py` | 71% |
+| `cli/quickstart.py` | 74% |
+
+⚠️ **The floor catches collapse, not erosion.** A large module falling out of
+the run (`app.py`, `poller.py`) moves the total by many points and trips it. A
+small module going dark moves it by a fraction of a point and does not — the
+per-module table in the run summary is what shows you that.
+
+⚠️ **A covered line is not a tested one.** This file records several guards that
+matched a spelling rather than a behaviour, and every one of them counts as
+covered.
 
 ## Baseline
 

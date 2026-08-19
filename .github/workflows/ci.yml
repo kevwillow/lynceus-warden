@@ -102,19 +102,26 @@ jobs:
       # second opinion: running it everywhere would add its overhead to every
       # leg to produce three copies of the same number.
       #
-      # ⛔ No `--cov-fail-under` yet, on purpose. A threshold is only worth
-      # having if it came from a measurement taken HERE: a number carried over
-      # from a developer's box is a guess, because that box skips a different
-      # test than CI does (the Bluetooth-directory one rather than the live
-      # Argus one) and so measures a slightly different set of lines. This lands
-      # as measurement first; the floor gets set from this job's own number.
+      # ⛔ 85 is a RATCHET AGAINST COLLAPSE, not a quality bar, and the number
+      # was measured HERE rather than carried over from a dev box -- that box
+      # skips the Bluetooth-directory test while this job skips the live-Argus
+      # one, so the two measure slightly different line sets.
       #
-      # ⚠️ When it is set, it will be a RATCHET AGAINST COLLAPSE, not a quality
-      # bar. It catches a whole module dropping out of the run -- an import that
-      # starts failing silently, a test file that stops being collected. It will
-      # NOT mean the covered lines are covered *well*: this repo's own notes
-      # record guards that matched a spelling rather than a behaviour, and every
-      # one of those counts as covered here.
+      # Measured on this runner, 2026-08-19 at d2a1c3d: **86.86%** -- 1534 of
+      # 11675 statements unreached. The floor sits 1.86 points under that, which
+      # is about 217 statements of slack.
+      #
+      # ⚠️ Be honest about what that catches. A large module falling out of the
+      # run -- `app.py` or `poller.py` ceasing to be imported because something
+      # started failing silently -- moves the total by many points and trips
+      # this. A SMALL module dropping out moves it by a fraction of a point and
+      # does not. So this is a floor against collapse, not a per-module
+      # guarantee; the per-module table in the run summary is what shows you a
+      # single file going dark.
+      #
+      # ⚠️ And a covered line is not a tested one. This repo's own notes record
+      # guards that matched a spelling rather than a behaviour; every one of
+      # those counts as covered here.
       - name: Tests (with coverage)
         if: ${{ matrix.coverage }}
         run: |
@@ -122,7 +129,8 @@ jobs:
             --cov=lynceus \
             --cov-report=term-missing:skip-covered \
             --cov-report=html:htmlcov \
-            --cov-report=json:coverage.json
+            --cov-report=json:coverage.json \
+            --cov-fail-under=85
 
       # The per-module table is the actionable part -- it names which files the
       # suite never reaches, which is the question "how covered are we?"
