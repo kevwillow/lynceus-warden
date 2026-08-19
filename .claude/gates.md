@@ -59,11 +59,35 @@ test defects that Windows could not structurally expose, fixed in `9b2636c`;
 A drop below 3508 (local) or 3048 (Linux clone) is a regression. A **rise** in
 skips is usually one too — but not always, and the exceptions are below.
 
-⭐ **Current Linux number, measured 2026-08-13 on `feat/csp` after the
-production-readiness remediation: 3281 passed, 1 skipped, 47 deselected, 0
-failed, 19m46s.** That is the number to beat here. The skip is
-`test_setup_wizard.py:1955` (real `/sys/class/bluetooth` present) — **skip
-count 1, and check WHICH test**, per the traps below.
+⭐ **Current LOCAL Linux number — measured 2026-08-19 at `2ccbc92`** (this box,
+throwaway worktree at `/home/kev/lw-gate`, `.venv/bin` on `PATH`), all four gates:
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` | **4334 passed, 1 skipped, 47 deselected, 0 failed** — 26m20s |
+| `pytest -m diagnostic` | **47 passed**, 0 failed, 4335 deselected — 3m37s |
+| `ruff check .` | `All checks passed!` |
+| `python -m build --wheel` | `lynceus-0.9.5-py3-none-any.whl` |
+
+The one skip is the good one: `test_setup_wizard.py:2018` — it skips *because* a
+real `/sys/class/bluetooth` is present. **Skip count 1, and check WHICH test.**
+
+⭐ **Local and CI both totalled 4334 — identical, and that is the expected
+result, not a coincidence.** They trade one skip for one run: CI skips the live
+Argus test, this box skips the missing-Bluetooth-dir branch. **That the local
+skip was the Bluetooth one is the proof the Argus cross-repo gate actually ran**
+— which only happens because the worktree sat at `/home/kev/lw-gate`, so
+`parents[1].parent` resolved to `/home/kev/argus`. Under `.claude/worktrees/` it
+would have skipped and the total would have read 4333.
+
+⚠️ **26m20s against CI's 8m46s is contention, not the suite.** Measured during
+this run: another project's Go test suite at 90–108% CPU across many processes,
+`/proc/pressure/io` full avg60 ≈7–12%, pytest in `D` on `jbd2_log_wait_commit`.
+It sat at 9% for 22 minutes and then did 165 tests in 30 seconds. **A slow run
+here is not a hung one.**
+
+**Previous:** 3281 passed at `feat/csp` (2026-08-13, 19m46s), skip
+`test_setup_wizard.py:1955`.
 
 Previous: 3249 at `d5c27e2` (2026-08-07). The +32 is the CSP guards
 (`test_webui_csp.py`, `test_setup_web_csp.py`), the delivery-failure suite
