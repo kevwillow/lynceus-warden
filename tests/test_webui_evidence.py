@@ -21,6 +21,33 @@ from lynceus.db import Database
 from lynceus.evidence import capture_evidence
 from lynceus.webui.app import create_app, render_rssi_sparkline
 
+# --- random page content is not rendered data ---------------------------------
+#
+# ⛔ Every rendered page carries a CSRF token and a CSP nonce, both
+# `secrets.token_urlsafe`. A short needle asserted against the WHOLE body
+# therefore matches at random. Measured over 200k renders:
+#
+#     "inf"  ~1 run in 561
+#     "nan"  ~1 run in 557
+#
+# Across two Python versions that is roughly 0.7% of CI runs failing on a test
+# that has nothing to do with the change under review. It happened on
+# 2026-08-18: `test (3.12)` went red on a token containing "…lrinfv-yh5…"
+# while 3.11 passed.
+#
+# ⚠️ The assertion's INTENT is right -- "this value must not appear anywhere on
+# the page" -- so the fix is to strip the parts of the page that are not
+# rendered data, rather than to narrow the search and lose the coverage.
+_RANDOM_PAGE_TOKENS = re.compile(
+    r'(?:name="_csrf"\s+value="[^"]*")|(?:nonce="[^"]*")'
+)
+
+
+def _without_random_tokens(html: str) -> str:
+    """Drop CSRF tokens and CSP nonces: page content, but not rendered data."""
+    return _RANDOM_PAGE_TOKENS.sub("", html)
+
+
 MAC = "aa:bb:cc:dd:ee:01"
 
 # The map link's host, asserted by EQUALITY rather than by substring.
@@ -427,7 +454,7 @@ def test_alert_detail_hides_gps_when_lat_is_nan(tmp_path):
         body = r.text
         # No OSM link, no "nan" string, no "Captured location" line.
         assert "openstreetmap.org" not in body
-        assert "nan" not in body.lower()
+        assert "nan" not in _without_random_tokens(body).lower()
         assert "Captured location" not in body
     finally:
         db.close()
@@ -473,6 +500,6 @@ def test_alert_detail_hides_gps_when_lon_is_inf(tmp_path):
         assert r.status_code == 200
         body = r.text
         assert "openstreetmap.org" not in body
-        assert "inf" not in body.lower()
+        assert "inf" not in _without_random_tokens(body).lower()
     finally:
         db.close()
