@@ -277,3 +277,136 @@ def test_the_conditional_insert_and_the_dedup_read_agree_on_recent(tmp_path):
             )
     finally:
         db.close()
+
+
+def _seed_undelivered(path, ruleset, config):
+    """One alert row that exists and was NOT delivered — attempts=1, left to retry."""
+    db = Database(path)
+    try:
+        _run(db, config, ruleset, Recorder(deliver=False), T0)
+    finally:
+        db.close()
+    rows = _alerts(path)
+    assert len(rows) == 1 and rows[0]["notified_at"] is None, (
+        f"fixture failed: expected one undelivered alert, got {[dict(r) for r in rows]}"
+    )
+    assert rows[0]["notify_attempts"] == 1, "fixture failed: no attempt was burned"
+
+
+class _PausedRead(Database):
+    """Hold every writer at the dedup READ so they all decide from one row.
+
+    The seam is the READ, not the write: that is what makes both callers
+    believe the row is still undelivered and both take the retry arm.
+    """
+
+    barrier: threading.Barrier
+    reached: list
+
+    def get_recent_alert_for_rule_and_mac(self, rule_name, mac, since_ts):
+        row = super().get_recent_alert_for_rule_and_mac(rule_name, mac, since_ts)
+        if rule_name == "watchlisted mac":
+            type(self).reached.append(1)
+            type(self).barrier.wait()
+        return row
+
+
+def _race(path, config, ruleset, notifier, ts, n=2):
+    """Run `n` writers, each on its OWN connection, interleaved at the dedup read."""
+    barrier = threading.Barrier(n, timeout=15)
+    reached: list = []
+    proxy = type("_P", (_PausedRead,), {"barrier": barrier, "reached": reached})
+    errors: list = []
+
+    def worker():
+        try:
+            db = proxy(path)
+            try:
+                _run(db, config, ruleset, notifier, ts)
+            finally:
+                db.close()
+        except Exception as exc:  # pragma: no cover - surfaced by the assert below
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not errors, f"a writer raised: {errors}"
+    assert len(reached) == n, (
+        f"the writers did NOT interleave (reached={len(reached)}, wanted {n}) -- "
+        "this test would pass vacuously, which is what most concurrency tests "
+        "silently measure"
+    )
+
+
+def test_two_writers_retrying_one_undelivered_alert_notify_the_operator_once(watched):
+    """⛔ The RETRY arm is a read->decide->send with nothing re-asserted at the send.
+
+    Finding 58 closed this shape on the INSERT arm only, and said so: the
+    conditional insert is "ONLY for the 'nothing recent, write a new one' arm".
+    That is correct — but it leaves the retry arm deciding from a READ
+    (`notified_at IS NULL`, attempts remaining) that two writers can pass
+    together. Measured before the claim existed:
+
+        CONTROL   sequential, one connection    sent=1
+        TREATMENT two connections, interleaved  sent=2
+
+    One detection, and the operator is told about it twice — the same harm
+    Finding 58 exists to prevent, through the arm its fix excluded.
+    """
+    path, ruleset = watched
+    config = Config(db_path=path)
+    _seed_undelivered(path, ruleset, config)
+
+    up = Recorder(deliver=True)
+    _race(path, config, ruleset, up, T0 + 1)
+
+    assert len(up.sent) == 1, (
+        f"one undelivered alert was re-sent {len(up.sent)} times: both writers "
+        "read it as undeliverable-but-retryable and both notified"
+    )
+    rows = _alerts(path)
+    assert len(rows) == 1, f"the retry wrote a new row: {[dict(r) for r in rows]}"
+    assert rows[0]["notified_at"] is not None, "the winning retry did not stamp delivery"
+    assert rows[0]["notify_attempts"] == 2, (
+        f"the losing writer burned an attempt it never used: "
+        f"attempts={rows[0]['notify_attempts']}, wanted 2"
+    )
+
+
+def test_a_lost_claim_does_not_swallow_the_alert_when_the_winner_fails(watched):
+    """⛔ THE OPPOSITE DIRECTION, and the reason this fix is not just a lock.
+
+    Fixing fail-open invites fail-closed: this repo has already shipped a
+    duplicate-alert fix that made the alert undeliverable, and Wave 5
+    Finding 12 was one failed send swallowing an alert for the whole window.
+    Here the winner's send FAILS while the loser skips. If the claim were
+    doing more than serialising this instant, the alert would now be lost.
+
+    It must not be: `notified_at` stays NULL, so the next tick retries.
+    """
+    path, ruleset = watched
+    config = Config(db_path=path)
+    _seed_undelivered(path, ruleset, config)
+
+    down = Recorder(deliver=False)
+    _race(path, config, ruleset, down, T0 + 1)
+    assert len(down.sent) == 1, "exactly one writer should have attempted the send"
+
+    rows = _alerts(path)
+    assert rows[0]["notified_at"] is None, "a failed send must not be marked delivered"
+
+    # The next tick, on a single connection, must still re-send it.
+    up = Recorder(deliver=True)
+    db = Database(path)
+    try:
+        _run(db, config, ruleset, up, T0 + 2)
+    finally:
+        db.close()
+    assert len(up.sent) == 1, (
+        "the alert was swallowed after a lost claim -- this is Wave 5 Finding 12 "
+        "reintroduced through the concurrency fix"
+    )
+    assert _alerts(path)[0]["notified_at"] is not None

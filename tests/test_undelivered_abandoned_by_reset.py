@@ -31,12 +31,13 @@ from __future__ import annotations
 
 import pytest
 
+from lynceus import poller
 from lynceus.allowlist import Allowlist
 from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.kismet import DeviceObservation
 from lynceus.notify import Notifier
-from lynceus.poller import process_observation
+from lynceus.poller import _retry_watchful_escalation, process_observation
 from lynceus.rules import Rule, Ruleset
 
 MAC = "ac:de:48:11:22:33"
@@ -355,4 +356,116 @@ def test_the_heartbeat_stops_complaining_after_the_reset(watched):
     assert "never delivered" not in body, (
         "the heartbeat still reports an undelivered alert that no action by "
         f"the operator or the daemon can ever clear: {body!r}"
+    )
+
+
+def test_an_abandoned_escalation_is_never_retried(watched):
+    """⛔ FINDING 50's mark must also BIND the retry, not just the counter.
+
+    The reset stops re-delivery by clearing `escalated_at` -- that is the whole
+    mechanism, per this file's header. It follows that anything still holding a
+    PRE-RESET copy of the entry can drive exactly one send the reset was meant
+    to prevent, because `_retry_watchful_escalation` re-reads the alert row but
+    never re-reads the entry, and `get_recent_alert_for_rule_and_mac` does not
+    filter `notify_abandoned_at`.
+
+    This drives the helper with a stale entry directly, so it guards the
+    MECHANISM rather than one caller. The caller-side guard is the next test;
+    they fail independently and both are needed.
+    """
+    db, config, ruleset, entries = watched
+    next_day = _escalate(db, config, ruleset, DeadNotifier(), MAC)
+    stale = db.get_watchful_recurrence(entries[MAC])
+    assert stale.escalated_at is not None, (
+        "precondition: the entry never escalated, so there is no stale copy to hold"
+    )
+    reset_at = T0 + next_day * DAY
+    db.reset_watchful_recurrence(entries[MAC], reset_at)
+    row = _escalation_rows(db, MAC)[0]
+    assert row["notify_abandoned_at"] is not None, "precondition: the reset did not abandon the row"
+    assert row["notified_at"] is None, "precondition: the row must still be undelivered"
+
+    live = DeadNotifier(deliver=True)
+    _retry_watchful_escalation(db, live, stale, reset_at + 3600)
+
+    assert live.sent == [], (
+        f"an ABANDONED escalation was re-sent {len(live.sent)} time(s) -- the "
+        "operator reset this entry while looking at that very escalation, and "
+        "the tool told them again anyway"
+    )
+
+
+def test_a_reset_landing_between_the_two_entry_reads_does_not_resend(watched, monkeypatch):
+    """⛔ `process_observation` decided from TWO different reads of one entry.
+
+    `watchful_entry` is read at poller.py:793, before
+    `record_watchful_sighting`; `outcome.entry` is the row as it is INSIDE that
+    write's transaction. The threshold branch used the fresh one and the retry
+    branch used the stale one. A reset landing between them is where they
+    disagree. Measured against a control that resets BEFORE the observation:
+
+        CONTROL   reset first, then observe   escalation sends=0
+        TREATMENT reset between the reads     escalation sends=1
+
+    The operator clicked reset on the escalation they were looking at, and were
+    told about it again.
+    """
+    db, config, ruleset, entries = watched
+    next_day = _escalate(db, config, ruleset, DeadNotifier(), MAC)
+    assert _escalation_rows(db, MAC)[0]["notified_at"] is None, (
+        "precondition: the escalation was delivered, so there is nothing to re-send"
+    )
+    later = T0 + next_day * DAY
+    path = config.db_path
+    fired: list = []
+
+    class ResetAtSeam(Database):
+        """A second writer resets the entry after the gate has read it."""
+
+        def get_active_watchful_recurrence_by_mac(self, mac):
+            entry = super().get_active_watchful_recurrence_by_mac(mac)
+            if entry is not None and entry.escalated_at is not None and not fired:
+                fired.append(1)
+                other = Database(path)  # a genuinely separate connection
+                try:
+                    other.reset_watchful_recurrence(entry.id, later)
+                finally:
+                    other.close()
+            return entry
+
+    # Spy on the retry branch so the test can see WHICH entry it decided from.
+    seen_entries: list = []
+    real_retry = poller._retry_watchful_escalation
+
+    def spy(db_, notifier_, entry, now_ts):
+        seen_entries.append(entry.escalated_at)
+        return real_retry(db_, notifier_, entry, now_ts)
+
+    live = DeadNotifier(deliver=True)
+    racer = ResetAtSeam(path)
+    monkeypatch.setattr(poller, "_retry_watchful_escalation", spy)
+    try:
+        _observe(racer, config, ruleset, live, MAC, later)
+    finally:
+        racer.close()
+
+    assert fired, (
+        "the reset never landed at the seam -- this test would pass vacuously"
+    )
+    escalations = [t for t in live.sent if "escalation" in t]
+    assert escalations == [], (
+        f"a reset landing between the two reads still re-sent the escalation "
+        f"({len(escalations)} send(s)) -- the retry branch decided from the "
+        "pre-reset copy of the entry"
+    )
+    # ⛔ And assert the DECISION, not only its outcome. The abandoned-row check
+    # inside `_retry_watchful_escalation` also suppresses the send, so an
+    # outcome-only assertion passes with the stale read still in place and
+    # guards the other layer by accident. What belongs here is that the branch
+    # was taken from the POST-WRITE entry.
+    assert [e for e in seen_entries if e is not None] == [], (
+        "the retry branch was entered from the pre-reset entry "
+        f"(escalated_at={[getattr(e, 'escalated_at', None) for e in seen_entries]}) "
+        "-- it decided from `watchful_entry`, read before the write, instead of "
+        "`outcome.entry`, read inside it"
     )
