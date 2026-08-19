@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/healthz.json` now reports the heartbeat.** The dead-man's switch is what
+  distinguishes "nothing is out there" from "the daemon died", and the
+  machine-readable health endpoint said nothing about it at all — six checks,
+  and a switch that had not fired in a year sat behind `status: ok`. The page
+  told you; a monitoring tool could not find out.
+
+  It is a separate check rather than part of the poller one because the two fail
+  independently: the daemon can be polling perfectly while the notification
+  channel is broken, and vice versa. `is_stale` is reported as null — never a
+  reassuring false — in the three cases where nothing has been established: the
+  heartbeat is off, it has never once been delivered, or the last delivery is
+  dated ahead of this machine's clock. `undelivered` stays beside it rather than
+  folded into it, because a broken channel and a stopped daemon need different
+  fixes.
+
+  Top-level `status` is unchanged: only the database check drives it, so a
+  stopped heartbeat will not start paging anyone who alerts on `status`.
+
+
 - **A heartbeat, so that silence means something.** Every other failure mode in
   lynceus raises an alert. What was left is the daemon dying or notification
   delivery breaking — and there the operator's only symptom is silence, which
