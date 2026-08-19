@@ -2001,6 +2001,76 @@ def _check_clock(db: Database, *, now_ts: int) -> dict:
     }
 
 
+def _check_heartbeat(db: Database, config: Config, *, now_ts: int) -> dict:
+    """Is the dead-man's switch still firing? The MACHINE-readable half.
+
+    ⛔ **This endpoint said nothing at all about the heartbeat until now** — six
+    checks, the word appeared nowhere, and ``status: "ok"`` was returned beside a
+    switch 400 intervals overdue. That was not a false claim (silence is not a
+    lie), which is why it stayed a decision rather than a bug; it is added
+    deliberately, because ``poller.poll_tick`` and the heartbeat fail
+    **independently**: the daemon can be polling perfectly while ntfy is broken,
+    and a tool watching ``poll_tick.is_stale`` has no way to see the second.
+
+    Shares ``heartbeat_liveness`` with ``/settings``, so the page and the JSON
+    cannot drift — the same reason ``poll_tick`` shares its predicate with the
+    home page and the HTML health page.
+
+    ⭐ ``status`` stays ``"ok"`` regardless, matching the clock and ruleset
+    checks: only the DB check drives top-level status, so a stopped heartbeat
+    does not start paging whoever alerts on ``status``. The condition is in its
+    own fields, which are unambiguous.
+
+    ⚠️ ``is_stale`` is ``None`` — never a reassuring ``False`` — in the two cases
+    where no verdict is established:
+
+        heartbeat disabled      there is no switch to be stale, and "not stale"
+                                would read as "the dead-man's switch is fine"
+                                about an install that does not have one
+        delivery stamped ahead  the clock disagrees; see clock_stamped_freshness
+
+    ``undelivered`` counts heartbeats COMPOSED but not delivered — a channel
+    failure whose fix (topic/auth) differs from a stopped daemon's. ⛔ Reported
+    beside the staleness verdict rather than folded into it, because a daemon
+    that has stopped composes nothing and leaves that counter at zero.
+    """
+    enabled = bool(config.heartbeat_enabled)
+    last_delivered = db.latest_delivered_heartbeat_ts()
+    if not enabled or last_delivered is None:
+        # ⛔ THREE states collapse here, and none of them is "fresh".
+        #
+        # `clock_stamped_freshness(None, ...)` deliberately answers
+        # known-and-not-stale for a missing stamp, because for the POLL TICK
+        # that is a fresh install and its surface says "waiting for first
+        # poll". It is the wrong answer here: a heartbeat that is ENABLED and
+        # has never once been delivered is the "armed, unproven" state, which
+        # /settings deliberately stopped rendering green — the page cannot tell
+        # "enabled five minutes ago" from "enabled months ago and never fired",
+        # and neither can this.
+        #
+        # ⚠️ Reporting `is_stale: false` here would have made this endpoint
+        # disagree with the page it was added to complement, on the exact state
+        # the page warns about. Caught by driving every state rather than the
+        # headline one.
+        liveness = {"staleness_known": False, "is_stale": None, "ahead_by_seconds": 0}
+    else:
+        liveness = heartbeat_liveness(last_delivered, config, now_ts=now_ts)
+    return {
+        "status": "ok",
+        "enabled": enabled,
+        "interval_hours": int(config.heartbeat_interval_hours),
+        "last_delivered_at": (
+            unix_to_iso(last_delivered) if last_delivered is not None else None
+        ),
+        # Shares `age_since`, so a delivery stamped ahead of this clock reports
+        # None rather than a negative that every `> threshold` silently passes.
+        "seconds_since_delivery": age_since(last_delivered, now_ts=now_ts),
+        "undelivered": int(db.count_undelivered_heartbeats()),
+        "is_stale": liveness["is_stale"],
+        "staleness_known": liveness["staleness_known"],
+    }
+
+
 def _check_ruleset(config: Config) -> dict:
     """Loads ``rules.yaml`` on each call (cheap — the file is small and
     operators rarely poll /healthz.json at sub-second cadence). When the
@@ -2226,6 +2296,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
             ),
             "ruleset": _safe_check("ruleset", lambda: _check_ruleset(config)),
             "clock": _safe_check("clock", lambda: _check_clock(db, now_ts=now_ts)),
+            "heartbeat": _safe_check(
+                "heartbeat", lambda: _check_heartbeat(db, config, now_ts=now_ts)
+            ),
             "alerts": _safe_check("alerts", lambda: _check_alerts(db, now_ts=now_ts)),
         }
         overall = (

@@ -507,6 +507,11 @@ def test_healthz_json_returns_200_on_healthy_db(tmp_path):
         # waved through, and the exact set is kept `==` for the same reason as
         # the per-check sets below — an addition failing this test is the test
         # working.
+        # ⭐ `heartbeat` is a DELIBERATE seventh check, recorded here rather
+        # than waved through — an addition failing this test is the test
+        # working. It exists because `poller.poll_tick` and the heartbeat fail
+        # INDEPENDENTLY: the daemon can poll perfectly while ntfy is broken, and
+        # a tool watching `poll_tick.is_stale` had no way to see the second.
         assert set(body["checks"].keys()) == {
             "db",
             "poller",
@@ -514,6 +519,17 @@ def test_healthz_json_returns_200_on_healthy_db(tmp_path):
             "ruleset",
             "clock",
             "alerts",
+            "heartbeat",
+        }
+        assert set(body["checks"]["heartbeat"].keys()) == {
+            "status",
+            "enabled",
+            "interval_hours",
+            "last_delivered_at",
+            "seconds_since_delivery",
+            "undelivered",
+            "is_stale",
+            "staleness_known",
         }
     finally:
         db.close()
@@ -803,8 +819,12 @@ def test_one_unreadable_row_does_not_take_down_the_whole_health_report(
         )
         body = r.json()
         # every check is still present and readable
+        # ⭐ `heartbeat` added deliberately as the seventh check. It is wired
+        # through `_safe_check` like every sibling, so the isolation this test
+        # exists to prove covers it too — a new check is exactly how that
+        # defect would come back.
         assert set(body["checks"]) == {
-            "db", "poller", "watchlist", "ruleset", "clock", "alerts"
+            "db", "poller", "watchlist", "ruleset", "clock", "alerts", "heartbeat"
         }, body["checks"]
         # the broken one is REPORTED, not hidden
         assert body["checks"]["watchlist"]["status"] == "error"
