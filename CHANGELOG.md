@@ -4,7 +4,14 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.0.0] — UNRELEASED
+
+> ⚠️ **This release has NOT been cut.** The version in `pyproject.toml` and
+> `src/lynceus/__init__.py` is still `0.9.5`, there is no `v1.0.0` tag, and no
+> artefact has been published. This heading names the release these entries are
+> *targeted at*, nothing more — do not cite `1.0.0` as shipped, and do not date
+> this section until the tag exists.
+
 
 ### Added
 
