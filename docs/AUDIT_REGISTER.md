@@ -3518,6 +3518,124 @@ and de-duplicating"* claim false because existing duplicates are not removed. Th
 the NEW values against the existing ones, which is exactly what the code does. **Overstated, not a
 defect.**
 
+## Round 17 — the stalker-detection chain, driven end to end, 2026-08-19
+
+**Taken at `61efb0a`.** Scope: one artifact — an Apple Find My tracker in the *separated* state,
+i.e. an AirTag that is not near its owner — walked advert bytes → Continuity decode → observation
+field → rule → alert row → notifier dispatch → `/settings`. Driven, not read:
+`scripts/audit/repro_stalker_chain.py`, which is tracked beside `repro_watchlist_gap.py` and asserts
+the tree it imported before reporting anything.
+
+⛔ **What this round did NOT measure: the radio.** The probe drives the bridge's real
+`_record_advert` → `_flush` → `process_observation` seam, which is the same seam the radio feeds, but
+`BleBridge.run` needs an HCI adapter and was not exercised. The BLE radio is blocked on this box, so
+a radio measurement here would have read zero for reasons that have nothing to do with the code —
+**an unmeasured result, not a refutation.** Everything downstream of the advert bytes is real.
+
+⭐ **The advert bytes are structural, not invented.** A Find My message is `[type][length][body]`
+with type `0x12`; separated carries 25 body bytes (status + rotating key material), paired carries 2.
+`ble_continuity` decodes the LENGTH, and that was measured against a 204-frame rig capture on
+2026-08-01. Both forms were driven, because a rule that fires on the paired form too is not detection
+— every passer-by's own iPhone advertises that — it is a noise generator.
+
+### ✅ Confirmed working end to end — DO NOT RE-AUDIT (2026-08-19, `61efb0a`)
+
+Measured in arm B (the shipped `apple_find_my` block, uncommented by the probe from the shipped file
+rather than retyped — a hand-written copy would prove some rule *I* wrote works, which is not the
+question):
+
+| Hop | Result |
+|---|---|
+| decode, separated advert | `find_my_separated` |
+| decode, paired advert | `find_my_paired` |
+| `devices.ble_device_class` persisted | both classes, via `poller.py:594` |
+| rule match | `rules.py:1415-1425` |
+| **alert row written** | 1 — `[med] apple_find_my … Apple Find My tracker away from its owner` |
+| **notification dispatched** | 1 — via `process_observation`'s notifier |
+| paired device (the noise case) | **0 alerts** — correctly excluded |
+
+⇒ ⭐ **The capability is one comment marker from working, and the delivery half is proven, not
+assumed.** That makes the `apple_find_my` default a pure product decision with no engineering risk
+behind it. **The control is proven non-vacuous**: arm A decoded and persisted `find_my_separated` and
+still raised zero alerts, so the shipped behaviour is a rule gap, not a dead pipeline.
+
+### 🔴 Finding 59 — the bridge decodes trackers nothing consumes, and `/settings` reports nothing wrong
+
+`ble_bridge_checks.py:297` `check_bridge_readiness` already **receives `enabled_rule_types`**. It uses
+them for exactly one thing: warning when a `watchlist_ble_manufacturer_id` rule is present and would
+be too NOISY (`:348-364`). **Nothing warns when no rule consumes what the bridge decodes.**
+
+Measured on the shipped config, bridge enabled: **0 rules consuming `ble_device_class`, 0 warnings
+returned.** The `/settings` panel (`webui/templates/settings.html:88-150`) then renders:
+
+- `status: ON`
+- `devices decoded: N`, and a per-class breakdown **listing `find_my_separated` and its count**
+- **no warnings block at all** — it is conditional on `ble_bridge.warnings` being non-empty
+- the "nothing decoded yet" explainer (`:140`) is conditional on `not decoded_total`, so it is
+  **silent in exactly this case** — the case where the tracker *was* seen
+
+⛔ The operator has opted in, bought the second adapter the bridge requires, can watch
+`find_my_separated` counts climb on the page, and **will never be alerted**. The panel's own
+docstring says an empty result means *"nothing known is wrong"*. Nothing on the page says otherwise.
+
+⚠️ **This is the conservative default becoming a misleading one.** `apple_find_my` shipping off is
+defensible on its own (`rules.yaml:78-83` promises existing deployments zero behavioural change).
+Shipping it off *while a health panel reports the tracker as decoded and the configuration as clean*
+is the failure — the same shape as **Finding 0** (a watchlist write whose alert never came) and
+**Finding 37** (221 bundled OUI rows that land and can never fire).
+
+**Branch chosen: (1) make the surface honest.** The input is already plumbed into the function that
+would carry the check, so this is a warning, not a feature.
+
+### 🟡 Finding 60 — two surfaces recommend `ble_device_class` while no such rule ships enabled
+
+`settings.html:609-610`, rendered to an operator whose watchlist rules are not firing:
+
+> "For Apple devices the `ble_device_class` rule type is decoded from the advert itself **and does
+> match** — prefer it."
+
+and `ble_bridge_checks.py:358-363` gives the same advice as a remedy: *"Disable that rule and use a
+`ble_device_class` rule instead."*
+
+Under shipped defaults that advice is **doubly** inert: no `ble_device_class` rule is enabled (the
+only one that ships is commented out), and with `ble_bridge.enabled: false` there is no capture path
+that could feed one — `db.py:2609` states it in the code's own words, *"Only the passive BLE bridge
+ever populates `ble_device_class` — the Kismet classic-HCI path surfaces no advertisement payload to
+decode and leaves it NULL"*, and `kismet.py` never assigns the field, only blanks it (`:224-225`).
+
+⇒ 🪤 **[[two-causes-must-not-share-one-sentence]].** "Decoded from the advert itself" is true.
+"And does match" is true only with the bridge on *and* a rule enabled. Joined into one clause, an
+operator follows it, finds nothing, and has no way to tell which half failed them.
+
+**Branch chosen: (1) make the surface honest.** Both sentences must state their two preconditions.
+
+### ⬜ REFUTED — `watchful_recurrence` is NOT a third instance
+
+`watchful_recurrence` appears **nowhere** in the shipped `rules.yaml`, not even commented out, while
+`watchful_list.html:10` promises *"an entry escalates to a high-severity recurrence alert"* and eight
+templates render the surface. That reads exactly like Finding 59 and **it is not**:
+`poller.py:239` emits the escalation **synthetically**, independent of any configured rule — the
+rule_type exists as a snooze and severity axis, not an enablement gate. The promise is honest.
+
+⇒ Recorded so it is not re-reported. Registered as refuted rather than dropped, per the label policy.
+
+### ⭐ The root cause, and why this survived a whole round about this exact class
+
+Round 10 was *"features that are configured but not connected"*, and Finding 37 built the instrument
+that catches them. **That instrument is keyed on watchlist ROWS.** `webui/liveness.py` opens with its
+own scope in its first line — *"Which watchlist pattern_types can actually fire"* — and every
+mechanism it reports is per-`pattern_type` or per-row.
+
+`ble_device_class` **has no watchlist rows by construction**: it is a decoded property of an
+observation, not a curated identifier, and it is listed explicitly in
+`liveness.py:118-122` `NON_DELEGATING_RULE_TYPES`. So the repo's own "can this fire?" instrument is
+**structurally blind to it** — not by oversight, but because the question it answers is about rows.
+
+⇒ **The gap is not in the chain. It is in the coverage of the instrument that checks the chain.**
+Any rule type that consults nothing is invisible to every liveness surface this repo has. There are
+three; one (`new_non_randomized_device`) ships enabled, one (`watchful_recurrence`) fires
+synthetically and needs no rule, and the third is `ble_device_class` — which is why it is the only
+one that produced a finding.
 ## Round 18 — `process_observation` swept line by line, and the delivery RETRY had no claim, 2026-08-19
 
 **The largest unaudited surface in the codebase is now swept.** `process_observation`
@@ -4335,6 +4453,22 @@ below describes, running in the other direction:**
   and the clock-trust holds (both live in `poll_once`, which that instrument never reached), and
   **concurrency** — every measurement on that track was single-threaded, and the poller/web-UI race
   that makes `database is locked` reachable was *simulated by raising*, not reproduced.
+
+**Appended 2026-08-19 at `61efb0a` (Round 17) — an APPEND, not the re-derivation this list needs.**
+⚠️ Read that literally: the two bullets below were measured today, and **nothing above them was
+re-checked when they were added.** The re-derivation the note below demands is still outstanding.
+
+- 🔴 **Finding 59 — an enabled BLE bridge decodes Find My trackers that no rule consumes, and
+  `/settings` shows a clean panel with a `find_my_separated` count on it.** Measured: 0 consuming
+  rules, 0 readiness warnings. `ble_bridge_checks.py:297` already receives `enabled_rule_types` and
+  only warns about a rule being too noisy, never about there being none. Branch: make the surface
+  honest.
+- 🟡 **Finding 60 — `settings.html:609-610` and `ble_bridge_checks.py:358-363` both tell the operator
+  to prefer `ble_device_class`**, which under shipped defaults has neither an enabled rule nor a
+  capture path to feed it. Branch: make the surface honest; both sentences must state both
+  preconditions.
+- ⬜ **`apple_find_my`'s default is a DECISION for Kev, not a defect** — the chain is proven to work
+  end to end (Round 17's ✅ table). Listed here so it is not mistaken for an open engineering item.
 
 ⇒ **This list drifted in BOTH directions within two days**: on 2026-08-15 it held four bullets that
 were already fixed, and on 2026-08-16 it was missing five items that were genuinely open — including
