@@ -70,9 +70,13 @@ from dataclasses import dataclass
 
 CHECK_ADAPTER_CONTENTION = "adapter_contention"
 CHECK_SOURCE_GATE = "source_gate"
+CHECK_NO_DECODED_CLASS_CONSUMER = "no_decoded_class_consumer"
 CHECK_RAW_COMPANY_ID_RULE = "raw_company_id_rule"
 CHECK_BLEAK_MISSING = "bleak_missing"
 CHECK_BLUEZ_NO_ADV_MONITOR = "bluez_no_advertisement_monitor"
+
+# The rule type that consults the Continuity class the bridge decodes.
+_DECODED_CLASS_RULE_TYPE = "ble_device_class"
 
 # The D-Bus interface bleak's passive scan needs. BlueZ publishes it per
 # adapter object, and only when bluetoothd is running with experimental
@@ -345,6 +349,37 @@ def check_bridge_readiness(
             )
         )
 
+    # Sits AFTER the two gates that presume the bridge is actually feeding
+    # observations in (adapter_contention, source_gate): with either of those
+    # tripped, no decoded class ever lands, so a "nothing consumes it" warning
+    # would be noise the operator cannot act on. Sits BEFORE the noisy-rule
+    # warning, because a missing consumer is the more-blocking failure --
+    # even after disabling the noisy rule the bridge still alerts on nothing.
+    # ⛔ Keyed on `enabled_rule_types is not None`, NOT on `rule_types` being
+    # non-empty, and the difference is the whole point. `None` means the CALLER
+    # DOES NOT KNOW the rule state -- the setup wizard runs before a ruleset
+    # exists -- and warning there would be a guess. An EMPTY tuple means the
+    # caller looked and found no enabled rules, which is the WORST case: nothing
+    # alerts at all. Collapsing the two suppresses the warning exactly where it
+    # matters most, which is the defect this check was added to fix, reappearing
+    # inside its own fix.
+    if enabled_rule_types is not None and _DECODED_CLASS_RULE_TYPE not in rule_types:
+        found.append(
+            BridgeWarning(
+                code=CHECK_NO_DECODED_CLASS_CONSUMER,
+                summary=(
+                    "The bridge decodes an Apple Continuity class for every Apple "
+                    "device it hears, including Find My trackers, and no enabled "
+                    "rule consults it -- so those adverts are decoded, counted "
+                    "and recorded, and raise no alert."
+                ),
+                remedy=(
+                    "Enable the apple_find_my block in config/rules.yaml -- it is "
+                    "the rule that matches the decoded class."
+                ),
+            )
+        )
+
     if _RAW_COMPANY_ID_RULE_TYPE in rule_types:
         found.append(
             BridgeWarning(
@@ -356,9 +391,9 @@ def check_bridge_readiness(
                     "it, this alerts on every passing phone and pair of earbuds."
                 ),
                 remedy=(
-                    "Disable that rule and use a ble_device_class rule instead, which "
-                    "matches the decoded Continuity class (e.g. find_my_separated) "
-                    "rather than the vendor."
+                    "Requires both the bridge enabled AND a ble_device_class rule. "
+                    "Disable this rule and enable the apple_find_my block in "
+                    "config/rules.yaml."
                 ),
             )
         )

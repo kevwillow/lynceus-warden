@@ -17,6 +17,7 @@ from lynceus.ble_bridge_checks import (
     CHECK_ADAPTER_CONTENTION,
     CHECK_BLEAK_MISSING,
     CHECK_BLUEZ_NO_ADV_MONITOR,
+    CHECK_NO_DECODED_CLASS_CONSUMER,
     CHECK_RAW_COMPANY_ID_RULE,
     CHECK_SOURCE_GATE,
     check_bridge_readiness,
@@ -102,14 +103,20 @@ def test_every_warning_carries_a_remedy():
         kismet_sources=("hci1",),
         enabled_rule_types=("watchlist_ble_manufacturer_id",),
     )
-    assert len(warnings) == 3
+    # ⚠️ Was `len(warnings) == 3`. A bare count has to be bumped by hand every
+    # time a check is added, and bumping it is a no-op edit that proves nothing
+    # -- it passes for the wrong new warning just as readily as the right one.
+    # Naming the expected SET fails on an unexpected addition AND on a silent
+    # disappearance, which the count never caught.
+    assert warnings, "no warnings produced -- the per-warning loop below would be vacuous"
     for w in warnings:
         assert w.summary and w.remedy
-        assert w.code in {
-            CHECK_ADAPTER_CONTENTION,
-            CHECK_SOURCE_GATE,
-            CHECK_RAW_COMPANY_ID_RULE,
-        }
+    assert {w.code for w in warnings} == {
+        CHECK_ADAPTER_CONTENTION,
+        CHECK_SOURCE_GATE,
+        CHECK_RAW_COMPANY_ID_RULE,
+        CHECK_NO_DECODED_CLASS_CONSUMER,
+    }
 
 
 def test_accepts_lists_not_just_tuples():
