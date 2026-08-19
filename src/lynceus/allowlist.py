@@ -912,6 +912,26 @@ def find_impossible_ui_entries(
     positives. **It is a narrower claim than the DB siblings can make, and
     saying so is the point.**
 
+    ⛔ **The precondition, and it is NOT "no assumptions".** This needs every
+    ``added_at`` in the file to have been stamped AT WRITE TIME. All three UI
+    write paths do exactly that (``webui/app.py`` stamps
+    ``added_at=int(time.time())`` at each of them), so for a file only the UI has
+    touched the append order and the timestamps are two records of one event.
+
+    **A hand-edit breaks that, and a test fixture found it before any operator
+    did.** ``added_at`` is operator-supplied data in a hand-written entry -- a
+    *claim about the past*, not a record of the write -- so someone documenting
+    when they originally added a device produces a genuine out-of-order file with
+    a perfectly good clock. `tests/test_webui.py`'s allowlist-filter fixture does
+    precisely this (an entry back-dated 7200s to make it expired) and this
+    reported it. Pinned by
+    ``test_a_backdated_hand_edit_is_a_known_false_positive``.
+
+    ⇒ So the wording must offer BOTH readings -- "either the clock moved backward
+    between the two saves, or these were added by hand with a past date" -- and
+    must not say the clock is wrong. Hand-edits that OMIT ``added_at`` (the shape
+    the field's own docstring describes) are skipped and cost nothing.
+
     ⚠️ **Blind, by construction, on an install where every UI write shares one
     behind clock** -- there is no earlier-stamped row to contradict. That is the
     same population ``schema_migrations`` cannot see either (Finding 41's

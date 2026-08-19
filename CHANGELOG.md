@@ -35,11 +35,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   operator that a suppression they can watch working had failed is the mistake
   the database-side reporter shipped once already.
 
-  Two limits are published beside it rather than left to be discovered: an install
-  where every allowlist write shares one wrong clock has nothing to contradict and
-  stays invisible, and the forward-dated-entry repair can leave the file genuinely
-  out of order, which produces a false report if the daemon is stopped for longer
-  than the snooze itself.
+  Three limits are published beside it rather than left to be discovered. An
+  install where every allowlist write shares one wrong clock has nothing to
+  contradict and stays invisible. The forward-dated-entry repair can leave the
+  file genuinely out of order, which produces a false report if the daemon is
+  stopped for longer than the snooze itself. And the check assumes every
+  timestamp was stamped when the entry was written — true of all three paths the
+  UI writes through, but not of a hand-edit, where the date is something the
+  operator typed rather than a record of the save. So the wording offers both
+  readings and never says the clock is wrong.
+
+  On a filtered view the banner shows only a count and a link back, because the
+  evidence is a relationship between two entries and naming the second one would
+  put a filtered-out address on the page.
 
 
 - **`/healthz.json` now reports the heartbeat.** The dead-man's switch is what

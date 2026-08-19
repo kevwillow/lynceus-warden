@@ -19,33 +19,50 @@
      the file's append order against its own timestamps; it cannot tell whether
      this row was stamped behind or the one above it was stamped ahead, and the
      wording must not pretend otherwise. Same rule the poller follows for the
-     two DB backends. Rendered above the filters because it is a fact about the
-     FILE, not about the rows currently in view. #}
+     two DB backends.
+
+     ⛔ Computed on the UNFILTERED file, but only NAMED in full on the
+     unfiltered VIEW. The evidence is an ordering fact between two entries, so
+     deriving it from the filtered rows would let an operator searching for one
+     MAC be told their clock was fine. But this page has a contract older than
+     this banner -- six tests in `test_webui.py` assert that a filtered-out
+     pattern does not appear in the response at all -- and printing the
+     contradicted row's MAC into a filtered page breaks it. So a filtered view
+     gets the COUNT and a way back, which survives any filter and names nothing
+     the filter excluded. #}
   {% if clock_disagreements %}
-    <article class="clock-disagreement">
-      <p><strong>{{ clock_disagreements | length }}
-        {% if clock_disagreements | length == 1 %}expired suppression disagrees{% else %}expired suppressions disagree{% endif %}
-        with the order this file was written in.</strong></p>
-      <p>Each was saved <em>below</em> an entry that carries a <em>later</em> timestamp.
-        A file entry cannot have been written before one that sits above it, so this
-        machine&rsquo;s clock and this file disagree about when these were saved &mdash;
-        and at least one of the two is wrong. If the clock was behind at the time,
-        the deadline was stored on the near side of the gap and the suppression
-        ended earlier than it looks, or never began.</p>
-      <ul>
-        {% for d in clock_disagreements %}
-          <li><code>{{ d.pattern }}</code> ({{ d.pattern_type }}) &mdash;
-            asked for {{ (d.duration_seconds / 3600) | round(1) }}h,
-            stamped <time datetime="{{ d.added_at | unix_to_iso }}">{{ d.added_at | unix_to_utc_human }}</time>,
-            which is {{ (d.behind_by_seconds / 3600) | round(1) }}h <em>earlier</em> than
-            <code>{{ d.preceded_by_pattern }}</code> above it.</li>
-        {% endfor %}
-      </ul>
-      <p><small>Check this host&rsquo;s time source (<code>timedatectl</code> / NTP).
-        Set the suppression again if you still want it &mdash; permanent entries carry
-        no deadline and are unaffected. If the clock is correct, these rows are simply
-        old and can be removed.</small></p>
-    </article>
+    {% if filters_active %}
+      <article class="clock-disagreement">
+        <p><strong>{{ clock_disagreements | length }}
+          {% if clock_disagreements | length == 1 %}entry disagrees{% else %}entries disagree{% endif %}
+          with the order this file was written in.</strong>
+          Hidden by the current filter &mdash;
+          <a href="/allowlist">view the whole allowlist</a> to see which.</p>
+      </article>
+    {% else %}
+      <article class="clock-disagreement">
+        <p><strong>{{ clock_disagreements | length }}
+          {% if clock_disagreements | length == 1 %}expired suppression disagrees{% else %}expired suppressions disagree{% endif %}
+          with the order this file was written in.</strong></p>
+        <p>Each was saved <em>below</em> an entry that carries a <em>later</em> timestamp.
+          Appends to this file are only ever added at the end, so either this machine&rsquo;s
+          clock moved backward between the two saves, or these rows were added by hand with
+          a past date. If it was the clock, the deadline was stored on the near side of the
+          gap and the suppression ended earlier than it looks, or never began.</p>
+        <ul>
+          {% for d in clock_disagreements %}
+            <li><code>{{ d.pattern }}</code> ({{ d.pattern_type }}) &mdash;
+              asked for {{ (d.duration_seconds / 3600) | round(1) }}h,
+              stamped <time datetime="{{ d.added_at | unix_to_iso }}">{{ d.added_at | unix_to_utc_human }}</time>,
+              which is {{ (d.behind_by_seconds / 3600) | round(1) }}h <em>earlier</em> than
+              <code>{{ d.preceded_by_pattern }}</code> above it.</li>
+          {% endfor %}
+        </ul>
+        <p><small>If you did not add these by hand, check this host&rsquo;s time source
+          (<code>timedatectl</code> / NTP) and set the suppression again if you still want it.
+          Permanent entries carry no deadline and are unaffected.</small></p>
+      </article>
+    {% endif %}
   {% endif %}
 
   {% if configured %}

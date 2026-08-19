@@ -329,10 +329,19 @@ def test_the_allowlist_page_is_silent_on_a_healthy_file(tmp_path, monkeypatch):
 
 
 def test_a_filter_cannot_hide_the_disagreement(tmp_path, monkeypatch):
-    """⛔ The evidence is an ORDERING fact between TWO entries. Deriving the
-    banner from the filtered rows would let an operator searching for one MAC
-    be told their clock was fine, because the row it contradicts was filtered
-    out from under it."""
+    """⛔ A filter must not be able to tell the operator their clock is fine.
+
+    The evidence is an ORDERING fact between TWO entries, so deriving the banner
+    from the filtered rows would let someone searching for one MAC be told
+    nothing was wrong. The count is computed on the whole file and survives any
+    filter.
+
+    ⚠️ But the filtered view must NOT name the contradicted row. This page has a
+    contract older than this banner — six tests in `test_webui.py` assert a
+    filtered-out pattern does not appear in the response at all, and the first CI
+    run of this feature turned all six red. So the filtered form carries the
+    count and a way back to the unfiltered view, and nothing else.
+    """
     from starlette.testclient import TestClient
 
     app, db, ui = _app(tmp_path)
@@ -345,8 +354,34 @@ def test_a_filter_cannot_hide_the_disagreement(tmp_path, monkeypatch):
     finally:
         db.close()
 
-    assert "disagree" in body
-    assert _mac(1) in body, "the contradicted row must still be named as evidence"
+    assert "disagree" in body, "a filter silenced the whole finding"
+    assert 'href="/allowlist"' in body, "no way back to the evidence"
+    # ⛔ Both halves. The filter excluded _mac(1); naming it here would break the
+    # older contract, and asserting only the line above would not notice.
+    assert _mac(1) not in body
+
+
+def test_the_unfiltered_view_names_the_contradicted_row(tmp_path, monkeypatch):
+    """The other half of the split: with no filter active, the banner must still
+    name the row it disagrees WITH. A count alone is a warning with no evidence,
+    which is the shape this project has had dismissed twice."""
+    from starlette.testclient import TestClient
+
+    app, db, ui = _app(tmp_path)
+    _write(ui, _mac(1), NOW)
+    _write(ui, _mac(2), NOW - 30 * DAY)
+    monkeypatch.setattr("lynceus.webui.app.time.time", lambda: float(NOW + DAY))
+    try:
+        with TestClient(app) as c:
+            body = c.get("/allowlist").text
+    finally:
+        db.close()
+
+    assert _mac(2) in body and _mac(1) in body
+    # ⛔ And it must offer BOTH readings rather than blaming the clock, because a
+    # back-dated hand edit produces the same file.
+    assert "added by hand" in body or "by hand" in body
+    assert "clock is wrong" not in body.lower()
 
 
 def test_an_unconfigured_allowlist_path_does_not_break_the_page(tmp_path):
@@ -398,3 +433,54 @@ def test_an_entry_whose_deadline_precedes_its_own_stamp_is_not_reported(ui):
     found = find_impossible_ui_entries(ui, NOW + DAY)
     assert [r.pattern for r in found] == [_mac(3)]
     assert found[0].duration_seconds > 0
+
+
+def test_a_backdated_hand_edit_is_a_known_false_positive(ui):
+    """⛔ **This test asserts a FALSE POSITIVE happens**, like the repair one.
+
+    The discriminator needs every `added_at` to have been stamped AT WRITE TIME.
+    All three UI write paths do. A hand-edit does not: there `added_at` is
+    operator-supplied data, a claim about the past rather than a record of the
+    write, so someone documenting when they originally added a device produces a
+    genuinely out-of-order file with a perfectly good clock.
+
+    ⭐ Found by `tests/test_webui.py`'s allowlist-filter fixture, which
+    back-dates an entry 7200s to make it expired — six of its tests went red on
+    the first CI run of this feature. That is the fixture doing the job a fixture
+    can do and a plant cannot: it encoded a real usage shape its author had no
+    reason to think was interesting.
+
+    Pinned so nobody "fixes" it by loosening the reporter, and so the banner's
+    wording — which offers both readings — cannot drift into asserting the clock
+    is wrong.
+    """
+    _write(ui, _mac(1), NOW)
+    add_ui_entry(
+        ui,
+        AllowlistEntry(
+            pattern=_mac(2),
+            pattern_type="mac",
+            note="added by hand, documenting the original date",
+            added_at=NOW - 7200,
+            expires_at=NOW - 3600,
+        ),
+    )
+    found = find_impossible_ui_entries(ui, NOW + DAY)
+    assert len(found) == 1 and found[0].pattern == _mac(2), (
+        "the published hand-edit false positive changed; re-measure before "
+        "editing this test"
+    )
+
+
+def test_a_hand_edit_that_omits_added_at_costs_nothing(ui):
+    """The mitigating half: the hand-edit shape `AllowlistEntry.added_at`'s own
+    docstring describes ("None for operator hand-edits that omit the field") is
+    skipped entirely, so the false positive above needs a DELIBERATE past date."""
+    _write(ui, _mac(1), NOW)
+    add_ui_entry(
+        ui,
+        AllowlistEntry(
+            pattern=_mac(2), pattern_type="mac", expires_at=NOW - 3600
+        ),
+    )
+    assert find_impossible_ui_entries(ui, NOW + DAY) == []
