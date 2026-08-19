@@ -367,3 +367,34 @@ def test_an_unconfigured_allowlist_path_does_not_break_the_page(tmp_path):
         db.close()
     assert r.status_code == 200
     assert "disagree" not in r.text
+
+
+def test_an_entry_whose_deadline_precedes_its_own_stamp_is_not_reported(ui):
+    """⛔ Found by cold-reading the merged reporter, and it was reachable:
+    `AllowlistEntry._bound_timestamps` checks each timestamp's RANGE, not their
+    ordering, so a hand-edit can store `expires_at < added_at`. The banner read
+    *"asked for -24.0h"*.
+
+    Such an entry expired at the moment it was written; its problem is the edit,
+    not the clock. Naming the clock would send the operator to fix the wrong
+    thing -- the same failure mode `webui/clock.py` splits its two messages to
+    avoid.
+    """
+    _write(ui, _mac(1), NOW)
+    add_ui_entry(
+        ui,
+        AllowlistEntry(
+            pattern=_mac(2),
+            pattern_type="mac",
+            added_at=NOW - 30 * DAY,
+            expires_at=NOW - 31 * DAY,  # deadline BEFORE the stamp
+        ),
+    )
+    assert find_impossible_ui_entries(ui, NOW + DAY) == []
+
+    # The control: an ordinary out-of-order entry with a real duration is still
+    # reported, so the silence above is the bad duration and not a dead branch.
+    _write(ui, _mac(3), NOW - 30 * DAY)
+    found = find_impossible_ui_entries(ui, NOW + DAY)
+    assert [r.pattern for r in found] == [_mac(3)]
+    assert found[0].duration_seconds > 0

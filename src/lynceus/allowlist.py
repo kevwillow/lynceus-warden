@@ -962,12 +962,23 @@ def find_impossible_ui_entries(
                 continue
             if e.expires_at is None or e.expires_at > now_ts:
                 continue
+            duration = e.expires_at - e.added_at
+            if duration <= 0:
+                # ⛔ A hand-edit whose deadline precedes its own stamp. The
+                # model permits it (`_bound_timestamps` checks the range, not
+                # the ordering) and it was reachable: the banner read *"asked
+                # for -24.0h"*. Skipped rather than reported, because such an
+                # entry expired at the moment it was written and its problem is
+                # the edit, not the clock -- naming the clock would send the
+                # operator to fix the wrong thing. Same `duration > 0` posture
+                # `repair_future_dated_ui_entries` already takes.
+                continue
             out.append(
                 ImpossibleUiEntry(
                     pattern=e.pattern,
                     pattern_type=e.pattern_type,
                     added_at=e.added_at,
-                    duration_seconds=e.expires_at - e.added_at,
+                    duration_seconds=duration,
                     preceded_by_pattern=high[1],
                     preceded_by_added_at=high[0],
                     behind_by_seconds=high[0] - e.added_at,
