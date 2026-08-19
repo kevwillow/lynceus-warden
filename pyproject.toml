@@ -64,6 +64,12 @@ ble = [
 dev = [
     "pytest>=9.1.1",
     "pytest-mock>=3.15.1",
+    # Coverage is measurement, not a gate on quality -- see the note on
+    # `--cov-fail-under` in .github/workflows/ci.yml. Kept in `dev` rather than
+    # a separate extra so `make install` gives a contributor the same tooling
+    # CI has, and `pytest --cov` works from a fresh clone without a second
+    # install step.
+    "pytest-cov>=7.0",
     "httpx>=0.28.1",
     "freezegun>=1.5.5",
     "ruff>=0.16.2",

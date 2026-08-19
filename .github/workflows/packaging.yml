@@ -71,22 +71,46 @@ jobs:
             fi
             # --help must exit 0. A script whose module moved fails here with
             # an ImportError instead, which is exactly the regression we want.
-            /tmp/clean/bin/$s --help > /dev/null || {
+            "/tmp/clean/bin/$s" --help > /dev/null || {
               echo "::error::$s --help failed"; exit 1; }
             echo "  ok: $s"
           done
+
+      # ⚠️ Derived, never transcribed. These numbers used to be hardcoded
+      # floors (`>= 24`), written when there were 24 migration files. There are
+      # now 54, so the floor had silently stopped proving anything: thirty of
+      # them could have vanished from the wheel and the gate would still have
+      # gone green. Reading the expected values out of the checkout means the
+      # gate stays exact as migrations are added, with nothing to remember to
+      # bump.
+      - name: Derive what the wheel is expected to contain
+        run: |
+          set -euo pipefail
+          sql=$(git ls-files 'src/lynceus/migrations/*.sql' | wc -l | tr -d '[:space:]')
+          # Up-migrations only -- `NNN_x_down.sql` is the rollback half and does
+          # not advance the schema version.
+          ver=$(git ls-files 'src/lynceus/migrations/*.sql' \
+                  | sed 's|.*/||' | grep -v '_down\.sql$' \
+                  | grep -oE '^[0-9]+' | sort -n | tail -1)
+          if [ -z "$sql" ] || [ "$sql" -eq 0 ] || [ -z "$ver" ]; then
+            echo "::error::derived 0 migrations from the checkout; the gate would be vacuous"
+            exit 1
+          fi
+          echo "EXPECTED_SQL=$sql"     >> "$GITHUB_ENV"
+          echo "EXPECTED_VERSION=$((10#$ver))" >> "$GITHUB_ENV"
+          echo "expecting $sql migration file(s), schema version $ver"
 
       # The real test: package data. Templates, static assets, the bundled
       # Argus CSV and -- most importantly -- the migrations.
       - name: Packaged data is present and usable
         run: |
           /tmp/clean/bin/python - <<'PY'
-          import pathlib, sys
+          import os, pathlib, sys
           from importlib.resources import files
 
           failures = []
 
-          def need(pkg, sub, pattern, minimum=1):
+          def need(pkg, sub, pattern, minimum=1, exact=None):
               try:
                   d = pathlib.Path(str(files(pkg) / sub))
               except (ModuleNotFoundError, TypeError, OSError) as e:
@@ -96,12 +120,20 @@ jobs:
                   failures.append(f"{pkg}/{sub}: not packaged")
                   return []
               found = sorted(d.glob(pattern))
-              if len(found) < minimum:
+              # `exact` is the strong form: every file the source tree tracks
+              # must be in the wheel. A floor only catches total absence.
+              if exact is not None and len(found) != exact:
+                  failures.append(
+                      f"{pkg}/{sub}/{pattern}: {len(found)} packaged, "
+                      f"{exact} tracked in the source tree")
+              elif exact is None and len(found) < minimum:
                   failures.append(
                       f"{pkg}/{sub}/{pattern}: {len(found)} found, expected >= {minimum}")
               return found
 
-          migrations = need("lynceus", "migrations", "*.sql", minimum=24)
+          migrations = need(
+              "lynceus", "migrations", "*.sql",
+              exact=int(os.environ["EXPECTED_SQL"]))
           need("lynceus.webui", "templates", "*.html", minimum=10)
           need("lynceus.webui", "static", "*", minimum=3)
           need("lynceus.setup.web", "templates", "*.html", minimum=10)
@@ -135,14 +167,21 @@ jobs:
 
           print(f"lynceus {__version__}, schema version {version}")
           problems = []
-          if version is None or version < 24:
-              problems.append(f"schema version {version} -- migrations did not apply")
+          expected_version = int(os.environ["EXPECTED_VERSION"])
+          if version is None:
+              problems.append("schema version is NULL -- no migration applied at all")
+          elif version != expected_version:
+              problems.append(
+                  f"schema version {version}, expected {expected_version} -- the wheel "
+                  "is missing migrations the source tree tracks, or they failed to apply")
           for t in ("alerts", "devices", "sightings", "watchlist"):
               if t not in tables:
                   problems.append(f"missing table: {t}")
-          # Pins the delivery-tracking columns specifically: they are the
-          # newest migration and therefore the likeliest to be missed by a
-          # packaging change.
+          # Pins the delivery-tracking columns specifically. (They were the
+          # newest migration when this was written; 024 is no longer the head
+          # -- the derived version check above is what covers "the newest one
+          # applied". This stays as a named regression guard for the columns
+          # the notifier depends on.)
           for c in ("notified_at", "notify_attempts"):
               if c not in cols:
                   problems.append(f"alerts.{c} missing -- migration 024 not packaged")

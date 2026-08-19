@@ -1,0 +1,248 @@
+# Surfaces the suite asserts about but never executes.
+#
+# ⚠️ The common shape of every job here. Each of these artefacts already HAS
+# tests -- and every one of those tests reads the file as TEXT and greps it for
+# substrings. `test_install_sh.py` asserts `After=` appears in a unit; seven
+# test files assert strings appear in `lynceus.js`. None of them ever hand the
+# file to the tool that actually consumes it, so a file can satisfy every
+# assertion in the suite and still be rejected by systemd, or fail to parse in
+# a browser. That gap is what this workflow closes, and it is why these checks
+# live in CI rather than in pytest: each one needs an interpreter or a
+# privilege the test suite cannot assume.
+#
+# ⛔ Every job derives its file list from `git ls-files` and fails on an empty
+# one. A glob that silently stops matching would otherwise report success while
+# checking nothing, which is the failure mode this repo has been bitten by.
+#
+# ⛔ Deliberately NO `paths:` filter, unlike shellcheck.yml. These jobs are
+# cheap (all four finish well inside five minutes), and a path-filtered check
+# does not run at all on an unrelated PR -- which renders in the checks list as
+# something other than a failure, and reads to a human as "this passed". For a
+# gate whose whole purpose is to be believed, always-runs is worth the minutes.
+name: integrity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: integrity-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------
+  # 604 lines of hand-written browser JS that nothing has ever parsed.
+  # ------------------------------------------------------------------
+  web-assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # Ubuntu runners ship node. Asserting rather than assuming keeps this
+      # from degrading into a no-op if that ever changes -- the same trap
+      # ci.yml guards against with its `command -v python` check.
+      - name: node is available
+        run: |
+          command -v node || { echo "::error::node not on PATH; nothing would be checked"; exit 1; }
+          node --version
+
+      - name: Every tracked script parses
+        run: |
+          set -euo pipefail
+          mapfile -t js < <(git ls-files '*.js')
+          if [ "${#js[@]}" -eq 0 ]; then
+            echo "::error::no .js files found; this gate would prove nothing"; exit 1
+          fi
+          printf 'checking %d script(s)\n' "${#js[@]}"
+          fail=0
+          for f in "${js[@]}"; do
+            if node --check "$f" 2>/tmp/err; then
+              echo "  ok: $f"
+            else
+              echo "::error file=$f::does not parse"; sed 's/^/    /' /tmp/err; fail=1
+            fi
+          done
+          exit "$fail"
+
+  # ------------------------------------------------------------------
+  # The units an operator's machine actually runs.
+  # ------------------------------------------------------------------
+  systemd-units:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # ⭐ Why stubs instead of filtering the output. `systemd-analyze verify`
+      # reports a missing ExecStart binary, which is ALWAYS absent on a runner.
+      # Grepping that line away would also hide a genuinely typo'd ExecStart
+      # path -- the exact defect most worth catching. Creating the binaries at
+      # the paths the units themselves declare keeps the check unfiltered: a
+      # path that does not match a stub is still an error.
+      #
+      # The paths are read out of the units, never transcribed here, so a unit
+      # that gains a new ExecStart is covered without editing this file.
+      - name: Stub the ExecStart targets the units declare
+        run: |
+          set -euo pipefail
+          mapfile -t units < <(git ls-files 'systemd/*' 'deploy/*.service')
+          if [ "${#units[@]}" -eq 0 ]; then
+            echo "::error::no unit files found; this gate would prove nothing"; exit 1
+          fi
+          mapfile -t bins < <(grep -hoP '^Exec[A-Za-z]*=-?\K[^ ]+' "${units[@]}" | sort -u)
+          if [ "${#bins[@]}" -eq 0 ]; then
+            echo "::error::no ExecStart targets parsed out of the units"; exit 1
+          fi
+          printf 'stubbing %d target(s):\n' "${#bins[@]}"
+          for b in "${bins[@]}"; do
+            sudo mkdir -p "$(dirname "$b")"
+            printf '#!/bin/sh\nexit 0\n' | sudo tee "$b" > /dev/null
+            sudo chmod 0755 "$b"
+            echo "  $b"
+          done
+
+      # ⚠️ Keyed on OUTPUT, not on exit status. Measured: a malformed directive
+      # value (`ProtectSystem=banana`) makes systemd print
+      # "Failed to parse protect system value, ignoring" and exit *0* -- the
+      # directive is silently dropped and the unit runs unhardened. An
+      # exit-code gate passes that. Only a missing binary exits nonzero.
+      - name: Every unit file verifies clean
+        run: |
+          set -euo pipefail
+          mapfile -t units < <(git ls-files 'systemd/*' 'deploy/*.service')
+          printf 'verifying %d unit(s)\n' "${#units[@]}"
+          fail=0
+          for u in "${units[@]}"; do
+            out=$(systemd-analyze verify "$u" 2>&1 || true)
+            if [ -n "$out" ]; then
+              echo "::error file=$u::systemd rejected this unit"
+              echo "$out" | sed 's/^/    /'
+              fail=1
+            else
+              echo "  ok: $u"
+            fi
+          done
+          exit "$fail"
+
+  # ------------------------------------------------------------------
+  # The config files we ship, through the validator we ship.
+  # ------------------------------------------------------------------
+  config-examples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # ⚠️ The shipped `lynceus.example.yaml` declares only `db_path`, so
+      # validating it alone reports "1 file" and never opens rules.yaml or
+      # allowlist.yaml -- a green run that checked almost nothing. The setup
+      # wizard appends `rules_path:` to the config it writes (setup/core.py,
+      # append_rules_path_to_config), so a real operator's config DOES
+      # reference them. Staging the same shape makes the validator open the
+      # rules and allowlist too, instead of lynceus.yaml alone.
+      - name: Validate the shipped examples the way an operator ends up with them
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/cfg"
+          mkdir -p "$stage/lynceus"
+          cp config/lynceus.example.yaml "$stage/lynceus/lynceus.yaml"
+          cp config/rules.yaml           "$stage/lynceus/rules.yaml"
+          cp config/allowlist.yaml       "$stage/lynceus/allowlist.yaml"
+          {
+            echo "rules_path: $stage/lynceus/rules.yaml"
+            echo "allowlist_path: $stage/lynceus/allowlist.yaml"
+          } >> "$stage/lynceus/lynceus.yaml"
+
+          out=$(XDG_CONFIG_HOME="$stage" lynceus-validate validate --scope user)
+          echo "$out"
+
+          # ⛔ Exit 0 alone is not enough. A config referencing nothing also
+          # exits 0 -- it just validates one file and calls itself green. Assert
+          # the validator actually OPENED each artefact, by name. A count would
+          # be the weaker check: measured, this reports four files, because the
+          # validator also probes the daemon-written `allowlist_ui.yaml`
+          # sibling, which is absent here and passes as "not present".
+          echo "$out" | grep -q "0 errors" || {
+            echo "::error::validator reported errors against the shipped examples"; exit 1; }
+          for f in lynceus.yaml rules.yaml allowlist.yaml; do
+            echo "$out" | grep -q "/$f$" || {
+              echo "::error::$f was never opened by the validator; the reference did not resolve"
+              exit 1; }
+            echo "  validated: $f"
+          done
+
+      # The dev example is a separate artefact and rots independently. It
+      # needs no staging: it already declares `rules_path: config/rules.yaml`
+      # relatively, so run from the repo root it validates the real shipped
+      # rules and allowlist as a side effect.
+      - name: The dev example validates too
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/cfgdev"
+          mkdir -p "$stage/lynceus"
+          cp config/lynceus.dev.example.yaml "$stage/lynceus/lynceus.yaml"
+          out=$(XDG_CONFIG_HOME="$stage" lynceus-validate validate --scope user)
+          echo "$out"
+          echo "$out" | grep -q "0 errors" || {
+            echo "::error::config/lynceus.dev.example.yaml does not validate"; exit 1; }
+
+  # ------------------------------------------------------------------
+  # The workflows themselves -- mostly embedded bash, previously unchecked.
+  # ------------------------------------------------------------------
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned by version AND checksum. actionlint is not a first-party action
+      # and the repo deliberately runs none, so it is fetched as a binary and
+      # verified rather than trusted -- an unpinned `| bash` installer in a
+      # security tool's own CI would be a poor advertisement.
+      - name: Fetch actionlint
+        env:
+          AL_VER: 1.7.7
+          AL_SHA: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+        run: |
+          set -euo pipefail
+          url="https://github.com/rhysd/actionlint/releases/download/v${AL_VER}/actionlint_${AL_VER}_linux_amd64.tar.gz"
+          curl -fsSL -o actionlint.tgz "$url"
+          echo "${AL_SHA}  actionlint.tgz" | sha256sum -c - || {
+            echo "::error::actionlint checksum mismatch; refusing to run it"; exit 1; }
+          tar xzf actionlint.tgz actionlint
+          chmod +x actionlint
+          ./actionlint --version
+
+      # ⚠️ SHELLCHECK_OPTS mirrors shellcheck.yml's `-S warning` deliberately.
+      # At the default severity the existing workflows report two style nits
+      # (SC2129, and an SC2086 fixed in this change). Gating on style would
+      # make this red on arrival, and a gate that arrives red is a gate people
+      # learn to route around -- the same reasoning that keeps
+      # `ruff format --check` out of the lint gate.
+      - name: Lint every workflow
+        env:
+          SHELLCHECK_OPTS: -S warning
+        run: |
+          set -euo pipefail
+          mapfile -t wf < <(git ls-files '.github/workflows/*.yml' '.github/workflows/*.yaml')
+          if [ "${#wf[@]}" -eq 0 ]; then
+            echo "::error::no workflow files found; this gate would prove nothing"; exit 1
+          fi
+          printf 'linting %d workflow(s):\n' "${#wf[@]}"
+          printf '  %s\n' "${wf[@]}"
+          ./actionlint -no-color -oneline "${wf[@]}"

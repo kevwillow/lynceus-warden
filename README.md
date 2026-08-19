@@ -35,6 +35,8 @@ and pushes an alert to your phone when something interesting shows up.
 It never transmits. It never probes. It never associates. It just listens, and
 it tells you the truth about what it heard.
 
+[![CI](https://github.com/kevwillow/lynceus-warden/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kevwillow/lynceus-warden/actions/workflows/ci.yml?query=branch%3Amain)
+[![CodeQL](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml?query=branch%3Amain)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Status: v0.9.5](https://img.shields.io/badge/Status-v0.9.5-blue.svg)](#project-status)
@@ -305,7 +307,8 @@ captures, not out of reasoning about what should work.
 
 **The test suite ships, so you can check the claims on this page yourself.**
 CI runs `pytest -q`, `ruff check .` and `python -m build` on Python 3.11 and
-3.12 for every push and pull request, in about nine minutes. Most recently
+3.12 for every push and pull request, in about nine minutes — and on **arm64**
+as well as x86-64, because the machine this is built for is a Raspberry Pi. Most recently
 measured: **4334 passed, 1 skipped**, at commit
 [`2ccbc92`](https://github.com/kevwillow/lynceus-warden/actions/runs/32208092940).
 

@@ -43,7 +43,26 @@ ruff check .     # must be clean
 python -m build --wheel
 ```
 
-CI runs exactly these on 3.11 and 3.12 for every pull request.
+CI runs these on 3.11 and 3.12, and on arm64 as well as x86-64, for every pull
+request.
+
+It also runs five gates you cannot usefully run from a clean clone, because
+each needs a tool or a privilege a contributor's checkout does not have. You
+are not expected to run them locally — but if one of them turns your PR red,
+this is what it is telling you:
+
+| CI gate | What it checks | Why not local |
+| --- | --- | --- |
+| `integrity / web-assets` | every tracked `.js` parses (`node --check`) | needs node |
+| `integrity / systemd-units` | every unit passes `systemd-analyze verify` | needs systemd, and root to stub the `ExecStart` targets |
+| `integrity / config-examples` | the shipped `config/*.yaml` pass `lynceus-validate` | needs the package installed, not just importable |
+| `integrity / workflows` | the workflows themselves lint (`actionlint`) | needs the actionlint binary |
+| `packaging` | the built **wheel** installs and its migrations apply | `pytest` runs against `src/`, so it cannot see a packaging bug |
+
+⚠️ `integrity / systemd-units` is keyed on the verifier's **output**, not its
+exit status. A malformed directive value makes systemd print a parse warning,
+silently drop the directive, and exit **0** — so the unit runs unhardened while
+an exit-code check calls it fine.
 
 ### Traps that make a green run mean less than it looks like
 
