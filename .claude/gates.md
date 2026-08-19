@@ -105,10 +105,20 @@ baseline does not fail loudly; it silently stops being able to detect anything.
 
 | | |
 |---|---|
-| SHA | **`63aa497`** |
-| CI, Python 3.11 | **3523 passed, 1 skipped, 47 deselected** — 4m26s |
-| CI, Python 3.12 | **3523 passed, 1 skipped, 47 deselected** — 4m22s |
-| run | <https://github.com/kevwillow/lynceus-warden/actions/runs/31844656916> |
+| SHA | **`2ccbc92`** |
+| CI, Python 3.11 | **4334 passed, 1 skipped, 47 deselected** — 8m46s |
+| CI, Python 3.12 | **4334 passed, 1 skipped, 47 deselected** — 8m01s |
+| run | <https://github.com/kevwillow/lynceus-warden/actions/runs/32208092940> |
+
+Measured 2026-08-19. The one CI skip is the expected one and was **read, not counted**:
+`tests/test_import_argus.py:3364` — *"live Argus CSV not found"*. CI does not and should not have it.
+
+⚠️ **CI is no longer a 4-minute job.** It was 4m22s at `63aa497` and is **8m01s–8m46s** at `2ccbc92`;
+the suite grew by **811 tests** over the same stretch. The old "CI is 3-4× faster than this box"
+note below is still directionally right but its absolute figures are history.
+
+**Previous baseline:** 3523 passed, 1 skipped at `63aa497`
+(<https://github.com/kevwillow/lynceus-warden/actions/runs/31844656916>), CI 4m26s / 4m22s.
 
 ⛔ **A bare total is a claim that quietly stops being true at the next merge.**
 This line has now rotted three times — 3024 → 3508 → 3294 — and the 3294 stood

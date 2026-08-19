@@ -305,9 +305,9 @@ captures, not out of reasoning about what should work.
 
 **The test suite ships, so you can check the claims on this page yourself.**
 CI runs `pytest -q`, `ruff check .` and `python -m build` on Python 3.11 and
-3.12 for every push and pull request, in about four minutes. Most recently
-measured: **3518 passed, 1 skipped**, at commit
-[`c2c86ce`](https://github.com/kevwillow/lynceus-warden/actions/runs/31843894231).
+3.12 for every push and pull request, in about nine minutes. Most recently
+measured: **4334 passed, 1 skipped**, at commit
+[`2ccbc92`](https://github.com/kevwillow/lynceus-warden/actions/runs/32208092940).
 
 The commit is named on purpose. A bare total is a claim that quietly stops
 being true at the next merge — this one had drifted to 3294 against an actual
