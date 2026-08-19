@@ -261,6 +261,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **One device, seen once, could alert you twice.** Lynceus watches through two
+  independent paths — the main scan loop and the Bluetooth listener — and each
+  keeps its own connection to the database. Before writing an alert it checks
+  whether it has already alerted about that device recently. When both paths
+  handled the same detection at the same moment, each check ran before either
+  write, both concluded "nothing recent", and both alerted. Measured: one
+  detection, two records, two notifications.
+
+  The check and the write are now a single step, so the second one finds the
+  first and stands down. The suppression is deliberately narrow: an alert that
+  was written but never actually delivered is still retried, exactly as before —
+  that retry is the thing standing between you and a notification lost to a
+  brief network failure, and quietly skipping it would be a worse bug than the
+  duplicate this fixes.
+
 - **A monitoring tool could not tell a broken rules file from an empty one.**
   `/healthz.json` reported `active_rules: 0` for both — a `rules.yaml` that
   failed to parse, and one that legitimately contains no enabled rules. The two

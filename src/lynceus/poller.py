@@ -1129,15 +1129,53 @@ def process_observation(
             new_alert_id = int(retry_alert["id"])
         else:
             try:
-                new_alert_id = db.add_alert(
-                    ts=now_ts,
-                    rule_name=hit.rule_name,
-                    mac=hit.mac,
-                    message=hit.message,
-                    severity=hit.severity,
-                    matched_watchlist_id=hit_match_id,
-                    rule_type=hit.rule_type,
-                )
+                if config.alert_dedup_window_seconds > 0:
+                    # ⛔ Finding 58. The dedup above is a READ; this is the
+                    # WRITE, and the read is not true any more by the time we
+                    # get here if another writer inserted in between.
+                    # `process_observation` runs in the poll loop AND in the
+                    # `ble-bridge` thread, which holds its own `Database` on
+                    # its own connection, so the per-instance lock does not
+                    # serialise them. Measured, one detection to both writers:
+                    # sequential 1 alert / 1 send, interleaved 2 alerts /
+                    # 2 sends. The conditional insert re-asserts "nothing
+                    # recent" inside the INSERT itself.
+                    #
+                    # ⚠️ Only THIS arm. The retry arm above reuses the existing
+                    # row deliberately; routing it through here would turn a
+                    # re-send into a silent skip and reinstate Wave 5
+                    # Finding 12.
+                    new_alert_id = db.add_alert_if_none_since(
+                        ts=now_ts,
+                        rule_name=hit.rule_name,
+                        mac=hit.mac,
+                        message=hit.message,
+                        severity=hit.severity,
+                        matched_watchlist_id=hit_match_id,
+                        rule_type=hit.rule_type,
+                        since_ts=now_ts - config.alert_dedup_window_seconds,
+                    )
+                    if new_alert_id is None:
+                        # Another writer alerted for this rule+mac inside the
+                        # window while we were deciding. It notifies; we must
+                        # not, or the operator hears about one detection twice.
+                        logger.debug(
+                            "dedup-skip %s/%s (a concurrent writer alerted "
+                            "first)",
+                            hit.rule_name,
+                            hit.mac,
+                        )
+                        continue
+                else:
+                    new_alert_id = db.add_alert(
+                        ts=now_ts,
+                        rule_name=hit.rule_name,
+                        mac=hit.mac,
+                        message=hit.message,
+                        severity=hit.severity,
+                        matched_watchlist_id=hit_match_id,
+                        rule_type=hit.rule_type,
+                    )
             except Exception as e:
                 # ⛔ Do NOT swallow this. The rule has already MATCHED: a
                 # watchlisted device is in range and the operator has not been

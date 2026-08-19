@@ -2613,7 +2613,53 @@ Its packet was handed to M3 twice (once at 79 KB, once split to 41 KB) and retur
 file** both times, and codex was rate-limited until 2026-08-20, so there was no second channel to
 swap to. The function is unaudited for this defect shape.
 
-### 🔴 Finding 58 — the MAIN alert dedup is a read-then-write, so one detection can alert twice
+### 🔴 Finding 58 — the MAIN alert dedup is a read-then-write, so one detection can alert twice — ✅ FIXED
+
+**Closed by making the dedup check and the insert ONE statement**, via
+`add_alert_if_none_since` (`INSERT ... SELECT ... WHERE NOT EXISTS`). Measured with a control, one
+detection delivered to both writers:
+
+```
+CONTROL   sequential, one connection    alerts=1  sent=1
+TREATMENT two connections, interleaved  alerts=2  sent=2      <- before
+TREATMENT two connections, interleaved  alerts=1  sent=1      <- after
+```
+
+⛔ **Only ONE of the dedup's three arms became conditional, and that is the whole difficulty.**
+*delivered* → skip; *undelivered, attempts spent* → skip; *undelivered, attempts remaining* →
+**reuse the row and re-send**; *nothing recent* → write a new row. Only the last goes through the
+conditional insert. Routing the RETRY arm through it turns a re-send into a silent skip and
+reinstates **Wave 5 Finding 12**, where one failed send swallowed the alert for the whole window —
+which is why `test_an_undelivered_alert_with_attempts_left_is_still_retried` is the second half of
+the acceptance criterion and is planted against (`D3`).
+
+⚠️ **The `alert_dedup_window_seconds == 0` path deliberately does NOT go through it.** With no window
+there is nothing to be "recent" within, and suppressing there would silence an operator who
+explicitly turned dedup off.
+
+⛔ **THE FAULT-INJECTION SEAM FOR "THE ALERT WRITE FAILED" MOVED, AND THREE EXISTING GUARDS WENT
+DARK.** `tests/test_alert_write_failure_is_retried.py` breaks `db.add_alert` to prove a confirmed
+watchlist hit is not silently lost when it cannot be persisted. The new arm does not call
+`add_alert`, so the injection stopped injecting. **They failed on their own precondition
+(`_alerts(db) == 0`)** rather than passing vacuously — the only reason it was caught. ⇒ **Assert your
+fault injection FIRED**, and when you move a write, grep for what injects failures into it. The
+helper now breaks both seams and returns a `restore()` that undoes both; restoring only one left the
+retry unable to write and produced a failure message that was true about the fixture and false about
+the code.
+
+⚠️ **A test that could not discriminate, found by its plant surviving.** The dedup-disabled test used
+two DIFFERENT timestamps; with the window at 0, `since_ts` becomes `now_ts`, so an alert a second
+earlier fails `ts >= since_ts` and the insert proceeds regardless. It now drives both observations at
+the SAME timestamp — ordinary here, since a bridge flush and a poll tick routinely share a second.
+
+⚠️ **The NULL-mac predicate is duplicated** between `get_recent_alert_for_rule_and_mac` and the
+conditional insert, deliberately rather than shared, because the two must agree exactly — a drift
+would make "recent" mean two different things and the dedup would silently change behaviour. Pinned
+by `test_the_conditional_insert_and_the_dedup_read_agree_on_recent` for both a real mac and NULL.
+
+Original measurement follows.
+
+### (measurement) Finding 58 — the MAIN alert dedup is a read-then-write
 
 **MEASURED, NOT PATCHED — deliberately, because it is the hottest path in the product and the fix
 has to preserve three-way retry semantics. Registered so the measurement is not re-derived.**
