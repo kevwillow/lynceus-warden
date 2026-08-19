@@ -26,7 +26,7 @@ import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import yaml
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -821,6 +821,161 @@ def add_ui_entry(ui_path: Path, entry: AllowlistEntry) -> None:
         data = _read_ui_yaml(ui_path)
         data["entries"].append(entry.model_dump(mode="json", exclude_none=True))
         _atomic_write_yaml(ui_path, data)
+
+
+#: Matches ``webui.clock.CLOCK_BEHIND_TOLERANCE_SECONDS`` and, through it,
+#: ``poller.CLOCK_JUMP_TOLERANCE_SECONDS``. Deliberately NOT imported: `webui`
+#: imports `allowlist`, so importing back would invert the layering for one
+#: integer. ``test_the_clock_tolerances_stay_equal`` asserts they stay equal
+#: instead -- the same pattern, and the same reason, as `webui/clock.py`'s own
+#: copy of the poller constant.
+#:
+#: ⚠️ Without it, an ordinary NTP slew of a second or two between two clicks
+#: reads as a backward jump. What it buys the operator is a second of a snooze;
+#: what it costs them is a warning that their clock is broken when it is not.
+UI_ORDER_TOLERANCE_SECONDS = 300
+
+
+class ImpossibleUiEntry(NamedTuple):
+    """A UI suppression stamped EARLIER than one written before it.
+
+    Named rather than a bare tuple for the reason ``db.ImpossibleSnooze``
+    records: these fields are rendered into an operator-facing message, and a
+    positional mistake there is invisible to tests that only check values.
+
+    ``duration_seconds`` is ``expires_at - added_at`` -- what the operator
+    actually asked for, which survives the wrong clock because both stamps moved
+    together.
+    """
+
+    pattern: str
+    pattern_type: str
+    added_at: int
+    duration_seconds: int
+    #: The ``added_at`` of the earlier-written entry this one contradicts, and
+    #: its pattern -- so the message can name the evidence rather than assert a
+    #: verdict.
+    preceded_by_pattern: str
+    preceded_by_added_at: int
+    #: How far the clock had moved backward by the time this row was written.
+    behind_by_seconds: int
+
+
+def find_impossible_ui_entries(
+    ui_path: Path, now_ts: int
+) -> list[ImpossibleUiEntry]:
+    """Expired UI suppressions stamped before an entry written earlier.
+
+    ⭐ **The third of the four deadline backends to get a BACKWARD reporter, and
+    the one Finding 56 recorded as unreachable.** That record was right about the
+    discriminator it had and wrong about the conclusion: it says this file *"has
+    no ``schema_migrations`` row to compare against, so the ordering
+    discriminator does not exist for it."* No ``schema_migrations`` row exists
+    here -- but **a different ordering fact does**, and it does not need one.
+
+    **The fact: this file's list order IS its write order.** ``add_ui_entry``
+    appends; ``remove_ui_entry`` and ``bulk_remove_ui_entries`` filter;
+    ``repair_future_dated_ui_entries`` rebuilds in place; ``_validate_ui_entries``
+    keeps survivors in order. **Nothing in this module sorts.** So an entry
+    sitting BELOW another while claiming an EARLIER ``added_at`` is a
+    contradiction between two things the file records independently -- position
+    and timestamp -- and the only way to produce it is a clock that moved
+    backward between the two writes. No reference to the reading clock is made,
+    which is why it works where clock reasoning does not.
+
+    ⛔ **This is a DISAGREEMENT, not a proof about which clock was right**, and
+    the caller must phrase it that way -- exactly as ``db.find_impossible_
+    rule_type_snoozes`` must. Either the later row was stamped behind, or the
+    earlier row was stamped ahead. Nothing local can say which.
+
+    ⛔ **Scoped to ``expires_at <= now_ts``, and that conjunction is REQUIRED**,
+    for the reason #139 had to add it to the DB sibling: a suppression written
+    on a behind clock can still be IN FORCE if its duration outruns the gap.
+    Measured on this backend -- clock 12h behind, 24h asked for, operator gets
+    12h. Telling them it *"never took effect"* would be false about a
+    suppression they can watch working.
+
+    ⭐ **The scope also kills a false positive this backend has and the DB ones
+    do not.** ``repair_future_dated_ui_entries`` rewrites ``added_at`` in place
+    without moving the row, so a forward-dated entry repaired AFTER a later
+    healthy write leaves the file genuinely out of order. Measured: a 10-second
+    inversion, manufactured by the repair, on two perfectly good suppressions.
+    Both were still live, so the scope excludes them.
+
+    ⚠️ **The residual, measured, not eliminated:** if the poller is stopped long
+    enough for the later healthy entry's own deadline to pass BEFORE the repair
+    runs, the scope no longer excludes it and this reports a healthy row. It
+    needs the daemon down for longer than the snooze while the web UI keeps
+    serving clicks. The direction is the recoverable one -- the operator is told
+    to check a clock that is fine, about a suppression that already worked --
+    which is the same trade ``webui/clock.py`` documents for its own false
+    positives. **It is a narrower claim than the DB siblings can make, and
+    saying so is the point.**
+
+    ⚠️ **Blind, by construction, on an install where every UI write shares one
+    behind clock** -- there is no earlier-stamped row to contradict. That is the
+    same population ``schema_migrations`` cannot see either (Finding 41's
+    RTC-less Pi), so this narrows the window without closing it.
+
+    ⚠️ **``expires_at is None`` is a PERMANENT entry, not a snooze**, and unlike
+    the SQLite sibling -- where ``NULL <= x`` is never true and the equivalent
+    guard is redundant -- this one is load-bearing: in Python the comparison
+    would raise. A permanent entry has no deadline to be wrong about.
+
+    ⚠️ Entries with no ``added_at`` are operator hand-edits. They carry no
+    provenance, so they are skipped entirely: they neither report nor advance
+    the running maximum.
+
+    ⛔ **Never raises.** A diagnostic that can change what its caller does is the
+    defect this project has shipped twice -- once emptying an allowlist from
+    inside this very module's loader, once taking the daemon down at startup. On
+    any failure this reports nothing and the caller behaves exactly as before.
+    """
+    try:
+        if not isinstance(now_ts, int) or isinstance(now_ts, bool):
+            return []
+        # ⛔ The canonical loader, not a private parser. A second reader is how
+        # this module produced a permanent corruption once already: the read path
+        # and the write path validated differently, so a file the reader rejected
+        # the writer preserved and extended. See `_validate_ui_entries`. It also
+        # keeps this off `test_every_yaml_loader_is_wired_or_exempt_with_a_reason`
+        # -- a new `safe_load` site here would need an exemption, and an
+        # exemption is a claim.
+        entries = _load_ui_entries(ui_path)
+        out: list[ImpossibleUiEntry] = []
+        # ⛔ Carried as ONE value, not two. An `assert high_pattern is not None`
+        # here would be swallowed by this function's own `except Exception` and
+        # silently return [] -- a reporter that goes dark is the failure mode
+        # this whole family exists to prevent, and `python -O` strips the assert
+        # anyway. A single tuple makes the pairing unrepresentable-if-wrong.
+        high: tuple[int, str] | None = None
+        for e in entries:
+            if e.added_at is None:
+                continue
+            if high is None or e.added_at >= high[0] - UI_ORDER_TOLERANCE_SECONDS:
+                # ⚠️ The running maximum advances only on a stamp that is NOT a
+                # violation, so one backward jump followed by several writes on
+                # the still-wrong clock reports every one of them -- they are all
+                # short, and they are all the operator's.
+                if high is None or e.added_at > high[0]:
+                    high = (e.added_at, e.pattern)
+                continue
+            if e.expires_at is None or e.expires_at > now_ts:
+                continue
+            out.append(
+                ImpossibleUiEntry(
+                    pattern=e.pattern,
+                    pattern_type=e.pattern_type,
+                    added_at=e.added_at,
+                    duration_seconds=e.expires_at - e.added_at,
+                    preceded_by_pattern=high[1],
+                    preceded_by_added_at=high[0],
+                    behind_by_seconds=high[0] - e.added_at,
+                )
+            )
+        return out
+    except Exception:  # noqa: BLE001 -- see above; a report must never decide
+        return []
 
 
 def repair_future_dated_ui_entries(

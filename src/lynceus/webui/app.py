@@ -12,10 +12,12 @@ import math
 import sqlite3
 import time
 from pathlib import Path
+from typing import Annotated
 from typing import get_args as _typing_get_args
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi import Path as PathParam
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -26,9 +28,11 @@ from lynceus import allowlist as allowlist_mod
 from lynceus import rules as rules_mod
 from lynceus.allowlist import (
     AllowlistEntry,
+    ImpossibleUiEntry,
     add_ui_entry,
     bulk_remove_ui_entries,
     derive_ui_path,
+    find_impossible_ui_entries,
     load_allowlist_with_source,
     remove_ui_entry,
 )
@@ -553,6 +557,35 @@ def _normalize_optional_note(note: str | None) -> str | None:
     if len(note) > 500:
         raise HTTPException(status_code=400, detail="note must be <= 500 chars")
     return note
+
+
+#: Every path parameter that becomes a SQLite row id.
+#:
+#: ⛔ **`int` alone is not a row id, and the gap is reachable.** FastAPI's `int`
+#: converter is an arbitrary-precision Python int with no upper bound; SQLite's
+#: INTEGER is signed 64-bit. So `GET /alerts/9223372036854775808` reached the
+#: query layer and raised `OverflowError: Python int too large to convert to
+#: SQLite INTEGER` out of the route. Measured on **all 15** routes carrying one
+#: of these params -- `2**63` returned **500** where `2**63 - 1` correctly
+#: returned 404.
+#:
+#: ⚠️ **Graded, not inflated.** The body is Starlette's plain "Internal Server
+#: Error" and leaks nothing; the daemon keeps serving (the next request 404s
+#: normally); nothing is written before the raise. It is a wrong status code on
+#: hostile input, not a security or availability defect. It is fixed here
+#: because the class is 15 surfaces wide and the fix is one line each.
+#:
+#: ⛔ **`le` only, deliberately no `ge`.** Zero and negative ids currently reach
+#: the routes' own preconditions and return **400** with a message about the
+#: entry; adding `ge=1` would silently convert those to 422 and change
+#: behaviour three existing tests pin. Bounding the end that actually breaks is
+#: the whole change.
+#:
+#: ⛔ Derived, not transcribed: `test_every_int_path_param_is_bounded` walks the
+#: AST for `<name>: int` in a route signature and fails on the 16th one, because
+#: this project has re-committed a first-match-only fix three PRs later before.
+SQLITE_MAX_ROWID = 2**63 - 1
+RowId = Annotated[int, PathParam(le=SQLITE_MAX_ROWID)]
 
 
 def unix_to_iso(ts) -> str:
@@ -2772,7 +2805,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.get("/alerts/{alert_id}", response_class=HTMLResponse)
     def alert_detail(
         request: Request,
-        alert_id: int,
+        alert_id: RowId,
         success: str | None = Query(default=None),
     ):
         if alert_id < 1:
@@ -3101,7 +3134,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/alerts/{alert_id}/ack")
     def ack_alert(
         request: Request,
-        alert_id: int,
+        alert_id: RowId,
         note: str | None = Form(default=None),
     ):
         if alert_id < 1:
@@ -3137,7 +3170,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/alerts/{alert_id}/unack")
     def unack_alert(
         request: Request,
-        alert_id: int,
+        alert_id: RowId,
         note: str | None = Form(default=None),
     ):
         if alert_id < 1:
@@ -3242,7 +3275,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         add_ui_entry(ui_path, entry)
 
     @app.post("/alerts/{alert_id}/allowlist")
-    def allowlist_alert_post(request: Request, alert_id: int):
+    def allowlist_alert_post(request: Request, alert_id: RowId):
         result = _load_alert_for_triage(alert_id, request)
         if not isinstance(result, dict):
             return result
@@ -3254,7 +3287,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/alerts/{alert_id}/snooze")
     def snooze_alert_post(
         request: Request,
-        alert_id: int,
+        alert_id: RowId,
         snooze_duration: str = Form(default=_SNOOZE_DEFAULT_KEY),
     ):
         if snooze_duration not in _SNOOZE_DURATIONS:
@@ -3292,7 +3325,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
 
     @app.post("/alerts/{alert_id}/allowlist/remove")
-    def remove_allowlist_alert_post(request: Request, alert_id: int):
+    def remove_allowlist_alert_post(request: Request, alert_id: RowId):
         result = _load_alert_for_triage(alert_id, request)
         if not isinstance(result, dict):
             return result
@@ -3308,7 +3341,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/alerts/{alert_id}/note")
     def update_alert_note_post(
         request: Request,
-        alert_id: int,
+        alert_id: RowId,
         note_text: str = Form(default=""),
     ):
         # Persistent per-alert triage note. Distinct from the
@@ -3405,7 +3438,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/alerts/{alert_id}/watch")
     def watch_alert_post(
         request: Request,
-        alert_id: int,
+        alert_id: RowId,
         snooze_duration: str = Form(default="forever"),
     ):
         """Triage an alert into the watchful tracking surface.
@@ -3471,7 +3504,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return RedirectResponse(target, status_code=303)
 
     @app.post("/watchful/{entry_id}/dismiss")
-    def watchful_dismiss_post(request: Request, entry_id: int):
+    def watchful_dismiss_post(request: Request, entry_id: RowId):
         result = _load_watchful_for_action(entry_id, request)
         if not isinstance(result, WatchfulRecurrence):
             return result
@@ -3484,7 +3517,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/watchful/{entry_id}/promote")
     def watchful_promote_post(
         request: Request,
-        entry_id: int,
+        entry_id: RowId,
         note: str | None = Form(default=None),
     ):
         result = _load_watchful_for_action(entry_id, request)
@@ -3527,7 +3560,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return RedirectResponse("/watchful?success=promoted", status_code=303)
 
     @app.post("/watchful/{entry_id}/reset")
-    def watchful_reset_post(request: Request, entry_id: int):
+    def watchful_reset_post(request: Request, entry_id: RowId):
         result = _load_watchful_for_action(entry_id, request)
         if not isinstance(result, WatchfulRecurrence):
             return result
@@ -3567,7 +3600,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/watchful/{entry_id}/investigate")
     def watchful_investigate_post(
         request: Request,
-        entry_id: int,
+        entry_id: RowId,
         note: str | None = Form(default=None),
     ):
         result = _load_watchful_for_action(entry_id, request)
@@ -3585,7 +3618,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/watchful/{entry_id}/confirm-safe")
     def watchful_confirm_safe_post(
         request: Request,
-        entry_id: int,
+        entry_id: RowId,
         note: str | None = Form(default=None),
     ):
         result = _load_watchful_for_action(entry_id, request)
@@ -3858,7 +3891,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.get("/watchful/{entry_id}", response_class=HTMLResponse)
     def watchful_detail(
         request: Request,
-        entry_id: int,
+        entry_id: RowId,
         success: str | None = Query(default=None),
     ):
         if entry_id < 1:
@@ -5360,7 +5393,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         )
 
     @app.get("/watchlist/{watchlist_id}", response_class=HTMLResponse)
-    def watchlist_detail(request: Request, watchlist_id: int):
+    def watchlist_detail(request: Request, watchlist_id: RowId):
         if watchlist_id < 1:
             raise HTTPException(status_code=400, detail="watchlist_id must be positive")
         row = db.get_watchlist_with_metadata(watchlist_id)
@@ -5541,6 +5574,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         primary_count = 0
         ui_count = 0
         configured = bool(allowlist_path)
+        clock_disagreements: list[ImpossibleUiEntry] = []
         if not configured:
             notice = "No allowlist_path configured. Set allowlist_path in lynceus.yaml."
         else:
@@ -5558,6 +5592,18 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 status=status,
                 type_=type_,
                 now_ts=int(time.time()),
+            )
+            # ⛔ Reported on the UNFILTERED file, deliberately. The evidence is
+            # an ORDERING fact between two entries, so a filter that hides
+            # either half would silently change the verdict -- an operator
+            # searching for one MAC would be told their clock was fine.
+            #
+            # ⚠️ Read from disk rather than derived from `tagged`:
+            # `load_allowlist_with_source` merges primary and UI entries, and
+            # the discriminator is only valid within the UI file's own append
+            # order. A merged list is not that order.
+            clock_disagreements = find_impossible_ui_entries(
+                derive_ui_path(Path(allowlist_path)), int(time.time())
             )
 
         # Pagination is applied in Python on the already-filtered list
@@ -5597,6 +5643,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 # rendering in that case.
                 "allowlist_path": allowlist_path,
                 "entries": page_rows,
+                "clock_disagreements": clock_disagreements,
                 "primary_count": primary_count,
                 "ui_count": ui_count,
                 "filters": {
