@@ -14,6 +14,44 @@ What to run before claiming this repo is clean, and what the numbers should be.
 `make test`, `make lint`, `make format-check` wrap the first, second, and
 fourth. There is no `make build`.
 
+## CI-only gates
+
+Added 2026-08-19. These run in Actions and not in `make`, because each needs a
+tool or privilege a checkout does not have. Listed here so a red check is
+readable without opening the workflow.
+
+| Gate | Command it amounts to | Note |
+| --- | --- | --- |
+| `integrity / web-assets` | `node --check` over `git ls-files '*.js'` | 604 lines of `lynceus.js` that nothing had ever parsed |
+| `integrity / systemd-units` | `systemd-analyze verify` over the 6 units | stubs the `ExecStart` targets first; see the trap below |
+| `integrity / config-examples` | `lynceus-validate` over the shipped `config/*.yaml` | staged under `XDG_CONFIG_HOME` |
+| `integrity / workflows` | `actionlint`, pinned + sha256-verified | `SHELLCHECK_OPTS=-S warning`, matching `shellcheck.yml` |
+| `ci / test (ubuntu-24.04-arm)` | the suite, on arm64 | the deployment architecture, unexercised until now |
+| `ci` coverage leg | `pytest --cov` on the 3.11 x86 leg | HTML report uploaded as an artifact |
+
+⚠️ **`systemd-analyze verify` exits 0 on a malformed directive value.**
+Measured: `ProtectSystem=banana` prints "Failed to parse protect system value,
+ignoring" and exits **0** — the directive is dropped and the unit runs
+unhardened. Only a missing binary exits nonzero. The gate is therefore keyed on
+the verifier's OUTPUT being empty, never on its exit status. If you rewrite that
+job, keep that property.
+
+⚠️ **The gate stubs `ExecStart` rather than filtering the "not executable"
+line.** Filtering would also hide a genuinely typo'd `ExecStart` path, which is
+the defect most worth catching. The stub paths are read out of the units, so a
+unit that gains a new `Exec*` is covered without editing the workflow.
+
+⚠️ **Coverage lands as measurement; no `--cov-fail-under` is set yet.** The
+threshold is deliberately not carried over from a local run: this box skips the
+Bluetooth-directory test and CI skips the live-Argus one, so the two measure
+slightly different line sets. Set it from the CI job's own number.
+
+⚠️ **When it is set, it is a ratchet against collapse, not a quality bar.** It
+catches a module dropping out of the run entirely. It says nothing about
+whether the covered lines are covered *well* — this file records several guards
+that matched a spelling rather than a behaviour, and every one of them counts
+as covered.
+
 ## Baseline
 
 Taken on 2026-08-02, on Windows with Python 3.11, on the full local suite.

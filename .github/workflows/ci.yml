@@ -26,15 +26,34 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.runner }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
+        # Spelled out with `include` rather than crossed, because the third leg
+        # is not a version at all -- it is an ARCHITECTURE, and a full cross
+        # product would buy two more x86 runs nobody needs.
+        #
         # 3.11 is the floor declared in pyproject (requires-python >=3.11) and
         # is the one that matters: a 3.12-only syntax regression passes on a
         # dev box running 3.12 and breaks every 3.11 user.
-        python-version: ["3.11", "3.12"]
+        #
+        # ⭐ The arm64 leg is the one this project was missing. Lynceus targets
+        # a Raspberry Pi; every run before this one was x86-64, so the actual
+        # deployment architecture was never exercised by anything but a human
+        # with a Pi on the desk. arm64 runners are free on public repos.
+        include:
+          - runner: ubuntu-latest
+            python-version: "3.11"
+            coverage: true
+          - runner: ubuntu-latest
+            python-version: "3.12"
+            coverage: false
+          - runner: ubuntu-24.04-arm
+            python-version: "3.11"
+            coverage: false
 
     steps:
       - uses: actions/checkout@v7
@@ -76,7 +95,73 @@ jobs:
       # `-ra` (set in pyproject addopts) prints every skip reason, so check
       # WHICH test skipped before concluding anything from a count.
       - name: Tests
+        if: ${{ !matrix.coverage }}
         run: pytest -q
+
+      # ⚠️ Coverage runs on ONE leg, not all three. It is measurement, not a
+      # second opinion: running it everywhere would add its overhead to every
+      # leg to produce three copies of the same number.
+      #
+      # ⛔ No `--cov-fail-under` yet, on purpose. A threshold is only worth
+      # having if it came from a measurement taken HERE: a number carried over
+      # from a developer's box is a guess, because that box skips a different
+      # test than CI does (the Bluetooth-directory one rather than the live
+      # Argus one) and so measures a slightly different set of lines. This lands
+      # as measurement first; the floor gets set from this job's own number.
+      #
+      # ⚠️ When it is set, it will be a RATCHET AGAINST COLLAPSE, not a quality
+      # bar. It catches a whole module dropping out of the run -- an import that
+      # starts failing silently, a test file that stops being collected. It will
+      # NOT mean the covered lines are covered *well*: this repo's own notes
+      # record guards that matched a spelling rather than a behaviour, and every
+      # one of those counts as covered here.
+      - name: Tests (with coverage)
+        if: ${{ matrix.coverage }}
+        run: |
+          pytest -q \
+            --cov=lynceus \
+            --cov-report=term-missing:skip-covered \
+            --cov-report=html:htmlcov \
+            --cov-report=json:coverage.json
+
+      # The per-module table is the actionable part -- it names which files the
+      # suite never reaches, which is the question "how covered are we?"
+      # actually needs answered. Put in the run summary so it needs no download.
+      - name: Coverage summary
+        if: ${{ matrix.coverage && !cancelled() }}
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib, sys
+          src = pathlib.Path("coverage.json")
+          # ⚠️ This step runs on failure too (`!cancelled()`), which is exactly
+          # when the table is most wanted -- a floor breach should still tell you
+          # WHICH module fell. But if the run died before writing the report,
+          # say so and exit clean: a diagnostic that raises on top of the real
+          # failure buries the error that matters.
+          if not src.exists():
+              print("_No coverage.json — the test run did not get far enough to write one._")
+              sys.exit(0)
+          data = json.loads(src.read_text())
+          total = data["totals"]["percent_covered"]
+          print(f"### Coverage: {total:.1f}%\n")
+          rows = sorted(
+              ((f, m["summary"]) for f, m in data["files"].items()),
+              key=lambda kv: kv[1]["percent_covered"],
+          )
+          print("| module | covered | missing |")
+          print("| --- | --- | --- |")
+          for name, s in rows[:25]:
+              print(f"| `{name}` | {s['percent_covered']:.0f}% | {s['missing_lines']} |")
+          print(f"\n_{len(rows)} modules measured; 25 least-covered shown._")
+          PY
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ matrix.coverage && !cancelled() }}
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Build wheel
         run: |
