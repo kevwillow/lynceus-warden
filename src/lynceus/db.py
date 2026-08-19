@@ -905,6 +905,79 @@ class Database:
                 rule_type=rule_type,
             )
 
+    def add_alert_if_none_since(
+        self,
+        *,
+        ts: int,
+        rule_name: str,
+        mac: str | None,
+        message: str,
+        severity: str,
+        matched_watchlist_id: int | None,
+        rule_type: str | None,
+        since_ts: int,
+    ) -> int | None:
+        """Write the alert ONLY if no alert for this rule+mac exists since
+        ``since_ts``. Returns the new id, or ``None`` when another writer got
+        there first -- in which case NOTHING is written and the caller must not
+        notify.
+
+        ⛔ Finding 58. The caller's dedup was a read
+        (``get_recent_alert_for_rule_and_mac``) followed by a separate
+        ``add_alert``, and the read is not re-asserted at the write.
+        ``process_observation`` runs concurrently in the poll loop AND in the
+        ``ble-bridge`` thread, which holds its own ``Database`` on its own
+        connection, so the per-instance lock does not serialise them. Both could
+        see "nothing recent" and both insert. Measured, one detection delivered
+        to both writers:
+
+            CONTROL   sequential, one connection    alerts=1  sent=1
+            TREATMENT two connections, interleaved  alerts=2  sent=2
+
+        The ``NOT EXISTS`` runs inside the same statement as the INSERT, so the
+        check and the write cannot be separated.
+
+        ⚠️ **This is ONLY for the "nothing recent, write a new one" arm.** The
+        dedup's other arms -- *delivered* → skip, *undelivered with attempts
+        spent* → skip, *undelivered with attempts left* → **reuse the row and
+        retry** -- are the caller's and are deliberately untouched. Routing the
+        retry arm through here would turn a re-send into a silent skip and
+        reinstate Wave 5 Finding 12, where one failed send swallowed the alert
+        for the whole window.
+
+        ⚠️ The NULL-mac predicate is duplicated from
+        ``get_recent_alert_for_rule_and_mac`` rather than shared, because the
+        two must agree exactly: a mismatch would make this method's idea of
+        "recent" differ from the caller's, and the dedup would silently stop
+        matching. It is asserted equal by
+        ``test_the_conditional_insert_and_the_dedup_read_agree_on_recent``.
+        """
+        for name, value in (("ts", ts), ("since_ts", since_ts)):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"{name} must be an int (epoch seconds)")
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """
+                INSERT INTO alerts(ts, rule_name, mac, message, severity,
+                                   matched_watchlist_id, rule_type)
+                SELECT ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM alerts
+                    WHERE rule_name = ?
+                      AND ts >= ?
+                      AND ((? IS NOT NULL AND mac = ?) OR (? IS NULL AND mac IS NULL))
+                )
+                """,
+                (
+                    ts, rule_name, mac, message, severity,
+                    matched_watchlist_id, rule_type,
+                    rule_name, since_ts, mac, mac, mac,
+                ),
+            )
+            if cur.rowcount == 0:
+                return None
+            return cur.lastrowid
+
     def _insert_alert_row(
         self,
         *,

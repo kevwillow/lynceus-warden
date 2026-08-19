@@ -73,12 +73,37 @@ def _alerts(db) -> int:
 
 
 def _break_add_alert(db):
+    """Make the alert WRITE fail, whichever method the poller reaches for.
+
+    ⛔ Both seams are broken deliberately. Finding 58 routed the "write a new
+    alert" arm through `add_alert_if_none_since` (the dedup check and the insert
+    became one statement), and breaking only `add_alert` stopped injecting
+    anything -- the alert was written normally and every test here failed on its
+    own precondition, `_alerts(db) == 0`.
+
+    That precondition is the only reason it was caught. Without it these guards
+    would have gone on "passing" while proving nothing about what happens when a
+    confirmed watchlist hit cannot be persisted, which is the whole point of the
+    file. ⇒ Assert your fault injection FIRED.
+    """
+
     def boom(*a, **k):
         raise sqlite3.OperationalError("database is locked")
 
-    real = db.add_alert
+    real_add = db.add_alert
+    real_cond = db.add_alert_if_none_since
     db.add_alert = boom
-    return real
+    db.add_alert_if_none_since = boom
+
+    def restore():
+        """⚠️ Restores BOTH. Restoring only `add_alert` left the conditional
+        insert broken, so the retry could not write and the test failed
+        claiming "the confirmed hit never came back" -- a true statement about
+        a fixture, not about the code."""
+        db.add_alert = real_add
+        db.add_alert_if_none_since = real_cond
+
+    return restore
 
 
 # --- presence assertion ---------------------------------------------------
@@ -119,13 +144,13 @@ def test_an_alert_write_failure_is_recorded_as_a_persist_failure(env):
 def test_the_hit_still_reaches_the_operator_on_the_retry(env):
     """The whole point. A transient lock must cost a tick, not the alert."""
     cfg, db, client, ruleset = env
-    real = _break_add_alert(db)
+    restore = _break_add_alert(db)
     notifier = _Recorder()
 
     poll_once(client, db, cfg, NOW, ruleset=ruleset, notifier=notifier)
     assert _alerts(db) == 0 and notifier.calls == []
 
-    db.add_alert = real  # the lock clears
+    restore()  # the lock clears
     poll_once(client, db, cfg, NOW + 60, ruleset=ruleset, notifier=notifier)
 
     assert _alerts(db) == 1, "the confirmed hit never came back after the retry"
@@ -167,12 +192,12 @@ def test_a_new_device_alert_is_NOT_recovered_by_the_retry(env):
             )
         ]
     )
-    real = _break_add_alert(db)
+    restore = _break_add_alert(db)
 
     poll_once(client, db, cfg, NOW, ruleset=new_dev_rules, notifier=_Recorder())
     assert _alerts(db) == 0
 
-    db.add_alert = real
+    restore()
     poll_once(client, db, cfg, NOW + 60, ruleset=new_dev_rules, notifier=_Recorder())
 
     assert _alerts(db) == 0, (
