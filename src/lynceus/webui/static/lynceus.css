@@ -671,6 +671,18 @@ details > summary { cursor: pointer; }
 .badge-allow-expired   { background: var(--lyn-badge-negative-bg); color: var(--lyn-badge-negative-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
 .settings-card         { margin-bottom: 1em; }
 
+/* Clock-vs-file-order disagreement banner on /allowlist. Uses the WARNING
+   tier, not the negative one: the finding is that two records disagree, and
+   the check cannot tell which of them is wrong -- an error-red banner would
+   assert a verdict the code explicitly refuses to assert. Tokens are the
+   theme-swapped badge vars, so it flips light/dark with everything else. */
+.clock-disagreement {
+  border-left: 4px solid var(--lyn-badge-warning-fg);
+  background: var(--lyn-badge-warning-bg);
+  color: var(--lyn-badge-warning-fg);
+}
+.clock-disagreement code { background: transparent; color: inherit; }
+
 /* Horizontal scroll wrapper for tables that may exceed container width.
    Apply by wrapping the <table> in <div class="table-scroll">. The
    gradient fades to var(--pico-background-color) (which Pico swaps per

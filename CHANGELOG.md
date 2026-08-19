@@ -15,6 +15,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The allowlist page now says when its own file disagrees about the order it
+  was written in.** A suppression saved while the host clock was behind stores a
+  deadline on the near side of the gap: it ends early, or never begins. The two
+  database backends already report that after the fact; the YAML allowlist could
+  not, because the discriminator they use — a row cannot predate its own
+  database's first migration — has no `schema_migrations` row to compare against
+  here.
+
+  It has a different ordering fact instead. This file's list order *is* its write
+  order (every writer appends or filters; nothing sorts), so an entry sitting
+  below one that carries a later timestamp is a contradiction between two things
+  the file records independently. No clock is consulted to notice it.
+
+  Reported as a disagreement, never a verdict: the check cannot tell whether this
+  row was stamped behind or the one above it was stamped ahead, and it says so.
+  Only entries whose deadline has already passed are listed — a snooze written on
+  a behind clock still works if its duration outruns the gap, and telling an
+  operator that a suppression they can watch working had failed is the mistake
+  the database-side reporter shipped once already.
+
+  Three limits are published beside it rather than left to be discovered. An
+  install where every allowlist write shares one wrong clock has nothing to
+  contradict and stays invisible. The forward-dated-entry repair can leave the
+  file genuinely out of order, which produces a false report if the daemon is
+  stopped for longer than the snooze itself. And the check assumes every
+  timestamp was stamped when the entry was written — true of all three paths the
+  UI writes through, but not of a hand-edit, where the date is something the
+  operator typed rather than a record of the save. So the wording offers both
+  readings and never says the clock is wrong.
+
+  On a filtered view the banner shows only a count and a link back, because the
+  evidence is a relationship between two entries and naming the second one would
+  put a filtered-out address on the page.
+
+
 - **`/healthz.json` now reports the heartbeat.** The dead-man's switch is what
   distinguishes "nothing is out there" from "the daemon died", and the
   machine-readable health endpoint said nothing about it at all — six checks,
@@ -294,6 +329,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   copy of it. The two are separate defences on purpose: either one alone closes
   the case that was measured, and each has its own test that fails if only that
   defence is removed.
+- **A row id larger than SQLite can hold returned 500 instead of 404.** FastAPI's
+  `int` path converter is an unbounded Python integer; SQLite's INTEGER is signed
+  64-bit. So `/alerts/9223372036854775808` reached the query layer and raised
+  `OverflowError` out of the route, on **all fifteen** routes that take a row id —
+  while `9223372036854775807`, one lower, returned 404 correctly.
+
+  The response body was Starlette's plain "Internal Server Error" and leaked
+  nothing, the daemon kept serving, and nothing was written before the raise, so
+  this was a wrong status code on hostile input rather than a security or
+  availability defect. It is fixed at the type rather than per route, and a guard
+  derives the route list from the URL templates so a sixteenth cannot be added
+  unbounded.
+
 
 - **One device, seen once, could alert you twice.** Lynceus watches through two
   independent paths — the main scan loop and the Bluetooth listener — and each
