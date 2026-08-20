@@ -492,6 +492,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   page was missing. With no `rules_path` at all, every active snooze is listed
   there, since none of them can have a row.
 
+  **The severity-overrides card retracted itself three lines later.** Its path
+  and status rows are carefully conditional — they say *"the default location —
+  nothing is configured, so the runtime override layer is off"* and mark the
+  file `missing`. The paragraph beneath them was not: *"Edit the file directly
+  to customize severity rules. Two layers read this file… restart the daemon to
+  apply."* An operator who followed it created a file nothing reads and
+  restarted a daemon that changed nothing.
+
+  Same half-fix shape this file already records for the snooze sentence:
+  conditioning the first clause and leaving the second asserting the thing that
+  was just retracted. With nothing configured the card now says so and gives the
+  step that actually turns the layer on, and separates the importer, which reads
+  whatever `--override-file` is passed and needs no setting at all.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still
