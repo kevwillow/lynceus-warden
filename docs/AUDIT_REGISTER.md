@@ -4378,6 +4378,27 @@ findings this round were all expressible as a CAS, which is evidence about the s
 
 ## Still open
 
+⭐ **RE-DERIVED 2026-08-20 at `416bad5`, mechanically and in BOTH directions.** This is the
+re-derivation the 2026-08-16 note below says is outstanding. **Method, so it can be repeated rather
+than trusted:** the universe was enumerated from this file (`Finding N` across all 4800+ lines — 64
+findings exist: 0 and 4–67; 1, 2, 3 and 26 were never issued), and each was cross-referenced against
+`git log origin/main` commit messages, which is a source outside this file and cannot drift with it.
+
+**Result: the list agrees with the history in both directions.** No entry here claims open for a
+finding the merged history shows closed, and no finding absent from here reads as open at its
+disposition. Findings 59 and 60 are struck and closed by #182. ⭐ **Finding 52 has ZERO fix commits
+on `main`** — the one entry with objective confirmation that it is genuinely untouched.
+
+🪤 **The trap that will make the next re-derivation wrong.** The 🔴/🟡 on a finding's `###` heading is
+the severity it was **filed** at, not its disposition — sections do not carry an inline outcome.
+Deriving status from headings flags **24 findings as open**, nearly all long since fixed. Read the
+body and the commit history; never the heading. ⇒ [[grade-the-line-not-the-function]]
+
+⛔ **What this pass did NOT do, stated plainly: it did not re-measure the substance of any bullet.**
+It is a consistency pass over which findings are listed, not a verification pass over what they
+claim. A bullet can be correctly listed as open and wrong about why.
+⇒ [[label-context-with-what-you-ran-not-what-you-concluded]]
+
 ⚠️ **Audited 2026-08-15 and four entries were removed as already closed** — see the note below this
 list. Everything here has been checked against `main` on that date; a bullet with no date has not.
 

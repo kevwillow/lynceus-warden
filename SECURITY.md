@@ -2,7 +2,7 @@
 
 ## Project status
 
-Lynceus is currently personal-use software at version **0.9.5**. It is
+Lynceus is currently personal-use software at version **1.0.0**. It is
 not a hardened public product, has no dedicated security team, and offers
 no formal disclosure SLA. Vulnerability reports are welcomed and taken
 seriously, but response is best-effort.
@@ -70,7 +70,7 @@ Two surfaces in `lynceus.db` are notably sensitive:
 
 Please include:
 
-- Affected version (e.g. `0.9.5`), from `lynceus --version` or `/settings`.
+- Affected version (e.g. `1.0.0`), from `lynceus --version` or `/settings`.
 - Reproduction steps.
 - Expected vs. actual behavior.
 - Your assessment of impact.
