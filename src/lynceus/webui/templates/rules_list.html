@@ -216,6 +216,41 @@
     {% endif %}
   {% endif %}
 
+  {# ⛔ Snoozes with no rule of their type in the loaded file. Without this
+     block they had no control on any view of this page -- not the default, not
+     `?status=snoozed`, not `?status=all` -- while /watchlist and /settings both
+     said "lift it on the rules page". The snooze stays in force in the poller,
+     so re-adding the rule later leaves it silently suppressed. #}
+  {% if orphaned_snoozes %}
+    <article>
+      <header><strong>snoozed, with no rule of that type loaded</strong></header>
+      <p><small>
+        {% if ruleset %}
+          These rule types are silenced, and no rule in
+          {% if rules_file() %}<code>{{ rules_file() }}</code>{% else %}your rules file{% endif %}
+          has them &mdash; so they have no row above. Lifting the snooze here is
+          the only way to clear it; re-adding a rule of that type while the
+          snooze stands would leave it silenced.
+        {% else %}
+          No ruleset is loaded, so every active snooze is listed here. Each one
+          still silences its rule type in the poller.
+        {% endif %}
+      </small></p>
+      {% for o in orphaned_snoozes %}
+        <p>
+          <code>{{ o.rule_type }}</code>
+          <span class="badge-snoozed">snoozed until
+            <time datetime="{{ o.snooze.expires_at | unix_to_iso }}">{{ o.snooze.expires_at | unix_to_utc_human }}</time></span>
+          {% if o.snooze.note %}<small>&mdash; {{ o.snooze.note }}</small>{% endif %}
+          <form method="post" action="/rules/{{ o.rule_type }}/unsnooze" class="inline-form">
+            <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+            <button type="submit" class="secondary">unsnooze</button>
+          </form>
+        </p>
+      {% endfor %}
+    </article>
+  {% endif %}
+
   {# ⛔ This footer renders on every visit, including the one where no rules
      file is loaded at all -- so it is the second of the two sites that must
      branch rather than name a path. "Edit rules.yaml on disk" sent an operator

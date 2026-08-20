@@ -5023,6 +5023,32 @@ def create_app(
                 key=lambda r: (-r["stats"].count, r["rule_type"])
             )
 
+        # ⛔ Active snoozes with NO rule of that type in the loaded ruleset.
+        # The scope decision above is deliberate and stays -- but its
+        # consequence was that such a snooze had no control ANYWHERE, while
+        # /watchlist and /settings both told the operator to "lift it on the
+        # rules page". Measured at cca7c5c: with `watchlist_ssid` snoozed and
+        # no rule of that type loaded, /rules rendered zero unsnooze forms on
+        # the default view, on `?status=snoozed`, on `?status=all`, and on
+        # `?rule_type=watchlist_ssid`. The snooze stays in force in the poller
+        # gate, so re-adding the rule later leaves it silently suppressed.
+        #
+        # ⭐ Reachable through the UI's own instructions: snooze a type here,
+        # then "Edit <rules file> on disk and restart" as the footer says.
+        #
+        # ⚠️ The unsnooze endpoint already accepts these -- it validates
+        # against the RuleType Literal, not against the loaded ruleset -- so
+        # the button offered here is one that works, which is the only kind
+        # worth adding.
+        loaded_rule_types = (
+            {rule.rule_type for rule in ruleset.rules} if ruleset is not None else set()
+        )
+        orphaned_snoozes = [
+            {"rule_type": rt, "snooze": snoozes_by_type[rt]}
+            for rt in sorted(snoozes_by_type)
+            if rt not in loaded_rule_types
+        ]
+
         # Resolve the window label for the dynamic "Fires (last X)"
         # column header. "all" gets the human label "all time"; the
         # other four buckets render their raw key ("1h" / "24h" /
@@ -5048,6 +5074,7 @@ def create_app(
                 "active": "rules",
                 "ruleset": ruleset,
                 "notice": notice,
+                "orphaned_snoozes": orphaned_snoozes,
                 "rules_with_stats": rules_with_stats,
                 "rule_types_with_stats": rule_types_with_stats,
                 "since": since,
