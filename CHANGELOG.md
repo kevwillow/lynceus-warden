@@ -15,6 +15,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Apple Find My tracker alerting now ships enabled, and `/settings` says
+  whether it is actually on.** The decoder, the three-valued separation state
+  and the rule were all built, tested and shipped commented out; the capability
+  existed and nothing reached it. `find_my_separated` means a tracker is not
+  near its owner — the AirTag in your bag that is not yours — and that is now
+  alerted on out of the box.
+
+  **A Kismet-only install sees no behavioural change, and that is structural
+  rather than a promise.** Nothing but the passive BLE bridge ever populates
+  the decoded Continuity class: the classic-HCI path surfaces no advertisement
+  payload, so with the bridge off the rule cannot fire at all. It therefore
+  needs no enable-flag of its own, and one should not be added. A test asserts
+  the silence rather than describing it, and fails if any non-bridge path ever
+  starts populating the class.
+
+  `find_my_paired` is deliberately **not** matched. Every passer-by's own
+  tracker advertises that form, and alerting on it would produce a permanent
+  stream of other people's belongings. The unqualified `find_my` form — an
+  advert in neither observed shape — *is* matched, because treating an
+  unmeasured state as benign is how a detector goes quiet about the case nobody
+  anticipated.
+
+  The setup wizard emits the rule too, active when the BLE bridge is enabled and
+  commented with an explanation when it is not. That covers every path that
+  writes `rules.yaml`, including the one the CLI writes after applying config —
+  which previously overwrote the correct file moments after it was produced.
+
+- **The BLE bridge panel now warns when nothing consumes what it decodes.** An
+  operator could enable the bridge, buy the second adapter it requires, watch a
+  `find_my_separated` count climb on `/settings`, and never be alerted, while
+  the readiness check reported nothing wrong. It now reports it, and names the
+  block to enable.
+
+  The check distinguishes "no enabled rule consumes this" from "the rule state
+  could not be determined". A ruleset that will not parse, or an install with no
+  rules file configured, means the daemon does not know — and a warning there
+  would be a guess. Both setup wizards evaluate readiness before rules are
+  chosen and are treated as the unknown case, so neither reports a rule gap to
+  an operator who has not been asked about rules yet.
+
+  ⚠️ **This alerts; it does not build a tracker history.** Find My separated
+  adverts carry rotating key material by design, and the sighting record is keyed
+  on address, so a tracker seen at several places over weeks currently appears as
+  several unrelated devices. No surface added here implies otherwise. Linking a
+  tracker across rotations is unsolved and is not claimed.
+
+
 - **The allowlist page now says when its own file disagrees about the order it
   was written in.** A suppression saved while the host clock was behind stores a
   deadline on the near side of the gap: it ends early, or never begins. The two
