@@ -449,6 +449,39 @@ def test_system_info_shows_db_path(tmp_path, monkeypatch):
 
 @pytest.mark.webui
 def test_severity_overrides_section_includes_guidance(tmp_path, monkeypatch):
+    """With a CONFIGURED path, the card carries the editing guidance.
+
+    ⛔ This fixture used to leave ``severity_overrides_path`` unset and assert
+    "Edit the file directly" anyway -- i.e. it pinned the instruction in exactly
+    the state where following it does nothing, since the runtime layer stays off
+    until the setting exists. The card said so itself two rows higher ("nothing
+    is configured, so the runtime override layer is off") and then contradicted
+    itself. The state the fixture was actually in now has its own test below.
+    """
+    _stub_kismet_reachable(monkeypatch)
+    overrides = tmp_path / "severity_overrides.yaml"
+    overrides.write_text("device_category_severity:\n  tracker: low\n", encoding="utf-8")
+    app, db = _make_app(tmp_path, severity_overrides_path=str(overrides))
+    try:
+        with TestClient(app) as client:
+            r = client.get("/settings")
+        assert r.status_code == 200
+        assert "severity_overrides.yaml" in r.text
+        assert "Edit the file directly" in r.text
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_severity_overrides_section_does_not_instruct_when_unconfigured(
+    tmp_path, monkeypatch
+):
+    """The state the test above was really exercising: nothing configured.
+
+    The default path is still shown -- labelled as the default -- but the card
+    no longer tells the operator to edit it and restart, because nothing would
+    read it.
+    """
     _stub_kismet_reachable(monkeypatch)
     app, db = _make_app(tmp_path)
     try:
@@ -456,7 +489,8 @@ def test_severity_overrides_section_includes_guidance(tmp_path, monkeypatch):
             r = client.get("/settings")
         assert r.status_code == 200
         assert "severity_overrides.yaml" in r.text
-        assert "Edit the file directly" in r.text
+        assert "Edit the file directly" not in r.text
+        assert "Nothing reads this file yet" in r.text
     finally:
         db.close()
 
