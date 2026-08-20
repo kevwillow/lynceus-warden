@@ -184,11 +184,30 @@ rules:
   # Match both listed classes: dropping 'find_my' would silently discard
   # every advert form the rig has not seen yet.
   #
-  # - name: apple_find_my
-  #   rule_type: ble_device_class
-  #   severity: med
-  #   patterns: [find_my_separated, find_my]
-  #   description: "Apple Find My tracker away from its owner"
+  # ENABLED BY DEFAULT, and that costs a Kismet-only deployment nothing.
+  #
+  # This rule needs no `ble_bridge.enabled` gate and must not be given one.
+  # Nothing but the passive BLE bridge ever populates `ble_device_class` --
+  # the Kismet classic-HCI path surfaces no advertisement payload to decode
+  # and leaves the column NULL (see db.py, count_devices_by_ble_device_class;
+  # kismet.py never assigns the field, it only blanks it for non-BLE
+  # observations). So "on when the bridge is on" IS this rule being present:
+  # with the bridge off it cannot fire, by construction rather than by policy.
+  #
+  # ⇒ Unlike argus_mac, enabling this does NOT break a backward-compatibility
+  # promise -- it satisfies one structurally. The zero-behavioural-change
+  # guarantee is asserted, not assumed: see the bridge-off test in
+  # tests/test_find_my_alerting.py, which fails if any non-bridge path ever
+  # starts populating the class.
+  #
+  # ⚠️ The backward-compat paragraph further up this file is scoped to the
+  # DELEGATION entries and the empty-patterns idiom; it never covered this
+  # rule type. Do not edit it on this rule's account.
+  - name: apple_find_my
+    rule_type: ble_device_class
+    severity: med
+    patterns: [find_my_separated, find_my]
+    description: "Apple Find My tracker away from its owner"
 
   # ---- ble_local_name delegation (v0.6.1+) ----
   #

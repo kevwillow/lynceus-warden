@@ -101,6 +101,36 @@
           <em>none yet</em>
         {% endif %}
       </dd>
+      {# ⛔ Three-valued deliberately. `None` means the ruleset could not be
+         read, and neither ON nor OFF is honest there — see the context
+         builder. Decoding a tracker and never alerting on it is exactly the
+         silence this card exists to break, so the OFF case says so plainly
+         rather than leaving the operator to infer it from the counts. #}
+      <dt>Find My alerting</dt>
+      <dd>
+        {% if ble_bridge.find_my_rule_enabled is none %}
+          {# Two different situations, and telling an operator the wrong one
+             sends them to the wrong file. `rules_unreadable` already
+             distinguishes them. #}
+          {% if ble_bridge.rules_unreadable %}
+            <em>unknown</em> — the ruleset could not be read.
+          {% else %}
+            <em>unknown</em> — no <code>rules_path</code> is configured,
+            so no rules are loaded at all.
+          {% endif %}
+        {% elif ble_bridge.find_my_rule_enabled %}
+          {# ⛔ Says rule TYPE, not rule NAME. What was actually checked is that
+             some enabled rule has rule_type ble_device_class -- its patterns
+             were never inspected, so a rule matching only `airpods` would land
+             here. Naming apple_find_my would assert something no code
+             verified. #}
+          ON — a <code>ble_device_class</code> rule is enabled.
+        {% else %}
+          <strong>OFF</strong> — trackers are decoded and counted here,
+          but <strong>nothing will alert</strong> on them.
+          Enable <code>apple_find_my</code> in <code>rules.yaml</code>.
+        {% endif %}
+      </dd>
     </dl>
 
     {% if ble_bridge.class_counts %}
@@ -606,8 +636,11 @@
         The manufacturer company id is read from candidate Kismet field paths
         that have never been confirmed against a live capture, so these rules
         are stored and counted but have not been seen to fire. Your other rule
-        types are unaffected. For Apple devices the <code>ble_device_class</code>
-        rule type is decoded from the advert itself and does match — prefer it.
+        types are unaffected. For Apple devices, <code>ble_device_class</code> is
+        decoded from the advert itself rather than from a Kismet field, so it
+        does not share this limitation. It needs two things to alert: the
+        passive BLE bridge enabled, and an <code>apple_find_my</code> rule in
+        <code>rules.yaml</code>. With both, prefer it.
       </small></p>
     {% endif %}
     <p><small>

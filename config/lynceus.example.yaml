@@ -165,11 +165,18 @@ capture:
 # the readiness failure you get without misconfiguring anything.
 #
 # Consequence: it needs a Bluetooth adapter Kismet is NOT already capturing
-# on. Kismet holds an adapter for the lifetime of its daemon. Three
+# on. Kismet holds an adapter for the lifetime of its daemon. Several
 # configurations make an enabled bridge silently useless or noisy --
 # adapter contention, a kismet_sources list missing the bridge's own
-# "ble:<adapter>" provenance, and a raw company-id rule that alerts on a
-# whole vendor. `lynceus-setup` checks all four and prints the fix.
+# "ble:<adapter>" provenance, a raw company-id rule that alerts on a
+# whole vendor, and a bridge whose decoded class no enabled rule
+# consumes, which alerts on nothing at all. `lynceus-setup` and
+# /settings check each of these and print the fix.
+#
+# ⚠️ Deliberately not a COUNT. This sentence said "three" while listing
+# three and then claiming `lynceus-setup` "checks all four", and both
+# numbers were wrong again the moment a check was added. A list that
+# names the cases cannot drift out of step with itself.
 #
 # See docs/CONFIGURATION.md before enabling.
 ble_bridge:

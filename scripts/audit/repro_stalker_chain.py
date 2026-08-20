@@ -117,7 +117,18 @@ def _rules_with_find_my_enabled(dest: Path) -> Path:
         re.MULTILINE,
     )
     if block is None:
-        raise SystemExit("REFUSING TO CONTINUE: could not find the apple_find_my block.")
+        # ⛔ Already ACTIVE in the shipped file, which is the normal case now.
+        # Bailing here is what made this script exit 1 against a fixed tree:
+        # "I could not find the commented block" is not a defect, it is the
+        # fix. Hand the file back unchanged -- it already IS arm B.
+        if any(r.name == "apple_find_my" for r in load_ruleset(str(_SHIPPED_RULES)).rules):
+            dest.write_text(text)
+            return dest
+        raise SystemExit(
+            "REFUSING TO CONTINUE: apple_find_my is neither active nor present as a\n"
+            "commented block. The rule has been renamed or removed; this proof is\n"
+            "about a rule that no longer exists."
+        )
     commented = block.group(1)
     uncommented = re.sub(r"^  # ?", "  ", commented, flags=re.MULTILINE)
     out = text.replace(commented, uncommented)
@@ -125,6 +136,41 @@ def _rules_with_find_my_enabled(dest: Path) -> Path:
         raise SystemExit("REFUSING TO CONTINUE: uncommenting changed nothing.")
     dest.write_text(out)
     return dest
+
+
+def _rules_with_find_my_disabled(dest: Path) -> Path:
+    """Arm A's config: the shipped file with the apple_find_my block COMMENTED.
+
+    ⛔ Arm A used to just load the shipped file, which was a real control only
+    for as long as the rule shipped disabled. It now ships ENABLED, so that arm
+    silently became a second treatment and this script exited 1 against a tree
+    where everything works -- a tracked proof crying wolf at everyone who clones
+    the repo.
+
+    Both arms are now DERIVED, so the A/B contrast holds whichever way the
+    default goes. What the shipped file actually does is reported separately,
+    as a fact, in shipped_default_state().
+    """
+    text = _SHIPPED_RULES.read_text()
+    block = re.search(
+        r"(^  - name: apple_find_my\n(?:^    .*\n)*)",
+        text,
+        re.MULTILINE,
+    )
+    if block is None:
+        # Already commented out (or renamed) -- the shipped file is its own
+        # control, so hand it back unchanged rather than pretending we edited it.
+        dest.write_text(text)
+        return dest
+    active = block.group(1)
+    commented = "".join(f"  # {line[2:]}\n" for line in active.rstrip("\n").split("\n"))
+    dest.write_text(text.replace(active, commented, 1))
+    return dest
+
+
+def shipped_default_state() -> bool:
+    """Does the file this repo SHIPS enable Find My alerting? Reported, not assumed."""
+    return any(r.name == "apple_find_my" for r in load_ruleset(str(_SHIPPED_RULES)).rules)
 
 
 def run_arm(label: str, rules_path: Path, tmp: Path) -> dict:
@@ -191,8 +237,14 @@ def main() -> int:
     _decode_check()
     tmp = Path(tempfile.mkdtemp(prefix="stalker-chain-"))
 
-    a = run_arm("A-shipped", _SHIPPED_RULES, tmp)
-    report("A (control: shipped rules.yaml)", a)
+    shipped_on = shipped_default_state()
+    print(f"shipped default: apple_find_my is "
+          f"{'ENABLED' if shipped_on else 'disabled'} in config/rules.yaml")
+    print()
+
+    arm_a_rules = _rules_with_find_my_disabled(tmp / "rules_find_my_off.yaml")
+    a = run_arm("A-disabled", arm_a_rules, tmp)
+    report("A (control: apple_find_my forced OFF)", a)
 
     arm_b_rules = _rules_with_find_my_enabled(tmp / "rules_find_my_on.yaml")
     b = run_arm("B-enabled", arm_b_rules, tmp)
@@ -203,13 +255,19 @@ def main() -> int:
     ok = True
 
     if "apple_find_my" in a["rules_loaded"]:
-        print("UNEXPECTED: apple_find_my is loaded in the SHIPPED config.")
+        print("BROKEN    : arm A still loaded apple_find_my; it is not a control.")
         ok = False
     if a["alerts"]:
-        print(f"UNEXPECTED: shipped config raised {len(a['alerts'])} alert(s) for a tracker.")
+        print(f"BROKEN    : arm A raised {len(a['alerts'])} alert(s) with the rule OFF.")
         ok = False
     else:
-        print("CONTROL   : shipped config -> a separated Find My tracker raises NO alert.")
+        print("CONTROL   : rule off -> a separated Find My tracker raises NO alert.")
+    print(
+        "SHIPPED   : this repo ships the rule "
+        + ("ENABLED, so a bridge-equipped operator is covered out of the box."
+           if shipped_on else
+           "DISABLED, so an operator must enable it by hand.")
+    )
 
     if "apple_find_my" not in b["rules_loaded"]:
         print("BROKEN    : uncommenting did not load the rule.")
@@ -292,7 +350,7 @@ def operator_view() -> int:
     print("      devices decoded : 3")
     print("      find_my_separated : 3      <- the tracker WAS seen and decoded")
     print(f"      warnings block  : {'shown' if warnings else 'NOT RENDERED (no warnings)'}")
-    print("      alerts raised   : 0")
+    print(f"      alerts raised   : {'yes -- a consumer is enabled' if consumers else '0'}")
     print()
     if not consumers and not warnings:
         print("  ⛔ GAP: zero rules consume ble_device_class, and the readiness check")

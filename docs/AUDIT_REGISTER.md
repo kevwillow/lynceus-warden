@@ -4458,17 +4458,31 @@ below describes, running in the other direction:**
 ⚠️ Read that literally: the two bullets below were measured today, and **nothing above them was
 re-checked when they were added.** The re-derivation the note below demands is still outstanding.
 
-- 🔴 **Finding 59 — an enabled BLE bridge decodes Find My trackers that no rule consumes, and
-  `/settings` shows a clean panel with a `find_my_separated` count on it.** Measured: 0 consuming
-  rules, 0 readiness warnings. `ble_bridge_checks.py:297` already receives `enabled_rule_types` and
-  only warns about a rule being too noisy, never about there being none. Branch: make the surface
-  honest.
-- 🟡 **Finding 60 — `settings.html:609-610` and `ble_bridge_checks.py:358-363` both tell the operator
-  to prefer `ble_device_class`**, which under shipped defaults has neither an enabled rule nor a
-  capture path to feed it. Branch: make the surface honest; both sentences must state both
-  preconditions.
-- ⬜ **`apple_find_my`'s default is a DECISION for Kev, not a defect** — the chain is proven to work
-  end to end (Round 17's ✅ table). Listed here so it is not mistaken for an open engineering item.
+- ~~🔴 **Finding 59** — an enabled BLE bridge decodes Find My trackers that no rule consumes, and
+  `/settings` shows a clean panel with a `find_my_separated` count on it.~~
+  ✅ **CLOSED by #182.** `check_bridge_readiness` gained a `no_decoded_class_consumer` warning, keyed
+  on `enabled_rule_types is not None` so it distinguishes "found no consumer" from "could not
+  determine the rule state". `/settings` now states Find My alerting ON / OFF / unknown.
+- ~~🟡 **Finding 60** — two surfaces recommended `ble_device_class` while stating neither of its two
+  preconditions.~~ ✅ **CLOSED by #182**, both sentences rewritten.
+- ⬜ **`apple_find_my`'s default — DECIDED by Kev 2026-08-19: ships ENABLED.** It needs no
+  `ble_bridge.enabled` gate and must not be given one; nothing else populates `ble_device_class`, so
+  a Kismet-only install cannot fire it. Shipped in #182.
+
+- 🔴 **NEW, opened and closed inside #182 — recorded because the SHAPE recurs.** Widening the
+  rules-write gate to include the BLE bridge let a bridge-only reconfigure **overwrite a
+  hand-authored `rules.yaml`** with a generated one: no confirmation, no backup. Enabling a radio is
+  an answer about CAPTURE and is not permission to replace a ruleset. Fixed so the bridge leg may
+  CREATE but never OVERWRITE, pinned in both directions. ⇒ **Found by a codex cold read, not by the
+  suite, on a branch that was 11/11 green.**
+
+- ⛔ **THE TRACKER RECORD DOES NOT WORK, and it is the pivot's headline.** Measured 2026-08-19: one
+  physical tracker at three locations over three weeks, rotating its address as a real one does,
+  produces **three unrelated device rows** and **zero co-observation candidates**. The record is
+  MAC-keyed (`db.py`, `list_co_observations`) and nothing resolves a rotated address; Find My
+  separated adverts carry rotating key material *by design*. ⇒ The record works for surveillance
+  INFRASTRUCTURE (stable MACs) and not for personal TRACKERS. **Gated on the rotation capture**
+  (`internal/tools/measure_find_my_rotation.py`), which needs a radio and a real AirTag.
 
 ⇒ **This list drifted in BOTH directions within two days**: on 2026-08-15 it held four bullets that
 were already fixed, and on 2026-08-16 it was missing five items that were genuinely open — including
