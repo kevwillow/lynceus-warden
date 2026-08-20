@@ -115,6 +115,20 @@ test defects that Windows could not structurally expose, fixed in `9b2636c`;
 A drop below 3508 (local) or 3048 (Linux clone) is a regression. A **rise** in
 skips is usually one too — but not always, and the exceptions are below.
 
+⭐ **Current CI number — measured 2026-08-20 at `416bad5`, the MERGED `main`** that carries
+v1.0.0's contents (#182). Published here because a baseline taken on a branch head is how this line
+rotted three times; this one is `main` itself.
+
+| Leg | Result |
+| --- | --- |
+| `test (ubuntu-latest, py3.11)` | **4447 passed, 1 skipped, 47 deselected** — 9m56s |
+| `test (ubuntu-latest, py3.12)` | **4447 passed, 1 skipped, 47 deselected** — 7m31s |
+| `test (ubuntu-24.04-arm, py3.11)` | **4447 passed, 1 skipped, 47 deselected** — 7m05s |
+| all checks at that SHA | **10/10 `completed`+`success`**, 0 cancelled, 0 neutral, list non-empty |
+
+⚠️ **10, not the 11 a PR head gets** — CodeQL reports on pull requests, so it is absent from a
+push-to-`main` SHA. Absent is not failed; the conclusions present were enumerated, not counted.
+
 ⭐ **Current LOCAL Linux number — measured 2026-08-19 at `754f388`** (this box,
 worktree `/home/kev/lw-s3-clock`, `.venv/bin` on `PATH`). ⚠️ `754f388` is the branch head that
 squash-merged as **`de46f81`**; the source tree is identical, and `6f24a45` on top of it is

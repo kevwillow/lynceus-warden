@@ -6,11 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.0.0] — UNRELEASED
 
-> ⚠️ **This release has NOT been cut.** The version in `pyproject.toml` and
-> `src/lynceus/__init__.py` is still `0.9.5`, there is no `v1.0.0` tag, and no
-> artefact has been published. This heading names the release these entries are
-> *targeted at*, nothing more — do not cite `1.0.0` as shipped, and do not date
-> this section until the tag exists.
+> ⚠️ **The version literals are now `1.0.0`, but this release is NOT cut.**
+> Updated 2026-08-20: `pyproject.toml`, `src/lynceus/__init__.py` and the
+> `test_smoke.py` guard now read `1.0.0`, and the README badge, `SECURITY.md`
+> and `config/rules.yaml`'s `argus_mac` note were moved with them. **There is
+> still no `v1.0.0` tag and no published artefact.**
+>
+> ⛔ So `1.0.0` is *claimable as the version in the tree* and **not** as a
+> shipped release. Do not date this section until the tag exists.
+>
+> 🪤 Deliberately left at `0.9.5`, because each is a statement about history
+> rather than about the current version: the MIT grant in `README.md` and
+> `COMMERCIAL-LICENSE.md` ("releases up to and including v0.9.5"), the dated
+> baseline wheel names in `.claude/gates.md`, and the `Post-0.9.5` markers in
+> `import_argus.py` and the tests. A blanket find-and-replace would have
+> rewritten a licence grant.
 
 
 ### Added

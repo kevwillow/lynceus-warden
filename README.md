@@ -39,7 +39,7 @@ it tells you the truth about what it heard.
 [![CodeQL](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml?query=branch%3Amain)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Status: v0.9.5](https://img.shields.io/badge/Status-v0.9.5-blue.svg)](#project-status)
+[![Status: v1.0.0](https://img.shields.io/badge/Status-v1.0.0-blue.svg)](#project-status)
 [![Counter-Surveillance](https://img.shields.io/badge/Counter--Surveillance-passive%20only-1f6feb.svg)](#privacy--threat-model)
 [![Watching the Watchers](https://img.shields.io/badge/Watching-the%20Watchers-black.svg)](#what-lynceus-does)
 
@@ -290,6 +290,26 @@ What Lynceus can honestly tell you is that **an unfamiliar separated Find My
 emitter is in range, correlated within one rotation window.** That's the
 ceiling. Treat any product promising more than that with suspicion.
 
+There is a second half to that ceiling, and it is the half worth knowing before
+you quote the rest of this page back at anyone. Lynceus's real advantage over a
+proximity keychain is that it keeps a **record** — a `location_id` per sighting,
+co-observation across places, a device you can look up three weeks later. That
+record is keyed on MAC address. A device that rotates its address is a new row
+every time.
+
+Driven through the ingest and database path — **not** over the air — one tracker
+at three locations over three weeks, rotating as a real one does, produces
+**three unrelated device rows, one sighting each, and zero co-observation
+candidates.**
+
+So the record is real, and it is real for the things this was built to watch:
+ALPR cameras, body cams, gunshot-detection nodes, fixed readers — surveillance
+infrastructure broadcasts from a stable address, because it is not trying to
+hide. It is **not** a per-tracker history. Lynceus alerts you **per encounter**;
+it will not tell you that the tracker in your bag today is the one that was in it
+last Tuesday. If that ever changes it will be a feature with a version number,
+not an implication left lying around on this page.
+
 The same honesty applies elsewhere: the BLE service-UUID and manufacturer-id
 matchers are built and tested, but they are **inert unless you enable the BLE
 bridge**, because Kismet's classic capture path never hands them any payload.
@@ -304,17 +324,20 @@ serial. Both are tracked openly in [BACKLOG.md](BACKLOG.md).
 
 ## Project status
 
-**v0.9.5.** Feature-complete for the 0.9.x line and hardware-verified
-on-device. The Bluetooth fixes in 0.9.3 and 0.9.4 came out of real rig
-captures, not out of reasoning about what should work.
+**v1.0.0** — the first stable release, and the first under AGPL-3.0. It
+closes the 0.9.x line: hardware-verified on-device, with Find My tracker
+alerting shipped **enabled** rather than commented out. The Bluetooth fixes in
+0.9.3 and 0.9.4 came out of real rig captures, not out of reasoning about what
+should work.
 
 **The test suite ships, so you can check the claims on this page yourself.**
 CI runs `pytest -q`, `ruff check .` and `python -m build` on Python 3.11 and
 3.12 for every push and pull request, in about nine minutes — and on **arm64**
 as well as x86-64, because the machine this is built for is a Raspberry Pi. Most recently
-measured: **4416 passed, 1 skipped**, at commit
-[`6f24a45`](https://github.com/kevwillow/lynceus-warden/actions/runs/32325722053)
+measured: **4447 passed, 1 skipped, 47 deselected**, at commit
+[`416bad5`](https://github.com/kevwillow/lynceus-warden/actions/runs/32401010050)
 — the same total on all three legs, x86-64 Python 3.11 and 3.12 and arm64.
+That commit is `main` with v1.0.0's contents in it, not a branch head.
 
 The commit is named on purpose. A bare total is a claim that quietly stops
 being true at the next merge — this one had drifted to 3294 against an actual
