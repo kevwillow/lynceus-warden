@@ -296,6 +296,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A device with no real-time clock could hold back the "this device keeps
+  showing up" alert for days.** Raspberry Pi-class hardware has no battery-backed
+  clock, so it can boot believing the date is days in the future until the
+  network corrects it. If the recurrence alert was raised during that window and
+  its delivery failed, the retry was spaced using the difference between "now"
+  and the alert's own timestamp — which, once the clock was corrected, was
+  negative. That is always less than the required wait, so the retry declined to
+  fire on every subsequent check for as long as the original error had been.
+  Measured with a clock a week fast: the alert went undelivered for the whole
+  week, while an otherwise identical install re-sent it normally.
+
+  A timestamp in the future relative to the current clock can only mean the
+  clock moved backwards, so the elapsed time is not slightly wrong — it is
+  unknowable, and the spacing no longer suppresses delivery on it. The spacing
+  itself is unchanged whenever the clock is sane, which is deliberately covered
+  by its own test: without one, simply removing the spacing would look like a
+  fix while letting a single outage burn every retry in twenty minutes.
+
+- **Two detections of the same device could lose one of the networks it probed
+  for.** Lynceus records the Wi-Fi network names a device calls out for — useful
+  corroborating evidence when you are working out whether the same device keeps
+  turning up around you. It watches through two independent paths, and when both
+  saw the same device at the same moment, each read the stored list, added its
+  own finding, and wrote the whole list back. The second write replaced the
+  first, so one network name vanished with nothing logged.
+
+  Each path now checks the list has not changed underneath it before writing,
+  and if it has, re-reads and merges on top of the other path's result — so both
+  findings survive rather than one winning. ⛔ Deliberately not the simpler fix
+  of "whoever is second gives up": that loses exactly the same evidence, just on
+  purpose instead of by accident. In the case that should never happen, where
+  the write is contested repeatedly, it now reports what is actually stored and
+  logs which names were not saved, rather than reporting a success it did not
+  earn.
+
 - **A notification that had to be re-sent could reach you twice.** When a
   notification fails to go out — the usual cause is your phone or the ntfy
   broker being briefly unreachable — lynceus keeps the record and re-sends it

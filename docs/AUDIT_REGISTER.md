@@ -3541,7 +3541,7 @@ available as a defence here.
 | 5 | `793` `get_active_watchful_recurrence_by_mac` → `795` `record_watchful_sighting` | ⬜ **refuted** — the write re-SELECTs *inside* its transaction, returns `None` on a concurrent archive, and CAS-es `last_seen_at`. Guarded by `test_one_observation_cannot_be_counted_by_both_writers`. |
 | 6 | `866` ledger read → decide emit vs recover → `add_watchful_escalation_alert` | ⬜ **refuted** — `UNIQUE(entry_id, generation)` (migration 026) is the authority; a failed read degrades to the emit path by design. |
 | 7 | `793` stale `watchful_entry` → `1000` `elif watchful_entry.escalated_at` → `_retry_watchful_escalation` | 🔴 **REPRODUCED → Finding 61** |
-| 8 | `1050` `resolve_matched_watchlist_id` → alert write with that FK | ⚠️ **UNMEASURED** — a watchlist row deleted between read and write would raise `IntegrityError` into the `except` at `1128`, which re-raises as `RuntimeError` and holds the watermark. That is the designed persist-failure path, so the cost is a held tick, not a lost alert. Not reproduced; recorded so it is not re-derived. |
+| 8 | `1050` `resolve_matched_watchlist_id` → alert write with that FK | ⬜ **REFUTED — unreachable.** Measured; see below. **Nothing in the product deletes a watchlist row.** ⛔ And the prediction this row used to carry was WRONG. |
 | 9 | `1102` `get_recent_alert_for_rule_and_mac` → `1115` `retry_alert = recent` → `1256` attempt → `1265` `notifier.send` | 🔴 **REPRODUCED → Finding 62** |
 | 10 | `_retry_watchful_escalation` `477–541` → `_deliver_watchful_escalation` `395` | 🔴 **REPRODUCED → Finding 63** |
 | 11 | `1104` `is_rule_type_snoozed` → decide skip | ⬜ **refuted** — read→decide only; a snooze expiring mid-tick is benign in both directions. |
@@ -3558,6 +3558,32 @@ knows it must take the claim. `record_heartbeat_notify_attempt` was deliberately
 ⭐ **Six refutations against three findings, and the refutations are the load-bearing half.** This
 project's audit is credible because 6 of 11 reported findings once failed reproduction and were
 recorded as refuted; the same discipline applies to a sweep's own candidates.
+
+### Pair 8, measured — and the prediction recorded here was wrong
+
+This row sat as **UNMEASURED** with a prediction attached: *"the cost is a held tick, not a lost
+alert."* ⛔ **That prediction is false, and a wrong prediction in a register is worse than an admitted
+gap** — the next person budgets against it. Measured, with the watchlist row deleted at the seam
+between the FK read and the alert write, injection asserted:
+
+```
+CONTROL   no delete        alerts=1  sightings=1  sends=1  raised=no
+TREATMENT delete at seam   alerts=0  sightings=1  sends=0  raised=RuntimeError
+NEXT TICK (row now gone)   alerts=0                sends=0  raised=None
+```
+
+The raise and the held watermark happen exactly as predicted. **The self-heal does not.** Once the
+watchlist row is gone `evaluate` no longer produces the hit at all, so the retried window writes
+nothing: the detection made while the device *was* watchlisted is **lost, not delayed**.
+
+⬜ **REFUTED anyway, and for a stronger reason than the prediction**: the race needs a deleter, and
+**there is none.** No `delete_watchlist`, no `DELETE FROM watchlist` anywhere in `src/` outside the
+migrations (which rebuild the table offline with the daemon stopped). The only reachable route is an
+operator editing the sqlite file by hand.
+
+⛔ **This becomes REACHABLE the moment anyone adds a watchlist-delete route**, and the failure mode
+is then a silently lost alert, not a held tick. Whoever adds one owns this. Probe:
+`internal/session2-harnesses/pair8_watchlist_fk_race.py`.
 
 ### 🔴 Finding 61 — a reset the operator just performed still re-sent the escalation they cleared
 
@@ -3663,18 +3689,21 @@ read-and-write methods reachable from `process_observation`*, which is six:
 | `escalate_watchful_recurrence` | `expected_reset_count` | ⬜ closed |
 | `add_watchful_escalation_alert` | `UNIQUE(entry_id, generation)` | ⬜ closed (migration 026) |
 | `record_alert_notify_attempt` | `expected_attempts` | ✅ **closed THIS round (F62/63)** |
-| `merge_device_probe_ssids` | **none** | 🟡 **REPRODUCED → Finding 64** |
+| `merge_device_probe_ssids` | read-CAS-retry on the stored value | ✅ **closed (F64)** |
 
-⇒ **With Finding 64 open, every read-and-write method on the two-writer path now carries a
-re-assertion except that one.** That is a checkable statement, and it is the closing claim of this
-round.
+⇒ **With Finding 64 now fixed, EVERY read-and-write method on the two-writer path carries a
+re-assertion at its write.** That is a checkable statement and it is the closing claim of this round.
+⭐ It was verified a second way: an independent pass over every `notifier.send` in `poller.py` found
+six, and the three with no claim (`Poller.__init__`'s allowlist-failure notice and the two Kismet
+up/down notices in `_note_kismet_poll_result`) are **`Poller`-only with no alert row to claim on** —
+`bridges/ble.py` touches the notifier in exactly one place, passing it into `process_observation`.
 
 The other four unprotected methods (`upsert_metadata`, `_set_alert_ack`, `bulk_acknowledge_alerts`,
 `promote_watchful_to_allowlist`, `reset_watchful_recurrence`, `create_watchful_from_alert`) are
 ⬜ **refuted for this class**: web-UI-only, one process, one connection. `rollback_to` is an explicit
 `lynceus-validate` CLI action. `record_heartbeat_notify_attempt` is refuted by measurement above.
 
-### 🟡 Finding 64 — two writers merging probe SSIDs silently lose one — ⛔ REPRODUCED, **NOT FIXED**
+### 🟡 Finding 64 — two writers merging probe SSIDs silently lose one — ✅ FIXED (read-CAS-retry)
 
 `merge_device_probe_ssids` (`db.py:761`) reads the stored JSON list, merges the new SSIDs in Python,
 and writes it back `WHERE mac = ?` — **keyed on the primary key only**. `Database` sets no
@@ -3695,15 +3724,133 @@ outside the transaction.
 ⚠️ **Distinct from Finding 54**, which is about an *unreadable* stored value being overwritten. This
 is a *readable* one being lost.
 
-⛔ **Deliberately left unfixed this round, and here is the reason rather than an excuse.** The
-obvious fix — CAS the UPDATE on the value read — has a fail-closed twin: a losing writer that simply
-returns has *silently not merged*, which is the same silent evidence loss in a new costume. The
-honest fix is a bounded read-CAS-retry loop, and that is a new behaviour on the capture hot path
-that needs its own tests, its own planted defects and a full gate. ⇒ **Next session-2 round.**
-Probe: `internal/session2-harnesses/probe_ssids_lost_update.py`.
+✅ **FIXED with a read-CAS-RETRY, and the "retry" is the whole point.** A bare compare-and-swap has a
+**fail-closed twin**: the loser returns having *silently not merged*, which is the same evidence loss
+in a new costume — so the finding was registered and deliberately left unfixed for a round rather
+than patched with the obvious guard. The `UPDATE` now re-asserts the exact value the merge was
+computed from (`probe_ssids IS ?` — `IS`, so NULL matches NULL); on a miss the loop **re-reads and
+merges on top of the winner's result**, so both writers' SSIDs survive.
+
+⚠️ Convergence is not merely hoped for: a CAS-miss `UPDATE` has already taken the write lock, so the
+retry's `SELECT` reads inside that transaction and nothing can commit underneath attempt 2.
+`MERGE_PROBE_SSIDS_MAX_ATTEMPTS = 4` is a spin guard, not an expectation.
+
+⛔ **On exhaustion it does not claim the merge happened.** It re-reads, returns what is ACTUALLY
+stored, and logs a WARNING naming the dropped SSIDs — a return value that overstates what landed
+would be the same silent loss one layer up.
+
+**Three plants, each killing a different guard** (the third initially FAILED TO APPLY and its assert
+caught it — a plant that does not apply reads exactly like a fix that works):
+
+| plant | what it restores | goes red |
+|---|---|---|
+| A — drop the `IS ?` predicate | the original lost update | both race tests |
+| B — bare CAS, loser returns | the fail-closed twin | both race tests |
+| C — silent + overstated give-up | a give-up nobody can see | the exhaustion test |
+
+⚠️ **Honest note on B**: it is caught by *both* race tests, not uniquely by the second. The second
+test's added value is that it asserts the **exact** resulting set rather than membership, so a fix
+that duplicated or reordered entries would fail it. It is a stronger assertion, not an independent
+layer — recorded because "one test per plant" would be the tidier story and it is not the true one.
+
+Probe: `internal/session2-harnesses/probe_ssids_lost_update.py` (control included, injection asserted).
 
 ⭐ Severity is 🟡, not 🔴: probe SSIDs are corroborating evidence, not an alert. Losing one narrows
 the co-observation corpus; it does not cost the operator a notification.
+
+### 🔴 Finding 65 — a clock corrected AFTER the escalation was written held its delivery for a week — ✅ FIXED
+
+⭐ **Found by an M3 red-team of the Round 18 fix, not by the sweep** — and it is not a regression from
+that fix. Reproduced **identically** on `61efb0a` (before any of this work) and on `0085487` (after
+it), so it is pre-existing and was simply never looked for.
+
+`_retry_watchful_escalation` spaces its attempts from the alert row's own `ts`:
+
+```python
+since_alert   = now_ts - int(row["ts"])
+required_wait = WATCHFUL_RETRY_BASE_SECONDS * 3 ** (attempts - 1)
+if attempts >= 1 and since_alert < required_wait: return
+```
+
+A Pi with no RTC — **this project's stated target platform** — boots with the clock days AHEAD. The
+escalation row is stamped with that clock; NTP then corrects it. From that moment `since_alert` is
+NEGATIVE, which is below every `required_wait`, so the gate returns on **every tick for as long as
+the original skew lasted.** Measured with a 7-day skew against an identical un-skewed install:
+
+```
+CONTROL   no skew          escalation re-sends = 1
+TREATMENT clock corrected  escalation re-sends = 0     (~7 days)
+```
+
+⭐ **The insight that makes the fix safe**: a row `ts` in the future *relative to the current clock*
+means precisely "the clock moved BACKWARDS since the write". If it were merely running ahead, both
+values would be ahead together and the spacing would work. So in that state the elapsed-time
+reasoning is not slightly wrong — it is **void**, and suppressing on it asserts a wait nobody
+measured. The gate now applies only when `row_ts <= now_ts`.
+
+⚠️ **This is the OPPOSITE direction from the watchful COUNTING gate a few hundred lines up, and
+deliberately so.** There a bad clock FABRICATES evidence, so skipping is the safe error. Here the row
+already exists and the operator has already not been told; the only thing at stake is whether the
+most serious message this product sends is delivered or silently held. Still bounded by
+`NOTIFY_MAX_ATTEMPTS`, so a persistently backwards clock spends the remaining attempts sooner rather
+than looping.
+
+**Two plants, and the second is the one that matters:**
+
+| plant | goes red |
+|---|---|
+| D — restore the un-guarded comparison | the Finding 65 test only |
+| E — drop the spacing entirely (the fail-open twin) | **both**, including `test_the_retry_spacing_still_holds_on_a_sane_clock` |
+
+⇒ Plant E is why the opposite-direction test exists: without it, "ignore the spacing" scores as a fix
+and a wedged notifier burns all four attempts inside twenty minutes.
+
+Probe: `internal/session2-harnesses/clock_ahead_blocks_escalation_retry.py`.
+
+### The M3 red-team of Round 18 — what it found, and what came back empty
+
+⛔ **codex was exhausted** (quota, exit 1 in seconds with an empty `-o` — distinct from the
+exploration trap's exit 0), so this was **M3 only**. Seven packets, bounded context pasted inline,
+one question each, each required to state what would REFUTE its own claim.
+
+| packet | returned | outcome |
+|---|---|---|
+| P1 fail-closed hunt | **EMPTY** | re-run as P1b with untruncated context → 4 claims |
+| P2 abandoned-check | **EMPTY** | re-run as P2b → 2 claims (one concern) |
+| P3 `int \| None` return | ✅ | UNCERTAIN — **caught that MY packet truncated the context mid-branch**; its own falsifier then satisfied by the real code (the branch `continue`s) ⇒ refuted |
+| P4 send-site completeness | ✅ | CLEAN, and named its own blind spot; closed by hand (6 sends, 3 unclaimed are `Poller`-only with no alert row) |
+| P5 stale-vs-fresh entry | ✅ | CLEAN; its self-falsifier ("does `record_watchful_sighting` write `escalated_at`?") checked and disproved |
+| P1b | ✅ | **1 real finding (65)**, 1 latent trap fixed, 2 claims dispositioned below |
+| P2b | ✅ | pre-existing product question, not a regression |
+
+⭐ **3 of 5 first-round packets returned, exactly the ~half the calibration predicts.** Naming the
+empties matters: a fan-out that quietly drops 2 of 5 implies coverage it does not have.
+
+**Dispositions on the claims that were NOT findings — recorded so they are not re-raised:**
+
+- ⬜ **"The lost claim removes a real second send attempt"** (P1b). True, and it is the **accepted
+  trade**, not an oversight: pre-fix, the loser's send was a duplicate whenever the winner succeeded.
+  The residual is real but bounded — for a once-firing rule the winner's transient failure is no
+  longer covered by a redundant concurrent send. ⭐ It is **not silent**: the row stays
+  `notified_at IS NULL`, which `count_undelivered_alerts` reports to the heartbeat and `/settings`.
+- ⬜ **"The attempt is committed before the send, so a killed writer burns one with no send"** (P1b).
+  **Pre-existing and deliberate** — "Count the attempt BEFORE making it… otherwise the bound is not a
+  bound and a wedged notifier is retried on every tick forever." The change adds only that a
+  concurrent writer no longer supplies a redundant attempt; same family as above.
+- ⬜ **`_deliver_watchful_escalation`'s `expected_attempts=0` default** (P1b). **Refuted as a live
+  defect** — `add_watchful_escalation_alert` returns an id only for a row it just inserted, so
+  attempts is 0 by construction. ✅ **But the latent trap was real and is fixed**: the parameter is now
+  **required**. `record_alert_notify_attempt`'s omitted `expected_attempts` means *no CAS*; omitting
+  it here meant *CAS against 0* — two defaults of different KINDS, one calling the other.
+- ⚠️ **"An operator can reset an escalation they never actually received"** (P2b). **Pre-existing, not
+  a regression**: reset already cleared `escalated_at`, which already removed the retry path
+  (Finding 50) — Finding 61's own CONTROL measured 0 sends on pre-fix `main`. **But the concern is
+  fair and it lands on a claim in this register**: the justification for abandoning says *"the reset
+  control renders only on an ESCALATED entry, so the operator was looking at that escalation"*.
+  Seeing an escalated badge in the UI is **not** being told — if ntfy was down they saw the status and
+  never got the message. ⇒ **Kev's / session 3's call**, in `webui/`: either the reset control says it
+  discards undelivered alerts, or abandoning is gated on `notified_at IS NOT NULL`.
+  ⇒ [[an-exemption-is-a-claim]].
 
 ## Hardening candidates — cost measured, trigger UNPROVEN
 

@@ -749,6 +749,12 @@ class Database:
             )
 
     PROBE_SSIDS_PER_DEVICE_CAP = 50
+    #: Bounded retries for the probe_ssids read-CAS-retry (Finding 64). A miss
+    #: means another writer merged first; the retry re-reads and merges on top
+    #: of their result. A CAS-miss UPDATE has already taken the write lock, so
+    #: attempt 2 settles it -- this bound exists so a pathological case cannot
+    #: spin, not because 4 rounds are expected.
+    MERGE_PROBE_SSIDS_MAX_ATTEMPTS = 4
 
     # Upper bound on the device list materialized per SSID on the
     # SSID-grouped /probes view. The true per-SSID device count is
@@ -774,67 +780,141 @@ class Database:
         actually happened so the caller can emit a warning.
 
         Returns ``(stored_count, truncated)``.
+
+        ⛔ **Finding 64. This is a read-modify-write and it has TWO writers.**
+        The merge happens in Python between a ``SELECT`` and an ``UPDATE``, and
+        ``Database`` sets no ``isolation_level``, so ``sqlite3`` implicitly
+        ``BEGIN``s only before DML -- **the SELECT runs in AUTOCOMMIT, outside
+        the UPDATE's transaction**, and ``with self._conn:`` does not begin
+        eagerly. ``process_observation`` reaches this from the poll loop AND
+        from the ``ble-bridge`` thread, which holds its own ``Database`` on its
+        own connection, so ``self._lock`` does not serialise them. Both read the
+        same list; the second write won whole. Measured, injection asserted at
+        both writers:
+
+            CONTROL   sequential   ['home-wifi', 'from-poller', 'from-bridge']
+            TREATMENT interleaved  ['home-wifi', 'from-poller']
+
+        ⚠️ It LOST rather than raising ``database is locked``, which is what
+        confirmed the read sits outside the transaction.
+
+        ⭐ The fix is a **read-CAS-retry**, not a bare CAS, and the difference is
+        the whole point. A bare compare-and-swap makes the loser return having
+        *silently not merged* -- the same silent evidence loss in a new costume,
+        which is why this was registered and deliberately left unfixed for a
+        round rather than patched with the obvious guard. Re-reading and
+        re-merging is what makes the loser's SSIDs survive too.
+
+        The ``UPDATE`` re-asserts the exact value the merge was computed from
+        (``probe_ssids IS ?`` -- ``IS`` so a NULL matches a NULL). On a miss,
+        another writer got there first and we merge again on top of THEIR
+        result.
+
+        ⚠️ Convergence is not merely hoped for: a CAS-miss ``UPDATE`` has already
+        opened a write transaction, so the retry's ``SELECT`` reads inside it and
+        no other connection can commit underneath the second attempt. In
+        practice this settles on attempt 2.
+
+        ⛔ On exhaustion it does NOT claim the merge happened. It re-reads and
+        returns what is ACTUALLY stored, and logs a warning naming the loss --
+        because a silently dropped SSID is the defect, and a return value that
+        overstates what was stored would be the same defect one layer up.
         """
         with self._lock, self._conn:
-            row = self._conn.execute(
+            warned_unusable = False
+            for _attempt in range(1, self.MERGE_PROBE_SSIDS_MAX_ATTEMPTS + 1):
+                row = self._conn.execute(
+                    "SELECT probe_ssids FROM devices WHERE mac = ?", (mac,)
+                ).fetchone()
+                if row is None:
+                    return (0, False)
+                raw = row["probe_ssids"]
+                existing: list[str] = []
+                if raw:
+                    # ⛔ An unusable stored value is LOGGED, because the next line
+                    # overwrites it and the operator would otherwise never know.
+                    # Measured: a corrupt blob (`{not json`) and a merely
+                    # WRONG-SHAPED one (`{"ssid": "x"}`, `"x"`, `123`) both end up
+                    # as `[]`, and the UPDATE below writes that back -- so the
+                    # original is gone and the result is indistinguishable from the
+                    # legitimate "this device has never probed anything". With no
+                    # new SSIDs to merge the column is set to NULL outright.
+                    #
+                    # ⚠️ Note the wrong-shape cases never reach the `except` at all:
+                    # they decode fine and simply are not lists. A report describing
+                    # this as "a bare except" is describing the wrong mechanism.
+                    #
+                    # Overwriting is still the right call -- keeping an unreadable
+                    # blob would strand the column forever -- so the fix is to stop
+                    # it being SILENT, not to stop it happening.
+                    unusable = False
+                    try:
+                        decoded = json.loads(raw)
+                        if isinstance(decoded, list):
+                            existing = [s for s in decoded if isinstance(s, str)]
+                        else:
+                            unusable = True
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        unusable = True
+                    if unusable and not warned_unusable:
+                        # Once per call, not once per retry -- a CAS miss must not
+                        # multiply an operator-facing warning about one bad value.
+                        warned_unusable = True
+                        logger.warning(
+                            "device %s had an unreadable probe_ssids value (%.60r); "
+                            "it cannot be merged and is being replaced, so any SSIDs "
+                            "it held are lost",
+                            mac,
+                            raw,
+                        )
+                merged: list[str] = list(existing)
+                seen: set[str] = set(existing)
+                for ssid in new_ssids:
+                    if not isinstance(ssid, str) or not ssid:
+                        continue
+                    if ssid in seen:
+                        continue
+                    seen.add(ssid)
+                    merged.append(ssid)
+                truncated = len(merged) > cap
+                if truncated:
+                    merged = merged[:cap]
+                payload = json.dumps(merged) if merged else None
+                cur = self._conn.execute(
+                    "UPDATE devices SET probe_ssids = ? "
+                    "WHERE mac = ? AND probe_ssids IS ?",
+                    (payload, mac, raw),
+                )
+                if cur.rowcount == 1:
+                    return (len(merged), truncated)
+                # CAS miss: another writer merged between our SELECT and this
+                # UPDATE. Loop and merge again on top of THEIR result, so their
+                # SSIDs and ours both survive.
+            # Exhausted. Report what is ACTUALLY stored, never what we hoped to
+            # store, and make the loss visible.
+            stored_row = self._conn.execute(
                 "SELECT probe_ssids FROM devices WHERE mac = ?", (mac,)
             ).fetchone()
-            if row is None:
-                return (0, False)
-            raw = row["probe_ssids"]
-            existing: list[str] = []
-            if raw:
-                # ⛔ An unusable stored value is LOGGED, because the next line
-                # overwrites it and the operator would otherwise never know.
-                # Measured: a corrupt blob (`{not json`) and a merely
-                # WRONG-SHAPED one (`{"ssid": "x"}`, `"x"`, `123`) both end up
-                # as `[]`, and the UPDATE below writes that back -- so the
-                # original is gone and the result is indistinguishable from the
-                # legitimate "this device has never probed anything". With no
-                # new SSIDs to merge the column is set to NULL outright.
-                #
-                # ⚠️ Note the wrong-shape cases never reach the `except` at all:
-                # they decode fine and simply are not lists. A report describing
-                # this as "a bare except" is describing the wrong mechanism.
-                #
-                # Overwriting is still the right call -- keeping an unreadable
-                # blob would strand the column forever -- so the fix is to stop
-                # it being SILENT, not to stop it happening.
-                unusable = False
-                try:
-                    decoded = json.loads(raw)
-                    if isinstance(decoded, list):
-                        existing = [s for s in decoded if isinstance(s, str)]
-                    else:
-                        unusable = True
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    unusable = True
-                if unusable:
-                    logger.warning(
-                        "device %s had an unreadable probe_ssids value (%.60r); "
-                        "it cannot be merged and is being replaced, so any SSIDs "
-                        "it held are lost",
-                        mac,
-                        raw,
-                    )
-            merged: list[str] = list(existing)
-            seen: set[str] = set(existing)
-            for ssid in new_ssids:
-                if not isinstance(ssid, str) or not ssid:
-                    continue
-                if ssid in seen:
-                    continue
-                seen.add(ssid)
-                merged.append(ssid)
-            truncated = len(merged) > cap
-            if truncated:
-                merged = merged[:cap]
-            payload = json.dumps(merged) if merged else None
-            self._conn.execute(
-                "UPDATE devices SET probe_ssids = ? WHERE mac = ?",
-                (payload, mac),
+            stored_now: list[str] = []
+            if stored_row is not None and stored_row["probe_ssids"]:
+                  try:
+                    decoded_now = json.loads(stored_row["probe_ssids"])
+                    if isinstance(decoded_now, list):
+                          stored_now = [s for s in decoded_now if isinstance(s, str)]
+                  except (json.JSONDecodeError, TypeError, ValueError):
+                    stored_now = []
+            dropped = [s for s in new_ssids if isinstance(s, str) and s and s not in stored_now]
+            logger.warning(
+                "probe_ssids merge for %s lost the write race %d times and gave "
+                "up; %d SSID(s) were NOT stored (%.80r). The device row is intact "
+                "and holds %d.",
+                mac,
+                self.MERGE_PROBE_SSIDS_MAX_ATTEMPTS,
+                len(dropped),
+                dropped,
+                len(stored_now),
             )
-            return (len(merged), truncated)
+            return (len(stored_now), False)
 
     def update_device_ble_name(self, mac: str, ble_name: str) -> None:
         """Set the device's BLE friendly name. Latest write wins."""
