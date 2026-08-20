@@ -181,7 +181,18 @@
            "the rule still runs and still matches this pattern" was false in
            every clause — and "Nothing in rules.yaml needs changing" was the
            opposite of the truth. #}
-        {% if entry_is_live %}
+        {# ⛔ THREE cases, because `entry_is_live` is True for an UNKNOWN ruleset
+           as well as for a delegated one -- `is_pattern_type_live` gives that
+           benefit of the doubt so an unreadable file cannot mark every row
+           inert. This block only became reachable in the unknown state when
+           `is_pattern_type_snoozed` stopped gating on the ruleset verdict (it
+           gates on `snoozes_known` now, which is the fix beside this one), and
+           the first thing it did was assert "this entry matches" about a
+           ruleset nothing could read. The SNOOZE is known; the matching is not,
+           and the two are reported separately. #}
+        {% if not liveness.known %}
+          <strong>This entry's rule type is snoozed.</strong>
+        {% elif entry_is_live %}
           <strong>This entry matches, but its alerts are being dropped.</strong>
         {% else %}
           <strong>You have also snoozed this entry's rule type.</strong>
@@ -194,7 +205,12 @@
         {% for rt in entry_rule_types %}<code>{{ rt }}</code>{% if not loop.last %} / {% endif %}{% endfor %}
         &mdash; the rule type that serves <code>{{ entry.pattern_type }}</code>
         &mdash; from the <a href="/rules">rules page</a>.
-        {% if entry_is_live %}
+        {% if not liveness.known %}
+          Whether any rule matches this pattern is a separate question and it
+          could not be answered &mdash; {{ liveness.reason }}. Lifting the snooze
+          is what stops the alerts being dropped; it is not, on its own, a
+          report that this entry would then fire.
+        {% elif entry_is_live %}
           The rule still runs and still matches this pattern; the alert is
           suppressed until the snooze expires. Nothing in
           <code>{{ rules_file() }}</code> needs changing.

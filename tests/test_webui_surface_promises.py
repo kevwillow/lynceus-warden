@@ -490,6 +490,53 @@ def test_a_known_snooze_is_reported_even_when_the_ruleset_verdict_is_not(tmp_pat
     assert "This entry alerts at a different severity" not in detail
 
 
+@pytest.mark.webui
+def test_a_snooze_shown_under_an_unknown_ruleset_does_not_claim_the_row_matches(
+    tmp_path,
+):
+    """⛔ A regression THIS BRANCH introduced, caught by asking what branch the
+    fix newly reaches.
+
+    Making the snooze visible under an unknown ruleset (the fix above) routed
+    the row into a block whose text asserts "This entry matches, but its alerts
+    are being dropped" and "The rule still runs and still matches this pattern"
+    -- four claims about a ruleset that could not be read. `entry_is_live` is
+    True for UNKNOWN as well as for delegated, which is exactly the benefit of
+    the doubt that must not become a promise.
+
+    The snooze is known; the matching is not. They are reported separately.
+    """
+    app, db, watchlist_id = _app_with_remapped_row(
+        tmp_path, UNREADABLE_RULES, snooze=True
+    )
+    try:
+        with TestClient(app) as client:
+            detail = _prose(client.get(f"/watchlist/{watchlist_id}").text)
+    finally:
+        db.close()
+    assert "snoozed" in detail, "the snooze block did not render"
+    assert "This entry matches" not in detail
+    assert "still matches this pattern" not in detail
+    assert "could not be answered" in detail
+
+
+@pytest.mark.webui
+def test_a_snooze_under_a_readable_ruleset_still_says_the_row_matches(tmp_path):
+    """The control. The useful sentence must survive for the state where it is
+    true, or the fix above has simply deleted it."""
+    app, db, watchlist_id = _app_with_remapped_row(
+        tmp_path, DELEGATING_RULES, snooze=True
+    )
+    try:
+        with TestClient(app) as client:
+            detail = _prose(client.get(f"/watchlist/{watchlist_id}").text)
+    finally:
+        db.close()
+    assert "This entry matches, but its alerts are being dropped." in detail
+    assert "still matches this pattern" in detail
+    assert "could not be answered" not in detail
+
+
 # ---------------------------------------------------------------------------
 # 6. The rules page carries a control for every snooze it is blamed for
 # ---------------------------------------------------------------------------

@@ -519,6 +519,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   keeps the original wording for the case where the dropped filter really was
   the only one.
 
+  ⭐ **One of these fixes introduced a defect of its own, and it was caught by
+  asking what branch the fix newly reaches.** Making the snooze visible under an
+  unknown ruleset routed the row into a block whose text asserts *"This entry
+  matches, but its alerts are being dropped"* and *"The rule still runs and
+  still matches this pattern"* — four claims about a ruleset that could not be
+  read, because the liveness predicate returns "live" for unknown as well as for
+  delegated. The snooze is known; the matching is not, and they are now reported
+  separately.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still
