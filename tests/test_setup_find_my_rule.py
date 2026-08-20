@@ -23,6 +23,8 @@ notes). Two failure modes are pinned here:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import yaml
 
 from lynceus import paths as paths_mod
