@@ -255,7 +255,10 @@ These are design commitments, not current limitations:
   before switching it on: it needs an adapter Kismet isn't holding, and it
   needs the optional scan library, which a default install does not ship
   (`pip install 'lynceus[ble]'`). The setup wizard and `/settings` both check
-  the four ways an enabled bridge silently does nothing, and print the fix.
+  every known way an enabled bridge silently does nothing — adapter contention,
+  a source filter that drops its own observations, a missing scan library, a
+  BlueZ without passive-scan support, a rule so broad it alerts on every Apple
+  device, and no enabled rule consuming what it decodes — and print the fix.
 - **Ergonomic CLI tooling.** A wizard (`lynceus-setup`, with a browser-based
   `--web` flow for headless boxes), a Kismet bootstrapper, a config validator
   with migration rollback, a config exporter for backup and diffing, and
