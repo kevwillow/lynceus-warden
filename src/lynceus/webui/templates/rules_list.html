@@ -23,7 +23,9 @@
         <select name="sort">
           {% for s in sort_options %}
             <option value="{{ s }}" {% if sort == s %}selected{% endif %}>
-              {% if s == 'default' %}rules.yaml order
+              {# "rules.yaml order" named a file the operator may not have; the
+                 order this means is the order of whatever `rules_path` loads. #}
+              {% if s == 'default' %}file order
               {% elif s == 'count_desc' %}most fires first
               {% elif s == 'count_asc' %}fewest fires first
               {% else %}{{ s }}{% endif %}
@@ -214,5 +216,13 @@
     {% endif %}
   {% endif %}
 
-  <p><small>Edit rules.yaml on disk and restart lynceus to apply changes (live edit lands in v0.3).</small></p>
+  {# ⛔ This footer renders on every visit, including the one where no rules
+     file is loaded at all -- so it is the second of the two sites that must
+     branch rather than name a path. "Edit rules.yaml on disk" sent an operator
+     with no `rules_path` to edit a file the daemon would never read. #}
+  {% if rules_file() %}
+    <p><small>Edit <code>{{ rules_file() }}</code> on disk and restart lynceus to apply changes (live edit lands in v0.3).</small></p>
+  {% else %}
+    <p><small>No rules file is loaded: <code>rules_path</code> is unset in <code>lynceus.yaml</code>, so editing a rules file on disk changes nothing until it is set.</small></p>
+  {% endif %}
 {% endblock %}

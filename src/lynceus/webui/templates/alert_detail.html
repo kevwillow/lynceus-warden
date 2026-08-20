@@ -164,7 +164,7 @@
             <button type="submit">Remove from allowlist</button>
           </form>
         {% else %}
-          <p class="dim"><em>Configured in <code>allowlist.yaml</code> (operator-managed); edit that file directly to remove.</em></p>
+          <p class="dim"><em>Configured in <code>{{ allowlist_file() }}</code> (operator-managed); edit that file directly to remove.</em></p>
         {% endif %}
       {% else %}
         <p class="status">
@@ -178,7 +178,7 @@
             <button type="submit">Cancel snooze</button>
           </form>
         {% else %}
-          <p class="dim"><em>Snooze configured in <code>allowlist.yaml</code> (operator-managed); edit that file directly to cancel.</em></p>
+          <p class="dim"><em>Snooze configured in <code>{{ allowlist_file() }}</code> (operator-managed); edit that file directly to cancel.</em></p>
         {% endif %}
       {% endif %}
     </article>

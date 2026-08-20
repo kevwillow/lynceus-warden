@@ -115,7 +115,13 @@ def test_watchlist_renders_never_independently_of_the_inert_marker(tmp_path):
     # (a CSS comment, a <span> splitting "Marked inert", now <code>).
     # ⇒ Assert on a run of plain prose, never one spanning a tag.
     assert "will not change that for this row" in detail
-    assert "rules.yaml" in detail, "the note does not name the file it is about"
+    # ⚠️ Derived from the config, NOT the literal "rules.yaml" this line used to
+    # assert. The fixture points `rules_path` at the shipped `config/rules.yaml`,
+    # so the old assertion passed on a template that hard-coded the name and
+    # would have passed for an operator whose file is called anything else --
+    # while the page named a file they do not have. The needle is the path the
+    # daemon loads, whatever it is called.
+    assert str(cfg.rules_path) in detail, "the note does not name the file it is about"
     assert "locally-administered (first octet de)" in detail
     assert "This entry cannot currently fire." in detail
 

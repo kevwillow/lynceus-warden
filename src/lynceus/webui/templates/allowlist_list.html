@@ -67,8 +67,8 @@
 
   {% if configured %}
     <p><small>
-      {{ primary_count }} operator entries (allowlist.yaml) &middot;
-      {{ ui_count }} UI entries (allowlist_ui.yaml)
+      {{ primary_count }} operator entries (<code>{{ allowlist_file() }}</code>) &middot;
+      {{ ui_count }} UI entries (<code>{{ allowlist_ui_file() }}</code>)
     </small></p>
 
     <form method="get" action="/allowlist">
@@ -166,7 +166,7 @@
                     {% if e.composite_key %}
                       <input type="checkbox" name="entry_keys" value="{{ e.composite_key }}">
                     {% else %}
-                      <span title="operator-managed; edit allowlist.yaml directly">&mdash;</span>
+                      <span title="operator-managed; edit {{ allowlist_file() }} directly">&mdash;</span>
                     {% endif %}
                   </td>
                   <td>{{ e.pattern_type }}</td>

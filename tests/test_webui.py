@@ -4566,7 +4566,12 @@ def test_alert_detail_state2_primary_match_shows_no_button(tmp_path):
         assert "Allowlisted" in r.text
         assert "Remove from allowlist" not in r.text
         assert "operator-managed" in r.text
-        assert "allowlist.yaml" in r.text
+        # ⚠️ The configured path, not the literal "allowlist.yaml" this line used
+        # to assert. `allowlist_path` is free-form; the hint has to name the file
+        # the daemon loads, and a fixture that happens to use the default name
+        # cannot tell the two apart. See
+        # tests/test_webui_names_the_configured_file.py.
+        assert str(primary) in r.text
     finally:
         db.close()
 

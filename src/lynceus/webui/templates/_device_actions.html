@@ -115,7 +115,7 @@
             <button type="submit" class="outline device-action-btn">Stop silencing</button>
           </form>
         {% else %}
-          <p class="dim"><em>Configured in <code>allowlist.yaml</code> (operator-managed); edit that file directly to remove.</em></p>
+          <p class="dim"><em>Configured in <code>{{ allowlist_file() }}</code> (operator-managed); edit that file directly to remove.</em></p>
         {% endif %}
       {% else %}
         <p class="status">Silenced until
@@ -130,7 +130,7 @@
             <button type="submit" class="outline device-action-btn">Cancel silence</button>
           </form>
         {% else %}
-          <p class="dim"><em>Configured in <code>allowlist.yaml</code> (operator-managed); edit that file directly to cancel.</em></p>
+          <p class="dim"><em>Configured in <code>{{ allowlist_file() }}</code> (operator-managed); edit that file directly to cancel.</em></p>
         {% endif %}
       {% endif %}
     </section>

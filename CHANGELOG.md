@@ -401,6 +401,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+- **Twenty-one places where the web UI named a config file the daemon does
+  not load.** `rules_path` and `allowlist_path` are free-form settings — an operator
+  can point either at any filename, and the UI-side allowlist is a *derived*
+  sibling that carries the stem and the extension across, so the companion of
+  `site-devices.yml` is `site-devices_ui.yml`. Seven templates named
+  `rules.yaml`, `allowlist.yaml` and `allowlist_ui.yaml` regardless, across the
+  seven routes that render them.
+
+  Seven of the twenty-one were remedies, which is what makes this more than a
+  naming slip: *"edit that file directly to remove"* on an alert and on a
+  device, and *"Edit rules.yaml on disk and restart lynceus to apply changes"*
+  on the rules page. An operator with a non-default path was told to edit a file that does
+  not exist on their machine, and then to restart — so the device stayed
+  silenced, the restart confirmed nothing had changed, and the page still said
+  what it said before.
+
+  Measured at `cca7c5c` against `allowlist_path=site-devices.yml` and
+  `rules_path=site-rules.yml`: `/alerts/{id}`, `/devices/{mac}`, `/allowlist`,
+  `/rules`, `/settings`, `/watchlist` and `/watchlist/{id}` each named at least
+  one file that install does not have. `/allowlist` printed the true path in its
+  empty state and the wrong one in its entry counts, on the same page.
+
+  Twenty of them now render the configured path, resolved at render time from
+  the config the app is actually holding; the nineteenth was the rules page's
+  sort label, which meant *file order* and now says so, naming no file at all.
+
+  Two sites can be reached with no `rules_path` set at all — the rules page's
+  footer, and the note on a watchlist row whose OUI prefix can never match — and
+  those two say so in words rather than rendering a blank filename, which would
+  read as a name the operator failed to notice.
+
+  ⭐ Two more instances arrived from another branch while this was being
+  written, and the new source-level guard named both by file and line within
+  seconds of the rebase — which is the entire reason it is there beside the
+  per-page tests rather than instead of them.
+
+  One exemption is recorded, with its reason: the BLE bridge's own remedy names
+  `config/rules.yaml` on purpose, to say that it is *not necessarily* the file
+  the daemon loads. It is exempted as an exact phrase and asserted to still
+  reach a rendered page, so it cannot quietly come to cover a different sentence
+  that merely mentions the same filename.
+
+  ⚠️ The guard that covered this text asserted `"allowlist.yaml" in r.text`
+  against a fixture whose file *was* named `allowlist.yaml`, so it passed on the
+  hard-coded literal it was supposed to be checking. The new tests use
+  deliberately non-default filenames, assert both directions — the configured
+  path present, the default name absent — and were run against nine planted
+  reversions, each of which they caught.
+
 - **Three more ways a hostile number could 500 a page, and a row that could be
   called two contradictory things at once.** The previous release bounded row ids
   that arrive in the URL. The same overflow was still reachable through three
