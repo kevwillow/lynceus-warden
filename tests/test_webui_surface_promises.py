@@ -488,3 +488,124 @@ def test_a_known_snooze_is_reported_even_when_the_ruleset_verdict_is_not(tmp_pat
     # so it outranks the unknown verdict rather than being masked by it.
     assert "cannot be determined" not in detail
     assert "This entry alerts at a different severity" not in detail
+
+
+# ---------------------------------------------------------------------------
+# 6. The rules page carries a control for every snooze it is blamed for
+# ---------------------------------------------------------------------------
+
+OUI_ONLY_RULES = (
+    "rules:\n"
+    "  - name: o\n"
+    "    rule_type: watchlist_oui\n"
+    "    enabled: true\n"
+    "    severity: med\n"
+)
+
+
+def _app_with_snooze(tmp_path, rules_body: str | None, snoozed_type: str):
+    config_kwargs = {"db_path": str(tmp_path / "s.db")}
+    if rules_body is not None:
+        rules = tmp_path / "rules.yaml"
+        rules.write_text(rules_body, encoding="utf-8")
+        config_kwargs["rules_path"] = str(rules)
+    config = Config(**config_kwargs)
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    db.add_watchlist(
+        pattern="HomeNet", pattern_type="ssid", severity="high", description="d"
+    )
+    now = int(time.time())
+    db.add_rule_type_snooze(snoozed_type, now + 3600, now)
+    return create_app(config, db), db
+
+
+def _unsnooze_controls(html: str) -> list[str]:
+    return sorted(set(re.findall(r'action="/rules/([^/]+)/unsnooze"', _prose(html))))
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize("query", ["", "?status=snoozed", "?status=all"])
+def test_a_snooze_with_no_loaded_rule_can_still_be_lifted(tmp_path, query):
+    """⛔ /watchlist and /settings say "lift it on the rules page". Measured at
+    cca7c5c, that page offered ZERO unsnooze controls for this snooze -- on the
+    default view, on ?status=snoozed, on ?status=all, and filtered by the type.
+    The snooze stays in force in the poller, so re-adding a rule of that type
+    later leaves it silently suppressed.
+
+    Reachable through the UI's own instructions: snooze the type here, then
+    "Edit <rules file> on disk and restart", as this page's footer says.
+    """
+    app, db = _app_with_snooze(tmp_path, OUI_ONLY_RULES, "watchlist_ssid")
+    try:
+        with TestClient(app) as client:
+            assert "watchlist_ssid" in _unsnooze_controls(
+                client.get("/rules" + query).text
+            ), f"/rules{query} offers no way to lift the snooze it is blamed for"
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_lifting_an_orphaned_snooze_actually_lifts_it(tmp_path):
+    """The button is only worth adding if the endpoint takes it.
+
+    ⭐ It does: the unsnooze route validates against the ``RuleType`` literal,
+    not against the loaded ruleset. Driven rather than read.
+    """
+    app, db = _app_with_snooze(tmp_path, OUI_ONLY_RULES, "watchlist_ssid")
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            page = client.get("/rules").text
+            token = re.search(
+                r'name="' + CSRF_FORM_FIELD + r'" value="([^"]+)"', _prose(page)
+            )
+            response = client.post(
+                "/rules/watchlist_ssid/unsnooze",
+                data={CSRF_FORM_FIELD: token.group(1) if token else ""},
+                cookies=client.cookies,
+            )
+            assert response.status_code == 303
+            after = client.get("/rules").text
+            watchlist_after = _prose(client.get("/watchlist").text)
+        assert _unsnooze_controls(after) == []
+        assert "you snoozed" not in watchlist_after, (
+            "the watchlist still reports a snooze that was just lifted"
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_a_snooze_with_a_loaded_rule_is_not_listed_as_orphaned(tmp_path):
+    """The control. A type with a rule has its own row and its own button; it
+    must not also appear in the orphan block, or one snooze reads as two."""
+    app, db = _app_with_snooze(tmp_path, OUI_ONLY_RULES, "watchlist_oui")
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get("/rules").text)
+    finally:
+        db.close()
+    assert "watchlist_oui" in _unsnooze_controls(prose)
+    # ⚠️ Asserted as "the orphan block did not render", not as a count of
+    # unsnooze forms. This page already renders two for a loaded type -- one on
+    # the rule row and one in the per-rule_type summary -- which is pre-existing
+    # and unrelated. A count assertion here would have been a guard against the
+    # wrong thing that happened to be red.
+    assert "no rule of that type loaded" not in prose
+    assert "No ruleset is loaded" not in prose
+
+
+@pytest.mark.webui
+def test_with_no_ruleset_at_all_every_active_snooze_is_still_liftable(tmp_path):
+    """No `rules_path` means no rows on this page at all -- and, before this,
+    no snooze controls either, while the snoozes went on silencing."""
+    app, db = _app_with_snooze(tmp_path, None, "watchlist_ssid")
+    try:
+        with TestClient(app) as client:
+            page = client.get("/rules").text
+    finally:
+        db.close()
+    assert "watchlist_ssid" in _unsnooze_controls(page)
+    assert "No ruleset is loaded" in _prose(page)
+

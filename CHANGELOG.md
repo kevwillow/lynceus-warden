@@ -472,6 +472,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   snooze, an override suppression, a reserved OUI, an allowlist match — is
   established without reading the ruleset and still wins outright.
 
+  **A snooze could become unliftable from the UI, while two pages told the
+  operator where to lift it.** The rules page iterates the rule types present in
+  the loaded ruleset — a deliberate scope, since that file is the authoritative
+  view — so a snooze on a rule type with no rule in the file got no row and no
+  button. Measured: zero unsnooze controls on the default view, on
+  `?status=snoozed`, on `?status=all`, and filtered by the type itself, while
+  `/watchlist` and `/settings` both said "lift it on the rules page".
+
+  It is reachable through this UI's own instructions: snooze a rule type, then
+  "Edit `<rules file>` on disk and restart", which the rules page footer tells
+  you to do. The snooze survives in the database and keeps silencing that rule
+  type in the poller, so re-adding a rule of that type later leaves it silently
+  suppressed with nothing on any page saying why.
+
+  Such snoozes now get their own block on the rules page with a working
+  unsnooze button — the endpoint already accepted them, since it validates
+  against the rule-type list rather than the loaded file, so nothing but the
+  page was missing. With no `rules_path` at all, every active snooze is listed
+  there, since none of them can have a row.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still
