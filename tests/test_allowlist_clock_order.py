@@ -484,3 +484,74 @@ def test_a_hand_edit_that_omits_added_at_costs_nothing(ui):
         ),
     )
     assert find_impossible_ui_entries(ui, NOW + DAY) == []
+
+
+# --------------------------------------------------------------------------
+# One clock read per render. Two surfaces, one truth.
+# --------------------------------------------------------------------------
+def test_the_table_and_the_banner_cannot_disagree_across_a_second_boundary(
+    tmp_path, monkeypatch
+):
+    """⛔ `_render_allowlist` used to call `int(time.time())` TWICE — once for
+    the row filter, once for the reporter. A render straddling a second boundary
+    gave the SAME ROW opposite verdicts: the table labelled it `snoozed` (live)
+    while the banner called it an expired suppression that disagrees.
+
+    That is the Finding 45 class — two surfaces naming contradictory causes for
+    one row — and here the cause was simply reading the clock twice. Found by a
+    cross-model red-team of the merged diff, then reproduced deterministically
+    before being believed.
+
+    The entry's deadline is placed exactly ON the boundary, which is the only
+    value that can be classified both ways.
+    """
+    from starlette.testclient import TestClient
+
+    app, db, ui = _app(tmp_path)
+    _write(ui, _mac(1), NOW - 10, seconds=86400 + 10)
+    add_ui_entry(
+        ui,
+        AllowlistEntry(
+            pattern=_mac(2), pattern_type="mac",
+            added_at=NOW - 40 * DAY, expires_at=NOW,   # deadline == the boundary
+        ),
+    )
+
+    # First read lands just before T, second just after. Only a single read can
+    # make the two surfaces agree.
+    seq = iter([float(NOW) - 0.000001, float(NOW) + 0.000001])
+    monkeypatch.setattr(
+        "lynceus.webui.app.time.time", lambda: next(seq, float(NOW) + 1)
+    )
+    try:
+        with TestClient(app) as c:
+            body = c.get("/allowlist").text
+    finally:
+        db.close()
+
+    says_live = "badge-allow-snoozed" in body
+    banner_says_expired = "disagree" in body
+    assert not (says_live and banner_says_expired), (
+        "one row is 'snoozed' in the table and an 'expired suppression' in the "
+        "banner on the same page — the clock was read twice"
+    )
+
+
+def test_a_genuine_disagreement_still_reaches_the_banner(tmp_path, monkeypatch):
+    """⛔ The control for the test above, and it is not optional: making
+    `clock_disagreements` always empty would satisfy that assertion perfectly
+    while deleting the whole feature."""
+    from starlette.testclient import TestClient
+
+    app, db, ui = _app(tmp_path)
+    _write(ui, _mac(1), NOW)
+    _write(ui, _mac(2), NOW - 40 * DAY)
+    monkeypatch.setattr(
+        "lynceus.webui.app.time.time", lambda: float(NOW + DAY)
+    )
+    try:
+        with TestClient(app) as c:
+            body = c.get("/allowlist").text
+    finally:
+        db.close()
+    assert "disagree" in body

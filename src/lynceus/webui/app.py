@@ -2917,6 +2917,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
         for aid in alert_ids:
             if aid < 1:
                 raise HTTPException(status_code=400, detail="alert_id must be positive")
+            # ⛔ The SAME bound `RowId` puts on path params, reached through a
+            # FORM instead. `RowId` is a `Path(...)` annotation and cannot apply
+            # here, so the check is explicit -- and its absence was NOT
+            # hypothetical: `alert_ids=2**63` returned 500 out of
+            # `db.bulk_acknowledge_alerts` while `2**63 - 1` returned 200.
+            if aid > SQLITE_MAX_ROWID:
+                raise HTTPException(
+                    status_code=400, detail="alert_id is out of range"
+                )
         note = _normalize_optional_note(note)
         actor = request.client.host if request.client else "unknown"
         now_ts = int(time.time())
@@ -2989,7 +2998,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 rendered_ts: int | None = int(rendered_at)
             except (TypeError, ValueError):
                 rendered_ts = None
-            if rendered_ts is not None and rendered_ts > 0:
+            # ⛔ Upper bound as well as the existing `> 0`. This value is
+            # hand-parsed from a form string and bound straight into
+            # `db.count_alerts(until_ts=...)`, so an unbounded int 500s the
+            # route. `> 0` alone passed a 19-digit number happily. Treated as
+            # unset rather than rejected, matching how this parse already
+            # handles every other unusable value.
+            if rendered_ts is not None and 0 < rendered_ts <= SQLITE_MAX_ROWID:
                 effective_until_ts = (
                     rendered_ts if until_ts is None else min(until_ts, rendered_ts)
                 )
@@ -4956,6 +4971,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         page: str | None = Query(default=None),
         page_size: str | None = Query(default=None),
     ):
+        render_now_ts = int(time.time())
         # Backward compat: /watchlist with no query params behaves
         # exactly as pre-rc5 (first 50 rows, severity-by-importance
         # then pattern alphabetical). Invalid filter values silently
@@ -5039,7 +5055,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             app.state.config,
             db.watchlist_pattern_type_counts(),
             db=db,
-            now_ts=int(time.time()),
+            now_ts=render_now_ts,
         )
         # ⚠️ Loaded ONCE and shared: the suppression axes and the severity remap
         # read the same file, and two loads per render could disagree if the
@@ -5086,7 +5102,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 # called once per request and only when a `mac` row is actually
                 # on the page, so a watchlist with none stays YAML-cost-free.
                 "allowlisted_ids": _allowlisted_row_ids(
-                    app.state.config, rows, int(time.time())
+                    app.state.config, rows, render_now_ts
                 ),
                 # ⭐ Finding 42. The severity column is the triage surface, and
                 # it was rendering the value the importer baked in rather than
@@ -5128,6 +5144,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         severity: str | None = Query(default=None),
         device_category: str | None = Query(default=None),
     ):
+        render_now_ts = int(time.time())
         # Streaming CSV export of the currently-filtered /watchlist
         # result set. Filter parsing mirrors the watchlist_list handler
         # byte-for-byte: same clamp posture, same silent-fallback for
@@ -5263,7 +5280,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             app.state.config,
             db.watchlist_pattern_type_counts(),
             db=db,
-            now_ts=int(time.time()),
+            now_ts=render_now_ts,
         )
         csv_overrides = load_overrides(app.state.config)
         csv_suppressions = suppression_axes_of(csv_overrides)
@@ -5271,7 +5288,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # streams, and a per-row load would re-parse the allowlist YAML for
         # every one of a 17k-row watchlist.
         csv_allowlist = _merged_allowlist_entries(app.state.config)
-        csv_now = int(time.time())
+        csv_now = render_now_ts
 
         def _allowlist_suppressed(pattern_type: str, pattern: str) -> str:
             if not allowlist_answerable_for(pattern_type) or not pattern:
@@ -5382,7 +5399,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 buf.seek(0)
                 buf.truncate(0)
 
-        ts_now = _dt.datetime.fromtimestamp(int(time.time()), tz=_dt.UTC).strftime(
+        ts_now = _dt.datetime.fromtimestamp(render_now_ts, tz=_dt.UTC).strftime(
             "%Y%m%dT%H%M%SZ"
         )
         filename = f"watchlist-{ts_now}.csv"
@@ -5394,6 +5411,14 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/watchlist/{watchlist_id}", response_class=HTMLResponse)
     def watchlist_detail(request: Request, watchlist_id: RowId):
+        render_now_ts = int(time.time())
+        # ⛔ ONE clock read per render, threaded into every consumer.
+        # Two independent reads let the SAME row be classified twice from
+        # two instants. Measured here: with an allowlist entry expiring
+        # between them the page rendered `entry_can_alert=False` beside
+        # `allowlist_entries=[]` -- "cannot alert because it is
+        # allowlisted", with nothing shown suppressing it. Neither
+        # consistent state produces that pair.
         if watchlist_id < 1:
             raise HTTPException(status_code=400, detail="watchlist_id must be positive")
         row = db.get_watchlist_with_metadata(watchlist_id)
@@ -5441,7 +5466,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             app.state.config,
             db.watchlist_pattern_type_counts(),
             db=db,
-            now_ts=int(time.time()),
+            now_ts=render_now_ts,
         )
         # Read once; the suppression axes and the severity remap are two
         # questions about the same file.
@@ -5501,7 +5526,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                         _match_all_mac_in_entries(
                             _merged_allowlist_entries(app.state.config),
                             row["pattern"],
-                            int(time.time()),
+                            render_now_ts,
                         )
                         if allowlist_answerable_for(row.get("pattern_type") or "")
                         and row.get("pattern")
@@ -5519,7 +5544,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     _match_all_mac_in_entries(
                         _merged_allowlist_entries(app.state.config),
                         row["pattern"],
-                        int(time.time()),
+                        render_now_ts,
                     )
                     if allowlist_answerable_for(row.get("pattern_type") or "")
                     and row.get("pattern")
@@ -5585,13 +5610,22 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 tagged = []
             primary_count = sum(1 for _, src in tagged if src == "primary")
             ui_count = sum(1 for _, src in tagged if src == "ui")
+            # ⛔ ONE clock read, threaded into both consumers below. It used
+            # to be two independent `int(time.time())` calls, and a render
+            # straddling a second boundary gave the SAME ROW opposite verdicts:
+            # the table labelled it `snoozed` (live) while the banner called it
+            # an expired suppression that disagrees. Reproduced deterministically
+            # by returning `T - epsilon` then `T + epsilon`. That is the Finding
+            # 45 class -- two surfaces naming contradictory causes for one row --
+            # and the cause here is simply reading the clock twice.
+            render_now_ts = int(time.time())
             filtered_rows = _filter_allowlist_entries(
                 tagged,
                 q=q,
                 source=source,
                 status=status,
                 type_=type_,
-                now_ts=int(time.time()),
+                now_ts=render_now_ts,
             )
             # ⛔ Reported on the UNFILTERED file, deliberately. The evidence is
             # an ORDERING fact between two entries, so a filter that hides
@@ -5603,7 +5637,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             # the discriminator is only valid within the UI file's own append
             # order. A merged list is not that order.
             clock_disagreements = find_impossible_ui_entries(
-                derive_ui_path(Path(allowlist_path)), int(time.time())
+                derive_ui_path(Path(allowlist_path)), render_now_ts
             )
 
         # Pagination is applied in Python on the already-filtered list
