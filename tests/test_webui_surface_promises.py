@@ -661,3 +661,72 @@ def test_the_overrides_card_keeps_its_instructions_when_configured(tmp_path):
     assert "Nothing reads this file yet" not in prose
     assert "restart the daemon to apply" in prose
 
+
+# ---------------------------------------------------------------------------
+# 8. "showing all entries" only when it is showing all entries
+# ---------------------------------------------------------------------------
+
+
+def _app_with_three_watchlist_rows(tmp_path):
+    config = Config(db_path=str(tmp_path / "s.db"))
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    db.add_watchlist(pattern="aa:bb:cc:dd:ee:01", pattern_type="mac", severity="high")
+    db.add_watchlist(pattern="aa:bb:cc:dd:ee:02", pattern_type="mac", severity="low")
+    db.add_watchlist(pattern="HomeNet", pattern_type="ssid", severity="low")
+    return create_app(config, db), db
+
+
+def _row_count(html: str) -> int:
+    return len(re.findall(r'href="/watchlist/\d+"', _prose(html)))
+
+
+@pytest.mark.webui
+def test_a_dropped_filter_does_not_claim_the_whole_watchlist(tmp_path):
+    """⛔ Measured at cca7c5c: `?pattern_type=bogus&severity=high` rendered ONE
+    of three rows under a banner saying all of them were shown. On the list of
+    devices an operator is specifically watching for, a false "nothing else is
+    here" is the inaction direction.
+    """
+    app, db = _app_with_three_watchlist_rows(tmp_path)
+    try:
+        with TestClient(app) as client:
+            html = client.get("/watchlist?pattern_type=bogus&severity=high").text
+    finally:
+        db.close()
+    prose = _prose(html)
+    assert "filter ignored" in prose, "the dropped-filter banner did not render"
+    # The page IS narrowed -- that is the whole point of the test.
+    assert _row_count(html) < 3, "the fixture is not exercising a narrowed view"
+    assert "showing <strong>all</strong> entries" not in prose
+    assert "not</strong> the whole watchlist" in prose
+
+
+@pytest.mark.webui
+def test_a_dropped_filter_alone_still_says_showing_all(tmp_path):
+    """The control. When the unrecognised filter was the ONLY one, the page
+    really is showing everything and must still say so."""
+    app, db = _app_with_three_watchlist_rows(tmp_path)
+    try:
+        with TestClient(app) as client:
+            html = client.get("/watchlist?pattern_type=bogus").text
+    finally:
+        db.close()
+    prose = _prose(html)
+    assert "filter ignored" in prose
+    assert _row_count(html) == 3, "the control is not showing every row"
+    assert "showing <strong>all</strong> entries" in prose
+
+
+@pytest.mark.webui
+def test_no_banner_when_every_filter_is_recognised(tmp_path):
+    """The second control: a valid filter must not trip the ignored-filter
+    banner, or the page cries wolf on every ordinary search."""
+    app, db = _app_with_three_watchlist_rows(tmp_path)
+    try:
+        with TestClient(app) as client:
+            html = client.get("/watchlist?severity=high").text
+    finally:
+        db.close()
+    assert "filter ignored" not in _prose(html)
+

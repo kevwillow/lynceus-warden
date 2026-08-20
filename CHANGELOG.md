@@ -506,6 +506,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   step that actually turns the layer on, and separates the importer, which reads
   whatever `--override-file` is passed and needs no setting at all.
 
+  **"showing all entries" was printed over a filtered watchlist.** When the page
+  is given a `pattern_type` it does not recognise it drops that filter and says
+  so — correctly, and that banner exists because dropping it silently was itself
+  a finding. But the sentence claims the view is unfiltered, and the *other*
+  filters survive. Measured: `?pattern_type=bogus&severity=high` on a three-row
+  watchlist rendered **one** row under a banner saying all three were shown.
+
+  On the list of devices an operator is specifically watching for, a false
+  "nothing else is here" points at inaction. The banner now says the
+  unrecognised filter was dropped and that the remaining ones still apply — and
+  keeps the original wording for the case where the dropped filter really was
+  the only one.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still
