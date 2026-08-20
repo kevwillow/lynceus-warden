@@ -3887,6 +3887,168 @@ empties matters: a fan-out that quietly drops 2 of 5 implies coverage it does no
   discards undelivered alerts, or abandoning is gated on `notified_at IS NOT NULL`.
   ⇒ [[an-exemption-is-a-claim]].
 
+
+## Round 19 — the discriminator that was said not to exist, and two classes closed one surface at a time, 2026-08-19
+
+**Session 3's track: #179 → #184.** Both merged and re-gated at the merged SHA. Every finding below
+was **reproduced in this repo before being believed**, including the ones a cross-model sweep
+reported — and two of the sweep's own claims were corrected by that reproduction.
+
+### ⭐ Finding 56's conclusion is FALSIFIED for the YAML half — a discriminator does exist
+
+Finding 56 records the UI allowlist as unreachable: *"`repair_future_dated_ui_entries` is the YAML
+allowlist, which has no `schema_migrations` row to compare against, so the ordering discriminator
+does not exist for it."*
+
+**Right about the evidence, wrong about the conclusion.** `schema_migrations` was never *the*
+ordering fact — it is one instance of one. The general fact is *a record cannot precede something it
+demonstrably follows*, and `allowlist_ui.yaml` has its own instance: **its list order is its write
+order.** `add_ui_entry` appends; both removers filter; `repair_future_dated_ui_entries` rebuilds in
+place; `_validate_ui_entries` keeps survivors in order. **Nothing in the module sorts.** So an entry
+sitting below one carrying a *later* `added_at` is a contradiction between two things the file
+records independently.
+
+Ground truth measured first (`internal/session3-harnesses/yaml_backend_probe.py`), 24h asked for:
+
+```
+CONTROL correct clock   gets 24.0h     BACKWARD (-6y)    gets  0.0h
+forward-jumped (+91d)   gets 24.0h     BACKWARD (-30d)   gets  0.0h
+                                       BACKWARD (-12h)   gets 12.0h   <- IN FORCE, must not report
+```
+
+⭐ Unlike the DB backends, an expired UI entry is **skipped, not purged**, so the evidence survives
+on disk. Shipped as `allowlist.find_impossible_ui_entries` + a banner on `/allowlist` (#179).
+
+⛔ **The `_watchful_baselines` half of Finding 56's sentence still stands** and is untouched.
+
+⚠️ **Three limits, published beside it and each pinned by a test.** Blind where every UI write shares
+one behind clock (Finding 41's population). A false positive if the forward repair runs after a later
+entry expired. And — **found by CI, not by 19 planted defects** — the discriminator assumes every
+`added_at` was stamped AT WRITE TIME, which is true of all three UI write paths and **false for a
+hand-edit**, where the field is operator-supplied data. `tests/test_webui.py`'s allowlist-filter
+fixture back-dates an entry 7200s and six of its tests went red. Two of the three are pinned by tests
+that **assert the false positive happens**, so neither can be closed by loosening the reporter.
+
+### ⭐ Finding 41's "believed impossible" is the wrong disposition — measured, not built
+
+Finding 41 records post-hoc detection as *"believed impossible"* for the install whose clock was
+wrong from its FIRST migration. Asked the question that solved it for the DB backend: **impossible
+using what?**
+
+Impossible using **any clock stamped by this host** — which is every discriminator built so far.
+Three non-local clocks exist. Kismet's `last_seen` is present but `clock_behind_recorded_history`
+excludes it deliberately and with a measured reason. A build-date constant does not exist and would
+be the literal-that-rots shape. **The third is already shipped and already comparing:**
+`webui/static/lynceus.js:formatStamp` runs `new Date()` against every `<time datetime>` the server
+renders, on every page load.
+
+Measured (`internal/session3-harnesses/f41_impossible_using_what.py`) on a first-migration-wrong
+install: the newest stamp reads **2190 days** stale against a correct browser clock, and the page
+renders *"6 years ago"* on an alert raised seconds ago. **The evidence is already on the operator's
+screen and nothing interprets it.**
+
+⛔ **MEASURED, NOT BUILT, and the reasons are the finding:** it needs a human at the page (a headless
+Pi — the target deployment — stays blind); the browser clock is a second opinion, not an authority;
+and posting it back to gate a server write is a trust boundary that needs deciding, not assuming.
+⇒ Replace *"believed impossible after the fact"* with *"impossible from this host's own clocks"*.
+
+⚠️ **Stated so this is not read as more novel than it is:** Finding 41's own option 2 already names
+*"a durable monotonic anchor written alongside the row, so 'when was this stamped' does not depend on
+the same clock that was wrong"*. This is that idea with the anchor **already present and already
+being compared** — it needed finding, not building. What is new is only that option **1**
+(post-hoc detection), the one recorded as impossible, is not impossible; it is impossible *locally*.
+
+### 🟢 Finding 66 — a row id above SQLite's ceiling returned 500, on four different input channels
+
+Python ints are arbitrary precision; SQLite `INTEGER` is signed 64-bit. A request-supplied number
+bound into a query raises `OverflowError: Python int too large to convert to SQLite INTEGER`, which
+escapes as an unhandled 500.
+
+**Found by driving `/watchful/{entry_id}/reset`**, which this register recorded as *"never exercised
+by Round 13's form-field sweep… unexamined, not cleared"*. Driving it cleared it — and turned up
+something that was never about that route.
+
+| channel | trigger | measured |
+|---|---|---|
+| **Path** param, all 15 routes taking a row id | `GET /alerts/9223372036854775808` | **500** (`…807` → 404) |
+| Form `list[int]` | `POST /alerts/bulk-ack alert_ids=2**63` | **500** |
+| Form `str`, hand-parsed | `POST /alerts/ack-all-visible rendered_at=2**63` | **500** |
+| Query `str` via `parse_pagination` | `GET /watchlist?page=2**63` | **500** |
+
+⛔ **#179 fixed only the path-param row and that was a fix closing the SURFACE it was reported
+through.** The other three were found within the hour by an M3 sweep of the tree #179 merged into,
+and fixed by #184.
+
+⭐ **The `page` bound is NOT `SQLITE_MAX_ROWID`, and the CONTROL is what said so.** Callers compute
+`offset = (page - 1) * per_page`, so the ceiling on `page` is the rowid ceiling **divided by**
+`per_page`:
+
+```
+per_page=25    largest working page = 368934881474191033
+per_page=500   largest working page =  18446744073709551   <- /devices, /probes
+```
+
+The sweep reported the trigger as `>= 2**63`. Testing `2**63 - 1` — a legal rowid, one below the
+ceiling — **also returned 500**. A `le=SQLITE_MAX_ROWID` bound would have looked like a fix and fixed
+nothing. Clamp lives in the shared `parse_pagination`, so every list route is covered rather than the
+one reported.
+
+⚠️ **Graded LOW and it should stay LOW:** the body is Starlette's plain `Internal Server Error` and
+leaks nothing, the daemon keeps serving, and the bulk-ack transaction rolls back when the
+`with self._conn` block exits by exception. **A wrong status code on hostile input**, not a security
+or availability defect.
+
+**Acceptance criterion (a conjunction):** a value above the ceiling is rejected or clamped on every
+channel, **AND** the largest *valid* value still reaches the route — without the second half,
+`le=0` passes the first perfectly.
+
+### 🟡 Finding 67 — one page, one row, two contradictory answers, because the clock was read twice
+
+**Two instances, the second worse than the first.**
+
+`_render_allowlist` called `int(time.time())` twice — once for the row filter, once for Finding 56's
+new reporter. A render straddling a second boundary labelled the same entry `snoozed` (live) in the
+table and an *expired suppression* in the banner above it. Found by a cold cross-model red-team of
+the merged diff.
+
+Then the class was swept: **four leaf handlers read the wall clock more than once**, and
+`watchlist_detail` computes `entry_can_alert` and `allowlist_entries` from **the same function with
+the same arguments**, each taking its own read. Measured:
+
+```
+both reads before expiry   entry_can_alert=False  allowlist_entries=1   consistent
+both reads after  expiry   entry_can_alert=True   allowlist_entries=0   consistent
+reads STRADDLE the expiry  entry_can_alert=False  allowlist_entries=0   <- IMPOSSIBLE
+```
+
+⇒ The page says *"this row cannot alert because it is allowlisted"* **and lists nothing allowlisting
+it** — worse than the first, because it names a cause the same page then contradicts. This is the
+**Finding 45 class** (two surfaces, one row, opposite verdicts), and here the cause is only that the
+clock was read twice.
+
+⛔ **Not every double read is a defect, and the guard does not pretend otherwise.** Six handlers gate
+on the clock and then write a timestamp; the two values feed different things and a one-second gap
+changes nothing observable. Those are **exempt with written reasons, each read before being listed**,
+and `test_no_exemption_is_stale` fails if one stops reading twice. The guard is derived from the AST
+so the next handler is graded automatically.
+
+### 🪤 What this round got wrong, recorded because the corrections are the transferable part
+
+- ⛔ **19 planted defects all passed and did not find the unsound premise; a fixture written long
+  before the feature did.** A plant tests the failure its author imagined; a pre-existing fixture
+  samples the world as someone else found it. **Run the whole suite before believing a plant score.**
+- ⛔ **A plant survived and it was the TEST, not the fix.**
+  `test_ack_all_visible_still_honours_a_valid_rendered_at` asserted only a `200`, so "ignore
+  `rendered_at` entirely" walked through it — while that value is what stops the bulk ack swallowing
+  alerts that arrived after the page was drawn. Now behavioural.
+- ⛔ **A guard's own CONTROL asserted something false.** It claimed the clock scan would aggregate
+  nested reads into `create_app`; the scan deliberately counts a function's own body. The control
+  failed, and the control was wrong — adjusting the scan to match it would have masked a real bug.
+- ⛔ **A test written the same day transcribed one per-page set while the app defines two**, the
+  unlisted one (`500`, `/devices` and `/probes`) being the TIGHTER ceiling. Now derived.
+- ⛔ **`ruff check .`, never `ruff check <the files I edited>`** — a dead import failed both CI jobs
+  at Lint in under 21 seconds with every test unrun.
+
 ## Hardening candidates — cost measured, trigger UNPROVEN
 
 ⭐ **A distinct verdict, and the register needs it.** These are not confirmed findings and they are
