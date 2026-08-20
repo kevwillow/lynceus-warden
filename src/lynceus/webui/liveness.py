@@ -169,8 +169,26 @@ def live_pattern_types(ruleset: Ruleset) -> frozenset[str]:
     return frozenset(live)
 
 
-def snoozed_pattern_types(db: Database, now_ts: int) -> tuple[dict[str, int], bool]:
-    """``({pattern_type: snooze expiry}, known)`` for active rule_type snoozes.
+def snoozed_pattern_types(
+    db: Database, now_ts: int
+) -> tuple[dict[str, int], dict[str, int], bool]:
+    """``({pattern_type: expiry}, {rule_type: expiry}, known)`` for active snoozes.
+
+    ⛔ The rule_type map is returned rather than discarded because it is the
+    only identifier the operator can act on. A snooze is created and lifted on
+    ``/rules``, which is keyed on ``rule_type``; ``pattern_type`` is a different
+    name and ``/rules`` offers no control under it. See ``serving_rule_types``,
+    which exists because this exact sentence named the wrong one once already --
+    and it was fixed on the watchlist DETAIL page only, while ``/settings`` and
+    ``/watchlist`` went on printing the pattern type beside "lift it on the
+    rules page".
+
+    ⚠️ Not derived by inverting the map afterwards. ``serving_rule_types``
+    answers "which rule types COULD serve this pattern type", which is a
+    superset of "which ones are snoozed" the moment any pattern type gains a
+    second delegator -- the shape this function's own comment below warns
+    about. The snoozed set is known exactly here, so it is carried, not
+    reconstructed.
 
     ⭐ A snooze is a SECOND way a stored entry produces no alert, and it is a
     completely different thing from being inert. The rule fires normally — the
@@ -197,8 +215,8 @@ def snoozed_pattern_types(db: Database, now_ts: int) -> tuple[dict[str, int], bo
         # same answer the pre-snooze releases gave.
         logger.warning("watchlist liveness: rule_type snoozes unreadable (%s)", exc)
         if "no such table" in str(exc).lower():
-            return {}, True
-        return {}, False
+            return {}, {}, True
+        return {}, {}, False
 
     out: dict[str, int] = {}
     for rule_type, expires_at in by_rule_type.items():
@@ -214,7 +232,7 @@ def snoozed_pattern_types(db: Database, now_ts: int) -> tuple[dict[str, int], bo
             # A cold read caught it. If such a type is ever added, decide the
             # semantics deliberately and test it, rather than inheriting this.
             out[pattern_type] = max(out.get(pattern_type, 0), expires_at)
-    return out, True
+    return out, by_rule_type, True
 
 
 def watchlist_liveness(
@@ -281,11 +299,26 @@ def watchlist_liveness(
     stored = {pt for pt, n in pattern_type_counts.items() if int(n) > 0}
     snoozed_until: dict[str, int] = {}
     snoozes_known = True
+    suppressing_rule_types: tuple[str, ...] = ()
     if db is not None and now_ts is not None:
-        snoozed_by_type, snoozes_known = snoozed_pattern_types(db, now_ts)
+        snoozed_by_type, snoozed_by_rule_type, snoozes_known = snoozed_pattern_types(
+            db, now_ts
+        )
         snoozed_until = {
             pt: exp for pt, exp in snoozed_by_type.items() if pt in stored
         }
+        # ⭐ The rule types the operator can actually lift, narrowed to the ones
+        # silencing a type they STORE. A snooze on a rule_type serving nothing
+        # they have is not part of this report, for the same reason the type
+        # lists are narrowed to `stored`: a remedy for a row that does not exist
+        # is noise.
+        suppressing_rule_types = tuple(
+            sorted(
+                rt
+                for rt in snoozed_by_rule_type
+                if any(pt in snoozed_until for pt in RULE_TYPE_DELEGATES_TO.get(rt, ()))
+            )
+        )
     suppressed = set(snoozed_until)
     # ⛔ `None`, not `total`. This said `live_count: total` and it was a
     # CONTRADICTION shipped as a reassurance: `/healthz.json` returned
@@ -311,6 +344,11 @@ def watchlist_liveness(
         "live_types": (),
         "inert_types": (),
         "suppressed_types": tuple(sorted(suppressed)) if snoozes_known else (),
+        # ⭐ The rule_type identifiers `/rules` actually offers a control under.
+        # Reported in the UNKNOWN path too: the snooze verdict is independent of
+        # the ruleset, so a page can name the thing to lift even when it cannot
+        # say whether a rule delegates.
+        "suppressing_rule_types": suppressing_rule_types if snoozes_known else (),
         # both_types must stay empty in the unknown path: it is the
         # intersection with the INERT set, which is not known.
         "both_types": (),
@@ -355,6 +393,7 @@ def watchlist_liveness(
         "live_types": tuple(sorted(firing)),
         "inert_types": tuple(sorted(inert)),
         "suppressed_types": tuple(sorted(suppressed)) if snoozes_known else (),
+        "suppressing_rule_types": suppressing_rule_types if snoozes_known else (),
         # ⭐ The intersection, DERIVED here once rather than recomputed in each
         # template that needs it. #116 made these two independent flags in this
         # module and left every surface rendering them as an `{% elif %}` chain,

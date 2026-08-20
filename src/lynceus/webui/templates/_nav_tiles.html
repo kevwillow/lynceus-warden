@@ -20,8 +20,19 @@
 {% endmacro %}
 
 <nav class="nav-tiles" aria-label="sections">
+  {# ⛔ The note is about `unacked` whenever there is no high-severity headline
+     to lead with. It used to read "none unacknowledged" on the strength of
+     `high_30d == 0` alone, so a board with seven unacknowledged medium alerts
+     rendered `alerts | 7 | none unacknowledged` -- the count and the words
+     denying it, inside one tile. Measured at cca7c5c.
+
+     ⚠️ That is the accessible name, which the note at the top of this file
+     says is the entire reason the tile exists: a screen-reader user heard
+     "alerts, 7, none unacknowledged" and had nothing else to go on. The colour
+     was already correct (`warn`), which is exactly why this survived a look. #}
   {{ tile('/alerts', 'alerts', tiles.unacked,
-          (tiles.high_30d ~ ' high in 30d') if tiles.high_30d else 'none unacknowledged',
+          (tiles.high_30d ~ ' high in 30d') if tiles.high_30d
+            else ('unacknowledged' if tiles.unacked else 'none unacknowledged'),
           'alert' if tiles.high_30d else ('warn' if tiles.unacked else '')) }}
 
   {{ tile('/devices', 'devices', tiles.devices,

@@ -55,7 +55,16 @@
       <span class="status-pill status-pill-warn">{{ liveness.suppressed_count }} snoozed</span>
       {{ liveness.suppressed_count }} of {{ liveness.total }}
       {% if liveness.total == 1 %}entry is{% else %}entries are{% endif %}
+      {# ⛔ The RULE TYPE, not the pattern type. `/rules` is keyed on rule_type
+         and offers no control under a pattern_type, so "you snoozed `ssid`.
+         Lift it on the rules page" named something that page does not have --
+         measured: /rules renders `watchlist_ssid` and never `ssid`. The pattern
+         types are still shown, as what the snooze SILENCES, because that is the
+         half that explains the count beside it. #}
       silenced by a rule_type snooze: you snoozed
+      {% for rt in liveness.suppressing_rule_types %}<code>{{ rt }}</code>{% if not loop.last %}, {% endif %}{% endfor %},
+      which
+      {% if liveness.suppressed_types | length == 1 %}serves{% else %}serve{% endif %}
       {% for pt in liveness.suppressed_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
       Lift it on the rules page.
     </p>

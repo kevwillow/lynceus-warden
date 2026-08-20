@@ -586,9 +586,15 @@
         🔕 <strong>{{ watchlist_liveness.suppressed_count }} of your entries
         {% if watchlist_liveness.suppressed_count == 1 %}is{% else %}are{% endif %}
         snoozed, not dead.</strong>
+        {# ⛔ Same correction as /watchlist: the identifier has to be the one
+           `/rules` offers a control under. This sentence sends the operator to
+           that page by name, so naming a pattern_type sends them to look for a
+           button that is not there. #}
         You silenced
-        {% for pt in watchlist_liveness.suppressed_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
-        from the <a href="/rules">rules page</a>.
+        {% for rt in watchlist_liveness.suppressing_rule_types %}<code>{{ rt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+        from the <a href="/rules">rules page</a>, which
+        {% if watchlist_liveness.suppressed_types | length == 1 %}serves{% else %}serve{% endif %}
+        {% for pt in watchlist_liveness.suppressed_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
         {# 🪤 BOTH sentences are conditional, not just the second one. The first
            fix here scoped "nothing in rules.yaml needs changing" and left "the
            rules still match, the alerts are dropped until the snooze expires"
@@ -736,10 +742,25 @@
           &mdash;
         {% endif %}
       </dd>
+      {# ⛔ The file this process LOADED, when it is known. This row rendered
+         `paths.default_config_path("user")` unconditionally, under a heading
+         that calls the page "a read-only view of the active configuration" --
+         so a system-scope install, or any `--config <elsewhere>`, was shown a
+         path it had not loaded and could edit with no effect. #}
       <dt>config path</dt>
-      <dd><code>{{ system.config_path }}</code></dd>
-      <dt>log path</dt>
-      <dd><code>{{ system.log_dir }}</code></dd>
+      {% if system.config_path %}
+        <dd><code>{{ system.config_path }}</code></dd>
+      {% else %}
+        <dd>not recorded by this process &mdash;
+          <code>{{ system.config_path_default }}</code> is the user-scope
+          default location, which is not necessarily the file in use.</dd>
+      {% endif %}
+      {# ⚠️ Labelled as the default, because it is one: the scope is assumed
+         `user` and nothing here reads where this daemon actually writes. A
+         system-scope install logs to /var/log/lynceus. #}
+      <dt>default log path</dt>
+      <dd><code>{{ system.log_dir_default }}</code> <small class="dim">(user
+        scope)</small></dd>
     </dl>
   </article>
 {% endblock %}

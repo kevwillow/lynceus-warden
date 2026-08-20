@@ -1112,7 +1112,12 @@ def _watchlist_freshness_summary(
     }
 
 
-def _build_settings_context(config: Config, db: Database, kismet_status: dict) -> dict:
+def _build_settings_context(
+    config: Config,
+    db: Database,
+    kismet_status: dict,
+    loaded_config_path: str | Path | None = None,
+) -> dict:
     """Compute the read-only /settings page payload.
 
     Sensitive values (Kismet token, full ntfy topic) are redacted on the
@@ -1152,6 +1157,12 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
         else paths.default_overrides_path("user")
     )
     config_path_default = paths.default_config_path("user")
+    # ⚠️ `"user"` for both, and that scope is an assumption, not a reading. A
+    # system-scope install logs to /var/log/lynceus and keeps its config under
+    # /etc; nothing here knows which it is. The config half is answerable --
+    # the loaded path is passed to `create_app` -- so it is answered; the log
+    # half is not, and the page now labels it as the default rather than as
+    # this daemon's.
     log_dir_default = paths.default_log_dir("user")
 
     try:
@@ -1315,8 +1326,11 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             "db_path": str(db_path),
             "db_size_human": db_size_human,
             "db_mtime": db_mtime,
-            "config_path": str(config_path_default),
-            "log_dir": str(log_dir_default),
+            # The file this process actually loaded, or None when the caller
+            # did not say. Never the default dressed up as the active one.
+            "config_path": str(loaded_config_path) if loaded_config_path else None,
+            "config_path_default": str(config_path_default),
+            "log_dir_default": str(log_dir_default),
         },
     }
 
@@ -1494,17 +1508,39 @@ def _resolve_allowlist_match(
     config: Config,
     alert_mac: str | None,
     now_ts: int,
-) -> tuple[AllowlistEntry | None, bool, bool]:
+) -> tuple[AllowlistEntry | None, bool, bool, str | None]:
     """Look up the alert's MAC across both allowlist files.
 
-    Returns ``(match, removable, configured)``:
+    Returns ``(match, removable, configured, source)``:
 
     - ``match``: the matched ``AllowlistEntry``, or ``None``.
     - ``removable``: True only when the match came from the daemon-managed
-      UI sibling. Primary-file entries are operator-curated; the daemon
-      never writes to ``allowlist.yaml``, so the UI cannot remove them.
-      The triage section renders status without a button in that case
-      with a hint to edit the primary file directly.
+      UI sibling AND is an exact ``mac`` entry, which is the only shape the
+      remove endpoints can address. Primary-file entries are
+      operator-curated; the daemon never writes to the primary file, so the
+      UI cannot remove them. The triage section renders status without a
+      button in those cases, with a hint naming what to do instead.
+
+      ⛔ The "exact mac" half was missing and the button lied. ``/allowlist``
+      offers an add form with a ``pattern_type`` dropdown, so an operator can
+      put an ``oui`` or ``mac_range`` entry in the UI file; it then covers this
+      device (the matcher honours all three shapes) and ``removable`` said
+      True, while both remove endpoints delete ``(mac, "mac")`` and find
+      nothing. Measured at cca7c5c: an ``oui`` UI entry, "Remove from
+      allowlist" clicked, **303 back to the page, the file byte-identical, the
+      device still silenced** -- a success redirect over a write that never
+      happened, which is this project's signature defect.
+
+      ⚠️ Deliberately NOT fixed by making the button remove whatever matched.
+      An ``oui`` entry silences a whole prefix; lifting it from a per-device
+      button would un-silence every other device it covers, without saying so.
+      The offer is narrowed and the covering entry is named instead, with
+      ``/allowlist``, which removes UI entries by composite key, as the remedy.
+
+    - ``source``: ``"primary"``, ``"ui"``, or ``None`` when there is no match.
+      The template needs the two non-removable cases to read differently:
+      a primary-file entry is edited by hand, a non-mac UI entry is removed on
+      ``/allowlist``.
     - ``configured``: True when ``config.allowlist_path`` is set. When
       False, the triage section is hidden entirely, parity with the
       /allowlist read-only view.
@@ -1513,7 +1549,7 @@ def _resolve_allowlist_match(
     read-only view. No caching: edits land instantly without invalidation.
     """
     if not config.allowlist_path or alert_mac is None:
-        return None, False, bool(config.allowlist_path)
+        return None, False, bool(config.allowlist_path), None
     primary_path = Path(config.allowlist_path)
     try:
         primary_entries = allowlist_mod._load_primary(primary_path).entries
@@ -1522,11 +1558,11 @@ def _resolve_allowlist_match(
     ui_entries = allowlist_mod._load_ui_entries(derive_ui_path(primary_path))
     primary_match = _match_mac_in_entries(primary_entries, alert_mac, now_ts)
     if primary_match is not None:
-        return primary_match, False, True
+        return primary_match, False, True, "primary"
     ui_match = _match_mac_in_entries(ui_entries, alert_mac, now_ts)
     if ui_match is not None:
-        return ui_match, True, True
-    return None, False, True
+        return ui_match, ui_match.pattern_type == "mac", True, "ui"
+    return None, False, True, None
 
 
 def _resolve_silence_states(
@@ -2203,10 +2239,22 @@ def _check_alerts(db: Database, *, now_ts: int) -> dict:
     }
 
 
-def create_app(config: Config, db: Database) -> FastAPI:
+def create_app(
+    config: Config, db: Database, *, config_path: str | Path | None = None
+) -> FastAPI:
     """App factory. Takes a live Config and Database. Used by both the production
     server entry point and the test client. Does NOT open the DB itself — that's the
-    caller's responsibility, so tests can inject an in-memory or tmp_path DB."""
+    caller's responsibility, so tests can inject an in-memory or tmp_path DB.
+
+    ``config_path`` is the file this ``Config`` was loaded FROM. ``/settings``
+    showed ``paths.default_config_path("user")`` under the heading "Read-only
+    view of the active configuration", which is a convention rather than a fact
+    about this process: a system-scope install, or any `lynceus-ui --config
+    <elsewhere>`, saw a path it had not loaded and could edit it all day. The
+    entry point requires ``--config``, so in production this is always known;
+    when it is not, the page says the location is the default rather than
+    calling it the active one.
+    """
 
     app = FastAPI(
         title="lynceus",
@@ -2218,6 +2266,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     app.state.db = db
     app.state.config = config
+    # The path `config` was read from, or None. Read at render time from
+    # app.state for the same reason the file-name globals below are callables.
+    app.state.config_path = str(config_path) if config_path else None
     app.state.templates = Jinja2Templates(directory=str(_resolve_templates_dir()))
     app.state.templates.env.globals["csrf_token"] = lambda request: get_csrf_token(request)
     # AGPL-3.0 §13: anyone interacting with this over a network must be able to
@@ -2918,9 +2969,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 evidence["gps_alt"] = None
                 evidence["gps_captured_at"] = None
         now_ts = int(time.time())
-        allowlist_match, allowlist_match_removable, allowlist_configured = (
-            _resolve_allowlist_match(app.state.config, alert.get("mac"), now_ts)
-        )
+        (
+            allowlist_match,
+            allowlist_match_removable,
+            allowlist_configured,
+            allowlist_match_source,
+        ) = _resolve_allowlist_match(app.state.config, alert.get("mac"), now_ts)
         snooze_hours_remaining: int | None = None
         if (
             allowlist_match is not None
@@ -2952,6 +3006,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "rssi_sparkline_svg": rssi_sparkline_svg,
                 "allowlist_match": allowlist_match,
                 "allowlist_match_removable": allowlist_match_removable,
+                "allowlist_match_source": allowlist_match_source,
                 "allowlist_configured": allowlist_configured,
                 "snooze_hours_remaining": snooze_hours_remaining,
                 "snooze_duration_options": list(_SNOOZE_DURATIONS.keys()),
@@ -3408,7 +3463,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # operator file) get the same 303 back to /alerts/<id>. The
         # template re-renders against the current state and shows the
         # truth, which is more useful than a stale error message.
-        remove_ui_entry(ui_path, result["mac"], "mac")
+        #
+        # ⚠️ Through an AllowlistEntry, per `remove_ui_entry`'s documented
+        # contract: it compares the pattern AS STORED, so a raw `alerts.mac`
+        # could miss a normalised stored entry and no-op. The device-side
+        # route has always done this; this one passed the raw column.
+        entry = AllowlistEntry(pattern=result["mac"], pattern_type="mac")
+        remove_ui_entry(ui_path, entry.pattern, "mac")
         return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
 
     @app.post("/alerts/{alert_id}/note")
@@ -4228,9 +4289,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         surface's own state resolver) so the "silence" section behaves
         identically to the alert-detail allowlist section.
         """
-        allowlist_match, allowlist_match_removable, allowlist_configured = (
-            _resolve_allowlist_match(app.state.config, mac, now_ts)
-        )
+        (
+            allowlist_match,
+            allowlist_match_removable,
+            allowlist_configured,
+            allowlist_match_source,
+        ) = _resolve_allowlist_match(app.state.config, mac, now_ts)
         snooze_hours_remaining: int | None = None
         if allowlist_match is not None and allowlist_match.expires_at is not None:
             seconds_left = max(0, allowlist_match.expires_at - now_ts)
@@ -4242,6 +4306,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "watch_source_alert_id": db.get_most_recent_alert_id_for_mac(mac),
             "allowlist_match": allowlist_match,
             "allowlist_match_removable": allowlist_match_removable,
+            "allowlist_match_source": allowlist_match_source,
             "allowlist_configured": allowlist_configured,
             "snooze_hours_remaining": snooze_hours_remaining,
             "severities": db._ALERT_SEVERITIES,
@@ -5615,7 +5680,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
     def settings_view(request: Request):
         now = time.time()
         kismet_status = _get_kismet_status(app, now)
-        ctx = _build_settings_context(app.state.config, db, kismet_status)
+        ctx = _build_settings_context(
+            app.state.config, db, kismet_status, app.state.config_path
+        )
         return app.state.templates.TemplateResponse(
             request=request,
             name="settings.html",
