@@ -1242,6 +1242,19 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             "class_counts": ble_class_counts,
             "decoded_total": sum(ble_class_counts.values()),
             "rules_unreadable": rules_unreadable,
+            # ⛔ THREE-valued, and it has to be. `None` means we could not
+            # determine the rule state (no rules_path, or a ruleset that will
+            # not parse) -- the panel must not answer ON or OFF there, because
+            # both would be claims this function never established. Derived
+            # from the LOADED ruleset and never from `config.ble_bridge.enabled`
+            # or from an assumption about the shipped default: the operator may
+            # have turned the rule off, and a panel that cannot represent that
+            # is the same defect this line was added to report.
+            "find_my_rule_enabled": (
+                None
+                if enabled_rule_types is None
+                else "ble_device_class" in enabled_rule_types
+            ),
         },
         "kismet": {
             "url": config.kismet_url,

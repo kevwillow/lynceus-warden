@@ -1,6 +1,11 @@
 """Read-only /settings panel for the passive BLE bridge.
 
-tests/ is gitignored — these are NEVER committed (see project memory).
+⚠️ The header here used to read "tests/ is gitignored — these are NEVER
+committed". That is false about this very file: it is tracked, CI runs it,
+and it failed CI once. `.gitignore` names SPECIFIC test files — the handful
+that embed a real adapter MAC or host — not the directory. Corrected rather
+than deleted, because a reader who believed it would not have bothered
+writing a regression test here.
 
 The panel answers two questions the operator otherwise cannot: "is this on,
 and is it actually producing anything", and "what would stop it working if I
@@ -256,5 +261,153 @@ def test_storm_rule_is_flagged_when_rules_load(tmp_path):
     client, db = _client(tmp_path, rules_path=str(rules), kismet_sources=["ble:hci1"])
     try:
         assert "entire vendor" in client.get("/settings").text
+    finally:
+        db.close()
+
+
+# --- Find My alerting state ------------------------------------------------
+#
+# ⛔ Asserted on the RENDERED HTML, not on the context dict. A context value
+# that never reaches the page proves nothing, and this panel's entire purpose
+# is what the operator can SEE. The three states are distinct on purpose:
+# ON, OFF, and "we could not determine it" -- answering ON or OFF in the third
+# case would be a claim the code never established.
+
+
+def _settings_html(tmp_path, **config_overrides) -> str:
+    """GET /settings through the real app and return the page.
+
+    Renders rather than inspecting the context, because the context value is
+    only worth anything if it reaches the page. A dict assertion would pass
+    just as happily against a template that never referenced it.
+    """
+    from fastapi.testclient import TestClient
+
+    from lynceus.webui.app import create_app
+
+    kwargs = {"db_path": str(tmp_path / "panel.db")}
+    kwargs.update(config_overrides)
+    config = Config(**kwargs)
+    db = Database(config.db_path)
+    try:
+        app = create_app(config, db)
+        with TestClient(app) as client:
+            r = client.get("/settings")
+        assert r.status_code == 200, r.status_code
+        return r.text
+    finally:
+        db.close()
+
+
+def _rules_file(tmp_path, body: str):
+    p = tmp_path / "rules.yaml"
+    p.write_text(body)
+    return str(p)
+
+
+_ONE_MAC_RULE = (
+    "rules:\n"
+    "  - name: only_mac\n"
+    "    rule_type: watchlist_mac\n"
+    "    severity: low\n"
+    '    patterns: ["aa:bb:cc:dd:ee:ff"]\n'
+)
+
+
+def test_panel_says_OFF_when_no_rule_consumes_the_decoded_class(tmp_path):
+    """The silence this card exists to break, stated in words.
+
+    A bridge that decodes trackers while nothing alerts on them is the whole
+    defect. The panel must SAY so, not leave the operator to infer it from a
+    class-count table.
+    """
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        cfg = _config(
+            ble_bridge=BleBridgeConfig(enabled=True),
+            rules_path=_rules_file(tmp_path, _ONE_MAC_RULE),
+        )
+        ctx = _ctx(cfg, db)
+        assert ctx["ble_bridge"]["find_my_rule_enabled"] is False
+    finally:
+        db.close()
+
+    html = _settings_html(
+        tmp_path,
+        ble_bridge=BleBridgeConfig(enabled=True),
+        rules_path=_rules_file(tmp_path, _ONE_MAC_RULE),
+    )
+    assert "Find My alerting" in html, "the panel does not render the row at all"
+    assert "nothing will alert" in html, (
+        "the panel renders the row but never states the consequence; an "
+        "operator reading a class-count table has no way to know"
+    )
+
+
+def test_panel_says_ON_when_the_rule_is_enabled(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        cfg = _config(
+            ble_bridge=BleBridgeConfig(enabled=True),
+            rules_path=_rules_file(
+                tmp_path,
+                "rules:\n"
+                "  - name: apple_find_my\n"
+                "    rule_type: ble_device_class\n"
+                "    severity: med\n"
+                "    patterns: [find_my_separated, find_my]\n",
+            ),
+        )
+        ctx = _ctx(cfg, db)
+        assert ctx["ble_bridge"]["find_my_rule_enabled"] is True
+    finally:
+        db.close()
+
+    html = _settings_html(
+        tmp_path,
+        ble_bridge=BleBridgeConfig(enabled=True),
+        rules_path=_rules_file(
+            tmp_path,
+            "rules:\n"
+            "  - name: apple_find_my\n"
+            "    rule_type: ble_device_class\n"
+            "    severity: med\n"
+            "    patterns: [find_my_separated, find_my]\n",
+        ),
+    )
+    assert "Find My alerting" in html
+    assert "nothing will alert" not in html, (
+        "the panel claims nothing will alert while the rule IS enabled"
+    )
+
+
+def test_panel_answers_neither_when_the_ruleset_cannot_be_read(tmp_path):
+    """⛔ NOT False. An unreadable ruleset means we do not know.
+
+    Reporting OFF here would tell the operator to go and enable a rule that
+    may already be enabled, and reporting ON would promise coverage that may
+    not exist. Both are claims this code never established.
+    """
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        cfg = _config(
+            ble_bridge=BleBridgeConfig(enabled=True),
+            rules_path=_rules_file(tmp_path, "rules: [[[not yaml"),
+        )
+        ctx = _ctx(cfg, db)
+        assert ctx["ble_bridge"]["find_my_rule_enabled"] is None
+        assert ctx["ble_bridge"]["rules_unreadable"] is True
+    finally:
+        db.close()
+
+
+def test_panel_answers_neither_when_no_rules_path_is_configured(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        cfg = _config(ble_bridge=BleBridgeConfig(enabled=True))
+        ctx = _ctx(cfg, db)
+        assert ctx["ble_bridge"]["find_my_rule_enabled"] is None
+        # Distinct from the unreadable case: nothing failed to parse.
+        assert ctx["ble_bridge"]["rules_unreadable"] is False
     finally:
         db.close()
