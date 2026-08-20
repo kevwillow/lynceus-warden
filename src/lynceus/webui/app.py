@@ -1165,7 +1165,14 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
     # alert-storm gate can be checked too — but only if the ruleset actually
     # loads. When it does not we cannot evaluate that gate, and the panel says
     # so rather than rendering a clean result that means "not checked".
-    enabled_rule_types: list[str] = []
+    # ⛔ `None` means WE DO NOT KNOW the rule state; `[]` means we looked and
+    # found no enabled rules. They are different claims and collapsing them
+    # makes the readiness check guess. With no `rules_path` there is no ruleset
+    # to read, and when one exists but will not parse we know less still -- in
+    # both cases a "nothing consumes the decoded class" warning would be
+    # asserting something this function never established. An empty LIST, by
+    # contrast, is a real and reportable finding: rules loaded, none enabled.
+    enabled_rule_types: list[str] | None = None
     rules_unreadable = False
     if config.rules_path:
         try:
@@ -1176,6 +1183,7 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             ]
         except Exception:
             rules_unreadable = True
+            enabled_rule_types = None
 
     try:
         ble_class_counts = db.count_devices_by_ble_device_class()

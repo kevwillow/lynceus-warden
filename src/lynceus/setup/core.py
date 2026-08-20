@@ -1828,12 +1828,19 @@ def apply_config(
     # exact defect the packet exists to fix; the no-bridge-no-delegation
     # case still writes nothing (the legacy behaviour).
     if config.rules_path and (enabled_rule_types or config.ble_bridge.enabled):
+        # ⛔ `enabled_rule_types` is `set[str] | None`, and until the bridge leg
+        # was added to the gate above, the gate ITSELF guaranteed it was truthy
+        # by the time control reached here. It no longer does: an operator with
+        # the bridge on and no alerting selection opens this branch with None,
+        # and `rt in None` is a TypeError, not a quiet wrong answer. Widening a
+        # guard silently changes what every line under it may assume.
+        selected: set[str] = enabled_rule_types or set()
         rules_target = Path(config.rules_path)
         rules_target.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(
             rules_target,
             render_rules_yaml(
-                enabled_rule_types,
+                selected,
                 ble_bridge_enabled=config.ble_bridge.enabled,
             ),
         )
@@ -1845,7 +1852,7 @@ def apply_config(
         # in the file we just wrote (the old definition under-counted
         # by one when the bridge was on but no delegation types were).
         active = sorted(
-            rt for (_n, rt, _pt, _l, _d) in DELEGATION_RULES if rt in enabled_rule_types
+            rt for (_n, rt, _pt, _l, _d) in DELEGATION_RULES if rt in selected
         )
         if config.ble_bridge.enabled:
             active.append("ble_device_class")

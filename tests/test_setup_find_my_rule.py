@@ -396,3 +396,39 @@ def test_cli_declining_argus_alerting_writes_nothing_when_bridge_off(
         "wrote a rules.yaml for an operator who declined alerting and has no "
         "BLE bridge -- that is a behavioural change they never asked for"
     )
+
+
+def test_apply_config_bridge_on_with_none_rule_types_does_not_crash(tmp_path):
+    """`enabled_rule_types=None` + bridge on must not TypeError.
+
+    ⛔ Found by CI, not by the targeted tests written alongside the change.
+    `apply_config` declares `enabled_rule_types: set[str] | None`, and before
+    the BLE-bridge leg was added to the write gate, the gate ITSELF guaranteed
+    the value was truthy by the time the code below it ran. Widening a guard
+    silently changes what every line under it may assume: with the bridge on
+    and no alerting selection, `rt in enabled_rule_types` became `rt in None`.
+
+    A crash, not a wrong answer -- which is why no assertion caught it and a
+    caller in an unrelated test file did.
+    """
+    target = tmp_path / "lynceus.yaml"
+    rules_path = tmp_path / "rules.yaml"
+    config = Config(
+        kismet_url="http://localhost:2501",
+        db_path=str(tmp_path / "l.db"),
+        rules_path=str(rules_path),
+        ble_bridge=BleBridgeConfig(enabled=True),
+    )
+    report = apply_config(
+        config,
+        scope="user",
+        target_path=target,
+        severity_overrides_path=tmp_path / "severity.yaml",
+        allowlist_path=tmp_path / "allowlist.yaml",
+        enabled_rule_types=None,
+        run_bundled_import=False,
+    )
+    assert report is not None
+    assert rules_path.exists(), "bridge on + None selection wrote no rules.yaml"
+    names = [r.name for r in rules_mod.load_ruleset(str(rules_path)).rules]
+    assert names == ["apple_find_my"], f"unexpected rules: {names}"
