@@ -3807,6 +3807,41 @@ and a wedged notifier burns all four attempts inside twenty minutes.
 
 Probe: `internal/session2-harnesses/clock_ahead_blocks_escalation_retry.py`.
 
+### Post-merge verification of Round 18 — two claims measured, one lead dispositioned
+
+⭐ **The "bounded" claim in Finding 65 was an ASSERTION and is now a MEASUREMENT.** The register and a
+code comment both said the relaxed spacing gate is *"still bounded by `NOTIFY_MAX_ATTEMPTS`"*.
+⇒ [[an-exemption-is-a-claim]]. Measured on a future-stamped row across **20 corrected ticks**:
+
+```
+sends FAILING     notify_attempts = 4  (cap = 4)   delivered = False
+sends SUCCEEDING  notify_attempts = 2              delivered = True,  deliveries = 1
+```
+
+Both halves matter. The failing arm proves it is **bounded, not an unbounded resend loop**; the
+succeeding arm proves the operator is told **exactly once**, because `notified_at` stops the retry on
+its next pass. Probe: `internal/session2-harnesses/f65_bounded_check.py`.
+
+⬜ **REFUTED — "cap-induced loss in the truncate-then-CAS logic".** The adversarial read of the merged
+diff produced exactly one claim: that a `probe_ssids` list already at `PROBE_SSIDS_PER_DEVICE_CAP`
+drops new SSIDs. **True, pre-existing, and not silent.** Measured byte-identical on the merged tree
+and on `dc06863` before the change:
+
+```
+cap = 50;  fill to cap -> (50, truncated=False);  then add x,y -> (50, truncated=True)
+stored has x? False   stored has y? False   len = 50
+```
+
+The caller is warned — `truncated=True` drives `poller.py`'s *"probe_ssids cap reached for %s"*. It is
+the documented cap doing its job, not a defect the read-CAS-retry introduced.
+
+⚠️ **Rig calibration, worth more than the finding.** The verification reads were run **four times**
+through `opencode run` (two lenses × two attempts, with the second attempt's context de-duplicated)
+and **all four returned EMPTY** — 32 bytes, header only. The **tmux TUI channel, given the same
+packet, worked first time** and reasoned for 7 minutes. ⇒ **A repeated `opencode run` no-op is not
+proof that M3 cannot do the work; try the other channel before concluding anything.** codex was
+quota-exhausted throughout, so there was no model to swap to.
+
 ### The M3 red-team of Round 18 — what it found, and what came back empty
 
 ⛔ **codex was exhausted** (quota, exit 1 in seconds with an empty `-o` — distinct from the
