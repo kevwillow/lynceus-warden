@@ -401,6 +401,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+- **Four surfaces promised the operator something they could not get.** Each was
+  measured on a rendered page, not reasoned about.
+
+  **The home page's alerts tile denied the count printed inside it.** The note
+  was chosen from the 30-day high-severity count alone, so a board with seven
+  unacknowledged medium alerts and no highs rendered `alerts | 7 | none
+  unacknowledged`. The colour was already right — the tile was flagged `warn` —
+  which is how this survived being looked at. The accessible name mattered more
+  than the layout here: the template's own note says the count is inside the
+  link text precisely so a screen-reader user hears "alerts, 42 unacknowledged,
+  3 high", and what they actually heard was "alerts, 7, none unacknowledged".
+
+  **Two pages sent the operator to `/rules` to lift a snooze under a name that
+  page does not use.** `/settings` said *"You silenced `ssid` from the rules
+  page"* and `/watchlist` said *"you snoozed `ssid`. Lift it on the rules
+  page"* — but a snooze is keyed on the **rule type**, `watchlist_ssid`, and
+  `/rules` offers no control called `ssid`. The helper that maps between the two
+  already exists, and its docstring records this exact sentence being wrong
+  once before; it was fixed on the watchlist detail page and nowhere else. Both
+  sentences now name the rule type to lift and say which pattern types it
+  serves.
+
+  **"Remove from allowlist" was offered for entries it cannot remove.** The
+  allowlist page has an add form with a `pattern_type` dropdown, so an operator
+  can put an `oui` or `mac_range` entry in the UI file; it then covers a device,
+  and the alert and device pages offered a removal button — while both remove
+  endpoints delete an exact `mac` entry. Measured: the click returned a success
+  redirect, the file was byte-identical afterwards, and the device was still
+  silenced.
+
+  The offer is narrowed rather than the button widened. An `oui` entry silences
+  a whole prefix, so lifting it from a per-device button would un-silence every
+  other device it covers without saying so. Instead the page names the entry
+  that is covering the device, the file it lives in, and points at `/allowlist`,
+  which removes UI entries properly. The alert-side endpoint also now passes the
+  canonical stored pattern, per the contract its device-side twin already
+  followed — a raw MAC could miss a normalised entry and no-op.
+
+  **`/settings` showed a config path it had not loaded.** The row rendered the
+  user-scope default location under a heading calling the page "a read-only view
+  of the active configuration", so a system-scope install, or any `lynceus-ui
+  --config <elsewhere>`, was shown a file it could edit with no effect. The
+  entry point requires `--config`, so the real answer was always available and
+  simply discarded; it now travels with the config. When it genuinely is not
+  known the row says so rather than dressing the default up as the active file,
+  and the log path — which nothing here can resolve, since the scope is an
+  assumption — is labelled as the default it is.
+
+  Each fix ships with its control pinned as well as its treatment: the tile
+  still says "none unacknowledged" when nothing is unacknowledged and still
+  leads with the high count when there is one, the removal button is still
+  offered and still works for the exact-MAC entry it can remove, and a
+  primary-file entry still gets the operator-managed hint. Six reversions were
+  planted one at a time and every one was caught.
+
 - **Twenty-one places where the web UI named a config file the daemon does
   not load.** `rules_path` and `allowlist_path` are free-form settings — an operator
   can point either at any filename, and the UI-side allowlist is a *derived*

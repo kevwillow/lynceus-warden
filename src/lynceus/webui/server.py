@@ -50,7 +50,10 @@ def main(argv: list[str] | None = None) -> int:
             format="%(asctime)s %(levelname)s %(name)s %(message)s",
         )
         db = Database(config.db_path)
-        app = create_app(config, db)
+        # ⭐ The path travels with the config. /settings used to render the
+        # user-scope DEFAULT under "active configuration"; --config is required
+        # here, so the real answer was always available and simply discarded.
+        app = create_app(config, db, config_path=args.config)
 
         import uvicorn
 
