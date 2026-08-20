@@ -1827,7 +1827,36 @@ def apply_config(
     # its own prompt, never lands on disk. Widening the gate is the
     # exact defect the packet exists to fix; the no-bridge-no-delegation
     # case still writes nothing (the legacy behaviour).
-    if config.rules_path and (enabled_rule_types or config.ble_bridge.enabled):
+    # ⛔ TWO REASONS TO WRITE, AND THEY DO NOT HAVE THE SAME AUTHORITY.
+    #
+    # A delegation selection is the operator answering a question about their
+    # rules, so writing the file is what they asked for. The BLE bridge being
+    # enabled is NOT that: it is an answer about CAPTURE, and treating it as
+    # permission to replace a rules file was measured destroying a
+    # hand-authored ruleset on a reconfigure -- the operator turned a radio on
+    # and lost their detection rules, with no confirmation and no backup.
+    #
+    # So the bridge leg may CREATE the file and must never OVERWRITE it. The
+    # CLI path has an explicit overwrite prompt for exactly this; apply_config
+    # has no way to ask, so it declines instead of guessing.
+    writing_for_delegation = bool(enabled_rule_types)
+    writing_for_bridge = config.ble_bridge.enabled and not writing_for_delegation
+    rules_target = Path(config.rules_path) if config.rules_path else None
+    if rules_target is not None and writing_for_bridge and rules_target.exists():
+        _emit(
+            ApplyStep(
+                name="write_rules",
+                status="skipped",
+                message=(
+                    f"Left {rules_target} untouched: it already exists, and the "
+                    "only reason to write it was the BLE bridge being enabled. "
+                    "Add an apple_find_my rule by hand to alert on Find My "
+                    "trackers."
+                ),
+                detail={"path": str(rules_target), "reason": "would_overwrite"},
+            )
+        )
+    elif config.rules_path and (writing_for_delegation or writing_for_bridge):
         # ⛔ `enabled_rule_types` is `set[str] | None`, and until the bridge leg
         # was added to the gate above, the gate ITSELF guaranteed it was truthy
         # by the time control reached here. It no longer does: an operator with
@@ -1835,7 +1864,7 @@ def apply_config(
         # and `rt in None` is a TypeError, not a quiet wrong answer. Widening a
         # guard silently changes what every line under it may assume.
         selected: set[str] = enabled_rule_types or set()
-        rules_target = Path(config.rules_path)
+        assert rules_target is not None
         rules_target.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(
             rules_target,

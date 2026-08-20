@@ -432,3 +432,91 @@ def test_apply_config_bridge_on_with_none_rule_types_does_not_crash(tmp_path):
     assert rules_path.exists(), "bridge on + None selection wrote no rules.yaml"
     names = [r.name for r in rules_mod.load_ruleset(str(rules_path)).rules]
     assert names == ["apple_find_my"], f"unexpected rules: {names}"
+
+
+# --- the bridge leg must CREATE, never OVERWRITE ---------------------------
+
+
+def _handwritten_ruleset(path: Path) -> str:
+    body = (
+        "rules:\n"
+        "  - name: my_own_carefully_tuned_rule\n"
+        "    rule_type: watchlist_mac\n"
+        "    severity: high\n"
+        '    patterns: ["de:ad:be:ef:00:01"]\n'
+    )
+    path.write_text(body)
+    return body
+
+
+def _apply(tmp_path, rules_path, *, delegation, bridge):
+    cfg = Config(
+        kismet_url="http://localhost:2501",
+        db_path=str(tmp_path / "l.db"),
+        rules_path=str(rules_path),
+        ble_bridge=BleBridgeConfig(enabled=bridge),
+    )
+    return apply_config(
+        cfg,
+        scope="user",
+        target_path=tmp_path / "lynceus.yaml",
+        severity_overrides_path=tmp_path / "sev.yaml",
+        allowlist_path=tmp_path / "allow.yaml",
+        enabled_rule_types=delegation,
+        run_bundled_import=False,
+    )
+
+
+def test_bridge_only_reconfigure_never_clobbers_a_handwritten_ruleset(tmp_path):
+    """⛔ DATA LOSS. Measured destroying an operator's rules on a reconfigure.
+
+    Enabling the BLE bridge is an answer about CAPTURE. It is not permission to
+    replace a detection ruleset. Before this guard, turning the radio on and
+    re-running setup silently overwrote a hand-authored rules.yaml with a
+    generated one -- no confirmation, no backup, and the operator's rules were
+    simply gone.
+
+    The CLI path has an explicit overwrite prompt for exactly this case.
+    apply_config has no way to ask, so it must decline rather than guess.
+    """
+    rules_path = tmp_path / "rules.yaml"
+    original = _handwritten_ruleset(rules_path)
+
+    _apply(tmp_path, rules_path, delegation=None, bridge=True)
+
+    assert rules_path.read_text() == original, (
+        "a bridge-only reconfigure REPLACED the operator's hand-authored "
+        "rules.yaml. Enabling a radio must never destroy detection rules."
+    )
+
+
+def test_bridge_only_may_still_create_the_file_when_absent(tmp_path):
+    """The guard must not become "the bridge never writes at all".
+
+    ⭐ The paired half. Without this, the fix above could be satisfied by
+    disabling the bridge leg entirely, which silently reinstates the original
+    defect: a wizard user who enables the bridge gets no Find My rule.
+    """
+    rules_path = tmp_path / "rules.yaml"
+    assert not rules_path.exists()
+
+    _apply(tmp_path, rules_path, delegation=None, bridge=True)
+
+    assert rules_path.exists(), "bridge on + no existing file wrote nothing"
+    names = [r.name for r in rules_mod.load_ruleset(str(rules_path)).rules]
+    assert names == ["apple_find_my"], names
+
+
+def test_a_delegation_selection_is_an_answer_about_rules_and_may_overwrite(tmp_path):
+    """Pins the distinction, so the guard is not widened to cover this too.
+
+    Selecting delegation rule_types IS the operator answering a question about
+    their rules, so writing the file is what they asked for. That path's
+    overwrite behaviour predates this change and is deliberately unaltered.
+    """
+    rules_path = tmp_path / "rules.yaml"
+    original = _handwritten_ruleset(rules_path)
+
+    _apply(tmp_path, rules_path, delegation={"watchlist_mac"}, bridge=True)
+
+    assert rules_path.read_text() != original

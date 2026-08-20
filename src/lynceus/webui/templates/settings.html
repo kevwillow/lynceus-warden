@@ -119,7 +119,12 @@
             so no rules are loaded at all.
           {% endif %}
         {% elif ble_bridge.find_my_rule_enabled %}
-          ON — <code>apple_find_my</code> is enabled.
+          {# ⛔ Says rule TYPE, not rule NAME. What was actually checked is that
+             some enabled rule has rule_type ble_device_class -- its patterns
+             were never inspected, so a rule matching only `airpods` would land
+             here. Naming apple_find_my would assert something no code
+             verified. #}
+          ON — a <code>ble_device_class</code> rule is enabled.
         {% else %}
           <strong>OFF</strong> — trackers are decoded and counted here,
           but <strong>nothing will alert</strong> on them.

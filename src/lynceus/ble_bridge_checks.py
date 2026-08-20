@@ -375,8 +375,10 @@ def check_bridge_readiness(
                     "can still match your other rules by MAC, vendor or SSID."
                 ),
                 remedy=(
-                    "Enable the apple_find_my block in config/rules.yaml -- it is "
-                    "the rule that matches the decoded class."
+                    "Add or uncomment an apple_find_my rule (rule_type: "
+                    "ble_device_class) in the rules file this daemon actually "
+                    "loads -- `rules_path` in lynceus.yaml, which is not "
+                    "necessarily the config/rules.yaml shipped in the repo."
                 ),
             )
         )
