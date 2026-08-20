@@ -118,3 +118,45 @@ def test_unknown_rule_state_is_silent_but_known_empty_warns():
         "the case the operator most needs told about -- do not collapse it "
         "with the unknown case"
     )
+
+
+def test_wizard_callers_pass_unknown_not_empty():
+    """Both setup wizards must say "I do not know", not "I found none".
+
+    ⛔ The call sites are the load-bearing part and they look innocuous. Both
+    wizards evaluate bridge readiness BEFORE the operator has chosen any rule
+    types -- their own comments say so -- and both used to pass `()`, which was
+    indistinguishable from None until this warning existed.
+
+    With `()` they print "no enabled rule consults the decoded class" to an
+    operator who has not been asked about rules yet: false at that moment, and
+    displayed under a heading saying it would stop the bridge working. A
+    warning that fires where the operator cannot act on it is the noise this
+    module's own docstring says it exists to avoid.
+
+    Asserted against the SOURCE of the two call sites, because the wizards
+    reach them through interactive flows that a unit test cannot drive, and a
+    revert to `()` would be silent everywhere else.
+    """
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    call_sites = [
+        repo / "src" / "lynceus" / "cli" / "setup.py",
+        repo / "src" / "lynceus" / "setup" / "web" / "steps_capture.py",
+    ]
+    for path in call_sites:
+        src = path.read_text()
+        assert "collect_bridge_warnings(" in src, (
+            f"{path.name} no longer calls collect_bridge_warnings; this guard "
+            f"is now watching nothing and must be repointed, not deleted"
+        )
+        assert "enabled_rule_types=None" in src, (
+            f"{path.name} does not pass enabled_rule_types=None"
+        )
+        assert "enabled_rule_types=()" not in src, (
+            f"{path.name} passes an EMPTY TUPLE for enabled_rule_types. This "
+            f"caller runs BEFORE rule types are chosen, so it does not know "
+            f"them; () claims it looked and found none, and over-reports the "
+            f"no-consumer warning to an operator who has not been asked yet."
+        )

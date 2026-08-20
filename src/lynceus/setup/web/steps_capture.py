@@ -96,7 +96,10 @@ async def ble_names_get(request: Request) -> HTMLResponse:
     bridge_warnings = collect_bridge_warnings(
         adapter=_DEFAULT_BLE_ADAPTER,
         kismet_sources=session.answers.get("kismet_sources"),
-        enabled_rule_types=(),
+        # ⛔ None, not () -- see the CLI wizard's copy of this call. Rule types
+        # are chosen in a later step, so this caller does not know them; () now
+        # asserts "looked, found none enabled" and over-reports here.
+        enabled_rule_types=None,
     )
     return _render(
         request,

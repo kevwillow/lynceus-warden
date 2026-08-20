@@ -371,7 +371,8 @@ def check_bridge_readiness(
                     "The bridge decodes an Apple Continuity class for every Apple "
                     "device it hears, including Find My trackers, and no enabled "
                     "rule consults it -- so those adverts are decoded, counted "
-                    "and recorded, and raise no alert."
+                    "and recorded, and raise no alert ON THAT BASIS. Such a device "
+                    "can still match your other rules by MAC, vendor or SSID."
                 ),
                 remedy=(
                     "Enable the apple_find_my block in config/rules.yaml -- it is "

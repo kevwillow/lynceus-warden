@@ -1188,7 +1188,13 @@ Lynceus default is OFF.
     bridge_warnings = collect_bridge_warnings(
         adapter=bridge_adapter,
         kismet_sources=kismet_sources,
-        enabled_rule_types=(),
+        # ⛔ None, not (), and the comment above says why: the rule types are not
+        # chosen yet, so we do not KNOW the rule state. An empty tuple now claims
+        # we looked and found none enabled, which would print "no enabled rule
+        # consults the decoded class" to an operator who has not been asked about
+        # rules yet -- false at this moment, and shown under a heading saying it
+        # would stop the bridge working.
+        enabled_rule_types=None,
     )
     if bridge_warnings:
         print(f"Before you decide, {len(bridge_warnings)} thing(s) would stop this working here:")
