@@ -42,6 +42,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   writes `rules.yaml`, including the one the CLI writes after applying config —
   which previously overwrote the correct file moments after it was produced.
 
+- **Setup no longer replaces a hand-authored `rules.yaml` because you turned a
+  radio on.** Enabling the passive BLE bridge is an answer about capture, not
+  permission to rewrite a detection ruleset — and a bridge-only reconfigure was
+  measured destroying one, with no confirmation and no backup. The bridge may
+  now create that file when it is absent and will never overwrite it; the step
+  says which it did. Selecting watchlist rule types is still the operator
+  answering a question about their rules, so that path is unchanged.
+
 - **The BLE bridge panel now warns when nothing consumes what it decodes.** An
   operator could enable the bridge, buy the second adapter it requires, watch a
   `find_my_separated` count climb on `/settings`, and never be alerted, while
