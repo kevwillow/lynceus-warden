@@ -310,11 +310,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   nothing. The clamp now lives in the shared pagination helper, so every list
   page is covered rather than the one that happened to be reported.
 
-  Separately, the allowlist page read the clock twice while drawing itself — once
-  to decide whether each row was still live, once to decide whether to warn about
-  the file's ordering. A page drawn across a second boundary could therefore
-  label the same entry "snoozed" in the table and "expired" in the warning above
-  it. It now reads the clock once.
+  Separately, four pages read the clock more than once while drawing themselves,
+  and two of them used the second reading to describe a row the first reading had
+  already described. The allowlist page could label an entry "snoozed" in the
+  table and "expired" in the warning above it. The watchlist detail page was
+  worse: it could say a device "cannot alert because it is allowlisted" while
+  listing nothing that was allowlisting it — a state that is impossible if both
+  answers come from the same moment. Each page now reads the clock once and uses
+  that one reading everywhere, and a new check refuses any future page that reads
+  it twice without a written reason.
 
 
 - **A device with no real-time clock could hold back the "this device keeps

@@ -195,20 +195,71 @@ def test_watchlist_survives_a_page_below_the_rowid_ceiling(client, per_page):
     assert r.status_code != 500, (per_page, r.status_code)
 
 
-def test_the_pagination_ceiling_divides_by_per_page(client):
-    """The property, stated directly rather than only through a route: the
-    clamp must scale with per_page, or the largest allowed page still overflows
-    the offset multiplication."""
+def _per_page_tuples() -> dict[str, tuple[int, ...]]:
+    """Every `*_PER_PAGE_ALLOWED` the app actually defines, DERIVED.
+
+    ⛔ Not transcribed. This test originally hardcoded `(25, 50, 100, 200)` and
+    would have passed while missing `/devices` and `/probes`, whose widest page
+    size is **500** — a tighter ceiling than the one under test. A hand-copied
+    derivation looks derived and is not; a seventh tuple added tomorrow is
+    graded here automatically.
+    """
+    import lynceus.webui.app as appmod
+
+    found = {
+        name: value
+        for name, value in vars(appmod).items()
+        if name.endswith("_PER_PAGE_ALLOWED") and isinstance(value, tuple)
+    }
+    # `WATCHFUL_PER_PAGE_ALLOWED` is defined inside `create_app`, so it is not a
+    # module attribute; parse it out rather than pretend the scan saw it.
+    import pathlib as _pl
+    import re as _re
+
+    src = (
+        _pl.Path(appmod.__file__).read_text()
+        if hasattr(appmod, "__file__")
+        else ""
+    )
+    for m in _re.finditer(
+        r"^\s*(\w*PER_PAGE_ALLOWED): tuple\[int, \.\.\.\] = \(([^)]*)\)",
+        src,
+        _re.M,
+    ):
+        found.setdefault(
+            m.group(1), tuple(int(x) for x in m.group(2).split(",") if x.strip())
+        )
+    return found
+
+
+def test_the_scan_finds_every_per_page_tuple():
+    """The instrument's own control — a scan matching nothing would make the
+    test below pass vacuously."""
+    found = _per_page_tuples()
+    assert len(found) >= 6, found
+    assert max(max(v) for v in found.values()) == 500, (
+        f"the widest page size changed; re-derive the ceiling. found={found}"
+    )
+
+
+def test_the_pagination_ceiling_divides_by_per_page():
+    """⛔ The property, over EVERY per-page set the app defines.
+
+    The clamp must scale with per_page or the largest allowed page still
+    overflows `offset = (page - 1) * per_page`. Bounding `page` at the rowid
+    ceiling passes a naive check and fails this one.
+    """
     from lynceus.webui.pagination import parse_pagination
 
-    allowed = (25, 50, 100, 200)
-    page, per = parse_pagination(
-        str(2**70), None, allowed_per_page=allowed, default_per_page=50
-    )
-    assert page * max(allowed) <= MAX_SQLITE_INT, (
-        f"page={page} still overflows the offset multiplication at "
-        f"per_page={max(allowed)}"
-    )
+    for name, allowed in _per_page_tuples().items():
+        page, _ = parse_pagination(
+            str(2**70), None, allowed_per_page=allowed, default_per_page=allowed[0]
+        )
+        worst_offset = (page - 1) * max(allowed)
+        assert worst_offset <= MAX_SQLITE_INT, (
+            f"{name}: clamped page={page} still overflows at "
+            f"per_page={max(allowed)} (offset={worst_offset})"
+        )
 
 
 def test_the_two_int_ceilings_stay_equal():
