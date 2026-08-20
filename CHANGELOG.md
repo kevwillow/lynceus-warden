@@ -528,6 +528,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   delegated. The snooze is known; the matching is not, and they are now reported
   separately.
 
+  ⭐ **A cold cross-model read of this branch's own diff found three more, two
+  of them real.** The refuted one is worth recording too: it claimed the Find My
+  panel could render an empty filename with no `rules_path`, and the test it
+  named to refute itself showed the panel correctly reporting *"unknown — no
+  `rules_path` is configured"* instead, with zero empty elements on four pages.
+
+  **Three remedies still named `lynceus.yaml`** while `lynceus-ui --config` can
+  point anywhere — the *config path row* had been corrected and the *sentences
+  telling you to edit it* had not. Same class, one direction only, reintroduced
+  by two sentences this change set added itself.
+
+  **And "cannot be determined, because the rules file could not be read"**
+  named one of the two situations that produce it: the verdict is also unknown
+  when no `rules_path` is configured at all, which sends that operator hunting
+  for a syntax error in a file they never set. The module already distinguishes
+  them; the sentence now asks.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still

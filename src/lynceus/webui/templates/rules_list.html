@@ -258,6 +258,6 @@
   {% if rules_file() %}
     <p><small>Edit <code>{{ rules_file() }}</code> on disk and restart lynceus to apply changes (live edit lands in v0.3).</small></p>
   {% else %}
-    <p><small>No rules file is loaded: <code>rules_path</code> is unset in <code>lynceus.yaml</code>, so editing a rules file on disk changes nothing until it is set.</small></p>
+    <p><small>No rules file is loaded: <code>rules_path</code> is unset in {% if config_file() %}<code>{{ config_file() }}</code>{% else %}your <code>lynceus.yaml</code>{% endif %}, so editing a rules file on disk changes nothing until it is set.</small></p>
   {% endif %}
 {% endblock %}
