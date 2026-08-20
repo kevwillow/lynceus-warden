@@ -62,6 +62,15 @@ class PaginationParams:
         return self.page < self.total_pages
 
 
+#: SQLite's INTEGER is signed 64-bit; Python's int is arbitrary precision. Any
+#: value at or above this bound raises `OverflowError: Python int too large to
+#: convert to SQLite INTEGER` when bound as a query parameter, which escapes as
+#: an unhandled 500. Kept here rather than imported from `webui.app` because
+#: `app` imports this module, not the other way round; a test asserts the two
+#: stay equal.
+MAX_SQLITE_INT = 2**63 - 1
+
+
 def parse_pagination(
     raw_page,
     raw_per_page,
@@ -92,6 +101,29 @@ def parse_pagination(
         page = 1
     if page < 1:
         page = 1
+    # ⛔ **The UPPER bound, and it is NOT `SQLITE_MAX_ROWID`.** Callers compute
+    # `offset = (page - 1) * per_page` and bind it to SQLite, whose INTEGER is
+    # signed 64-bit -- so the ceiling on `page` is the rowid ceiling DIVIDED BY
+    # `per_page`, not the rowid ceiling itself. Measured on `/watchlist`, which
+    # is the one list route that queries with the raw requested page before
+    # `build_pagination` clamps it:
+    #
+    #     per_page=25   largest working page = 368934881474191033
+    #     per_page=200  largest working page =  46116860184273880
+    #
+    # ⚠️ A bound of `2**63 - 1` would therefore have left this defect fully
+    # reachable at every per_page — the fix has to divide. Found because the
+    # control (`page = 2**63 - 1`, one below the rowid ceiling) ALSO returned
+    # 500; testing only the reported trigger would have shipped a fix that
+    # fixed nothing.
+    #
+    # Clamped rather than rejected: an out-of-range page is already clamped
+    # against `total_pages` by `build_pagination`, so refusing here would turn a
+    # stale bookmark into a 4xx where every other over-large page renders the
+    # last page. No real table is within a factor of a trillion of this.
+    max_page = MAX_SQLITE_INT // max(max(allowed_per_page), 1)
+    if page > max_page:
+        page = max_page
 
     try:
         per_page = int(raw_per_page) if raw_per_page is not None else default_per_page

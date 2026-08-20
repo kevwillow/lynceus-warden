@@ -295,6 +295,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+- **Three more ways a hostile number could 500 a page, and a row that could be
+  called two contradictory things at once.** The previous release bounded row ids
+  that arrive in the URL. The same overflow was still reachable through three
+  other doors: the bulk-acknowledge form, the "acknowledge everything visible"
+  form's rendered-at marker, and the page number on the watchlist. All three now
+  reject or clamp the value instead of returning an error page.
+
+  The page-number one is worth spelling out because the obvious bound would not
+  have worked. The database is asked to skip `(page - 1) x page size` rows, so
+  the largest usable page number is the database's own ceiling *divided by* the
+  page size — about twenty times smaller than the ceiling itself at the largest
+  page size. A limit set to the ceiling would have looked correct and fixed
+  nothing. The clamp now lives in the shared pagination helper, so every list
+  page is covered rather than the one that happened to be reported.
+
+  Separately, the allowlist page read the clock twice while drawing itself — once
+  to decide whether each row was still live, once to decide whether to warn about
+  the file's ordering. A page drawn across a second boundary could therefore
+  label the same entry "snoozed" in the table and "expired" in the warning above
+  it. It now reads the clock once.
+
 
 - **A device with no real-time clock could hold back the "this device keeps
   showing up" alert for days.** Raspberry Pi-class hardware has no battery-backed

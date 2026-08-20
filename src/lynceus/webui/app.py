@@ -2917,6 +2917,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
         for aid in alert_ids:
             if aid < 1:
                 raise HTTPException(status_code=400, detail="alert_id must be positive")
+            # ⛔ The SAME bound `RowId` puts on path params, reached through a
+            # FORM instead. `RowId` is a `Path(...)` annotation and cannot apply
+            # here, so the check is explicit -- and its absence was NOT
+            # hypothetical: `alert_ids=2**63` returned 500 out of
+            # `db.bulk_acknowledge_alerts` while `2**63 - 1` returned 200.
+            if aid > SQLITE_MAX_ROWID:
+                raise HTTPException(
+                    status_code=400, detail="alert_id is out of range"
+                )
         note = _normalize_optional_note(note)
         actor = request.client.host if request.client else "unknown"
         now_ts = int(time.time())
@@ -2989,7 +2998,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 rendered_ts: int | None = int(rendered_at)
             except (TypeError, ValueError):
                 rendered_ts = None
-            if rendered_ts is not None and rendered_ts > 0:
+            # ⛔ Upper bound as well as the existing `> 0`. This value is
+            # hand-parsed from a form string and bound straight into
+            # `db.count_alerts(until_ts=...)`, so an unbounded int 500s the
+            # route. `> 0` alone passed a 19-digit number happily. Treated as
+            # unset rather than rejected, matching how this parse already
+            # handles every other unusable value.
+            if rendered_ts is not None and 0 < rendered_ts <= SQLITE_MAX_ROWID:
                 effective_until_ts = (
                     rendered_ts if until_ts is None else min(until_ts, rendered_ts)
                 )
@@ -5585,13 +5600,22 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 tagged = []
             primary_count = sum(1 for _, src in tagged if src == "primary")
             ui_count = sum(1 for _, src in tagged if src == "ui")
+            # ⛔ ONE clock read, threaded into both consumers below. It used
+            # to be two independent `int(time.time())` calls, and a render
+            # straddling a second boundary gave the SAME ROW opposite verdicts:
+            # the table labelled it `snoozed` (live) while the banner called it
+            # an expired suppression that disagrees. Reproduced deterministically
+            # by returning `T - epsilon` then `T + epsilon`. That is the Finding
+            # 45 class -- two surfaces naming contradictory causes for one row --
+            # and the cause here is simply reading the clock twice.
+            render_now_ts = int(time.time())
             filtered_rows = _filter_allowlist_entries(
                 tagged,
                 q=q,
                 source=source,
                 status=status,
                 type_=type_,
-                now_ts=int(time.time()),
+                now_ts=render_now_ts,
             )
             # ⛔ Reported on the UNFILTERED file, deliberately. The evidence is
             # an ORDERING fact between two entries, so a filter that hides
@@ -5603,7 +5627,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             # the discriminator is only valid within the UI file's own append
             # order. A merged list is not that order.
             clock_disagreements = find_impossible_ui_entries(
-                derive_ui_path(Path(allowlist_path)), int(time.time())
+                derive_ui_path(Path(allowlist_path)), render_now_ts
             )
 
         # Pagination is applied in Python on the already-filtered list
