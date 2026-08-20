@@ -309,8 +309,9 @@ captures, not out of reasoning about what should work.
 CI runs `pytest -q`, `ruff check .` and `python -m build` on Python 3.11 and
 3.12 for every push and pull request, in about nine minutes — and on **arm64**
 as well as x86-64, because the machine this is built for is a Raspberry Pi. Most recently
-measured: **4334 passed, 1 skipped**, at commit
-[`2ccbc92`](https://github.com/kevwillow/lynceus-warden/actions/runs/32208092940).
+measured: **4416 passed, 1 skipped**, at commit
+[`6f24a45`](https://github.com/kevwillow/lynceus-warden/actions/runs/32325722053)
+— the same total on all three legs, x86-64 Python 3.11 and 3.12 and arm64.
 
 The commit is named on purpose. A bare total is a claim that quietly stops
 being true at the next merge — this one had drifted to 3294 against an actual

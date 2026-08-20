@@ -115,8 +115,22 @@ test defects that Windows could not structurally expose, fixed in `9b2636c`;
 A drop below 3508 (local) or 3048 (Linux clone) is a regression. A **rise** in
 skips is usually one too — but not always, and the exceptions are below.
 
-⭐ **Current LOCAL Linux number — measured 2026-08-19 at `2ccbc92`** (this box,
-throwaway worktree at `/home/kev/lw-gate`, `.venv/bin` on `PATH`), all four gates:
+⭐ **Current LOCAL Linux number — measured 2026-08-19 at `754f388`** (this box,
+worktree `/home/kev/lw-s3-clock`, `.venv/bin` on `PATH`). ⚠️ `754f388` is the branch head that
+squash-merged as **`de46f81`**; the source tree is identical, and `6f24a45` on top of it is
+docs-only. Named precisely rather than reported as "main", because the SHA is the whole point of
+this table.
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` | **4416 passed, 1 skipped, 47 deselected, 0 failed** — 36m48s |
+| `ruff check .` | `All checks passed!` |
+
+⚠️ **The 26m20s below and the 36m48s above are the same suite under different contention**, not a
+regression: three sessions plus other projects were running on this box. **Do not read the wall
+clock as the suite's cost.**
+
+<details><summary>Superseded — <code>2ccbc92</code>, 2026-08-19 (kept: the rate of rot is the lesson)</summary>
 
 | Gate | Result |
 | --- | --- |
@@ -125,10 +139,12 @@ throwaway worktree at `/home/kev/lw-gate`, `.venv/bin` on `PATH`), all four gate
 | `ruff check .` | `All checks passed!` |
 | `python -m build --wheel` | `lynceus-0.9.5-py3-none-any.whl` |
 
+</details>
+
 The one skip is the good one: `test_setup_wizard.py:2018` — it skips *because* a
 real `/sys/class/bluetooth` is present. **Skip count 1, and check WHICH test.**
 
-⭐ **Local and CI both totalled 4334 — identical, and that is the expected
+⭐ **Local and CI both totalled 4416 — identical, and that is the expected
 result, not a coincidence.** They trade one skip for one run: CI skips the live
 Argus test, this box skips the missing-Bluetooth-dir branch. **That the local
 skip was the Bluetooth one is the proof the Argus cross-repo gate actually ran**
@@ -185,10 +201,16 @@ baseline does not fail loudly; it silently stops being able to detect anything.
 
 | | |
 |---|---|
-| SHA | **`2ccbc92`** |
-| CI, Python 3.11 | **4334 passed, 1 skipped, 47 deselected** — 8m46s |
-| CI, Python 3.12 | **4334 passed, 1 skipped, 47 deselected** — 8m01s |
-| run | <https://github.com/kevwillow/lynceus-warden/actions/runs/32208092940> |
+| SHA | **`6f24a45`** |
+| CI, Python 3.11 (x86-64) | **4416 passed, 1 skipped, 47 deselected** |
+| CI, Python 3.12 (x86-64) | **4416 passed, 1 skipped, 47 deselected** |
+| CI, Python 3.11 (**arm64**) | **4416 passed, 1 skipped, 47 deselected** |
+| run | <https://github.com/kevwillow/lynceus-warden/actions/runs/32325722053> |
+
+⚠️ **Superseded numbers kept below rather than deleted**, because the rate of rot is the lesson:
+`2ccbc92` read **4334** and was published on 2026-08-19; five merges later the same day it read
+**4416**. A SHA-stamped number does not become false, it becomes *old* — which is why the SHA is
+there and why a bare total is not.
 
 Measured 2026-08-19. The one CI skip is the expected one and was **read, not counted**:
 `tests/test_import_argus.py:3364` — *"live Argus CSV not found"*. CI does not and should not have it.
