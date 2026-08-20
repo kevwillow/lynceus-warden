@@ -2360,6 +2360,19 @@ def create_app(
         primary = app.state.config.allowlist_path
         return str(derive_ui_path(Path(primary))) if primary else None
 
+    def _config_file() -> str | None:
+        """The lynceus.yaml this process loaded, or None when it was not told.
+
+        ⛔ Added because a cold read of the fix caught it applying in one
+        direction only: the /settings "config path" ROW was corrected to name
+        the loaded file, and three REMEDIES went on saying "set X in
+        `lynceus.yaml`" -- which for `lynceus-ui --config /etc/lynceus/site.yml`
+        names a file the process never reads. Exactly the class this change set
+        exists to remove, reintroduced by two sentences it added itself.
+        """
+        return app.state.config_path or None
+
+    app.state.templates.env.globals["config_file"] = _config_file
     app.state.templates.env.globals["rules_file"] = _rules_file
     app.state.templates.env.globals["allowlist_file"] = _allowlist_file
     app.state.templates.env.globals["allowlist_ui_file"] = _allowlist_ui_file

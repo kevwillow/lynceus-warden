@@ -777,3 +777,100 @@ def test_no_banner_when_every_filter_is_recognised(tmp_path):
         db.close()
     assert "filter ignored" not in _prose(html)
 
+
+# ---------------------------------------------------------------------------
+# 9. Two findings from a cold read of this very branch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+def test_remedies_name_the_config_file_this_process_loaded(tmp_path):
+    """⛔ The fix applied in one direction only, caught by a cold read.
+
+    The /settings "config path" ROW was corrected to name the loaded file while
+    three REMEDIES went on saying "set X in `lynceus.yaml`" -- which, for
+    `lynceus-ui --config /etc/lynceus/site.yml`, names a file the process never
+    reads. Exactly the class this change set exists to remove, reintroduced by
+    two sentences it added itself.
+    """
+    loaded = tmp_path / "site.yml"
+    loaded.write_text("db_path: x\n", encoding="utf-8")
+    config = Config(db_path=str(tmp_path / "s.db"))
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    try:
+        app = create_app(config, db, config_path=str(loaded))
+        with TestClient(app) as client:
+            rules_page = _prose(client.get("/rules").text)
+            settings = _prose(client.get("/settings").text)
+    finally:
+        db.close()
+    assert "No rules file is loaded" in rules_page, "the unset-rules banner is absent"
+    assert str(loaded) in rules_page
+    assert "<code>lynceus.yaml</code>" not in rules_page
+    assert str(loaded) in settings
+    assert "<code>lynceus.yaml</code>" not in settings
+
+
+@pytest.mark.webui
+def test_remedies_fall_back_to_the_generic_name_when_the_path_is_unknown(tmp_path):
+    """The control. With no recorded path the sentence must still be usable --
+    a blank where the filename goes is worse than a generic name."""
+    config = Config(db_path=str(tmp_path / "s.db"))
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    try:
+        with TestClient(create_app(config, db)) as client:
+            rules_page = _prose(client.get("/rules").text)
+    finally:
+        db.close()
+    assert "your <code>lynceus.yaml</code>" in rules_page
+    assert not re.search(r"<code>\s*</code>", rules_page)
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "rules_body,expected",
+    [
+        (None, "no rules_path is configured"),
+        (UNREADABLE_RULES, "the rules file could not be read"),
+    ],
+    ids=["unset", "unreadable"],
+)
+def test_an_undeterminable_verdict_names_its_own_cause(tmp_path, rules_body, expected):
+    """⛔ Two causes must not share one sentence.
+
+    `known=False` covers BOTH "the rules file would not load" and "no
+    `rules_path` is configured at all". The new unknown branch said "because the
+    rules file could not be read", which sends an operator with the second cause
+    into syntax and permission checks for a file they never set.
+    `liveness.reason` already distinguishes them.
+    """
+    overrides = tmp_path / "sev.yaml"
+    overrides.write_text("device_category_severity:\n  tracker: low\n", encoding="utf-8")
+    kwargs = {
+        "db_path": str(tmp_path / "s.db"),
+        "severity_overrides_path": str(overrides),
+    }
+    if rules_body is not None:
+        rules = tmp_path / "rules.yaml"
+        rules.write_text(rules_body, encoding="utf-8")
+        kwargs["rules_path"] = str(rules)
+    config = Config(**kwargs)
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    try:
+        watchlist_id, _ = db.add_watchlist(
+            pattern="3c:5a:b4:11:22:33", pattern_type="mac", severity="high"
+        )
+        db.upsert_metadata(
+            watchlist_id,
+            {"argus_record_id": "A-1", "vendor": "V", "device_category": "tracker"},
+        )
+        with TestClient(create_app(config, db)) as client:
+            detail = _prose(client.get(f"/watchlist/{watchlist_id}").text)
+    finally:
+        db.close()
+    assert "cannot be determined" in detail, "the unknown branch did not render"
+    assert expected in detail
+

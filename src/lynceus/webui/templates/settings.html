@@ -653,7 +653,7 @@
     <p><small>
       Staleness threshold is
       <code>watchlist_staleness_warn_days</code> in
-      <code>lynceus.yaml</code> (default 30).
+      {% if config_file() %}<code>{{ config_file() }}</code>{% else %}your <code>lynceus.yaml</code>{% endif %} (default 30).
     </small></p>
   </article>
 
@@ -713,7 +713,7 @@
         read this file:
       {% else %}
         <strong>Nothing reads this file yet.</strong> Create it and set
-        <code>severity_overrides_path</code> in <code>lynceus.yaml</code>, then
+        <code>severity_overrides_path</code> in {% if config_file() %}<code>{{ config_file() }}</code>{% else %}your <code>lynceus.yaml</code>{% endif %}, then
         restart the daemon, and the runtime layer below turns on. The importer
         is separate and needs no setting: it reads whatever you pass to
         <code>lynceus-import-argus --override-file</code>. The two layers, for
