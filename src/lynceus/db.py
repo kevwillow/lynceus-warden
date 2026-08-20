@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ import sqlite3
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import NamedTuple
@@ -449,6 +450,7 @@ class Database:
         # Migrations and `rollback_to` write outside these blocks; both are
         # admin-time, before traffic, and deliberately out of scope here.
         self._lock = threading.RLock()
+        self._txn_depth = 0
         self._conn = sqlite3.connect(
             path,
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
@@ -470,6 +472,30 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
+        # ⛔ CHOSEN, not inherited. 5000 ms is also `sqlite3.connect`'s default
+        # `timeout=5.0`, so this line changes no behaviour — that is the point.
+        # Until it existed, the entire cross-process contention policy of this
+        # product was a CPython default that nobody had decided, and the only
+        # place that so much as named it was a docstring in `bridges/ble.py`.
+        #
+        # What the number buys, measured with two real OS processes in
+        # `tests/test_db_cross_process_locking.py` (the poller, the web UI and
+        # the ble-bridge are separate processes holding separate connections,
+        # so `self._lock` cannot serialise them — only SQLite can):
+        #
+        #     write lock held   second process
+        #     0.5s / 2s / 4s    waits that long, then COMMITS
+        #     6s / 12s          OperationalError at 5.00s, write is LOST
+        #
+        # ⚠️ Raising it makes the loss rarer and makes a wedged writer block the
+        # other process for longer before it finds out. Lowering it does the
+        # reverse. Either way the cross-process tests assert this exact value,
+        # so changing it here turns them red on purpose — read them first.
+        # ⚠️ And a long write transaction is what makes the loss reachable at
+        # all. The candidate is a retention prune (one unbounded DELETE, once
+        # per 86400s, on Pi-class SD storage); its duration on a large database
+        # is NOT measured, and that is the number this value really wants.
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         # The /alerts has_action filter clause builder emits
         # mac_in_mac_range(alerts.mac, ?) per allowlist mac_range
         # entry. Register as deterministic so SQLite can hoist it
@@ -480,6 +506,88 @@ class Database:
         )
         self._migrations_dir = _find_migrations_dir()
         self._apply_migrations()
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """The ONE way to open a write transaction on this database.
+
+        ⛔ **Every write outside ``db.py`` must go through this.** Yields the
+        connection inside ``self._lock`` and ``self._conn``, so the block is
+        both lock-guarded and transactional::
+
+            with db.transaction() as conn:
+                conn.execute("DELETE FROM sightings WHERE ts < ?", (cutoff,))
+
+        **Why it exists.** Finding 52: the web process runs its sync route
+        handlers on a threadpool against ONE ``sqlite3.Connection``, and
+        transaction state is per-CONNECTION rather than per-thread — so one
+        thread leaving a ``with conn:`` block COMMITS every other thread's
+        pending work on that connection. ``db.py``'s own blocks are contained
+        by writing ``with self._lock, self._conn:``, and
+        ``test_every_transaction_block_takes_the_lock`` holds them to it.
+
+        ⛔ That guard could only ever see ``db.py``. Callers in other modules
+        reached ``db._conn`` directly and took **no** lock — five such blocks
+        existed in ``retention.py``, ``evidence.py`` and ``cli/import_argus.py``
+        and none of them were visible to it, which is precisely the escape the
+        finding's acceptance criterion predicted: *"the first alone passes the
+        moment someone adds an unguarded block somewhere else."*
+
+        ⛔ **Do not nest it, and it will not let you.** See the comment on the
+        body: an inner block's exit commits the outer block's work, so nesting
+        silently converts a rollback into a partial commit. Re-entry on the
+        same thread raises ``RuntimeError``.
+
+                ⚠️ **This gives transaction ownership, NOT application atomicity.** A
+        value read before the block, decided on in Python, and written inside
+        it can still act on state another writer has since changed. That is
+        Finding 52's open residual and it needs a CAS (see
+        ``add_alert_if_none_since`` and the ``expected_*`` parameters), not a
+        wider lock — widening the lock is the direction that has already
+        shipped a duplicate-alert fix which made the alert undeliverable.
+
+        ⚠️ And the lock is **per-process**. The poller, the web UI and the
+        ble-bridge are separate processes holding separate connections; nothing
+        in Python serialises them. SQLite does, by making the second writer
+        wait — for ``busy_timeout`` milliseconds, which this product has never
+        set, so it is ``sqlite3.connect``'s inherited default of 5000. Past
+        that the write raises ``OperationalError: database is locked`` and is
+        LOST. Measured, cross-process, in
+        ``tests/test_db_cross_process_locking.py``.
+        """
+        # ⛔ Re-entry is REFUSED, and the refusal is the point. `sqlite3`'s
+        # connection context manager is not a nested transaction and not a
+        # SAVEPOINT: the INNER block's exit COMMITS the connection, so an
+        # exception in the outer block can no longer roll back anything the
+        # inner one wrote. Measured on this class, before the guard below:
+        #
+        #     with db.transaction() as outer:
+        #         outer.execute("INSERT ... 'outer'")
+        #         with db.transaction() as inner:
+        #             inner.execute("INSERT ... 'inner'")
+        #         raise RuntimeError          # outer "fails"
+        #     -> rows afterwards: ['outer', 'inner']      BOTH committed
+        #
+        # ⚠️ Checked INSIDE the lock on purpose. A plain instance flag read
+        # outside it would refuse a *different* thread that is merely waiting
+        # its turn -- a legitimate caller turned into an error, which is the
+        # fail-CLOSED mirror of the bug this whole finding is about. Holding
+        # the RLock first means a non-zero depth can only ever be THIS thread
+        # re-entering.
+        with self._lock:
+            if self._txn_depth:
+                raise RuntimeError(
+                    "Database.transaction() is already open on this thread; "
+                    "nesting it COMMITS the outer block's partial work instead "
+                    "of nesting. Pass the connection you already have down to "
+                    "the inner code, or split the work into separate units."
+                )
+            self._txn_depth += 1
+            try:
+                with self._conn:
+                    yield self._conn
+            finally:
+                self._txn_depth -= 1
 
     # Sentinel comment that marks an irreversible migration's down
     # file. The rollback runner detects this string anywhere in the

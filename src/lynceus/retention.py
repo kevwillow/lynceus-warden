@@ -77,10 +77,10 @@ def prune_old_sightings(
         return 0, oldest
 
     cutoff = now_ts - retention_days * 86_400
-    with db._conn:
-        cur = db._conn.execute("DELETE FROM sightings WHERE ts < ?", (cutoff,))
+    with db.transaction() as conn:
+        cur = conn.execute("DELETE FROM sightings WHERE ts < ?", (cutoff,))
         deleted = cur.rowcount
-        oldest_row = db._conn.execute("SELECT MIN(ts) FROM sightings").fetchone()
+        oldest_row = conn.execute("SELECT MIN(ts) FROM sightings").fetchone()
     oldest = int(oldest_row[0]) if oldest_row and oldest_row[0] is not None else None
     logger.info(
         "Pruned %d sightings older than %d days (oldest remaining: %s)",

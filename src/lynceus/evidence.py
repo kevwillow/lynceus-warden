@@ -229,8 +229,8 @@ def capture_evidence(
         rssi_history_json = (
             json.dumps(_sanitize_floats(rssi_history)) if rssi_history is not None else None
         )
-        with db._conn:
-            cur = db._conn.execute(
+        with db.transaction() as conn:
+            cur = conn.execute(
                 "INSERT INTO evidence_snapshots("
                 "alert_id, mac, captured_at, kismet_record_json, "
                 "rssi_history_json, gps_lat, gps_lon, gps_alt, gps_captured_at"
@@ -293,13 +293,13 @@ def prune_old_evidence(
     omitting the argument is a TypeError at the call site.
     """
     cutoff = now_ts - retention_days * 86400
-    with db._conn:
-        cur = db._conn.execute(
+    with db.transaction() as conn:
+        cur = conn.execute(
             "DELETE FROM evidence_snapshots WHERE captured_at < ?",
             (cutoff,),
         )
         deleted = cur.rowcount
-        oldest_row = db._conn.execute("SELECT MIN(captured_at) FROM evidence_snapshots").fetchone()
+        oldest_row = conn.execute("SELECT MIN(captured_at) FROM evidence_snapshots").fetchone()
     oldest = int(oldest_row[0]) if oldest_row and oldest_row[0] is not None else None
     logger.info("Pruned %d evidence snapshots older than %d days", deleted, retention_days)
     return deleted, oldest
