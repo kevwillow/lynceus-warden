@@ -699,9 +699,26 @@
         {% endif %}
       </dd>
     </dl>
+    {# 🪤 THIS paragraph was unconditional while the two rows above it were
+       carefully conditional -- so the card said "nothing is configured, so the
+       runtime override layer is off" and then, three lines down, "Two layers
+       read this file" with instructions to edit it and restart. Following them
+       does nothing: the runtime layer stays off until `severity_overrides_path`
+       is set. Same half-fix shape this file already records for the snooze
+       sentence -- conditioning the first clause and leaving the second one
+       asserting the thing that was just retracted. #}
     <p><small>
-      Edit the file directly to customize severity rules. Two layers
-      read this file:
+      {% if severity_overrides.configured %}
+        Edit the file directly to customize severity rules. Two layers
+        read this file:
+      {% else %}
+        <strong>Nothing reads this file yet.</strong> Create it and set
+        <code>severity_overrides_path</code> in <code>lynceus.yaml</code>, then
+        restart the daemon, and the runtime layer below turns on. The importer
+        is separate and needs no setting: it reads whatever you pass to
+        <code>lynceus-import-argus --override-file</code>. The two layers, for
+        when you get there:
+      {% endif %}
       <ul>
         <li><strong>Import-time</strong>
           (<code>vendor_overrides</code>, <code>geographic_filter</code>,
@@ -712,9 +729,14 @@
           <code>suppress_categories</code>,
           <code>suppress_vendors</code>,
           <code>pattern_overrides</code>,
-          <code>vendor_severity</code>): restart the daemon to
-          apply &mdash; already-imported rows pick up the new
-          severity (or are suppressed) without re-import.</li>
+          <code>vendor_severity</code>):
+          {% if severity_overrides.configured %}
+            restart the daemon to apply &mdash; already-imported rows pick up
+            the new severity (or are suppressed) without re-import.
+          {% else %}
+            off until the setting above is in place; a restart alone changes
+            nothing.
+          {% endif %}</li>
       </ul>
     </small></p>
   </article>

@@ -609,3 +609,55 @@ def test_with_no_ruleset_at_all_every_active_snooze_is_still_liftable(tmp_path):
     assert "watchlist_ssid" in _unsnooze_controls(page)
     assert "No ruleset is loaded" in _prose(page)
 
+
+# ---------------------------------------------------------------------------
+# 7. The overrides card does not retract itself three lines later
+# ---------------------------------------------------------------------------
+
+
+def _app_with_overrides(tmp_path, *, configured: bool):
+    kwargs = {"db_path": str(tmp_path / "s.db")}
+    if configured:
+        overrides = tmp_path / "sev.yaml"
+        overrides.write_text(
+            "device_category_severity:\n  tracker: low\n", encoding="utf-8"
+        )
+        kwargs["severity_overrides_path"] = str(overrides)
+    config = Config(**kwargs)
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    return create_app(config, db), db
+
+
+@pytest.mark.webui
+def test_the_overrides_card_does_not_tell_you_to_edit_a_file_nothing_reads(tmp_path):
+    """🪤 The path and status rows were carefully conditional and the paragraph
+    under them was not, so the card said "nothing is configured, so the runtime
+    override layer is off" and then "Two layers read this file: ... restart the
+    daemon to apply". Following that changes nothing until the setting exists.
+    """
+    app, db = _app_with_overrides(tmp_path, configured=False)
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get("/settings").text)
+    finally:
+        db.close()
+    assert "nothing is configured" in prose, "the card is not in the state under test"
+    assert "Two layers read this file" not in prose
+    assert "Nothing reads this file yet" in prose
+    assert "severity_overrides_path" in prose
+
+
+@pytest.mark.webui
+def test_the_overrides_card_keeps_its_instructions_when_configured(tmp_path):
+    """The control: a configured path must still get the editing guidance."""
+    app, db = _app_with_overrides(tmp_path, configured=True)
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get("/settings").text)
+    finally:
+        db.close()
+    assert "Two layers read this file" in prose
+    assert "Nothing reads this file yet" not in prose
+    assert "restart the daemon to apply" in prose
+
