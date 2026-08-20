@@ -1407,6 +1407,51 @@ def _match_all_mac_in_entries(
     return out
 
 
+def _entry_can_alert(
+    entry: dict,
+    row: dict,
+    liveness: dict,
+    suppressions: dict,
+    allowlist_entries: list,
+    now_ts: int,
+) -> bool | None:
+    """Can this watchlist row produce an alert today? ``None`` = cannot tell.
+
+    Order matters and is the whole point:
+
+    1. **Definite blockers first.** A rule_type snooze, a severity-override
+       suppression, a reserved OUI prefix and an allowlist match are each
+       established WITHOUT reading the ruleset, so any of them is a plain
+       ``False`` no matter what the ruleset verdict is.
+    2. **Then the ruleset verdict.** If it could not be read, the answer is
+       ``None`` -- not ``True`` (which the page rendered as "this entry
+       alerts", a promise nothing had checked) and not ``False`` (whose wording
+       points at "the reason given elsewhere on this page", and there is none).
+    3. Otherwise the type is delegated or it is not, and that is the answer.
+
+    ⚠️ Callers must test ``is None`` / ``is False`` explicitly. ``if not
+    entry_can_alert`` reads ``None`` as "cannot alert", which is the branch
+    whose text asserts a blocker exists.
+    """
+    if is_pattern_type_snoozed(entry["pattern_type"], liveness):
+        return False
+    if override_suppression_axes(
+        row.get("vendor"), row.get("device_category"), suppressions
+    ):
+        return False
+    if oui_prefix_never_matches(row.get("pattern_type"), row.get("pattern")):
+        return False
+    if (
+        allowlist_answerable_for(row.get("pattern_type") or "")
+        and row.get("pattern")
+        and _match_all_mac_in_entries(allowlist_entries, row["pattern"], now_ts)
+    ):
+        return False
+    if not liveness.get("known"):
+        return None
+    return is_pattern_type_live(entry["pattern_type"], liveness)
+
+
 def _merged_allowlist_entries(config: Config) -> list:
     """Primary + UI allowlist entries, in the order ``is_allowed`` sees them.
 
@@ -5636,25 +5681,39 @@ def create_app(
                 # remap is still worth showing (it decides the severity the
                 # moment the other blocker is lifted); it just cannot be
                 # phrased as something that happens today.
-                "entry_can_alert": (
-                    is_pattern_type_live(entry["pattern_type"], liveness)
-                    and not is_pattern_type_snoozed(entry["pattern_type"], liveness)
-                    and not override_suppression_axes(
-                        row.get("vendor"), row.get("device_category"), suppressions
-                    )
-                    and not oui_prefix_never_matches(
-                        row.get("pattern_type"), row.get("pattern")
-                    )
-                    and not (
-                        _match_all_mac_in_entries(
-                            _merged_allowlist_entries(app.state.config),
-                            row["pattern"],
-                            render_now_ts,
-                        )
-                        if allowlist_answerable_for(row.get("pattern_type") or "")
-                        and row.get("pattern")
-                        else []
-                    )
+                #
+                # ⛔ THREE-VALUED, and the third value is not decoration.
+                # `is_pattern_type_live` returns True when the ruleset verdict
+                # is UNKNOWN — deliberately, so an unreadable rules file cannot
+                # mark every row inert. That benefit of the doubt then arrived
+                # here as a `True` and the page turned it into a present-tense
+                # promise: with a rules file that would not parse, /watchlist/1
+                # said "This entry alerts at a different severity" and named
+                # what an alert "will actually carry", while /settings one
+                # click away correctly said the verdict could not be read.
+                # Measured at cca7c5c.
+                #
+                # ⚠️ Collapsing it to False would be the opposite lie: the
+                # else-branch says the row "produces none today, for the reason
+                # given elsewhere on this page", and under an unknown verdict
+                # there IS no reason elsewhere on the page. Unknown reads as
+                # unknown — the rule this module already follows for the
+                # inert/live verdict itself.
+                #
+                # ⭐ A DEFINITE blocker still wins outright. A snooze, an
+                # override suppression, a reserved OUI or an allowlist match
+                # are all established without reading the ruleset, so a row
+                # carrying one is a plain False even when the verdict is
+                # unknown — which is what keeps `entry_can_alert is False`
+                # meaning "something on this page is suppressing it" for
+                # test_webui_one_clock_read.
+                "entry_can_alert": _entry_can_alert(
+                    entry,
+                    row,
+                    liveness,
+                    suppressions,
+                    _merged_allowlist_entries(app.state.config),
+                    render_now_ts,
                 ),
                 "oui_never_matches_reason": oui_prefix_never_matches(
                     row.get("pattern_type"), row.get("pattern")

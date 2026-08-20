@@ -376,3 +376,115 @@ def test_the_ui_entry_point_passes_the_config_path_it_was_given():
     assert "create_app(config, db, config_path=args.config)" in server, (
         "lynceus-ui builds the app without telling it which file it loaded"
     )
+
+
+# ---------------------------------------------------------------------------
+# 5. An unreadable rules file must not become a promise (or a false blocker)
+# ---------------------------------------------------------------------------
+
+# Parses as YAML, fails the Ruleset schema -> `load_ruleset` raises and the
+# verdict is UNKNOWN, which is the state this whole section is about.
+UNREADABLE_RULES = "rules:\n  - this is not a rule\n"
+DELEGATING_RULES = (
+    "rules:\n"
+    "  - name: m\n"
+    "    rule_type: watchlist_mac\n"
+    "    enabled: true\n"
+    "    severity: med\n"
+)
+
+
+def _app_with_remapped_row(tmp_path, rules_body: str, *, snooze: bool = False):
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(rules_body, encoding="utf-8")
+    overrides = tmp_path / "sev.yaml"
+    overrides.write_text("device_category_severity:\n  tracker: low\n", encoding="utf-8")
+    config = Config(
+        db_path=str(tmp_path / "s.db"),
+        rules_path=str(rules),
+        severity_overrides_path=str(overrides),
+    )
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    watchlist_id, _ = db.add_watchlist(
+        pattern="3c:5a:b4:11:22:33", pattern_type="mac", severity="high"
+    )
+    db.upsert_metadata(
+        watchlist_id,
+        {"argus_record_id": "A-1", "vendor": "V", "device_category": "tracker"},
+    )
+    if snooze:
+        now = int(time.time())
+        db.add_rule_type_snooze("watchlist_mac", now + 3600, now)
+    return create_app(config, db), db, watchlist_id
+
+
+@pytest.mark.webui
+def test_an_unreadable_ruleset_is_not_rendered_as_a_row_that_alerts(tmp_path):
+    """⛔ `is_pattern_type_live` returns True on an UNKNOWN verdict on purpose,
+    so no row is falsely marked inert. That benefit of the doubt reached the
+    remap block and came out as "This entry alerts at a different severity" and
+    "what an alert will actually carry" — a present-tense promise about a
+    daemon whose rules file will not parse, while /settings one click away
+    correctly reported the verdict as unreadable.
+    """
+    app, db, watchlist_id = _app_with_remapped_row(tmp_path, UNREADABLE_RULES)
+    try:
+        with TestClient(app) as client:
+            detail = _prose(client.get(f"/watchlist/{watchlist_id}").text)
+            settings = _prose(client.get("/settings").text)
+    finally:
+        db.close()
+    assert "different severity from the one stored" in detail, (
+        "the remap block did not render at all; this test proves nothing"
+    )
+    assert "This entry alerts at a different severity" not in detail
+    assert "will actually carry" not in detail
+    assert "cannot be determined" in detail
+    # ...and the two pages agree about why.
+    assert "could not be read" in settings
+
+
+@pytest.mark.webui
+def test_a_readable_ruleset_still_states_the_remap_in_the_present_tense(tmp_path):
+    """The control. Unknown must read as unknown; KNOWN must still read as
+    known, or the fix has simply deleted the useful sentence."""
+    app, db, watchlist_id = _app_with_remapped_row(tmp_path, DELEGATING_RULES)
+    try:
+        with TestClient(app) as client:
+            detail = _prose(client.get(f"/watchlist/{watchlist_id}").text)
+    finally:
+        db.close()
+    assert "This entry alerts at a different severity" in detail
+    assert "will actually carry" in detail
+    assert "cannot be determined" not in detail
+
+
+@pytest.mark.webui
+def test_a_known_snooze_is_reported_even_when_the_ruleset_verdict_is_not(tmp_path):
+    """⛔ The list page and the detail page disagreed about one row.
+
+    `is_pattern_type_snoozed` gated on `known` (the RULESET verdict) rather
+    than `snoozes_known`, though the two are independent and the dict was
+    carrying the snooze all along. Measured at cca7c5c: with an unreadable
+    rules file /watchlist showed the snoozed badge and /watchlist/<id> showed
+    no snooze at all — and, because the same flag feeds `entry_can_alert`, went
+    on to describe what an alert would carry.
+    """
+    app, db, watchlist_id = _app_with_remapped_row(
+        tmp_path, UNREADABLE_RULES, snooze=True
+    )
+    try:
+        with TestClient(app) as client:
+            listing = _prose(client.get("/watchlist").text)
+            detail = _prose(client.get(f"/watchlist/{watchlist_id}").text)
+    finally:
+        db.close()
+    assert "badge-snoozed-type" in listing, "the list page lost the badge"
+    assert "snoozed" in detail, (
+        "the detail page reports no snooze for a row the list page badges"
+    )
+    # A snooze is a DEFINITE blocker, established without reading the ruleset,
+    # so it outranks the unknown verdict rather than being masked by it.
+    assert "cannot be determined" not in detail
+    assert "This entry alerts at a different severity" not in detail
