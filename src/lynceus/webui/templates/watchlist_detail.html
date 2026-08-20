@@ -34,9 +34,17 @@
            where one of them has to be false. The remap still matters — it
            decides the severity the moment the other blocker is lifted — so it
            is stated conditionally rather than hidden. #}
+        {# ⛔ THREE branches. `entry_can_alert` is None when the rules file
+           could not be read: the else-branch below points at "the reason given
+           elsewhere on this page" and under an unknown verdict there is no such
+           reason, so it cannot stand in for unknown. #}
         {% if entry_can_alert %}
           <strong>This entry alerts at a different severity from the one stored
           against it.</strong>
+        {% elif entry_can_alert is none %}
+          <strong>If this entry produced an alert it would carry a different
+          severity from the one stored against it</strong> — whether it produces
+          one cannot be determined, because the rules file could not be read.
         {% else %}
           <strong>If this entry produced an alert it would carry a different
           severity from the one stored against it</strong> — it produces none

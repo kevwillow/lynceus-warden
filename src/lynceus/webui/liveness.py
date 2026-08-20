@@ -847,7 +847,26 @@ def is_pattern_type_live(pattern_type: str, liveness: dict) -> bool:
 
 
 def is_pattern_type_snoozed(pattern_type: str, liveness: dict) -> bool:
-    """Whether this entry's type is currently silenced by a rule_type snooze."""
-    if not liveness.get("known"):
+    """Whether this entry's type is currently silenced by a rule_type snooze.
+
+    ⛔ Gated on ``snoozes_known``, NOT on ``known``. This read ``known`` -- the
+    RULESET verdict -- and the two are independent, which is the first thing
+    ``watchlist_liveness``'s docstring says. So an unreadable rules file made
+    this answer "not snoozed" about a snooze the same dict was reporting:
+
+        rules file unreadable -> known=False, snoozes_known=True,
+                                 suppressed_types=('mac',)
+        /watchlist            -> renders the snoozed badge   (reads the list)
+        /watchlist/<id>       -> renders no snooze at all    (called this)
+
+    Two answers about one row, one click apart -- the contradiction #116 fixed
+    for the inert/snoozed pair, reappearing between a list page and its detail
+    page. Measured at cca7c5c.
+
+    ⚠️ It also fed ``entry_can_alert``, so the detail page went on to say the
+    row "alerts at a different severity" and name what an alert "will actually
+    carry", about a row the operator had silenced themselves.
+    """
+    if not liveness.get("snoozes_known", True):
         return False
     return pattern_type in liveness["suppressed_types"]

@@ -449,6 +449,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the log path — which nothing here can resolve, since the scope is an
   assumption — is labelled as the default it is.
 
+  **A rules file that would not parse became a promise on one page and an
+  invisible snooze on another.** Two faults from one flag, found by asking what
+  the deliberate three-state liveness verdict turns into downstream.
+
+  `is_pattern_type_snoozed` gated on `known` — the **ruleset** verdict — while
+  a snooze is established independently and the same dict was already carrying
+  it. So with an unreadable rules file the watchlist list page showed the
+  snoozed badge and the detail page one click away showed no snooze at all: two
+  answers about one row, which is the contradiction #116 fixed between two
+  causes and this reintroduced between two pages.
+
+  That flag also fed `entry_can_alert`, which is now three-valued. The liveness
+  verdict returns "live" for an unknown ruleset on purpose, so that an
+  unreadable file cannot mark every row inert — and the detail page turned that
+  benefit of the doubt into *"This entry alerts at a different severity"* and
+  *"what an alert will actually carry"*, a present-tense promise about a daemon
+  that cannot load its rules, while `/settings` one click away correctly said
+  the verdict could not be read. Collapsing it to false would have been the
+  opposite lie, since that branch points at "the reason given elsewhere on this
+  page" and under an unknown verdict there is none. A definite blocker — a
+  snooze, an override suppression, a reserved OUI, an allowlist match — is
+  established without reading the ruleset and still wins outright.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still
