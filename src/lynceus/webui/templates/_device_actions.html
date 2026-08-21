@@ -61,7 +61,12 @@
       <form method="post" action="/devices/{{ mac }}/watch"
             hx-post="/devices/{{ mac }}/watch"
             hx-target="#device-actions" hx-swap="outerHTML"
-            data-confirm="Watch {{ mac }}? It will be tracked and raise a high-severity alert on repeated sightings.">
+            {# ⛔ Two confirmations, because the second is a different promise.
+               A snoozed `watchful_recurrence` does not delay the escalation, it
+               spends it -- the entry is stamped escalated with no alert row and
+               the fire-once guard blocks it later. Saying "will raise an alert"
+               at the moment of the click would be the untrue half. #}
+            data-confirm="{% if recurrence_snooze %}Watch {{ mac }}? It will be tracked, but watchful_recurrence is snoozed: a recurrence reached while it is will be marked escalated with NO alert written, and lifting the snooze later will not produce it.{% else %}Watch {{ mac }}? It will be tracked and raise a high-severity alert on repeated sightings.{% endif %}">
         <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
         <label>suppress repeats for
           <select name="snooze_duration" class="device-action-select" title="how long to suppress repeat alerts; tracking continues regardless">

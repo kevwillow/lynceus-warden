@@ -12,6 +12,23 @@
     sightings). An operator reset puts that total back to one without a
     sighting, so a reset entry escalates on its third sighting afterwards.
   </small></p>
+  {# ⛔ The promise above is off while `watchful_recurrence` is snoozed, and the
+     snooze does not DEFER the escalation -- the poller stamps the entry
+     escalated, writes no alert row, and the fire-once guard means lifting the
+     snooze later cannot produce it. An operator reading the paragraph above
+     with a snooze in force is waiting for something that will be spent
+     silently. #}
+  {% if recurrence_snooze %}
+    <p class="status-line">
+      <span class="status-pill status-pill-warn">escalation snoozed</span>
+      <code>watchful_recurrence</code> is snoozed until
+      <time datetime="{{ recurrence_snooze.expires_at | unix_to_iso }}">{{ recurrence_snooze.expires_at | unix_to_utc_human }}</time>,
+      so nothing above will alert. An entry that reaches the threshold meanwhile
+      is still marked escalated and <strong>no alert is written for it</strong>
+      &mdash; the escalation is spent, not held, and lifting the snooze later
+      will not produce it. Lift it on the <a href="/rules">rules page</a>.
+    </p>
+  {% endif %}
   {{ last_activity_note(in_list=true) }}
 
   {% if flash %}

@@ -1159,3 +1159,81 @@ def test_the_home_page_names_no_cause_for_either(tmp_path):
     assert "dated ahead" not in prose
     assert "could not be read" not in prose
 
+
+# ---------------------------------------------------------------------------
+# 13. The watchful escalation is promised on three surfaces; a snooze SPENDS it
+# ---------------------------------------------------------------------------
+
+
+def _app_with_watched_device(tmp_path, *, snoozed: bool):
+    config = Config(db_path=str(tmp_path / "s.db"))
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    now = int(time.time())
+    db.upsert_device(MAC, "wifi", None, 0, now)
+    db.add_alert(ts=now, rule_name="r", mac=MAC, message="m", severity="med")
+    if snoozed:
+        db.add_rule_type_snooze("watchful_recurrence", now + 3600, now)
+    return create_app(config, db), db
+
+
+# Every surface that promises the recurrence alert, and the needle that proves
+# the promise rendered. Kept as a table so a fourth site is one line, not a
+# fourth test -- the defect here WAS that the promise lives in three places.
+PROMISE_SURFACES = (
+    ("/watchful", "escalates to a high-severity recurrence alert"),
+    (f"/devices/{MAC}", "raise a high-severity alert on repeated sightings"),
+    ("/alerts", "raise a high-severity recurrence alert if it shows up four times"),
+)
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "route,promise", PROMISE_SURFACES, ids=[s[0] for s in PROMISE_SURFACES]
+)
+def test_the_recurrence_promise_renders_when_it_can_be_kept(tmp_path, route, promise):
+    """The control, and the reason the table exists: each surface really does
+    make this promise, so the assertions below are not vacuous."""
+    app, db = _app_with_watched_device(tmp_path, snoozed=False)
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get(route).text)
+    finally:
+        db.close()
+    assert promise in prose
+    assert "watchful_recurrence is snoozed" not in prose
+    assert "escalation snoozed" not in prose
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "route,promise", PROMISE_SURFACES, ids=[s[0] for s in PROMISE_SURFACES]
+)
+def test_a_snoozed_recurrence_is_disclosed_wherever_it_is_promised(
+    tmp_path, route, promise
+):
+    """⛔ `watchful_recurrence` is snoozeable from /rules, and the poller does
+    not DEFER the escalation -- it consumes it. Its own comment: "The snooze
+    CONSUMES the escalation -- stamp it". The entry is marked escalated, no
+    alert row is written, and the fire-once guard means lifting the snooze
+    later cannot produce it.
+
+    Measured at 7958b28: /watchful rendered identical text in both states and
+    never mentioned the snooze, and the two Watch affordances promised the
+    alert at the moment of the click.
+    """
+    app, db = _app_with_watched_device(tmp_path, snoozed=True)
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get(route).text)
+    finally:
+        db.close()
+    assert "watchful_recurrence" in prose, f"{route} does not disclose the snooze"
+    # The load-bearing half: spent, not deferred.
+    assert ("NO alert written" in prose) or (
+        "no alert is written for it" in prose
+    ), f"{route} does not say the escalation is spent"
+    if route == "/watchful":
+        assert "will not produce it" in prose
+        assert promise in prose, "the intro paragraph was removed rather than qualified"
+

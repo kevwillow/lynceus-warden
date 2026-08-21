@@ -595,6 +595,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one: it says "age unknown" and links here, which is honest for both — only a
   surface that names a cause has to know which.
 
+  **Three surfaces promised a recurrence alert that the operator's own snooze
+  quietly spends.** `watchful_recurrence` is snoozeable from the rules page, and
+  the poller does not *defer* the escalation while it is — it **consumes** it.
+  Its own comment says so: the entry is stamped escalated, no alert row is
+  written, and the fire-once guard means lifting the snooze later cannot produce
+  it. The escalation is spent, not held.
+
+  `/watchful`'s intro said *"an entry escalates to a high-severity recurrence
+  alert once its counted-sighting total reaches four"* identically in both
+  states and never mentioned the snooze; the Watch confirmation on a device and
+  the Watch tooltip on the alerts list made the same promise at the moment of
+  the click. All three now say what a snooze does to it, and the load-bearing
+  half is the part about recovery: lifting it afterwards does not bring the
+  alert back.
+
+  This is the stalker-detection surface, so the direction matters — an operator
+  who silenced the type is otherwise waiting for something that will never
+  arrive and leaves no trace on the page they are watching.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still

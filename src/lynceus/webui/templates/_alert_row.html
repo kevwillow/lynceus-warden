@@ -71,7 +71,7 @@
                         <option value="30d" selected>30d</option>
                         <option value="forever">forever</option>
                       </select>
-                      <button type="submit" class="watch-button-inline" title="Track this MAC; raise a high-severity recurrence alert if it shows up four times">Watch</button>
+                      <button type="submit" class="watch-button-inline" title="{% if recurrence_snooze %}Track this MAC. watchful_recurrence is snoozed, so a recurrence reached meanwhile is marked escalated with NO alert written and cannot be recovered by lifting the snooze{% else %}Track this MAC; raise a high-severity recurrence alert if it shows up four times{% endif %}">Watch</button>
                     </form>
                   {% endif %}
                   </div>

@@ -2788,6 +2788,13 @@ def create_app(
             context={
                 "version": __version__,
                 "active": "alerts",
+                # Third site of the same promise: the inline Watch button's
+                # tooltip. See `_device_actions.html` -- a snoozed
+                # `watchful_recurrence` spends the escalation rather than
+                # deferring it.
+                "recurrence_snooze": db.is_rule_type_snoozed(
+                    "watchful_recurrence", now_ts
+                ),
                 "alerts": alerts,
                 "total_count": total_count,
                 "page": pagination.page,
@@ -4098,6 +4105,18 @@ def create_app(
             context={
                 "version": __version__,
                 "active": "watchful",
+                # ⛔ Whether the escalation this page PROMISES can be delivered
+                # at all. `watchful_recurrence` is snoozeable from /rules, and
+                # the poller's snooze branch does not defer the escalation -- it
+                # CONSUMES it: the entry is stamped escalated, no alert row is
+                # written, and the "fire once per escalation" guard means
+                # lifting the snooze later cannot produce it. Its own comment
+                # says so. This page's intro promised the alert unconditionally
+                # and never mentioned the snooze; measured at 7958b28, the two
+                # states rendered identical text.
+                "recurrence_snooze": db.is_rule_type_snoozed(
+                    "watchful_recurrence", now_ts
+                ),
                 "decorated": decorated,
                 "pagination": pagination,
                 "status": status,
@@ -4410,6 +4429,13 @@ def create_app(
             "snooze_default_duration": _SNOOZE_DEFAULT_KEY,
             "watch_duration_options": _DEVICE_WATCH_DURATIONS,
             "watch_default_duration": _DEVICE_WATCH_DEFAULT,
+            # ⛔ The Watch button's confirmation promises "a high-severity alert
+            # on repeated sightings". While `watchful_recurrence` is snoozed the
+            # poller CONSUMES that escalation instead of deferring it, so the
+            # promise is made at the moment of the click and cannot be kept.
+            "recurrence_snooze": db.is_rule_type_snoozed(
+                "watchful_recurrence", now_ts
+            ),
             "now_ts": now_ts,
         }
 
