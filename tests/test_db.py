@@ -4209,17 +4209,53 @@ def test_every_transaction_block_takes_the_lock(tmp_path):
             and node.value.id == "self"
         )
 
-    guarded, bare = 0, []
-    for node in ast.walk(ast.parse(src)):
-        if not isinstance(node, ast.With):
-            continue
-        items = [item.context_expr for item in node.items]
-        if not any(_is_self_attr(e, "_conn") for e in items):
-            continue
-        if any(_is_self_attr(e, "_lock") for e in items):
-            guarded += 1
-        else:
-            bare.append(node.lineno)
+    # ⚠️ ...and the SECOND rendering trap, found when `Database.transaction()`
+    # was added: it holds the lock in an ENCLOSING `with self._lock:` (it has to
+    # -- the nesting check must be read under the lock) and then opens
+    # `with self._conn:` inside it. The lock is genuinely held, but this guard
+    # only ever looked at with-items on the SAME statement, so it reported a
+    # correct block as a bare one and named the fix as the error.
+    #
+    # ⇒ The predicate is now "is the lock held HERE", by lexical enclosure,
+    # rather than "are both names on this line".
+    tree = ast.parse(src)
+    holds_lock: dict[ast.AST, bool] = {}
+
+    def _lock_index(items):
+        for i, e in enumerate(items):
+            if _is_self_attr(e, "_lock"):
+                return i
+        return None
+
+    def _walk(node, locked):
+        # ⛔ A function DEFINED inside `with self._lock:` does not HOLD it when
+        # it is later called. Enclosure stops at every callable boundary, or the
+        # guard would bless a closure that runs entirely unlocked.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            locked = False
+        if isinstance(node, ast.With):
+            items = [item.context_expr for item in node.items]
+            li = _lock_index(items)
+            conn_ix = [i for i, e in enumerate(items) if _is_self_attr(e, "_conn")]
+            if conn_ix:
+                # ⛔ ORDER, not mere presence. `with A, B:` unwinds in REVERSE,
+                # so `with self._conn, self._lock:` RELEASES THE LOCK FIRST and
+                # only then commits. Measured with probe context managers:
+                #   enter conn, enter lock, body, EXIT lock, EXIT conn
+                # Another thread can take the lock in that gap and have its
+                # partial work committed by this one -- the exact shared-
+                # connection failure this guard exists to prevent, wearing the
+                # guard's own approved spelling. Presence-only was the original
+                # rule and it blessed this.
+                holds_lock[node] = locked or (li is not None and li < min(conn_ix))
+            if li is not None:
+                locked = True
+        for child in ast.iter_child_nodes(node):
+            _walk(child, locked)
+
+    _walk(tree, False)
+    guarded = sum(1 for v in holds_lock.values() if v)
+    bare = sorted(n.lineno for n, v in holds_lock.items() if not v)
 
     assert guarded >= 30, f"the pattern has drifted; only {guarded} guarded blocks found"
     assert not bare, (

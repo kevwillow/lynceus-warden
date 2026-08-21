@@ -311,7 +311,7 @@ DEFAULT_UI_PORT = 8765
 # cannot wedge --system setup at the import step with no visible
 # progress. Sized for the 22k-row bundled CSV running on Pi-class
 # hardware (Raspberry Pi 4/5 on SD-card storage): cli/import_argus.py's
-# pass-3 commits per row (one `with db._conn:` block per survivor), so
+# pass-3 commits per row (one `db.transaction()` block per survivor), so
 # wall-clock import time on a Pi SD card is dominated by sqlite fsync
 # and can run several minutes. The previous 120s ceiling was sized for
 # a much smaller bundled CSV and fired on real Pi hardware during the

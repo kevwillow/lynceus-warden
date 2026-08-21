@@ -1361,8 +1361,8 @@ def import_csv(
                 # Argus side has no record for this argus_record_id and
                 # no operator row holds the natural key: insert a new
                 # watchlist row and attach its Argus metadata.
-                with db._conn:
-                    cur = db._conn.execute(
+                with db.transaction() as conn:
+                    cur = conn.execute(
                         "INSERT INTO watchlist("
                         "pattern, pattern_type, severity, description, "
                         "mac_range_prefix, mac_range_prefix_length) "
@@ -1382,8 +1382,8 @@ def import_csv(
             else:
                 watchlist_id = int(existing_md["watchlist_id"])
                 if wl_changed:
-                    with db._conn:
-                        db._conn.execute(
+                    with db.transaction() as conn:
+                        conn.execute(
                             "UPDATE watchlist SET severity = ?, description = ? WHERE id = ?",
                             (c.severity, c.description, watchlist_id),
                         )

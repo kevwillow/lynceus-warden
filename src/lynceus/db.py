@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ import sqlite3
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import NamedTuple
@@ -412,6 +413,18 @@ def _probe_ssids_array_guard(alias: str) -> str:
     )
 
 
+class _BatchResult(NamedTuple):
+    """What a batched delete actually achieved.
+
+    ``complete`` is False only when the loop hit its batch bound with rows still
+    matching. Callers MUST propagate it rather than assume success.
+    """
+
+    deleted: int
+    batches: int
+    complete: bool
+
+
 class Database:
     def __init__(self, path: str) -> None:
         # sqlite3.connect with a nested non-existent path fails with the
@@ -449,6 +462,7 @@ class Database:
         # Migrations and `rollback_to` write outside these blocks; both are
         # admin-time, before traffic, and deliberately out of scope here.
         self._lock = threading.RLock()
+        self._txn_depth = 0
         self._conn = sqlite3.connect(
             path,
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
@@ -470,6 +484,30 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
+        # ⛔ CHOSEN, not inherited. 5000 ms is also `sqlite3.connect`'s default
+        # `timeout=5.0`, so this line changes no behaviour — that is the point.
+        # Until it existed, the entire cross-process contention policy of this
+        # product was a CPython default that nobody had decided, and the only
+        # place that so much as named it was a docstring in `bridges/ble.py`.
+        #
+        # What the number buys, measured with two real OS processes in
+        # `tests/test_db_cross_process_locking.py` (the poller, the web UI and
+        # the ble-bridge are separate processes holding separate connections,
+        # so `self._lock` cannot serialise them — only SQLite can):
+        #
+        #     write lock held   second process
+        #     0.5s / 2s / 4s    waits that long, then COMMITS
+        #     6s / 12s          OperationalError at 5.00s, write is LOST
+        #
+        # ⚠️ Raising it makes the loss rarer and makes a wedged writer block the
+        # other process for longer before it finds out. Lowering it does the
+        # reverse. Either way the cross-process tests assert this exact value,
+        # so changing it here turns them red on purpose — read them first.
+        # ⚠️ And a long write transaction is what makes the loss reachable at
+        # all. The candidate is a retention prune (one unbounded DELETE, once
+        # per 86400s, on Pi-class SD storage); its duration on a large database
+        # is NOT measured, and that is the number this value really wants.
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         # The /alerts has_action filter clause builder emits
         # mac_in_mac_range(alerts.mac, ?) per allowlist mac_range
         # entry. Register as deterministic so SQLite can hoist it
@@ -480,6 +518,264 @@ class Database:
         )
         self._migrations_dir = _find_migrations_dir()
         self._apply_migrations()
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """The ONE way to open a write transaction on this database.
+
+        ⛔ **Every write outside ``db.py`` must go through this.** Yields the
+        connection inside ``self._lock`` and ``self._conn``, so the block is
+        both lock-guarded and transactional::
+
+            with db.transaction() as conn:
+                conn.execute("DELETE FROM sightings WHERE ts < ?", (cutoff,))
+
+        **Why it exists.** Finding 52: the web process runs its sync route
+        handlers on a threadpool against ONE ``sqlite3.Connection``, and
+        transaction state is per-CONNECTION rather than per-thread — so one
+        thread leaving a ``with conn:`` block COMMITS every other thread's
+        pending work on that connection. ``db.py``'s own blocks are contained
+        by writing ``with self._lock, self._conn:``, and
+        ``test_every_transaction_block_takes_the_lock`` holds them to it.
+
+        ⛔ That guard could only ever see ``db.py``. Callers in other modules
+        reached ``db._conn`` directly and took **no** lock — five such blocks
+        existed in ``retention.py``, ``evidence.py`` and ``cli/import_argus.py``
+        and none of them were visible to it, which is precisely the escape the
+        finding's acceptance criterion predicted: *"the first alone passes the
+        moment someone adds an unguarded block somewhere else."*
+
+        ⛔ **Do not nest it, and it will not let you.** See the comment on the
+        body: an inner block's exit commits the outer block's work, so nesting
+        silently converts a rollback into a partial commit. Re-entry on the
+        same thread raises ``RuntimeError``.
+
+                ⚠️ **This gives transaction ownership, NOT application atomicity.** A
+        value read before the block, decided on in Python, and written inside
+        it can still act on state another writer has since changed. That is
+        Finding 52's open residual and it needs a CAS (see
+        ``add_alert_if_none_since`` and the ``expected_*`` parameters), not a
+        wider lock — widening the lock is the direction that has already
+        shipped a duplicate-alert fix which made the alert undeliverable.
+
+        ⚠️ And the lock is **per-process**. The poller, the web UI and the
+        ble-bridge are separate processes holding separate connections; nothing
+        in Python serialises them. SQLite does, by making the second writer
+        wait — for ``busy_timeout`` milliseconds, which this product has never
+        set, so it is ``sqlite3.connect``'s inherited default of 5000. Past
+        that the write raises ``OperationalError: database is locked`` and is
+        LOST. Measured, cross-process, in
+        ``tests/test_db_cross_process_locking.py``.
+        """
+        # ⛔ Re-entry is REFUSED, and the refusal is the point. `sqlite3`'s
+        # connection context manager is not a nested transaction and not a
+        # SAVEPOINT: the INNER block's exit COMMITS the connection, so an
+        # exception in the outer block can no longer roll back anything the
+        # inner one wrote. Measured on this class, before the guard below:
+        #
+        #     with db.transaction() as outer:
+        #         outer.execute("INSERT ... 'outer'")
+        #         with db.transaction() as inner:
+        #             inner.execute("INSERT ... 'inner'")
+        #         raise RuntimeError          # outer "fails"
+        #     -> rows afterwards: ['outer', 'inner']      BOTH committed
+        #
+        # ⚠️ Checked INSIDE the lock on purpose. A plain instance flag read
+        # outside it would refuse a *different* thread that is merely waiting
+        # its turn -- a legitimate caller turned into an error, which is the
+        # fail-CLOSED mirror of the bug this whole finding is about. Holding
+        # the RLock first means a non-zero depth can only ever be THIS thread
+        # re-entering.
+        with self._lock:
+            if self._txn_depth:
+                raise RuntimeError(
+                    "Database.transaction() is already open on this thread; "
+                    "nesting it COMMITS the outer block's partial work instead "
+                    "of nesting. Pass the connection you already have down to "
+                    "the inner code, or split the work into separate units."
+                )
+            self._txn_depth += 1
+            try:
+                with self._conn:
+                    yield self._conn
+            finally:
+                self._txn_depth -= 1
+
+    # How many rows one prune batch deletes before releasing the write lock.
+    # ⛔ Derived from measurement, not taste. With a single unbounded DELETE,
+    # `prune_old_evidence` was measured holding the write lock for **5.67s at
+    # 120,000 rows and 16.38s at 200,000** on NVMe SSD, and a second OS process
+    # doing ordinary `add_alert` writes LOST 1 and 3 of them respectively --
+    # past `busy_timeout`, SQLite gives up and the write is gone. Evidence rows
+    # cost ~47us each there, so 1000 is ~50ms of held lock on this hardware and
+    # still comfortably sub-second on the far slower SD storage the Pi uses.
+    DELETE_BATCH_ROWS = 1000
+
+    # ⛔ Stand aside between batches, for as long as the batch itself took.
+    #
+    # Batching alone is NOT the property. Measured on a 400,000-row prune:
+    # 401 batches, max batch 56.77ms, median 10.20ms -- and **100% of the
+    # prune's wall-clock was inside a held lock**, because the loop reacquired
+    # immediately. SQLite gives a waiting writer no fairness guarantee, so a
+    # second process kept losing the race and still waited 1.57s in the
+    # cross-process harness. Shrinking the batch makes that WORSE, not better:
+    # more batches means more reacquisitions.
+    #
+    # Yielding for the batch's own duration gives roughly a 50% duty cycle, so
+    # a waiter's next busy-handler retry has an even chance every time. ⭐ It is
+    # deliberately proportional rather than a constant: on the slower storage
+    # the Pi uses, batches take longer and the yield grows with them, so the
+    # duty cycle holds without anyone re-tuning a magic number for that
+    # hardware. The cap stops a pathologically slow batch from stalling the
+    # prune for minutes.
+    _YIELD_CAP_SECONDS = 0.05
+
+    # A prune that never terminates would be worse than one that holds the lock,
+    # so the loop is bounded. ⛔ If this is ever hit the shortfall is LOGGED, not
+    # swallowed: a maintenance job that silently stops early and reports success
+    # is how a retention promise quietly becomes false.
+    _DELETE_MAX_BATCHES = 100_000
+
+    def delete_in_batches(
+        self,
+        table: str,
+        where: str,
+        params: Sequence[object],
+        *,
+        batch_size: int | None = None,
+    ) -> _BatchResult:
+        """Delete matching rows in bounded transactions.
+
+        Returns a :class:`_BatchResult` — ``(deleted, batches, complete)``.
+        ⛔ ``complete`` is the field that matters and it is why this is not a
+        bare pair: a caller that logs *"Pruned N rows"* after the loop bailed on
+        its batch bound has turned a retention promise into a claim nothing
+        contradicts. The WARNING inside this method is not enough on its own,
+        because the caller's own INFO line is what an operator reads.
+
+        ⛔ **The point is the lock, not the deletion.** One unbounded
+        ``DELETE`` holds SQLite's write lock for its whole duration, and the
+        poller, the web UI and the ble-bridge are separate processes with
+        separate connections — nothing in Python serialises them, so a second
+        writer simply waits out ``busy_timeout`` and then loses its write. This
+        releases the lock between batches, so the longest hold is one batch
+        rather than the whole backlog.
+
+        ⚠️ **This is deliberately NOT atomic**, and that is safe *here* and not
+        in general. A prune is idempotent and monotonic: an interrupted one has
+        deleted a prefix of the rows it would have deleted, and the next tick
+        continues from there. Do not reach for this for a delete whose partial
+        application would leave the schema inconsistent.
+
+        ⛔ ``table`` and ``where`` are interpolated into SQL. They must be
+        literals written in this repo — never operator input, never a value read
+        from the database. ``params`` is the only channel for runtime values.
+
+        The row-count of each batch is bounded by ``batch_size``; ``rowid`` is
+        used to pick the batch so the predicate is evaluated once per row rather
+        than re-scanning from the start on every pass.
+
+        **Measured, same harness before and after** — the product's prune run
+        while a second OS process performed ordinary ``add_alert`` writes:
+
+        ==============  ==============  =============  =============  ===========
+        prune           unbounded       + batching     + standing      writes LOST
+                        (before)                       aside           before/after
+        ==============  ==============  =============  =============  ===========
+        evidence 200k   16.38s hold     0.42s hold     **0.18s** hold  3 -> **0**
+                        16.38s total    26.57s total   34.19s total
+        sightings 2M    5.01s wait      1.57s wait     **0.06s** wait  1 -> **0**
+                        7.23s total     21.51s total   50.48s total
+        ==============  ==============  =============  =============  ===========
+
+        ⭐ Batching alone was not enough: it took the evidence case to safety but
+        left the sightings case waiting **1.57s**, which is only 3x under the
+        timeout and would not survive slower storage. Standing aside is what
+        bought the two orders of magnitude.
+
+        ⚠️ **THE TRADE, stated because it is real and it runs the other way.**
+        Total prune time grows ~2x (evidence) to ~7x (sightings), and the prune
+        runs inside ``poll_once`` — so the poller is not polling while it
+        happens. The web UI reports the daemon stale at **2x
+        ``poll_interval_seconds`` (120s by default)**, so the worst case
+        measured here, 50.48s, keeps about 2.4x headroom. ⛔ That headroom is
+        finite and this change halved it: a backlog roughly twice the largest
+        measured here would breach it, sooner on Pi-class storage.
+
+        ⇒ **The complete answer is a DEADLINE, not a smaller batch**: stop after
+        N seconds, return ``complete=False``, and let ``maybe_prune_*`` decline
+        to stamp the run so the next tick continues instead of waiting out
+        another interval — exactly the precedent already set for
+        ``retention_days=None``. The machinery for it is here (``complete`` is
+        plumbed through to both callers); the deadline itself is deliberately
+        NOT built yet, because no measured case breaches the threshold and
+        guessing at N without measuring the Pi would be tuning by vibe.
+
+        ⚠️ ``DELETE_BATCH_ROWS`` is a knob but NOT the one for this: measured,
+        every batch was already short (max 56.77ms over 401 batches) while 100%
+        of the prune's wall-clock sat inside a held lock. Shrinking the batch
+        makes starvation worse, not better.
+        """
+        if not table.isidentifier():
+            raise ValueError(f"table must be a bare identifier, got {table!r}")
+        size = self.DELETE_BATCH_ROWS if batch_size is None else batch_size
+        if size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {size}")
+
+        sql = (
+            f"DELETE FROM {table} WHERE rowid IN ("  # noqa: S608 - literal, see docstring
+            f"SELECT rowid FROM {table} WHERE {where} LIMIT ?)"
+        )
+        deleted = 0
+        batches = 0
+        while batches < self._DELETE_MAX_BATCHES:
+            started = time.monotonic()
+            with self.transaction() as conn:
+                n = conn.execute(sql, (*params, size)).rowcount
+            held = time.monotonic() - started
+            batches += 1
+            deleted += n
+            if n < size:
+                # A short batch means the predicate is exhausted. Checking the
+                # COUNT rather than `n == 0` saves one whole extra round trip
+                # per prune, which on the common "nothing to delete" tick is the
+                # entire cost of the call.
+                #
+                # ⚠️ "Exhausted" is as of this statement, not forever: another
+                # process could insert a matching row a microsecond later. That
+                # is fine and deliberate -- a prune is a repeating job, and the
+                # next tick takes it. What must NOT happen is reporting
+                # completeness we did not achieve, which is what `complete`
+                # below is for.
+                return _BatchResult(deleted, batches, complete=True)
+            # Only yield when there is more to do; never after the last batch.
+            if held:
+                time.sleep(min(held, self._YIELD_CAP_SECONDS))
+        # ⛔ Under `self._lock`. This is the one statement in the function that
+        # a cold read found taking the connection WITHOUT it -- the same class
+        # this change exists to eliminate, reintroduced on the failure path
+        # whose diagnostics have to be the most trustworthy thing here. Another
+        # thread can own a transaction on this same connection, so an unguarded
+        # read could participate in or observe that thread's transaction and
+        # report a count that never existed.
+        #
+        # `self._lock` and NOT `transaction()`: this is a read, and opening a
+        # write transaction to count rows would reacquire exactly the lock this
+        # function spent its whole design budget learning to hand back.
+        with self._lock:
+            remaining = self._conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {where}",  # noqa: S608 - literal
+                tuple(params),
+            ).fetchone()[0]
+        logger.warning(
+            "delete_in_batches hit its %d-batch bound on %s after %d rows; "
+            "%d still match and will be retried on the next run",
+            self._DELETE_MAX_BATCHES,
+            table,
+            deleted,
+            remaining,
+        )
+        return _BatchResult(deleted, batches, complete=False)
 
     # Sentinel comment that marks an irreversible migration's down
     # file. The rollback runner detects this string anywhere in the

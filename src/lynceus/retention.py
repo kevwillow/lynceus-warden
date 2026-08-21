@@ -77,11 +77,29 @@ def prune_old_sightings(
         return 0, oldest
 
     cutoff = now_ts - retention_days * 86_400
-    with db._conn:
-        cur = db._conn.execute("DELETE FROM sightings WHERE ts < ?", (cutoff,))
-        deleted = cur.rowcount
-        oldest_row = db._conn.execute("SELECT MIN(ts) FROM sightings").fetchone()
+    # ⛔ BATCHED, and the reason is the write lock rather than the deletion.
+    # `sightings` is the largest table in the product; as one unbounded DELETE
+    # this held the lock for 7.23s at 2,000,000 rows and a second OS process
+    # LOST an ordinary write to `database is locked`. See
+    # `Database.delete_in_batches`.
+    result = db.delete_in_batches("sightings", "ts < ?", (cutoff,))
+    deleted = result.deleted
+    # ⚠️ Under the lock. This read was briefly outside it, which on a shared
+    # `Database` lets another thread be mid-transaction on the same connection.
+    with db.transaction() as conn:
+        oldest_row = conn.execute("SELECT MIN(ts) FROM sightings").fetchone()
     oldest = int(oldest_row[0]) if oldest_row and oldest_row[0] is not None else None
+    if not result.complete:
+        # ⛔ Never let the INFO line below stand alone for a prune that bailed.
+        # "Pruned N sightings" reads as "the retention policy was applied".
+        logger.warning(
+            "Sightings prune did NOT finish: %d deleted in %d batches before "
+            "hitting the batch bound; rows older than %d days REMAIN and the "
+            "retention policy is not yet satisfied",
+            deleted,
+            result.batches,
+            retention_days,
+        )
     logger.info(
         "Pruned %d sightings older than %d days (oldest remaining: %s)",
         deleted,
