@@ -25,6 +25,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A banner and logo mark, and a README that reads like a person wrote it.**
+  `scripts/make_banner.py` draws both, so they can be regenerated when the
+  numbers in the strapline move rather than being a binary nobody can edit.
+
+  The mark is a sibling to the Argus one and not a copy. Argus is a database,
+  so its eye holds closed concentric rings: a thing already catalogued. Lynceus
+  is a live receiver, so its iris is three arcs opening toward the pupil, the
+  glyph for a transmission arriving. The arcs point *into* the eye, never out
+  of it, which is the whole product in one mark.
+
+  PNG rather than SVG on purpose. GitHub sanitises SVG in markdown, and text in
+  an SVG depends on fonts the reader may not have.
+
+  The README also lost all 36 of its em dashes. Each one was restructured
+  rather than swapped for a comma, because a blind substitution leaves comma
+  splices where the dash was carrying a full stop.
+
+- **`docs/superpowers/` is out of the repo and gitignored.** Four planning and
+  spec documents that were an artefact of how the code got written, citing
+  skills and commit SHAs that mean nothing to anyone who clones this.
+
+  Three live references pointed into that directory and would have dangled:
+  a `config.py` docstring, a CHANGELOG entry claiming a withdrawn design
+  "ships as a tombstone" there, and a `.claude/gates.md` note about ruff
+  counting a Markdown file. All three now carry the reasoning inline instead of
+  pointing at a path. ⚠️ None of them was a Markdown link, so
+  `test_docs_links.py` would not have caught any of it.
+
 - **The Find My tracker alert has now fired on a real tracker, off the air —
   and `scripts/audit/repro_live_find_my_alert.py` ships so you can reproduce
   it.** Measured 2026-08-20: a genuine `find_my_separated` advertisement was
@@ -252,9 +280,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from a quiet device or a device that was not there, and no number would be
   defensible. The panel reports counts you read; it does not reach a verdict.
   An earlier scored design was withdrawn after it was measured returning
-  maximum confidence for the always-present neighbour it existed to demote —
-  that design now ships as a tombstone under `docs/superpowers/specs/` so the
-  reasoning is not lost.
+  maximum confidence for the always-present neighbour it existed to demote.
+  The reasoning is kept in this entry rather than in a design file, so it
+  survives the file being removed.
 
   Both run denominators are shown, because they are not the same number: five
   candidate runs inside one anchor run are not five events. The range and the

@@ -61,3 +61,9 @@ tests/test_setup_web_kismet.py
 .coverage.*
 coverage.json
 htmlcov/
+
+# Agentic planning/spec scratch. These were a working artefact of how the code
+# got written, not documentation anyone installing Lynceus needs, and they cite
+# skills and commit SHAs that mean nothing outside the machine that made them.
+# Kept on disk, out of the repo.
+/docs/superpowers/
