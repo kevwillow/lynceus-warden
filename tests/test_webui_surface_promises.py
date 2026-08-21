@@ -1400,3 +1400,67 @@ def test_an_unreadable_ruleset_does_not_also_claim_undelegated(tmp_path):
     assert "could not be read" in confirm
     assert "no enabled rule delegates" not in confirm
 
+
+# ---------------------------------------------------------------------------
+# 15. An orphaned snooze on a poller-driven type is not dormant
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "rule_type,expect_note",
+    [("watchful_recurrence", True), ("watchlist_ssid", False)],
+)
+def test_a_poller_driven_orphan_snooze_says_it_is_in_force_now(
+    tmp_path, rule_type, expect_note
+):
+    """⛔ A fix to a fix, and the cold read that produced it was REFUTED.
+
+    The orphaned-snooze block says "re-adding a rule of that type while the
+    snooze stands would leave it silenced", which reads as *harmless until you
+    add a rule*. True for every type that needs an enabled rule. False for
+    `watchful_recurrence`: `poller.py` raises it directly with no ruleset lookup
+    at all, so that snooze is consuming escalations today -- and a suppressed
+    escalation is spent, not deferred.
+
+    The reported finding was that `has_enabled_rule` could see a type with no
+    rule object; measured, it cannot -- `rule_types_with_stats` is built by
+    iterating `ruleset.rules`, so every entry has one. This is what the
+    refutation led to instead.
+    """
+    app, db = _app_with_snooze(tmp_path, OUI_ONLY_RULES, rule_type)
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get("/rules").text)
+    finally:
+        db.close()
+    assert rule_type in _unsnooze_controls(prose), "the orphan block did not render"
+    assert ("This type needs no rule" in prose) is expect_note, prose[:0] or rule_type
+    if expect_note:
+        assert "spent, not held" in prose
+
+
+def test_the_poller_driven_set_matches_what_the_poller_actually_does():
+    """⭐ The set is a claim about `poller.py`, so it is checked against it.
+
+    `watchful_recurrence` is in it because the escalation path emits without
+    consulting a ruleset. The other non-delegating types are NOT, because they
+    still need an enabled rule -- Finding 59 was precisely that no rule consumed
+    `ble_device_class`.
+    """
+    from lynceus.webui.liveness import (
+        NON_DELEGATING_RULE_TYPES,
+        POLLER_DRIVEN_RULE_TYPES,
+    )
+
+    assert POLLER_DRIVEN_RULE_TYPES == {"watchful_recurrence"}
+    assert POLLER_DRIVEN_RULE_TYPES < NON_DELEGATING_RULE_TYPES, (
+        "a poller-driven type consults no watchlist row either"
+    )
+    poller_src = (
+        Path(__file__).resolve().parents[1] / "src/lynceus/poller.py"
+    ).read_text(encoding="utf-8")
+    assert "the synthetic ``watchful_recurrence`` escalation alert" in poller_src, (
+        "the poller no longer describes this as synthetic; re-derive the set"
+    )
+

@@ -247,8 +247,9 @@
           These rule types are silenced, and no rule in
           {% if rules_file() %}<code>{{ rules_file() }}</code>{% else %}your rules file{% endif %}
           has them &mdash; so they have no row above. Lifting the snooze here is
-          the only way to clear it; re-adding a rule of that type while the
-          snooze stands would leave it silenced.
+          the only way to clear it; for most types re-adding a rule while the
+          snooze stands would leave it silenced, and any marked below need no
+          rule at all.
         {% else %}
           No ruleset is loaded, so every active snooze is listed here. Each one
           still silences its rule type in the poller.
@@ -260,6 +261,15 @@
           <span class="badge-snoozed">snoozed until
             <time datetime="{{ o.snooze.expires_at | unix_to_iso }}">{{ o.snooze.expires_at | unix_to_utc_human }}</time></span>
           {% if o.snooze.note %}<small>&mdash; {{ o.snooze.note }}</small>{% endif %}
+          {% if o.poller_driven %}
+            {# ⛔ This one is NOT dormant. The poller raises it with no rule at
+               all, so the snooze is suppressing alerts today -- and a suppressed
+               watchful escalation is CONSUMED, not deferred. #}
+            <br><small><strong>This type needs no rule:</strong> the poller
+            raises it directly, so this snooze is suppressing escalations
+            <em>now</em> &mdash; and an escalation suppressed by it is spent,
+            not held. Lifting the snooze later does not recover it.</small>
+          {% endif %}
           <form method="post" action="/rules/{{ o.rule_type }}/unsnooze" class="inline-form">
             <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
             <button type="submit" class="secondary">unsnooze</button>

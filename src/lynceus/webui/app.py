@@ -56,6 +56,7 @@ from lynceus.webui.clock import (
 from lynceus.webui.csp import CSPMiddleware
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.liveness import (
+    POLLER_DRIVEN_RULE_TYPES,
     allowlist_answerable_for,
     configured_remap_axes,
     effective_severity,
@@ -5211,7 +5212,18 @@ def create_app(
             {rule.rule_type for rule in ruleset.rules} if ruleset is not None else set()
         )
         orphaned_snoozes = [
-            {"rule_type": rt, "snooze": snoozes_by_type[rt]}
+            {
+                "rule_type": rt,
+                "snooze": snoozes_by_type[rt],
+                # ⛔ Whether this snooze is DORMANT or in force right now. The
+                # block's wording -- "re-adding a rule of that type while the
+                # snooze stands would leave it silenced" -- reads as "harmless
+                # until you add a rule", and for `watchful_recurrence` that is
+                # badly wrong: the poller raises it with no rule at all, so the
+                # snooze is consuming escalations today. Found by a cold read
+                # whose stated finding was refuted; this is what it led to.
+                "poller_driven": rt in POLLER_DRIVEN_RULE_TYPES,
+            }
             for rt in sorted(snoozes_by_type)
             if rt not in loaded_rule_types
         ]
