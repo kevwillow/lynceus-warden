@@ -35,7 +35,10 @@
       <form method="post" action="/devices/{{ mac }}/watchlist"
             hx-post="/devices/{{ mac }}/watchlist"
             hx-target="#device-actions" hx-swap="outerHTML"
-            data-confirm="Add {{ mac }} to the watchlist? It will raise alerts on every future sighting.">
+            {# ⛔ The promise is conditional on four things this page can check: an
+                 allowlist entry, a rule_type snooze, a rules file that loads, and a
+                 rule that actually delegates to `mac`. It used to be flat. #}
+              data-confirm="{% if watchlist_add_caveats %}Add {{ mac }} to the watchlist? Note: {{ watchlist_add_caveats | join('; and ') }}.{% else %}Add {{ mac }} to the watchlist? It will raise alerts on every future sighting.{% endif %}">
         <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
         <label>severity
           <select name="severity" class="device-action-select">

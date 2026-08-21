@@ -614,6 +614,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   who silenced the type is otherwise waiting for something that will never
   arrive and leaves no trace on the page they are watching.
 
+  **"It will raise alerts on every future sighting" was said in four states
+  where it raises nothing.** The Add-to-watchlist confirmation on a device made
+  that promise identically with no rules file at all, with `mac` undelegated,
+  with `watchlist_mac` snoozed, and with the device already allowlisted. It is
+  the confirmation on a stalker-detection action, so the promise is made at the
+  moment of the click and there is no other signal.
+
+  ⚠️ The obvious implementation would have been wrong, and the wrong version was
+  written and run to prove it. `watchlist_liveness` narrows every verdict to the
+  pattern types the operator **already stores** — right for reporting on
+  existing rows, wrong here: on an install with no `mac` rows yet, which is
+  exactly the install where someone clicks Add for the first time, `mac` is
+  absent from the inert set and the liveness predicate answers "live" for a type
+  no rule delegates to. The caveat reads the ruleset directly instead, and a
+  test pins that with an empty watchlist.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still
