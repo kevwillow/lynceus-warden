@@ -431,6 +431,21 @@ def _parse_date_or_datetime_to_ts(
 # Mirror of allowlist.AllowlistPatternType, exposed as a tuple so
 # the /allowlist filter validator and the add-form dropdown can
 # iterate in display order without re-deriving from typing.get_args.
+# ⛔ A PLAUSIBILITY bound on ECHOED content, not a verification. `count` reaches
+# the bulk-remove flash straight from the query string, so the page cannot know
+# it describes anything that happened -- this only stops an arbitrary integer
+# being rendered as a fact. Measured at 7958b28:
+#
+#   /allowlist?success=bulk_remove&count=999   -> "Removed 999 entries."
+#   /allowlist?success=bulk_remove             -> "Removed None entries."
+#   /allowlist?success=bulk_remove&count=-5    -> "Removed -5 entries."
+#   ...&count=99999999999999999999             -> echoed verbatim
+#
+# ...with the file byte-identical in every case. The last one is the unbounded
+# integer channel Finding 66 closed for row ids, arriving through a flash
+# instead of a path parameter.
+_ALLOWLIST_FLASH_COUNT_MAX = 100_000
+
 ALLOWLIST_PATTERN_TYPES: tuple[str, ...] = (
     "mac",
     "oui",
@@ -5913,7 +5928,18 @@ def create_app(
                 "filters_active": filters_active,
                 "supported_pattern_types": ALLOWLIST_PATTERN_TYPES,
                 "success": success,
-                "success_count": count,
+                # ⛔ `None` when the value is absent or not plausible, and the
+                # template then omits the number rather than asserting one. The
+                # token itself is already effectively whitelisted by the
+                # template's equality checks, so an unknown `success` renders
+                # nothing -- it is the COUNT that was echoed unchecked.
+                "success_count": (
+                    count
+                    if isinstance(count, int)
+                    and not isinstance(count, bool)
+                    and 0 <= count <= _ALLOWLIST_FLASH_COUNT_MAX
+                    else None
+                ),
                 "add_form": add_form or {},
                 "add_error": add_error,
                 "pagination": pagination,
