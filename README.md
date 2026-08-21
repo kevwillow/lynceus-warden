@@ -332,8 +332,15 @@ Find My tracker alerting shipped **enabled** rather than commented out.
 its owner — was received by the production scanner, decoded, persisted, matched
 the shipped `apple_find_my` rule, and produced an alert row with a notification
 dispatched. Nothing in that run was synthetic: the shipped `config/rules.yaml`,
-the real bridge, the real adapter, asserted powered before *and* after the
-window so the result cannot be a lucky one.
+the real bridge, a real adapter, a real tracker.
+
+**Why that result stands on its own:** receiving an advertisement and raising an
+alert from it is self-validating — the scanner was demonstrably live at that
+moment, or there would have been nothing to decode. ⚠️ An earlier draft of this
+paragraph also claimed the adapter was "asserted powered before and after";
+that check named a *different* controller than the one scanning, so it
+contributed nothing, and a before/after check would not have proved continuous
+operation anyway. The claim is withdrawn; the measurement does not need it.
 
 ```
 ff:1f:9e:91:52:bc   class='find_my_separated'

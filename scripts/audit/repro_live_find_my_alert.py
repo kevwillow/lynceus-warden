@@ -24,8 +24,16 @@ COMMENTED OUT until #182 turned it on.
 
 ⚠️ WHAT A ZERO MEANS. If no find_my_separated advert arrives in the window, this
 prints UNPROVEN, not "the chain is broken". A separated tracker has to be in
-range and advertising. The adapter is asserted powered BEFORE and AFTER, so a
-zero cannot be a dead-radio zero -- but it is still not evidence of anything.
+range and advertising.
+
+⛔ And be precise about how much the power check buys. Powered BEFORE and AFTER
+rules out an adapter that was down for the WHOLE window, and nothing more. A
+controller can fail, reset, or silently stop scanning mid-window and recover
+before the second check, and this harness would not see it. So a zero here is
+"no tracker observed by an adapter that was up at both ends" -- weaker than
+"the radio definitely worked throughout", and still not evidence of anything.
+⇒ A POSITIVE result does not depend on this: receiving an advert and raising an
+alert is itself proof the scanner was live at that moment.
 
 ⭐ RESULT ON RECORD — reproduce it, do not take it on faith. Run 2026-08-20 on
 an 8-device-class adapter, 12-minute window, shipped config/rules.yaml:
@@ -105,6 +113,20 @@ def adapter_power_state(address: str) -> tuple[str, str]:
     return "UNKNOWN", "bluetoothctl printed no 'Powered:' line"
 
 
+def adapter_address(index: int) -> str | None:
+    """Resolve hciN -> BD address, so the guard and the scanner cannot disagree."""
+    try:
+        out = subprocess.run(
+            ["hciconfig", f"hci{index}"], capture_output=True, text=True, timeout=10
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        if "BD Address:" in line:
+            return line.split("BD Address:")[1].split()[0].strip().upper()
+    return None
+
+
 def build_bridge(tmp: Path, adapter: str):
     """Wire a real BleBridge exactly as the Poller does, on the SHIPPED rules."""
     ruleset = load_ruleset(str(_SHIPPED_RULES))
@@ -144,12 +166,35 @@ def main() -> int:
     ap.add_argument("--minutes", type=int, default=10)
     args = ap.parse_args()
 
+    # ⛔ --address and --index were INDEPENDENT here: the power guard checked the
+    # address while the scanner was selected by index, so `--address <hci1>
+    # --index 0` vouched for one controller and scanned another. That is the
+    # same defect already fixed in measure_find_my_rotation.py -- and
+    # reintroduced here, in a new file, days later. A lesson does not
+    # generalise itself; the second site has to be looked for on purpose.
+    resolved = adapter_address(args.index)
+    if resolved is None:
+        raise SystemExit(
+            f"REFUSING TO RUN: could not resolve hci{args.index} to a BD address.\n"
+            "`hciconfig` lists the controllers. Without this the guard below "
+            "could vouch for a different adapter than the one that scans."
+        )
+    if resolved != args.address.upper():
+        raise SystemExit(
+            f"REFUSING TO RUN: --address {args.address.upper()} but hci{args.index} "
+            f"is {resolved}.\n"
+            "The power guard would then vouch for a controller that is not the one\n"
+            "scanning, and a zero from the scanning adapter would look validated.\n"
+            "Pass the index whose address you actually named."
+        )
+
     state, why = adapter_power_state(args.address)
     if state != "POWERED":
         raise SystemExit(
             f"REFUSING TO RUN: {args.address} is {state} — {why}.\n"
             "A zero from an adapter that is off or unknown is indistinguishable\n"
-            "from 'no tracker present', and this harness exists to tell those apart."
+            "from 'no tracker present', and this harness exists to tell those apart.\n"
+            "(Powered at both ends still does not prove it scanned throughout.)"
         )
     print(f"tree under test:       {_REPO}")
     print(f"rules file (SHIPPED):  {_SHIPPED_RULES}")

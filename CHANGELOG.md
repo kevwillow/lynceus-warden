@@ -30,8 +30,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it.** Measured 2026-08-20: a genuine `find_my_separated` advertisement was
   received by the production scanner, decoded, persisted, matched the shipped
   `apple_find_my` rule, and produced an alert row with a notification
-  dispatched — through `config/rules.yaml` as shipped, on a real adapter
-  asserted powered before *and* after the window.
+  dispatched — through `config/rules.yaml` as shipped, on a real adapter.
+
+  ⚠️ **Correction to this entry as first written.** It claimed the adapter was
+  "asserted powered before and after the window". A cold read found that the
+  harness took `--address` for the power guard and `--index` for the scanner as
+  *independent* arguments, and the published run passed an address belonging to
+  a different controller than the one that scanned — so the guard vouched for
+  the wrong adapter and added nothing. Both harnesses now refuse to start
+  unless the two agree. **The result itself is unaffected:** an advert arriving
+  and raising an alert proves the scanner was live at that moment, which is
+  stronger than any before/after check. Recorded rather than quietly amended,
+  because the same defect had already been fixed in the other harness and was
+  reintroduced here — a lesson does not generalise itself.
 
   This was the last unproven hop, and it could not have been proven earlier:
   the rule shipped commented out until this release enabled it. The pieces were
