@@ -34,7 +34,7 @@ from lynceus.allowlist import AllowlistEntry, add_ui_entry, derive_ui_path
 from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.webui.app import create_app
-from lynceus.webui.csrf import CSRF_FORM_FIELD
+from lynceus.webui.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
 
 MAC = "aa:bb:cc:dd:ee:ff"
 
@@ -873,4 +873,108 @@ def test_an_undeterminable_verdict_names_its_own_cause(tmp_path, rules_body, exp
         db.close()
     assert "cannot be determined" in detail, "the unknown branch did not render"
     assert expected in detail
+
+
+# ---------------------------------------------------------------------------
+# 10. A success flash must not assert a number the page cannot check
+# ---------------------------------------------------------------------------
+
+
+def _app_with_ui_entries(tmp_path, n: int = 3):
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    ui_path = derive_ui_path(primary)
+    now = int(time.time())
+    for i in range(n):
+        add_ui_entry(
+            ui_path,
+            AllowlistEntry(
+                pattern=f"aa:bb:cc:dd:ee:{i:02x}", pattern_type="mac", added_at=now
+            ),
+        )
+    config = Config(db_path=str(tmp_path / "s.db"), allowlist_path=str(primary))
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    return create_app(config, db), db, ui_path
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "query",
+    [
+        "?success=bulk_remove",
+        "?success=bulk_remove&count=-5",
+        "?success=bulk_remove&count=99999999999999999999",
+    ],
+    ids=["absent", "negative", "above-any-plausible-file"],
+)
+def test_an_implausible_flash_count_is_not_rendered_as_a_fact(tmp_path, query):
+    """⛔ `count` reaches this flash straight from the query string.
+
+    Measured at 7958b28, with the file byte-identical in every case:
+
+        ?success=bulk_remove              -> "Removed None entries."
+        ?success=bulk_remove&count=-5     -> "Removed -5 entries."
+        ...&count=99999999999999999999    -> echoed verbatim
+
+    The last is the unbounded-integer channel Finding 66 closed for row ids,
+    arriving through a flash instead of a path parameter. The page cannot
+    confirm any of them -- a removal that already happened leaves nothing to
+    check against -- so an implausible value loses its number rather than being
+    printed as one.
+    """
+    app, db, ui_path = _app_with_ui_entries(tmp_path)
+    try:
+        before = ui_path.read_text(encoding="utf-8")
+        with TestClient(app) as client:
+            prose = _prose(client.get("/allowlist" + query).text)
+        assert ui_path.read_text(encoding="utf-8") == before, "a GET mutated the file"
+    finally:
+        db.close()
+    assert "Bulk removal finished." in prose, "the flash vanished instead of degrading"
+    assert "Removed" not in prose
+    assert "None" not in prose
+
+
+@pytest.mark.webui
+def test_a_real_bulk_removal_still_reports_its_count(tmp_path):
+    """⛔ The control, driven end to end rather than simulated by visiting the
+    redirect URL. Dropping implausible counts is only correct if the real one
+    survives."""
+    app, db, ui_path = _app_with_ui_entries(tmp_path)
+    try:
+        with TestClient(app, follow_redirects=False) as client:
+            token = client.get("/allowlist").cookies[CSRF_COOKIE_NAME]
+            response = client.post(
+                "/allowlist/bulk_remove",
+                data={
+                    CSRF_FORM_FIELD: token,
+                    "entry_keys": ["mac:aa:bb:cc:dd:ee:00", "mac:aa:bb:cc:dd:ee:01"],
+                },
+            )
+            assert response.status_code == 303
+            assert response.headers["location"] == (
+                "/allowlist?success=bulk_remove&count=2"
+            )
+            prose = _prose(client.get(response.headers["location"]).text)
+        remaining = ui_path.read_text(encoding="utf-8").count("pattern:")
+    finally:
+        db.close()
+    assert "Removed 2 entries." in prose
+    assert remaining == 1, "the removal itself did not happen"
+
+
+@pytest.mark.webui
+def test_an_unknown_success_token_renders_no_flash_at_all(tmp_path):
+    """The second control: the TOKEN was already effectively whitelisted by the
+    template's equality checks, and must stay that way. It was the count that
+    was echoed unchecked."""
+    app, db, _ = _app_with_ui_entries(tmp_path)
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get("/allowlist?success=nonsense&count=7").text)
+    finally:
+        db.close()
+    assert "Removed" not in prose
+    assert "Bulk removal finished." not in prose
 

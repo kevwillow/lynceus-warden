@@ -545,6 +545,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for a syntax error in a file they never set. The module already distinguishes
   them; the sentence now asks.
 
+  **A success message reported a number nothing had established.** The
+  bulk-removal flash takes its count from the query string — the ordinary
+  post/redirect/get shape — and printed it unchecked. Measured, with the
+  allowlist file byte-identical in every case:
+
+  | URL | rendered |
+  |---|---|
+  | `?success=bulk_remove&count=999` | "Removed 999 entries." |
+  | `?success=bulk_remove` | **"Removed None entries."** |
+  | `?success=bulk_remove&count=-5` | "Removed -5 entries." |
+  | `?success=bulk_remove&count=99999999999999999999` | echoed verbatim |
+
+  The realistic route is not a crafted URL, it is the back button: a genuine
+  removal redirects to that address, and returning to it later re-renders the
+  confirmation over a list where nothing was removed this time. The last row is
+  the unbounded-integer channel closed for row ids one release ago, arriving
+  through a flash instead of a path parameter.
+
+  The token was already effectively whitelisted, so an unknown `success` value
+  renders nothing; it was only the count that was echoed. An implausible or
+  absent one now loses its number instead of being printed as one, and a real
+  bulk removal still reports its count — driven end to end, not simulated by
+  visiting the redirect address.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still
