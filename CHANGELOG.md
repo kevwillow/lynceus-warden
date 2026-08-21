@@ -630,6 +630,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no rule delegates to. The caveat reads the ruleset directly instead, and a
   test pins that with an empty watchlist.
 
+  **And one fix to a fix.** The orphaned-snooze block added above says
+  *"re-adding a rule of that type while the snooze stands would leave it
+  silenced"* — which reads as *harmless until you add a rule*. That is true of
+  every rule type except one: `watchful_recurrence` is raised by the poller
+  directly, with no ruleset lookup at all, so a snooze on it is consuming
+  escalations **today** — and a suppressed escalation is spent, not deferred.
+  Those rows now say so.
+
+  It came out of a cold read whose stated finding was **refuted**: the claim was
+  that the rules summary could see a type with no rule object behind it, and it
+  cannot — that list is built by iterating the loaded rules, so every entry has
+  one. Chasing the refutation is what surfaced the real one.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still

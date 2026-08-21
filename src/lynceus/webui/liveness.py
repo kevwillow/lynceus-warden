@@ -120,6 +120,22 @@ NON_DELEGATING_RULE_TYPES: frozenset[str] = frozenset(
     {"new_non_randomized_device", "watchful_recurrence", "ble_device_class"}
 )
 
+# ⛔ rule_types the POLLER raises on its own, with NO rule in the ruleset.
+#
+# Everything else needs an enabled rule to fire, so a snooze on it is dormant
+# while no such rule is loaded -- a snooze on one of THESE is suppressing alerts
+# right now. `watchful_recurrence` is emitted by `poller.py`'s escalation path
+# directly (`_emit_watchful_escalation`, "the synthetic watchful_recurrence
+# escalation alert"), which consults no ruleset at all; the register records the
+# same fact as the reason `watchful_recurrence` was REFUTED as an instance of
+# Finding 59.
+#
+# ⚠️ NOT the same set as NON_DELEGATING_RULE_TYPES above. Those consult no
+# WATCHLIST ROW; `ble_device_class` and `new_non_randomized_device` still need
+# an enabled rule to fire, and Finding 59 was precisely that no rule consumed
+# `ble_device_class`.
+POLLER_DRIVEN_RULE_TYPES: frozenset[str] = frozenset({"watchful_recurrence"})
+
 # ⛔ Storable, and no rule_type can ever serve it: there is no field on
 # DeviceObservation to compare the stored pattern against. No ruleset change
 # revives this one — it needs capture-side work first (Finding 32). Kept
