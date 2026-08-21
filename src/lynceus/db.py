@@ -413,6 +413,18 @@ def _probe_ssids_array_guard(alias: str) -> str:
     )
 
 
+class _BatchResult(NamedTuple):
+    """What a batched delete actually achieved.
+
+    ``complete`` is False only when the loop hit its batch bound with rows still
+    matching. Callers MUST propagate it rather than assume success.
+    """
+
+    deleted: int
+    batches: int
+    complete: bool
+
+
 class Database:
     def __init__(self, path: str) -> None:
         # sqlite3.connect with a nested non-existent path fails with the
@@ -588,6 +600,170 @@ class Database:
                     yield self._conn
             finally:
                 self._txn_depth -= 1
+
+    # How many rows one prune batch deletes before releasing the write lock.
+    # ⛔ Derived from measurement, not taste. With a single unbounded DELETE,
+    # `prune_old_evidence` was measured holding the write lock for **5.67s at
+    # 120,000 rows and 16.38s at 200,000** on NVMe SSD, and a second OS process
+    # doing ordinary `add_alert` writes LOST 1 and 3 of them respectively --
+    # past `busy_timeout`, SQLite gives up and the write is gone. Evidence rows
+    # cost ~47us each there, so 1000 is ~50ms of held lock on this hardware and
+    # still comfortably sub-second on the far slower SD storage the Pi uses.
+    DELETE_BATCH_ROWS = 1000
+
+    # ⛔ Stand aside between batches, for as long as the batch itself took.
+    #
+    # Batching alone is NOT the property. Measured on a 400,000-row prune:
+    # 401 batches, max batch 56.77ms, median 10.20ms -- and **100% of the
+    # prune's wall-clock was inside a held lock**, because the loop reacquired
+    # immediately. SQLite gives a waiting writer no fairness guarantee, so a
+    # second process kept losing the race and still waited 1.57s in the
+    # cross-process harness. Shrinking the batch makes that WORSE, not better:
+    # more batches means more reacquisitions.
+    #
+    # Yielding for the batch's own duration gives roughly a 50% duty cycle, so
+    # a waiter's next busy-handler retry has an even chance every time. ⭐ It is
+    # deliberately proportional rather than a constant: on the slower storage
+    # the Pi uses, batches take longer and the yield grows with them, so the
+    # duty cycle holds without anyone re-tuning a magic number for that
+    # hardware. The cap stops a pathologically slow batch from stalling the
+    # prune for minutes.
+    _YIELD_CAP_SECONDS = 0.05
+
+    # A prune that never terminates would be worse than one that holds the lock,
+    # so the loop is bounded. ⛔ If this is ever hit the shortfall is LOGGED, not
+    # swallowed: a maintenance job that silently stops early and reports success
+    # is how a retention promise quietly becomes false.
+    _DELETE_MAX_BATCHES = 100_000
+
+    def delete_in_batches(
+        self,
+        table: str,
+        where: str,
+        params: Sequence[object],
+        *,
+        batch_size: int | None = None,
+    ) -> _BatchResult:
+        """Delete matching rows in bounded transactions.
+
+        Returns a :class:`_BatchResult` — ``(deleted, batches, complete)``.
+        ⛔ ``complete`` is the field that matters and it is why this is not a
+        bare pair: a caller that logs *"Pruned N rows"* after the loop bailed on
+        its batch bound has turned a retention promise into a claim nothing
+        contradicts. The WARNING inside this method is not enough on its own,
+        because the caller's own INFO line is what an operator reads.
+
+        ⛔ **The point is the lock, not the deletion.** One unbounded
+        ``DELETE`` holds SQLite's write lock for its whole duration, and the
+        poller, the web UI and the ble-bridge are separate processes with
+        separate connections — nothing in Python serialises them, so a second
+        writer simply waits out ``busy_timeout`` and then loses its write. This
+        releases the lock between batches, so the longest hold is one batch
+        rather than the whole backlog.
+
+        ⚠️ **This is deliberately NOT atomic**, and that is safe *here* and not
+        in general. A prune is idempotent and monotonic: an interrupted one has
+        deleted a prefix of the rows it would have deleted, and the next tick
+        continues from there. Do not reach for this for a delete whose partial
+        application would leave the schema inconsistent.
+
+        ⛔ ``table`` and ``where`` are interpolated into SQL. They must be
+        literals written in this repo — never operator input, never a value read
+        from the database. ``params`` is the only channel for runtime values.
+
+        The row-count of each batch is bounded by ``batch_size``; ``rowid`` is
+        used to pick the batch so the predicate is evaluated once per row rather
+        than re-scanning from the start on every pass.
+
+        **Measured, same harness before and after** — the product's prune run
+        while a second OS process performed ordinary ``add_alert`` writes:
+
+        ==============  ==============  =============  =============  ===========
+        prune           unbounded       + batching     + standing      writes LOST
+                        (before)                       aside           before/after
+        ==============  ==============  =============  =============  ===========
+        evidence 200k   16.38s hold     0.42s hold     **0.18s** hold  3 -> **0**
+                        16.38s total    26.57s total   34.19s total
+        sightings 2M    5.01s wait      1.57s wait     **0.06s** wait  1 -> **0**
+                        7.23s total     21.51s total   50.48s total
+        ==============  ==============  =============  =============  ===========
+
+        ⭐ Batching alone was not enough: it took the evidence case to safety but
+        left the sightings case waiting **1.57s**, which is only 3x under the
+        timeout and would not survive slower storage. Standing aside is what
+        bought the two orders of magnitude.
+
+        ⚠️ **THE TRADE, stated because it is real and it runs the other way.**
+        Total prune time grows ~2x (evidence) to ~7x (sightings), and the prune
+        runs inside ``poll_once`` — so the poller is not polling while it
+        happens. The web UI reports the daemon stale at **2x
+        ``poll_interval_seconds`` (120s by default)**, so the worst case
+        measured here, 50.48s, keeps about 2.4x headroom. ⛔ That headroom is
+        finite and this change halved it: a backlog roughly twice the largest
+        measured here would breach it, sooner on Pi-class storage.
+
+        ⇒ **The complete answer is a DEADLINE, not a smaller batch**: stop after
+        N seconds, return ``complete=False``, and let ``maybe_prune_*`` decline
+        to stamp the run so the next tick continues instead of waiting out
+        another interval — exactly the precedent already set for
+        ``retention_days=None``. The machinery for it is here (``complete`` is
+        plumbed through to both callers); the deadline itself is deliberately
+        NOT built yet, because no measured case breaches the threshold and
+        guessing at N without measuring the Pi would be tuning by vibe.
+
+        ⚠️ ``DELETE_BATCH_ROWS`` is a knob but NOT the one for this: measured,
+        every batch was already short (max 56.77ms over 401 batches) while 100%
+        of the prune's wall-clock sat inside a held lock. Shrinking the batch
+        makes starvation worse, not better.
+        """
+        if not table.isidentifier():
+            raise ValueError(f"table must be a bare identifier, got {table!r}")
+        size = self.DELETE_BATCH_ROWS if batch_size is None else batch_size
+        if size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {size}")
+
+        sql = (
+            f"DELETE FROM {table} WHERE rowid IN ("  # noqa: S608 - literal, see docstring
+            f"SELECT rowid FROM {table} WHERE {where} LIMIT ?)"
+        )
+        deleted = 0
+        batches = 0
+        while batches < self._DELETE_MAX_BATCHES:
+            started = time.monotonic()
+            with self.transaction() as conn:
+                n = conn.execute(sql, (*params, size)).rowcount
+            held = time.monotonic() - started
+            batches += 1
+            deleted += n
+            if n < size:
+                # A short batch means the predicate is exhausted. Checking the
+                # COUNT rather than `n == 0` saves one whole extra round trip
+                # per prune, which on the common "nothing to delete" tick is the
+                # entire cost of the call.
+                #
+                # ⚠️ "Exhausted" is as of this statement, not forever: another
+                # process could insert a matching row a microsecond later. That
+                # is fine and deliberate -- a prune is a repeating job, and the
+                # next tick takes it. What must NOT happen is reporting
+                # completeness we did not achieve, which is what `complete`
+                # below is for.
+                return _BatchResult(deleted, batches, complete=True)
+            # Only yield when there is more to do; never after the last batch.
+            if held:
+                time.sleep(min(held, self._YIELD_CAP_SECONDS))
+        remaining = self._conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {where}",  # noqa: S608 - literal
+            tuple(params),
+        ).fetchone()[0]
+        logger.warning(
+            "delete_in_batches hit its %d-batch bound on %s after %d rows; "
+            "%d still match and will be retried on the next run",
+            self._DELETE_MAX_BATCHES,
+            table,
+            deleted,
+            remaining,
+        )
+        return _BatchResult(deleted, batches, complete=False)
 
     # Sentinel comment that marks an irreversible migration's down
     # file. The rollback runner detects this string anywhere in the
