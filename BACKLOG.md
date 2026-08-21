@@ -587,10 +587,18 @@ gate: every NON-Apple company id is still uncurated and would storm the same
 way.
 - **Trigger**: blocking. Must be resolved before `ble_bridge.enabled` is ever
   set in a real deployment.
-- **Notes**: in the shipped `config/rules.yaml` template both
-  `argus_ble_manufacturer_id` and the new `apple_find_my` rule are commented
-  out, so the repo default is safe. **Verify the deployed rig config
-  separately**. If `argus_ble_manufacturer_id` is uncommented there,
+- **Notes**: ⚠️ **CORRECTED 2026-08-20 — this said BOTH rules were commented
+  out "so the repo default is safe", and #182 made half of that false.**
+  `apple_find_my` now ships **LIVE** (`config/rules.yaml:206`); only
+  `argus_ble_manufacturer_id` is still commented out (`:148`). The repo default
+  is still safe, but for a different and narrower reason than this note gave:
+  `apple_find_my` matches `ble_device_class`, which **nothing but the passive
+  BLE bridge populates**, so with the bridge off it cannot fire by
+  construction. That is an argument from the capture path, not from the rule
+  being disabled — and it is the reason #182 was allowed to ship it enabled.
+  ⇒ A note that is right for the wrong reason survives the change that
+  falsifies it. **Verify the deployed rig config separately**. If
+  `argus_ble_manufacturer_id` is uncommented there,
   enabling the bridge storms immediately with no further warning, and the
   decoder does not help because that rule matches company id, not class.
 

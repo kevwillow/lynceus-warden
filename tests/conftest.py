@@ -137,3 +137,41 @@ def _kismet_no_runtime_retry(monkeypatch):
         raise MaxRetryError(_pool, url, error or "test-mode no-retry")
 
     monkeypatch.setattr(Retry, "increment", raise_immediately)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_config_dirs(tmp_path_factory, monkeypatch):
+    """Give every test its own HOME, so the suite cannot write into the
+    real ``~/.config/lynceus`` of whoever runs it.
+
+    ⛔ This is a hermeticity guard, not a convenience. Measured 2026-08-20 on
+    `416bad5`: running the suite created ``rules.yaml`` and ``allowlist.yaml``
+    in the developer's actual config directory. Seven tests reached a wizard
+    write whose target is ``paths.default_config_dir(scope) / "<name>"`` while
+    stubbing only ``resolve_config_path``, which covers ``lynceus.yaml`` and
+    nothing else.
+
+    ⚠️ It stayed invisible for the worst possible reason: **it only fails when
+    the file already exists.** On a clean home -- every CI runner -- the write
+    SUCCEEDS and the test PASSES, so green CI was being bought by writing
+    outside the sandbox. It surfaced only on a box that had run
+    ``lynceus-setup``, where #182's overwrite confirmation consumed a scripted
+    answer and the test died on StopIteration, reading like a broken test
+    rather than a test escaping its sandbox.
+
+    ⭐ Isolating the ENVIRONMENT rather than stubbing ``default_config_dir``
+    is deliberate: ``test_paths.py`` asserts what that function derives, so
+    stubbing the function would gut the tests that cover path resolution
+    itself. Redirecting HOME leaves the derivation under test and only moves
+    where it lands. Evidence it is safe: the full suite was run under a
+    redirected HOME before this was added -- 4446 passed, 0 failed.
+
+    Per-test rather than per-session, so a file one test leaves behind cannot
+    change what the next one observes. ⇒ [[a-fixture-can-contaminate-the-next-case]]
+    """
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(home / ".local" / "state"))
+    return home

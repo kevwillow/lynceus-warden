@@ -324,20 +324,34 @@ serial. Both are tracked openly in [BACKLOG.md](BACKLOG.md).
 
 ## Project status
 
-**v1.0.0** — the first stable release, and the first under AGPL-3.0. It
-closes the 0.9.x line: hardware-verified on-device, with Find My tracker
-alerting shipped **enabled** rather than commented out. The Bluetooth fixes in
-0.9.3 and 0.9.4 came out of real rig captures, not out of reasoning about what
-should work.
+**v1.0.0** — the first release under AGPL-3.0. It closes the 0.9.x line, with
+Find My tracker alerting shipped **enabled** rather than commented out.
+
+⚠️ **Read this before trusting the tracker feature — it is field-unproven in
+one specific hop.** The pieces are individually validated on real hardware: the
+capture bridge was hardware-validated end to end from inside the daemon, and
+the Find My decoder was built against **204 real Find My frames from 5
+devices**, which is what retired an earlier status-bit guess. The Bluetooth
+fixes in 0.9.3 and 0.9.4 likewise came out of real rig captures rather than
+reasoning about what should work.
+
+**What has never happened is the joint event**: a live advertisement off the
+air producing an *alert* through the `apple_find_my` rule, as one continuous
+chain. It could not have — that rule shipped commented out until this release
+turned it on. Every hop is tested, and the seam between the proven capture path
+and the newly-enabled rule has not been exercised by a real tracker. A default
+install also ships without `bleak`, so the bridge captures nothing until you
+`pip install 'lynceus[ble]'`. Treat the tracker alert as unproven on your
+hardware until you have watched it fire on your own.
 
 **The test suite ships, so you can check the claims on this page yourself.**
 CI runs `pytest -q`, `ruff check .` and `python -m build` on Python 3.11 and
 3.12 for every push and pull request, in about nine minutes — and on **arm64**
 as well as x86-64, because the machine this is built for is a Raspberry Pi. Most recently
 measured: **4447 passed, 1 skipped, 47 deselected**, at commit
-[`416bad5`](https://github.com/kevwillow/lynceus-warden/actions/runs/32401010050)
+[`7958b28`](https://github.com/kevwillow/lynceus-warden/actions/runs/32403708354)
 — the same total on all three legs, x86-64 Python 3.11 and 3.12 and arm64.
-That commit is `main` with v1.0.0's contents in it, not a branch head.
+That is the version-bump commit itself, not its parent and not a branch head.
 
 The commit is named on purpose. A bare total is a claim that quietly stops
 being true at the next merge — this one had drifted to 3294 against an actual

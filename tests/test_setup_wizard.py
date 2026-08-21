@@ -706,6 +706,25 @@ def _stub_path_resolution(monkeypatch, tmp_path):
     monkeypatch.setattr(wiz, "resolve_config_path", lambda scope, output: target)
     monkeypatch.setattr(wiz, "enumerate_bluetooth_adapters", lambda: None)
     monkeypatch.setattr(wiz, "_kismet_api_key_candidate_paths", lambda scope: [])
+    # ⛔ resolve_config_path covers lynceus.yaml and NOTHING ELSE. Every other
+    # file the wizard writes -- rules.yaml, allowlist.yaml, severity_overrides
+    # .yaml -- is built as `paths.default_config_dir(scope) / "<name>"`, which
+    # this helper did not stub. So the wizard wrote into the REAL
+    # ~/.config/lynceus of whoever ran the suite.
+    #
+    # It stayed invisible because it only fails when the file already exists:
+    # on a clean home (every CI runner) the write SUCCEEDS, the test passes,
+    # and the pollution is silent. On a machine that has run lynceus-setup it
+    # hits the overwrite confirmation added in #182, consumes an answer the
+    # test never scripted, and dies on StopIteration -- reading like a broken
+    # test rather than a test escaping its sandbox.
+    #
+    # ⇒ Stub the DIRECTORY, not each file: default_config_path,
+    # default_allowlist_path and default_overrides_path all derive from
+    # default_config_dir, so redirecting it covers the ones nobody has added
+    # yet. A per-file stub would need editing every time the wizard learns to
+    # write something new -- which is exactly how this got missed.
+    monkeypatch.setattr(wiz.paths, "default_config_dir", lambda scope: tmp_path)
     return target
 
 
