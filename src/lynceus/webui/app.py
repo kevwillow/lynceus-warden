@@ -1036,6 +1036,7 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
             "imported_at": None,
             "exported_at": None,
             "age_days": None,
+            "unknown_reason": None,
             "source": None,
             "record_count": None,
             "pattern_type_counts": pattern_type_counts,
@@ -1055,6 +1056,26 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
     age_days = (
         None if reference_ts is None else age_days_since(reference_ts, now_ts=now_ts)
     )
+    # ⛔ WHICH of the two unknowns this is. The comment above already says
+    # `age_days` is None for an UNREADABLE reference as well as an ahead one --
+    # and all three sentences rendering the unknown state named only the second.
+    # Measured at 7958b28 on an `import_runs` row whose `imported_at` AND
+    # `exported_at` are both unparseable: /settings rendered "(not established
+    # -- the source is dated ahead of this clock)" with nothing ahead of
+    # anything, sending the operator to compare host clocks and check NTP over
+    # what is actually corrupt import metadata. The liveness verdict carries a
+    # `reason` for exactly this purpose; this one now does too.
+    #
+    # ⚠️ The home page needs none of this -- it says "age unknown" and links
+    # here, which is honest for both causes. Only the surface that names a cause
+    # has to know which one.
+    unknown_reason = (
+        None
+        if age_days is not None
+        else "unreadable"
+        if reference_ts is None
+        else "ahead"
+    )
     return {
         "has_import": True,
         "status": (
@@ -1067,6 +1088,7 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
         "imported_at": imported_at,
         "exported_at": exported_at,
         "age_days": age_days,
+        "unknown_reason": unknown_reason,
         "source": latest["source"],
         "record_count": stored_int(latest["record_count"]),
         "pattern_type_counts": pattern_type_counts,

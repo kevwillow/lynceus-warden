@@ -336,6 +336,9 @@
           {%- if watchlist_freshness.age_days is not none %}
             {{ watchlist_freshness.age_days }}
             {%- if watchlist_freshness.age_days == 1 %} day{% else %} days{% endif %} ago:
+          {%- elif watchlist_freshness.unknown_reason == "unreadable" %}
+            at a time this machine cannot place (the import's own timestamps
+            could not be read):
           {%- else %}
             at a time this machine cannot place (the source is dated ahead of
             its clock):
@@ -389,10 +392,21 @@
           <span class="badge-status-error">stale (older than {{ watchlist_freshness.warn_days }} days)</span>
         {% else %}
           <span class="badge-status-warn">cannot tell</span>
-          <small>the source timestamp is ahead of this machine&#39;s clock, so
-          the age of this data is not established. Argus stamps
-          <code>exported_at</code> with ITS clock, so this can happen with a
-          perfectly good local one &mdash; compare the two hosts.</small>
+          {# ⛔ TWO causes reach this branch and they need different actions:
+             an ahead timestamp is a clock question, an unreadable one is a data
+             question. Naming the first for the second sends the operator to
+             NTP over corrupt metadata. #}
+          {% if watchlist_freshness.unknown_reason == "unreadable" %}
+            <small>this import's timestamps could not be read, so the age of
+            this data is not established. Nothing here says the clocks
+            disagree &mdash; the stored values are unusable. Re-run the import
+            to replace them.</small>
+          {% else %}
+            <small>the source timestamp is ahead of this machine&#39;s clock, so
+            the age of this data is not established. Argus stamps
+            <code>exported_at</code> with ITS clock, so this can happen with a
+            perfectly good local one &mdash; compare the two hosts.</small>
+          {% endif %}
         {% endif %}
       </p>
       <dl class="metadata-grid">
@@ -410,6 +424,8 @@
         <dd>
           {% if watchlist_freshness.age_days is not none %}
             {{ watchlist_freshness.age_days }} days
+          {% elif watchlist_freshness.unknown_reason == "unreadable" %}
+            <em>(not established &mdash; this import's timestamps could not be read)</em>
           {% else %}
             <em>(not established &mdash; the source is dated ahead of this clock)</em>
           {% endif %}
