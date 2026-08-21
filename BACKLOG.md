@@ -613,12 +613,39 @@ scan, and buffer correctly while contributing nothing, with only DEBUG-level
 drop logging to show for it. The alias-map expansion does not rescue this:
 aliases come from Kismet's own `list_sources()`, which has no knowledge of the
 bridge's synthetic source name.
-- **Trigger**: blocking. Verify before enabling, not after.
-- **Estimated**: read-only verification first. Inspect the deployed
-  `kismet_sources` and decide the contract. If a change is needed the options
-  are to document `ble:<adapter>` as the value operators must allowlist, or to
-  exempt bridge-stamped provenance from the gate; the latter is a real code
-  change with its own tests, so confirm the failure is actually present first.
+⭐ **MEASURED 2026-08-21 — this entry OVERSTATES the severity, and the gate is
+already built.** The read-only verification it asks for was done; here is what
+is actually true:
+
+1. **The check exists and is wired.** `ble_bridge_checks.py:339` warns
+   *"kismet_sources is set but does not list 'ble:<adapter>' … it will scan and
+   buffer correctly while contributing nothing"*, with the remedy *"Add
+   'ble:<adapter>' to kismet_sources, or clear kismet_sources entirely."* It
+   runs from `collect_bridge_warnings`, which is called by **both setup wizards**
+   (`cli/setup.py:1188`, `setup/web/steps_capture.py:96`) **and `/settings`**
+   (`webui/app.py:1287`).
+2. ⛔ **"only DEBUG-level drop logging" is FALSE.** `poller.py:2033` emits an
+   operator-facing **INFO** line per tick naming both sides:
+   *"source_allowlist mismatch on tick: N records seen by sources=[…] not in
+   allowlist=[…]"*, bounded to one line per tick.
+3. **It reaches the UI too**: `/healthz` renders `dropped (allowlist mismatch)`
+   (`healthz.html:54`) and the home page branches on it (`index.html:97`).
+
+⇒ **The MECHANISM is real** — `ble:hci1` fails an exact-membership test against
+`hci1` at `poller.py:1963` and every bridge observation is dropped. **The
+"silent failure" framing is not.** Left here rather than deleted because the
+mechanism still bites an operator who does not read logs or check `/settings`.
+
+⚠️ **BLE-G6 and BLE-G8 are likewise already implemented** —
+`CHECK_ADAPTER_CONTENTION` and `check_bluez_advertisement_monitor`, both wired
+into `collect_bridge_warnings`, and correctly **ordered** (G8 upstream of G6,
+because contention presumes an adapter the monitor interface could open).
+⇒ ⭐ **Grep the shipped code before scoping a gate from this file.** Three gates
+were scoped as work here and all three were already done.
+
+- **Trigger**: ~~blocking~~ **satisfied by the readiness check**; what remains is
+  whether the gate should *exempt* bridge-stamped provenance rather than make the
+  operator hand-write `ble:<adapter>`. That is a contract decision, not a defect.
 - **Notes**: an operator whose `kismet_sources` is unset has no gate at all
   (`None` means no filter) and is unaffected.
 
