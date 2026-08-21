@@ -5045,7 +5045,21 @@ def create_app(
                 )
                 snooze = snoozes_by_type.get(rt)
                 rule_types_with_stats.append(
-                    {"rule_type": rt, "stats": stats, "snooze": snooze}
+                    {
+                        "rule_type": rt,
+                        "stats": stats,
+                        "snooze": snooze,
+                        # ⛔ Whether ANY rule of this type is enabled. The snooze
+                        # affordance here says "The rule still evaluates; only
+                        # alert emit is gated", which is false for a type whose
+                        # rules are all disabled -- nothing of that type
+                        # evaluates, and the snooze changes nothing. Same
+                        # sentence, same falsehood, one section up from the
+                        # per-rule card that had it.
+                        "has_enabled_rule": any(
+                            r.enabled for r in ruleset.rules if r.rule_type == rt
+                        ),
+                    }
                 )
             rule_types_with_stats.sort(
                 key=lambda r: (-r["stats"].count, r["rule_type"])

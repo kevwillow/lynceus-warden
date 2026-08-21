@@ -112,7 +112,13 @@
               </fieldset>
               <small>
                 Suppresses all alerts from <code>{{ rt }}</code> until expiry.
-                The rule still evaluates; only alert emit is gated.
+                {% if type_entry.has_enabled_rule %}
+                  The rules of this type still evaluate; only alert emit is gated.
+                {% else %}
+                  <strong>No rule of this type is enabled</strong>, so nothing of
+                  it evaluates and the snooze changes nothing today &mdash; it
+                  would apply to any rule of this type enabled later.
+                {% endif %}
               </small>
             </form>
           </details>
@@ -199,7 +205,19 @@
               </fieldset>
               <small>
                 Suppresses all alerts from <code>{{ rule.rule_type }}</code> until expiry.
-                The rule still evaluates; only alert emit is gated.
+                {# ⛔ "The rule still evaluates" is false on a DISABLED rule's
+                   card, and this form sits on every card. The snooze is
+                   type-level either way -- it silences every enabled rule of
+                   this type, which from a disabled rule's card is a wider
+                   action than "the rule" suggests. Say which rule it is
+                   about. #}
+                {% if rule.enabled %}
+                  The rule still evaluates; only alert emit is gated.
+                {% else %}
+                  <strong>This rule is disabled</strong> and evaluates nothing, so
+                  the snooze changes nothing for it &mdash; it silences every
+                  <em>enabled</em> rule of this type.
+                {% endif %}
               </small>
             </form>
           </details>
