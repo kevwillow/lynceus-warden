@@ -63,6 +63,7 @@ from lynceus.webui.liveness import (
     is_pattern_type_live,
     is_pattern_type_snoozed,
     is_row_suppressed_by_overrides,
+    live_pattern_types,
     load_overrides,
     oui_prefix_never_matches,
     override_suppression_axes,
@@ -1584,6 +1585,76 @@ def _load_actioned_patterns(
         elif entry.pattern_type == "mac_range":
             mac_ranges.append(entry.pattern)
     return tuple(macs), tuple(ouis), tuple(mac_ranges)
+
+
+def _watchlist_add_caveats(
+    config: Config,
+    db: Database,
+    *,
+    allowlist_match,
+    now_ts: int,
+) -> list[str]:
+    """EVERY reason adding this device to the watchlist would not alert.
+
+    The Add-to-watchlist confirmation asserts "It will raise alerts on every
+    future sighting". Measured at 7958b28, it said exactly that with no rules
+    file at all, with `mac` undelegated, with `watchlist_mac` snoozed, and with
+    the device already allowlisted -- four states in which it raises nothing.
+
+    ⛔ A LIST, not the first one. These blockers are INDEPENDENT: each suppresses
+    alerting on its own, so lifting the one named leaves the others in force.
+    The first version of this returned a single reason and reproduced the defect
+    it was written to fix -- measured, an allowlisted device whose rule_type was
+    also snoozed named only the allowlist. That is the shape #116 fixed for
+    covering allowlist entries ("removing the one named would leave the other
+    suppressing it"), and it is why `override_suppression_axes` reports every
+    axis while `severity_remap_axis` reports only the winner: suppression is
+    independent, precedence is not. This is suppression.
+
+    ⛔ Deliberately NOT built on ``watchlist_liveness``. That function narrows
+    every verdict to the pattern types the operator ALREADY STORES, which is
+    right for reporting on existing rows and wrong here: on an install with no
+    `mac` rows yet, `mac` is absent from `inert_types` and
+    ``is_pattern_type_live`` would answer True for a type no rule delegates to
+    -- reporting "this will alert" for the first row ever added, which is
+    exactly the click this exists to qualify. Swapped in, the liveness version
+    fails two of this function's tests. The ruleset-level fact is the one being
+    asked about, so ``live_pattern_types`` is read directly.
+
+    Ordered definite-first, matching ``_entry_can_alert``: causes established
+    without reading the ruleset, then the ruleset verdict, then the unknown.
+    """
+    caveats: list[str] = []
+    if allowlist_match is not None:
+        caveats.append(
+            "this device is allowlisted, so alerts for it are suppressed until "
+            "that entry is removed"
+        )
+    if db.is_rule_type_snoozed("watchlist_mac", now_ts) is not None:
+        caveats.append(
+            "watchlist_mac is snoozed, so a watchlist row for it raises nothing "
+            "until the snooze is lifted on the rules page"
+        )
+    if not config.rules_path:
+        caveats.append(
+            "no rules_path is configured, so no rules are loaded and a watchlist "
+            "row raises nothing"
+        )
+        return caveats
+    try:
+        ruleset = rules_mod.load_ruleset(config.rules_path)
+    except Exception:  # noqa: BLE001 -- configured-but-broken is observable
+        caveats.append(
+            "the rules file could not be read, so whether a watchlist row would "
+            "alert cannot be determined"
+        )
+        return caveats
+    if "mac" not in live_pattern_types(ruleset):
+        caveats.append(
+            "no enabled rule delegates to mac, so a watchlist row for it raises "
+            "nothing until one does"
+        )
+    return caveats
 
 
 def _resolve_allowlist_match(
@@ -4435,6 +4506,12 @@ def create_app(
             # promise is made at the moment of the click and cannot be kept.
             "recurrence_snooze": db.is_rule_type_snoozed(
                 "watchful_recurrence", now_ts
+            ),
+            "watchlist_add_caveats": _watchlist_add_caveats(
+                app.state.config,
+                db,
+                allowlist_match=allowlist_match,
+                now_ts=now_ts,
             ),
             "now_ts": now_ts,
         }

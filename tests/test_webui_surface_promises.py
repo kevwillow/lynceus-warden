@@ -1237,3 +1237,166 @@ def test_a_snoozed_recurrence_is_disclosed_wherever_it_is_promised(
         assert "will not produce it" in prose
         assert promise in prose, "the intro paragraph was removed rather than qualified"
 
+
+# ---------------------------------------------------------------------------
+# 14. "It will raise alerts on every future sighting" -- against four blockers
+# ---------------------------------------------------------------------------
+
+WATCHED_MAC = "3c:5a:b4:11:22:33"
+DELEGATING_MAC_RULES = (
+    "rules:\n  - name: m\n    rule_type: watchlist_mac\n"
+    "    enabled: true\n    severity: med\n"
+)
+NON_DELEGATING_RULES = (
+    "rules:\n  - name: o\n    rule_type: watchlist_oui\n"
+    "    enabled: true\n    severity: med\n"
+)
+
+
+def _app_for_add_confirm(
+    tmp_path, *, rules=DELEGATING_MAC_RULES, snooze=False, allowlisted=False
+):
+    kwargs = {"db_path": str(tmp_path / "s.db")}
+    if rules is not None:
+        rules_file = tmp_path / "rules.yaml"
+        rules_file.write_text(rules, encoding="utf-8")
+        kwargs["rules_path"] = str(rules_file)
+    primary = tmp_path / "allowlist.yaml"
+    primary.write_text("entries: []\n", encoding="utf-8")
+    kwargs["allowlist_path"] = str(primary)
+    config = Config(**kwargs)
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    now = int(time.time())
+    db.upsert_device(WATCHED_MAC, "wifi", None, 0, now)
+    if snooze:
+        db.add_rule_type_snooze("watchlist_mac", now + 3600, now)
+    if allowlisted:
+        add_ui_entry(
+            derive_ui_path(primary),
+            AllowlistEntry(pattern=WATCHED_MAC, pattern_type="mac", added_at=now),
+        )
+    return create_app(config, db), db
+
+
+def _add_confirm(html: str) -> str:
+    match = re.search(r'data-confirm="(Add [^"]{0,300})', _prose(html))
+    assert match, "the add-to-watchlist confirmation is not on the page"
+    return match.group(1)
+
+
+@pytest.mark.webui
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({"rules": None}, "no rules_path is configured"),
+        ({"rules": NON_DELEGATING_RULES}, "no enabled rule delegates to mac"),
+        ({"snooze": True}, "watchlist_mac is snoozed"),
+        ({"allowlisted": True}, "this device is allowlisted"),
+    ],
+    ids=["no-rules-file", "undelegated", "snoozed", "allowlisted"],
+)
+def test_the_add_confirmation_does_not_promise_alerts_it_cannot_deliver(
+    tmp_path, kwargs, expected
+):
+    """⛔ Measured at 7958b28: "Add <mac> to the watchlist? It will raise alerts
+    on every future sighting." rendered IDENTICALLY in all four of these states,
+    each of which raises nothing.
+
+    It is the confirmation on a stalker-detection action, so the promise is made
+    at the moment of the click and the operator has no other signal.
+    """
+    app, db = _app_for_add_confirm(tmp_path, **kwargs)
+    try:
+        with TestClient(app) as client:
+            confirm = _add_confirm(client.get(f"/devices/{WATCHED_MAC}").text)
+    finally:
+        db.close()
+    assert "raise alerts on every future sighting" not in confirm, confirm
+    assert expected in confirm, confirm
+
+
+@pytest.mark.webui
+def test_the_add_confirmation_keeps_its_promise_when_nothing_blocks(tmp_path):
+    """The control. With `mac` delegated, unsnoozed, no allowlist entry and a
+    readable ruleset, the original sentence is true and must survive."""
+    app, db = _app_for_add_confirm(tmp_path)
+    try:
+        with TestClient(app) as client:
+            confirm = _add_confirm(client.get(f"/devices/{WATCHED_MAC}").text)
+    finally:
+        db.close()
+    assert "It will raise alerts on every future sighting." in confirm
+    assert "Note:" not in confirm
+
+
+@pytest.mark.webui
+def test_the_caveat_reads_the_ruleset_not_the_stored_types(tmp_path):
+    """⛔ The trap this fix had to avoid, pinned so a later refactor cannot walk
+    into it.
+
+    `watchlist_liveness` narrows every verdict to the pattern types the operator
+    ALREADY STORES. On an install with no `mac` rows yet -- which is exactly the
+    install where someone clicks Add for the first time -- `mac` is absent from
+    `inert_types`, so `is_pattern_type_live` answers True for a type no rule
+    delegates to. The caveat reads `live_pattern_types` from the ruleset
+    instead, so an EMPTY watchlist still gets the truth.
+    """
+    app, db = _app_for_add_confirm(tmp_path, rules=NON_DELEGATING_RULES)
+    try:
+        counts = db.watchlist_pattern_type_counts()
+        # ⚠️ Not `== {}`: this returns every known type with a zero count. What
+        # matters is that NOTHING is stored -- `watchlist_liveness` builds its
+        # `stored` set from the types whose count is > 0, and an empty set is
+        # what makes `mac` absent from `inert_types`.
+        assert not any(v > 0 for v in counts.values()), (
+            f"the fixture must have an EMPTY watchlist for this to prove "
+            f"anything; got {counts}"
+        )
+        with TestClient(app) as client:
+            confirm = _add_confirm(client.get(f"/devices/{WATCHED_MAC}").text)
+    finally:
+        db.close()
+    assert "no enabled rule delegates to mac" in confirm
+
+
+@pytest.mark.webui
+def test_every_blocker_is_named_not_just_the_first(tmp_path):
+    """⛔ The defect the FIRST version of this fix had, kept as its own test.
+
+    These blockers are independent: each suppresses alerting on its own, so an
+    operator who lifts the one named still gets nothing. Measured on the
+    single-reason version: an allowlisted device whose rule_type was also
+    snoozed named only the allowlist.
+
+    That is the shape #116 fixed for covering allowlist entries, and it is why
+    `override_suppression_axes` reports every axis while `severity_remap_axis`
+    reports only the winner -- suppression is independent, precedence is not.
+    """
+    app, db = _app_for_add_confirm(
+        tmp_path, rules=NON_DELEGATING_RULES, snooze=True, allowlisted=True
+    )
+    try:
+        with TestClient(app) as client:
+            confirm = _add_confirm(client.get(f"/devices/{WATCHED_MAC}").text)
+    finally:
+        db.close()
+    assert "this device is allowlisted" in confirm, confirm
+    assert "watchlist_mac is snoozed" in confirm, confirm
+    assert "no enabled rule delegates to mac" in confirm, confirm
+    assert "raise alerts on every future sighting" not in confirm
+
+
+@pytest.mark.webui
+def test_an_unreadable_ruleset_does_not_also_claim_undelegated(tmp_path):
+    """The delegation verdict is not available when the file will not parse, so
+    it must not be asserted alongside the read failure -- unknown is unknown."""
+    app, db = _app_for_add_confirm(tmp_path, rules="rules:\n  - not a rule\n")
+    try:
+        with TestClient(app) as client:
+            confirm = _add_confirm(client.get(f"/devices/{WATCHED_MAC}").text)
+    finally:
+        db.close()
+    assert "could not be read" in confirm
+    assert "no enabled rule delegates" not in confirm
+
