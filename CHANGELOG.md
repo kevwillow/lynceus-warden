@@ -569,6 +569,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bulk removal still reports its count — driven end to end, not simulated by
   visiting the redirect address.
 
+  **A snooze affordance told the operator a disabled rule still evaluates.**
+  *"Suppresses all alerts from `watchlist_mac` until expiry. The rule still
+  evaluates; only alert emit is gated"* sits on every rule card — including a
+  disabled rule's, where it is flatly false. The snooze is type-level either
+  way, so from a disabled rule's card it is also a **wider** action than "the
+  rule" suggests: it silences every enabled rule of that type.
+
+  The same sentence sits one section up in the per-type summary, where a type
+  whose rules are *all* disabled hits the identical falsehood. Both are fixed,
+  and the test walks every affordance on the page rather than the one that was
+  reported — fixing the reported site alone is how this class survives.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still

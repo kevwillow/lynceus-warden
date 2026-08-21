@@ -978,3 +978,86 @@ def test_an_unknown_success_token_renders_no_flash_at_all(tmp_path):
     assert "Removed" not in prose
     assert "Bulk removal finished." not in prose
 
+
+# ---------------------------------------------------------------------------
+# 11. A snooze affordance must not claim a disabled rule evaluates
+# ---------------------------------------------------------------------------
+
+MIXED_RULES = (
+    "rules:\n"
+    "  - name: off_rule\n"
+    "    rule_type: watchlist_mac\n"
+    "    enabled: false\n"
+    "    severity: med\n"
+    "  - name: on_rule\n"
+    "    rule_type: watchlist_oui\n"
+    "    enabled: true\n"
+    "    severity: med\n"
+)
+
+
+def _rules_page(tmp_path, body: str) -> str:
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(body, encoding="utf-8")
+    config = Config(db_path=str(tmp_path / "s.db"), rules_path=str(rules))
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    try:
+        with TestClient(create_app(config, db)) as client:
+            return _prose(client.get("/rules").text)
+    finally:
+        db.close()
+
+
+def _snooze_blurbs(prose: str) -> list[str]:
+    """Every "Suppresses all alerts from X until expiry. …" affordance."""
+    return [
+        re.sub(r"<[^>]+>", " ", m.group(0))
+        for m in re.finditer(r"Suppresses all alerts from.{0,260}?</small>", prose)
+    ]
+
+
+@pytest.mark.webui
+def test_no_snooze_affordance_claims_a_disabled_rule_evaluates(tmp_path):
+    """⛔ "The rule still evaluates; only alert emit is gated" sat on EVERY
+    card, including a disabled rule's -- where it is flatly false. The snooze is
+    type-level either way, so from a disabled rule's card it is also a wider
+    action than "the rule" suggests: it silences every enabled rule of that
+    type.
+
+    ⭐ Derived over every affordance on the page, not just the one that was
+    reported. The same sentence sits one section up in the per-type summary,
+    where a type whose rules are ALL disabled hits the identical falsehood --
+    fixing the reported site alone would have left it.
+    """
+    prose = _rules_page(tmp_path, MIXED_RULES)
+    blurbs = _snooze_blurbs(prose)
+    assert len(blurbs) >= 4, f"expected the per-type and per-rule affordances, got {len(blurbs)}"
+    for blurb in blurbs:
+        if "watchlist_mac" in blurb:  # every rule of this type is disabled
+            assert "still evaluate" not in blurb, blurb
+        else:
+            assert "still evaluate" in blurb, blurb
+
+
+@pytest.mark.webui
+def test_the_disabled_card_says_the_snooze_reaches_the_other_rules(tmp_path):
+    """The remedy half: the operator has to learn what the button DOES do."""
+    prose = _rules_page(tmp_path, MIXED_RULES)
+    assert "This rule is disabled" in prose
+    assert "silences every" in prose
+    assert "No rule of this type is enabled" in prose
+
+
+@pytest.mark.webui
+def test_an_all_enabled_ruleset_keeps_the_original_wording(tmp_path):
+    """The control. The sentence is correct for enabled rules and must stay."""
+    body = MIXED_RULES.replace("enabled: false", "enabled: true")
+    prose = _rules_page(tmp_path, body)
+    blurbs = _snooze_blurbs(prose)
+    assert blurbs, "no snooze affordance rendered at all"
+    for blurb in blurbs:
+        assert "still evaluate" in blurb, blurb
+    assert "This rule is disabled" not in prose
+    assert "No rule of this type is enabled" not in prose
+
