@@ -65,7 +65,19 @@ LIVE_TYPE = "mac"
 INERT_EXPLANATION = "This entry cannot currently fire."
 SNOOZE_LIVE_EXPLANATION = "This entry matches, but its alerts are being dropped."
 SNOOZE_ALSO_EXPLANATION = "You have also snoozed this entry's rule type."
-RULES_YAML_IS_FINE = "Nothing in <code>rules.yaml</code> needs changing."
+
+
+def _rules_file_is_fine(cfg, *, tail: str = ".") -> str:
+    """The "your rules file is fine" sentence, with the path the app loaded.
+
+    ⚠️ Was a constant naming `rules.yaml`. The template used to hard-code that
+    filename while the daemon loads whatever `rules_path` points at, so this
+    needle asserted the defect rather than the behaviour -- and it kept passing
+    for an operator whose file is called something else, while the page named a
+    file they do not have. Derived from the fixture's config, so it follows the
+    path instead of the spelling.
+    """
+    return f"Nothing in <code>{cfg.rules_path}</code> needs changing{tail}"
 
 
 def test_this_suite_is_testing_the_tree_it_lives_in():
@@ -181,7 +193,7 @@ def test_the_detail_page_explains_both_causes_and_retracts_the_false_sentence(tm
 
     assert INERT_EXPLANATION in detail, "the inert cause is not explained at all"
     assert SNOOZE_ALSO_EXPLANATION in detail, "the snooze cause is not explained at all"
-    assert RULES_YAML_IS_FINE not in detail, (
+    assert _rules_file_is_fine(cfg) not in detail, (
         "the detail page still tells the operator that rules.yaml is fine for a "
         "row whose pattern_type has no enabled delegating rule"
     )
@@ -207,7 +219,7 @@ def test_a_snoozed_but_delegated_type_keeps_the_original_wording(tmp_path):
         db.close()
 
     assert SNOOZE_LIVE_EXPLANATION in detail
-    assert RULES_YAML_IS_FINE in detail
+    assert _rules_file_is_fine(cfg) in detail
     assert INERT_EXPLANATION not in detail
 
 
@@ -279,7 +291,7 @@ def test_settings_retracts_the_same_sentence_when_a_snoozed_type_is_also_inert(t
         db.close()
 
     assert "snoozed, not dead" in settings
-    assert "Nothing in <code>rules.yaml</code> needs changing — lift it" not in settings
+    assert _rules_file_is_fine(cfg, tail=" — lift it") not in settings
     assert "also inert" in settings
 
 
@@ -291,7 +303,7 @@ def test_settings_keeps_the_sentence_when_the_snoozed_type_delegates(tmp_path):
     finally:
         db.close()
 
-    assert "Nothing in <code>rules.yaml</code> needs changing — lift it" in settings
+    assert _rules_file_is_fine(cfg, tail=" — lift it") in settings
     assert "also inert" not in settings
 
 

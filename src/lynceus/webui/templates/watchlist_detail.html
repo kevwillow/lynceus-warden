@@ -151,8 +151,18 @@
       <p><small class="dim">
         <span class="badge-inert">never</span>
         <strong>This entry can never match.</strong>
-        Editing <code>rules.yaml</code> will not change that for this row: its
-        OUI prefix is <code>{{ oui_never_matches_reason }}</code>.
+        {# ⚠️ The ONLY rules-file sentence on this page that can render with no
+           rules file configured -- every other one sits behind a liveness
+           verdict, and `known` is False when `rules_path` is unset. A blank
+           <code></code> here would read as a filename the operator failed to
+           notice, so the unset case gets its own wording. #}
+        {% if rules_file() %}
+          Editing <code>{{ rules_file() }}</code> will not change that for this
+          row: its OUI prefix is <code>{{ oui_never_matches_reason }}</code>.
+        {% else %}
+          Editing your rules file will not change that for this row: its OUI
+          prefix is <code>{{ oui_never_matches_reason }}</code>.
+        {% endif %}
       </small></p>
     {% endif %}
     {% if entry_is_snoozed %}
@@ -179,7 +189,7 @@
         {% if entry_is_live %}
           The rule still runs and still matches this pattern; the alert is
           suppressed until the snooze expires. Nothing in
-          <code>rules.yaml</code> needs changing.
+          <code>{{ rules_file() }}</code> needs changing.
         {% else %}
           Lifting that snooze on its own will <strong>not</strong> restore
           alerting for this entry — the note below is a separate cause and both
@@ -193,14 +203,14 @@
         <span class="badge-inert">inert</span>
         <strong>This entry cannot currently fire.</strong>
         A watchlist row is consulted only by a rule whose <code>patterns:</code>
-        list is empty; no enabled rule in <code>rules.yaml</code> delegates to
+        list is empty; no enabled rule in <code>{{ rules_file() }}</code> delegates to
         <code>{{ entry.pattern_type }}</code>, so a device matching this pattern
         raises no alert.
         {% if entry.pattern_type in liveness.dead_by_model_types %}
-          Editing <code>rules.yaml</code> will not change that for this type —
+          Editing <code>{{ rules_file() }}</code> will not change that for this type —
           nothing in a capture carries the field to compare against yet.
         {% else %}
-          Enabling the delegating rule for this type in <code>rules.yaml</code>
+          Enabling the delegating rule for this type in <code>{{ rules_file() }}</code>
           changes what alerts for every device, so it is a deployment decision
           rather than a setting.
         {% endif %}

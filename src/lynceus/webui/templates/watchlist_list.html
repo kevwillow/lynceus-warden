@@ -171,7 +171,7 @@
                  away showed only `snoozed` — two contradictory diagnoses of
                  one row, each naming a fix that alone restores nothing. #}
               <td>{{ e.pattern_type }}{% if e.pattern_type in inert_pattern_types %}
-                <span class="badge-inert" title="no enabled rule in rules.yaml delegates to this pattern type, so this entry cannot fire">inert</span>
+                <span class="badge-inert" title="no enabled rule in {{ rules_file() }} delegates to this pattern type, so this entry cannot fire">inert</span>
               {% endif %}
               {% if e.pattern_type in snoozed_pattern_types %}
                 <span class="badge-snoozed-type" title="you snoozed this rule_type from the rules page; alerts are dropped until it expires">snoozed</span>

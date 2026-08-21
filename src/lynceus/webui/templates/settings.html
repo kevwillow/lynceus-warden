@@ -128,7 +128,7 @@
         {% else %}
           <strong>OFF</strong> — trackers are decoded and counted here,
           but <strong>nothing will alert</strong> on them.
-          Enable <code>apple_find_my</code> in <code>rules.yaml</code>.
+          Enable <code>apple_find_my</code> in <code>{{ rules_file() }}</code>.
         {% endif %}
       </dd>
     </dl>
@@ -489,12 +489,12 @@
         A watchlist row is only consulted by a rule whose <code>patterns:</code>
         list is empty — an enabled rule with its own inline patterns matches
         those instead and never reads your watchlist. No enabled rule in
-        <code>rules.yaml</code> delegates to
+        <code>{{ rules_file() }}</code> delegates to
         {% for pt in watchlist_liveness.inert_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
         Your other rule types are unaffected.
         {% if watchlist_liveness.dead_by_model_types %}
           {% for pt in watchlist_liveness.dead_by_model_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
-          cannot be revived by editing <code>rules.yaml</code> at all — nothing
+          cannot be revived by editing <code>{{ rules_file() }}</code> at all — nothing
           in a capture carries that field yet.
         {% endif %}
       </small></p>
@@ -596,7 +596,7 @@
            no enabled rule delegates to. A cold read caught the half-fix. #}
         {% if not watchlist_liveness.both_types %}
           The rules still match; the alerts are dropped until the snooze
-          expires. Nothing in <code>rules.yaml</code> needs changing — lift it
+          expires. Nothing in <code>{{ rules_file() }}</code> needs changing — lift it
           on /rules.
         {% else %}
           ⚠️ But
@@ -619,7 +619,7 @@
         <code>suppress_vendors</code> / <code>suppress_categories</code> entry in
         your severity overrides, by an allowlist match, or (for
         <code>oui</code>) by a prefix the matcher discards. And this reads
-        <code>rules.yaml</code> as it is on disk now; a running poller picks up
+        <code>{{ rules_file() }}</code> as it is on disk now; a running poller picks up
         an edit when it restarts.
       </small></p>
     {% endif %}
@@ -640,7 +640,8 @@
         decoded from the advert itself rather than from a Kismet field, so it
         does not share this limitation. It needs two things to alert: the
         passive BLE bridge enabled, and an <code>apple_find_my</code> rule in
-        <code>rules.yaml</code>. With both, prefer it.
+        {% if rules_file() %}<code>{{ rules_file() }}</code>{% else %}your rules
+        file{% endif %}. With both, prefer it.
       </small></p>
     {% endif %}
     <p><small>

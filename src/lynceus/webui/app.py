@@ -2230,6 +2230,43 @@ def create_app(config: Config, db: Database) -> FastAPI:
     app.state.templates.env.globals["lynceus_version"] = __version__
     app.state.templates.env.globals["lynceus_source_url"] = SOURCE_URL
     app.state.templates.env.globals["lynceus_license"] = "AGPL-3.0-or-later"
+    # ⛔ The FILE the daemon actually loads, for every surface that names one.
+    #
+    # `rules_path` and `allowlist_path` are free-form config: an operator can
+    # point them at any filename, and `derive_ui_path` carries the stem AND the
+    # extension across, so the UI sibling of `site-devices.yml` is
+    # `site-devices_ui.yml`. Twelve renderings across five pages hard-coded
+    # `rules.yaml` / `allowlist.yaml` / `allowlist_ui.yaml` instead, including
+    # four REMEDIES -- "edit that file directly to remove", "Edit rules.yaml on
+    # disk and restart". Measured at cca7c5c against
+    # `allowlist_path=site-devices.yml` + `rules_path=site-rules.yml`: every one
+    # of those sentences named a file that does not exist on that install, and
+    # `/allowlist` printed the true path in its empty state while naming the
+    # wrong one in its counts, on the same page.
+    #
+    # ⚠️ Callables, not values, and env globals rather than per-route context,
+    # for the two reasons already written into the block below: a route that
+    # forgets a context key renders an EMPTY string -- which for a remedy is
+    # worse than a wrong filename -- and reading `app.state.config` at render
+    # time cannot go stale if the config object is ever replaced.
+    #
+    # `None` when the path is unset. Two sites can render with it unset
+    # (`/rules`' footer, and the OUI never-matches note on a watchlist entry);
+    # both branch on it explicitly, because "no rules file is configured" is a
+    # different sentence, not a blank.
+    def _rules_file() -> str | None:
+        return app.state.config.rules_path or None
+
+    def _allowlist_file() -> str | None:
+        return app.state.config.allowlist_path or None
+
+    def _allowlist_ui_file() -> str | None:
+        primary = app.state.config.allowlist_path
+        return str(derive_ui_path(Path(primary))) if primary else None
+
+    app.state.templates.env.globals["rules_file"] = _rules_file
+    app.state.templates.env.globals["allowlist_file"] = _allowlist_file
+    app.state.templates.env.globals["allowlist_ui_file"] = _allowlist_ui_file
     app.state.templates.env.filters["unix_to_iso"] = unix_to_iso
     app.state.templates.env.filters["unix_to_utc_human"] = unix_to_utc_human
     app.state.templates.env.filters["device_label"] = _device_label
