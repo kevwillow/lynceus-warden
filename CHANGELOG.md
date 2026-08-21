@@ -581,6 +581,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the test walks every affordance on the page rather than the one that was
   reported — fixing the reported site alone is how this class survives.
 
+  **"The source is dated ahead of this clock" was said about timestamps that
+  could not be read at all.** The watchlist-freshness age is unknown in two
+  situations — the reference is stamped ahead of this machine, or it cannot be
+  parsed — and the computation's own comment says so. All three sentences
+  rendering that state named only the first. Measured on an import row whose
+  `imported_at` and `exported_at` are both unparseable: *"(not established — the
+  source is dated ahead of this clock)"*, with nothing ahead of anything, sending
+  the operator to compare host clocks and check NTP over corrupt metadata.
+
+  The card now carries which of the two it is, the way the liveness verdict
+  already carries its reason. ⭐ The home page needed no change and did not get
+  one: it says "age unknown" and links here, which is honest for both — only a
+  surface that names a cause has to know which.
+
   Each fix ships with its control pinned as well as its treatment: the tile
   still says "none unacknowledged" when nothing is unacknowledged and still
   leads with the high count when there is one, the removal button is still

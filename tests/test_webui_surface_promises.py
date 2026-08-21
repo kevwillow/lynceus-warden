@@ -1061,3 +1061,101 @@ def test_an_all_enabled_ruleset_keeps_the_original_wording(tmp_path):
     assert "This rule is disabled" not in prose
     assert "No rule of this type is enabled" not in prose
 
+
+# ---------------------------------------------------------------------------
+# 12. Unknown import freshness has two causes and must name the right one
+# ---------------------------------------------------------------------------
+
+
+def _app_with_import_run(tmp_path, imported_at, exported_at):
+    """An `import_runs` row written directly, so unreadable values are reachable.
+
+    ``stored_int`` exists because such values ARE reachable -- its own docstring
+    records a database carrying an `imported_at` of "not-an-int".
+    """
+    config = Config(db_path=str(tmp_path / "s.db"))
+    db = Database(config.db_path)
+    db.ensure_location("default", "Default")
+    db.add_watchlist(pattern="aa:bb:cc:dd:ee:01", pattern_type="mac", severity="high")
+    with db._conn:
+        db._conn.execute(
+            "INSERT INTO import_runs(imported_at, exported_at, source, record_count) "
+            "VALUES (?, ?, ?, ?)",
+            (imported_at, exported_at, "argus", 10),
+        )
+    return create_app(config, db), db
+
+
+@pytest.mark.webui
+def test_unreadable_import_timestamps_are_not_blamed_on_a_clock(tmp_path):
+    """⛔ Two causes, one sentence.
+
+    `age_days` is None when the reference is stamped AHEAD of this clock and
+    when it cannot be read at all -- the computation's own comment says so --
+    and all three sentences rendering that state named only the first.
+
+    Measured at 7958b28 on a row whose `imported_at` and `exported_at` are both
+    unparseable: "(not established — the source is dated ahead of this clock)",
+    with nothing ahead of anything. That sends the operator to compare host
+    clocks and check NTP over what is corrupt import metadata.
+    """
+    app, db = _app_with_import_run(tmp_path, "not-an-int", "also-not-an-int")
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get("/settings").text)
+    finally:
+        db.close()
+    assert "cannot tell" in prose, "the unknown-freshness branch did not render"
+    assert "could not be read" in prose
+    assert "dated ahead of this clock" not in prose
+    assert "compare the two hosts" not in prose
+
+
+@pytest.mark.webui
+def test_a_source_stamped_ahead_still_says_so(tmp_path):
+    """The control. The clock explanation is right for the ahead case and is
+    the more common one -- it must survive."""
+    now = int(time.time())
+    app, db = _app_with_import_run(tmp_path, now - 3600, now + 400 * 86400)
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get("/settings").text)
+    finally:
+        db.close()
+    assert "dated ahead of this clock" in prose
+    assert "compare the two hosts" in prose
+    assert "could not be read" not in prose
+
+
+@pytest.mark.webui
+def test_a_readable_import_reports_a_real_age(tmp_path):
+    """The second control: neither unknown sentence may render for an import
+    this machine can place."""
+    now = int(time.time())
+    app, db = _app_with_import_run(tmp_path, now - 3600, now - 2 * 86400)
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get("/settings").text)
+    finally:
+        db.close()
+    assert "cannot tell" not in prose
+    assert "dated ahead of this clock" not in prose
+    assert "could not be read" not in prose
+
+
+@pytest.mark.webui
+def test_the_home_page_names_no_cause_for_either(tmp_path):
+    """⭐ The home page says "age unknown" and links to /settings, which is
+    honest for BOTH causes -- so it needed no change, and must not acquire one.
+    Only a surface that names a cause has to know which it is.
+    """
+    app, db = _app_with_import_run(tmp_path, "not-an-int", "also-not-an-int")
+    try:
+        with TestClient(app) as client:
+            prose = _prose(client.get("/").text)
+    finally:
+        db.close()
+    assert "age unknown" in prose
+    assert "dated ahead" not in prose
+    assert "could not be read" not in prose
+
