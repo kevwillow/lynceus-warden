@@ -327,22 +327,38 @@ serial. Both are tracked openly in [BACKLOG.md](BACKLOG.md).
 **v1.0.0** — the first release under AGPL-3.0. It closes the 0.9.x line, with
 Find My tracker alerting shipped **enabled** rather than commented out.
 
-⚠️ **Read this before trusting the tracker feature — it is field-unproven in
-one specific hop.** The pieces are individually validated on real hardware: the
-capture bridge was hardware-validated end to end from inside the daemon, and
-the Find My decoder was built against **204 real Find My frames from 5
-devices**, which is what retired an earlier status-bit guess. The Bluetooth
-fixes in 0.9.3 and 0.9.4 likewise came out of real rig captures rather than
-reasoning about what should work.
+⭐ **The tracker alert has fired on a real tracker, off the air.** Measured
+2026-08-20: a genuine `find_my_separated` advertisement — a tracker away from
+its owner — was received by the production scanner, decoded, persisted, matched
+the shipped `apple_find_my` rule, and produced an alert row with a notification
+dispatched. Nothing in that run was synthetic: the shipped `config/rules.yaml`,
+the real bridge, the real adapter, asserted powered before *and* after the
+window so the result cannot be a lucky one.
 
-**What has never happened is the joint event**: a live advertisement off the
-air producing an *alert* through the `apple_find_my` rule, as one continuous
-chain. It could not have — that rule shipped commented out until this release
-turned it on. Every hop is tested, and the seam between the proven capture path
-and the newly-enabled rule has not been exercised by a real tracker. A default
-install also ships without `bleak`, so the bridge captures nothing until you
-`pip install 'lynceus[ble]'`. Treat the tracker alert as unproven on your
-hardware until you have watched it fire on your own.
+```
+ff:1f:9e:91:52:bc   class='find_my_separated'
+alert: apple_find_my / ble_device_class / severity med
+       "BLE device class find_my_separated matched:
+        Apple Find My tracker away from its owner"
+```
+
+That was the last unproven hop. The pieces were already validated on hardware —
+the capture bridge end to end from inside the daemon, the decoder against **204
+real Find My frames from 5 devices** — but the *joint* event could not happen
+until this release enabled the rule.
+
+⚠️ **Three things that run still did not prove, stated because a partial proof
+quoted as a whole one is how this page would stop being trustworthy:**
+
+- **Push delivery.** The notifier was called with the right payload; a real
+  ntfy push was not sent. The last hop to your phone is untested.
+- **The daemon's own scheduling.** The flush was driven directly. That logic is
+  production, but the long-running restart-and-retry loop was not exercised.
+- **Identity across rotations** — see the ceiling described further up. One
+  tracker, one advert; no rotation occurred in the window.
+
+A default install also ships without `bleak`, so the bridge captures nothing
+until you `pip install 'lynceus[ble]'` — and `/settings` will tell you so.
 
 **The test suite ships, so you can check the claims on this page yourself.**
 CI runs `pytest -q`, `ruff check .` and `python -m build` on Python 3.11 and
