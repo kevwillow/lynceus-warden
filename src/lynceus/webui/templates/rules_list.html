@@ -112,7 +112,13 @@
               </fieldset>
               <small>
                 Suppresses all alerts from <code>{{ rt }}</code> until expiry.
-                The rule still evaluates; only alert emit is gated.
+                {% if type_entry.has_enabled_rule %}
+                  The rules of this type still evaluate; only alert emit is gated.
+                {% else %}
+                  <strong>No rule of this type is enabled</strong>, so nothing of
+                  it evaluates and the snooze changes nothing today &mdash; it
+                  would apply to any rule of this type enabled later.
+                {% endif %}
               </small>
             </form>
           </details>
@@ -199,7 +205,19 @@
               </fieldset>
               <small>
                 Suppresses all alerts from <code>{{ rule.rule_type }}</code> until expiry.
-                The rule still evaluates; only alert emit is gated.
+                {# ⛔ "The rule still evaluates" is false on a DISABLED rule's
+                   card, and this form sits on every card. The snooze is
+                   type-level either way -- it silences every enabled rule of
+                   this type, which from a disabled rule's card is a wider
+                   action than "the rule" suggests. Say which rule it is
+                   about. #}
+                {% if rule.enabled %}
+                  The rule still evaluates; only alert emit is gated.
+                {% else %}
+                  <strong>This rule is disabled</strong> and evaluates nothing, so
+                  the snooze changes nothing for it &mdash; it silences every
+                  <em>enabled</em> rule of this type.
+                {% endif %}
               </small>
             </form>
           </details>
@@ -216,6 +234,51 @@
     {% endif %}
   {% endif %}
 
+  {# ⛔ Snoozes with no rule of their type in the loaded file. Without this
+     block they had no control on any view of this page -- not the default, not
+     `?status=snoozed`, not `?status=all` -- while /watchlist and /settings both
+     said "lift it on the rules page". The snooze stays in force in the poller,
+     so re-adding the rule later leaves it silently suppressed. #}
+  {% if orphaned_snoozes %}
+    <article>
+      <header><strong>snoozed, with no rule of that type loaded</strong></header>
+      <p><small>
+        {% if ruleset %}
+          These rule types are silenced, and no rule in
+          {% if rules_file() %}<code>{{ rules_file() }}</code>{% else %}your rules file{% endif %}
+          has them &mdash; so they have no row above. Lifting the snooze here is
+          the only way to clear it; for most types re-adding a rule while the
+          snooze stands would leave it silenced, and any marked below need no
+          rule at all.
+        {% else %}
+          No ruleset is loaded, so every active snooze is listed here. Each one
+          still silences its rule type in the poller.
+        {% endif %}
+      </small></p>
+      {% for o in orphaned_snoozes %}
+        <p>
+          <code>{{ o.rule_type }}</code>
+          <span class="badge-snoozed">snoozed until
+            <time datetime="{{ o.snooze.expires_at | unix_to_iso }}">{{ o.snooze.expires_at | unix_to_utc_human }}</time></span>
+          {% if o.snooze.note %}<small>&mdash; {{ o.snooze.note }}</small>{% endif %}
+          {% if o.poller_driven %}
+            {# ⛔ This one is NOT dormant. The poller raises it with no rule at
+               all, so the snooze is suppressing alerts today -- and a suppressed
+               watchful escalation is CONSUMED, not deferred. #}
+            <br><small><strong>This type needs no rule:</strong> the poller
+            raises it directly, so this snooze is suppressing escalations
+            <em>now</em> &mdash; and an escalation suppressed by it is spent,
+            not held. Lifting the snooze later does not recover it.</small>
+          {% endif %}
+          <form method="post" action="/rules/{{ o.rule_type }}/unsnooze" class="inline-form">
+            <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+            <button type="submit" class="secondary">unsnooze</button>
+          </form>
+        </p>
+      {% endfor %}
+    </article>
+  {% endif %}
+
   {# ⛔ This footer renders on every visit, including the one where no rules
      file is loaded at all -- so it is the second of the two sites that must
      branch rather than name a path. "Edit rules.yaml on disk" sent an operator
@@ -223,6 +286,6 @@
   {% if rules_file() %}
     <p><small>Edit <code>{{ rules_file() }}</code> on disk and restart lynceus to apply changes (live edit lands in v0.3).</small></p>
   {% else %}
-    <p><small>No rules file is loaded: <code>rules_path</code> is unset in <code>lynceus.yaml</code>, so editing a rules file on disk changes nothing until it is set.</small></p>
+    <p><small>No rules file is loaded: <code>rules_path</code> is unset in {% if config_file() %}<code>{{ config_file() }}</code>{% else %}your <code>lynceus.yaml</code>{% endif %}, so editing a rules file on disk changes nothing until it is set.</small></p>
   {% endif %}
 {% endblock %}

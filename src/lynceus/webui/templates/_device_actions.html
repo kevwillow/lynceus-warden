@@ -35,7 +35,10 @@
       <form method="post" action="/devices/{{ mac }}/watchlist"
             hx-post="/devices/{{ mac }}/watchlist"
             hx-target="#device-actions" hx-swap="outerHTML"
-            data-confirm="Add {{ mac }} to the watchlist? It will raise alerts on every future sighting.">
+            {# ⛔ The promise is conditional on four things this page can check: an
+                 allowlist entry, a rule_type snooze, a rules file that loads, and a
+                 rule that actually delegates to `mac`. It used to be flat. #}
+              data-confirm="{% if watchlist_add_caveats %}Add {{ mac }} to the watchlist? Note: {{ watchlist_add_caveats | join('; and ') }}.{% else %}Add {{ mac }} to the watchlist? It will raise alerts on every future sighting.{% endif %}">
         <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
         <label>severity
           <select name="severity" class="device-action-select">
@@ -61,7 +64,12 @@
       <form method="post" action="/devices/{{ mac }}/watch"
             hx-post="/devices/{{ mac }}/watch"
             hx-target="#device-actions" hx-swap="outerHTML"
-            data-confirm="Watch {{ mac }}? It will be tracked and raise a high-severity alert on repeated sightings.">
+            {# ⛔ Two confirmations, because the second is a different promise.
+               A snoozed `watchful_recurrence` does not delay the escalation, it
+               spends it -- the entry is stamped escalated with no alert row and
+               the fire-once guard blocks it later. Saying "will raise an alert"
+               at the moment of the click would be the untrue half. #}
+            data-confirm="{% if recurrence_snooze %}Watch {{ mac }}? It will be tracked, but watchful_recurrence is snoozed: a recurrence reached while it is will be marked escalated with NO alert written, and lifting the snooze later will not produce it.{% else %}Watch {{ mac }}? It will be tracked and raise a high-severity alert on repeated sightings.{% endif %}">
         <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
         <label>suppress repeats for
           <select name="snooze_duration" class="device-action-select" title="how long to suppress repeat alerts; tracking continues regardless">
@@ -114,6 +122,18 @@
             <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
             <button type="submit" class="outline device-action-btn">Stop silencing</button>
           </form>
+        {% elif allowlist_match_source == 'ui' %}
+          {# ⛔ A UI-file entry that this button cannot address. The remove
+             endpoints delete an exact `mac` entry; this device is covered by a
+             wider shape, so the button would 303 back having changed nothing.
+             Naming the covering entry is the whole remedy: /allowlist removes
+             UI entries by composite key. #}
+          <p class="dim"><em>Covered by the
+            <code>{{ allowlist_match.pattern_type }}</code> entry
+            <code>{{ allowlist_match.pattern }}</code> in
+            <code>{{ allowlist_ui_file() }}</code>, which covers more than this
+            device &mdash; remove it on the <a href="/allowlist">allowlist
+            page</a>.</em></p>
         {% else %}
           <p class="dim"><em>Configured in <code>{{ allowlist_file() }}</code> (operator-managed); edit that file directly to remove.</em></p>
         {% endif %}
@@ -129,6 +149,18 @@
             <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
             <button type="submit" class="outline device-action-btn">Cancel silence</button>
           </form>
+        {% elif allowlist_match_source == 'ui' %}
+          {# ⛔ A UI-file entry that this button cannot address. The remove
+             endpoints delete an exact `mac` entry; this device is covered by a
+             wider shape, so the button would 303 back having changed nothing.
+             Naming the covering entry is the whole remedy: /allowlist removes
+             UI entries by composite key. #}
+          <p class="dim"><em>Covered by the
+            <code>{{ allowlist_match.pattern_type }}</code> entry
+            <code>{{ allowlist_match.pattern }}</code> in
+            <code>{{ allowlist_ui_file() }}</code>, which covers more than this
+            device &mdash; cancel it on the <a href="/allowlist">allowlist
+            page</a>.</em></p>
         {% else %}
           <p class="dim"><em>Configured in <code>{{ allowlist_file() }}</code> (operator-managed); edit that file directly to cancel.</em></p>
         {% endif %}

@@ -11,11 +11,24 @@
      believed it was filtered. `status-pill` and `status-pill-warn` are both
      defined in lynceus.css -- checked, because an undefined class here would
      render nothing and reintroduce exactly the silence this is fixing. #}
+  {# ⛔ "showing ALL entries" is true only when the dropped filter was the ONLY
+     one. Measured at cca7c5c: `?pattern_type=bogus&severity=high` on a
+     three-row watchlist rendered ONE row under a banner saying all of them
+     were shown -- a false "nothing else is here" about the list of devices the
+     operator is specifically watching for, which is the inaction direction.
+     `filters_active` is computed from the CLEANED values, so it is exactly
+     "some surviving filter is still narrowing this". #}
   {% if dropped_filters %}
     <p class="status-line">
       <span class="status-pill status-pill-warn">filter ignored</span>
-      showing <strong>all</strong> entries &mdash; this view does not recognise
-      {{ dropped_filters | join(", ") }}.
+      {% if filters_active %}
+        this view does not recognise {{ dropped_filters | join(", ") }}, so that
+        filter was dropped &mdash; but your other filters still apply, so this is
+        <strong>not</strong> the whole watchlist.
+      {% else %}
+        showing <strong>all</strong> entries &mdash; this view does not recognise
+        {{ dropped_filters | join(", ") }}.
+      {% endif %}
     </p>
   {% endif %}
 
@@ -55,7 +68,16 @@
       <span class="status-pill status-pill-warn">{{ liveness.suppressed_count }} snoozed</span>
       {{ liveness.suppressed_count }} of {{ liveness.total }}
       {% if liveness.total == 1 %}entry is{% else %}entries are{% endif %}
+      {# ⛔ The RULE TYPE, not the pattern type. `/rules` is keyed on rule_type
+         and offers no control under a pattern_type, so "you snoozed `ssid`.
+         Lift it on the rules page" named something that page does not have --
+         measured: /rules renders `watchlist_ssid` and never `ssid`. The pattern
+         types are still shown, as what the snooze SILENCES, because that is the
+         half that explains the count beside it. #}
       silenced by a rule_type snooze: you snoozed
+      {% for rt in liveness.suppressing_rule_types %}<code>{{ rt }}</code>{% if not loop.last %}, {% endif %}{% endfor %},
+      which
+      {% if liveness.suppressed_types | length == 1 %}serves{% else %}serve{% endif %}
       {% for pt in liveness.suppressed_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
       Lift it on the rules page.
     </p>

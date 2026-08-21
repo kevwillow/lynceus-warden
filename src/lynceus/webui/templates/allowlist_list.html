@@ -12,7 +12,15 @@
   {% if success == "add" %}
     <article><p><em>Entry added.</em></p></article>
   {% elif success == "bulk_remove" %}
-    <article><p><em>Removed {{ success_count }} {% if success_count == 1 %}entry{% else %}entries{% endif %}.</em></p></article>
+    {# ⚠️ The count comes from the query string and describes a request that has
+       already finished, so the page cannot confirm it. An implausible or absent
+       value is dropped rather than rendered -- "Removed None entries." was
+       reachable by visiting this URL without the parameter at all. #}
+    {% if success_count is not none %}
+      <article><p><em>Removed {{ success_count }} {% if success_count == 1 %}entry{% else %}entries{% endif %}.</em></p></article>
+    {% else %}
+      <article><p><em>Bulk removal finished.</em></p></article>
+    {% endif %}
   {% endif %}
 
   {# ⛔ A DISAGREEMENT, never a verdict. `find_impossible_ui_entries` compares

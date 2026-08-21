@@ -401,6 +401,255 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+- **Four surfaces promised the operator something they could not get.** Each was
+  measured on a rendered page, not reasoned about.
+
+  **The home page's alerts tile denied the count printed inside it.** The note
+  was chosen from the 30-day high-severity count alone, so a board with seven
+  unacknowledged medium alerts and no highs rendered `alerts | 7 | none
+  unacknowledged`. The colour was already right — the tile was flagged `warn` —
+  which is how this survived being looked at. The accessible name mattered more
+  than the layout here: the template's own note says the count is inside the
+  link text precisely so a screen-reader user hears "alerts, 42 unacknowledged,
+  3 high", and what they actually heard was "alerts, 7, none unacknowledged".
+
+  **Two pages sent the operator to `/rules` to lift a snooze under a name that
+  page does not use.** `/settings` said *"You silenced `ssid` from the rules
+  page"* and `/watchlist` said *"you snoozed `ssid`. Lift it on the rules
+  page"* — but a snooze is keyed on the **rule type**, `watchlist_ssid`, and
+  `/rules` offers no control called `ssid`. The helper that maps between the two
+  already exists, and its docstring records this exact sentence being wrong
+  once before; it was fixed on the watchlist detail page and nowhere else. Both
+  sentences now name the rule type to lift and say which pattern types it
+  serves.
+
+  **"Remove from allowlist" was offered for entries it cannot remove.** The
+  allowlist page has an add form with a `pattern_type` dropdown, so an operator
+  can put an `oui` or `mac_range` entry in the UI file; it then covers a device,
+  and the alert and device pages offered a removal button — while both remove
+  endpoints delete an exact `mac` entry. Measured: the click returned a success
+  redirect, the file was byte-identical afterwards, and the device was still
+  silenced.
+
+  The offer is narrowed rather than the button widened. An `oui` entry silences
+  a whole prefix, so lifting it from a per-device button would un-silence every
+  other device it covers without saying so. Instead the page names the entry
+  that is covering the device, the file it lives in, and points at `/allowlist`,
+  which removes UI entries properly. The alert-side endpoint also now passes the
+  canonical stored pattern, per the contract its device-side twin already
+  followed — a raw MAC could miss a normalised entry and no-op.
+
+  **`/settings` showed a config path it had not loaded.** The row rendered the
+  user-scope default location under a heading calling the page "a read-only view
+  of the active configuration", so a system-scope install, or any `lynceus-ui
+  --config <elsewhere>`, was shown a file it could edit with no effect. The
+  entry point requires `--config`, so the real answer was always available and
+  simply discarded; it now travels with the config. When it genuinely is not
+  known the row says so rather than dressing the default up as the active file,
+  and the log path — which nothing here can resolve, since the scope is an
+  assumption — is labelled as the default it is.
+
+  **A rules file that would not parse became a promise on one page and an
+  invisible snooze on another.** Two faults from one flag, found by asking what
+  the deliberate three-state liveness verdict turns into downstream.
+
+  `is_pattern_type_snoozed` gated on `known` — the **ruleset** verdict — while
+  a snooze is established independently and the same dict was already carrying
+  it. So with an unreadable rules file the watchlist list page showed the
+  snoozed badge and the detail page one click away showed no snooze at all: two
+  answers about one row, which is the contradiction #116 fixed between two
+  causes and this reintroduced between two pages.
+
+  That flag also fed `entry_can_alert`, which is now three-valued. The liveness
+  verdict returns "live" for an unknown ruleset on purpose, so that an
+  unreadable file cannot mark every row inert — and the detail page turned that
+  benefit of the doubt into *"This entry alerts at a different severity"* and
+  *"what an alert will actually carry"*, a present-tense promise about a daemon
+  that cannot load its rules, while `/settings` one click away correctly said
+  the verdict could not be read. Collapsing it to false would have been the
+  opposite lie, since that branch points at "the reason given elsewhere on this
+  page" and under an unknown verdict there is none. A definite blocker — a
+  snooze, an override suppression, a reserved OUI, an allowlist match — is
+  established without reading the ruleset and still wins outright.
+
+  **A snooze could become unliftable from the UI, while two pages told the
+  operator where to lift it.** The rules page iterates the rule types present in
+  the loaded ruleset — a deliberate scope, since that file is the authoritative
+  view — so a snooze on a rule type with no rule in the file got no row and no
+  button. Measured: zero unsnooze controls on the default view, on
+  `?status=snoozed`, on `?status=all`, and filtered by the type itself, while
+  `/watchlist` and `/settings` both said "lift it on the rules page".
+
+  It is reachable through this UI's own instructions: snooze a rule type, then
+  "Edit `<rules file>` on disk and restart", which the rules page footer tells
+  you to do. The snooze survives in the database and keeps silencing that rule
+  type in the poller, so re-adding a rule of that type later leaves it silently
+  suppressed with nothing on any page saying why.
+
+  Such snoozes now get their own block on the rules page with a working
+  unsnooze button — the endpoint already accepted them, since it validates
+  against the rule-type list rather than the loaded file, so nothing but the
+  page was missing. With no `rules_path` at all, every active snooze is listed
+  there, since none of them can have a row.
+
+  **The severity-overrides card retracted itself three lines later.** Its path
+  and status rows are carefully conditional — they say *"the default location —
+  nothing is configured, so the runtime override layer is off"* and mark the
+  file `missing`. The paragraph beneath them was not: *"Edit the file directly
+  to customize severity rules. Two layers read this file… restart the daemon to
+  apply."* An operator who followed it created a file nothing reads and
+  restarted a daemon that changed nothing.
+
+  Same half-fix shape this file already records for the snooze sentence:
+  conditioning the first clause and leaving the second asserting the thing that
+  was just retracted. With nothing configured the card now says so and gives the
+  step that actually turns the layer on, and separates the importer, which reads
+  whatever `--override-file` is passed and needs no setting at all.
+
+  **"showing all entries" was printed over a filtered watchlist.** When the page
+  is given a `pattern_type` it does not recognise it drops that filter and says
+  so — correctly, and that banner exists because dropping it silently was itself
+  a finding. But the sentence claims the view is unfiltered, and the *other*
+  filters survive. Measured: `?pattern_type=bogus&severity=high` on a three-row
+  watchlist rendered **one** row under a banner saying all three were shown.
+
+  On the list of devices an operator is specifically watching for, a false
+  "nothing else is here" points at inaction. The banner now says the
+  unrecognised filter was dropped and that the remaining ones still apply — and
+  keeps the original wording for the case where the dropped filter really was
+  the only one.
+
+  ⭐ **One of these fixes introduced a defect of its own, and it was caught by
+  asking what branch the fix newly reaches.** Making the snooze visible under an
+  unknown ruleset routed the row into a block whose text asserts *"This entry
+  matches, but its alerts are being dropped"* and *"The rule still runs and
+  still matches this pattern"* — four claims about a ruleset that could not be
+  read, because the liveness predicate returns "live" for unknown as well as for
+  delegated. The snooze is known; the matching is not, and they are now reported
+  separately.
+
+  ⭐ **A cold cross-model read of this branch's own diff found three more, two
+  of them real.** The refuted one is worth recording too: it claimed the Find My
+  panel could render an empty filename with no `rules_path`, and the test it
+  named to refute itself showed the panel correctly reporting *"unknown — no
+  `rules_path` is configured"* instead, with zero empty elements on four pages.
+
+  **Three remedies still named `lynceus.yaml`** while `lynceus-ui --config` can
+  point anywhere — the *config path row* had been corrected and the *sentences
+  telling you to edit it* had not. Same class, one direction only, reintroduced
+  by two sentences this change set added itself.
+
+  **And "cannot be determined, because the rules file could not be read"**
+  named one of the two situations that produce it: the verdict is also unknown
+  when no `rules_path` is configured at all, which sends that operator hunting
+  for a syntax error in a file they never set. The module already distinguishes
+  them; the sentence now asks.
+
+  **A success message reported a number nothing had established.** The
+  bulk-removal flash takes its count from the query string — the ordinary
+  post/redirect/get shape — and printed it unchecked. Measured, with the
+  allowlist file byte-identical in every case:
+
+  | URL | rendered |
+  |---|---|
+  | `?success=bulk_remove&count=999` | "Removed 999 entries." |
+  | `?success=bulk_remove` | **"Removed None entries."** |
+  | `?success=bulk_remove&count=-5` | "Removed -5 entries." |
+  | `?success=bulk_remove&count=99999999999999999999` | echoed verbatim |
+
+  The realistic route is not a crafted URL, it is the back button: a genuine
+  removal redirects to that address, and returning to it later re-renders the
+  confirmation over a list where nothing was removed this time. The last row is
+  the unbounded-integer channel closed for row ids one release ago, arriving
+  through a flash instead of a path parameter.
+
+  The token was already effectively whitelisted, so an unknown `success` value
+  renders nothing; it was only the count that was echoed. An implausible or
+  absent one now loses its number instead of being printed as one, and a real
+  bulk removal still reports its count — driven end to end, not simulated by
+  visiting the redirect address.
+
+  **A snooze affordance told the operator a disabled rule still evaluates.**
+  *"Suppresses all alerts from `watchlist_mac` until expiry. The rule still
+  evaluates; only alert emit is gated"* sits on every rule card — including a
+  disabled rule's, where it is flatly false. The snooze is type-level either
+  way, so from a disabled rule's card it is also a **wider** action than "the
+  rule" suggests: it silences every enabled rule of that type.
+
+  The same sentence sits one section up in the per-type summary, where a type
+  whose rules are *all* disabled hits the identical falsehood. Both are fixed,
+  and the test walks every affordance on the page rather than the one that was
+  reported — fixing the reported site alone is how this class survives.
+
+  **"The source is dated ahead of this clock" was said about timestamps that
+  could not be read at all.** The watchlist-freshness age is unknown in two
+  situations — the reference is stamped ahead of this machine, or it cannot be
+  parsed — and the computation's own comment says so. All three sentences
+  rendering that state named only the first. Measured on an import row whose
+  `imported_at` and `exported_at` are both unparseable: *"(not established — the
+  source is dated ahead of this clock)"*, with nothing ahead of anything, sending
+  the operator to compare host clocks and check NTP over corrupt metadata.
+
+  The card now carries which of the two it is, the way the liveness verdict
+  already carries its reason. ⭐ The home page needed no change and did not get
+  one: it says "age unknown" and links here, which is honest for both — only a
+  surface that names a cause has to know which.
+
+  **Three surfaces promised a recurrence alert that the operator's own snooze
+  quietly spends.** `watchful_recurrence` is snoozeable from the rules page, and
+  the poller does not *defer* the escalation while it is — it **consumes** it.
+  Its own comment says so: the entry is stamped escalated, no alert row is
+  written, and the fire-once guard means lifting the snooze later cannot produce
+  it. The escalation is spent, not held.
+
+  `/watchful`'s intro said *"an entry escalates to a high-severity recurrence
+  alert once its counted-sighting total reaches four"* identically in both
+  states and never mentioned the snooze; the Watch confirmation on a device and
+  the Watch tooltip on the alerts list made the same promise at the moment of
+  the click. All three now say what a snooze does to it, and the load-bearing
+  half is the part about recovery: lifting it afterwards does not bring the
+  alert back.
+
+  This is the stalker-detection surface, so the direction matters — an operator
+  who silenced the type is otherwise waiting for something that will never
+  arrive and leaves no trace on the page they are watching.
+
+  **"It will raise alerts on every future sighting" was said in four states
+  where it raises nothing.** The Add-to-watchlist confirmation on a device made
+  that promise identically with no rules file at all, with `mac` undelegated,
+  with `watchlist_mac` snoozed, and with the device already allowlisted. It is
+  the confirmation on a stalker-detection action, so the promise is made at the
+  moment of the click and there is no other signal.
+
+  ⚠️ The obvious implementation would have been wrong, and the wrong version was
+  written and run to prove it. `watchlist_liveness` narrows every verdict to the
+  pattern types the operator **already stores** — right for reporting on
+  existing rows, wrong here: on an install with no `mac` rows yet, which is
+  exactly the install where someone clicks Add for the first time, `mac` is
+  absent from the inert set and the liveness predicate answers "live" for a type
+  no rule delegates to. The caveat reads the ruleset directly instead, and a
+  test pins that with an empty watchlist.
+
+  **And one fix to a fix.** The orphaned-snooze block added above says
+  *"re-adding a rule of that type while the snooze stands would leave it
+  silenced"* — which reads as *harmless until you add a rule*. That is true of
+  every rule type except one: `watchful_recurrence` is raised by the poller
+  directly, with no ruleset lookup at all, so a snooze on it is consuming
+  escalations **today** — and a suppressed escalation is spent, not deferred.
+  Those rows now say so.
+
+  It came out of a cold read whose stated finding was **refuted**: the claim was
+  that the rules summary could see a type with no rule object behind it, and it
+  cannot — that list is built by iterating the loaded rules, so every entry has
+  one. Chasing the refutation is what surfaced the real one.
+
+  Each fix ships with its control pinned as well as its treatment: the tile
+  still says "none unacknowledged" when nothing is unacknowledged and still
+  leads with the high count when there is one, the removal button is still
+  offered and still works for the exact-MAC entry it can remove, and a
+  primary-file entry still gets the operator-managed hint. Six reversions were
+  planted one at a time and every one was caught.
+
 - **Twenty-one places where the web UI named a config file the daemon does
   not load.** `rules_path` and `allowlist_path` are free-form settings — an operator
   can point either at any filename, and the UI-side allowlist is a *derived*

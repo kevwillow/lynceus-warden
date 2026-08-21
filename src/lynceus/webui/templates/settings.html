@@ -336,6 +336,9 @@
           {%- if watchlist_freshness.age_days is not none %}
             {{ watchlist_freshness.age_days }}
             {%- if watchlist_freshness.age_days == 1 %} day{% else %} days{% endif %} ago:
+          {%- elif watchlist_freshness.unknown_reason == "unreadable" %}
+            at a time this machine cannot place (the import's own timestamps
+            could not be read):
           {%- else %}
             at a time this machine cannot place (the source is dated ahead of
             its clock):
@@ -389,10 +392,21 @@
           <span class="badge-status-error">stale (older than {{ watchlist_freshness.warn_days }} days)</span>
         {% else %}
           <span class="badge-status-warn">cannot tell</span>
-          <small>the source timestamp is ahead of this machine&#39;s clock, so
-          the age of this data is not established. Argus stamps
-          <code>exported_at</code> with ITS clock, so this can happen with a
-          perfectly good local one &mdash; compare the two hosts.</small>
+          {# ⛔ TWO causes reach this branch and they need different actions:
+             an ahead timestamp is a clock question, an unreadable one is a data
+             question. Naming the first for the second sends the operator to
+             NTP over corrupt metadata. #}
+          {% if watchlist_freshness.unknown_reason == "unreadable" %}
+            <small>this import's timestamps could not be read, so the age of
+            this data is not established. Nothing here says the clocks
+            disagree &mdash; the stored values are unusable. Re-run the import
+            to replace them.</small>
+          {% else %}
+            <small>the source timestamp is ahead of this machine&#39;s clock, so
+            the age of this data is not established. Argus stamps
+            <code>exported_at</code> with ITS clock, so this can happen with a
+            perfectly good local one &mdash; compare the two hosts.</small>
+          {% endif %}
         {% endif %}
       </p>
       <dl class="metadata-grid">
@@ -410,6 +424,8 @@
         <dd>
           {% if watchlist_freshness.age_days is not none %}
             {{ watchlist_freshness.age_days }} days
+          {% elif watchlist_freshness.unknown_reason == "unreadable" %}
+            <em>(not established &mdash; this import's timestamps could not be read)</em>
           {% else %}
             <em>(not established &mdash; the source is dated ahead of this clock)</em>
           {% endif %}
@@ -586,9 +602,15 @@
         🔕 <strong>{{ watchlist_liveness.suppressed_count }} of your entries
         {% if watchlist_liveness.suppressed_count == 1 %}is{% else %}are{% endif %}
         snoozed, not dead.</strong>
+        {# ⛔ Same correction as /watchlist: the identifier has to be the one
+           `/rules` offers a control under. This sentence sends the operator to
+           that page by name, so naming a pattern_type sends them to look for a
+           button that is not there. #}
         You silenced
-        {% for pt in watchlist_liveness.suppressed_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
-        from the <a href="/rules">rules page</a>.
+        {% for rt in watchlist_liveness.suppressing_rule_types %}<code>{{ rt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+        from the <a href="/rules">rules page</a>, which
+        {% if watchlist_liveness.suppressed_types | length == 1 %}serves{% else %}serve{% endif %}
+        {% for pt in watchlist_liveness.suppressed_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
         {# 🪤 BOTH sentences are conditional, not just the second one. The first
            fix here scoped "nothing in rules.yaml needs changing" and left "the
            rules still match, the alerts are dropped until the snooze expires"
@@ -647,7 +669,7 @@
     <p><small>
       Staleness threshold is
       <code>watchlist_staleness_warn_days</code> in
-      <code>lynceus.yaml</code> (default 30).
+      {% if config_file() %}<code>{{ config_file() }}</code>{% else %}your <code>lynceus.yaml</code>{% endif %} (default 30).
     </small></p>
   </article>
 
@@ -693,9 +715,26 @@
         {% endif %}
       </dd>
     </dl>
+    {# 🪤 THIS paragraph was unconditional while the two rows above it were
+       carefully conditional -- so the card said "nothing is configured, so the
+       runtime override layer is off" and then, three lines down, "Two layers
+       read this file" with instructions to edit it and restart. Following them
+       does nothing: the runtime layer stays off until `severity_overrides_path`
+       is set. Same half-fix shape this file already records for the snooze
+       sentence -- conditioning the first clause and leaving the second one
+       asserting the thing that was just retracted. #}
     <p><small>
-      Edit the file directly to customize severity rules. Two layers
-      read this file:
+      {% if severity_overrides.configured %}
+        Edit the file directly to customize severity rules. Two layers
+        read this file:
+      {% else %}
+        <strong>Nothing reads this file yet.</strong> Create it and set
+        <code>severity_overrides_path</code> in {% if config_file() %}<code>{{ config_file() }}</code>{% else %}your <code>lynceus.yaml</code>{% endif %}, then
+        restart the daemon, and the runtime layer below turns on. The importer
+        is separate and needs no setting: it reads whatever you pass to
+        <code>lynceus-import-argus --override-file</code>. The two layers, for
+        when you get there:
+      {% endif %}
       <ul>
         <li><strong>Import-time</strong>
           (<code>vendor_overrides</code>, <code>geographic_filter</code>,
@@ -706,9 +745,14 @@
           <code>suppress_categories</code>,
           <code>suppress_vendors</code>,
           <code>pattern_overrides</code>,
-          <code>vendor_severity</code>): restart the daemon to
-          apply &mdash; already-imported rows pick up the new
-          severity (or are suppressed) without re-import.</li>
+          <code>vendor_severity</code>):
+          {% if severity_overrides.configured %}
+            restart the daemon to apply &mdash; already-imported rows pick up
+            the new severity (or are suppressed) without re-import.
+          {% else %}
+            off until the setting above is in place; a restart alone changes
+            nothing.
+          {% endif %}</li>
       </ul>
     </small></p>
   </article>
@@ -736,10 +780,25 @@
           &mdash;
         {% endif %}
       </dd>
+      {# ⛔ The file this process LOADED, when it is known. This row rendered
+         `paths.default_config_path("user")` unconditionally, under a heading
+         that calls the page "a read-only view of the active configuration" --
+         so a system-scope install, or any `--config <elsewhere>`, was shown a
+         path it had not loaded and could edit with no effect. #}
       <dt>config path</dt>
-      <dd><code>{{ system.config_path }}</code></dd>
-      <dt>log path</dt>
-      <dd><code>{{ system.log_dir }}</code></dd>
+      {% if system.config_path %}
+        <dd><code>{{ system.config_path }}</code></dd>
+      {% else %}
+        <dd>not recorded by this process &mdash;
+          <code>{{ system.config_path_default }}</code> is the user-scope
+          default location, which is not necessarily the file in use.</dd>
+      {% endif %}
+      {# ⚠️ Labelled as the default, because it is one: the scope is assumed
+         `user` and nothing here reads where this daemon actually writes. A
+         system-scope install logs to /var/log/lynceus. #}
+      <dt>default log path</dt>
+      <dd><code>{{ system.log_dir_default }}</code> <small class="dim">(user
+        scope)</small></dd>
     </dl>
   </article>
 {% endblock %}

@@ -56,6 +56,7 @@ from lynceus.webui.clock import (
 from lynceus.webui.csp import CSPMiddleware
 from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
 from lynceus.webui.liveness import (
+    POLLER_DRIVEN_RULE_TYPES,
     allowlist_answerable_for,
     configured_remap_axes,
     effective_severity,
@@ -63,6 +64,7 @@ from lynceus.webui.liveness import (
     is_pattern_type_live,
     is_pattern_type_snoozed,
     is_row_suppressed_by_overrides,
+    live_pattern_types,
     load_overrides,
     oui_prefix_never_matches,
     override_suppression_axes,
@@ -431,6 +433,21 @@ def _parse_date_or_datetime_to_ts(
 # Mirror of allowlist.AllowlistPatternType, exposed as a tuple so
 # the /allowlist filter validator and the add-form dropdown can
 # iterate in display order without re-deriving from typing.get_args.
+# ⛔ A PLAUSIBILITY bound on ECHOED content, not a verification. `count` reaches
+# the bulk-remove flash straight from the query string, so the page cannot know
+# it describes anything that happened -- this only stops an arbitrary integer
+# being rendered as a fact. Measured at 7958b28:
+#
+#   /allowlist?success=bulk_remove&count=999   -> "Removed 999 entries."
+#   /allowlist?success=bulk_remove             -> "Removed None entries."
+#   /allowlist?success=bulk_remove&count=-5    -> "Removed -5 entries."
+#   ...&count=99999999999999999999             -> echoed verbatim
+#
+# ...with the file byte-identical in every case. The last one is the unbounded
+# integer channel Finding 66 closed for row ids, arriving through a flash
+# instead of a path parameter.
+_ALLOWLIST_FLASH_COUNT_MAX = 100_000
+
 ALLOWLIST_PATTERN_TYPES: tuple[str, ...] = (
     "mac",
     "oui",
@@ -1021,6 +1038,7 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
             "imported_at": None,
             "exported_at": None,
             "age_days": None,
+            "unknown_reason": None,
             "source": None,
             "record_count": None,
             "pattern_type_counts": pattern_type_counts,
@@ -1040,6 +1058,26 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
     age_days = (
         None if reference_ts is None else age_days_since(reference_ts, now_ts=now_ts)
     )
+    # ⛔ WHICH of the two unknowns this is. The comment above already says
+    # `age_days` is None for an UNREADABLE reference as well as an ahead one --
+    # and all three sentences rendering the unknown state named only the second.
+    # Measured at 7958b28 on an `import_runs` row whose `imported_at` AND
+    # `exported_at` are both unparseable: /settings rendered "(not established
+    # -- the source is dated ahead of this clock)" with nothing ahead of
+    # anything, sending the operator to compare host clocks and check NTP over
+    # what is actually corrupt import metadata. The liveness verdict carries a
+    # `reason` for exactly this purpose; this one now does too.
+    #
+    # ⚠️ The home page needs none of this -- it says "age unknown" and links
+    # here, which is honest for both causes. Only the surface that names a cause
+    # has to know which one.
+    unknown_reason = (
+        None
+        if age_days is not None
+        else "unreadable"
+        if reference_ts is None
+        else "ahead"
+    )
     return {
         "has_import": True,
         "status": (
@@ -1052,6 +1090,7 @@ def _watchlist_freshness_card(db: Database, warn_days: int, *, now_ts: int) -> d
         "imported_at": imported_at,
         "exported_at": exported_at,
         "age_days": age_days,
+        "unknown_reason": unknown_reason,
         "source": latest["source"],
         "record_count": stored_int(latest["record_count"]),
         "pattern_type_counts": pattern_type_counts,
@@ -1112,7 +1151,12 @@ def _watchlist_freshness_summary(
     }
 
 
-def _build_settings_context(config: Config, db: Database, kismet_status: dict) -> dict:
+def _build_settings_context(
+    config: Config,
+    db: Database,
+    kismet_status: dict,
+    loaded_config_path: str | Path | None = None,
+) -> dict:
     """Compute the read-only /settings page payload.
 
     Sensitive values (Kismet token, full ntfy topic) are redacted on the
@@ -1152,6 +1196,12 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
         else paths.default_overrides_path("user")
     )
     config_path_default = paths.default_config_path("user")
+    # ⚠️ `"user"` for both, and that scope is an assumption, not a reading. A
+    # system-scope install logs to /var/log/lynceus and keeps its config under
+    # /etc; nothing here knows which it is. The config half is answerable --
+    # the loaded path is passed to `create_app` -- so it is answered; the log
+    # half is not, and the page now labels it as the default rather than as
+    # this daemon's.
     log_dir_default = paths.default_log_dir("user")
 
     try:
@@ -1315,8 +1365,11 @@ def _build_settings_context(config: Config, db: Database, kismet_status: dict) -
             "db_path": str(db_path),
             "db_size_human": db_size_human,
             "db_mtime": db_mtime,
-            "config_path": str(config_path_default),
-            "log_dir": str(log_dir_default),
+            # The file this process actually loaded, or None when the caller
+            # did not say. Never the default dressed up as the active one.
+            "config_path": str(loaded_config_path) if loaded_config_path else None,
+            "config_path_default": str(config_path_default),
+            "log_dir_default": str(log_dir_default),
         },
     }
 
@@ -1391,6 +1444,51 @@ def _match_all_mac_in_entries(
         elif entry.pattern_type == "mac_range" and mac_in_mac_range(mac, entry.pattern):
             out.append(entry)
     return out
+
+
+def _entry_can_alert(
+    entry: dict,
+    row: dict,
+    liveness: dict,
+    suppressions: dict,
+    allowlist_entries: list,
+    now_ts: int,
+) -> bool | None:
+    """Can this watchlist row produce an alert today? ``None`` = cannot tell.
+
+    Order matters and is the whole point:
+
+    1. **Definite blockers first.** A rule_type snooze, a severity-override
+       suppression, a reserved OUI prefix and an allowlist match are each
+       established WITHOUT reading the ruleset, so any of them is a plain
+       ``False`` no matter what the ruleset verdict is.
+    2. **Then the ruleset verdict.** If it could not be read, the answer is
+       ``None`` -- not ``True`` (which the page rendered as "this entry
+       alerts", a promise nothing had checked) and not ``False`` (whose wording
+       points at "the reason given elsewhere on this page", and there is none).
+    3. Otherwise the type is delegated or it is not, and that is the answer.
+
+    ⚠️ Callers must test ``is None`` / ``is False`` explicitly. ``if not
+    entry_can_alert`` reads ``None`` as "cannot alert", which is the branch
+    whose text asserts a blocker exists.
+    """
+    if is_pattern_type_snoozed(entry["pattern_type"], liveness):
+        return False
+    if override_suppression_axes(
+        row.get("vendor"), row.get("device_category"), suppressions
+    ):
+        return False
+    if oui_prefix_never_matches(row.get("pattern_type"), row.get("pattern")):
+        return False
+    if (
+        allowlist_answerable_for(row.get("pattern_type") or "")
+        and row.get("pattern")
+        and _match_all_mac_in_entries(allowlist_entries, row["pattern"], now_ts)
+    ):
+        return False
+    if not liveness.get("known"):
+        return None
+    return is_pattern_type_live(entry["pattern_type"], liveness)
 
 
 def _merged_allowlist_entries(config: Config) -> list:
@@ -1490,21 +1588,113 @@ def _load_actioned_patterns(
     return tuple(macs), tuple(ouis), tuple(mac_ranges)
 
 
+def _watchlist_add_caveats(
+    config: Config,
+    db: Database,
+    *,
+    allowlist_match,
+    now_ts: int,
+) -> list[str]:
+    """EVERY reason adding this device to the watchlist would not alert.
+
+    The Add-to-watchlist confirmation asserts "It will raise alerts on every
+    future sighting". Measured at 7958b28, it said exactly that with no rules
+    file at all, with `mac` undelegated, with `watchlist_mac` snoozed, and with
+    the device already allowlisted -- four states in which it raises nothing.
+
+    ⛔ A LIST, not the first one. These blockers are INDEPENDENT: each suppresses
+    alerting on its own, so lifting the one named leaves the others in force.
+    The first version of this returned a single reason and reproduced the defect
+    it was written to fix -- measured, an allowlisted device whose rule_type was
+    also snoozed named only the allowlist. That is the shape #116 fixed for
+    covering allowlist entries ("removing the one named would leave the other
+    suppressing it"), and it is why `override_suppression_axes` reports every
+    axis while `severity_remap_axis` reports only the winner: suppression is
+    independent, precedence is not. This is suppression.
+
+    ⛔ Deliberately NOT built on ``watchlist_liveness``. That function narrows
+    every verdict to the pattern types the operator ALREADY STORES, which is
+    right for reporting on existing rows and wrong here: on an install with no
+    `mac` rows yet, `mac` is absent from `inert_types` and
+    ``is_pattern_type_live`` would answer True for a type no rule delegates to
+    -- reporting "this will alert" for the first row ever added, which is
+    exactly the click this exists to qualify. Swapped in, the liveness version
+    fails two of this function's tests. The ruleset-level fact is the one being
+    asked about, so ``live_pattern_types`` is read directly.
+
+    Ordered definite-first, matching ``_entry_can_alert``: causes established
+    without reading the ruleset, then the ruleset verdict, then the unknown.
+    """
+    caveats: list[str] = []
+    if allowlist_match is not None:
+        caveats.append(
+            "this device is allowlisted, so alerts for it are suppressed until "
+            "that entry is removed"
+        )
+    if db.is_rule_type_snoozed("watchlist_mac", now_ts) is not None:
+        caveats.append(
+            "watchlist_mac is snoozed, so a watchlist row for it raises nothing "
+            "until the snooze is lifted on the rules page"
+        )
+    if not config.rules_path:
+        caveats.append(
+            "no rules_path is configured, so no rules are loaded and a watchlist "
+            "row raises nothing"
+        )
+        return caveats
+    try:
+        ruleset = rules_mod.load_ruleset(config.rules_path)
+    except Exception:  # noqa: BLE001 -- configured-but-broken is observable
+        caveats.append(
+            "the rules file could not be read, so whether a watchlist row would "
+            "alert cannot be determined"
+        )
+        return caveats
+    if "mac" not in live_pattern_types(ruleset):
+        caveats.append(
+            "no enabled rule delegates to mac, so a watchlist row for it raises "
+            "nothing until one does"
+        )
+    return caveats
+
+
 def _resolve_allowlist_match(
     config: Config,
     alert_mac: str | None,
     now_ts: int,
-) -> tuple[AllowlistEntry | None, bool, bool]:
+) -> tuple[AllowlistEntry | None, bool, bool, str | None]:
     """Look up the alert's MAC across both allowlist files.
 
-    Returns ``(match, removable, configured)``:
+    Returns ``(match, removable, configured, source)``:
 
     - ``match``: the matched ``AllowlistEntry``, or ``None``.
     - ``removable``: True only when the match came from the daemon-managed
-      UI sibling. Primary-file entries are operator-curated; the daemon
-      never writes to ``allowlist.yaml``, so the UI cannot remove them.
-      The triage section renders status without a button in that case
-      with a hint to edit the primary file directly.
+      UI sibling AND is an exact ``mac`` entry, which is the only shape the
+      remove endpoints can address. Primary-file entries are
+      operator-curated; the daemon never writes to the primary file, so the
+      UI cannot remove them. The triage section renders status without a
+      button in those cases, with a hint naming what to do instead.
+
+      ⛔ The "exact mac" half was missing and the button lied. ``/allowlist``
+      offers an add form with a ``pattern_type`` dropdown, so an operator can
+      put an ``oui`` or ``mac_range`` entry in the UI file; it then covers this
+      device (the matcher honours all three shapes) and ``removable`` said
+      True, while both remove endpoints delete ``(mac, "mac")`` and find
+      nothing. Measured at cca7c5c: an ``oui`` UI entry, "Remove from
+      allowlist" clicked, **303 back to the page, the file byte-identical, the
+      device still silenced** -- a success redirect over a write that never
+      happened, which is this project's signature defect.
+
+      ⚠️ Deliberately NOT fixed by making the button remove whatever matched.
+      An ``oui`` entry silences a whole prefix; lifting it from a per-device
+      button would un-silence every other device it covers, without saying so.
+      The offer is narrowed and the covering entry is named instead, with
+      ``/allowlist``, which removes UI entries by composite key, as the remedy.
+
+    - ``source``: ``"primary"``, ``"ui"``, or ``None`` when there is no match.
+      The template needs the two non-removable cases to read differently:
+      a primary-file entry is edited by hand, a non-mac UI entry is removed on
+      ``/allowlist``.
     - ``configured``: True when ``config.allowlist_path`` is set. When
       False, the triage section is hidden entirely, parity with the
       /allowlist read-only view.
@@ -1513,7 +1703,7 @@ def _resolve_allowlist_match(
     read-only view. No caching: edits land instantly without invalidation.
     """
     if not config.allowlist_path or alert_mac is None:
-        return None, False, bool(config.allowlist_path)
+        return None, False, bool(config.allowlist_path), None
     primary_path = Path(config.allowlist_path)
     try:
         primary_entries = allowlist_mod._load_primary(primary_path).entries
@@ -1522,11 +1712,11 @@ def _resolve_allowlist_match(
     ui_entries = allowlist_mod._load_ui_entries(derive_ui_path(primary_path))
     primary_match = _match_mac_in_entries(primary_entries, alert_mac, now_ts)
     if primary_match is not None:
-        return primary_match, False, True
+        return primary_match, False, True, "primary"
     ui_match = _match_mac_in_entries(ui_entries, alert_mac, now_ts)
     if ui_match is not None:
-        return ui_match, True, True
-    return None, False, True
+        return ui_match, ui_match.pattern_type == "mac", True, "ui"
+    return None, False, True, None
 
 
 def _resolve_silence_states(
@@ -2203,10 +2393,22 @@ def _check_alerts(db: Database, *, now_ts: int) -> dict:
     }
 
 
-def create_app(config: Config, db: Database) -> FastAPI:
+def create_app(
+    config: Config, db: Database, *, config_path: str | Path | None = None
+) -> FastAPI:
     """App factory. Takes a live Config and Database. Used by both the production
     server entry point and the test client. Does NOT open the DB itself — that's the
-    caller's responsibility, so tests can inject an in-memory or tmp_path DB."""
+    caller's responsibility, so tests can inject an in-memory or tmp_path DB.
+
+    ``config_path`` is the file this ``Config`` was loaded FROM. ``/settings``
+    showed ``paths.default_config_path("user")`` under the heading "Read-only
+    view of the active configuration", which is a convention rather than a fact
+    about this process: a system-scope install, or any `lynceus-ui --config
+    <elsewhere>`, saw a path it had not loaded and could edit it all day. The
+    entry point requires ``--config``, so in production this is always known;
+    when it is not, the page says the location is the default rather than
+    calling it the active one.
+    """
 
     app = FastAPI(
         title="lynceus",
@@ -2218,6 +2420,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     app.state.db = db
     app.state.config = config
+    # The path `config` was read from, or None. Read at render time from
+    # app.state for the same reason the file-name globals below are callables.
+    app.state.config_path = str(config_path) if config_path else None
     app.state.templates = Jinja2Templates(directory=str(_resolve_templates_dir()))
     app.state.templates.env.globals["csrf_token"] = lambda request: get_csrf_token(request)
     # AGPL-3.0 §13: anyone interacting with this over a network must be able to
@@ -2264,6 +2469,19 @@ def create_app(config: Config, db: Database) -> FastAPI:
         primary = app.state.config.allowlist_path
         return str(derive_ui_path(Path(primary))) if primary else None
 
+    def _config_file() -> str | None:
+        """The lynceus.yaml this process loaded, or None when it was not told.
+
+        ⛔ Added because a cold read of the fix caught it applying in one
+        direction only: the /settings "config path" ROW was corrected to name
+        the loaded file, and three REMEDIES went on saying "set X in
+        `lynceus.yaml`" -- which for `lynceus-ui --config /etc/lynceus/site.yml`
+        names a file the process never reads. Exactly the class this change set
+        exists to remove, reintroduced by two sentences it added itself.
+        """
+        return app.state.config_path or None
+
+    app.state.templates.env.globals["config_file"] = _config_file
     app.state.templates.env.globals["rules_file"] = _rules_file
     app.state.templates.env.globals["allowlist_file"] = _allowlist_file
     app.state.templates.env.globals["allowlist_ui_file"] = _allowlist_ui_file
@@ -2642,6 +2860,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
             context={
                 "version": __version__,
                 "active": "alerts",
+                # Third site of the same promise: the inline Watch button's
+                # tooltip. See `_device_actions.html` -- a snoozed
+                # `watchful_recurrence` spends the escalation rather than
+                # deferring it.
+                "recurrence_snooze": db.is_rule_type_snoozed(
+                    "watchful_recurrence", now_ts
+                ),
                 "alerts": alerts,
                 "total_count": total_count,
                 "page": pagination.page,
@@ -2918,9 +3143,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 evidence["gps_alt"] = None
                 evidence["gps_captured_at"] = None
         now_ts = int(time.time())
-        allowlist_match, allowlist_match_removable, allowlist_configured = (
-            _resolve_allowlist_match(app.state.config, alert.get("mac"), now_ts)
-        )
+        (
+            allowlist_match,
+            allowlist_match_removable,
+            allowlist_configured,
+            allowlist_match_source,
+        ) = _resolve_allowlist_match(app.state.config, alert.get("mac"), now_ts)
         snooze_hours_remaining: int | None = None
         if (
             allowlist_match is not None
@@ -2952,6 +3180,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "rssi_sparkline_svg": rssi_sparkline_svg,
                 "allowlist_match": allowlist_match,
                 "allowlist_match_removable": allowlist_match_removable,
+                "allowlist_match_source": allowlist_match_source,
                 "allowlist_configured": allowlist_configured,
                 "snooze_hours_remaining": snooze_hours_remaining,
                 "snooze_duration_options": list(_SNOOZE_DURATIONS.keys()),
@@ -3408,7 +3637,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
         # operator file) get the same 303 back to /alerts/<id>. The
         # template re-renders against the current state and shows the
         # truth, which is more useful than a stale error message.
-        remove_ui_entry(ui_path, result["mac"], "mac")
+        #
+        # ⚠️ Through an AllowlistEntry, per `remove_ui_entry`'s documented
+        # contract: it compares the pattern AS STORED, so a raw `alerts.mac`
+        # could miss a normalised stored entry and no-op. The device-side
+        # route has always done this; this one passed the raw column.
+        entry = AllowlistEntry(pattern=result["mac"], pattern_type="mac")
+        remove_ui_entry(ui_path, entry.pattern, "mac")
         return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
 
     @app.post("/alerts/{alert_id}/note")
@@ -3942,6 +4177,18 @@ def create_app(config: Config, db: Database) -> FastAPI:
             context={
                 "version": __version__,
                 "active": "watchful",
+                # ⛔ Whether the escalation this page PROMISES can be delivered
+                # at all. `watchful_recurrence` is snoozeable from /rules, and
+                # the poller's snooze branch does not defer the escalation -- it
+                # CONSUMES it: the entry is stamped escalated, no alert row is
+                # written, and the "fire once per escalation" guard means
+                # lifting the snooze later cannot produce it. Its own comment
+                # says so. This page's intro promised the alert unconditionally
+                # and never mentioned the snooze; measured at 7958b28, the two
+                # states rendered identical text.
+                "recurrence_snooze": db.is_rule_type_snoozed(
+                    "watchful_recurrence", now_ts
+                ),
                 "decorated": decorated,
                 "pagination": pagination,
                 "status": status,
@@ -4228,9 +4475,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         surface's own state resolver) so the "silence" section behaves
         identically to the alert-detail allowlist section.
         """
-        allowlist_match, allowlist_match_removable, allowlist_configured = (
-            _resolve_allowlist_match(app.state.config, mac, now_ts)
-        )
+        (
+            allowlist_match,
+            allowlist_match_removable,
+            allowlist_configured,
+            allowlist_match_source,
+        ) = _resolve_allowlist_match(app.state.config, mac, now_ts)
         snooze_hours_remaining: int | None = None
         if allowlist_match is not None and allowlist_match.expires_at is not None:
             seconds_left = max(0, allowlist_match.expires_at - now_ts)
@@ -4242,6 +4492,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "watch_source_alert_id": db.get_most_recent_alert_id_for_mac(mac),
             "allowlist_match": allowlist_match,
             "allowlist_match_removable": allowlist_match_removable,
+            "allowlist_match_source": allowlist_match_source,
             "allowlist_configured": allowlist_configured,
             "snooze_hours_remaining": snooze_hours_remaining,
             "severities": db._ALERT_SEVERITIES,
@@ -4250,6 +4501,19 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "snooze_default_duration": _SNOOZE_DEFAULT_KEY,
             "watch_duration_options": _DEVICE_WATCH_DURATIONS,
             "watch_default_duration": _DEVICE_WATCH_DEFAULT,
+            # ⛔ The Watch button's confirmation promises "a high-severity alert
+            # on repeated sightings". While `watchful_recurrence` is snoozed the
+            # poller CONSUMES that escalation instead of deferring it, so the
+            # promise is made at the moment of the click and cannot be kept.
+            "recurrence_snooze": db.is_rule_type_snoozed(
+                "watchful_recurrence", now_ts
+            ),
+            "watchlist_add_caveats": _watchlist_add_caveats(
+                app.state.config,
+                db,
+                allowlist_match=allowlist_match,
+                now_ts=now_ts,
+            ),
             "now_ts": now_ts,
         }
 
@@ -4907,11 +5171,62 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 )
                 snooze = snoozes_by_type.get(rt)
                 rule_types_with_stats.append(
-                    {"rule_type": rt, "stats": stats, "snooze": snooze}
+                    {
+                        "rule_type": rt,
+                        "stats": stats,
+                        "snooze": snooze,
+                        # ⛔ Whether ANY rule of this type is enabled. The snooze
+                        # affordance here says "The rule still evaluates; only
+                        # alert emit is gated", which is false for a type whose
+                        # rules are all disabled -- nothing of that type
+                        # evaluates, and the snooze changes nothing. Same
+                        # sentence, same falsehood, one section up from the
+                        # per-rule card that had it.
+                        "has_enabled_rule": any(
+                            r.enabled for r in ruleset.rules if r.rule_type == rt
+                        ),
+                    }
                 )
             rule_types_with_stats.sort(
                 key=lambda r: (-r["stats"].count, r["rule_type"])
             )
+
+        # ⛔ Active snoozes with NO rule of that type in the loaded ruleset.
+        # The scope decision above is deliberate and stays -- but its
+        # consequence was that such a snooze had no control ANYWHERE, while
+        # /watchlist and /settings both told the operator to "lift it on the
+        # rules page". Measured at cca7c5c: with `watchlist_ssid` snoozed and
+        # no rule of that type loaded, /rules rendered zero unsnooze forms on
+        # the default view, on `?status=snoozed`, on `?status=all`, and on
+        # `?rule_type=watchlist_ssid`. The snooze stays in force in the poller
+        # gate, so re-adding the rule later leaves it silently suppressed.
+        #
+        # ⭐ Reachable through the UI's own instructions: snooze a type here,
+        # then "Edit <rules file> on disk and restart" as the footer says.
+        #
+        # ⚠️ The unsnooze endpoint already accepts these -- it validates
+        # against the RuleType Literal, not against the loaded ruleset -- so
+        # the button offered here is one that works, which is the only kind
+        # worth adding.
+        loaded_rule_types = (
+            {rule.rule_type for rule in ruleset.rules} if ruleset is not None else set()
+        )
+        orphaned_snoozes = [
+            {
+                "rule_type": rt,
+                "snooze": snoozes_by_type[rt],
+                # ⛔ Whether this snooze is DORMANT or in force right now. The
+                # block's wording -- "re-adding a rule of that type while the
+                # snooze stands would leave it silenced" -- reads as "harmless
+                # until you add a rule", and for `watchful_recurrence` that is
+                # badly wrong: the poller raises it with no rule at all, so the
+                # snooze is consuming escalations today. Found by a cold read
+                # whose stated finding was refuted; this is what it led to.
+                "poller_driven": rt in POLLER_DRIVEN_RULE_TYPES,
+            }
+            for rt in sorted(snoozes_by_type)
+            if rt not in loaded_rule_types
+        ]
 
         # Resolve the window label for the dynamic "Fires (last X)"
         # column header. "all" gets the human label "all time"; the
@@ -4938,6 +5253,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "active": "rules",
                 "ruleset": ruleset,
                 "notice": notice,
+                "orphaned_snoozes": orphaned_snoozes,
                 "rules_with_stats": rules_with_stats,
                 "rule_types_with_stats": rule_types_with_stats,
                 "since": since,
@@ -5571,25 +5887,39 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 # remap is still worth showing (it decides the severity the
                 # moment the other blocker is lifted); it just cannot be
                 # phrased as something that happens today.
-                "entry_can_alert": (
-                    is_pattern_type_live(entry["pattern_type"], liveness)
-                    and not is_pattern_type_snoozed(entry["pattern_type"], liveness)
-                    and not override_suppression_axes(
-                        row.get("vendor"), row.get("device_category"), suppressions
-                    )
-                    and not oui_prefix_never_matches(
-                        row.get("pattern_type"), row.get("pattern")
-                    )
-                    and not (
-                        _match_all_mac_in_entries(
-                            _merged_allowlist_entries(app.state.config),
-                            row["pattern"],
-                            render_now_ts,
-                        )
-                        if allowlist_answerable_for(row.get("pattern_type") or "")
-                        and row.get("pattern")
-                        else []
-                    )
+                #
+                # ⛔ THREE-VALUED, and the third value is not decoration.
+                # `is_pattern_type_live` returns True when the ruleset verdict
+                # is UNKNOWN — deliberately, so an unreadable rules file cannot
+                # mark every row inert. That benefit of the doubt then arrived
+                # here as a `True` and the page turned it into a present-tense
+                # promise: with a rules file that would not parse, /watchlist/1
+                # said "This entry alerts at a different severity" and named
+                # what an alert "will actually carry", while /settings one
+                # click away correctly said the verdict could not be read.
+                # Measured at cca7c5c.
+                #
+                # ⚠️ Collapsing it to False would be the opposite lie: the
+                # else-branch says the row "produces none today, for the reason
+                # given elsewhere on this page", and under an unknown verdict
+                # there IS no reason elsewhere on the page. Unknown reads as
+                # unknown — the rule this module already follows for the
+                # inert/live verdict itself.
+                #
+                # ⭐ A DEFINITE blocker still wins outright. A snooze, an
+                # override suppression, a reserved OUI or an allowlist match
+                # are all established without reading the ruleset, so a row
+                # carrying one is a plain False even when the verdict is
+                # unknown — which is what keeps `entry_can_alert is False`
+                # meaning "something on this page is suppressing it" for
+                # test_webui_one_clock_read.
+                "entry_can_alert": _entry_can_alert(
+                    entry,
+                    row,
+                    liveness,
+                    suppressions,
+                    _merged_allowlist_entries(app.state.config),
+                    render_now_ts,
                 ),
                 "oui_never_matches_reason": oui_prefix_never_matches(
                     row.get("pattern_type"), row.get("pattern")
@@ -5615,7 +5945,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
     def settings_view(request: Request):
         now = time.time()
         kismet_status = _get_kismet_status(app, now)
-        ctx = _build_settings_context(app.state.config, db, kismet_status)
+        ctx = _build_settings_context(
+            app.state.config, db, kismet_status, app.state.config_path
+        )
         return app.state.templates.TemplateResponse(
             request=request,
             name="settings.html",
@@ -5747,7 +6079,18 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "filters_active": filters_active,
                 "supported_pattern_types": ALLOWLIST_PATTERN_TYPES,
                 "success": success,
-                "success_count": count,
+                # ⛔ `None` when the value is absent or not plausible, and the
+                # template then omits the number rather than asserting one. The
+                # token itself is already effectively whitelisted by the
+                # template's equality checks, so an unknown `success` renders
+                # nothing -- it is the COUNT that was echoed unchecked.
+                "success_count": (
+                    count
+                    if isinstance(count, int)
+                    and not isinstance(count, bool)
+                    and 0 <= count <= _ALLOWLIST_FLASH_COUNT_MAX
+                    else None
+                ),
                 "add_form": add_form or {},
                 "add_error": add_error,
                 "pagination": pagination,
