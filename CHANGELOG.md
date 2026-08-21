@@ -25,6 +25,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The Find My tracker alert has now fired on a real tracker, off the air —
+  and `scripts/audit/repro_live_find_my_alert.py` ships so you can reproduce
+  it.** Measured 2026-08-20: a genuine `find_my_separated` advertisement was
+  received by the production scanner, decoded, persisted, matched the shipped
+  `apple_find_my` rule, and produced an alert row with a notification
+  dispatched — through `config/rules.yaml` as shipped, on a real adapter
+  asserted powered before *and* after the window.
+
+  This was the last unproven hop, and it could not have been proven earlier:
+  the rule shipped commented out until this release enabled it. The pieces were
+  already hardware-validated — the capture bridge end to end from inside the
+  daemon, the decoder against 204 real Find My frames — but the joint event was
+  not.
+
+  ⛔ **What the run did not prove, recorded beside what it did:** push delivery
+  (the notifier was called with the right payload; no real ntfy push was sent),
+  the daemon's own restart-and-retry scheduling (the flush was driven directly
+  — production logic, not production scheduling), and identity across rotations
+  (one tracker, one advert, no rotation in the window).
+
+  🪤 The reason this went unmeasured for so long was **the instrument, not the
+  radio.** The measurement harness had never once run to completion: its power
+  check shelled out to `btmgmt`, which blocks forever unprivileged and whose
+  timeout silently became "adapter not powered"; and it built its scanner
+  without the BlueZ `or_patterns` that passive scanning requires. Both were
+  already solved and documented in `bridges/ble.py`. A probe that re-derives
+  what production already constructs is measuring a different thing. ⇒ When a
+  measurement has never produced a positive result, suspect the instrument
+  before the world.
+
 - **Apple Find My tracker alerting now ships enabled, and `/settings` says
   whether it is actually on.** The decoder, the three-valued separation state
   and the rule were all built, tested and shipped commented out; the capability
