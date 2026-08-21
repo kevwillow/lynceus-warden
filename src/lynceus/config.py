@@ -60,8 +60,9 @@ class CoObservationConfig(BaseModel):
     Shows the operator which other devices keep turning up at the same time as
     a given one. It makes no statistical claim: sensor uptime is not recorded
     anywhere in the schema, so absence of data cannot be distinguished from
-    absence of a device, and no score would be defensible. See
-    docs/superpowers/specs/2026-08-02-co-observation-explorer-design.md.
+    absence of a device, and no score would be defensible. An earlier scored
+    design was withdrawn after it was measured returning maximum confidence for
+    the always-present neighbour it existed to demote.
 
     ⭐ ``enabled`` is a capability toggle and a security control, not a
     preference. Iterating the route across every MAC reconstructs an

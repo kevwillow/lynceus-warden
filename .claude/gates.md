@@ -440,10 +440,19 @@ directory.
 
 The Windows "93" and the Linux "94" are the same source state, not drift.
 93 is `22 src/ + 70 tests/ + 1 scripts/` — the `scripts/` file is the one the
-"22 + 70" phrasing above silently omits. The 94th is a **Markdown** file:
-ruff 0.16.1 formats Python fenced inside `.md`, which older ruff did not, so
-`docs/superpowers/plans/2026-07-28-ble-continuity-decoder.md` now counts.
-Compare the `src/` figure across versions, not the total.
+"22 + 70" phrasing above silently omits. The 94th was a **Markdown** file:
+ruff 0.16.1 formats Python fenced inside `.md`, which older ruff did not, so a
+plan document under `docs/superpowers/` counted.
+
+⚠️ **That directory was removed from the repo on 2026-08-21 and gitignored**, so
+the Markdown file no longer contributes at all.
+
+⛔ **Do not read 93/94 as a current number.** Measured 2026-08-21: `ruff format
+--check .` reports **176 would be reformatted, 111 already formatted**. The
+totals here drifted because the suite grew from roughly 3,200 tests to 4,560,
+which is exactly the reason the note above says to compare the `src/` figure
+across versions rather than the total. The split is the useful part; the sum is
+not.
 
 ## The traps this repo actually has
 

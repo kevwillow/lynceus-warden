@@ -1,15 +1,44 @@
+<div align="center">
+
+<img src="docs/assets/lynceus-banner.png" alt="Lynceus Warden" width="100%">
+
 # Lynceus Warden
 
+**Something near you is broadcasting. Lynceus tells you what.**
+
+[![CI](https://github.com/kevwillow/lynceus-warden/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kevwillow/lynceus-warden/actions/workflows/ci.yml?query=branch%3Amain)
+[![CodeQL](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml?query=branch%3Amain)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Status: v1.0.0](https://img.shields.io/badge/Status-v1.0.0-blue.svg)](#project-status)
+
+[![listens, never transmits](https://img.shields.io/badge/listens-never%20transmits-111111.svg)](#privacy--threat-model)
+[![sees what's shouting](https://img.shields.io/badge/sees-what's%20shouting-c8102e.svg)](#what-lynceus-does)
+[![no cloud, no account](https://img.shields.io/badge/no%20cloud-no%20account-111111.svg)](#privacy--threat-model)
+[![watching the watchers](https://img.shields.io/badge/watching-the%20watchers-c8102e.svg)](#what-lynceus-does)
+
+</div>
+
+> [!WARNING]
+> **Active development. Expect issues.** This is personal-use software, not a
+> hardened product. Run it on hardware you control, in a jurisdiction where
+> passive RF observation is legal, and read the source before you trust it
+> with anything that matters.
+
+---
+
+## What is Lynceus
+
+A passive RF watchtower for the airspace you live in. It listens to the Wi-Fi
+and Bluetooth traffic already flying past your antenna, matches every device it
+hears against a curated database of surveillance hardware, and pushes an alert
+to your phone when something interesting turns up. License-plate readers,
+drones, gunshot-detection nodes, body cams, trackers.
+
+It never transmits. It never probes. It never associates. It listens, and it
+tells you the truth about what it heard.
+
 ```
-██╗     ██╗   ██╗███╗   ██╗ ██████╗███████╗██╗   ██╗███████╗
-██║     ╚██╗ ██╔╝████╗  ██║██╔════╝██╔════╝██║   ██║██╔════╝
-██║      ╚████╔╝ ██╔██╗ ██║██║     █████╗  ██║   ██║███████╗
-██║       ╚██╔╝  ██║╚██╗██║██║     ██╔══╝  ██║   ██║╚════██║
-███████╗   ██║   ██║ ╚████║╚██████╗███████╗╚██████╔╝███████║
-╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝╚══════╝ ╚═════╝ ╚══════╝
-        W A R D E N  -  passive RF counter-surveillance
-
-
       ((( o )))          ((( o )))          ((( o )))
           |                  |                  |
          alpr              drone             tracker
@@ -24,30 +53,8 @@
                      your phone buzzes
 ```
 
-**Something near you is broadcasting. Lynceus tells you what.**
-
-A passive RF watchtower for the airspace you actually live in. It listens to
-the Wi-Fi and Bluetooth traffic already flying past your antenna, matches
-every device it hears against a curated database of surveillance hardware
-(license-plate readers, drones, gunshot-detection nodes, body cams, trackers),
-and pushes an alert to your phone when something interesting shows up.
-
-It never transmits. It never probes. It never associates. It just listens, and
-it tells you the truth about what it heard.
-
-[![CI](https://github.com/kevwillow/lynceus-warden/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kevwillow/lynceus-warden/actions/workflows/ci.yml?query=branch%3Amain)
-[![CodeQL](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml?query=branch%3Amain)
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
-[![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Status: v1.0.0](https://img.shields.io/badge/Status-v1.0.0-blue.svg)](#project-status)
-[![Counter-Surveillance](https://img.shields.io/badge/Counter--Surveillance-passive%20only-1f6feb.svg)](#privacy--threat-model)
-[![Watching the Watchers](https://img.shields.io/badge/Watching-the%20Watchers-black.svg)](#what-lynceus-does)
-
-> [!WARNING]
-> **Active development. Expect issues.** This is personal-use software, not a
-> hardened product. Run it on hardware you control, in a jurisdiction where
-> passive RF observation is legal, and read the source before you trust it
-> with anything that matters.
+Tools to surveil people are cheap and everywhere. Tools to notice being
+surveilled are neither. Lynceus is one of the second kind.
 
 ---
 
@@ -77,7 +84,7 @@ types, each with an argus id and a confidence score](docs/images/watchlist-argus
 Probe history on `/probes`, exactly as the page opens: three devices, and the
 networks each one asked for kept behind a `reveal` control rather than printed
 on screen. Click through and you can find two devices with nothing else in
-common asking for the same unusual network — the kind of correlation a
+common asking for the same unusual network. That is the kind of correlation a
 randomised MAC address will never give you:
 
 ![The probes page listing three devices with their MAC, type, vendor and last
@@ -85,7 +92,7 @@ seen, the networks each one probed for sitting unopened behind a "reveal 2
 network(s)" control](docs/images/probes-history.png)
 
 That page is off by default, and the device-to-network pairing stays collapsed
-until you ask for it — opening the page never puts it on screen.
+until you ask for it. Opening the page never puts it on screen.
 
 And the part most tools skip. `/settings` says when a feature is switched on
 but cannot possibly work, instead of leaving you to guess at antennas:
@@ -148,8 +155,8 @@ These are design commitments, not current limitations:
 - **The read-only UI is a security boundary.** The web UI never mutates your
   configuration: `lynceus.yaml`, rules and capture settings change only
   out-of-band, via `lynceus-setup` or the YAML. It does record operator
-  decisions — acks, notes, snoozes, watchful entries, and the daemon-managed
-  `allowlist_ui.yaml` — because triage is what the UI is for. What it cannot do
+  decisions: acks, notes, snoozes, watchful entries, and the daemon-managed
+  `allowlist_ui.yaml`. Triage is what the UI is for. What it cannot do
   is change what Lynceus captures or how it is deployed. Read-only about
   configuration is a feature, not a missing one.
 - **No telemetry.** Lynceus does not phone home. At runtime it connects to the
@@ -239,7 +246,7 @@ These are design commitments, not current limitations:
   keeps the device-to-network *pairing* behind a click in both of its
   groupings, so opening the page never puts that pairing on screen. Grouped by
   device (the default) it shows only how many networks each device probed for
-  — "reveal 2 network(s)" — with the names inside the closed reveal. Grouped by
+  ("reveal 2 network(s)") with the names inside the closed reveal. Grouped by
   network it names the networks but keeps the devices that probed for each one
   inside the reveal, because there the identifying concentration is *which*
   devices wanted that network.
@@ -255,10 +262,10 @@ These are design commitments, not current limitations:
   before switching it on: it needs an adapter Kismet isn't holding, and it
   needs the optional scan library, which a default install does not ship
   (`pip install 'lynceus[ble]'`). The setup wizard and `/settings` both check
-  every known way an enabled bridge silently does nothing — adapter contention,
+  every known way an enabled bridge silently does nothing: adapter contention,
   a source filter that drops its own observations, a missing scan library, a
   BlueZ without passive-scan support, a rule so broad it alerts on every Apple
-  device, and no enabled rule consuming what it decodes — and print the fix.
+  device, and no enabled rule consuming what it decodes. Both print the fix.
 - **Ergonomic CLI tooling.** A wizard (`lynceus-setup`, with a browser-based
   `--web` flow for headless boxes), a Kismet bootstrapper, a config validator
   with migration rollback, a config exporter for backup and diffing, and
@@ -292,18 +299,18 @@ ceiling. Treat any product promising more than that with suspicion.
 
 There is a second half to that ceiling, and it is the half worth knowing before
 you quote the rest of this page back at anyone. Lynceus's real advantage over a
-proximity keychain is that it keeps a **record** — a `location_id` per sighting,
+proximity keychain is that it keeps a **record**: a `location_id` per sighting,
 co-observation across places, a device you can look up three weeks later. That
 record is keyed on MAC address. A device that rotates its address is a new row
 every time.
 
-Driven through the ingest and database path — **not** over the air — one tracker
+Driven through the ingest and database path, **not** over the air, one tracker
 at three locations over three weeks, rotating as a real one does, produces
 **three unrelated device rows, one sighting each, and zero co-observation
 candidates.**
 
 So the record is real, and it is real for the things this was built to watch:
-ALPR cameras, body cams, gunshot-detection nodes, fixed readers — surveillance
+ALPR cameras, body cams, gunshot-detection nodes, fixed readers. Surveillance
 infrastructure broadcasts from a stable address, because it is not trying to
 hide. It is **not** a per-tracker history. Lynceus alerts you **per encounter**;
 it will not tell you that the tracker in your bag today is the one that was in it
@@ -324,18 +331,18 @@ serial. Both are tracked openly in [BACKLOG.md](BACKLOG.md).
 
 ## Project status
 
-**v1.0.0** — the first release under AGPL-3.0. It closes the 0.9.x line, with
+**v1.0.0**, the first release under AGPL-3.0. It closes the 0.9.x line, with
 Find My tracker alerting shipped **enabled** rather than commented out.
 
 ⭐ **The tracker alert has fired on a real tracker, off the air.** Measured
-2026-08-20: a genuine `find_my_separated` advertisement — a tracker away from
-its owner — was received by the production scanner, decoded, persisted, matched
+2026-08-20: a genuine `find_my_separated` advertisement, a tracker away from
+its owner, reached the production scanner, decoded, persisted, matched
 the shipped `apple_find_my` rule, and produced an alert row with a notification
 dispatched. Nothing in that run was synthetic: the shipped `config/rules.yaml`,
 the real bridge, a real adapter, a real tracker.
 
 **Why that result stands on its own:** receiving an advertisement and raising an
-alert from it is self-validating — the scanner was demonstrably live at that
+alert from it is self-validating. The scanner was live at that
 moment, or there would have been nothing to decode. ⚠️ An earlier draft of this
 paragraph also claimed the adapter was "asserted powered before and after";
 that check named a *different* controller than the one scanning, so it
@@ -349,9 +356,9 @@ alert: apple_find_my / ble_device_class / severity med
         Apple Find My tracker away from its owner"
 ```
 
-That was the last unproven hop. The pieces were already validated on hardware —
-the capture bridge end to end from inside the daemon, the decoder against **204
-real Find My frames from 5 devices** — but the *joint* event could not happen
+That was the last unproven hop. The pieces were already validated on hardware:
+the capture bridge end to end from inside the daemon, and the decoder against
+**204 real Find My frames from 5 devices**. The *joint* event could not happen
 until this release enabled the rule.
 
 ⚠️ **Three things that run still did not prove, stated because a partial proof
@@ -361,23 +368,23 @@ quoted as a whole one is how this page would stop being trustworthy:**
   ntfy push was not sent. The last hop to your phone is untested.
 - **The daemon's own scheduling.** The flush was driven directly. That logic is
   production, but the long-running restart-and-retry loop was not exercised.
-- **Identity across rotations** — see the ceiling described further up. One
+- **Identity across rotations**, described further up. One
   tracker, one advert; no rotation occurred in the window.
 
 A default install also ships without `bleak`, so the bridge captures nothing
-until you `pip install 'lynceus[ble]'` — and `/settings` will tell you so.
+until you `pip install 'lynceus[ble]'`, and `/settings` will tell you so.
 
 **The test suite ships, so you can check the claims on this page yourself.**
 CI runs `pytest -q`, `ruff check .` and `python -m build` on Python 3.11 and
-3.12 for every push and pull request, in about nine minutes — and on **arm64**
+3.12 for every push and pull request, in about nine minutes, and on **arm64**
 as well as x86-64, because the machine this is built for is a Raspberry Pi. Most recently
 measured: **4447 passed, 1 skipped, 47 deselected**, at commit
 [`7958b28`](https://github.com/kevwillow/lynceus-warden/actions/runs/32403708354)
-— the same total on all three legs, x86-64 Python 3.11 and 3.12 and arm64.
+with the same total on all three legs, x86-64 Python 3.11 and 3.12 and arm64.
 That is the version-bump commit itself, not its parent and not a branch head.
 
 The commit is named on purpose. A bare total is a claim that quietly stops
-being true at the next merge — this one had drifted to 3294 against an actual
+being true at the next merge. This one had drifted to 3294 against an actual
 3494 before it was caught, on the very paragraph inviting you to verify it. A
 number you cannot date is a number you cannot check. Expect the current total
 to be *higher* than the figure above: compare against the newest run on `main`,
@@ -385,17 +392,17 @@ and treat a *lower* one as worth asking about.
 
 ⚠️ Expect the *skip* to differ from ours, and check which test it is rather
 than the count. One test skips when `/sys/class/bluetooth` exists (it needs the
-directory absent) and another skips without a live Argus CSV — so a machine
+directory absent) and another skips without a live Argus CSV, so a machine
 with Bluetooth and no CSV reports two skips, and CI reports one. `.claude/gates.md`
 records the traps that make a green run mean less than it looks like.
 
 Ten test files, plus one capture fixture, stay out of the repo because they
-embed the capture adapter's own MAC or the rig account name — which is what
+embed the capture adapter's own MAC or the rig account name, which is what
 "the fixtures describe a real rig" actually meant. They are listed by name in
 `.gitignore` rather than hidden behind a glob. Everything else is tracked, so
 the number above is the number you get: there is no larger private suite
 behind it. [CONTRIBUTING.md](CONTRIBUTING.md) and `.claude/gates.md` record
-the traps that make a green run mean less than it looks like — in particular,
+the traps that make a green run mean less than it looks like. In particular,
 check *which* test skipped rather than the skip count.
 
 ## Installation
@@ -456,7 +463,7 @@ for the failure modes that actually show up. The short version:
 1. **Install Lynceus.** Pick the scope now, because step 4 differs:
    `./install.sh --user` for a foreground demo on a machine you already use, or
    `sudo ./install.sh --system` for a dedicated always-on host. **`--user`
-   installs no systemd units** — it is deliberately not a service install.
+   installs no systemd units**. It is deliberately not a service install.
 2. **Install and configure Kismet.** `sudo lynceus-bootstrap-kismet` detects
    monitor-capable Wi-Fi and Bluetooth interfaces, patches
    `/etc/kismet/kismet_site.conf` (append-only, so your edits survive), and adds
@@ -473,9 +480,9 @@ for the failure modes that actually show up. The short version:
    ntfy prompt to skip notifications.
 
    ⚠️ **Say yes to Argus-backed alerting when it asks.** It is opt-in and
-   defaults to *no*, and declining it writes no `rules.yaml` — which leaves you
+   defaults to *no*, and declining it writes no `rules.yaml`, which leaves you
    with a system that captures devices, populates the UI, and **can never raise
-   an alert**. The `/rules` tile on the dashboard says `no ruleset — nothing
+   an alert**. The `/rules` tile on the dashboard says `no ruleset, nothing
    will alert` when you are in that state.
 
    ⚠️ **`--web` on a headless box needs an SSH tunnel.** The wizard binds
@@ -483,11 +490,11 @@ for the failure modes that actually show up. The short version:
    not the Pi. Forward it first:
    `ssh -L 8766:127.0.0.1:8766 you@your-pi`, then open
    <http://localhost:8766>. The same applies to the dashboard on port 8765.
-   Prefer this over `ui_allow_remote` — see [Privacy / threat model](#privacy--threat-model).
+   Prefer this over `ui_allow_remote`. See [Privacy / threat model](#privacy--threat-model).
 4. **Run.** After a `--user` install: `lynceus-quickstart` (daemon + UI +
    browser in the foreground, Ctrl+C to stop). After a `--system` install:
    `sudo systemctl enable --now lynceus.service lynceus-ui.service`.
-   These are not interchangeable — a `--user` install has no units to enable.
+   These are not interchangeable. A `--user` install has no units to enable.
 5. **Verify.** Open the UI, watch sightings populate, browse `/watchlist`, and
    check `/settings` for capture state and connectivity.
 
@@ -567,7 +574,7 @@ browser auto-launch, clean Ctrl+C shutdown. Not for unattended use.
 ## Privacy / threat model
 
 - **The UI is read-only about the *world*, not about your own triage.** It
-  never transmits, never reconfigures capture, and never edits `rules.yaml` —
+  never transmits, never reconfigures capture, and never edits `rules.yaml`,
   those stay operator config on disk. It does let you act on what you are
   shown: acknowledge, note, snooze, allowlist, watch. Every one of those is a
   POST carrying a CSRF token behind a confirmation prompt, and every
@@ -575,8 +582,8 @@ browser auto-launch, clean Ctrl+C shutdown. Not for unattended use.
   exactly the action an attacker would want.
 - **⚠️ The UI has no authentication, so keep it on loopback.** It binds
   `127.0.0.1` by default and that is the only thing protecting it. To reach a
-  headless box, forward the port over SSH — `ssh -L 8765:127.0.0.1:8765
-  you@your-pi` — rather than setting `ui_allow_remote: true`. That flag exposes
+  headless box, forward the port over SSH (`ssh -L 8765:127.0.0.1:8765
+  you@your-pi`) rather than setting `ui_allow_remote: true`. That flag exposes
   an unauthenticated dashboard to your whole network: anyone on it can read
   `/probes` (a partial location history of every device in range, most of them
   bystanders') and can silence a device by allowlisting it, which you would
@@ -665,8 +672,8 @@ load-bearing, not decorative.
 **AGPL-3.0-or-later.** See [LICENSE](LICENSE). Copyright © 2026 Kev Wilson.
 
 Use it, run it, modify it, sell it. The condition is that everyone you give it
-to — including anyone who only ever reaches it over a network, which is what
-AGPL §13 adds over plain GPL — gets the same freedom and the same source. If
+to, including anyone who only ever reaches it over a network, which is what
+AGPL §13 adds over plain GPL, gets the same freedom and the same source. If
 you want to build it into something closed, that is what the
 [commercial licence](COMMERCIAL-LICENSE.md) is for.
 
