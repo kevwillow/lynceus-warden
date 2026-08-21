@@ -751,10 +751,22 @@ class Database:
             # Only yield when there is more to do; never after the last batch.
             if held:
                 time.sleep(min(held, self._YIELD_CAP_SECONDS))
-        remaining = self._conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE {where}",  # noqa: S608 - literal
-            tuple(params),
-        ).fetchone()[0]
+        # ⛔ Under `self._lock`. This is the one statement in the function that
+        # a cold read found taking the connection WITHOUT it -- the same class
+        # this change exists to eliminate, reintroduced on the failure path
+        # whose diagnostics have to be the most trustworthy thing here. Another
+        # thread can own a transaction on this same connection, so an unguarded
+        # read could participate in or observe that thread's transaction and
+        # report a count that never existed.
+        #
+        # `self._lock` and NOT `transaction()`: this is a read, and opening a
+        # write transaction to count rows would reacquire exactly the lock this
+        # function spent its whole design budget learning to hand back.
+        with self._lock:
+            remaining = self._conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {where}",  # noqa: S608 - literal
+                tuple(params),
+            ).fetchone()[0]
         logger.warning(
             "delete_in_batches hit its %d-batch bound on %s after %d rows; "
             "%d still match and will be retried on the next run",
