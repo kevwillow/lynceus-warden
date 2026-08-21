@@ -650,6 +650,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   primary-file entry still gets the operator-managed hint. Six reversions were
   planted one at a time and every one was caught.
 
+
+- **The shipped test suite wrote into the operator's real `~/.config/lynceus`,
+  and failed outright on any machine that had already run `lynceus-setup`.**
+  Seven tests reached a wizard write whose target is
+  `paths.default_config_dir(scope) / "<name>"` while the shared helper stubbed
+  only `resolve_config_path`, which covers `lynceus.yaml` and nothing else.
+
+  ⛔ **CI could not have caught this class.** On a clean HOME — every CI runner
+  — the write silently *succeeds* and the test passes, so green CI was being
+  bought by writing outside the sandbox. It surfaced only on a box with an
+  existing `rules.yaml`, where the overwrite confirmation added in this release
+  consumed an answer the test never scripted and it died on `StopIteration`,
+  reading like a broken test rather than a test escaping its sandbox.
+
+  ⭐ Nothing was destroyed, and the reason is this release's own data-loss
+  guard: it turned a silent overwrite of a hand-authored `rules.yaml` into a
+  prompt, and the prompt is the only reason anyone found out.
+
+  Fixed by isolating the **environment** rather than stubbing
+  `default_config_dir` — `tests/test_paths.py` asserts what that function
+  derives, so stubbing it would gut the tests covering path resolution itself.
+  An autouse fixture gives every test its own HOME, per-test rather than
+  per-session so one test's leftovers cannot change what the next observes.
+
+- **That isolation was then a guard nothing asserted.** Disarmed, the pollution
+  returns and *every* test still passes — so no future refactor that dropped it
+  would have failed anything. `tests/test_home_isolation_guard.py` now fails if
+  it stops working, checking the config directory, each sidecar path, that HOME
+  and `XDG_CONFIG_HOME` agree, and that each test gets a distinct home.
+
+  🪤 Its own first version committed the exact defect it exists to catch: with
+  the fixture disarmed it wrote a marker into the real home **and still passed**,
+  because the marker was absent so the assertion held and the write was pure
+  collateral. Found only by planting the defect. ⇒ **A guard that performs a
+  side effect must prove it is safe to perform it *before* performing it, not
+  assert about it afterwards.**
+
+- **A published claim withdrawn: the live Find My proof's power check named the
+  wrong controller.** `--address` (the power guard) and `--index` (the scanner)
+  were independent arguments, so the recorded run guarded one adapter while
+  scanning another — and a before/after power check never proved *continuous*
+  operation regardless. Both harnesses now refuse to start unless the two agree.
+  ⭐ **The result is unaffected and does not need the claim:** an advert
+  arriving and raising an alert proves the scanner was live at that moment,
+  which is stronger than either endpoint check.
 - **Twenty-one places where the web UI named a config file the daemon does
   not load.** `rules_path` and `allowlist_path` are free-form settings — an operator
   can point either at any filename, and the UI-side allowlist is a *derived*
