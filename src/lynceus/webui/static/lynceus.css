@@ -109,6 +109,26 @@ form fieldset.grid {
     margin-bottom: 0.6em;
 }
 form fieldset.grid > label { margin-bottom: 0; font-size: 0.9em; }
+
+/* 🪤 MEASURED. A legibility bug on a privacy notice, and a Pico inconsistency
+   rather than anything this project wrote.
+
+   Pico pulls helper text up under a control:
+       :where(input,select,textarea,fieldset)+small { margin-top: calc(var(--pico-spacing) * -.75) }
+   which cancels the control's own bottom margin. But Pico ALSO zeroes that
+   bottom margin when the control sits inside a <label>. The two rules meet on
+   `label > select + small`, where the -0.75rem pull has nothing left to
+   cancel and simply drags the note up INTO the control.
+
+   Measured on /devices: `probe-SSID capture is disabled, so this view is
+   empty; enabling it has a privacy tradeoff` was drawn 15px underneath the
+   `probing` select at 1280, 1440 and 1920, so it read as struck through. It
+   is the sentence explaining a privacy tradeoff, so it is worth being able
+   to read.
+
+   ⛔ Restated as a positive gap rather than a smaller negative one, so it
+   cannot drift back into an overlap when the spacing scale moves. */
+form label > :where(input, select, textarea) + small { margin-top: var(--lyn-space-1); }
 /* Pico gives form controls a ~3rem height, which is right for a signup form
    and wrong for eleven filters above a triage table: the grid alone still
    left ~600px of chrome before the first alert. These are secondary controls
@@ -162,16 +182,47 @@ form fieldset.grid > button {
 .metadata-grid dd { margin: 0; }
 .mac-cell    { font-family: monospace; }
 .truncate    { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
-.topnav      { display: flex; align-items: center; gap: 0.75em; padding: 0.5em 0; border-bottom: 1px solid var(--lyn-topnav-border); margin-bottom: 1em; }
-.topnav a    { text-decoration: none; }
-/* Vertical divider between adjacent tabs so each is clearly delimited.
-   `a + a` skips the first link (no leading rule) and the theme-toggle
-   <button> (already set off by margin-left:auto + its own border).
-   padding-left matches the flex gap so the rule sits centered between
-   labels, and it reuses the same --lyn-topnav-border token as the nav's
-   border-bottom so it tracks the light/dark toggle. */
-.topnav a + a { border-left: 1px solid var(--lyn-topnav-border); padding-left: 0.75em; }
-.topnav a.active { font-weight: 600; }
+/* Primary navigation.
+ *
+ * ⭐ These are tabs, not prose links, and styling them as links was the
+ * problem. Every one rendered in the link colour at body weight, so ten
+ * equally loud items competed with the page beneath them and the current
+ * one was distinguished by font-weight alone. Measured before the change:
+ * the nav was ten 20px links in the browser's default blue.
+ *
+ * They now read as a tab strip -- muted labels in the mono microtype, the
+ * current one carrying the accent and a rule under it. The accent is spent
+ * on ONE item per page instead of ten. */
+.topnav {
+    display: flex;
+    align-items: stretch;
+    gap: var(--lyn-space-5);
+    padding: 0;
+    border-bottom: var(--lyn-hairline) solid var(--lyn-line);
+    margin-bottom: var(--lyn-space-5);
+}
+.topnav a {
+    text-decoration: none;
+    color: var(--lyn-muted);
+    font-family: var(--lyn-mono);
+    font-size: var(--lyn-text-sm);
+    letter-spacing: var(--lyn-tracking-caps);
+    padding: var(--lyn-space-3) 0;
+    /* Reserve the active rule's height on every tab, so the strip does not
+       shift by 2px as the operator moves between pages. */
+    border-bottom: 2px solid transparent;
+    margin-bottom: calc(var(--lyn-hairline) * -1);
+}
+.topnav a:hover { color: var(--lyn-text); }
+.topnav a.active {
+    color: var(--lyn-accent);
+    border-bottom-color: var(--lyn-accent);
+    font-weight: var(--lyn-weight-medium);
+}
+/* ⛔ The current tab is not marked by colour alone. `aria-current` is not
+   available here (the template sets a class), so the weight change carries
+   the same information for an operator who cannot separate the accent from
+   the muted grey. */
 .dim         { opacity: 0.55; }
 
 /* Quick-filter preset chips above the /devices table. Not tabs -- each
@@ -187,11 +238,14 @@ form fieldset.grid > button {
    end of the flex row so it doesn't collide with the link cluster. */
 .theme-toggle {
     margin-left: auto;
-    padding: 0.1em 0.6em;
-    font-size: 0.85em;
+    padding: var(--lyn-space-1) var(--lyn-space-4);
+    font-size: var(--lyn-text-xs);
+    font-family: var(--lyn-mono);
+    letter-spacing: var(--lyn-tracking-caps);
+    align-self: center;
     background: transparent;
-    border: 1px solid var(--lyn-topnav-border);
-    color: inherit;
+    border: var(--lyn-hairline) solid var(--lyn-line);
+    color: var(--lyn-muted);
     cursor: pointer;
     border-radius: 4px;
     font-family: inherit;
@@ -945,12 +999,27 @@ details:has(> .probe-reveal) > summary::after {
 
 /* Site header: identity strip above the topnav. Compact, single line, no
    background that would compete with the status line below. */
+/* The wordmark. `lynceus` is the only thing here that should carry weight;
+   the version and the tagline are context, so they take the muted step and
+   the mono microtype rather than competing with the page heading below. */
 .site-header {
     display: flex;
     align-items: baseline;
-    gap: 0.4em;
-    padding: 0.6em 0 0.2em;
+    gap: var(--lyn-space-3);
+    padding: var(--lyn-space-4) 0 var(--lyn-space-3);
     flex-wrap: wrap;
+    font-size: var(--lyn-text-md);
+}
+.site-header strong {
+    font-weight: var(--lyn-weight-bold);
+    letter-spacing: -0.02em;
+}
+.site-header small,
+.site-header .dim {
+    font-family: var(--lyn-mono);
+    font-size: var(--lyn-text-xs);
+    color: var(--lyn-muted);
+    opacity: 1;
 }
 
 /* AGPL-3.0 §13 source offer. Quiet, but present on every page — it is a
@@ -960,10 +1029,19 @@ details:has(> .probe-reveal) > summary::after {
 .site-footer {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4em;
-    padding: 1.2em 0 0.6em;
-    margin-top: 1.5em;
-    border-top: 1px solid var(--pico-muted-border-color);
+    gap: var(--lyn-space-3);
+    padding: var(--lyn-space-6) 0 var(--lyn-space-4);
+    margin-top: var(--lyn-space-6);
+    border-top: var(--lyn-hairline) solid var(--lyn-line);
+}
+/* The AGPL source offer is a legal obligation, so it stays legible rather
+   than being dimmed into decoration: the muted token passes AA on both
+   grounds, an opacity multiplier on top of it would not. */
+.site-footer .dim {
+    font-family: var(--lyn-mono);
+    font-size: var(--lyn-text-xs);
+    color: var(--lyn-muted);
+    opacity: 1;
 }
 
 /* Status line (UI-DIRECTION.md §"Hierarchy" item 1). One row, not a card.
@@ -1037,13 +1115,13 @@ details:has(> .probe-reveal) > summary::after {
 /* Block sections (items 2–5 of the hierarchy). Tight margins; the
    <h3> in each provides the visual break, no card border needed. */
 .block { margin: 1em 0; }
-.block > h3 { margin: 0.2em 0 0.5em; font-size: 1em; }
+.block > h3 { margin: 0.2em 0 0.5em; font-size: var(--lyn-text-lg); }
 /* "The largest, loudest block on the page. This is the work." An earlier pass
    gave .block-alerts exactly the same heading size and spacing as activity,
    trend and recently-seen-devices, so the markup claimed a hierarchy the CSS
    did not create. The unacked block now outranks its siblings visually. */
 .block-alerts > h3 {
-    font-size: 1.15em;
+    font-size: var(--lyn-text-xl);
     margin-top: 0.1em;
 }
 .block-alerts { margin-bottom: 1.6em; }
@@ -1201,8 +1279,8 @@ textarea:focus-visible,
    dashboard without sacrificing legibility. Pico's defaults add 1rem
    of vertical rhythm between every block; on a status-line + 4-section
    page that adds up to hundreds of pixels of dead space. */
-main > h2 { margin: 0.4em 0 0.6em; font-size: 1.4em; }
-.block h3 { font-weight: 600; }
+main > h2 { margin: 0.4em 0 0.6em; font-size: var(--lyn-text-2xl); }
+.block h3 { font-weight: var(--lyn-weight-bold); }
 /* Trim table cell vertical padding on the home page (full Pico default
    is ~1rem each side, which made a 5-row alerts table ~250px tall). */
 .alerts-table th,
@@ -1268,16 +1346,32 @@ main.container-fluid { min-width: 0; }
 
    ⚠️ Scoped to .alerts-table-full (the /alerts table). The home page's
    .alerts-table has its own narrower column set and must not inherit these. */
-.alerts-table-full th:first-child,
-.alerts-table-full td:first-child { width: 2.2rem; padding-right: 0; }
-.alerts-table-full th:nth-child(2),
-.alerts-table-full td:nth-child(2) { width: 7rem; }
-.alerts-table-full th:nth-child(3),
-.alerts-table-full td:nth-child(3) { width: 4.5rem; }
+/* ⛔ KEYED, not positional. These were `th/td:nth-child(N)` rules, which name
+   a POSITION. The table now carries `data-table-id`, and lynceus.js binds its
+   reorder handler to any keyed table, so a column dragged to a new position
+   would have inherited the previous occupant's width and cap. Widths live on
+   the <col> elements, which carry the column's own key and move with it.
+
+   ⚠️ A <col> can only style a handful of properties -- width, background,
+   border, visibility -- which is exactly why the ellipsis rules below stay on
+   the cells. Those are per-cell behaviour, not per-column geometry. */
+.alerts-table-full col[data-col-key="select"]    { width: 2.2rem; }
+.alerts-table-full col[data-col-key="timestamp"] { width: 6.5rem; }
+.alerts-table-full col[data-col-key="severity"]  { width: 4rem; }
+.alerts-table-full col[data-col-key="message"]   { width: 14.5rem; }
+.alerts-table-full col[data-col-key="rule"]      { width: 9rem; }
+.alerts-table-full col[data-col-key="device"]    { width: 9rem; }
+.alerts-table-full col[data-col-key="category"]  { width: 4.5rem; }
+.alerts-table-full col[data-col-key="status"]    { width: 3rem; }
+.alerts-table-full th[data-col-key="select"],
+.alerts-table-full td:first-child { padding-right: 0; }
 /* ⚠️ max-width alone does NOT clip a table cell — the content simply
    overflows into its neighbour, which is how "new_device_alert" ended up
    printed across the Device column. Capping a column means capping it AND
-   telling it what to do with the excess. */
+   telling it what to do with the excess.
+
+   The <col> widths above set the geometry; these tell the cells in those two
+   columns what to do with the excess. Both halves are still needed. */
 .alerts-table-full th:nth-child(4),
 .alerts-table-full td:nth-child(4),
 .alerts-table-full th:nth-child(5),
@@ -1296,12 +1390,16 @@ main.container-fluid { min-width: 0; }
     text-overflow: ellipsis;
     vertical-align: bottom;
 }
-.alerts-table-full th:nth-child(7),
-.alerts-table-full td:nth-child(7) { width: 5rem; }
-.alerts-table-full th:nth-child(9),
-.alerts-table-full td:nth-child(9) { width: 3.5rem; }
 /* The message is the one column worth giving the remaining room to, but it
    must not be allowed to set the table's minimum width — that is what pushed
    the actions off screen. Truncation keeps it to one line; the full text is
-   on the alert's own page. */
+   on the alert's own page.
+
+   🪤 MEASURED, and it must stay a bare length. `min(22ch, 100%)` was tried
+   here to stop the span overflowing its cell, and it did the opposite: a
+   percentage inside the max-width makes the value indeterminate while the
+   column width is still being computed, so it stopped capping the intrinsic
+   width entirely. The message column went 208px -> 303px and took 64px off
+   the action column, which is precisely the failure this cap exists to
+   prevent. The column is sized to fit this span instead, above. */
 .alerts-table-full .truncate { max-width: 22ch; }

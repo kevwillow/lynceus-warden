@@ -101,6 +101,12 @@ lynceus = [
     "migrations/*.sql",
     "webui/templates/*.html",
     "webui/static/*",
+    # ⚠️ The glob above is single-level, so it does NOT reach this directory.
+    # A self-hosted font left out of the wheel fails in the one place nobody
+    # looks: the installed product renders in a fallback mono while every dev
+    # checkout looks correct. tests/test_webui_assets.py asserts that every
+    # asset the CSS references is covered by one of these patterns.
+    "webui/static/fonts/*",
     "setup/web/templates/*.html",
 ]
 "lynceus.data" = [

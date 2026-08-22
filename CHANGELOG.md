@@ -25,6 +25,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The alerts table can hide columns now, like the other four data tables.**
+  `/devices`, `/watchful`, `/allowlist` and `/watchlist` have had a show/hide
+  columns menu since 0.9.2. `/alerts` is hand-written rather than built from the
+  shared table macro, so it never got one, and it is the widest table in the
+  product. Hiding two columns takes it from 1408 pixels to 1232 at a 1440 pixel
+  window, and the choice is remembered per table across reloads.
+
+  It still does not use the shared macro. That macro regenerates every cell,
+  and the wording in those rows is where earlier releases put their honesty
+  fixes, so the column layer is adopted by hand instead: the keyed column
+  group, the per-header keys, the menu and the applier call. No table cell was
+  touched, and every header line keeps its exact wording.
+
+  The column widths moved off `nth-child` rules and onto the column group.
+  Those rules named a position, and adopting the layer also enables column
+  reordering, so a column dragged elsewhere would have taken the previous
+  occupant's width and truncation cap with it.
+
+  An earlier note in the test suite predicted that this table's bulk-acknowledge
+  form and its inline row controls would fight the fixed layout the column
+  layer switches on. That was measured in a real browser before being acted on,
+  and it does not happen: no control is clipped or zero sized, the bulk button
+  is reachable rather than covered, and clicking a row's Acknowledge does
+  acknowledge that alert in the database.
+
+
 - **The two release gates are in the suite now, behind `install` and `browser`.**
   Both were measured green before 1.0.0 and then left as scripts somebody had to
   remember. `make release-gates` runs them. `addopts` deselects both markers,
@@ -393,6 +419,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The web UI has a token layer, and the alerts table fits a laptop again.**
+  A palette, type scale and spacing scale now live in
+  `webui/static/tokens.css` and are mapped onto Pico's own custom properties,
+  so the whole dashboard restyles without a single template being edited. That
+  matters because the templates are where earlier releases put their honesty
+  fixes, and regenerating markup would have quietly undone them.
+
+  The measured problem was scale, not width. Pico steps the root font size up
+  to 131.25% as a window widens, so this dashboard rendered every table cell at
+  20px and got *fewer* rows the bigger the screen. The root is back to 100%,
+  which also hands the choice to whatever the reader set as their own browser
+  default. Measured at a 1440px viewport: the alerts table needed 1750px inside
+  a 1400px container and now needs 1408px, so it fits with no column hidden and
+  none removed. The devices table went from 596px of hidden scroll to 69px, and
+  a table row went from 52px tall to 32px, which is about 38% more rows on a
+  screen.
+
+  Before this, the Message column on `/alerts` was rendered roughly two
+  characters wide in a 1440px window, so an operator could not read any alert
+  message on that page at all.
+
+  Links, buttons and focus rings now use the same red as the Argus mark instead
+  of the browser default blue. In dark mode they use a lighter tint of that red:
+  measured, `#c8102e` scores 3.30:1 on the dark ground, which fails the WCAG AA
+  floor of 4.5:1 for body text, so the shipped dark value is `#e8556b` at
+  5.49:1. The tint keeps the hue, which is what the sibling relationship with
+  Argus actually rests on, and `tests/test_webui_tokens.py` pins it to within 12
+  degrees of the colour `scripts/make_banner.py` draws the mark in.
+
+  Geist Mono is self-hosted, under `webui/static/fonts/` with its SIL OFL
+  licence beside it. It is a legibility change rather than a branding one: MACs,
+  rule names, timestamps and RSSI values are already set in mono, so on a
+  data-bearing page those columns are most of what gets read, and a face drawn
+  for tabular figures keeps a column of numbers aligned on the digit.
+
+  🪤 `[tool.setuptools.package-data]` globs are single level, so the new
+  `fonts/` directory needed its own entry. Without it the font is present in
+  every checkout, referenced correctly by the CSS, and simply absent from the
+  built wheel, where it degrades to a fallback face instead of failing. There is
+  a test asserting every asset the CSS references is on disk, covered by a
+  package-data pattern, and actually served over HTTP.
+
+
 - **The alert action buttons no longer resize when you use them.** Acknowledge,
   unack and Watch were sized by their own labels, measured at 124px and 68px for
   Watch, so acknowledging a row swapped the label to "unack" and the button
@@ -452,6 +521,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+
+- **The privacy note on `/devices` was drawn underneath the control it explains.**
+  `probe-SSID capture is disabled, so this view is empty; enabling it has a
+  privacy tradeoff` sat 15px under the `probing` select, so it rendered as
+  struck through and partly unreadable at every window width measured, 1280,
+  1440 and 1920 alike. It is the sentence that tells an operator what turning
+  the setting on costs them, so it is worth being able to read.
+
+  The cause is two Pico rules meeting. Pico pulls helper text up under a
+  control with a negative top margin, to close the gap left by that control's
+  own bottom margin, and separately zeroes that bottom margin when the control
+  sits inside a label. Where both apply the pull has nothing left to cancel and
+  drags the note into the control. Restated here as a small positive gap, so it
+  cannot drift back into an overlap when the spacing scale changes.
+
+  Nothing that reads the server's HTML could see this: the markup was correct
+  throughout. The browser gate now measures the two boxes and fails if a
+  control is drawn over its own help text.
+
+- **The primary navigation reads as tabs rather than as ten links.**
+  Every item rendered in the link colour at body weight, so ten equally loud
+  items competed with the page under them and the current one was marked by
+  font weight alone. They are now muted labels with the accent and a rule
+  spent on the current one only. The weight change is kept as well as the
+  colour, so the current tab is not signalled by colour alone.
+
 - **`lynceus-setup` could report a working first run having imported no threat
   data at all.** The wizard shells out to `lynceus-import-argus` by name. When
   that binary is not resolvable, `import_bundled_watchlist` takes its

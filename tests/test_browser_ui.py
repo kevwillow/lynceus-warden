@@ -359,6 +359,8 @@ def crawl(_served_ui):
                     "inline": 0,
                     "controls": [],
                     "links": [],
+                    "overlaps": [],
+                    "help_pairs": 0,
                 }
                 continue
 
@@ -393,6 +395,8 @@ def crawl(_served_ui):
                     "inline": 0,
                     "controls": [],
                     "links": [],
+                    "overlaps": [],
+                    "help_pairs": 0,
                 }
                 page.close()
                 continue
@@ -407,10 +411,54 @@ def crawl(_served_ui):
                 "inline": 0,
                 "controls": [],
                 "links": [],
+                "overlaps": [],
+                "help_pairs": 0,
             }
             if is_html:
                 page.wait_for_timeout(400)
                 record["csp"] = page.evaluate("window.__cspv || []")
+                # ⛔ Form CONTROLS are included even though they have children
+                # (<option>), which the first version of this probe got wrong:
+                # filtering to childless leaves silently excluded every
+                # <select> and reported zero overlaps on a page that had one.
+                # ⛔ Narrow ON PURPOSE: a control against the helper text
+                # that BELONGS to it, i.e. its own immediately-following
+                # <small> sibling. A general "do any two boxes intersect"
+                # sweep was tried first and reported 40 pairs across /alerts
+                # and /allowlist -- table cells, column-toggle checkboxes and
+                # a disclosure summary, every one of them correct layout. A
+                # guard that noisy gets switched off, and then it guards
+                # nothing. This pairing is exactly the defect class that was
+                # real, and it stays checkable.
+                record["overlaps"] = page.evaluate(
+                    """() => {
+                        const out = [];
+                        let seen = 0;
+                        document.querySelectorAll(
+                            'input + small, select + small, textarea + small'
+                        ).forEach(note => {
+                            seen++;
+                            const control = note.previousElementSibling;
+                            if (!control) return;
+                            const rc = control.getBoundingClientRect();
+                            const rn = note.getBoundingClientRect();
+                            if (rc.width < 2 || rn.width < 2) return;
+                            const ox = Math.min(rc.right, rn.right) - Math.max(rc.left, rn.left);
+                            const oy = Math.min(rc.bottom, rn.bottom) - Math.max(rc.top, rn.top);
+                            if (ox > 2 && oy > 2) {
+                                const what = note.textContent.trim().slice(0, 60);
+                                out.push(
+                                    control.tagName + '[' + (control.name || '') +
+                                    '] over its own help text ' + JSON.stringify(what) +
+                                    ' by ' + Math.round(ox) + 'x' + Math.round(oy) + 'px'
+                                );
+                            }
+                        });
+                        window.__helpPairs = seen;
+                        return out;
+                    }"""
+                )
+                record["help_pairs"] = page.evaluate("window.__helpPairs || 0")
                 record["controls"] = page.evaluate(
                     """() => {
                         const out = [];
@@ -496,6 +544,43 @@ def test_every_route_answers_what_it_owes(crawl):
     actual = {route: record["status"] for route, record in crawl["pages"].items()}
     expected = dict(EXPECTED_STATUS)
     assert actual == expected
+
+
+def test_no_form_control_is_drawn_over_its_own_help_text(crawl):
+    """Geometry the browser computed, not an impression from a screenshot.
+
+    🪤 The defect this caught is a Pico inconsistency, and it is invisible to
+    every server-rendered assertion in `tests/`. Pico pulls helper text up
+    under a control with `margin-top: calc(var(--pico-spacing) * -.75)` to
+    cancel that control's bottom margin, and separately zeroes that bottom
+    margin when the control sits inside a <label>. Where both apply, the pull
+    has nothing to cancel and drags the note INTO the control.
+
+    Measured on /devices before the fix: the `probing` select was drawn 15px
+    over `probe-SSID capture is disabled, so this view is empty; enabling it
+    has a privacy tradeoff`, so the sentence explaining a privacy tradeoff
+    read as struck through. The HTML was perfect throughout.
+    """
+    # ⛔ An empty universe scores as green. If no page renders a control
+    # followed by its own help text, this test inspected nothing and would
+    # pass over any amount of breakage.
+    inspected = sum(record["help_pairs"] for record in crawl["pages"].values())
+    assert inspected > 0, (
+        "the crawl found no control-plus-help-text pairs at all, so this test "
+        "proved nothing. Either the fixture stopped rendering them, or the "
+        "markup pattern changed and this selector needs to change with it."
+    )
+
+    collisions = {
+        route: record["overlaps"]
+        for route, record in crawl["pages"].items()
+        if record["overlaps"]
+    }
+    assert not collisions, (
+        f"a form control is drawn over another element's box: {collisions}. "
+        f"Text under a control is usually the thing explaining what the "
+        f"control costs, so an overlap here loses the explanation, not decoration."
+    )
 
 
 def test_no_content_security_policy_violations(crawl):
