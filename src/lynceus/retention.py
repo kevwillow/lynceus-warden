@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 
-from lynceus.db import Database
+from lynceus.db import Database, PruneResult
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +41,20 @@ def prune_old_sightings(
     retention_days: int | None,
     *,
     now_ts: int,
-) -> tuple[int, int | None]:
+    max_seconds: float | None = None,
+) -> PruneResult:
     """Delete sightings older than ``retention_days``.
 
-    Returns ``(rows_deleted, oldest_remaining_ts)``; the second element is None
-    when no sightings remain. ``retention_days=None`` is a no-op returning
-    ``(0, ...)``, because "no policy" is a valid and default configuration
-    rather than an error.
+    Returns a :class:`~lynceus.db.PruneResult` ``(deleted, oldest, complete)``;
+    ``oldest`` is None when no sightings remain.
+
+    ``max_seconds`` bounds elapsed time rather than row count. See
+    ``Database.delete_in_batches`` for why the bound is on time and why the
+    caller derives the value from ``poll_interval_seconds``.
+
+    ``retention_days=None`` is a no-op returning ``(0, ..., complete=True)``,
+    because "no policy" is a valid and default configuration rather than an
+    error, and a policy that does not exist is trivially satisfied.
 
     ⚠️ The cutoff is **exclusive**: a row exactly at ``now - retention_days``
     is KEPT. Off by one here quietly deletes an extra day of evidence on every
@@ -74,7 +81,8 @@ def prune_old_sightings(
     if retention_days is None:
         oldest_row = db._conn.execute("SELECT MIN(ts) FROM sightings").fetchone()
         oldest = int(oldest_row[0]) if oldest_row and oldest_row[0] is not None else None
-        return 0, oldest
+        # Nothing to do IS complete: there is no retention policy to satisfy.
+        return PruneResult(0, oldest, complete=True)
 
     cutoff = now_ts - retention_days * 86_400
     # ⛔ BATCHED, and the reason is the write lock rather than the deletion.
@@ -82,7 +90,9 @@ def prune_old_sightings(
     # this held the lock for 7.23s at 2,000,000 rows and a second OS process
     # LOST an ordinary write to `database is locked`. See
     # `Database.delete_in_batches`.
-    result = db.delete_in_batches("sightings", "ts < ?", (cutoff,))
+    result = db.delete_in_batches(
+        "sightings", "ts < ?", (cutoff,), max_seconds=max_seconds
+    )
     deleted = result.deleted
     # ⚠️ Under the lock. This read was briefly outside it, which on a shared
     # `Database` lets another thread be mid-transaction on the same connection.
@@ -100,13 +110,17 @@ def prune_old_sightings(
             result.batches,
             retention_days,
         )
+    # ⛔ The INFO line is what an operator actually reads, so it carries the
+    # qualification too. "Pruned N sightings older than D days" is a claim that
+    # the policy now holds, and after an early exit it does not.
     logger.info(
-        "Pruned %d sightings older than %d days (oldest remaining: %s)",
+        "Pruned %d sightings older than %d days (oldest remaining: %s)%s",
         deleted,
         retention_days,
         oldest,
+        "" if result.complete else " -- INCOMPLETE, continues next run",
     )
-    return deleted, oldest
+    return PruneResult(deleted, oldest, result.complete)
 
 
 def maybe_prune_sightings(
@@ -115,6 +129,7 @@ def maybe_prune_sightings(
     *,
     now_ts: int,
     interval_seconds: int = 86_400,
+    max_seconds: float | None = None,
 ) -> bool:
     """Run :func:`prune_old_sightings` at most once per ``interval_seconds``.
 
@@ -156,6 +171,21 @@ def maybe_prune_sightings(
         # so the run below re-records a sane value and the stall self-heals.
         if 0 <= elapsed < interval_seconds:
             return False
-    prune_old_sightings(db, retention_days, now_ts=now_ts)
-    db.set_state(STATE_KEY_LAST_SIGHTINGS_PRUNE, str(now_ts))
+    result = prune_old_sightings(
+        db, retention_days, now_ts=now_ts, max_seconds=max_seconds
+    )
+    # ⛔ Stamp ONLY a prune that finished. Stamping an incomplete one records a
+    # policy as applied when it is not, and the next attempt then waits out a
+    # whole `interval_seconds` (24h by default) with rows still over retention.
+    # Leaving the anchor alone makes the next tick continue instead.
+    #
+    # ⭐ This is the same precedent as `retention_days is None` above, which
+    # already declines to record a run it never served.
+    #
+    # ⚠️ The consequence is deliberate: while a backlog is being worked off the
+    # prune runs EVERY tick rather than daily. That is the point. Each run is
+    # bounded by `max_seconds`, so it is bounded work per tick that makes
+    # progress, instead of one unbounded run per day that may never finish.
+    if result.complete:
+        db.set_state(STATE_KEY_LAST_SIGHTINGS_PRUNE, str(now_ts))
     return True

@@ -36,7 +36,7 @@ def rows(db, mac="aa:1"):
 def test_prunes_only_rows_older_than_retention(db):
     seed_days(db, "aa:1", [0, 1, 5, 9, 10, 11, 30])
 
-    deleted, oldest = prune_old_sightings(db, 10, now_ts=NOW)
+    deleted, oldest, _ = prune_old_sightings(db, 10, now_ts=NOW)
 
     assert deleted == 2  # the 11-day and 30-day rows
     assert rows(db) == 5
@@ -48,7 +48,7 @@ def test_boundary_is_inclusive_at_exactly_the_cutoff(db):
     day of evidence every time the job runs."""
     seed_days(db, "aa:1", [10])
 
-    deleted, _ = prune_old_sightings(db, 10, now_ts=NOW)
+    deleted, _, _ = prune_old_sightings(db, 10, now_ts=NOW)
 
     assert deleted == 0
     assert rows(db) == 1
@@ -57,7 +57,7 @@ def test_boundary_is_inclusive_at_exactly_the_cutoff(db):
 def test_returns_none_oldest_when_table_is_emptied(db):
     seed_days(db, "aa:1", [40, 50])
 
-    deleted, oldest = prune_old_sightings(db, 10, now_ts=NOW)
+    deleted, oldest, _ = prune_old_sightings(db, 10, now_ts=NOW)
 
     assert deleted == 2
     assert oldest is None
@@ -66,7 +66,7 @@ def test_returns_none_oldest_when_table_is_emptied(db):
 def test_prune_is_a_no_op_when_retention_is_none(db):
     seed_days(db, "aa:1", [0, 100, 1000])
 
-    deleted, _ = prune_old_sightings(db, None, now_ts=NOW)
+    deleted, _, _ = prune_old_sightings(db, None, now_ts=NOW)
 
     assert deleted == 0
     assert rows(db) == 3

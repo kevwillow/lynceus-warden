@@ -21,7 +21,7 @@ import time
 from typing import Any
 
 from .config import CaptureConfig
-from .db import Database
+from .db import Database, PruneResult
 
 logger = logging.getLogger(__name__)
 
@@ -272,12 +272,17 @@ def prune_old_evidence(
     retention_days: int,
     *,
     now_ts: int,
-) -> tuple[int, int | None]:
+    max_seconds: float | None = None,
+) -> PruneResult:
     """Delete evidence rows older than ``retention_days``.
 
-    Returns ``(rows_deleted, oldest_remaining_captured_at)``. The second
-    element is None when the table is empty after pruning. Logs at INFO
-    so a daily run leaves an audit trail in journalctl.
+    Returns a :class:`~lynceus.db.PruneResult` ``(deleted, oldest, complete)``.
+    ``oldest`` is None when the table is empty after pruning. Logs at INFO so a
+    daily run leaves an audit trail in journalctl.
+
+    ``max_seconds`` bounds elapsed time rather than row count. See
+    ``Database.delete_in_batches`` for why the bound is on time and why the
+    caller derives the value from ``poll_interval_seconds``.
 
     ⛔ ``now_ts`` is REQUIRED. It has no wall-clock default on purpose.
 
@@ -302,7 +307,7 @@ def prune_old_evidence(
     # the first prune on a long-accumulated install, deletes the whole backlog
     # in one go. See `Database.delete_in_batches`.
     result = db.delete_in_batches(
-        "evidence_snapshots", "captured_at < ?", (cutoff,)
+        "evidence_snapshots", "captured_at < ?", (cutoff,), max_seconds=max_seconds
     )
     deleted = result.deleted
     # ⚠️ Under the lock -- see the sibling in `retention.py`.
@@ -320,8 +325,15 @@ def prune_old_evidence(
             result.batches,
             retention_days,
         )
-    logger.info("Pruned %d evidence snapshots older than %d days", deleted, retention_days)
-    return deleted, oldest
+    # ⛔ The INFO line is what an operator actually reads, so it carries the
+    # qualification too. See the sibling in `retention.py`.
+    logger.info(
+        "Pruned %d evidence snapshots older than %d days%s",
+        deleted,
+        retention_days,
+        "" if result.complete else " -- INCOMPLETE, continues next run",
+    )
+    return PruneResult(deleted, oldest, result.complete)
 
 
 def maybe_prune_evidence(
@@ -330,6 +342,7 @@ def maybe_prune_evidence(
     *,
     now_ts: int,
     interval_seconds: int = 86400,
+    max_seconds: float | None = None,
 ) -> bool:
     """Run prune_old_evidence at most once per ``interval_seconds``.
 
@@ -364,6 +377,13 @@ def maybe_prune_evidence(
         # impossible anchor is due, not recent.
         if 0 <= elapsed < interval_seconds:
             return False
-    prune_old_evidence(db, retention_days, now_ts=now_ts)
-    db.set_state(STATE_KEY_LAST_EVIDENCE_PRUNE, str(now_ts))
+    result = prune_old_evidence(
+        db, retention_days, now_ts=now_ts, max_seconds=max_seconds
+    )
+    # ⛔ Stamp ONLY a prune that finished. See the sibling in `retention.py`:
+    # stamping an incomplete run records a policy as applied when it is not,
+    # and the next attempt then waits out a whole `interval_seconds` with rows
+    # still over retention.
+    if result.complete:
+        db.set_state(STATE_KEY_LAST_EVIDENCE_PRUNE, str(now_ts))
     return True
