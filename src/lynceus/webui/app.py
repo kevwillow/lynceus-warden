@@ -605,6 +605,48 @@ SQLITE_MAX_ROWID = 2**63 - 1
 RowId = Annotated[int, PathParam(le=SQLITE_MAX_ROWID)]
 
 
+#: The four characters that flag a CSV cell as a formula to Excel, Google
+#: Sheets, and LibreOffice Calc when the CSV is opened. The CSV standard does
+#: not require these to be quoted, so ``csv.QUOTE_MINIMAL`` emits them verbatim
+#: and the spreadsheet interprets the cell as a formula on open — CWE-1236.
+_CSV_FORMULA_PREFIXES: frozenset[str] = frozenset(("=", "+", "-", "@"))
+
+
+def _csv_safe_cell(value) -> str:
+    """Neutralise CSV formula injection at the leading character.
+
+    ⛔ **Cells whose first character is one of ``=``, ``+``, ``-`` or ``@``
+    are RUN AS FORMULAS by Excel, Google Sheets and LibreOffice Calc when
+    the export is opened.** Measured against an unmodified
+    ``/alerts.csv`` / ``/watchlist.csv``: a message of ``=2+3`` or a
+    watchlist description of ``=HYPERLINK("http://...","Click")`` was
+    written verbatim, with no quoting, because ``csv.QUOTE_MINIMAL`` only
+    quotes on a delimiter, line-break or quote-character and none of the
+    four prefixes trigger any of those. The watchlist description column
+    is the worst case — the Argus importer populates it from
+    externally-controlled CSV/JSON, so a malicious export or rule could
+    plant a payload that fires when an operator opens the file.
+
+    A leading single quote (U+0027) is the spreadsheet convention for
+    "treat this as a text literal": Excel and Sheets hide the quote and
+    display the rest as a string, and the cell survives a round-trip
+    through the csv module's own quoting rules without further mutation.
+    Non-string inputs are stringified first so numeric / boolean cells
+    that happen to be formatted as a string get the same treatment.
+
+    ⚠️ ``None`` stays ``""`` — that is the file's NULL stand-in, set at
+    the writer sites, and leading with a quote there would silently turn
+    every empty column into a literal apostrophe in the export. Empty
+    cells are not formula cells.
+    """
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else str(value)
+    if text and text[0] in _CSV_FORMULA_PREFIXES:
+        return "'" + text
+    return text
+
+
 def unix_to_iso(ts) -> str:
     """Format a unix epoch int as ISO 8601 UTC with 'Z' suffix.
 
@@ -2733,6 +2775,21 @@ def create_app(
         # pre-rc5 filters and stay byte-identical -- bookmarked URLs
         # keep working. rule_type / q / window are new in rc5
         # alongside the unified-pagination upgrade.
+        # ⛔ The severity and acknowledged dropdowns both render
+        # ``<option value="" selected>any</option>`` as their default
+        # state in alerts_list.html, so a click on "filter" without
+        # changing them posts ``severity=`` / ``acknowledged=``.
+        # The validators below rejected the empty string with 400, so an
+        # operator landed on a styled error page after submitting a form
+        # they never changed. /devices, /watchlist and the rest of the
+        # list pages all normalize empty to None at route entry; do the
+        # same here so the default form render reaches the unfiltered
+        # list. An actual typo (``severity=bogus``) still 400s — only
+        # the form's own 'any' value is treated as unselected.
+        if severity == "":
+            severity = None
+        if acknowledged == "":
+            acknowledged = None
         if severity is not None and severity not in ("low", "med", "high"):
             raise HTTPException(status_code=400, detail="invalid severity")
         ack_bool = _parse_bool_str(acknowledged, "acknowledged")
@@ -2927,6 +2984,13 @@ def create_app(
         # (the operator opted into the YAML cost by clicking the
         # download link), unlike the list route which only loads
         # them when has_action is engaged.
+        # ⛔ Empty filter values from the form's 'any' dropdowns must be
+        # accepted as 'unselected', matching the HTML route above. See
+        # the alerts_list handler for the rationale.
+        if severity == "":
+            severity = None
+        if acknowledged == "":
+            acknowledged = None
         if severity is not None and severity not in ("low", "med", "high"):
             raise HTTPException(status_code=400, detail="invalid severity")
         ack_bool = _parse_bool_str(acknowledged, "acknowledged")
@@ -3058,19 +3122,19 @@ def create_app(
                         alert.get("rule_name") or "",
                         alert.get("rule_type") or "",
                         mac or "",
-                        alert.get("message") or "",
+                        _csv_safe_cell(alert.get("message") or ""),
                         "true" if alert.get("acknowledged") else "false",
-                        alert.get("note") or "",
+                        _csv_safe_cell(alert.get("note") or ""),
                         _iso_utc(alert.get("note_updated_at")),
                         alert.get("matched_watchlist_id") or "",
-                        wl.get("pattern") or "",
+                        _csv_safe_cell(wl.get("pattern") or ""),
                         wl.get("pattern_type") or "",
-                        meta.get("vendor") or "",
+                        _csv_safe_cell(meta.get("vendor") or ""),
                         meta.get("confidence") if meta.get("confidence") is not None else "",
-                        meta.get("device_category") or "",
+                        _csv_safe_cell(meta.get("device_category") or ""),
                         meta.get("argus_record_id") or "",
                         (device or {}).get("device_type") or "",
-                        (device or {}).get("oui_vendor") or "",
+                        _csv_safe_cell((device or {}).get("oui_vendor") or ""),
                         "true" if _mac_is_actioned(mac) else "false",
                     ]
                 )
@@ -5370,19 +5434,32 @@ def create_app(
             pattern_type = None
         pt_clean = pattern_type or None
 
+        # ⛔ Same treatment as pattern_type above, and for the same reason the
+        # comment there gives. These two were left resetting to None SILENTLY:
+        # `?severity=bogus` answered 200 with EVERY row while the operator
+        # believed they were looking at one severity. Measured before this
+        # change: severity=high -> 1 row, severity=low -> 0 rows,
+        # severity=bogus -> 1 row, i.e. the whole unfiltered list.
+        #
+        # 🪤 The fix for the pattern_type instance landed without its siblings,
+        # four lines above code doing exactly what its own comment calls the
+        # defect. Fixing the reported instance and not the shape is how that
+        # happens.
         if severity is not None and severity not in ("low", "med", "high"):
+            dropped_filters.append(f"severity {severity!r}")
             severity = None
         sev_clean = severity or None
 
         device_category_options = db.distinct_watchlist_device_categories()
-        # device_category accepts the "uncategorized" sentinel
-        # explicitly; any other value must appear in the live DISTINCT
-        # set, else silently fall back to "all".
+        # device_category accepts the "uncategorized" sentinel explicitly; any
+        # other value must appear in the live DISTINCT set. Dropping it is
+        # reported rather than silent, as above.
         if device_category is not None and device_category != "":
             if device_category not in (
                 _WATCHLIST_UNCATEGORIZED_SENTINEL,
                 *device_category_options,
             ):
+                dropped_filters.append(f"device category {device_category!r}")
                 device_category = None
         dc_clean = device_category or None
 
@@ -5730,25 +5807,25 @@ def create_app(
                         row.get("pattern") or "",
                         row.get("pattern_type") or "",
                         row.get("severity") or "",
-                        row.get("description") or "",
+                        _csv_safe_cell(row.get("description") or ""),
                         row.get("mac_range_prefix") or "",
                         row.get("mac_range_prefix_length")
                         if row.get("mac_range_prefix_length") is not None
                         else "",
                         row.get("argus_record_id") or "",
-                        row.get("device_category") or "",
+                        _csv_safe_cell(row.get("device_category") or ""),
                         row.get("confidence") if row.get("confidence") is not None else "",
-                        row.get("vendor") or "",
+                        _csv_safe_cell(row.get("vendor") or ""),
                         row.get("source") or "",
-                        row.get("source_url") or "",
-                        row.get("source_excerpt") or "",
-                        row.get("fcc_id") or "",
-                        row.get("geographic_scope") or "",
+                        _csv_safe_cell(row.get("source_url") or ""),
+                        _csv_safe_cell(row.get("source_excerpt") or ""),
+                        _csv_safe_cell(row.get("fcc_id") or ""),
+                        _csv_safe_cell(row.get("geographic_scope") or ""),
                         _iso_utc(row.get("first_seen")),
                         row.get("first_seen") if row.get("first_seen") is not None else "",
                         _iso_utc(row.get("last_verified")),
                         row.get("last_verified") if row.get("last_verified") is not None else "",
-                        row.get("notes") or "",
+                        _csv_safe_cell(row.get("notes") or ""),
                         _can_fire(row.get("pattern_type") or ""),
                         "yes"
                         if is_row_suppressed_by_overrides(

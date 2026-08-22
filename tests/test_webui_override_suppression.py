@@ -254,19 +254,37 @@ def test_both_row_shapes_the_two_routes_hand_over_are_marked(tmp_path):
 
 
 def test_the_engine_null_semantics_are_matched_exactly(tmp_path):
-    """⚠️ ``_apply_runtime_overrides`` tests ``is not None``, not truthiness,
-    and the loader ADMITS ``""`` into ``suppress_categories`` — measured. A
-    truthiness check here would skip a row whose category is ``""`` and mark it
-    live while the engine discards every alert it produces."""
+    """The loader and the engine must agree about an empty category.
+
+    ⚠️ UPDATED 2026-08-22, and this test told me how to update it. It used to
+    assert the loader ADMITS ``""`` into ``suppress_categories``, with the
+    message: "if that is deliberate this test can go, but check the engine
+    agrees". Selector keys are now canonicalised in
+    ``RuntimeSeverityOverride``, which drops empty-after-strip, so the loader
+    no longer admits it.
+
+    ⛔ The engine was checked, as instructed, and it agrees — measured:
+
+        loader/model  suppress_categories={""}  -> frozenset()
+        engine        row category ""           -> not suppressed
+        engine        row category "   "        -> not suppressed
+        engine        row category None         -> not suppressed
+
+    Nothing is lost: the documented "uncategorized" sentinel is ``__none__``
+    (``db.py:131``), not the empty string. What this now pins is the AGREEMENT
+    — a page that marked a row live while the engine discarded its alerts is
+    the defect the original test existed to prevent, and that is still checked,
+    from the other side.
+    """
     cfg, db, _app, _s, _o = _build(tmp_path, 'suppress_categories:\n  - ""\n')
     try:
         sup = runtime_suppressions(cfg)
-        assert "" in sup["categories"], (
-            "the loader no longer admits an empty category; if that is "
-            "deliberate this test can go, but check the engine agrees"
+        assert "" not in sup["categories"], (
+            "the loader admitted an empty category again; the engine drops it, "
+            "so the page would mark rows live whose alerts are discarded"
         )
-        assert is_row_suppressed_by_overrides(None, "", sup), (
-            "an empty-string category is suppressed by the engine and missed here"
+        assert not is_row_suppressed_by_overrides(None, "", sup), (
+            "the page says an empty-category row is suppressed; the engine does not"
         )
         assert not is_row_suppressed_by_overrides(None, None, sup), (
             "a row with NO category must not be swept up by an empty selector"

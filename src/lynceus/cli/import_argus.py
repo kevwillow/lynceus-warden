@@ -28,6 +28,7 @@ from ..patterns import (
     normalize_pattern,
     parse_mac_range_pattern,
 )
+from ..rules import normalize_override_key
 from ..yaml_duplicates import warn_duplicate_keys
 
 logger = logging.getLogger(__name__)
@@ -247,6 +248,33 @@ _DATE_FORMATS: tuple[str, ...] = (
 class OverrideConfig:
     vendor_overrides: dict[str, str] = field(default_factory=dict)
     device_category_severity: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Canonicalise the selector keys on EVERY construction path.
+
+        ⛔ Not in `load_override_config`. Callers build this directly --
+        `resolve_severity(..., overrides=OverrideConfig(vendor_overrides={...}))`
+        is how most of `tests/test_import_argus.py` uses it -- and a key
+        normalised only in the loader leaves `resolve_severity` (which
+        normalises the row value) unable to match a directly constructed one.
+        Normalising here means the two sides cannot disagree regardless of how
+        the config was made.
+        """
+        self.vendor_overrides = {
+            key: value
+            for key, value in (
+                (normalize_override_key(k), v) for k, v in self.vendor_overrides.items()
+            )
+            if key is not None
+        }
+        self.device_category_severity = {
+            key: value
+            for key, value in (
+                (normalize_override_key(k), v)
+                for k, v in self.device_category_severity.items()
+            )
+            if key is not None
+        }
     geographic_filter: list[str] = field(default_factory=list)
     confidence_downgrade_threshold: int = DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD
     # None or empty list disables the ingress check; any other list
@@ -311,6 +339,10 @@ def load_override_config(path: str | None) -> OverrideConfig:
         accept_list = None
     else:
         accept_list = [str(v) for v in raw_accept]
+    # ⛔ No normalisation here: `OverrideConfig.__post_init__` does it, so the
+    # loader and a direct construction produce identical keys. Doing it in both
+    # places would put the rule in two places, which is the drift this change
+    # removes.
     return OverrideConfig(
         vendor_overrides=dict(raw.get("vendor_overrides") or {}),
         device_category_severity=dict(raw.get("device_category_severity") or {}),
@@ -342,12 +374,17 @@ def resolve_severity(
     Returns one of ``"high"``, ``"med"``, ``"low"``, or the literal ``"drop"``
     when an override demands the record be skipped.
     """
-    if manufacturer and manufacturer in overrides.vendor_overrides:
-        sev = overrides.vendor_overrides[manufacturer]
-    elif device_category and device_category in overrides.device_category_severity:
-        sev = overrides.device_category_severity[device_category]
-    elif device_category in DEFAULT_CATEGORY_SEVERITIES:
-        sev = DEFAULT_CATEGORY_SEVERITIES[device_category]
+    normalized_vendor = normalize_override_key(manufacturer)
+    normalized_category = normalize_override_key(device_category)
+    if normalized_vendor and normalized_vendor in overrides.vendor_overrides:
+        sev = overrides.vendor_overrides[normalized_vendor]
+    elif normalized_category and normalized_category in overrides.device_category_severity:
+        sev = overrides.device_category_severity[normalized_category]
+    elif normalized_category in DEFAULT_CATEGORY_SEVERITIES:
+        # ⚠️ DEFAULT_CATEGORY_SEVERITIES' keys are lowercase literals, so this
+        # arm was one-sided: an Argus export carrying `ALPR` fell through to
+        # the "low" default instead of the built-in "high".
+        sev = DEFAULT_CATEGORY_SEVERITIES[normalized_category]
     else:
         sev = "low"
     if sev == "drop":

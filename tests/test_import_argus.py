@@ -2599,7 +2599,12 @@ def test_override_file_loads_yaml_contents(tmp_path):
         encoding="utf-8",
     )
     cfg = load_override_config(str(p))
-    assert cfg.vendor_overrides == {"VendorA": "drop"}
+    # ⚠️ Key normalised, deliberately: `OverrideConfig.__post_init__`
+    # canonicalises selector keys so the loader and a direct construction
+    # cannot disagree with `resolve_severity`, which lowercases the row value.
+    # Before that, `vendor_overrides: {Axon Enterprise: high}` silently never
+    # matched a row carrying `axon enterprise`.
+    assert cfg.vendor_overrides == {"vendora": "drop"}
     assert cfg.device_category_severity == {"alpr": "low"}
     assert cfg.geographic_filter == ["us"]
     assert cfg.confidence_downgrade_threshold == 50

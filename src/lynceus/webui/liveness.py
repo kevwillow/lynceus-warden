@@ -86,7 +86,7 @@ import sqlite3
 from typing import TYPE_CHECKING
 
 from lynceus import rules as rules_mod
-from lynceus.rules import _is_reserved_oui_mac
+from lynceus.rules import _is_reserved_oui_mac, normalize_override_key
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from lynceus.config import Config
@@ -587,11 +587,16 @@ def matching_remap_axes(
         key = vendor.strip().lower()
         if key in overrides.vendor_severity:
             matched.append(("vendor_severity", key))
+    # ⛔ Normalised the same way the eval path does, via the same function.
+    # This is what the operator is TOLD is matching; if it disagreed with what
+    # actually matches, the settings page would confidently report the wrong
+    # answer -- worse than not reporting one.
+    normalized_category = normalize_override_key(device_category)
     if (
-        device_category is not None
-        and device_category in overrides.device_category_severity
+        normalized_category is not None
+        and normalized_category in overrides.device_category_severity
     ):
-        matched.append(("device_category_severity", device_category))
+        matched.append(("device_category_severity", normalized_category))
     return tuple(matched)
 
 

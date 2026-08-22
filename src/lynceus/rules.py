@@ -363,6 +363,40 @@ class RuntimeSeverityOverride(BaseModel):
     pattern_overrides: dict[str, Severity] = {}
     vendor_severity: dict[str, Severity] = {}
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data):
+        """Canonicalise every selector key BEFORE validation.
+
+        ⛔ In the MODEL, not in the loader. `load_runtime_severity_overrides`
+        is not the only way one of these is built -- tests and callers
+        construct it directly, and a key normalised in the loader alone leaves
+        the lookup (which normalises the row value) unable to find a directly
+        constructed key. That is the same one-sided mistake this whole change
+        exists to fix, made one layer up; the full suite caught it.
+
+        Idempotent, so the three selectors that were already lowercased at
+        load time are unaffected.
+        """
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        for field in ("device_category_severity", "vendor_severity", "pattern_overrides"):
+            raw = out.get(field)
+            if isinstance(raw, dict):
+                out[field] = {
+                    k2: v
+                    for k2, v in ((normalize_override_key(k), v) for k, v in raw.items())
+                    if k2 is not None
+                }
+        for field in ("suppress_categories", "suppress_vendors"):
+            raw = out.get(field)
+            if isinstance(raw, (list, tuple, set, frozenset)):
+                out[field] = frozenset(
+                    k2 for k2 in (normalize_override_key(x) for x in raw) if k2 is not None
+                )
+        return out
+
     @model_validator(mode="after")
     def _validate(self) -> RuntimeSeverityOverride:
         for cat, sev in self.device_category_severity.items():
@@ -403,6 +437,30 @@ class RuntimeSeverityOverride(BaseModel):
             and not self.pattern_overrides
             and not self.vendor_severity
         )
+
+
+def normalize_override_key(value: str | None) -> str | None:
+    """Canonicalise an operator-config key or the row value it is matched against.
+
+    ⛔ **Both sides of every override lookup must call this.** That is the whole
+    point of it being a function rather than two `.strip().lower()` calls: a
+    normalisation that lives in two places is a normalisation that will
+    eventually disagree with itself, silently, and the failure mode is an
+    override the operator configured that simply never fires.
+
+    🪤 This repo has already shipped that exact defect once, with BLE service
+    UUIDs: the watchlist side expanded 16-bit UUIDs to the 128-bit base form and
+    the observation side did not, so every advertisement of a watchlisted
+    tracker was rejected and dropped with a DEBUG line. The fix there was to
+    make both sides call one function. This is the same fix for the same shape.
+
+    Returns None for a non-string or an empty-after-strip value, so a caller can
+    skip the lookup entirely rather than match on "".
+    """
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip().lower()
+    return stripped or None
 
 
 def load_runtime_severity_overrides(
@@ -497,6 +555,10 @@ def load_runtime_severity_overrides(
     # anywhere a raise could be mistaken for "could not read".
     warn_duplicate_keys(p, logger=logger, subject="severity overrides file")
     runtime_kwargs: dict = {}
+    # ⛔ No normalisation here on purpose. `RuntimeSeverityOverride` normalises
+    # every selector key in a `mode="before"` validator, so the loader and a
+    # direct construction get identical keys. Doing it here as well would put
+    # the rule in two places, which is exactly the drift this change removes.
     if isinstance(raw.get("device_category_severity"), dict):
         runtime_kwargs["device_category_severity"] = raw["device_category_severity"]
     if isinstance(raw.get("suppress_categories"), list):
@@ -767,10 +829,8 @@ def _apply_runtime_overrides(
                 rule_name,
             )
             return None
-    if (
-        match_device_category is not None
-        and match_device_category in overrides.suppress_categories
-    ):
+    normalized_category = normalize_override_key(match_device_category)
+    if normalized_category is not None and normalized_category in overrides.suppress_categories:
         logger.info(
             "runtime override: suppressing category=%s alert for "
             "watchlist_id=%d (rule=%s)",
@@ -794,11 +854,12 @@ def _apply_runtime_overrides(
         normalized_vendor_remap = match_manufacturer.strip().lower()
         if normalized_vendor_remap in overrides.vendor_severity:
             return overrides.vendor_severity[normalized_vendor_remap]
+    normalized_category_remap = normalize_override_key(match_device_category)
     if (
-        match_device_category is not None
-        and match_device_category in overrides.device_category_severity
+        normalized_category_remap is not None
+        and normalized_category_remap in overrides.device_category_severity
     ):
-        return overrides.device_category_severity[match_device_category]
+        return overrides.device_category_severity[normalized_category_remap]
     return match_severity
 
 
