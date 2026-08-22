@@ -265,6 +265,15 @@
        rule 4. This matrix would be better as a real <table> with row and column
        headers; that is a known remaining improvement, not done here because it
        needs CSS this change does not own. #}
+    {# ⛔ The caption is aria-hidden and the group keeps its own aria-label, on
+       purpose. The label carries "over 24h, 7d, 30d", which a screen reader
+       cannot otherwise get: this matrix is a div grid, so `24h` / `7d` / `30d`
+       are plain spans and are not associated as column headers (see the note
+       above about it wanting to be a real <table>). Pointing aria-labelledby
+       at the short visible caption would name the group more briefly and lose
+       that. Hiding the caption from assistive tech instead means the group is
+       announced once, with the fuller name. #}
+    <p class="group-caption" aria-hidden="true">alerts by severity</p>
     <div class="stat-grid" role="group" aria-label="alert counts by severity over 24h, 7d, 30d">
       <span></span>
       <span class="stat-row-label">24h</span>
@@ -287,6 +296,15 @@
       <span>{{ sev_30d.high }}</span>
     </div>
 
+    {# Why this caption exists: the two groups in this section measure
+       DIFFERENT things over the SAME windows -- alerts above, devices here --
+       and until these captions there was nothing visible saying so. An
+       operator saw 1/2/3 and then 5/5/5 under one "activity" heading with
+       identical 24h/7d/30d labels, and no way to tell the quantities apart.
+       Both numbers were correct; the page just invited them to be compared.
+       The distinction already existed in the aria-labels, so a screen-reader
+       user was told and a sighted one was not. #}
+    <p class="group-caption" aria-hidden="true">devices seen</p>
     <div class="tile-row" role="group" aria-label="unique devices seen over 24h, 7d, 30d">
       <div class="tile">
         <div class="tile-num">{{ device_seen.day }}</div>

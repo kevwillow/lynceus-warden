@@ -1288,6 +1288,17 @@ textarea:focus-visible,
    page that adds up to hundreds of pixels of dead space. */
 main > h2 { margin: 0.4em 0 0.6em; font-size: var(--lyn-text-2xl); }
 .block h3 { font-weight: var(--lyn-weight-bold); }
+/* Caption for a group of figures inside a block. Quieter than the block's own
+   h3 -- it names WHAT is being counted, not a new section -- so it takes the
+   small-caps mono treatment the table headers use rather than a heading step. */
+.group-caption {
+    margin: var(--lyn-space-4) 0 var(--lyn-space-2);
+    font-family: var(--lyn-mono);
+    font-size: var(--lyn-text-xs);
+    letter-spacing: var(--lyn-tracking-caps);
+    text-transform: uppercase;
+    color: var(--lyn-muted);
+}
 /* Trim table cell vertical padding on the home page (full Pico default
    is ~1rem each side, which made a 5-row alerts table ~250px tall). */
 .alerts-table th,

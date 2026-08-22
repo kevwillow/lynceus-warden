@@ -552,6 +552,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The home page's activity section said what it was counting.**
+  It showed alert counts by severity and then device counts, under one heading,
+  over the same three time windows, with nothing visible saying the two
+  measured different things. An operator saw one row of numbers and then
+  another and had no way to tell them apart. Both numbers were correct; the
+  page simply invited them to be compared. Each group now carries a caption.
+
+  The distinction already existed for anyone using a screen reader, because
+  both groups carried an accurate accessible name. It was only the visual
+  reader who was left to guess, which is that relationship the wrong way round.
+
+
 - **The privacy note on `/devices` was drawn underneath the control it explains.**
   `probe-SSID capture is disabled, so this view is empty; enabling it has a
   privacy tradeoff` sat 15px under the `probing` select, so it rendered as
