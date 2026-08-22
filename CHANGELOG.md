@@ -495,6 +495,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+
+- **The privacy note on `/devices` was drawn underneath the control it explains.**
+  `probe-SSID capture is disabled, so this view is empty; enabling it has a
+  privacy tradeoff` sat 15px under the `probing` select, so it rendered as
+  struck through and partly unreadable at every window width measured, 1280,
+  1440 and 1920 alike. It is the sentence that tells an operator what turning
+  the setting on costs them, so it is worth being able to read.
+
+  The cause is two Pico rules meeting. Pico pulls helper text up under a
+  control with a negative top margin, to close the gap left by that control's
+  own bottom margin, and separately zeroes that bottom margin when the control
+  sits inside a label. Where both apply the pull has nothing left to cancel and
+  drags the note into the control. Restated here as a small positive gap, so it
+  cannot drift back into an overlap when the spacing scale changes.
+
+  Nothing that reads the server's HTML could see this: the markup was correct
+  throughout. The browser gate now measures the two boxes and fails if a
+  control is drawn over its own help text.
+
+- **The primary navigation reads as tabs rather than as ten links.**
+  Every item rendered in the link colour at body weight, so ten equally loud
+  items competed with the page under them and the current one was marked by
+  font weight alone. They are now muted labels with the accent and a rule
+  spent on the current one only. The weight change is kept as well as the
+  colour, so the current tab is not signalled by colour alone.
+
 - **`lynceus-setup` could report a working first run having imported no threat
   data at all.** The wizard shells out to `lynceus-import-argus` by name. When
   that binary is not resolvable, `import_bundled_watchlist` takes its

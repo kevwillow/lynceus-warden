@@ -109,6 +109,26 @@ form fieldset.grid {
     margin-bottom: 0.6em;
 }
 form fieldset.grid > label { margin-bottom: 0; font-size: 0.9em; }
+
+/* 🪤 MEASURED. A legibility bug on a privacy notice, and a Pico inconsistency
+   rather than anything this project wrote.
+
+   Pico pulls helper text up under a control:
+       :where(input,select,textarea,fieldset)+small { margin-top: calc(var(--pico-spacing) * -.75) }
+   which cancels the control's own bottom margin. But Pico ALSO zeroes that
+   bottom margin when the control sits inside a <label>. The two rules meet on
+   `label > select + small`, where the -0.75rem pull has nothing left to
+   cancel and simply drags the note up INTO the control.
+
+   Measured on /devices: `probe-SSID capture is disabled, so this view is
+   empty; enabling it has a privacy tradeoff` was drawn 15px underneath the
+   `probing` select at 1280, 1440 and 1920, so it read as struck through. It
+   is the sentence explaining a privacy tradeoff, so it is worth being able
+   to read.
+
+   ⛔ Restated as a positive gap rather than a smaller negative one, so it
+   cannot drift back into an overlap when the spacing scale moves. */
+form label > :where(input, select, textarea) + small { margin-top: var(--lyn-space-1); }
 /* Pico gives form controls a ~3rem height, which is right for a signup form
    and wrong for eleven filters above a triage table: the grid alone still
    left ~600px of chrome before the first alert. These are secondary controls
@@ -162,16 +182,47 @@ form fieldset.grid > button {
 .metadata-grid dd { margin: 0; }
 .mac-cell    { font-family: monospace; }
 .truncate    { max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
-.topnav      { display: flex; align-items: center; gap: 0.75em; padding: 0.5em 0; border-bottom: 1px solid var(--lyn-topnav-border); margin-bottom: 1em; }
-.topnav a    { text-decoration: none; }
-/* Vertical divider between adjacent tabs so each is clearly delimited.
-   `a + a` skips the first link (no leading rule) and the theme-toggle
-   <button> (already set off by margin-left:auto + its own border).
-   padding-left matches the flex gap so the rule sits centered between
-   labels, and it reuses the same --lyn-topnav-border token as the nav's
-   border-bottom so it tracks the light/dark toggle. */
-.topnav a + a { border-left: 1px solid var(--lyn-topnav-border); padding-left: 0.75em; }
-.topnav a.active { font-weight: 600; }
+/* Primary navigation.
+ *
+ * ⭐ These are tabs, not prose links, and styling them as links was the
+ * problem. Every one rendered in the link colour at body weight, so ten
+ * equally loud items competed with the page beneath them and the current
+ * one was distinguished by font-weight alone. Measured before the change:
+ * the nav was ten 20px links in the browser's default blue.
+ *
+ * They now read as a tab strip -- muted labels in the mono microtype, the
+ * current one carrying the accent and a rule under it. The accent is spent
+ * on ONE item per page instead of ten. */
+.topnav {
+    display: flex;
+    align-items: stretch;
+    gap: var(--lyn-space-5);
+    padding: 0;
+    border-bottom: var(--lyn-hairline) solid var(--lyn-line);
+    margin-bottom: var(--lyn-space-5);
+}
+.topnav a {
+    text-decoration: none;
+    color: var(--lyn-muted);
+    font-family: var(--lyn-mono);
+    font-size: var(--lyn-text-sm);
+    letter-spacing: var(--lyn-tracking-caps);
+    padding: var(--lyn-space-3) 0;
+    /* Reserve the active rule's height on every tab, so the strip does not
+       shift by 2px as the operator moves between pages. */
+    border-bottom: 2px solid transparent;
+    margin-bottom: calc(var(--lyn-hairline) * -1);
+}
+.topnav a:hover { color: var(--lyn-text); }
+.topnav a.active {
+    color: var(--lyn-accent);
+    border-bottom-color: var(--lyn-accent);
+    font-weight: var(--lyn-weight-medium);
+}
+/* ⛔ The current tab is not marked by colour alone. `aria-current` is not
+   available here (the template sets a class), so the weight change carries
+   the same information for an operator who cannot separate the accent from
+   the muted grey. */
 .dim         { opacity: 0.55; }
 
 /* Quick-filter preset chips above the /devices table. Not tabs -- each
@@ -187,11 +238,14 @@ form fieldset.grid > button {
    end of the flex row so it doesn't collide with the link cluster. */
 .theme-toggle {
     margin-left: auto;
-    padding: 0.1em 0.6em;
-    font-size: 0.85em;
+    padding: var(--lyn-space-1) var(--lyn-space-4);
+    font-size: var(--lyn-text-xs);
+    font-family: var(--lyn-mono);
+    letter-spacing: var(--lyn-tracking-caps);
+    align-self: center;
     background: transparent;
-    border: 1px solid var(--lyn-topnav-border);
-    color: inherit;
+    border: var(--lyn-hairline) solid var(--lyn-line);
+    color: var(--lyn-muted);
     cursor: pointer;
     border-radius: 4px;
     font-family: inherit;
@@ -945,12 +999,27 @@ details:has(> .probe-reveal) > summary::after {
 
 /* Site header: identity strip above the topnav. Compact, single line, no
    background that would compete with the status line below. */
+/* The wordmark. `lynceus` is the only thing here that should carry weight;
+   the version and the tagline are context, so they take the muted step and
+   the mono microtype rather than competing with the page heading below. */
 .site-header {
     display: flex;
     align-items: baseline;
-    gap: 0.4em;
-    padding: 0.6em 0 0.2em;
+    gap: var(--lyn-space-3);
+    padding: var(--lyn-space-4) 0 var(--lyn-space-3);
     flex-wrap: wrap;
+    font-size: var(--lyn-text-md);
+}
+.site-header strong {
+    font-weight: var(--lyn-weight-bold);
+    letter-spacing: -0.02em;
+}
+.site-header small,
+.site-header .dim {
+    font-family: var(--lyn-mono);
+    font-size: var(--lyn-text-xs);
+    color: var(--lyn-muted);
+    opacity: 1;
 }
 
 /* AGPL-3.0 §13 source offer. Quiet, but present on every page — it is a
@@ -960,10 +1029,19 @@ details:has(> .probe-reveal) > summary::after {
 .site-footer {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4em;
-    padding: 1.2em 0 0.6em;
-    margin-top: 1.5em;
-    border-top: 1px solid var(--pico-muted-border-color);
+    gap: var(--lyn-space-3);
+    padding: var(--lyn-space-6) 0 var(--lyn-space-4);
+    margin-top: var(--lyn-space-6);
+    border-top: var(--lyn-hairline) solid var(--lyn-line);
+}
+/* The AGPL source offer is a legal obligation, so it stays legible rather
+   than being dimmed into decoration: the muted token passes AA on both
+   grounds, an opacity multiplier on top of it would not. */
+.site-footer .dim {
+    font-family: var(--lyn-mono);
+    font-size: var(--lyn-text-xs);
+    color: var(--lyn-muted);
+    opacity: 1;
 }
 
 /* Status line (UI-DIRECTION.md §"Hierarchy" item 1). One row, not a card.

@@ -136,6 +136,39 @@ def test_foreground_tokens_pass_aa_on_their_own_ground(theme):
 
 
 @pytest.mark.webui
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_every_badge_pair_passes_aa(theme):
+    """Severity badges are the loudest semantic colour in the product.
+
+    They are declared as explicit foreground/background PAIRS in lynceus.css,
+    which makes them checkable exactly the way the palette is. Derived from
+    the file, so a badge added later is graded without editing this test.
+    """
+    css = (STATIC_DIR / "lynceus.css").read_text()
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    selector = r"(?<![-\w]):root" if theme == "light" else r"\[data-theme=\"dark\"\]"
+    match = re.search(selector + r"\s*\{(.*?)\}", css, flags=re.S)
+    assert match, f"no {theme} block found in lynceus.css"
+    tokens = _tokens_in_block(match.group(1))
+
+    bases = sorted({
+        name.rsplit("-", 1)[0] for name in tokens
+        if name.startswith("--lyn-badge-") and name.rsplit("-", 1)[1] in {"bg", "fg"}
+    })
+    assert bases, f"no badge pairs found for {theme}; this test would prove nothing"
+
+    for base in bases:
+        fg, bg = tokens.get(f"{base}-fg"), tokens.get(f"{base}-bg")
+        assert fg and bg, f"{base} is missing one half of its pair in {theme}"
+        ratio = _contrast(fg, bg)
+        assert ratio >= AA_NORMAL, (
+            f"{theme}: badge {base.replace('--lyn-badge-', '')} is {fg} on {bg}, "
+            f"{ratio:.2f}:1, below the {AA_NORMAL}:1 WCAG AA floor. A severity "
+            f"badge that cannot be read is worse than no badge."
+        )
+
+
+@pytest.mark.webui
 def test_the_accent_stays_argus_red():
     """The mark's argument is that lynceus and Argus are siblings.
 
