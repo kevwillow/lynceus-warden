@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+#: The operator's environment as it was BEFORE anything in this file redirected it.
+#:
+#: ⛔ Captured here, at conftest import, and NOT in the test module that uses it.
+#: pytest loads conftest before it imports any test module and before any fixture
+#: body runs, so this is the one moment the real values still exist.
+#:
+#: 🪤 Measured 2026-08-22. This lived in `tests/test_fresh_install.py` and was
+#: correct only while that module was collected. Running a different file that
+#: imported it INSIDE a test body captured the per-test sandbox HOME instead, and
+#: the hermeticity guard built on it then compared an empty temporary directory
+#: against itself. A module-level capture is only as early as its first importer.
+REAL_ENV = {key: os.environ.get(key) for key in ("HOME", "XDG_CONFIG_HOME", "SUDO_USER")}
 
 _DIAGNOSTIC_OUTPUT_DIR = Path(__file__).parent / "diagnostic_output"
 
@@ -175,3 +189,45 @@ def _isolate_user_config_dirs(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
     monkeypatch.setenv("XDG_STATE_HOME", str(home / ".local" / "state"))
     return home
+
+
+#: Markers for gates that need a real machine rather than a CI runner.
+#: ``addopts`` deselects each of these, so they only ever run when somebody asks
+#: for them by name. Keep in step with the ``markers`` list in ``pyproject.toml``.
+HOST_ONLY_MARKERS = frozenset({"install", "browser"})
+
+
+def record_gate_ran(name: str) -> None:
+    """Append proof that a host-only gate BODY executed, if asked to.
+
+    ⛔ This is what makes `make release-gates` honest. pytest exits 0 for a run
+    that collected and executed nothing, and no exit code tells that apart from
+    a real pass. Measured 2026-08-22: `PYTEST_ADDOPTS=--collect-only make
+    release-gates` printed "1/4626 tests collected" and exited 0, having run no
+    test body at all. The Makefile clears `PYTEST_ADDOPTS` and then reads this
+    file, because it cannot trust the exit code alone.
+
+    Writes only when ``LYNCEUS_GATE_SENTINEL`` names a path, so an ordinary
+    `pytest` run has no side effects.
+    """
+    target = os.environ.get("LYNCEUS_GATE_SENTINEL")
+    if not target:
+        return
+    with open(target, "a", encoding="utf-8") as fh:
+        fh.write(f"{name}\n")
+
+
+@pytest.fixture(autouse=True)
+def _record_host_only_gate_ran(request):
+    """Record every host-only gate that actually runs.
+
+    ⭐ A fixture rather than a call inside each gate, so a gate added later is
+    covered without anyone remembering. The browser gate got this for free.
+
+    Records AFTER the body, so it means "this executed", not "this was about to".
+    A failing gate still records, which is correct: it ran, and pytest's exit
+    code is what carries pass or fail.
+    """
+    yield
+    if HOST_ONLY_MARKERS & {m.name for m in request.node.iter_markers()}:
+        record_gate_ran(request.node.nodeid)

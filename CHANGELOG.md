@@ -25,6 +25,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The two release gates are in the suite now, behind `install` and `browser`.**
+  Both were measured green before 1.0.0 and then left as scripts somebody had to
+  remember. `make release-gates` runs them. `addopts` deselects both markers,
+  because one needs a capture interface and the other needs Chromium, and a
+  hosted runner has neither.
+
+  Deselected means they cannot fail, so they rot unnoticed.
+  `tests/test_release_gates.py` therefore carries UNMARKED guards that do run in
+  CI: they collect both gates without executing them, assert the default run
+  still excludes them, import the audit script for real and check the API the
+  gate calls, and prove the hermeticity guard reads the operator's real account
+  rather than the `HOME` that `conftest` redirects per test.
+
+  `make release-gates` does not trust pytest's exit code either. Collecting
+  nothing successfully is a success, so the target clears `PYTEST_ADDOPTS` and
+  requires a sentinel that an autouse fixture writes for each gate that actually
+  executes.
+
+  The install gate asserts what the run observed rather than what it printed:
+  the wheel name derived from `lynceus.__version__`, every console script
+  declared in `[project.scripts]`, the files the wizard wrote, the validator's
+  error count, the parsed `/healthz.json` status, the database's table count,
+  and the number of rows in `watchlist`.
+
 - **A banner and logo mark, and a README that reads like a person wrote it.**
   `scripts/make_banner.py` draws both, so they can be regenerated when the
   numbers in the strapline move rather than being a binary nobody can edit.
@@ -428,6 +452,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+- **`lynceus-setup` could report a working first run having imported no threat
+  data at all.** The wizard shells out to `lynceus-import-argus` by name. When
+  that binary is not resolvable, `import_bundled_watchlist` takes its
+  `FileNotFoundError` branch, the wizard prints "Bundled threat-data import
+  failed" and then **exits 0**, so nothing downstream treats it as a failure.
+
+  That is also how the fresh-install gate spent a day reporting success in 21
+  seconds: it left the ambient `PATH` alone, so the clean venv's own
+  `lynceus-import-argus` was never on it. With `PATH` sandboxed the same run
+  takes 8m40s and lands 23,441 watchlist rows.
+
+  The gate now sandboxes `PATH`, so the wizard under test can only resolve the
+  installation it just made, and counts rows in `watchlist` rather than trusting
+  an exit code or a printed line.
+
+  ⚠️ Left open deliberately, because it is a product decision rather than a test
+  one: the bundled `default_watchlist.csv` is 25 MB and 45,663 rows and took 480
+  seconds to import when measured on its own, against the wizard's own 600-second
+  kill bound. A first-time user on slower hardware can lose that race and end up
+  with no threat data and a zero exit status.
+
+- **A "clean venv" that inherited `PYTHONPATH` was not clean.** With
+  `<checkout>/src` on that path, the `src/lynceus.egg-info` there makes pip
+  resolve `lynceus` as already installed: it pulls every dependency, skips the
+  package, exits 0, and writes no console scripts. The run then died on a missing
+  `lynceus-setup` two stages later, which reads as a broken wizard.
+
+  Not exotic. This repo is worked from git worktrees and the shared `.venv` pins
+  the primary checkout's `src` absolutely, so `PYTHONPATH=<worktree>/src` is the
+  only way to test a worktree at all. `PYTHONHOME`, `VIRTUAL_ENV`, `PIP_*` and
+  `CONDA_*` are stripped for the same reason.
+
 - **Turning on remote access broke every form on the site.** `ui_allow_remote:
   true` attached `Secure` to the CSRF cookie, and nothing in lynceus serves TLS.
   A `Secure` cookie does not come back over plain HTTP: browsers refuse to store

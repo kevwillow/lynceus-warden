@@ -67,3 +67,4 @@ htmlcov/
 # skills and commit SHAs that mean nothing outside the machine that made them.
 # Kept on disk, out of the repo.
 /docs/superpowers/
+.release-gate-ran

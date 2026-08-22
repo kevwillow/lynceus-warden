@@ -41,6 +41,60 @@ line.** Filtering would also hide a genuinely typo'd `ExecStart` path, which is
 the defect most worth catching. The stub paths are read out of the units, so a
 unit that gains a new `Exec*` is covered without editing the workflow.
 
+## Host-only gates
+
+Added 2026-08-22. The mirror image of the section above: these need a real
+machine rather than a runner, so they run in neither `make test` nor CI.
+
+| Gate | Marker | File | Needs |
+| --- | --- | --- | --- |
+| fresh install | `install` | `tests/test_fresh_install.py` | a capture interface |
+| browser crawl | `browser` | `tests/test_browser_ui.py` | Chromium and playwright |
+
+`addopts` carries `-m 'not diagnostic and not browser and not install'`, so the
+default suite deselects both. `make release-gates` runs them together; a
+command-line `-m` overrides the one in `addopts`, measured in both directions.
+
+⏱️ **The install gate takes about nine minutes.** Measured 2026-08-22: 8m40s, of
+which 8m00s is `lynceus-setup` importing the bundled `default_watchlist.csv`,
+which is 25 MB and 45,663 rows. Load average was 12 throughout, so a quiet
+machine is faster and a Pi much slower.
+
+🪤 ⭐ **That import is also how the gate spent a day reporting success in 21
+seconds.** The wizard shells out to `lynceus-import-argus` **by name**. The
+harness left the ambient `PATH` alone, so the binary was unresolvable from the
+clean venv, `import_bundled_watchlist` took its `FileNotFoundError` branch, and
+nobody noticed, because the wizard prints "Bundled threat-data import failed"
+and then **exits 0**. The gate now counts rows in `watchlist` rather than
+trusting an exit code or a printed line.
+
+⚠️ **That 8-minute import runs against a 600-second kill bound**
+(`BUNDLED_IMPORT_TIMEOUT_SECONDS`, `setup/core.py:322`). A first-time user on
+slower hardware can lose that race and end up with no threat data and a
+zero exit status.
+
+🪤 **A clean venv that inherits `PYTHONPATH` is not clean.** `src/lynceus.egg-info`
+on that path makes pip resolve `lynceus` as already installed: it pulls every
+dependency, skips the package, exits 0 and writes no console scripts. It matters
+here because `PYTHONPATH=<worktree>/src` is the only way to test a worktree
+against the shared `.venv`, so the people most likely to run the gate are the
+people it would mislead.
+
+⚠️ **A deselected test rots and nothing notices**, so `tests/test_release_gates.py`
+carries UNMARKED guards that DO run in CI. They collect the gates without
+executing them, assert the default run still excludes them, import the audit
+script for real and check the API the gate calls, and prove the hermeticity
+guard is looking at the real account rather than the per-test HOME. They are
+keyed on `HOST_ONLY_MARKERS` in `tests/conftest.py`, so a third gate is covered
+by adding its marker there.
+
+⛔ **`make release-gates` does not trust pytest's exit code.** Measured
+2026-08-22: `PYTEST_ADDOPTS=--collect-only make release-gates` exited 0 printing
+"1/4626 tests collected" and ran nothing, because collecting nothing
+successfully is a success. The target clears `PYTEST_ADDOPTS` and then requires
+a sentinel file that an autouse fixture writes for every host-only gate that
+actually executes.
+
 ### Coverage baseline
 
 ⭐ **Measured in CI on 2026-08-19 at `d2a1c3d`: 86.86%** — 1534 of 11675
