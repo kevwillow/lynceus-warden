@@ -5935,14 +5935,28 @@ class Database:
         if not isinstance(now_ts, int) or isinstance(now_ts, bool):
             raise ValueError("now_ts must be int")
 
+        # ⛔ Anchor the SQL window on the UTC MIDNIGHT of today, not on
+        # ``now_ts`` itself. The previous bound ``(now_ts - (days-1)*86400,
+        # now_ts + 86400)`` lands the lower bound MID-DAY on the oldest
+        # rendered day for any ``now_ts`` not exactly at 00:00 UTC, and the
+        # SELECT then silently drops every event in the early hours of that
+        # day -- the chart's oldest bar reads "0" while the table holds real
+        # alerts. ``date(ts, 'unixepoch')`` buckets in UTC, so the bounds
+        # must align to UTC midnight too. End-of-today is exclusive
+        # (``midnight_today + 86400``) so today's events through 23:59:59
+        # are included and nothing beyond is.
+        import datetime as _dt
+
+        midnight_today = now_ts - (now_ts % 86400)
+        lower = midnight_today - (days - 1) * 86400
+        upper = midnight_today + 86400
+
         rows = self._conn.execute(
             "SELECT date(ts, 'unixepoch') AS day, COUNT(*) AS c "
-            "FROM alerts WHERE ts >= ? AND ts <= ? GROUP BY day",
-            (now_ts - (days - 1) * 86400, now_ts + 86400),
+            "FROM alerts WHERE ts >= ? AND ts < ? GROUP BY day",
+            (lower, upper),
         ).fetchall()
         counts: dict[str, int] = {row["day"]: int(row["c"]) for row in rows if row["day"]}
-
-        import datetime as _dt
 
         end_day = _dt.datetime.fromtimestamp(now_ts, tz=_dt.UTC).date()
         result: list[dict] = []
@@ -5980,10 +5994,19 @@ class Database:
         if not isinstance(now_ts, int) or isinstance(now_ts, bool):
             raise ValueError("now_ts must be int")
 
+        # ⛔ Same window bug as ``alerts_per_day``: anchor on UTC midnight, not
+        # ``now_ts``. See that method's note for the measured reproducer. The
+        # stacked chart's oldest bar depends on the bound being right.
+        import datetime as _dt
+
+        midnight_today = now_ts - (now_ts % 86400)
+        lower = midnight_today - (days - 1) * 86400
+        upper = midnight_today + 86400
+
         rows = self._conn.execute(
             "SELECT date(ts, 'unixepoch') AS day, severity, COUNT(*) AS c "
-            "FROM alerts WHERE ts >= ? AND ts <= ? GROUP BY day, severity",
-            (now_ts - (days - 1) * 86400, now_ts + 86400),
+            "FROM alerts WHERE ts >= ? AND ts < ? GROUP BY day, severity",
+            (lower, upper),
         ).fetchall()
 
         by_day: dict[str, dict[str, int]] = {}
@@ -5996,8 +6019,6 @@ class Database:
             bucket["count"] += count
             if row["severity"] in ("low", "med", "high"):
                 bucket[row["severity"]] += count
-
-        import datetime as _dt
 
         end_day = _dt.datetime.fromtimestamp(now_ts, tz=_dt.UTC).date()
         result: list[dict] = []
