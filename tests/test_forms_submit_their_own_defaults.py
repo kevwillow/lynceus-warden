@@ -166,7 +166,9 @@ def test_the_sweep_found_forms(client):
         for form in _forms_on(client, path)
         if not form["fields"]
     ]
-    assert not empty, f"these forms parsed with zero fields, so replaying them proves nothing: {empty}"
+    assert not empty, (
+        f"these forms parsed with zero fields, so replaying them proves nothing: {empty}"
+    )
 
 
 @pytest.mark.parametrize("path", FORM_PAGES)

@@ -38,7 +38,6 @@ from lynceus.cli.import_argus import (
 )
 from lynceus.rules import load_runtime_severity_overrides, normalize_override_key
 
-
 # ---------------------------------------------------------------------------
 # The shared normaliser
 # ---------------------------------------------------------------------------
@@ -71,7 +70,8 @@ def test_both_sides_of_a_lookup_use_the_same_function():
     cannot reintroduce a second private normalisation.
     """
     for module in ("rules.py", "webui/liveness.py", "cli/import_argus.py"):
-        src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "lynceus" / module).read_text()
+        root = pathlib.Path(__file__).resolve().parent.parent / "src" / "lynceus"
+        src = (root / module).read_text()
         assert "normalize_override_key" in src, (
             f"{module} no longer calls the shared normaliser; if the lookup moved, "
             f"move this assertion with it rather than deleting it"
