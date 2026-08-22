@@ -2,15 +2,22 @@
 """
 README banner and logo mark for Lynceus Warden.
 
-The mark is a sibling to the Argus one and deliberately not a copy. Argus is a
-database, so its eye holds closed concentric rings: a thing that has been
-catalogued. Lynceus is a live receiver, so its iris is three arcs opening to the
-right, the glyph for a transmission arriving. The eye is narrower than the Argus
-vesica because Lynceus was the Argonaut with the sharpest sight, and because a
-narrower lens reads as looking rather than merely open.
+The mark is a shield holding an arriving signal. It is a deliberate structural
+sibling to the Argus mark and shares none of its shapes: Argus is one container
+(an eye) holding a motif (concentric rings, a thing already catalogued), and
+this is one container (a shield, because Warden is in the name) holding a motif
+(arcs sweeping in toward a point).
 
-The arcs point INTO the eye, never out of it. That is the whole product in one
-mark: it receives, it never transmits.
+The arcs arrive from ABOVE and terminate at the dot, symmetric about the
+vertical centre. Shield plus signal reads as wireless defence, which is the
+product. The shield carries "passive" and "defensive", so the arcs only have to
+carry "wireless" and do not have to fight to say "receiving" on their own.
+
+Three earlier attempts are worth not repeating. An eye was too close to Argus.
+A lighthouse emits, which is the opposite of the product. A transmission mast
+is the universal icon for broadcasting, and reads as exactly the wrong thing.
+A tower plus separate arcs is two objects competing in a square and turned to
+mush below 64px; the mark was redesigned square-first after measuring that.
 
 PNG rather than SVG on purpose. GitHub sanitises SVG in markdown, and text in an
 SVG depends on fonts the reader may not have. A PNG renders identically
@@ -21,7 +28,6 @@ soft on a HiDPI screen.
 Usage:
     python3 scripts/make_banner.py
 """
-import math
 import os
 
 from PIL import Image, ImageDraw, ImageFont
@@ -50,56 +56,51 @@ def font(kind, size):
     return ImageFont.load_default()
 
 
-def _vesica(cx, cy, w, hgt, n=160):
-    """Points of a true vesica: two circular arcs meeting at (+-w, 0).
-
-    The upper arc passes through (-w, 0), (0, -hgt), (w, 0). A circle through
-    those three points has centre (0, k) with k = (w^2 - hgt^2) / (2 * hgt).
-    """
-    k = (w * w - hgt * hgt) / (2.0 * hgt)
-    r = k + hgt
-    a0 = math.atan2(0 - k, -w)
-    a1 = math.atan2(0 - k, w)
-    top, bot = [], []
+def _shield(cx, cy, w, h, n=90):
+    """Heater shield: flat top, straight upper flanks, a curve sweeping to a tip."""
+    pts = [(cx - w, cy - h), (cx + w, cy - h)]
     for i in range(n + 1):
-        t = a0 + (a1 - a0) * i / n
-        x, y = cx + r * math.cos(t), cy + k + r * math.sin(t)
-        top.append((x, y))
-        bot.append((x, 2 * cy - y))
-    return top + bot[::-1]
+        t = i / n
+        pts.append((cx + w * (1 - t * t), cy - h + (2 * h) * (0.42 + 0.58 * t)))
+    for i in range(n + 1):
+        t = 1 - i / n
+        pts.append((cx - w * (1 - t * t), cy - h + (2 * h) * (0.42 + 0.58 * t)))
+    return pts
 
 
 def draw_mark(d, cx, cy, r, hole=GROUND, outline=TEXT):
-    """The receiving-eye mark, centred on (cx, cy) with iris radius r.
+    """The shield mark, centred on (cx, cy) with radius r.
 
-    The lens is two FILLED vesicas, outer in `outline` and inner in the
-    background, rather than a stroked polyline. Stroking a dense polyline leaves
-    visible lumps at this scale; filling does not. That trick is inherited from
-    the Argus mark and is the reason both read cleanly at 32px.
+    The shield is two FILLED polygons, outer in `outline` and inner in the
+    background, rather than a stroked outline. Stroking a dense polyline leaves
+    visible lumps at this scale; filling does not.
+
+    Two arcs, not three. A third was measured turning to mush at 32px, which is
+    the size that decides whether a mark works.
     """
-    lw = max(2.0, r * 0.150)
-    w, hh = r * 1.86, r * 1.04            # narrower than Argus: a sharper eye
-    d.polygon(_vesica(cx, cy, w, hh), fill=outline)
-    d.polygon(_vesica(cx, cy, w - lw * 1.30, hh - lw), fill=hole)
+    lw = max(2.0, r * 0.155)
+    w, h = r * 0.96, r * 1.02
+    d.polygon(_shield(cx, cy, w, h), fill=outline)
+    d.polygon(_shield(cx, cy - lw * 0.10, w - lw * 1.25, h - lw * 0.95), fill=hole)
 
-    # Three arcs opening RIGHT: an incoming transmission, not an emitted one.
-    # Drawn as arc segments rather than full ellipses so the eye reads as
-    # receiving a direction, which is what separates this mark from the Argus
-    # one at a glance.
-    # The pupil sits LEFT of centre and the arcs sweep in toward it, so the
-    # composition reads as a signal arriving rather than three shapes parked
-    # side by side. Centring the pupil made the arcs look like decoration.
-    px = cx - r * 0.30
-    for frac, col in [(0.96, RING), (0.72, RING), (0.47, ACCENT)]:
-        rr = r * frac
-        d.arc(
-            [px - rr, cy - rr, px + rr, cy + rr],
-            start=-58, end=58,
-            fill=col, width=max(2, int(r * 0.10)),
-        )
+    # ⭐ Symmetric about the vertical centre, and the arcs arrive from ABOVE.
+    # The first version swept in from the left, which was asymmetric and read
+    # as lopsided at every size.
+    #
+    # Two arcs, not three. Three measured to a smear at 32px, and 32px is the
+    # size that decides whether a mark works.
+    #
+    # ⚠️ The innermost arc used to be ACCENT and sat close to the dot, which
+    # merged the two into a red blob at small sizes. Grey arcs, one red dot,
+    # with a real gap between them.
+    by = cy + r * 0.26
+    for frac in (0.80, 0.50):
+        q = r * frac
+        d.arc([cx - q, by - q, cx + q, by + q], start=204, end=336,
+              fill=RING, width=max(3, int(r * 0.145)))
 
-    pr = r * 0.20
-    d.ellipse([px - pr, cy - pr, px + pr, cy + pr], fill=ACCENT)
+    pr = r * 0.135
+    d.ellipse([cx - pr, by - pr, cx + pr, by + pr], fill=ACCENT)
 
 
 def make_logo(path, size=512, outline=(42, 42, 48)):
@@ -136,10 +137,10 @@ def make_banner(path, w=1280, h=320):
 
     pad = ww * 0.055
     r = hh * 0.180
-    cx, cy = pad + r * 1.86, hh * 0.47
+    cx, cy = pad + r * 1.05, hh * 0.47
     draw_mark(d, cx, cy, r)
 
-    x = cx + r * 2.55
+    x = cx + r * 1.65
     avail = ww - x - pad                  # hard right bound; nothing may exceed it
 
     tagline = "Passive RF counter-surveillance. It listens, and never transmits."
