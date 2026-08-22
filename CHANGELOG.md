@@ -25,6 +25,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The alerts table can hide columns now, like the other four data tables.**
+  `/devices`, `/watchful`, `/allowlist` and `/watchlist` have had a show/hide
+  columns menu since 0.9.2. `/alerts` is hand-written rather than built from the
+  shared table macro, so it never got one, and it is the widest table in the
+  product. Hiding two columns takes it from 1408 pixels to 1232 at a 1440 pixel
+  window, and the choice is remembered per table across reloads.
+
+  It still does not use the shared macro. That macro regenerates every cell,
+  and the wording in those rows is where earlier releases put their honesty
+  fixes, so the column layer is adopted by hand instead: the keyed column
+  group, the per-header keys, the menu and the applier call. No table cell was
+  touched, and every header line keeps its exact wording.
+
+  The column widths moved off `nth-child` rules and onto the column group.
+  Those rules named a position, and adopting the layer also enables column
+  reordering, so a column dragged elsewhere would have taken the previous
+  occupant's width and truncation cap with it.
+
+  An earlier note in the test suite predicted that this table's bulk-acknowledge
+  form and its inline row controls would fight the fixed layout the column
+  layer switches on. That was measured in a real browser before being acted on,
+  and it does not happen: no control is clipped or zero sized, the bulk button
+  is reachable rather than covered, and clicking a row's Acknowledge does
+  acknowledge that alert in the database.
+
+
 - **The two release gates are in the suite now, behind `install` and `browser`.**
   Both were measured green before 1.0.0 and then left as scripts somebody had to
   remember. `make release-gates` runs them. `addopts` deselects both markers,

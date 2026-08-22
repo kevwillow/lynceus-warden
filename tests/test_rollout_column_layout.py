@@ -47,6 +47,18 @@ WATCHFUL_KEYS = [
     "source",
     "actions",
 ]
+ALERTS_KEYS = [
+    "select",
+    "timestamp",
+    "severity",
+    "rule",
+    "device",
+    "mac",
+    "category",
+    "message",
+    "status",
+    "action",
+]
 ALLOWLIST_KEYS = [
     "select",
     "pattern_type",
@@ -206,29 +218,103 @@ def test_allowlist_colgroup_keys_match_header_keys_in_order(tmp_path):
 
 
 def test_unconverted_list_pages_do_not_carry_layer(tmp_path):
-    """alerts stays a bare table this arc (HAZARD: its bulk-ack form + inline
-    action controls fight fixed-layout/overflow); rules is not a table. Neither
-    should emit the macro-only markers. (probes was converted to resize-only --
-    its positive coverage is in test_probes_resize_only below.) A bare
-    'data-table-id' substring is NOT a valid marker -- base.html defines the
-    literal table[data-table-id="..."] selector on every page -- so assert on
-    the resize grip + reset control, which only the opted-in macro emits."""
+    """rules is not a table and must not emit the macro-only markers.
+
+    ⭐ alerts USED to be in this negative list, with the note "HAZARD: its
+    bulk-ack form + inline action controls fight fixed-layout/overflow". It was
+    converted to hide-only on 2026-08-22 and its positive coverage is in
+    test_alerts_hide_only below -- the same move probes made to resize-only.
+
+    ⛔ That hazard was a prediction, and it was measured before being overruled
+    rather than argued away. In Chromium at 1440, on the converted table: no
+    action control is clipped or zero-sized (the only zero-size elements are
+    the type=hidden CSRF inputs), the bulk-ack button hit-tests to itself
+    rather than to something covering it, and clicking a row's Acknowledge
+    takes the alert from acknowledged=0 to acknowledged=1 in the database. The
+    controls work under fixed layout.
+
+    A bare 'data-table-id' substring is NOT a valid marker -- base.html defines
+    the literal table[data-table-id="..."] selector on every page -- so assert
+    on the resize grip + reset control, which only an opted-in table emits."""
     app, db = _make_app(tmp_path)
     try:
         with TestClient(app) as client:
-            # Seed an alert so /alerts renders its (unconverted) table, not
-            # the empty state -- a real negative, not a vacuous one. The
-            # alerts.mac FK requires the device row first.
-            db.upsert_device("aa:bb:cc:11:22:33", "wifi", None, 0, 1000)
-            db.add_alert(
-                ts=1000, rule_name="r", mac="aa:bb:cc:11:22:33",
-                message="m", severity="low",
-            )
-            for path in ("/alerts", "/rules"):
-                r = client.get(path)
-                assert r.status_code == 200, f"{path} -> {r.status_code}"
-                for marker in ("col-resizer", "data-table-reset"):
-                    assert marker not in r.text, f"{path} leaked {marker!r}"
+            r = client.get("/rules")
+            assert r.status_code == 200, f"/rules -> {r.status_code}"
+            for marker in ("col-resizer", "data-table-reset"):
+                assert marker not in r.text, f"/rules leaked {marker!r}"
+    finally:
+        db.close()
+
+
+def _make_alerts_app(tmp_path):
+    """An app with one alert, so /alerts renders its table and not the empty
+    state. ⛔ A page in its empty state emits no colgroup at all, which would
+    make every assertion below pass by rendering nothing. The alerts.mac
+    foreign key requires the device row first."""
+    app, db = _make_app(tmp_path)
+    db.upsert_device("aa:bb:cc:11:22:33", "wifi", "Axon Enterprise", 0, 1000)
+    db.add_alert(
+        ts=1000, rule_name="watchlist_oui", mac="aa:bb:cc:11:22:33",
+        message="Body-worn camera seen nearby", severity="high",
+    )
+    return app, db
+
+
+def test_alerts_hide_only_carries_layer(tmp_path):
+    """/alerts carries the hide menu + reset, and NOT the resize grips.
+
+    ⛔ Hide-only is deliberate. The resize grips are an extra affordance
+    pinned inside every <th>, and this table's header cells already carry the
+    sort links; the column budget it needs is served by hiding a column, not
+    by dragging one narrower.
+
+    🪤 It is adopted BY HAND rather than through the data_table macro, because
+    the macro regenerates every cell and the wording in these rows is where
+    #188 and #193 put their honesty fixes. So this test is what stops the
+    hand-written markup drifting out of step with what lynceus.js binds to."""
+    app, db = _make_alerts_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            html = client.get("/alerts").text
+        assert 'data-table-id="alerts"' in html
+        assert 'data-cols-for="alerts"' in html, "the hide menu is missing"
+        assert "col-toggle" in html, "the hide menu has no toggles"
+        assert 'data-table-reset="alerts"' in html, "the reset control is missing"
+        assert 'window.__lynTableApply("alerts")' in html, (
+            "the pre-paint applier is missing, so persisted layout would flash "
+            "from default to stored on every load"
+        )
+        assert "col-resizer" not in html, "/alerts leaked a resize grip"
+    finally:
+        db.close()
+
+
+def test_alerts_colgroup_keys_match_headers(tmp_path):
+    """The <col> keys and the <th> keys must agree, in order.
+
+    ⛔ This is the integrity the JS depends on: __lynTableApply derives a
+    single positional permutation from the header keys and applies it to the
+    colgroup, the header row and every body row alike. A key present on one
+    side and not the other silently corrupts a persisted layout rather than
+    failing.
+
+    ⚠️ One toggle per column, too. The menu is hand-written here, so a column
+    added to the table without a matching toggle would be un-hideable with
+    nothing to say so."""
+    app, db = _make_alerts_app(tmp_path)
+    try:
+        with TestClient(app) as client:
+            html = client.get("/alerts").text
+        col_keys, th_keys = _colgroup_and_header_keys(html)
+        assert col_keys == ALERTS_KEYS
+        assert th_keys == ALERTS_KEYS
+        assert "" not in col_keys
+        toggles = re.findall(r'data-col-toggle="([^"]+)"', html)
+        assert toggles == ALERTS_KEYS, (
+            f"the hide menu offers {toggles}, the table renders {ALERTS_KEYS}; "
+            f"a column with no toggle cannot be hidden"
+        )
     finally:
         db.close()
 
