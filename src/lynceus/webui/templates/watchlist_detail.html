@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}watchlist entry #{{ entry.id }} &mdash; lynceus{% endblock %}
+{% block title %}watchlist entry #{{ entry.id }} &middot; lynceus{% endblock %}
 {% block content %}
   {% include "_topnav.html" %}
   <p><a href="/watchlist">&larr; back to watchlist</a></p>
@@ -49,11 +49,11 @@
              set. The module already distinguishes them; the sentence just has
              to ask. #}
           <strong>If this entry produced an alert it would carry a different
-          severity from the one stored against it</strong> — whether it produces
+          severity from the one stored against it</strong>. Whether it produces
           one cannot be determined: {{ liveness.reason }}.
         {% else %}
           <strong>If this entry produced an alert it would carry a different
-          severity from the one stored against it</strong> — it produces none
+          severity from the one stored against it</strong>, and it produces none
           today, for the reason given elsewhere on this page.
         {% endif %}
         {% if severity_remap.axis %}
@@ -122,7 +122,7 @@
         {% endfor %}
         So the rule matches and the alert is discarded.
         {% if override_suppression_axes | length > 1 %}
-          ⚠️ <strong>Both</strong> apply — removing only one will not bring this
+          ⚠️ <strong>Both</strong> apply, so removing only one will not bring this
           entry back.
         {% else %}
           Removing it there clears this particular blocker.
@@ -149,7 +149,7 @@
         {% endfor %}
         {% if allowlist_entries | length > 1 %}
           ⚠️ <strong>{{ allowlist_entries | length }} entries</strong> cover this
-          device — removing one will not be enough.
+          device, so removing one will not be enough.
         {% endif %}
         {# ⚠️ "clears this particular blocker", never "brings the entry back".
            The allowlist is one of several independent causes, and the notes
@@ -209,11 +209,11 @@
            Derived by inverting the delegation map, so it cannot drift. #}
         You snoozed
         {% for rt in entry_rule_types %}<code>{{ rt }}</code>{% if not loop.last %} / {% endif %}{% endfor %}
-        &mdash; the rule type that serves <code>{{ entry.pattern_type }}</code>
-        &mdash; from the <a href="/rules">rules page</a>.
+        (the rule type that serves <code>{{ entry.pattern_type }}</code>)
+        from the <a href="/rules">rules page</a>.
         {% if not liveness.known %}
           Whether any rule matches this pattern is a separate question and it
-          could not be answered &mdash; {{ liveness.reason }}. Lifting the snooze
+          could not be answered. {{ liveness.reason }}. Lifting the snooze
           is what stops the alerts being dropped; it is not, on its own, a
           report that this entry would then fire.
         {% elif entry_is_live %}
@@ -222,7 +222,7 @@
           <code>{{ rules_file() }}</code> needs changing.
         {% else %}
           Lifting that snooze on its own will <strong>not</strong> restore
-          alerting for this entry — the note below is a separate cause and both
+          alerting for this entry. The note below is a separate cause and both
           have to be dealt with.
         {% endif %}
       </small></p>
@@ -237,7 +237,7 @@
         <code>{{ entry.pattern_type }}</code>, so a device matching this pattern
         raises no alert.
         {% if entry.pattern_type in liveness.dead_by_model_types %}
-          Editing <code>{{ rules_file() }}</code> will not change that for this type —
+          Editing <code>{{ rules_file() }}</code> will not change that for this type, because
           nothing in a capture carries the field to compare against yet.
         {% else %}
           Enabling the delegating rule for this type in <code>{{ rules_file() }}</code>
@@ -299,7 +299,7 @@
           <dd>
             {% if metadata.source_excerpt | length > 200 %}
               <details>
-                <summary>(excerpt — click to expand, {{ metadata.source_excerpt | length }} chars)</summary>
+                <summary>(excerpt, click to expand, {{ metadata.source_excerpt | length }} chars)</summary>
                 <blockquote>{{ metadata.source_excerpt }}</blockquote>
               </details>
             {% else %}

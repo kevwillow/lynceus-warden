@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}health &mdash; lynceus{% endblock %}
+{% block title %}health &middot; lynceus{% endblock %}
 {% block content %}
   {% include "_topnav.html" %}
   <h2>health</h2>
@@ -48,7 +48,7 @@
         {% if not last_tick.counters_known %}
         {# The stored counters were present but unreadable. Printing the
            placeholder zeros would assert "nothing was dropped". #}
-        <tr><th scope="row">counters</th><td>unavailable &mdash; the stored values could not be read</td></tr>
+        <tr><th scope="row">counters</th><td>unavailable, the stored values could not be read</td></tr>
         {% else %}
         <tr><th scope="row">admitted</th><td>{{ last_tick.admitted }}</td></tr>
         <tr><th scope="row">dropped (allowlist mismatch)</th><td>{{ last_tick.dropped_source_allowlist }}</td></tr>

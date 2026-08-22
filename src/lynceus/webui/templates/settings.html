@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}settings &mdash; lynceus{% endblock %}
+{% block title %}settings &middot; lynceus{% endblock %}
 {% block content %}
   {% include "_topnav.html" %}
   <h2>settings</h2>
@@ -113,9 +113,9 @@
              sends them to the wrong file. `rules_unreadable` already
              distinguishes them. #}
           {% if ble_bridge.rules_unreadable %}
-            <em>unknown</em> — the ruleset could not be read.
+            <em>unknown</em>. The ruleset could not be read.
           {% else %}
-            <em>unknown</em> — no <code>rules_path</code> is configured,
+            <em>unknown</em>. No <code>rules_path</code> is configured,
             so no rules are loaded at all.
           {% endif %}
         {% elif ble_bridge.find_my_rule_enabled %}
@@ -124,9 +124,9 @@
              were never inspected, so a rule matching only `airpods` would land
              here. Naming apple_find_my would assert something no code
              verified. #}
-          ON — a <code>ble_device_class</code> rule is enabled.
+          ON. A <code>ble_device_class</code> rule is enabled.
         {% else %}
-          <strong>OFF</strong> — trackers are decoded and counted here,
+          <strong>OFF</strong>. Trackers are decoded and counted here,
           but <strong>nothing will alert</strong> on them.
           Enable <code>apple_find_my</code> in <code>{{ rules_file() }}</code>.
         {% endif %}
@@ -162,7 +162,7 @@
       <p>
         <small>
           The rules file could not be read, so the alert-storm check was not
-          run &mdash; treat the result above as incomplete, not clean.
+          run, so treat the result above as incomplete, not clean.
         </small>
       </p>
     {% endif %}
@@ -172,14 +172,14 @@
         <small>
           Nothing decoded yet. Nothing in the configuration explains that, so
           the likely causes are no Apple device in range, or the adapter being
-          unavailable at daemon start &mdash; check the log.
+          unavailable at daemon start. Check the log.
         </small>
       </p>
     {% endif %}
 
     <p>
       <small>
-        Its own passive scan, not a decoder over Kismet's data &mdash; it needs
+        Its own passive scan, not a decoder over Kismet's data. It needs
         an adapter Kismet is not capturing on. Never connects, pairs, or probes.
         To change, run <code>lynceus-setup --reconfigure</code> or edit
         <code>ble_bridge.enabled</code>, then restart the daemon.
@@ -204,7 +204,7 @@
           {% if ntfy.undelivered %}
             <span class="badge-status-error">{{ ntfy.undelivered }}</span>
             <small>alert{{ '' if ntfy.undelivered == 1 else 's' }} written but never
-            delivered &mdash; check the topic and auth token</small>
+            delivered. Check the topic and auth token</small>
           {% else %}
             <span class="badge-status-ok">0</span>
             <small>every alert reached the broker</small>
@@ -217,13 +217,13 @@
         <dd>
           {% if not heartbeat.enabled %}
             <span class="badge-status-error">off</span>
-            <small>silence is ambiguous &mdash; nothing distinguishes "nothing is
+            <small>silence is ambiguous. Nothing distinguishes "nothing is
             out there" from "the daemon died". Set
             <code>heartbeat_enabled: true</code> to arm it.</small>
           {% elif heartbeat.undelivered %}
             <span class="badge-status-error">{{ heartbeat.undelivered }}</span>
             <small>heartbeat{{ '' if heartbeat.undelivered == 1 else 's' }} never
-            delivered &mdash; the proof-of-life you are relying on is NOT
+            delivered. The proof-of-life you are relying on is NOT
             arriving. Check the topic and auth token.</small>
           {# ⛔ `is not none`, NOT truthiness, on all three of these guards.
              A delivered heartbeat stamped at epoch 0 is FALSY, so
@@ -245,15 +245,15 @@
             <span class="badge-status-warn">clock disagrees</span>
             <small>last delivered
             {{ heartbeat.last_delivered_at | relative_time(now_ts=now_ts) }},
-            which is ahead of this machine&#39;s clock &mdash; whether the
+            which is ahead of this machine&#39;s clock, so whether the
             heartbeat is still arriving cannot be told from it. Check the clock
             (NTP / <code>timedatectl</code>).</small>
           {% elif heartbeat.last_delivered_at is not none and heartbeat.is_stale %}
             <span class="badge-status-error">stopped</span>
             <small>expected every {{ heartbeat.interval_hours }}h, but the last
             one arrived
-            {{ heartbeat.last_delivered_at | relative_time(now_ts=now_ts) }}
-            &mdash; the proof-of-life you are relying on has STOPPED. Silence is
+            {{ heartbeat.last_delivered_at | relative_time(now_ts=now_ts) }}.
+            The proof-of-life you are relying on has STOPPED. Silence is
             ambiguous again: check the daemon is running and that ntfy still
             accepts the topic.</small>
           {% elif heartbeat.last_delivered_at is not none %}
@@ -271,7 +271,7 @@
                page states the condition the OPERATOR can check instead of
                picking the reassuring reading for them. #}
             <span class="badge-status-warn">armed, unproven</span>
-            <small>expected every {{ heartbeat.interval_hours }}h &mdash; none
+            <small>expected every {{ heartbeat.interval_hours }}h, and none
             has arrived yet. If you enabled this more than
             {{ heartbeat.interval_hours }}h ago, it is not working: check the
             daemon restarted after the config change, and that ntfy accepts the
@@ -293,7 +293,7 @@
         <dt>status</dt>
         <dd>
           <span class="badge-status-error">not configured</span>
-          <small>no alert reaches your phone &mdash; alerts appear in this web
+          <small>no alert reaches your phone. Alerts appear in this web
           UI and nowhere else. If you are relying on being warned while away
           from a screen, you are not currently being warned.</small>
         </dd>
@@ -399,13 +399,13 @@
           {% if watchlist_freshness.unknown_reason == "unreadable" %}
             <small>this import's timestamps could not be read, so the age of
             this data is not established. Nothing here says the clocks
-            disagree &mdash; the stored values are unusable. Re-run the import
+            disagree. The stored values are unusable. Re-run the import
             to replace them.</small>
           {% else %}
             <small>the source timestamp is ahead of this machine&#39;s clock, so
             the age of this data is not established. Argus stamps
             <code>exported_at</code> with ITS clock, so this can happen with a
-            perfectly good local one &mdash; compare the two hosts.</small>
+            perfectly good local one, so compare the two hosts.</small>
           {% endif %}
         {% endif %}
       </p>
@@ -415,7 +415,7 @@
           {% if watchlist_freshness.exported_at %}
             {{ watchlist_freshness.exported_at | unix_to_utc_human }}
           {% else %}
-            <em>(unknown &mdash; CSV had no parseable <code>exported_at</code>)</em>
+            <em>(unknown, because the CSV had no parseable <code>exported_at</code>)</em>
           {% endif %}
         </dd>
         <dt>imported locally</dt>
@@ -425,9 +425,9 @@
           {% if watchlist_freshness.age_days is not none %}
             {{ watchlist_freshness.age_days }} days
           {% elif watchlist_freshness.unknown_reason == "unreadable" %}
-            <em>(not established &mdash; this import's timestamps could not be read)</em>
+            <em>(not established, because this import's timestamps could not be read)</em>
           {% else %}
-            <em>(not established &mdash; the source is dated ahead of this clock)</em>
+            <em>(not established, because the source is dated ahead of this clock)</em>
           {% endif %}
         </dd>
         <dt>source</dt>
@@ -460,7 +460,7 @@
         Run <code>lynceus-import-argus --from-github</code> (online) or
         <code>lynceus-import-argus --input &lt;path&gt;</code>
         (air-gapped) to populate this card. Existing imports from
-        before migration 012 landed don&rsquo;t appear here &mdash;
+        before migration 012 landed don&rsquo;t appear here, but
         the next refresh will.
       </small></p>
     {% endif %}
@@ -503,20 +503,20 @@
         {% if watchlist_liveness.total == 1 %}entry{% else %}entries{% endif %}
         cannot currently fire.</strong>
         A watchlist row is only consulted by a rule whose <code>patterns:</code>
-        list is empty — an enabled rule with its own inline patterns matches
+        list is empty. An enabled rule with its own inline patterns matches
         those instead and never reads your watchlist. No enabled rule in
         <code>{{ rules_file() }}</code> delegates to
         {% for pt in watchlist_liveness.inert_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
         Your other rule types are unaffected.
         {% if watchlist_liveness.dead_by_model_types %}
           {% for pt in watchlist_liveness.dead_by_model_types %}<code>{{ pt }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
-          cannot be revived by editing <code>{{ rules_file() }}</code> at all — nothing
+          cannot be revived by editing <code>{{ rules_file() }}</code> at all, because nothing
           in a capture carries that field yet.
         {% endif %}
       </small></p>
     {% elif not watchlist_liveness.known %}
       <p><small class="dim">
-        Whether these entries can fire is <strong>unknown</strong> —
+        Whether these entries can fire is <strong>unknown</strong>.
         {{ watchlist_liveness.reason }}. This is not a report that they are
         dead; it is a report that the question could not be answered.
       </small></p>
@@ -550,7 +550,7 @@
            a claim about rows nothing here looked at. /watchlist marks the rows
            that actually match. #}
         Any watchlist entry whose vendor or category is listed there still
-        matches — its alert is discarded. Entries that match are marked
+        matches, and its alert is discarded. Entries that match are marked
         <span class="badge-snoozed-type">override</span> on the watchlist;
         if none are marked there, nothing you have stored is affected.
       </small></p>
@@ -591,7 +591,7 @@
       <p><small class="dim">
         🕐 <strong>This machine's clock reads behind events already recorded
         here.</strong> Snoozes and other timed suppressions are being refused,
-        because a deadline set from this clock would already have passed — the
+        because a deadline set from this clock would already have passed, so the
         suppression would never take effect and would then be deleted as
         expired. Permanent allowlist entries are unaffected. Check NTP
         (<code>timedatectl</code>).
@@ -618,7 +618,7 @@
            no enabled rule delegates to. A cold read caught the half-fix. #}
         {% if not watchlist_liveness.both_types %}
           The rules still match; the alerts are dropped until the snooze
-          expires. Nothing in <code>{{ rules_file() }}</code> needs changing — lift it
+          expires. Nothing in <code>{{ rules_file() }}</code> needs changing. Lift it
           on /rules.
         {% else %}
           ⚠️ But
@@ -636,8 +636,8 @@
        the absence of a warning being read as a guarantee. #}
     {% if watchlist_liveness.known %}
       <p><small class="dim">
-        An entry not flagged above means <strong>a rule consults its type</strong>
-        — not that that row will alert. A row can still be silenced by a
+        An entry not flagged above means <strong>a rule consults its type</strong>,
+        not that that row will alert. A row can still be silenced by a
         <code>suppress_vendors</code> / <code>suppress_categories</code> entry in
         your severity overrides, by an allowlist match, or (for
         <code>oui</code>) by a prefix the matcher discards. And this reads
@@ -684,8 +684,8 @@
         {% if severity_overrides.configured %}
           <small class="dim">(from <code>severity_overrides_path</code>)</small>
         {% else %}
-          <small class="dim">(the default location — nothing is configured, so
-          the runtime override layer is off)</small>
+          <small class="dim">(the default location, shown because nothing is
+          configured, so the runtime override layer is off)</small>
         {% endif %}
       </dd>
       <dt>status</dt>
@@ -709,7 +709,7 @@
         {% else %}
           <span class="badge-status-error">unreadable</span>
           <small class="dim">the file is present but could not be parsed, so the
-          runtime override layer is <strong>off</strong> — no severity is
+          runtime override layer is <strong>off</strong>. No severity is
           remapped and no vendor or category is suppressed. Fix the file and
           restart the daemon.</small>
         {% endif %}
@@ -747,7 +747,7 @@
           <code>pattern_overrides</code>,
           <code>vendor_severity</code>):
           {% if severity_overrides.configured %}
-            restart the daemon to apply &mdash; already-imported rows pick up
+            restart the daemon to apply. Already-imported rows pick up
             the new severity (or are suppressed) without re-import.
           {% else %}
             off until the setting above is in place; a restart alone changes
@@ -789,7 +789,7 @@
       {% if system.config_path %}
         <dd><code>{{ system.config_path }}</code></dd>
       {% else %}
-        <dd>not recorded by this process &mdash;
+        <dd>not recorded by this process.
           <code>{{ system.config_path_default }}</code> is the user-scope
           default location, which is not necessarily the file in use.</dd>
       {% endif %}

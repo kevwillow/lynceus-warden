@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}rules &mdash; lynceus{% endblock %}
+{% block title %}rules &middot; lynceus{% endblock %}
 {% block content %}
   {% include "_topnav.html" %}
   <h2>rules</h2>
@@ -76,7 +76,7 @@
           {% if type_snooze %}
             &middot;
             <span class="badge-snoozed"
-                  title="expires {{ type_snooze.expires_at | relative_time(now_ts=now_ts) }} &mdash; {{ type_snooze.expires_at | unix_to_utc_human }}">
+                  title="expires {{ type_snooze.expires_at | relative_time(now_ts=now_ts) }} ({{ type_snooze.expires_at | unix_to_utc_human }})">
               &#x1F4A4; snoozed (until
               <time datetime="{{ type_snooze.expires_at | unix_to_iso }}">
                 {{ type_snooze.expires_at | relative_time(now_ts=now_ts) }}
@@ -116,7 +116,7 @@
                   The rules of this type still evaluate; only alert emit is gated.
                 {% else %}
                   <strong>No rule of this type is enabled</strong>, so nothing of
-                  it evaluates and the snooze changes nothing today &mdash; it
+                  it evaluates and the snooze changes nothing today. It
                   would apply to any rule of this type enabled later.
                 {% endif %}
               </small>
@@ -142,7 +142,7 @@
           {% if snooze %}
             &middot;
             <span class="badge-snoozed"
-                  title="expires {{ snooze.expires_at | relative_time(now_ts=now_ts) }} &mdash; {{ snooze.expires_at | unix_to_utc_human }}">
+                  title="expires {{ snooze.expires_at | relative_time(now_ts=now_ts) }} ({{ snooze.expires_at | unix_to_utc_human }})">
               &#x1F4A4; snoozed (until
               <time datetime="{{ snooze.expires_at | unix_to_iso }}">
                 {{ snooze.expires_at | relative_time(now_ts=now_ts) }}
@@ -215,7 +215,7 @@
                   The rule still evaluates; only alert emit is gated.
                 {% else %}
                   <strong>This rule is disabled</strong> and evaluates nothing, so
-                  the snooze changes nothing for it &mdash; it silences every
+                  the snooze changes nothing for it. It silences every
                   <em>enabled</em> rule of this type.
                 {% endif %}
               </small>
@@ -246,7 +246,7 @@
         {% if ruleset %}
           These rule types are silenced, and no rule in
           {% if rules_file() %}<code>{{ rules_file() }}</code>{% else %}your rules file{% endif %}
-          has them &mdash; so they have no row above. Lifting the snooze here is
+          has them, so they have no row above. Lifting the snooze here is
           the only way to clear it; for most types re-adding a rule while the
           snooze stands would leave it silenced, and any marked below need no
           rule at all.
@@ -260,14 +260,14 @@
           <code>{{ o.rule_type }}</code>
           <span class="badge-snoozed">snoozed until
             <time datetime="{{ o.snooze.expires_at | unix_to_iso }}">{{ o.snooze.expires_at | unix_to_utc_human }}</time></span>
-          {% if o.snooze.note %}<small>&mdash; {{ o.snooze.note }}</small>{% endif %}
+          {% if o.snooze.note %}<small>({{ o.snooze.note }})</small>{% endif %}
           {% if o.poller_driven %}
             {# ⛔ This one is NOT dormant. The poller raises it with no rule at
                all, so the snooze is suppressing alerts today -- and a suppressed
                watchful escalation is CONSUMED, not deferred. #}
             <br><small><strong>This type needs no rule:</strong> the poller
             raises it directly, so this snooze is suppressing escalations
-            <em>now</em> &mdash; and an escalation suppressed by it is spent,
+            <em>now</em>, and an escalation suppressed by it is spent,
             not held. Lifting the snooze later does not recover it.</small>
           {% endif %}
           <form method="post" action="/rules/{{ o.rule_type }}/unsnooze" class="inline-form">

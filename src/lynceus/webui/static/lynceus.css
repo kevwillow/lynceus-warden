@@ -229,7 +229,14 @@ form fieldset.grid > button {
    is a plain GET link setting filter params. Mirrors the topnav link +
    theme-toggle border idiom: outlined chips, the active one filled and
    bold. v0.8.0. */
-.preset-filters       { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; margin: 0.5em 0 1em; }
+/* ⛔ `justify-content` is not optional here, and leaving it unset is what was
+   wrong. These chips live in a <nav>, and Pico styles every nav with
+   `justify-content: space-between`. This rule set display, wrap, align and gap
+   but never justify, so Pico's value stood: measured at 1440, five chips and
+   their label total 389px and were spread across 1408px, leaving about 1019px
+   of gap between them. They read as an evenly-spaced toolbar rather than as a
+   related group of filters. */
+.preset-filters       { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 0.5em; margin: 0.5em 0 1em; }
 .preset-filters a     { padding: 0.1em 0.7em; font-size: 0.85em; text-decoration: none; border: 1px solid var(--lyn-topnav-border); border-radius: 4px; line-height: 1.5; }
 .preset-filters a:hover { border-color: currentColor; }
 .preset-filters a.active { font-weight: 600; background: var(--lyn-badge-neutral-bg); color: var(--lyn-badge-neutral-fg); border-color: var(--lyn-badge-neutral-fg); }
@@ -1281,6 +1288,17 @@ textarea:focus-visible,
    page that adds up to hundreds of pixels of dead space. */
 main > h2 { margin: 0.4em 0 0.6em; font-size: var(--lyn-text-2xl); }
 .block h3 { font-weight: var(--lyn-weight-bold); }
+/* Caption for a group of figures inside a block. Quieter than the block's own
+   h3 -- it names WHAT is being counted, not a new section -- so it takes the
+   small-caps mono treatment the table headers use rather than a heading step. */
+.group-caption {
+    margin: var(--lyn-space-4) 0 var(--lyn-space-2);
+    font-family: var(--lyn-mono);
+    font-size: var(--lyn-text-xs);
+    letter-spacing: var(--lyn-tracking-caps);
+    text-transform: uppercase;
+    color: var(--lyn-muted);
+}
 /* Trim table cell vertical padding on the home page (full Pico default
    is ~1rem each side, which made a 5-row alerts table ~250px tall). */
 .alerts-table th,
@@ -1403,3 +1421,34 @@ main.container-fluid { min-width: 0; }
    the action column, which is precisely the failure this cap exists to
    prevent. The column is sized to fit this span instead, above. */
 .alerts-table-full .truncate { max-width: 22ch; }
+
+
+/* Submit buttons are sized to their label, not to their container.
+ *
+ * Pico's classless build sets `button[type=submit] { width: 100% }`, which is
+ * right for a stacked mobile form and wrong for a dashboard. Measured at 1440
+ * before this rule: /alerts carried TWO 1408px-wide filled accent slabs
+ * ("Acknowledge selected" and "acknowledge all N matching") plus a 459px
+ * "filter"; /devices a 221px "filter". Recolouring the accent from Pico blue
+ * to Argus red made that area louder still, because the same slab is now the
+ * strongest colour on the page.
+ *
+ * ⚠️ Scoped to submits inside a form, and it deliberately does NOT reach the
+ * per-row controls: `.alert-action-controls .ack-button-inline` and its
+ * siblings are (0,2,0) selectors that already pin those to a shared width, and
+ * they outrank this (0,1,1) one. Those were equalised on purpose, and the
+ * comment above them says so.
+ *
+ * The min-width keeps a short label ("filter") from collapsing to a target too
+ * small to hit, which is the failure mode of simply setting `width: auto`. */
+form button[type="submit"] {
+    width: auto;
+    min-width: 7rem;
+    /* 🪤 `width: auto` alone does NOT shrink these. The filter submits sit in
+       a `fieldset.grid` cell, and a grid item stretches to fill its track by
+       default, so `auto` resolved to the whole cell: measured 459px on /alerts
+       and 221px on /devices even after the width rule. `justify-self` is what
+       actually sizes a grid item to its content. It is inert on the buttons
+       that are not grid items, which is why it can sit in the same rule. */
+    justify-self: start;
+}

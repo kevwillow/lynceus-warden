@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}watchful &mdash; lynceus{% endblock %}
+{% block title %}watchful &middot; lynceus{% endblock %}
 {% block content %}
   {% from "_table_macro.html" import data_table with context %}
   {% from "_watchful_last_activity.html" import last_activity_note, reset_marker with context %}
@@ -25,7 +25,7 @@
       <time datetime="{{ recurrence_snooze.expires_at | unix_to_iso }}">{{ recurrence_snooze.expires_at | unix_to_utc_human }}</time>,
       so nothing above will alert. An entry that reaches the threshold meanwhile
       is still marked escalated and <strong>no alert is written for it</strong>
-      &mdash; the escalation is spent, not held, and lifting the snooze later
+      The escalation is spent, not held, and lifting the snooze later
       will not produce it. Lift it on the <a href="/rules">rules page</a>.
     </p>
   {% endif %}
@@ -109,11 +109,11 @@
                   <span class="badge-watchful-tracking">tracking</span>
                 {% endif %}
                 {% if row.escalation_delivery == 'suppressed' %}
-                  <span class="badge-watchful-nosend" title="No escalation alert was ever written for this entry, so you were not notified. That is what happens when the watchful_recurrence rule type is snoozed at the moment the threshold is crossed: the escalation is consumed deliberately. Removing the snooze does not re-send it — reset this entry if you want it to escalate again.">never sent</span>
+                  <span class="badge-watchful-nosend" title="No escalation alert was ever written for this entry, so you were not notified. That is what happens when the watchful_recurrence rule type is snoozed at the moment the threshold is crossed: the escalation is consumed deliberately. Removing the snooze does not re-send it. Reset this entry if you want it to escalate again.">never sent</span>
                 {% elif row.escalation_delivery == 'undelivered' %}
                   <span class="badge-watchful-undelivered" title="The escalation alert was written but delivery has not succeeded. The poller retries when the device is seen again.">not delivered</span>
                 {% elif row.escalation_delivery == 'unknown' %}
-                  <span class="badge-watchful-delivery-unknown" title="Whether this escalation was delivered could not be determined — the lookup failed. This is a reporting failure, not a statement about the alert.">delivery unknown</span>
+                  <span class="badge-watchful-delivery-unknown" title="Whether this escalation was delivered could not be determined, because the lookup failed. This is a reporting failure, not a statement about the alert.">delivery unknown</span>
                 {% endif %}
                 {% if e.flagged_for_investigation %}
                   {% if e.confirmed_safe %}

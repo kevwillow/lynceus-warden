@@ -68,7 +68,7 @@
   {{ tile('/rules', 'rules',
           tiles.rules if tiles.rules is not none else '—',
           {'ok': 'enabled',
-           'unset': 'no ruleset — nothing will alert',
+           'unset': 'no ruleset, so nothing will alert',
            'unreadable': 'ruleset will not load'}[tiles.rules_state],
           'alert' if tiles.rules_state == 'unreadable'
             else ('warn' if tiles.rules_state == 'unset' else '')) }}

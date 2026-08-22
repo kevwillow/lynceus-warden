@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}probes &mdash; lynceus{% endblock %}
+{% block title %}probes &middot; lynceus{% endblock %}
 {% block content %}
   {% from "_table_macro.html" import data_table with context %}
   {% include "_topnav.html" %}
@@ -9,7 +9,7 @@
      network history of strangers passing the sensor. SSIDs are collapsed by
      default in BOTH groupings -- the operator opts into exposure with the
      per-row reveal. Nothing here reveals an SSID string until expanded. #}
-  <p class="dim"><small>Aggregated probe-SSID view &mdash; the networks devices
+  <p class="dim"><small>Aggregated probe-SSID view: the networks devices
     have tried to join. This is sensitive history, so network names are
     <strong>collapsed by default</strong>; expand a row to reveal them.</small></p>
 
@@ -60,7 +60,7 @@
        operator their probe history was gone while displaying it. #}
     {% if total_count %}
       <p><small class="dim">
-        probe-SSID capture is disabled, so nothing new is being recorded &mdash;
+        probe-SSID capture is disabled, so nothing new is being recorded,
         but the history below was captured while it was on and is still stored.
         Re-enabling capture has a privacy tradeoff.
       </small></p>
@@ -97,7 +97,7 @@
                     <summary>reveal {{ g.device_count }} device(s)</summary>
                     <ul class="probe-reveal">
                       {% for d in g.devices %}
-                        <li class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a> &mdash; {{ d | device_label }}</li>
+                        <li class="mac-cell"><a href="/devices/{{ d.mac }}">{{ d.mac }}</a> ({{ d | device_label }})</li>
                       {% endfor %}
                     </ul>
                     {% if g.device_count > g.shown %}

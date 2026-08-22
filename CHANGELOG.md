@@ -419,6 +419,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The web UI's prose follows the house rule now: no em dashes.**
+  99 sentences across 22 templates were restructured rather than having their
+  punctuation swapped, so a dash joining two clauses became either two
+  sentences or an explicit connective that says which way the logic runs. Page
+  titles use the same separator the footer already used.
+
+  Three things were deliberately left alone, and each would have been a
+  regression to change. The em dash that stands for an empty value in a table
+  cell is a UI convention rather than prose, and six tests assert it. Jinja and
+  HTML comments are not operator-facing. Neither are the 77 dashes in
+  `webui/app.py`, which are Python docstrings and code comments, plus three
+  helpers that return the empty-value dash.
+
+
+- **The filter bars stop shouting.**
+  Two things made the busiest pages loud, and both were inherited defaults
+  rather than choices. Pico sizes a form's submit button to the full width of
+  its container, so the alerts page carried two full-width filled buttons at
+  1408 pixels each, plus a 459 pixel "filter"; recolouring the accent to the
+  Argus red made that the strongest colour on the page. Submits are sized to
+  their label now, 112 to 235 pixels. The per-row Acknowledge and Watch
+  controls are untouched: they were equalised to a shared width on purpose.
+
+  The quick-filter chips on the devices page were spread across the full width
+  with about 1019 pixels of gap between them, because they live in a nav
+  element and Pico spaces every nav with space-between, which the rule for
+  those chips set everything except. They group at the left now and read as one
+  set of related filters rather than a toolbar.
+
+
 - **The web UI has a token layer, and the alerts table fits a laptop again.**
   A palette, type scale and spacing scale now live in
   `webui/static/tokens.css` and are mapped onto Pico's own custom properties,
@@ -521,6 +551,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+
+- **The home page's activity section said what it was counting.**
+  It showed alert counts by severity and then device counts, under one heading,
+  over the same three time windows, with nothing visible saying the two
+  measured different things. An operator saw one row of numbers and then
+  another and had no way to tell them apart. Both numbers were correct; the
+  page simply invited them to be compared. Each group now carries a caption.
+
+  The distinction already existed for anyone using a screen reader, because
+  both groups carried an accurate accessible name. It was only the visual
+  reader who was left to guess, which is that relationship the wrong way round.
+
 
 - **The privacy note on `/devices` was drawn underneath the control it explains.**
   `probe-SSID capture is disabled, so this view is empty; enabling it has a

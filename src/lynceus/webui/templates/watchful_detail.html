@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}watchful entry #{{ entry.id }} &mdash; lynceus{% endblock %}
+{% block title %}watchful entry #{{ entry.id }} &middot; lynceus{% endblock %}
 {% block content %}
   {% from "_watchful_last_activity.html" import last_activity_note, reset_marker with context %}
   {% include "_topnav.html" %}
@@ -21,11 +21,11 @@
         <span class="badge-watchful-tracking">tracking</span>
       {% endif %}
       {% if escalation_delivery == 'suppressed' %}
-        &middot; <span class="badge-watchful-nosend" title="No escalation alert was ever written for this entry, so you were not notified. That is what happens when the watchful_recurrence rule type is snoozed at the moment the threshold is crossed: the escalation is consumed deliberately. Removing the snooze does not re-send it — reset this entry if you want it to escalate again.">never sent</span>
+        &middot; <span class="badge-watchful-nosend" title="No escalation alert was ever written for this entry, so you were not notified. That is what happens when the watchful_recurrence rule type is snoozed at the moment the threshold is crossed: the escalation is consumed deliberately. Removing the snooze does not re-send it. Reset this entry if you want it to escalate again.">never sent</span>
       {% elif escalation_delivery == 'undelivered' %}
         &middot; <span class="badge-watchful-undelivered" title="The escalation alert was written but delivery has not succeeded. The poller retries when the device is seen again.">not delivered</span>
       {% elif escalation_delivery == 'unknown' %}
-        &middot; <span class="badge-watchful-delivery-unknown" title="Whether this escalation was delivered could not be determined — the lookup failed. This is a reporting failure, not a statement about the alert.">delivery unknown</span>
+        &middot; <span class="badge-watchful-delivery-unknown" title="Whether this escalation was delivered could not be determined, because the lookup failed. This is a reporting failure, not a statement about the alert.">delivery unknown</span>
       {% endif %}
       {% if entry.flagged_for_investigation %}
         {% if entry.confirmed_safe %}
@@ -64,7 +64,7 @@
     </p>
     {{ last_activity_note() }}
     {% if escalation_delivery == 'suppressed' %}
-      <p>This escalation was never sent: no alert was written for it, so you were not notified. That is what happens when the <code>watchful_recurrence</code> rule type is snoozed as the threshold is crossed — the escalation is consumed deliberately. Removing the snooze does not re-send it; reset this entry if you want it to escalate again.</p>
+      <p>This escalation was never sent: no alert was written for it, so you were not notified. That is what happens when the <code>watchful_recurrence</code> rule type is snoozed as the threshold is crossed: the escalation is consumed deliberately. Removing the snooze does not re-send it; reset this entry if you want it to escalate again.</p>
     {% endif %}
     <p>
       <strong>escalated:</strong>
@@ -105,12 +105,12 @@
     <header><strong>cross-links</strong></header>
     <ul>
       {% if entry.source_alert_id %}
-        <li><a href="/alerts/{{ entry.source_alert_id }}">originating alert &mdash; alert #{{ entry.source_alert_id }}</a></li>
+        <li><a href="/alerts/{{ entry.source_alert_id }}">originating alert, alert #{{ entry.source_alert_id }}</a></li>
       {% else %}
         <li><em>no source alert recorded</em></li>
       {% endif %}
       {% if entry.matched_watchlist_id %}
-        <li><a href="/watchlist/{{ entry.matched_watchlist_id }}">matched watchlist entry &mdash; watchlist #{{ entry.matched_watchlist_id }}</a></li>
+        <li><a href="/watchlist/{{ entry.matched_watchlist_id }}">matched watchlist entry, watchlist #{{ entry.matched_watchlist_id }}</a></li>
       {% else %}
         <li><em>no matched watchlist entry recorded</em></li>
       {% endif %}

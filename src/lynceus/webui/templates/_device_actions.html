@@ -58,7 +58,7 @@
     {% if active_watchful %}
       <p class="status">Tracked on the watchful surface
         ({{ active_watchful.sighting_count }} sighting{{ '' if active_watchful.sighting_count == 1 else 's' }}
-        since <time datetime="{{ active_watchful.first_seen_at | unix_to_iso }}">{{ active_watchful.first_seen_at | unix_to_iso }}</time>) &mdash;
+        since <time datetime="{{ active_watchful.first_seen_at | unix_to_iso }}">{{ active_watchful.first_seen_at | unix_to_iso }}</time>).
         <a href="/watchful">view watchful</a>.</p>
     {% elif watch_source_alert_id %}
       <form method="post" action="/devices/{{ mac }}/watch"
@@ -81,7 +81,7 @@
         <button type="submit" class="device-action-btn">Watch this device</button>
       </form>
     {% else %}
-      <p class="dim"><em>No alert recorded for this device yet &mdash; watchful tracking starts from an alert.</em></p>
+      <p class="dim"><em>No alert recorded for this device yet. Watchful tracking starts from an alert.</em></p>
     {% endif %}
   </section>
 
@@ -132,7 +132,7 @@
             <code>{{ allowlist_match.pattern_type }}</code> entry
             <code>{{ allowlist_match.pattern }}</code> in
             <code>{{ allowlist_ui_file() }}</code>, which covers more than this
-            device &mdash; remove it on the <a href="/allowlist">allowlist
+            device. Remove it on the <a href="/allowlist">allowlist
             page</a>.</em></p>
         {% else %}
           <p class="dim"><em>Configured in <code>{{ allowlist_file() }}</code> (operator-managed); edit that file directly to remove.</em></p>
@@ -159,7 +159,7 @@
             <code>{{ allowlist_match.pattern_type }}</code> entry
             <code>{{ allowlist_match.pattern }}</code> in
             <code>{{ allowlist_ui_file() }}</code>, which covers more than this
-            device &mdash; cancel it on the <a href="/allowlist">allowlist
+            device. Cancel it on the <a href="/allowlist">allowlist
             page</a>.</em></p>
         {% else %}
           <p class="dim"><em>Configured in <code>{{ allowlist_file() }}</code> (operator-managed); edit that file directly to cancel.</em></p>

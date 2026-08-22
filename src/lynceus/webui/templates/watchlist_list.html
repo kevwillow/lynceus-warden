@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}watchlist &mdash; lynceus{% endblock %}
+{% block title %}watchlist &middot; lynceus{% endblock %}
 {% block content %}
   {% from "_table_macro.html" import data_table with context %}
   {% include "_topnav.html" %}
@@ -23,10 +23,10 @@
       <span class="status-pill status-pill-warn">filter ignored</span>
       {% if filters_active %}
         this view does not recognise {{ dropped_filters | join(", ") }}, so that
-        filter was dropped &mdash; but your other filters still apply, so this is
+        filter was dropped, but your other filters still apply, so this is
         <strong>not</strong> the whole watchlist.
       {% else %}
-        showing <strong>all</strong> entries &mdash; this view does not recognise
+        showing <strong>all</strong> entries, because this view does not recognise
         {{ dropped_filters | join(", ") }}.
       {% endif %}
     </p>

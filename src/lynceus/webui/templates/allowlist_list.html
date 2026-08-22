@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}allowlist &mdash; lynceus{% endblock %}
+{% block title %}allowlist &middot; lynceus{% endblock %}
 {% block content %}
   {% from "_table_macro.html" import data_table with context %}
   {% include "_topnav.html" %}
@@ -44,8 +44,8 @@
         <p><strong>{{ clock_disagreements | length }}
           {% if clock_disagreements | length == 1 %}entry disagrees{% else %}entries disagree{% endif %}
           with the order this file was written in.</strong>
-          Hidden by the current filter &mdash;
-          <a href="/allowlist">view the whole allowlist</a> to see which.</p>
+          Hidden by the current filter.
+          <a href="/allowlist">View the whole allowlist</a> to see which.</p>
       </article>
     {% else %}
       <article class="clock-disagreement">
@@ -59,7 +59,7 @@
           gap and the suppression ended earlier than it looks, or never began.</p>
         <ul>
           {% for d in clock_disagreements %}
-            <li><code>{{ d.pattern }}</code> ({{ d.pattern_type }}) &mdash;
+            <li><code>{{ d.pattern }}</code> ({{ d.pattern_type }}):
               asked for {{ (d.duration_seconds / 3600) | round(1) }}h,
               stamped <time datetime="{{ d.added_at | unix_to_iso }}">{{ d.added_at | unix_to_utc_human }}</time>,
               which is {{ (d.behind_by_seconds / 3600) | round(1) }}h <em>earlier</em> than

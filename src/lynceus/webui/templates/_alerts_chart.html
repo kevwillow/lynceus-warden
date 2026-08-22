@@ -27,7 +27,7 @@
       {% for d in per_day_sev %}
         {% set pct = ((d.count * 100) // max_count) if max_count > 0 else 0 %}
         <div class="alerts-chart-col"
-             title="{{ d.date }}: {{ d.count }} alert(s) — {{ d.high }} high, {{ d.med }} med, {{ d.low }} low">
+             title="{{ d.count }} alert(s) on {{ d.date }}: {{ d.high }} high, {{ d.med }} med, {{ d.low }} low">
           <div class="alerts-chart-stack" style="height: {{ pct }}%;">
             {# Order matters: high sits on top, where the eye lands. Each
                segment is a share OF THIS DAY's bar, so the three always

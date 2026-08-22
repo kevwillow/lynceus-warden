@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}alerts &mdash; lynceus{% endblock %}
+{% block title %}alerts &middot; lynceus{% endblock %}
 {% block content %}
   {% include "_topnav.html" %}
   <h2>alerts</h2>
@@ -126,7 +126,7 @@
        at 3 than at 900, and acknowledging is how an alert leaves the
        operator's own view. #}
     <form method="post" action="/alerts/ack-all-visible"
-          data-confirm="Acknowledge all {{ total_count }} matching alert{{ '' if total_count == 1 else 's' }}? There is no bulk undo — reversing this means un-acknowledging each one individually.">
+          data-confirm="Acknowledge all {{ total_count }} matching alert{{ '' if total_count == 1 else 's' }}? There is no bulk undo. Reversing this means un-acknowledging each one individually.">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
       {# The instant this page was rendered. The POST bounds its write to
          alerts that existed at this moment, so an alert arriving while the
@@ -166,7 +166,7 @@
        associated by `form=` and is only known client-side at submit time. The
        message therefore names the irreversibility rather than the magnitude. #}
     <form id="bulk-ack-form" method="post" action="/alerts/bulk-ack"
-          data-confirm="Acknowledge the selected alerts? There is no bulk undo — reversing this means un-acknowledging each one individually.">
+          data-confirm="Acknowledge the selected alerts? There is no bulk undo. Reversing this means un-acknowledging each one individually.">
       <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
       <p>
         <button type="submit">Acknowledge selected</button>
