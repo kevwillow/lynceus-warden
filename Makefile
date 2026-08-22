@@ -26,7 +26,16 @@ test:
 #
 # ⏱️ Takes about nine minutes. Most of that is `lynceus-setup` importing the
 # bundled 25 MB, 45,663-row default_watchlist.csv, which is what a first-time
-# user actually waits for.
+# user actually waits for. The browser half adds about 20 seconds.
+#
+# ⚠️ The browser half needs playwright, which is NOT a dependency of lynceus and
+# is not in .venv. It FAILS rather than skips when it is missing, deliberately,
+# because a gate that skips proves nothing. Build a side venv on the same
+# interpreter and point the gate at it:
+#
+#   python -m venv /tmp/pw-venv && /tmp/pw-venv/bin/pip install playwright
+#   /tmp/pw-venv/bin/playwright install chromium
+#   LYNCEUS_PLAYWRIGHT_SITE=/tmp/pw-venv/lib/python3.11/site-packages make release-gates
 #
 # ⛔ PYTEST_ADDOPTS is cleared, and the run must leave a SENTINEL behind.
 # Measured 2026-08-22: `PYTEST_ADDOPTS=--collect-only make release-gates` exited

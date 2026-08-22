@@ -51,6 +51,32 @@ machine rather than a runner, so they run in neither `make test` nor CI.
 | fresh install | `install` | `tests/test_fresh_install.py` | a capture interface |
 | browser crawl | `browser` | `tests/test_browser_ui.py` | Chromium and playwright |
 
+⚠️ **The browser half FAILS rather than skips when playwright is missing**, which
+is correct for a gate and does mean `make release-gates` is red until you set it
+up. playwright is not a lynceus dependency and is not in `.venv`:
+
+```
+python -m venv /tmp/pw-venv && /tmp/pw-venv/bin/pip install playwright
+/tmp/pw-venv/bin/playwright install chromium
+LYNCEUS_PLAYWRIGHT_SITE=/tmp/pw-venv/lib/python3.11/site-packages make release-gates
+```
+
+Measured 2026-08-22 with that set: browser gate **6 passed in 21.9s**.
+
+⭐ **Current CI number, measured 2026-08-22 at `c363a01`** (PR head, so 11 checks
+rather than the 10 a push SHA gets; CodeQL reports on pull requests only):
+
+| Leg | Result |
+| --- | --- |
+| `test (ubuntu-latest, py3.11)` | **4582 passed, 1 skipped, 54 deselected**, 8m08s |
+| `test (ubuntu-latest, py3.12)` | **4582 passed, 1 skipped, 54 deselected**, 9m11s |
+| `test (ubuntu-24.04-arm, py3.11)` | **4582 passed, 1 skipped, 54 deselected**, 10m30s |
+| all checks | **11/11 `completed` + `success`**, list non-empty |
+
+The 54 deselected is 47 `diagnostic` plus the 7 host-only gates: 1 `install` and
+6 `browser`. If that number drops without a gate being deleted, a gate stopped
+being deselected and is now running somewhere it cannot pass.
+
 `addopts` carries `-m 'not diagnostic and not browser and not install'`, so the
 default suite deselects both. `make release-gates` runs them together; a
 command-line `-m` overrides the one in `addopts`, measured in both directions.
