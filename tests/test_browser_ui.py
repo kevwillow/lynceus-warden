@@ -30,6 +30,7 @@ false positives in the harness this file grew out of:
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import pwd
 import socket
@@ -43,7 +44,7 @@ from pathlib import Path
 import pytest
 
 from lynceus import kismet
-from lynceus.config import Config
+from lynceus.config import Config, CoObservationConfig
 from lynceus.db import Database
 from lynceus.webui.app import create_app
 
@@ -221,6 +222,29 @@ def _chromium_executable() -> str | None:
     return None
 
 
+@contextlib.contextmanager
+def _serve(app):
+    """Run an app on a real socket, and refuse to yield until it is up."""
+    import uvicorn
+
+    port = _free_port()
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(100):
+        if server.started:
+            break
+        time.sleep(0.1)
+    assert server.started, "uvicorn never came up, so nothing below measured the UI"
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
 @pytest.fixture(scope="module")
 def _isolated_home(tmp_path_factory):
     """The same hermeticity guard `conftest.py` gives every test, at module scope.
@@ -298,25 +322,10 @@ def _served_ui(_isolated_home, tmp_path_factory):
         )
     db.update_alert_note(1, "triage note so the clear-note form renders")
 
-    import uvicorn
-
-    app = create_app(config, db)
-    port = _free_port()
-    server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
-    )
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    for _ in range(100):
-        if server.started:
-            break
-        time.sleep(0.1)
-    assert server.started, "uvicorn never came up, so nothing below measured the UI"
     try:
-        yield f"http://127.0.0.1:{port}", macs[0]
+        with _serve(create_app(config, db)) as base:
+            yield base, macs[0]
     finally:
-        server.should_exit = True
-        thread.join(timeout=10)
         db.close()
 
 
@@ -561,3 +570,139 @@ def test_state_changing_controls_match_the_recorded_decision(crawl):
     }
     assert unguarded == EXPECTED_UNGUARDED, f"unguarded controls changed: {detail}"
     assert guarded == EXPECTED_GUARDED, f"guarded controls changed: {detail}"
+
+
+@pytest.fixture(scope="module")
+def _served_ui_with_co_observation(_isolated_home, tmp_path_factory):
+    """A second app, with the co-observation capability ON.
+
+    ⛔ The main crawl asserts `/devices/{mac}/co-observations` **404s**, because
+    the capability ships disabled and serving it while off would be the defect.
+    That is the right assertion and it leaves a real gap: the rendered page has
+    never been in a browser. This closes it without weakening the refusal, by
+    building a second app rather than turning the capability on in the first.
+
+    Seeded so the page has something to draw. Two devices at one location with
+    sightings inside `proximity_seconds` (300 by default) of each other are what
+    makes a pair, so a page rendered from this fixture must list a candidate. A
+    page that renders empty is indistinguishable from a page that renders
+    broken, and both would satisfy "HTTP 200".
+    """
+    tmp = tmp_path_factory.mktemp("browser-coobs")
+    allowlist = tmp / "allowlist.yaml"
+    allowlist.write_text(
+        "entries:\n"
+        '  - pattern: "99:99:99:00:00:01"\n'
+        "    pattern_type: mac\n"
+        "    note: deliberately unrelated to the seeded devices\n"
+    )
+    config = Config(
+        db_path=str(tmp / "coobs.db"),
+        allowlist_path=str(allowlist),
+        co_observation=CoObservationConfig(enabled=True),
+    )
+    db = Database(config.db_path)
+    now = int(time.time())
+    db.ensure_location("default", "Default")
+    macs = [kismet.normalize_mac(f"12:34:56:DD:EE:{i:02X}") for i in range(2)]
+    for i, mac in enumerate(macs):
+        db.upsert_device(
+            mac=mac,
+            device_type="wifi",
+            oui_vendor="Test Vendor Ltd",
+            is_randomized=0,
+            now_ts=now - 60,
+        )
+        # Both sighted at the same place, 30s apart, three times over three
+        # days. One pair proves nothing about runs; repeated pairs are what the
+        # page counts.
+        for day in range(3):
+            db.insert_sighting(
+                mac=mac,
+                ts=now - day * 86400 - i * 30,
+                rssi=-40 - i,
+                ssid="testnet",
+                location_id="default",
+            )
+    try:
+        with _serve(create_app(config, db)) as base:
+            yield base, macs[0]
+    finally:
+        db.close()
+
+
+@pytest.fixture(scope="module")
+def co_observation_page(_served_ui_with_co_observation):
+    """Render the co-observation page in Chromium and report what it drew."""
+    base, mac = _served_ui_with_co_observation
+    sync_playwright = _sync_playwright()
+    executable = _chromium_executable()
+    route = f"/devices/{mac}/co-observations"
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=executable)
+        ctx = browser.new_context(viewport={"width": 1400, "height": 1000})
+        page = ctx.new_page()
+        js_errors: list[str] = []
+        page.on(
+            "console",
+            lambda m, sink=js_errors: sink.append(m.text) if m.type == "error" else None,
+        )
+        page.on("pageerror", lambda exc, sink=js_errors: sink.append(str(exc)))
+        page.add_init_script(
+            """
+            window.__cspv = [];
+            document.addEventListener('securitypolicyviolation', e => {
+                window.__cspv.push(e.violatedDirective + ' <- ' + (e.blockedURI || ''));
+            });
+            """
+        )
+        resp = page.goto(base + route, wait_until="networkidle", timeout=15000)
+        page.wait_for_timeout(400)
+        record = {
+            "status": resp.status if resp else 0,
+            "csp": page.evaluate("window.__cspv || []"),
+            "js_errors": js_errors,
+            "inline": page.evaluate(
+                """() => {
+                    let n = 0;
+                    for (const el of document.querySelectorAll('*'))
+                        for (const a of el.attributes)
+                            if (a.name.startsWith('on')) n++;
+                    return n;
+                }"""
+            ),
+            # Candidate rows link to the other device's page. Counting the links
+            # rather than the rows keeps this off the table's shape, which the
+            # page changes between its list and detail views.
+            "candidates": page.evaluate(
+                """() => [...document.querySelectorAll('table a[href^="/devices/"]')].length"""
+            ),
+            "route": route,
+        }
+        ctx.close()
+        browser.close()
+    return record
+
+
+def test_the_co_observation_page_renders_when_the_capability_is_on(co_observation_page):
+    """The one surface the main crawl is not allowed to reach.
+
+    Keeping this separate from `crawl` is deliberate. The main fixture must go
+    on proving that the route REFUSES while the capability is off, and a single
+    fixture cannot assert both answers.
+    """
+    record = co_observation_page
+    assert record["status"] == 200, f"{record['route']} answered {record['status']}"
+    assert not record["csp"], f"the CSP blocked something the page needs: {record['csp']}"
+    assert not record["js_errors"], f"JavaScript failed: {record['js_errors']}"
+    assert not record["inline"], (
+        f"{record['inline']} inline on*= attribute(s) present at runtime"
+    )
+    # ⛔ Non-vacuity. A page that rendered its empty state also answers 200 with
+    # no CSP violations and no JS errors, and would pass everything above.
+    assert record["candidates"] > 0, (
+        "the page rendered with no co-observed devices, so the assertions above "
+        "graded an empty page. The fixture seeds two devices at one location "
+        "within the proximity window, which must produce at least one candidate."
+    )
