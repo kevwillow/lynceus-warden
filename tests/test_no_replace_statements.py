@@ -30,8 +30,6 @@ import ast
 import re
 from pathlib import Path
 
-import pytest
-
 SRC = Path(__file__).resolve().parent.parent / "src"
 
 # ⛔ The statement forms only. SQLite also has a scalar function `replace(X,Y,Z)`
@@ -70,7 +68,11 @@ def _sql_literals(py: Path):
     try:
         tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
     except SyntaxError as exc:  # pragma: no cover - a broken file is its own failure
-        pytest.fail(f"{py} does not parse: {exc}")
+        # ⚠️ `raise ... from` rather than `pytest.fail`. `fail()` does not
+        # return, but a static analyser cannot know that, and CodeQL flagged
+        # `tree` as possibly-unbound below because of it. Raising here says the
+        # same thing to both a reader and an analyser.
+        raise AssertionError(f"{py} does not parse: {exc}") from exc
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if LOOKS_LIKE_SQL.match(node.value):
