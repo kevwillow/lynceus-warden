@@ -248,6 +248,33 @@ _DATE_FORMATS: tuple[str, ...] = (
 class OverrideConfig:
     vendor_overrides: dict[str, str] = field(default_factory=dict)
     device_category_severity: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Canonicalise the selector keys on EVERY construction path.
+
+        ⛔ Not in `load_override_config`. Callers build this directly --
+        `resolve_severity(..., overrides=OverrideConfig(vendor_overrides={...}))`
+        is how most of `tests/test_import_argus.py` uses it -- and a key
+        normalised only in the loader leaves `resolve_severity` (which
+        normalises the row value) unable to match a directly constructed one.
+        Normalising here means the two sides cannot disagree regardless of how
+        the config was made.
+        """
+        self.vendor_overrides = {
+            key: value
+            for key, value in (
+                (normalize_override_key(k), v) for k, v in self.vendor_overrides.items()
+            )
+            if key is not None
+        }
+        self.device_category_severity = {
+            key: value
+            for key, value in (
+                (normalize_override_key(k), v)
+                for k, v in self.device_category_severity.items()
+            )
+            if key is not None
+        }
     geographic_filter: list[str] = field(default_factory=list)
     confidence_downgrade_threshold: int = DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD
     # None or empty list disables the ingress check; any other list
@@ -312,28 +339,13 @@ def load_override_config(path: str | None) -> OverrideConfig:
         accept_list = None
     else:
         accept_list = [str(v) for v in raw_accept]
-    # ⛔ Normalise the KEYS, and the row value at the lookup below. This file
-    # has its OWN override loader and its own lookup, separate from rules.py's
-    # -- and the vendor half, which rules.py normalises correctly on both
-    # sides, was raw on both sides here. A packet scoped to one module cannot
-    # see that; it was found by sweeping the class across files.
+    # ⛔ No normalisation here: `OverrideConfig.__post_init__` does it, so the
+    # loader and a direct construction produce identical keys. Doing it in both
+    # places would put the rule in two places, which is the drift this change
+    # removes.
     return OverrideConfig(
-        vendor_overrides={
-            key: value
-            for key, value in (
-                (normalize_override_key(k), v)
-                for k, v in (raw.get("vendor_overrides") or {}).items()
-            )
-            if key is not None
-        },
-        device_category_severity={
-            key: value
-            for key, value in (
-                (normalize_override_key(k), v)
-                for k, v in (raw.get("device_category_severity") or {}).items()
-            )
-            if key is not None
-        },
+        vendor_overrides=dict(raw.get("vendor_overrides") or {}),
+        device_category_severity=dict(raw.get("device_category_severity") or {}),
         geographic_filter=list(raw.get("geographic_filter") or []),
         confidence_downgrade_threshold=int(
             raw.get("confidence_downgrade_threshold", DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD)

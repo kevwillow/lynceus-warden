@@ -363,6 +363,40 @@ class RuntimeSeverityOverride(BaseModel):
     pattern_overrides: dict[str, Severity] = {}
     vendor_severity: dict[str, Severity] = {}
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_keys(cls, data):
+        """Canonicalise every selector key BEFORE validation.
+
+        ⛔ In the MODEL, not in the loader. `load_runtime_severity_overrides`
+        is not the only way one of these is built -- tests and callers
+        construct it directly, and a key normalised in the loader alone leaves
+        the lookup (which normalises the row value) unable to find a directly
+        constructed key. That is the same one-sided mistake this whole change
+        exists to fix, made one layer up; the full suite caught it.
+
+        Idempotent, so the three selectors that were already lowercased at
+        load time are unaffected.
+        """
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        for field in ("device_category_severity", "vendor_severity", "pattern_overrides"):
+            raw = out.get(field)
+            if isinstance(raw, dict):
+                out[field] = {
+                    k2: v
+                    for k2, v in ((normalize_override_key(k), v) for k, v in raw.items())
+                    if k2 is not None
+                }
+        for field in ("suppress_categories", "suppress_vendors"):
+            raw = out.get(field)
+            if isinstance(raw, (list, tuple, set, frozenset)):
+                out[field] = frozenset(
+                    k2 for k2 in (normalize_override_key(x) for x in raw) if k2 is not None
+                )
+        return out
+
     @model_validator(mode="after")
     def _validate(self) -> RuntimeSeverityOverride:
         for cat, sev in self.device_category_severity.items():
@@ -521,29 +555,15 @@ def load_runtime_severity_overrides(
     # anywhere a raise could be mistaken for "could not read".
     warn_duplicate_keys(p, logger=logger, subject="severity overrides file")
     runtime_kwargs: dict = {}
-    # ⛔ Normalise the KEYS here, and the row value at the lookup. Three of the
-    # five override containers (suppress_vendors, vendor_severity,
-    # pattern_overrides) already normalised at load time and their lookups
-    # normalise the row too; these two did neither, so an operator who wrote
-    # `ALPR:` in YAML got an override that silently never fired against the
-    # lowercase categories the watchlist actually carries. Fixing only the key
-    # would have been a REGRESSION for anyone whose rows really are uppercase,
-    # because the lookup compares against the raw row value -- which is why
-    # both halves move together, in this commit, calling one function.
+    # ⛔ No normalisation here on purpose. `RuntimeSeverityOverride` normalises
+    # every selector key in a `mode="before"` validator, so the loader and a
+    # direct construction get identical keys. Doing it here as well would put
+    # the rule in two places, which is exactly the drift this change removes.
     if isinstance(raw.get("device_category_severity"), dict):
-        runtime_kwargs["device_category_severity"] = {
-            key: value
-            for key, value in (
-                (normalize_override_key(k), v)
-                for k, v in raw["device_category_severity"].items()
-            )
-            if key is not None
-        }
+        runtime_kwargs["device_category_severity"] = raw["device_category_severity"]
     if isinstance(raw.get("suppress_categories"), list):
         runtime_kwargs["suppress_categories"] = frozenset(
-            key
-            for key in (normalize_override_key(s) for s in raw["suppress_categories"])
-            if key is not None
+            s for s in raw["suppress_categories"] if isinstance(s, str)
         )
     if isinstance(raw.get("suppress_vendors"), list):
         # Normalize at load time (lowercase + strip) so the eval-time
