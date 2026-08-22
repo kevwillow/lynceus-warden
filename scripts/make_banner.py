@@ -143,9 +143,23 @@ def make_banner(path, w=1280, h=320):
     x = cx + r * 1.65
     avail = ww - x - pad                  # hard right bound; nothing may exceed it
 
-    tagline = "Passive RF counter-surveillance. It listens, and never transmits."
+    # ⭐ Kev's line, kept: "Passive RF counter-surveillance" is the strapline
+    # and does not change. The second sentence used to be "It listens, and
+    # never transmits", which describes what the product REFRAINS from doing.
+    # It now says what the product does, and it is checkable: observed devices
+    # are matched against a curated database of surveillance hardware and named.
+    tagline = "Passive RF counter-surveillance. It names the surveillance hardware near you."
+    # ⚠️ THESE NUMBERS ROT, and this one has rotted three times already. Both
+    # are snapshots, so RE-DERIVE them when you regenerate rather than trusting
+    # what is written here:
+    #
+    #     tests:     pytest --collect-only -q | tail -1
+    #     watchlist: sqlite3 <db> "SELECT COUNT(*) FROM watchlist"
+    #
+    # Measured 2026-08-22 at `bf20903`: 4,573 collected, 47 deselected.
+    # The count was left at 4,566 through #200, which added seven.
     facts = (
-        "41,508 watchlist records   ·   4,566 tests   "
+        "41,508 watchlist records   ·   4,573 tests   "
         "·   receive only   ·   runs on a Pi"
     )
 

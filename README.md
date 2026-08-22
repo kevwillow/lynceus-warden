@@ -6,16 +6,16 @@
 
 **Something near you is broadcasting. Lynceus tells you what.**
 
-[![CI](https://github.com/kevwillow/lynceus-warden/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kevwillow/lynceus-warden/actions/workflows/ci.yml?query=branch%3Amain)
-[![CodeQL](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml?query=branch%3Amain)
+[![build](https://img.shields.io/github/actions/workflow/status/kevwillow/lynceus-warden/ci.yml?branch=main&label=build&logo=githubactions&logoColor=white)](https://github.com/kevwillow/lynceus-warden/actions/workflows/ci.yml?query=branch%3Amain)
+[![code scanning](https://img.shields.io/github/actions/workflow/status/kevwillow/lynceus-warden/codeql.yml?branch=main&label=code%20scanning&logo=github&logoColor=white)](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml?query=branch%3Amain)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Status: v1.0.0](https://img.shields.io/badge/Status-v1.0.0-blue.svg)](#project-status)
 
-[![listens, never transmits](https://img.shields.io/badge/listens-never%20transmits-111111.svg)](#privacy--threat-model)
-[![sees what's shouting](https://img.shields.io/badge/sees-what's%20shouting-c8102e.svg)](#what-lynceus-does)
-[![no cloud, no account](https://img.shields.io/badge/no%20cloud-no%20account-111111.svg)](#privacy--threat-model)
-[![watching the watchers](https://img.shields.io/badge/watching-the%20watchers-c8102e.svg)](#what-lynceus-does)
+[![capture: Wi-Fi and BLE](https://img.shields.io/badge/capture-Wi--Fi%20and%20BLE-111111.svg)](#what-lynceus-does)
+[![network: receive only](https://img.shields.io/badge/network-receive%20only-c8102e.svg)](#privacy--threat-model)
+[![storage: local SQLite](https://img.shields.io/badge/storage-local%20SQLite-111111.svg)](#privacy--threat-model)
+[![target: Raspberry Pi](https://img.shields.io/badge/target-Raspberry%20Pi-c8102e.svg)](#installation)
 
 </div>
 
