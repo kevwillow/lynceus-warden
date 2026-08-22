@@ -5434,19 +5434,32 @@ def create_app(
             pattern_type = None
         pt_clean = pattern_type or None
 
+        # ⛔ Same treatment as pattern_type above, and for the same reason the
+        # comment there gives. These two were left resetting to None SILENTLY:
+        # `?severity=bogus` answered 200 with EVERY row while the operator
+        # believed they were looking at one severity. Measured before this
+        # change: severity=high -> 1 row, severity=low -> 0 rows,
+        # severity=bogus -> 1 row, i.e. the whole unfiltered list.
+        #
+        # 🪤 The fix for the pattern_type instance landed without its siblings,
+        # four lines above code doing exactly what its own comment calls the
+        # defect. Fixing the reported instance and not the shape is how that
+        # happens.
         if severity is not None and severity not in ("low", "med", "high"):
+            dropped_filters.append(f"severity {severity!r}")
             severity = None
         sev_clean = severity or None
 
         device_category_options = db.distinct_watchlist_device_categories()
-        # device_category accepts the "uncategorized" sentinel
-        # explicitly; any other value must appear in the live DISTINCT
-        # set, else silently fall back to "all".
+        # device_category accepts the "uncategorized" sentinel explicitly; any
+        # other value must appear in the live DISTINCT set. Dropping it is
+        # reported rather than silent, as above.
         if device_category is not None and device_category != "":
             if device_category not in (
                 _WATCHLIST_UNCATEGORIZED_SENTINEL,
                 *device_category_options,
             ):
+                dropped_filters.append(f"device category {device_category!r}")
                 device_category = None
         dc_clean = device_category or None
 
