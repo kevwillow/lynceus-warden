@@ -2221,19 +2221,29 @@ def poll_once(
         # ⚠️ I found the rule_type instance by grepping for `db.<method>(now_ts=...)`,
         # which structurally could not see this one -- it writes a file, not a row.
         # Both are repaired here so the two backends cannot drift apart again.
-        try:
-            for pattern, duration in repair_future_dated_ui_entries(
-                derive_ui_path(Path(config.allowlist_path)), now_ts
-            ):
-                logger.warning(
-                    "UI suppression for %s was created on a clock that read "
-                    "ahead of this one; re-based so it runs for the %ds the "
-                    "operator chose, not until the wrong deadline",
-                    pattern,
-                    duration,
-                )
-        except Exception as e:
-            logger.warning("UI allowlist snooze repair failed: %s", e)
+        #
+        # ⛔ Guard the None case the way ``Poller.__init__`` already does for
+        # the same field. ``Path(None)`` raises ``TypeError``; the ``except``
+        # below would then catch it and log "UI allowlist snooze repair
+        # failed" once per tick for every install without an allowlist
+        # configured -- a default install -- polluting ``journalctl`` at the
+        # WARNING level that operators are trained to watch. Skipping is the
+        # honest direction: with no allowlist, there is nothing in the UI
+        # backend to repair, so the call site must no-op.
+        if config.allowlist_path is not None:
+            try:
+                for pattern, duration in repair_future_dated_ui_entries(
+                    derive_ui_path(Path(config.allowlist_path)), now_ts
+                ):
+                    logger.warning(
+                        "UI suppression for %s was created on a clock that read "
+                        "ahead of this one; re-based so it runs for the %ds the "
+                        "operator chose, not until the wrong deadline",
+                        pattern,
+                        duration,
+                    )
+            except Exception as e:
+                logger.warning("UI allowlist snooze repair failed: %s", e)
         # ⚠️ THIRD instance of the same defect, and the most harmful of the
         # three: `snooze_expires_at` gates the ORIGINAL alert pipeline for that
         # MAC (OQ-3), not just the recurrence escalation. Measured with the web
