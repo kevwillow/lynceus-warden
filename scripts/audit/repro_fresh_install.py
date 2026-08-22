@@ -64,6 +64,20 @@ def run(cmd, **kw):
 def main() -> int:
     real_home = Path(os.path.expanduser("~")).resolve()
 
+    # ⛔ PYTHONPATH must not reach the clean venv, and this is not tidiness.
+    # Measured 2026-08-22 with a control arm: with PYTHONPATH pointing at a
+    # checkout's `src`, `pip install <wheel>` sees `lynceus` already importable,
+    # treats the requirement as satisfied, installs NOTHING, creates none of the
+    # nine console scripts, and EXITS 0. The run then died three steps later on
+    # "No such file or directory: .../venv/bin/lynceus-setup", which reads as a
+    # packaging defect and is not one.
+    #
+    # It matters here because this repo's worktree workflow requires exporting
+    # PYTHONPATH: the shared `.venv` is editable-installed against the PRIMARY
+    # checkout, so anything run from a worktree needs it to test its own tree.
+    # Anyone following that habit would hit this.
+    os.environ.pop("PYTHONPATH", None)
+
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         home = tmp / "home"
@@ -100,6 +114,15 @@ def main() -> int:
         if r.returncode != 0:
             print(r.stdout[-2000:], r.stderr[-2000:])
             return 3
+        # ⛔ pip exiting 0 is not evidence that anything was installed. Assert
+        # the entry points exist, because "already satisfied" is a success.
+        missing = [n for n in ("lynceus-setup", "lynceus-validate", "lynceus-ui")
+                   if not (bins / n).exists()]
+        if missing:
+            print(f"      pip exited 0 but installed nothing usable: {', '.join(missing)} absent")
+            print("      A resolvable `lynceus` outside the venv makes the install a no-op.")
+            return 3
+        print(f"      {len(list(bins.glob('lynceus*')))} console scripts present")
 
         print("[3/5] driving lynceus-setup with answers on stdin")
         r = subprocess.run(
