@@ -461,6 +461,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with remote access enabled still works, rather than how the header is spelled.
   It fails against the old code. A second test proves the flag is still set over
   HTTPS, so simply deleting `Secure` does not pass in its place.
+
+  ⛔ **The fix does not ship alone, and that is deliberate.** `BACKLOG.md`
+  recorded this breakage as making the no-auth exposure "partially
+  self-limiting, by a bug rather than by design", and warned that repairing it
+  without adding authentication would make things strictly worse. It was never
+  a control. It stopped browsers, which means it stopped the operator, while a
+  caller using curl sets both halves of the double-submit itself and was never
+  impeded for a moment. `SameSite=Strict` already covered the browser-driven
+  case. What the bug actually bought was that remote deployments stayed broken
+  enough that nobody left one running, which is an accident rather than a
+  defence. So the accident is replaced by saying it out loud, below, and that
+  backlog entry is corrected rather than left asserting something that had
+  quietly stopped being true.
+
+- **`lynceus-ui` now says so, loudly, when it is listening where other machines
+  can reach it.** A startup banner naming the bind address, the fact that there
+  is no authentication of any kind, and that `/probes` is a record of where
+  bystanders have been. It prints the exact `ssh -L` line for the configured
+  port and names Tailscale as the other supported path.
+
+  Two decisions in it carry weight. It goes to **stderr rather than the
+  logger**, because `log_level: ERROR` is exactly what an operator running this
+  unattended is likely to have set, and a compensating control that a config
+  value can silence is not one. And it is keyed on the **bind host** rather than
+  on `ui_allow_remote`: the flag is a permission, the bind is the fact. Setting
+  the flag while staying on loopback exposes nothing and stays quiet, because a
+  banner that cries wolf is one people learn to scroll past.
+
+  `LOOPBACK_HOSTS` in `config.py` is now the single definition of what loopback
+  means, read both by the validator that refuses a wide bind and by the warning
+  that describes one. A test iterates that constant rather than restating it, so
+  the two cannot drift into a state where the daemon refuses a bind it would
+  then have called safe.
+
 - **Four surfaces promised the operator something they could not get.** Each was
   measured on a rendered page, not reasoned about.
 

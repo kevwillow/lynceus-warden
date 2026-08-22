@@ -583,12 +583,15 @@ browser auto-launch, clean Ctrl+C shutdown. Not for unattended use.
 - **⚠️ The UI has no authentication, so keep it on loopback.** It binds
   `127.0.0.1` by default and that is the only thing protecting it. To reach a
   headless box, forward the port over SSH (`ssh -L 8765:127.0.0.1:8765
-  you@your-pi`) rather than setting `ui_allow_remote: true`. That flag exposes
-  an unauthenticated dashboard to your whole network: anyone on it can read
+  you@your-pi`), or put it on a private network such as Tailscale that
+  authenticates before any traffic reaches the process. Either way the bind
+  stays on loopback. Setting `ui_allow_remote: true` instead exposes an
+  unauthenticated dashboard to your whole network: anyone on it can read
   `/probes` (a partial location history of every device in range, most of them
   bystanders') and can silence a device by allowlisting it, which you would
   never be alerted about. Treat it as "I have my own reverse proxy with auth in
-  front of this", not as a remote-access switch.
+  front of this", not as a remote-access switch. If you do set it with a
+  non-loopback bind, the server prints a banner at startup saying so.
 - **Probe SSID capture is OFF by default.** Probe lists are a partial Wi-Fi
   history of *other people's* devices. On by default would make Lynceus the
   thing it exists to detect. `/settings` shows a recording warning when it's

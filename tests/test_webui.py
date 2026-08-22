@@ -9480,3 +9480,76 @@ def test_device_page_declares_deleted_sightings_only_when_retention_is_on(tmp_pa
     finally:
         for _, db in apps:
             db.close()
+
+
+# --- lynceus-ui startup exposure warning -----------------------------------
+#
+# This warning is the compensating control that lets the Secure-cookie fix
+# ship. BACKLOG.md had recorded that bug as making the no-auth exposure
+# "partially self-limiting", so repairing it without saying anything would
+# have removed an accident and put nothing in its place.
+
+
+def test_startup_warning_is_silent_on_the_loopback_default(tmp_path):
+    from lynceus.webui.server import remote_exposure_warning
+
+    assert remote_exposure_warning(Config(db_path=str(tmp_path / "a.db"))) == []
+
+
+def test_startup_warning_is_silent_when_remote_is_permitted_but_bind_is_loopback(tmp_path):
+    """The flag is a permission. The bind is the fact. Only the fact warns.
+
+    ``ui_allow_remote: true`` with the host left at loopback exposes nothing,
+    and warning there would train the operator to scroll past the banner that
+    matters. Keying this on the flag would have been the easy wrong answer.
+    """
+    config = Config(db_path=str(tmp_path / "b.db"), ui_allow_remote=True)
+    from lynceus.webui.server import remote_exposure_warning
+
+    assert remote_exposure_warning(config) == []
+
+
+def test_startup_warning_fires_and_names_the_exposure_when_bound_off_host(tmp_path):
+    from lynceus.webui.server import remote_exposure_warning
+
+    config = Config(
+        db_path=str(tmp_path / "c.db"), ui_bind_host="0.0.0.0", ui_allow_remote=True
+    )
+    text = "\n".join(remote_exposure_warning(config))
+    assert text, "a wide-open bind produced no warning at all"
+    # Name the specific facts, not a vague caution. A warning that says
+    # "be careful" is one an operator can dismiss without learning anything.
+    assert "NONE" in text
+    assert "/probes" in text
+    assert "bystanders" in text
+    assert "0.0.0.0" in text
+    # The remedy has to be in it, with the port the operator actually configured.
+    assert f"ssh -L {config.ui_bind_port}:127.0.0.1:{config.ui_bind_port}" in text
+
+
+def test_loopback_set_is_shared_by_the_validator_and_the_warning(tmp_path):
+    """Derived from LOOPBACK_HOSTS, never transcribed.
+
+    Two readers decide what "loopback" means: the config validator, which
+    refuses a non-loopback bind without ui_allow_remote, and this warning. If
+    they ever disagreed the daemon could refuse a bind it then called safe, or
+    bind wide and stay quiet. Iterating the constant is what makes that
+    impossible rather than merely untrue today.
+    """
+    from lynceus.config import LOOPBACK_HOSTS
+    from lynceus.webui.server import remote_exposure_warning
+
+    assert LOOPBACK_HOSTS, "empty set would make every assertion below vacuous"
+    for host in LOOPBACK_HOSTS:
+        # The validator accepts it with no flag ...
+        config = Config(db_path=str(tmp_path / f"{host}.db"), ui_bind_host=host)
+        # ... and the warning agrees there is nothing to warn about.
+        assert remote_exposure_warning(config) == [], host
+
+    # And the other direction, so the test cannot pass by never warning.
+    wide = Config(
+        db_path=str(tmp_path / "wide.db"), ui_bind_host="192.168.1.10", ui_allow_remote=True
+    )
+    assert remote_exposure_warning(wide) != []
+    with pytest.raises(ValidationError):
+        Config(db_path=str(tmp_path / "w2.db"), ui_bind_host="192.168.1.10")

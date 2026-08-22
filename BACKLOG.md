@@ -297,19 +297,30 @@ routes, including `/devices/{mac}/allowlist`, `/rules/{rule_type}/snooze` and
 
 Concrete attack: someone on the same network allowlists **their own** tracker; the operator is never
 alerted and the UI shows nothing wrong. They can also read `/probes`, which is the probe-SSID history
-of every device in range — the most sensitive data the system holds, and about bystanders rather than
-the operator.
+of every device in range. That is the most sensitive data the system holds, and it is about
+bystanders rather than the operator.
 
-⭐ Partially self-limiting today, **by a bug rather than by design**: `ui_allow_remote` unconditionally
-sets a `Secure` CSRF cookie (`webui/app.py:1453`) while the bundled Uvicorn serves plain HTTP
-(`webui/server.py:55-63`), so a browser will not return the cookie and state-changing forms 403.
-That impairs the operator without impeding a non-browser attacker, who forges the header. Fixing the
-cookie bug **without** adding auth would make this strictly worse.
+⭐ **CORRECTED 2026-08-21. The self-limiting half of this entry is gone, deliberately.** This said
+the exposure was "partially self-limiting, by a bug rather than by design": `ui_allow_remote`
+attached `Secure` to the CSRF cookie while the bundled Uvicorn serves plain HTTP, so a browser
+never returned the cookie and every state-changing form answered 403. That bug is fixed, because
+it made the one documented remote path unusable.
 
-- **Trigger**: any deployment story beyond "loopback, single operator" — a shared house, a second
+⛔ **It was never a control.** It stopped browsers, which means it stopped the operator. A caller
+using curl sets both halves of the double-submit itself and was never impeded for a moment, and
+`SameSite=Strict` already handled the browser-driven case. What it actually bought was that remote
+deployments stayed broken enough that nobody left one running, which is an accident, not a defence.
+
+⇒ What replaces it is honesty rather than a brake: `webui/server.py` now prints an unmissable
+startup banner whenever the bind is off-loopback, naming that there is no authentication and that
+`/probes` is bystander history. It goes to **stderr, not the logger**, so `log_level: ERROR`
+cannot silence it, and it is keyed on the **bind host** rather than on `ui_allow_remote`, so
+permitting remote access while staying on loopback stays quiet.
+
+- **Trigger**: any deployment story beyond "loopback, single operator". A shared house, a second
   device, or the first user who asks for remote access.
-- **Interim, and what the docs should say now**: SSH port-forwarding is the supported remote path;
-  `ui_allow_remote` should warn loudly at startup rather than reading as a normal toggle.
+- **Interim, and what the docs say now**: SSH port-forwarding or a private network such as
+  Tailscale is the supported remote path. ✅ The loud startup warning is built.
 - **Estimated**: real work. Session auth + a login surface + rate limiting, or delegate it to a
   reverse proxy and document that as the only supported remote mode.
 
