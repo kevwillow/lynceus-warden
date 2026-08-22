@@ -110,13 +110,14 @@ lynceus = [
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = "-ra --strict-markers --strict-config -m 'not diagnostic'"
+addopts = "-ra --strict-markers --strict-config -m 'not diagnostic and not release_gate'"
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "slow: tests that build a wheel or do other slow setup",
     "webui: tests that exercise the FastAPI app",
     "diagnostic: pre-push observation-only tests; dump actual behavior, don't assert content. Excluded from default suite -- run explicitly with `pytest -m diagnostic`.",
+    "release_gate: gates that need a real host, not a runner: a capture interface, a browser, a wheel build. Excluded from default suite -- run explicitly with `pytest -m release_gate`. See tests/test_release_gates.py.",
 ]
 
 [tool.ruff]

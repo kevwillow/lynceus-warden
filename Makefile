@@ -1,4 +1,4 @@
-.PHONY: install test lint format-check run
+.PHONY: install test release-gates lint format-check run
 
 install:
 	pip install -e ".[dev]"
@@ -15,6 +15,16 @@ install:
 # rather than the skip count.
 test:
 	pytest -v
+
+# The gates that need a real machine: a capture interface, and later a browser.
+# `make test` deselects them, because a hosted runner has neither. Run this
+# before tagging a release, on hardware, and read what it prints.
+#
+# It is the release evidence, so it is deliberately NOT part of `make test`:
+# folding it in would make the everyday suite fail on any laptop without a
+# capture interface, and a target that fails for everyone stops being read.
+release-gates:
+	pytest -m release_gate -v
 
 # Lint only. Kept separate from format-check so this stays a gate that is
 # expected to pass: a permanently-red target is a target people stop reading.

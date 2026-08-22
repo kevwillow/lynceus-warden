@@ -41,6 +41,35 @@ line.** Filtering would also hide a genuinely typo'd `ExecStart` path, which is
 the defect most worth catching. The stub paths are read out of the units, so a
 unit that gains a new `Exec*` is covered without editing the workflow.
 
+## Host-only gates
+
+Added 2026-08-22. The mirror image of the section above: these need a real
+machine rather than a runner, so they run in neither `make test` nor CI.
+
+| Gate | Command | Needs |
+| --- | --- | --- |
+| fresh install | `make release-gates` | a host with at least one capture interface |
+
+`addopts` carries `-m 'not diagnostic and not release_gate'`, so the default
+suite deselects them. Run them with `pytest -m release_gate`, which overrides
+the marker expression because a command-line `-m` wins over the one in
+`addopts`. `make release-gates` is that command with the path filled in.
+
+⚠️ **A deselected test rots and nothing notices.** `tests/test_release_gates.py`
+therefore carries four UNMARKED tests that do run in CI: they collect the gates
+without executing them, assert the default run still excludes them, import the
+audit script for real and check the API the gate calls, and prove the
+hermeticity guard is looking at the real account rather than the per-test HOME.
+If you add a host-only gate, add it to that file so those four cover it too.
+
+🪤 **A clean venv that inherits `PYTHONPATH` is not clean.** `src/lynceus.egg-info`
+sitting on that path makes pip resolve `lynceus` as already installed: it pulls
+every dependency, skips the package, exits 0 and writes no console scripts. The
+fresh-install gate strips `PYTHONPATH` for exactly this reason. It matters here
+because `PYTHONPATH=<worktree>/src` is the standard way to test a worktree
+against the shared `.venv`, so the people most likely to run the gate are the
+people it would have misled.
+
 ### Coverage baseline
 
 ⭐ **Measured in CI on 2026-08-19 at `d2a1c3d`: 86.86%** — 1534 of 11675
