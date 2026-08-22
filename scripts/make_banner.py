@@ -8,9 +8,10 @@ sibling to the Argus mark and shares none of its shapes: Argus is one container
 this is one container (a shield, because Warden is in the name) holding a motif
 (arcs sweeping in toward a point).
 
-The arcs open to the LEFT and terminate at the dot, so they read as a signal
-arriving rather than one being sent. That is the whole product in one mark: it
-receives, it never transmits.
+The arcs arrive from ABOVE and terminate at the dot, symmetric about the
+vertical centre. Shield plus signal reads as wireless defence, which is the
+product. The shield carries "passive" and "defensive", so the arcs only have to
+carry "wireless" and do not have to fight to say "receiving" on their own.
 
 Three earlier attempts are worth not repeating. An eye was too close to Argus.
 A lighthouse emits, which is the opposite of the product. A transmission mast
@@ -82,13 +83,23 @@ def draw_mark(d, cx, cy, r, hole=GROUND, outline=TEXT):
     d.polygon(_shield(cx, cy, w, h), fill=outline)
     d.polygon(_shield(cx, cy - lw * 0.10, w - lw * 1.25, h - lw * 0.95), fill=hole)
 
-    by = cy - r * 0.10
-    for frac, col in [(0.66, RING), (0.40, ACCENT)]:
+    # ⭐ Symmetric about the vertical centre, and the arcs arrive from ABOVE.
+    # The first version swept in from the left, which was asymmetric and read
+    # as lopsided at every size.
+    #
+    # Two arcs, not three. Three measured to a smear at 32px, and 32px is the
+    # size that decides whether a mark works.
+    #
+    # ⚠️ The innermost arc used to be ACCENT and sat close to the dot, which
+    # merged the two into a red blob at small sizes. Grey arcs, one red dot,
+    # with a real gap between them.
+    by = cy + r * 0.26
+    for frac in (0.80, 0.50):
         q = r * frac
-        d.arc([cx - q, by - q, cx + q, by + q], start=118, end=242,
-              fill=col, width=max(3, int(r * 0.145)))
+        d.arc([cx - q, by - q, cx + q, by + q], start=204, end=336,
+              fill=RING, width=max(3, int(r * 0.145)))
 
-    pr = r * 0.155
+    pr = r * 0.135
     d.ellipse([cx - pr, by - pr, cx + pr, by + pr], fill=ACCENT)
 
 
