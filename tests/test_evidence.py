@@ -389,7 +389,7 @@ def test_prune_deletes_only_old_rows(db, alert_id):
             "UPDATE evidence_snapshots SET captured_at = ? WHERE id = ?",
             (1700000000 - 100 * 86400, old_id),
         )
-    deleted, oldest = prune_old_evidence(db, retention_days=90, now_ts=1700000000)
+    deleted, oldest, _ = prune_old_evidence(db, retention_days=90, now_ts=1700000000)
     assert deleted == 1
     assert oldest == 1700000000
     remaining = db._conn.execute("SELECT id FROM evidence_snapshots ORDER BY id").fetchall()
@@ -398,13 +398,13 @@ def test_prune_deletes_only_old_rows(db, alert_id):
 
 def test_prune_returns_zero_when_nothing_to_delete(db, alert_id):
     capture_evidence(db, alert_id, MAC, _kismet_record(), now_ts=1700000000)
-    deleted, oldest = prune_old_evidence(db, retention_days=90, now_ts=1700000000)
+    deleted, oldest, _ = prune_old_evidence(db, retention_days=90, now_ts=1700000000)
     assert deleted == 0
     assert oldest == 1700000000
 
 
 def test_prune_returns_none_oldest_when_table_empty(db):
-    deleted, oldest = prune_old_evidence(db, retention_days=90, now_ts=1700000000)
+    deleted, oldest, _ = prune_old_evidence(db, retention_days=90, now_ts=1700000000)
     assert deleted == 0
     assert oldest is None
 

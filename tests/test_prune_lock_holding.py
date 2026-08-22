@@ -44,8 +44,8 @@ from pathlib import Path
 import pytest
 
 from lynceus.db import Database
-from lynceus.evidence import prune_old_evidence
-from lynceus.retention import prune_old_sightings
+from lynceus.evidence import maybe_prune_evidence, prune_old_evidence
+from lynceus.retention import maybe_prune_sightings, prune_old_sightings
 
 NOW = 1_800_000_000
 DAY = 86_400
@@ -103,7 +103,7 @@ class _CountingTransactions:
 def test_a_sightings_prune_uses_many_bounded_transactions_not_one(db):
     _fill_sightings(db, n_old=2500, n_new=40)
     with _CountingTransactions(db) as spy:
-        deleted, oldest = prune_old_sightings(db, 100, now_ts=NOW)
+        deleted, oldest, _ = prune_old_sightings(db, 100, now_ts=NOW)
 
     assert deleted == 2500
     assert spy.count >= 3, (
@@ -128,7 +128,7 @@ def test_an_evidence_prune_uses_many_bounded_transactions_not_one(db):
             [(alert_id, NOW - 200 * DAY)] * 2500 + [(alert_id, NOW - 1 * DAY)] * 40,
         )
     with _CountingTransactions(db) as spy:
-        deleted, _ = prune_old_evidence(db, 100, now_ts=NOW)
+        deleted, _, _ = prune_old_evidence(db, 100, now_ts=NOW)
 
     assert deleted == 2500
     assert spy.count >= 3, f"the prune ran in {spy.count} transaction(s), not batches"
@@ -166,7 +166,7 @@ def test_no_batch_ever_deletes_more_than_the_bound(db):
 
     Database.transaction = lambda self_db: _Recording(real(self_db))
     try:
-        deleted, _ = prune_old_sightings(db, 100, now_ts=NOW)
+        deleted, _, _ = prune_old_sightings(db, 100, now_ts=NOW)
     finally:
         Database.transaction = real
 
@@ -280,7 +280,7 @@ def test_an_incomplete_prune_WARNS_and_does_not_only_say_Pruned(db, monkeypatch,
     monkeypatch.setattr(Database, "_DELETE_MAX_BATCHES", 1)
     monkeypatch.setattr(Database, "DELETE_BATCH_ROWS", 5)
     with caplog.at_level(logging.INFO):
-        deleted, _ = prune_old_sightings(db, 100, now_ts=NOW)
+        deleted, _, _ = prune_old_sightings(db, 100, now_ts=NOW)
 
     assert deleted == 5
     msgs = [r.getMessage() for r in caplog.records]
@@ -350,3 +350,157 @@ def test_every_table_delete_in_batches_is_used_on_is_a_plain_rowid_table():
                     )
     finally:
         database.close()
+
+
+# --- the elapsed-time deadline -------------------------------------------
+#
+# `_DELETE_MAX_BATCHES` bounds ITERATIONS, not time. Per batch there is up to
+# 5s waiting on SQLite, unbounded time executing the DELETE, and up to 50ms
+# yielding; concurrent insertion can keep every batch full to the bound. The
+# prune runs inside `poll_once`, so nothing polls throughout, and the measured
+# sightings case already spent 50.48s against a 120s stale threshold.
+#
+# `max_seconds=0` is what makes these deterministic: the check is `elapsed >=
+# max_seconds`, so it fires after the first batch without any sleeping.
+
+
+def test_the_deadline_stops_the_loop_and_reports_incomplete(db, caplog):
+    _fill_sightings(db, n_old=50, n_new=2)
+    with caplog.at_level(logging.WARNING):
+        result = db.delete_in_batches(
+            "sightings", "ts < ?", (NOW - 100 * DAY,), batch_size=5, max_seconds=0
+        )
+
+    assert result.complete is False
+    assert result.batches == 1
+    assert result.deleted == 5
+    assert db._conn.execute("SELECT COUNT(*) FROM sightings").fetchone()[0] == 47
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    # ⛔ The deadline and the batch bound are DIFFERENT causes and must not
+    # share a sentence: an operator who reads "batch bound" for a deadline stop
+    # goes looking for a backlog size problem that is not there.
+    assert any("deadline" in m for m in warnings), warnings
+    assert not any("batch bound" in m for m in warnings), warnings
+    assert any("45 still match" in m for m in warnings), (
+        f"the warning must name what is LEFT: {warnings}"
+    )
+
+
+def test_at_least_one_batch_runs_however_short_the_deadline(db):
+    """⛔ The livelock. If the deadline were checked BEFORE the first batch, a
+    value shorter than one batch would delete nothing, forever, while every
+    tick reported that a prune had run. Progress must be guaranteed."""
+    _fill_sightings(db, n_old=50, n_new=2)
+    result = db.delete_in_batches(
+        "sightings", "ts < ?", (NOW - 100 * DAY,), batch_size=5, max_seconds=0
+    )
+    assert result.deleted > 0, "a zero deadline made no progress at all"
+
+
+def test_a_prune_that_finishes_reports_complete_even_past_its_deadline(db):
+    """The deadline is checked AFTER the short-batch return, so a slow prune
+    that actually exhausted the predicate still reports complete=True. Reaching
+    the deadline is only a failure when rows still match."""
+    _fill_sightings(db, n_old=3, n_new=2)
+    result = db.delete_in_batches(
+        "sightings", "ts < ?", (NOW - 100 * DAY,), batch_size=50, max_seconds=0
+    )
+    assert result.complete is True
+    assert result.deleted == 3
+
+
+def test_no_deadline_means_no_deadline(db):
+    """The control. Without `max_seconds` the loop must behave exactly as
+    before, or every existing caller has silently changed."""
+    _fill_sightings(db, n_old=50, n_new=2)
+    result = db.delete_in_batches(
+        "sightings", "ts < ?", (NOW - 100 * DAY,), batch_size=5
+    )
+    assert result.complete is True
+    assert result.deleted == 50
+
+
+# --- an incomplete prune must not be recorded as a completed one ----------
+#
+# This is the half that actually costs data retention. `maybe_prune_*` used to
+# stamp its state key unconditionally, so a prune that bailed was recorded as
+# done and the next attempt waited out a whole `interval_seconds` (24h by
+# default) with rows still over retention -- while the INFO line read "Pruned N
+# sightings older than D days", which is a claim that the policy now holds.
+
+
+def _sightings_left(db):
+    return db._conn.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
+
+
+def test_an_incomplete_prune_is_not_stamped_so_the_next_tick_continues(db, monkeypatch):
+    # DELETE_BATCH_ROWS is 1000, so 50 rows would clear in ONE batch and the
+    # deadline would never be reached. `maybe_prune_*` deliberately does not
+    # expose batch_size, so the shipped constant is what has to move.
+    monkeypatch.setattr(Database, "DELETE_BATCH_ROWS", 5)
+    _fill_sightings(db, n_old=50, n_new=2)
+
+    ran = maybe_prune_sightings(db, 100, now_ts=NOW, max_seconds=0)
+    assert ran is True
+    first_left = _sightings_left(db)
+    assert first_left > 2, "the deadline should have left work behind"
+
+    # ⭐ The whole point. Same `now_ts`, so the interval guard has NOT elapsed.
+    # Had the incomplete run been stamped, this would be skipped and those rows
+    # would sit over retention for another 24 hours.
+    ran_again = maybe_prune_sightings(db, 100, now_ts=NOW, max_seconds=0)
+    assert ran_again is True, "an incomplete prune was stamped and the retry was skipped"
+    assert _sightings_left(db) < first_left, "the second run made no progress"
+
+
+def test_a_complete_prune_IS_stamped_so_it_does_not_run_every_tick(db):
+    """The other direction, so the fix cannot be "never stamp anything".
+    A finished prune must still hold off for its interval."""
+    _fill_sightings(db, n_old=3, n_new=2)
+
+    assert maybe_prune_sightings(db, 100, now_ts=NOW) is True
+    assert _sightings_left(db) == 2
+    # Same now_ts, interval not elapsed, and this one DID finish.
+    assert maybe_prune_sightings(db, 100, now_ts=NOW) is False, (
+        "a completed prune was not stamped, so it will re-run every single tick"
+    )
+
+
+def test_evidence_mirrors_it(db, monkeypatch):
+    """The two prunes mirror each other deliberately; a fix applied to one and
+    not the other is the shape this repo has shipped before."""
+    monkeypatch.setattr(Database, "DELETE_BATCH_ROWS", 5)
+    alert_id = db.add_alert(ts=NOW, rule_name="r", mac=None, message="m", severity="low")
+    with db.transaction() as conn:
+        conn.executemany(
+            "INSERT INTO evidence_snapshots (alert_id, mac, captured_at, "
+            "kismet_record_json, do_not_publish) "
+            "VALUES (?, 'aa:bb:cc:dd:ee:ff', ?, '{}', 0)",
+            [(alert_id, NOW - 200 * DAY)] * 40,
+        )
+    ran = maybe_prune_evidence(db, 100, now_ts=NOW, max_seconds=0)
+    assert ran is True
+    left = db._conn.execute("SELECT COUNT(*) FROM evidence_snapshots").fetchone()[0]
+    assert left > 0
+    assert maybe_prune_evidence(db, 100, now_ts=NOW, max_seconds=0) is True, (
+        "an incomplete evidence prune was stamped and the retry was skipped"
+    )
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM evidence_snapshots"
+    ).fetchone()[0] < left
+
+
+def test_the_INFO_line_does_not_claim_the_policy_holds_when_it_does_not(db, monkeypatch, caplog):
+    """An operator reads the INFO line, not the WARNING above it. "Pruned N
+    sightings older than D days" reads as "the retention policy was applied"."""
+    monkeypatch.setattr(Database, "DELETE_BATCH_ROWS", 5)
+    _fill_sightings(db, n_old=50, n_new=2)
+    with caplog.at_level(logging.INFO):
+        result = prune_old_sightings(db, 100, now_ts=NOW, max_seconds=0)
+    assert result.complete is False
+    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    pruned = [m for m in infos if "Pruned" in m]
+    assert pruned, infos
+    assert all("INCOMPLETE" in m for m in pruned), (
+        f"the INFO line still reads as a completed policy application: {pruned}"
+    )

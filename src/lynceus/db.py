@@ -425,6 +425,22 @@ class _BatchResult(NamedTuple):
     complete: bool
 
 
+class PruneResult(NamedTuple):
+    """What a retention prune actually achieved.
+
+    ⛔ ``complete`` is why this is not the bare ``(deleted, oldest)`` pair it
+    used to be. Both prunes previously warned about an incomplete run and then
+    threw the fact away, so ``maybe_prune_*`` stamped the run as done and the
+    next attempt waited out a full 24-hour interval with rows still over
+    retention, while the INFO line read *"Pruned N ... older than D days"*.
+    The warning was there; nothing acted on it.
+    """
+
+    deleted: int
+    oldest: int | None
+    complete: bool
+
+
 class Database:
     def __init__(self, path: str) -> None:
         # sqlite3.connect with a nested non-existent path fails with the
@@ -636,6 +652,34 @@ class Database:
     # is how a retention promise quietly becomes false.
     _DELETE_MAX_BATCHES = 100_000
 
+    def _count_matching(
+        self, table: str, where: str, params: Sequence[object]
+    ) -> int:
+        """How many rows still match, for a prune that stopped early.
+
+        ⛔ Under ``self._lock``. This read is the one a cold read previously
+        found taking the connection WITHOUT it, on the failure path whose
+        diagnostics have to be the most trustworthy thing in the function.
+        Another thread can own a transaction on this same connection, so an
+        unguarded read could participate in or observe that thread's
+        transaction and report a count that never existed.
+
+        ``self._lock`` and NOT ``transaction()``: this is a read, and opening a
+        write transaction to count rows would reacquire exactly the lock
+        ``delete_in_batches`` spent its whole design budget learning to hand
+        back.
+
+        ⭐ Shared by BOTH early exits, the batch bound and the deadline, so the
+        two cannot drift into different locking. The lock discipline here was
+        got wrong once already; one copy is what stops it being got wrong again
+        in only one of them.
+        """
+        with self._lock:
+            return self._conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {where}",  # noqa: S608 - literal
+                tuple(params),
+            ).fetchone()[0]
+
     def delete_in_batches(
         self,
         table: str,
@@ -643,6 +687,7 @@ class Database:
         params: Sequence[object],
         *,
         batch_size: int | None = None,
+        max_seconds: float | None = None,
     ) -> _BatchResult:
         """Delete matching rows in bounded transactions.
 
@@ -702,14 +747,30 @@ class Database:
         finite and this change halved it: a backlog roughly twice the largest
         measured here would breach it, sooner on Pi-class storage.
 
-        ⇒ **The complete answer is a DEADLINE, not a smaller batch**: stop after
-        N seconds, return ``complete=False``, and let ``maybe_prune_*`` decline
-        to stamp the run so the next tick continues instead of waiting out
-        another interval — exactly the precedent already set for
-        ``retention_days=None``. The machinery for it is here (``complete`` is
-        plumbed through to both callers); the deadline itself is deliberately
-        NOT built yet, because no measured case breaches the threshold and
-        guessing at N without measuring the Pi would be tuning by vibe.
+        ⇒ **The answer is a DEADLINE, not a smaller batch**, and it is now
+        built: ``max_seconds`` stops the loop after that much elapsed time,
+        returns ``complete=False``, and ``maybe_prune_*`` declines to stamp the
+        run so the next tick continues instead of waiting out another interval.
+        That is exactly the precedent already set for ``retention_days=None``.
+
+        ⭐ **The value is DERIVED, never guessed.** The earlier objection to
+        building this was right about invented constants: picking N without
+        measuring a Pi would be tuning by vibe. So N is not invented. The
+        failure being prevented is the UI calling the daemon stale, and that
+        threshold is already defined as ``2 * poll_interval_seconds``
+        (``webui/app.py`` and ``poller.py`` both derive it). The callers pass
+        **one** poll interval, which is half of it, leaving the other half for
+        the poll work the tick still has to do. Nothing here needs to know how
+        fast the storage is, because the bound is on how long we are willing to
+        spend rather than on how much we expect to get done.
+
+        ⚠️ It does not perturb any measured case above: the slowest was 50.48s
+        against a default deadline of 60s. This is a bound on the tail, not a
+        retune of the known-good path.
+
+        ⛔ **At least one batch always runs.** A deadline shorter than a single
+        batch must still make progress, or a small value would livelock the
+        prune at zero rows forever while every tick reported work.
 
         ⚠️ ``DELETE_BATCH_ROWS`` is a knob but NOT the one for this: measured,
         every batch was already short (max 56.77ms over 401 batches) while 100%
@@ -728,6 +789,7 @@ class Database:
         )
         deleted = 0
         batches = 0
+        loop_started = time.monotonic()
         while batches < self._DELETE_MAX_BATCHES:
             started = time.monotonic()
             with self.transaction() as conn:
@@ -748,25 +810,29 @@ class Database:
                 # completeness we did not achieve, which is what `complete`
                 # below is for.
                 return _BatchResult(deleted, batches, complete=True)
+            # ⛔ Checked AFTER the short-batch return above, so a slow prune that
+            # actually finished still reports complete=True. Reaching the
+            # deadline is only a failure when rows still match.
+            #
+            # ⛔ And checked BEFORE the yield below: sleeping and then bailing
+            # would hand back time we have already decided not to use.
+            if max_seconds is not None and time.monotonic() - loop_started >= max_seconds:
+                remaining = self._count_matching(table, where, params)
+                logger.warning(
+                    "delete_in_batches stopped on its %.1fs deadline on %s after "
+                    "%d rows in %d batches; %d still match and the next run "
+                    "continues from here",
+                    max_seconds,
+                    table,
+                    deleted,
+                    batches,
+                    remaining,
+                )
+                return _BatchResult(deleted, batches, complete=False)
             # Only yield when there is more to do; never after the last batch.
             if held:
                 time.sleep(min(held, self._YIELD_CAP_SECONDS))
-        # ⛔ Under `self._lock`. This is the one statement in the function that
-        # a cold read found taking the connection WITHOUT it -- the same class
-        # this change exists to eliminate, reintroduced on the failure path
-        # whose diagnostics have to be the most trustworthy thing here. Another
-        # thread can own a transaction on this same connection, so an unguarded
-        # read could participate in or observe that thread's transaction and
-        # report a count that never existed.
-        #
-        # `self._lock` and NOT `transaction()`: this is a read, and opening a
-        # write transaction to count rows would reacquire exactly the lock this
-        # function spent its whole design budget learning to hand back.
-        with self._lock:
-            remaining = self._conn.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE {where}",  # noqa: S608 - literal
-                tuple(params),
-            ).fetchone()[0]
+        remaining = self._count_matching(table, where, params)
         logger.warning(
             "delete_in_batches hit its %d-batch bound on %s after %d rows; "
             "%d still match and will be retried on the next run",

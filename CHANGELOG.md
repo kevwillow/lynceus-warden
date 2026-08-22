@@ -483,6 +483,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the primary checkout's `src` absolutely, so `PYTHONPATH=<worktree>/src` is the
   only way to test a worktree at all. `PYTHONHOME`, `VIRTUAL_ENV`, `PIP_*` and
   `CONDA_*` are stripped for the same reason.
+- **A retention prune could stop early and be recorded as having finished.**
+  Two faults that had to be fixed together, because either one alone is worse
+  than neither.
+
+  **The bound was on iterations, not time.** `_DELETE_MAX_BATCHES` caps how many
+  batches run, not how long they take: per batch there is up to 5s waiting on
+  SQLite, unbounded time in the DELETE itself, and up to 50ms yielding, and
+  concurrent insertion can keep every batch full to the bound. The prune runs
+  inside `poll_once`, so nothing polls throughout, and the measured worst case
+  already spent 50.48s on 2,000,000 sightings against a 120s stale threshold.
+
+  ⭐ **The new deadline is derived, not guessed**, which was the whole objection
+  to building it earlier: picking a number without measuring a Pi would be
+  tuning by vibe. So it is not a new number. The failure being prevented is the
+  UI calling the daemon stale, and that threshold is already defined, in two
+  places, as `2 * poll_interval_seconds`. The poller passes exactly one
+  interval, half of it, leaving the other half for the poll work the tick still
+  owes. Nothing needs to know how fast the storage is, because the bound is on
+  how long we are willing to spend rather than on how much we expect to finish.
+  It perturbs no measured case: the slowest was 50.48s against a 60s default.
+
+  **And an unfinished prune was stamped as done.** `maybe_prune_*` recorded its
+  state key unconditionally, so a prune that bailed was treated as complete and
+  the next attempt waited out a whole interval, 24 hours by default, with rows
+  still over retention. The log line read *"Pruned N sightings older than D
+  days"*, which is a claim that the policy now holds. The warning about the
+  early exit was already there. Nothing acted on it. Now only a completed prune
+  stamps, which is the precedent `retention_days=None` had already set, and the
+  INFO line carries the qualification too, because that is the line an operator
+  actually reads.
+
+  ⚠️ A deliberate consequence: while a backlog is being worked off, the prune
+  runs every tick rather than daily. That is the point. Bounded work per tick
+  that makes progress beats one unbounded run per day that may never finish.
 
 - **Turning on remote access broke every form on the site.** `ui_allow_remote:
   true` attached `Secure` to the CSRF cookie, and nothing in lynceus serves TLS.

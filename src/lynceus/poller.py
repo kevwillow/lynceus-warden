@@ -2399,9 +2399,21 @@ def poll_once(
     # test_returns_none_oldest_when_table_is_emptied asserts a wholly-stale
     # table is fully deleted. Any "elapsed since last prune" bound is computed
     # from the same corrupt clock, so it is circular.
+    # ⭐ The prune deadline is DERIVED from the staleness threshold it exists to
+    # protect, never invented. The UI and `_check_poller` both call this daemon
+    # stale at 2 * poll_interval_seconds; a prune runs INSIDE this tick, so
+    # spending one whole interval on it leaves the other for the poll work and
+    # keeps the tick clear of that threshold. Nothing here needs to know how
+    # fast the storage is, which is what made a hardcoded N unjustifiable.
+    prune_deadline = float(max(1, config.poll_interval_seconds))
     if clock_trusted:
         try:
-            maybe_prune_evidence(db, config.evidence_retention_days, now_ts=now_ts)
+            maybe_prune_evidence(
+                db,
+                config.evidence_retention_days,
+                now_ts=now_ts,
+                max_seconds=prune_deadline,
+            )
         except Exception as e:
             logger.warning("Evidence prune failed: %s", e)
     # The dead-man's switch. Placed AFTER the tick counters and the watermark
@@ -2423,7 +2435,12 @@ def poll_once(
     # for the same reason: a prune failure must not stop the poll loop.
     if clock_trusted:
         try:
-            maybe_prune_sightings(db, config.sightings_retention_days, now_ts=now_ts)
+            maybe_prune_sightings(
+                db,
+                config.sightings_retention_days,
+                now_ts=now_ts,
+                max_seconds=prune_deadline,
+            )
         except Exception as e:
             logger.warning("Sightings prune failed: %s", e)
     else:
