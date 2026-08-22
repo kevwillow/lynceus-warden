@@ -419,6 +419,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The filter bars stop shouting.**
+  Two things made the busiest pages loud, and both were inherited defaults
+  rather than choices. Pico sizes a form's submit button to the full width of
+  its container, so the alerts page carried two full-width filled buttons at
+  1408 pixels each, plus a 459 pixel "filter"; recolouring the accent to the
+  Argus red made that the strongest colour on the page. Submits are sized to
+  their label now, 112 to 235 pixels. The per-row Acknowledge and Watch
+  controls are untouched: they were equalised to a shared width on purpose.
+
+  The quick-filter chips on the devices page were spread across the full width
+  with about 1019 pixels of gap between them, because they live in a nav
+  element and Pico spaces every nav with space-between, which the rule for
+  those chips set everything except. They group at the left now and read as one
+  set of related filters rather than a toolbar.
+
+
 - **The web UI has a token layer, and the alerts table fits a laptop again.**
   A palette, type scale and spacing scale now live in
   `webui/static/tokens.css` and are mapped onto Pico's own custom properties,
