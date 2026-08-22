@@ -1037,13 +1037,13 @@ details:has(> .probe-reveal) > summary::after {
 /* Block sections (items 2–5 of the hierarchy). Tight margins; the
    <h3> in each provides the visual break, no card border needed. */
 .block { margin: 1em 0; }
-.block > h3 { margin: 0.2em 0 0.5em; font-size: 1em; }
+.block > h3 { margin: 0.2em 0 0.5em; font-size: var(--lyn-text-lg); }
 /* "The largest, loudest block on the page. This is the work." An earlier pass
    gave .block-alerts exactly the same heading size and spacing as activity,
    trend and recently-seen-devices, so the markup claimed a hierarchy the CSS
    did not create. The unacked block now outranks its siblings visually. */
 .block-alerts > h3 {
-    font-size: 1.15em;
+    font-size: var(--lyn-text-xl);
     margin-top: 0.1em;
 }
 .block-alerts { margin-bottom: 1.6em; }
@@ -1201,8 +1201,8 @@ textarea:focus-visible,
    dashboard without sacrificing legibility. Pico's defaults add 1rem
    of vertical rhythm between every block; on a status-line + 4-section
    page that adds up to hundreds of pixels of dead space. */
-main > h2 { margin: 0.4em 0 0.6em; font-size: 1.4em; }
-.block h3 { font-weight: 600; }
+main > h2 { margin: 0.4em 0 0.6em; font-size: var(--lyn-text-2xl); }
+.block h3 { font-weight: var(--lyn-weight-bold); }
 /* Trim table cell vertical padding on the home page (full Pico default
    is ~1rem each side, which made a 5-row alerts table ~250px tall). */
 .alerts-table th,

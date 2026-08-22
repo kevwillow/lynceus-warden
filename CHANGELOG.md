@@ -393,6 +393,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The web UI has a token layer, and the alerts table fits a laptop again.**
+  A palette, type scale and spacing scale now live in
+  `webui/static/tokens.css` and are mapped onto Pico's own custom properties,
+  so the whole dashboard restyles without a single template being edited. That
+  matters because the templates are where earlier releases put their honesty
+  fixes, and regenerating markup would have quietly undone them.
+
+  The measured problem was scale, not width. Pico steps the root font size up
+  to 131.25% as a window widens, so this dashboard rendered every table cell at
+  20px and got *fewer* rows the bigger the screen. The root is back to 100%,
+  which also hands the choice to whatever the reader set as their own browser
+  default. Measured at a 1440px viewport: the alerts table needed 1750px inside
+  a 1400px container and now needs 1408px, so it fits with no column hidden and
+  none removed. The devices table went from 596px of hidden scroll to 69px, and
+  a table row went from 52px tall to 32px, which is about 38% more rows on a
+  screen.
+
+  Before this, the Message column on `/alerts` was rendered roughly two
+  characters wide in a 1440px window, so an operator could not read any alert
+  message on that page at all.
+
+  Links, buttons and focus rings now use the same red as the Argus mark instead
+  of the browser default blue. In dark mode they use a lighter tint of that red:
+  measured, `#c8102e` scores 3.30:1 on the dark ground, which fails the WCAG AA
+  floor of 4.5:1 for body text, so the shipped dark value is `#e8556b` at
+  5.49:1. The tint keeps the hue, which is what the sibling relationship with
+  Argus actually rests on, and `tests/test_webui_tokens.py` pins it to within 12
+  degrees of the colour `scripts/make_banner.py` draws the mark in.
+
+  Geist Mono is self-hosted, under `webui/static/fonts/` with its SIL OFL
+  licence beside it. It is a legibility change rather than a branding one: MACs,
+  rule names, timestamps and RSSI values are already set in mono, so on a
+  data-bearing page those columns are most of what gets read, and a face drawn
+  for tabular figures keeps a column of numbers aligned on the digit.
+
+  🪤 `[tool.setuptools.package-data]` globs are single level, so the new
+  `fonts/` directory needed its own entry. Without it the font is present in
+  every checkout, referenced correctly by the CSS, and simply absent from the
+  built wheel, where it degrades to a fallback face instead of failing. There is
+  a test asserting every asset the CSS references is on disk, covered by a
+  package-data pattern, and actually served over HTTP.
+
+
 - **The alert action buttons no longer resize when you use them.** Acknowledge,
   unack and Watch were sized by their own labels, measured at 124px and 68px for
   Watch, so acknowledging a row swapped the label to "unack" and the button

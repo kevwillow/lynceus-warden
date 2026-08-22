@@ -1,0 +1,294 @@
+/* The token layer: the design system's vocabulary, and nothing else.
+ *
+ * This file defines custom properties and maps them onto Pico's own variables.
+ * It deliberately contains no layout, no component rules and no selectors that
+ * depend on markup, so restyling the product never risks the wording inside a
+ * template. Sessions of honesty work (#188 fixed 21 surfaces naming a config
+ * file the daemon does not load; #193 fixed 37 that promised the operator
+ * something unreachable) live in those templates, and a visual rewrite that
+ * regenerated markup would silently undo them.
+ *
+ * Load order is set in app.css: pico, then this, then lynceus.css. Cascade
+ * layers outrank specificity entirely, so mapping a --pico-* variable here
+ * beats Pico's own definition no matter how it was selected.
+ *
+ * 🪤 Because `app` outranks `pico` unconditionally, a --pico-* value set only
+ * on :root would also apply in DARK mode, where Pico would otherwise have
+ * replaced it. Every colour token below is therefore declared three times, the
+ * same three tiers lynceus.css already uses:
+ *   1. :root                                     -- light default
+ *   2. @media (prefers-color-scheme: dark) + :not([data-theme="light"])
+ *   3. [data-theme="dark"]                       -- operator's explicit choice
+ * Adding a colour token to only the first tier is the bug this comment exists
+ * to prevent.
+ */
+
+/* ------------------------------------------------------------------ *
+ * Typeface
+ *
+ * ⭐ Self-hosting a mono is a legibility change here, not a branding one.
+ * The UI already sets MACs, rule names, timestamps and RSSI values in mono,
+ * and on every data-bearing page those columns are the majority of what an
+ * operator reads. Geist Mono is drawn for tabular figures, so digits align
+ * down a column instead of drifting. Shipped with its SIL OFL licence beside
+ * it, as the source project does.
+ *
+ * `font-display: swap` so a cold cache renders text in the fallback mono
+ * immediately rather than blanking the data columns: this dashboard is read
+ * on a LAN, and an invisible MAC column is worse than an unstyled one.
+ * ------------------------------------------------------------------ */
+@font-face {
+    font-family: "GeistMono";
+    src: url("fonts/GeistMono-Variable.woff2") format("woff2-variations");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
+:root {
+    /* -------------------------------------------------------------- *
+     * Palette -- light
+     *
+     * ⛔ The accent is Argus red. `scripts/make_banner.py` sets the mark in
+     * "the same red Argus uses; these are siblings", and the banner's whole
+     * argument collapses if the UI drifts to another hue. Adamance's --ember
+     * is deliberately NOT imported: this project takes that system's
+     * restraint, not its colour.
+     * -------------------------------------------------------------- */
+    --lyn-ground:        #fbfbfc;
+    --lyn-surface:       #ffffff;
+    --lyn-surface-2:     #f4f4f6;
+    --lyn-line:          #e3e3e8;
+    --lyn-line-strong:   #cfcfd6;
+    --lyn-text:          #16161a;
+    --lyn-muted:         #5a5a66;
+    --lyn-dim:           #6b6b77;
+    --lyn-accent:        #c8102e;
+    --lyn-accent-hover:  #a50d26;
+    --lyn-accent-quiet:  rgba(200, 16, 46, 0.10);
+    --lyn-on-accent:     #ffffff;
+
+    /* -------------------------------------------------------------- *
+     * Type scale
+     *
+     * Measured before it was chosen: body and every table cell rendered at
+     * 20px, because Pico multiplies the browser's font-size by up to 131.25%
+     * on wide viewports. That inflation is why the alerts table needed
+     * 1750px inside a 1400px container on a 1440px laptop.
+     *
+     * ⇒ `html` below returns the root to 100%, which honours whatever the
+     * operator set as their browser default instead of overriding it. Every
+     * size here is relative to that, so the scale follows their choice.
+     * -------------------------------------------------------------- */
+    --lyn-text-xs:       0.75rem;    /* 12px at a 16px root -- badges, notes  */
+    --lyn-text-sm:       0.8125rem;  /* 13px -- captions, secondary detail    */
+    --lyn-text-base:     0.875rem;   /* 14px -- table cells, dense data       */
+    --lyn-text-md:       1rem;       /* 16px -- prose                         */
+    --lyn-text-lg:       1.125rem;   /* 18px -- section headings              */
+    --lyn-text-xl:       1.375rem;   /* 22px -- page heading                  */
+    --lyn-text-2xl:      1.75rem;    /* 28px -- reserved for the banner       */
+
+    --lyn-weight-normal: 400;
+    --lyn-weight-medium: 500;
+    --lyn-weight-bold:   650;
+
+    --lyn-leading-tight: 1.25;   /* table rows: density is the product   */
+    --lyn-leading-normal: 1.5;   /* prose                                */
+
+    --lyn-tracking-caps: 0.06em; /* the small-caps captions on stat tiles */
+
+    /* -------------------------------------------------------------- *
+     * Spacing scale
+     *
+     * ⛔ Non-negotiable: whitespace that costs an operator rows per screen
+     * is a regression here, however well it reads on a landing page. These
+     * steps are tighter than Pico's uniform 1rem block spacing, not looser.
+     * -------------------------------------------------------------- */
+    --lyn-space-0:  0;
+    --lyn-space-1:  0.25rem;
+    --lyn-space-2:  0.375rem;
+    --lyn-space-3:  0.5rem;
+    --lyn-space-4:  0.75rem;
+    --lyn-space-5:  1rem;
+    --lyn-space-6:  1.5rem;
+    --lyn-space-7:  2rem;
+
+    --lyn-radius:   4px;
+    --lyn-hairline: 1px;
+
+    --lyn-mono: "GeistMono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+                Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --lyn-ground:       #0d0d0f;
+        --lyn-surface:      #131317;
+        --lyn-surface-2:    #1a1a20;
+        --lyn-line:         #26262e;
+        --lyn-line-strong:  #35353f;
+        --lyn-text:         #ececef;
+        --lyn-muted:        #a0a0ac;
+        --lyn-dim:          #83838f;
+        /* ⚠️ MEASURED, and the reason this is not #c8102e: Argus red on the
+         * #0d0d0f ground scores 3.30:1, which fails WCAG AA for body text.
+         * This is a tint of the SAME hue (~350deg) lifted until it passes --
+         * 5.49:1 on the ground, 5.24:1 on a raised surface. The sibling
+         * argument is about hue, and hue is what is preserved.
+         * tests/test_webui_tokens.py re-derives both ratios from this file. */
+        --lyn-accent:       #e8556b;
+        --lyn-accent-hover: #f26a7c;
+        --lyn-accent-quiet: rgba(232, 85, 107, 0.16);
+        --lyn-on-accent:    #14060a;
+    }
+}
+
+[data-theme="dark"] {
+    --lyn-ground:       #0d0d0f;
+    --lyn-surface:      #131317;
+    --lyn-surface-2:    #1a1a20;
+    --lyn-line:         #26262e;
+    --lyn-line-strong:  #35353f;
+    --lyn-text:         #ececef;
+    --lyn-muted:        #a0a0ac;
+    --lyn-dim:          #83838f;
+    --lyn-accent:       #e8556b;
+    --lyn-accent-hover: #f26a7c;
+    --lyn-accent-quiet: rgba(232, 85, 107, 0.16);
+    --lyn-on-accent:    #14060a;
+}
+
+/* ------------------------------------------------------------------ *
+ * The root size.
+ *
+ * Pico ships `html { font-size: 100% }` and then steps it to 106.25%,
+ * 112.5%, 118.75%, 125% and 131.25% as the viewport widens. Measured on this
+ * UI that produced a 20px root at both 1280px and 1440px, and 21px at
+ * 1920px -- so the wider the screen, the LARGER the text, and the fewer rows
+ * of alerts an operator sees. For a read-only dashboard whose job is scanning
+ * tabular data that is backwards.
+ *
+ * Returning to 100% hands the decision back to the operator's own browser
+ * setting, which is also the accessible default: a reader who has chosen a
+ * 20px default still gets 20px.
+ * ------------------------------------------------------------------ */
+html {
+    font-size: 100%;
+}
+
+/* ------------------------------------------------------------------ *
+ * Mapping onto Pico.
+ *
+ * Everything below re-points a Pico variable at a token above. No selector
+ * here targets lynceus markup, so the whole product restyles without a
+ * template being edited.
+ * ------------------------------------------------------------------ */
+:root,
+:root:not([data-theme="light"]),
+[data-theme="dark"] {
+    --pico-background-color:        var(--lyn-ground);
+    --pico-color:                   var(--lyn-text);
+    --pico-muted-color:             var(--lyn-muted);
+    --pico-border-color:            var(--lyn-line);
+    --pico-muted-border-color:      var(--lyn-line);
+    --pico-table-border-color:      var(--lyn-line);
+    --pico-table-row-stripped-background-color: var(--lyn-surface-2);
+
+    --pico-card-background-color:            var(--lyn-surface);
+    --pico-card-border-color:                var(--lyn-line);
+    --pico-card-sectioning-background-color: var(--lyn-surface-2);
+
+    --pico-code-background-color:   var(--lyn-surface-2);
+    --pico-code-color:              var(--lyn-muted);
+
+    /* The accent. This one mapping is what removes the default browser blue
+     * from all nine nav links and every link in the product. */
+    --pico-primary:                 var(--lyn-accent);
+    --pico-primary-hover:           var(--lyn-accent-hover);
+    --pico-primary-focus:           var(--lyn-accent-quiet);
+    --pico-primary-underline:       var(--lyn-accent-quiet);
+    --pico-primary-hover-underline: var(--lyn-accent-hover);
+    --pico-primary-background:      var(--lyn-accent);
+    --pico-primary-hover-background: var(--lyn-accent-hover);
+    --pico-primary-border:          var(--lyn-accent);
+    --pico-primary-hover-border:    var(--lyn-accent-hover);
+    --pico-primary-inverse:         var(--lyn-on-accent);
+
+    --pico-h1-color:                var(--lyn-text);
+    --pico-h2-color:                var(--lyn-text);
+    --pico-h3-color:                var(--lyn-text);
+    --pico-h4-color:                var(--lyn-text);
+    --pico-h5-color:                var(--lyn-text);
+    --pico-h6-color:                var(--lyn-text);
+
+    --pico-font-family-monospace:   var(--lyn-mono);
+    --pico-line-height:             var(--lyn-leading-normal);
+    --pico-border-radius:           var(--lyn-radius);
+
+    /* Density. Pico spaces every block by a uniform 1rem; these are the
+     * scale's own steps, and they are tighter, never looser. */
+    --pico-spacing:                     var(--lyn-space-5);
+    --pico-typography-spacing-vertical: var(--lyn-space-5);
+    --pico-block-spacing-vertical:      var(--lyn-space-5);
+    --pico-form-element-spacing-vertical:   var(--lyn-space-3);
+    --pico-form-element-spacing-horizontal: var(--lyn-space-4);
+}
+
+/* ------------------------------------------------------------------ *
+ * The heading scale.
+ *
+ * Measured before it was changed: on `/`, the two sibling section headings
+ * rendered at DIFFERENT sizes -- `recent unacknowledged alerts` at 23px and
+ * `activity` at 20px -- and 20px was exactly the body size, so that heading
+ * was separated from the text beneath it by weight alone. Pico's own h1-h6
+ * ramp (2rem down to 1rem) is a document scale, far too loud for a dashboard
+ * whose pages are mostly tables.
+ * ------------------------------------------------------------------ */
+h1 { --pico-font-size: var(--lyn-text-2xl); }
+h2 { --pico-font-size: var(--lyn-text-xl); }
+h3 { --pico-font-size: var(--lyn-text-lg); }
+h4 { --pico-font-size: var(--lyn-text-md); }
+h5 { --pico-font-size: var(--lyn-text-base); }
+h6 { --pico-font-size: var(--lyn-text-sm); }
+
+h1, h2, h3, h4, h5, h6 {
+    font-weight: var(--lyn-weight-bold);
+    line-height: var(--lyn-leading-tight);
+    letter-spacing: -0.012em;
+}
+
+/* ------------------------------------------------------------------ *
+ * Tables are the product.
+ *
+ * Density lives here: a cell set at the base step with tight leading, and
+ * a header row that reads as a label rather than as another data row.
+ * ------------------------------------------------------------------ */
+table {
+    font-size: var(--lyn-text-base);
+}
+
+th {
+    font-size: var(--lyn-text-xs);
+    font-weight: var(--lyn-weight-medium);
+    letter-spacing: var(--lyn-tracking-caps);
+    text-transform: uppercase;
+    color: var(--lyn-muted);
+    white-space: nowrap;
+}
+
+td, th {
+    padding-top: var(--lyn-space-2);
+    padding-bottom: var(--lyn-space-2);
+    line-height: var(--lyn-leading-tight);
+}
+
+/* The data columns the mono was chosen for. `font-variant-numeric` is what
+ * makes a column of RSSI values and counts line up on the digit. */
+code, kbd, samp, pre, .mac-cell {
+    font-family: var(--lyn-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+td {
+    font-variant-numeric: tabular-nums;
+}
