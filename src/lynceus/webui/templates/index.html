@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}home &mdash; lynceus{% endblock %}
+{% block title %}home &middot; lynceus{% endblock %}
 {% block content %}
   {% include "_topnav.html" %}
   <h2>home</h2>
@@ -76,7 +76,7 @@
                 title="{{ last_tick.completed_at | unix_to_utc_human }}">
             {{- last_tick.completed_at | relative_time(now_ts=now_ts) -}}
           </time>,
-          ahead of this machine&#39;s clock &mdash; whether the daemon is still
+          ahead of this machine&#39;s clock, so whether the daemon is still
           polling cannot be told from it
         {% else %}
         <time datetime="{{ last_tick.completed_at | unix_to_iso }}"

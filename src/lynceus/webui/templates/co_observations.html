@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}co-observations &mdash; lynceus{% endblock %}
+{% block title %}co-observations &middot; lynceus{% endblock %}
 {% block content %}
   {% include "_topnav.html" %}
 
@@ -26,7 +26,7 @@
         <a href="/devices/{{ mac }}/co-observations?w={{ preset }}"
            {% if preset == proximity_seconds %}aria-current="true"{% endif %}>{{ preset }}s</a>{% if not loop.last %} &middot; {% endif %}
       {% endfor %}
-      &mdash; a relationship that dissolves as W tightens is worth knowing about.
+      A relationship that dissolves as W tightens is worth knowing about.
     </p>
   </article>
 
@@ -122,7 +122,7 @@
         {% endif %}
         <small>
           One run usually contains several pairs, so this list is longer than
-          those counts. <strong>Rows here are not encounters</strong> &mdash; the
+          those counts. <strong>Rows here are not encounters</strong>. The
           run counts above are the ones to read as events.
         </small>
       </p>
@@ -163,7 +163,7 @@
       <header><strong>Too few runs to say</strong></header>
       <p>
         Only a small share of these devices' own runs coincided with this one,
-        but each has been logged fewer than {{ coverage_min_runs }} times &mdash;
+        but each has been logged fewer than {{ coverage_min_runs }} times, so
         too little of a record to tell "usually somewhere else" from "barely
         seen at all".
       </p>
@@ -212,7 +212,7 @@
         <small>
           This is a share of <em>each device's own logged runs</em>, not a share
           of everything at the location. It says a device is frequently
-          <strong>observable</strong> here &mdash; not that it is present, and
+          <strong>observable</strong> here, not that it is present, and
           not that it is unrelated. A phone physically present the whole time
           may be detectable in very few runs.
         </small>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}alert #{{ alert.id }} &mdash; lynceus{% endblock %}
+{% block title %}alert #{{ alert.id }} &middot; lynceus{% endblock %}
 {% block content %}
   {% include "_topnav.html" %}
   <p><a href="/alerts">&larr; back to alerts</a></p>
@@ -66,7 +66,7 @@
         {% if alert.watchlist_metadata.source_excerpt %}
           {% if alert.watchlist_metadata.source_excerpt | length > 200 %}
             <details>
-              <summary>(excerpt &mdash; click to expand, {{ alert.watchlist_metadata.source_excerpt | length }} chars)</summary>
+              <summary>(excerpt, click to expand, {{ alert.watchlist_metadata.source_excerpt | length }} chars)</summary>
               <blockquote>{{ alert.watchlist_metadata.source_excerpt }}</blockquote>
             </details>
           {% else %}
@@ -173,7 +173,7 @@
             <code>{{ allowlist_match.pattern_type }}</code> entry
             <code>{{ allowlist_match.pattern }}</code> in
             <code>{{ allowlist_ui_file() }}</code>, which covers more than this
-            device &mdash; remove it on the <a href="/allowlist">allowlist
+            device. Remove it on the <a href="/allowlist">allowlist
             page</a>.</em></p>
         {% else %}
           <p class="dim"><em>Configured in <code>{{ allowlist_file() }}</code> (operator-managed); edit that file directly to remove.</em></p>
@@ -199,7 +199,7 @@
             <code>{{ allowlist_match.pattern_type }}</code> entry
             <code>{{ allowlist_match.pattern }}</code> in
             <code>{{ allowlist_ui_file() }}</code>, which covers more than this
-            device &mdash; cancel it on the <a href="/allowlist">allowlist
+            device. Cancel it on the <a href="/allowlist">allowlist
             page</a>.</em></p>
         {% else %}
           <p class="dim"><em>Snooze configured in <code>{{ allowlist_file() }}</code> (operator-managed); edit that file directly to cancel.</em></p>

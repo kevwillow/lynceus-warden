@@ -419,6 +419,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The web UI's prose follows the house rule now: no em dashes.**
+  99 sentences across 22 templates were restructured rather than having their
+  punctuation swapped, so a dash joining two clauses became either two
+  sentences or an explicit connective that says which way the logic runs. Page
+  titles use the same separator the footer already used.
+
+  Three things were deliberately left alone, and each would have been a
+  regression to change. The em dash that stands for an empty value in a table
+  cell is a UI convention rather than prose, and six tests assert it. Jinja and
+  HTML comments are not operator-facing. Neither are the 77 dashes in
+  `webui/app.py`, which are Python docstrings and code comments, plus three
+  helpers that return the empty-value dash.
+
+
 - **The filter bars stop shouting.**
   Two things made the busiest pages loud, and both were inherited defaults
   rather than choices. Pico sizes a form's submit button to the full width of

@@ -70,6 +70,12 @@ SNOOZE_ALSO_EXPLANATION = "You have also snoozed this entry's rule type."
 def _rules_file_is_fine(cfg, *, tail: str = ".") -> str:
     """The "your rules file is fine" sentence, with the path the app loaded.
 
+    ⚠️ The `tail` needles moved from " — lift it" to ". Lift it" on
+    2026-08-22 with the em dash sweep across `webui/**`. The SENTENCE is
+    unchanged; only the punctuation joining its two halves is, and this needle
+    embeds that punctuation. Both assertions still compare the whole sentence
+    against rendered prose, one positively and one negatively.
+
     ⚠️ Was a constant naming `rules.yaml`. The template used to hard-code that
     filename while the daemon loads whatever `rules_path` points at, so this
     needle asserted the defect rather than the behaviour -- and it kept passing
@@ -291,7 +297,7 @@ def test_settings_retracts_the_same_sentence_when_a_snoozed_type_is_also_inert(t
         db.close()
 
     assert "snoozed, not dead" in settings
-    assert _rules_file_is_fine(cfg, tail=" — lift it") not in settings
+    assert _rules_file_is_fine(cfg, tail=". Lift it") not in settings
     assert "also inert" in settings
 
 
@@ -303,7 +309,7 @@ def test_settings_keeps_the_sentence_when_the_snoozed_type_delegates(tmp_path):
     finally:
         db.close()
 
-    assert _rules_file_is_fine(cfg, tail=" — lift it") in settings
+    assert _rules_file_is_fine(cfg, tail=". Lift it") in settings
     assert "also inert" not in settings
 
 
