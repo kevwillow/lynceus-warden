@@ -50,6 +50,20 @@ machine rather than a runner, so they run in neither `make test` nor CI.
 | --- | --- | --- |
 | fresh install | `make release-gates` | a host with at least one capture interface |
 
+⏱️ **The fresh-install gate takes minutes, not seconds.** Measured 2026-08-22 on
+this box: **8m40s**, of which **8m00s** is `lynceus-setup` importing the bundled
+`default_watchlist.csv`, which is 25 MB and 45,663 rows. Load average was 12
+throughout, so a quiet machine will be faster and a Pi much slower. Do not
+"optimise" that away by skipping the import: skipping it is what made the gate
+report success in 21 seconds while proving nothing about threat data.
+
+⚠️ **That 8-minute import runs against a 600-second kill bound**
+(`BUNDLED_IMPORT_TIMEOUT_SECONDS`, `setup/core.py:322`), and a first-time user on
+slower hardware can lose that race. When they do, the wizard prints "Bundled
+threat-data import failed ... you can retry later" **and exits 0**, so nothing
+downstream treats it as a failure. The gate therefore counts rows in `watchlist`
+rather than trusting the wizard's exit code.
+
 `addopts` carries `-m 'not diagnostic and not release_gate'`, so the default
 suite deselects them. Run them with `pytest -m release_gate`, which overrides
 the marker expression because a command-line `-m` wins over the one in

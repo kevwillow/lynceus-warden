@@ -23,8 +23,22 @@ test:
 # It is the release evidence, so it is deliberately NOT part of `make test`:
 # folding it in would make the everyday suite fail on any laptop without a
 # capture interface, and a target that fails for everyone stops being read.
+#
+# ⛔ PYTEST_ADDOPTS is cleared, and the run must leave a SENTINEL behind.
+# Measured 2026-08-22: `PYTEST_ADDOPTS=--collect-only make release-gates` exited
+# 0 and printed "1/4626 tests collected", having executed nothing. A release
+# gate that reports success without running is worse than no gate, and pytest's
+# exit code cannot tell the two apart, because collecting nothing successfully
+# is a success. So the target asserts a file the gate itself writes.
 release-gates:
-	pytest -m release_gate -v
+	@rm -f "$(CURDIR)/.release-gate-ran"
+	env -u PYTEST_ADDOPTS LYNCEUS_GATE_SENTINEL="$(CURDIR)/.release-gate-ran" \
+		pytest -m release_gate -v
+	@test -s "$(CURDIR)/.release-gate-ran" || { \
+		echo "⛔ pytest exited 0 but no gate body ran. Nothing is proven."; \
+		exit 1; }
+	@echo "✅ gates that actually executed:"; cat "$(CURDIR)/.release-gate-ran"
+	@rm -f "$(CURDIR)/.release-gate-ran"
 
 # Lint only. Kept separate from format-check so this stays a gate that is
 # expected to pass: a permanently-red target is a target people stop reading.
