@@ -4,7 +4,7 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0] — UNRELEASED
+## [1.0.0], UNRELEASED
 
 > ⚠️ **The version literals are now `1.0.0`, but this release is NOT cut.**
 > Updated 2026-08-20: `pyproject.toml`, `src/lynceus/__init__.py` and the
@@ -53,36 +53,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pointing at a path. ⚠️ None of them was a Markdown link, so
   `test_docs_links.py` would not have caught any of it.
 
-- **The Find My tracker alert has now fired on a real tracker, off the air —
-  and `scripts/audit/repro_live_find_my_alert.py` ships so you can reproduce
-  it.** Measured 2026-08-20: a genuine `find_my_separated` advertisement was
+- **The Find My tracker alert has now fired on a real tracker, off the air, and
+  `scripts/audit/repro_live_find_my_alert.py` ships so you can reproduce it.**
+  Measured 2026-08-20: a genuine `find_my_separated` advertisement was
   received by the production scanner, decoded, persisted, matched the shipped
   `apple_find_my` rule, and produced an alert row with a notification
-  dispatched — through `config/rules.yaml` as shipped, on a real adapter.
+  dispatched, all through `config/rules.yaml` as shipped, on a real adapter.
 
   ⚠️ **Correction to this entry as first written.** It claimed the adapter was
   "asserted powered before and after the window". A cold read found that the
   harness took `--address` for the power guard and `--index` for the scanner as
   *independent* arguments, and the published run passed an address belonging to
-  a different controller than the one that scanned — so the guard vouched for
-  the wrong adapter and added nothing. Both harnesses now refuse to start
+  a different controller than the one that scanned, so the guard vouched for the
+  wrong adapter and added nothing. Both harnesses now refuse to start
   unless the two agree. **The result itself is unaffected:** an advert arriving
   and raising an alert proves the scanner was live at that moment, which is
   stronger than any before/after check. Recorded rather than quietly amended,
   because the same defect had already been fixed in the other harness and was
-  reintroduced here — a lesson does not generalise itself.
+  reintroduced here. A lesson does not generalise itself.
 
   This was the last unproven hop, and it could not have been proven earlier:
   the rule shipped commented out until this release enabled it. The pieces were
-  already hardware-validated — the capture bridge end to end from inside the
-  daemon, the decoder against 204 real Find My frames — but the joint event was
-  not.
+  already hardware-validated. The capture bridge had been proven end to end from
+  inside the daemon, and the decoder against 204 real Find My frames. The joint
+  event had not.
 
   ⛔ **What the run did not prove, recorded beside what it did:** push delivery
   (the notifier was called with the right payload; no real ntfy push was sent),
   the daemon's own restart-and-retry scheduling (the flush was driven directly
-  — production logic, not production scheduling), and identity across rotations
-  (one tracker, one advert, no rotation in the window).
+  by production logic rather than production scheduling), and identity across
+  rotations (one tracker, one advert, no rotation in the window).
 
   🪤 The reason this went unmeasured for so long was **the instrument, not the
   radio.** The measurement harness had never once run to completion: its power
@@ -98,8 +98,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   whether it is actually on.** The decoder, the three-valued separation state
   and the rule were all built, tested and shipped commented out; the capability
   existed and nothing reached it. `find_my_separated` means a tracker is not
-  near its owner — the AirTag in your bag that is not yours — and that is now
-  alerted on out of the box.
+  near its owner, which is the AirTag in your bag that is not yours, and that is
+  now alerted on out of the box.
 
   **A Kismet-only install sees no behavioural change, and that is structural
   rather than a promise.** Nothing but the passive BLE bridge ever populates
@@ -111,19 +111,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   `find_my_paired` is deliberately **not** matched. Every passer-by's own
   tracker advertises that form, and alerting on it would produce a permanent
-  stream of other people's belongings. The unqualified `find_my` form — an
-  advert in neither observed shape — *is* matched, because treating an
-  unmeasured state as benign is how a detector goes quiet about the case nobody
-  anticipated.
+  stream of other people's belongings. The unqualified `find_my` form, an advert
+  in neither observed shape, *is* matched. Treating an unmeasured state as
+  benign is how a detector goes quiet about the case nobody anticipated.
 
   The setup wizard emits the rule too, active when the BLE bridge is enabled and
   commented with an explanation when it is not. That covers every path that
-  writes `rules.yaml`, including the one the CLI writes after applying config —
+  writes `rules.yaml`, including the one the CLI writes after applying config,
   which previously overwrote the correct file moments after it was produced.
 
 - **Setup no longer replaces a hand-authored `rules.yaml` because you turned a
   radio on.** Enabling the passive BLE bridge is an answer about capture, not
-  permission to rewrite a detection ruleset — and a bridge-only reconfigure was
+  permission to rewrite a detection ruleset, and a bridge-only reconfigure was
   measured destroying one, with no confirmation and no backup. The bridge may
   now create that file when it is absent and will never overwrite it; the step
   says which it did. Selecting watchlist rule types is still the operator
@@ -137,7 +136,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   The check distinguishes "no enabled rule consumes this" from "the rule state
   could not be determined". A ruleset that will not parse, or an install with no
-  rules file configured, means the daemon does not know — and a warning there
+  rules file configured, means the daemon does not know, and a warning there
   would be a guess. Both setup wizards evaluate readiness before rules are
   chosen and are treated as the unknown case, so neither reports a rule gap to
   an operator who has not been asked about rules yet.
@@ -153,9 +152,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   was written in.** A suppression saved while the host clock was behind stores a
   deadline on the near side of the gap: it ends early, or never begins. The two
   database backends already report that after the fact; the YAML allowlist could
-  not, because the discriminator they use — a row cannot predate its own
-  database's first migration — has no `schema_migrations` row to compare against
-  here.
+  not. The discriminator they use, that a row cannot predate its own database's
+  first migration, has no `schema_migrations` row to compare against here.
 
   It has a different ordering fact instead. This file's list order *is* its write
   order (every writer appends or filters; nothing sorts), so an entry sitting
@@ -164,7 +162,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   Reported as a disagreement, never a verdict: the check cannot tell whether this
   row was stamped behind or the one above it was stamped ahead, and it says so.
-  Only entries whose deadline has already passed are listed — a snooze written on
+  Only entries whose deadline has already passed are listed. A snooze written on
   a behind clock still works if its duration outruns the gap, and telling an
   operator that a suppression they can watch working had failed is the mistake
   the database-side reporter shipped once already.
@@ -174,9 +172,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   contradict and stays invisible. The forward-dated-entry repair can leave the
   file genuinely out of order, which produces a false report if the daemon is
   stopped for longer than the snooze itself. And the check assumes every
-  timestamp was stamped when the entry was written — true of all three paths the
-  UI writes through, but not of a hand-edit, where the date is something the
-  operator typed rather than a record of the save. So the wording offers both
+  timestamp was stamped when the entry was written. That holds for all three
+  paths the UI writes through, but not for a hand-edit, where the date is what
+  the operator typed rather than a record of the save. So the wording offers both
   readings and never says the clock is wrong.
 
   On a filtered view the banner shows only a count and a link back, because the
@@ -186,14 +184,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`/healthz.json` now reports the heartbeat.** The dead-man's switch is what
   distinguishes "nothing is out there" from "the daemon died", and the
-  machine-readable health endpoint said nothing about it at all — six checks,
-  and a switch that had not fired in a year sat behind `status: ok`. The page
+  machine-readable health endpoint said nothing about it at all. Six checks, and
+  a switch that had not fired in a year sat behind `status: ok`. The page
   told you; a monitoring tool could not find out.
 
   It is a separate check rather than part of the poller one because the two fail
   independently: the daemon can be polling perfectly while the notification
-  channel is broken, and vice versa. `is_stale` is reported as null — never a
-  reassuring false — in the three cases where nothing has been established: the
+  channel is broken, and vice versa. `is_stale` is reported as null, never a
+  reassuring false, in the three cases where nothing has been established: the
   heartbeat is off, it has never once been delivered, or the last delivery is
   dated ahead of this machine's clock. `undelivered` stays beside it rather than
   folded into it, because a broken channel and a stopped daemon need different
@@ -205,7 +203,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **A heartbeat, so that silence means something.** Every other failure mode in
   lynceus raises an alert. What was left is the daemon dying or notification
-  delivery breaking — and there the operator's only symptom is silence, which
+  delivery breaking, and there the operator's only symptom is silence, which
   looks exactly like "nothing is out there". With `heartbeat_enabled: true`,
   lynceus pushes a periodic "still watching, N sightings in the last 24h, last
   alert Xh ago", so a heartbeat that *stops* arriving is itself the signal.
@@ -213,7 +211,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ⛔ It never claims health it has not verified. If the poll loop has wedged, if
   observations are failing to persist, or if alerts were written but never
   delivered, the heartbeat says so explicitly and is sent at a higher priority
-  instead of the quiet one — a cheerful "all good" sent while ingest is dead
+  instead of the quiet one. A cheerful "all good" sent while ingest is dead
   would be worse than no heartbeat at all, because it converts unease into false
   confidence. A quiet RF environment is deliberately *not* treated as unhealthy;
   that is the normal case for this tool.
@@ -225,8 +223,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and when it last arrived, because a dead-man's switch nobody has verified is
   a guarantee nobody is actually getting. Off by default; requires ntfy.
 
-- **A Content-Security-Policy, with a per-request nonce.** The UI had none —
-  measured; only `CSRFMiddleware` was installed — while several internal
+- **A Content-Security-Policy, with a per-request nonce.** The UI had none.
+  Measured: only `CSRFMiddleware` was installed, while several internal
   documents asserted that "a strict CSP applies". Escaping was the only barrier
   between an operator-controlled MAC, SSID or location name and script
   execution. A nonce rather than hashes because the `data_table` macro
@@ -238,7 +236,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ⚠️ **Adding a CSP is not a header change; it is an audit of every inline
   handler in the app**, and this one found sixteen. The dashboard had eleven
   `onsubmit="return confirm(...)"` guards on destructive actions. A nonce
-  authorises `<script>` *elements*, never `on*=` attributes — verified in
+  authorises `<script>` *elements*, never `on*=` attributes. Verified in
   headless Chromium: *"Executing inline event handler violates the following
   Content Security Policy directive… The action has been blocked."* And the
   failure was worse than losing the dialog: `onsubmit` cancels a submit by
@@ -246,7 +244,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   submits immediately**. "Permanently silence this device" would have become a
   single unconfirmed click that suppresses its future alerts.
 
-  All eleven now use `data-confirm` with one delegated capture-phase listener —
+  All eleven now use `data-confirm` with one delegated capture-phase listener,
   capture phase because these forms carry `hx-post` and htmx binds its own
   submit handler. The setup wizard, which had **no CSP at all** despite holding
   the Kismet key and ntfy topic in flight and sometimes running as root, gets
@@ -257,7 +255,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   run on every push and pull request across Python 3.11 and 3.12. The README
   invites readers to check its claims by running the suite, and until now
   nothing ran it automatically. The traps recorded in `.claude/gates.md` are
-  encoded in the workflow rather than left as tribal knowledge — in particular
+  encoded in the workflow rather than left as tribal knowledge, in particular
   that `ruff format --check` is red by design and is reported without gating,
   and that the packaging test skips itself silently when `python` is not on
   `PATH`.
@@ -271,7 +269,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A co-observation explorer, so you can see which devices keep turning up
   when you do.** `/devices/<mac>/co-observations` shows the other devices
   logged close in time to one device, at the same location. The query behind
-  it has existed since 0.9.5 and **nothing called it** — the feature was
+  it has existed since 0.9.5 and **nothing called it**. The feature was
   complete in the database and invisible to an operator.
 
   **It makes no statistical claim, and that is the feature.** There is no
@@ -290,7 +288,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no retention policy by default and an unstated horizon would silently
   control every result. Truncation is stated outright. Clicking a pair reveals
   **the actual logged sighting rows and the real Δt between them**, so a count
-  can be audited rather than trusted — and that list says plainly that its
+  can be audited rather than trusted, and that list says plainly that its
   rows are sighting pairs, not encounters.
 
   ⛔ **Off by default, and that is a security control rather than a
@@ -305,15 +303,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   1,440 rows a day, so the table grew without bound and eventually filled a
   Pi. Set `sightings_retention_days` to bound it.
 
-  ⛔ **Unset by default, meaning nothing is ever deleted** — exactly what
-  every existing install already does. Deleting observation history is
+  ⛔ **Unset by default, meaning nothing is ever deleted**, which is exactly
+  what every existing install already does. Deleting observation history is
   irreversible, and an upgrade that silently discarded your evidence would be
   a data-loss bug shipped as a feature. Alerts are never touched; they are
   your record of what was decided and outlive the observations behind them.
 
   Two things worth knowing if you turn it on. `devices.sighting_count` is an
   incrementing counter rather than a row count, so pruning cannot decrement
-  it — `/devices/<mac>` therefore states outright that older sightings were
+  it. `/devices/<mac>` therefore states outright that older sightings were
   deleted, instead of letting "showing N of M" imply they are still
   retrievable. And retention may not be shorter than
   `co_observation.window_days` while that panel is on, because the panel would
@@ -322,7 +320,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Lynceus now receives ASTM F3411 Remote ID over BLE, not just DJI's
   DroneID.** Kismet's UAV phy decodes DJI's proprietary format, which was 51 of
-  427 drone rows in the reference capture — 12%. The other 88% broadcast the
+  427 drone rows in the reference capture, or 12%. The other 88% broadcast the
   open standard and were invisible. A drone's serial now arrives through the
   BLE bridge and matches the existing `watchlist_drone_id_prefix` rules.
 
@@ -331,13 +329,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that alone would have changed nothing, because the frame never arrived: the
   passive scan matches adverts against a BlueZ pattern set, and a Remote ID
   advert is a *single* service-data element filling all 31 bytes of the legacy
-  payload — no Flags element, no manufacturer data, so it matched nothing and
-  BlueZ dropped it before the bridge ever saw it.
+  payload, with no Flags element and no manufacturer data, so it matched nothing
+  and BlueZ dropped it before the bridge ever saw it.
 
   Adding the pattern took the set to eight, and eight is one too many. That
   ceiling was measured rather than assumed, over matched 20-second windows:
   seven patterns captured 14 devices / 81 frames, eight captured **nothing at
-  all** — and eight captured nothing even with no Remote ID pattern involved,
+  all**, and eight captured nothing even with no Remote ID pattern involved,
   which is what proves the limit is the *count* and not the new pattern. So one
   Flags value (`0x00`) was traded for it and the set stays at seven. What that
   trade costs was undetectable over those windows, which is not the same as
@@ -352,8 +350,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fixtures built from the specification, and the Wi-Fi half of the standard is
   not implemented.
 
-- **Every web UI page now carries the AGPL §13 source offer** — version,
-  licence identifier, and a link to the corresponding source, in the footer.
+- **Every web UI page now carries the AGPL §13 source offer:** version, licence
+  identifier, and a link to the corresponding source, in the footer.
 
   It is rendered from Jinja environment globals rather than from each route's
   context dictionary, and that is a deliberate choice rather than a
@@ -361,7 +359,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so a handler that forgets the key renders an empty string. For a version
   number that is cosmetic. For a licence obligation it is a compliance failure
   that nothing would report. The guard enumerates routes from the app itself
-  instead of a hardcoded list — currently 10 HTML routes, all covered — because
+  instead of a hardcoded list, currently 10 HTML routes and all covered, because
   a list stops covering a new route silently, which is a failure mode this
   project has now hit three times.
 
@@ -372,24 +370,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **The alert action buttons no longer resize when you use them.** Acknowledge,
-  unack and Watch were sized by their own labels — measured at 124px, and 68px
-  for Watch — so acknowledging a row swapped the label to "unack" and the
-  button shrank under the cursor. All three now occupy one fixed rectangle
+  unack and Watch were sized by their own labels, measured at 124px and 68px for
+  Watch, so acknowledging a row swapped the label to "unack" and the button
+  shrank under the cursor. All three now occupy one fixed rectangle
   (150×44) in every state, and the state is carried by colour: solid for the
   action that is available, muted outline for the undo. 44px because that is
   the tap-target floor this project already applies to the home page's ack
-  button and had never applied here — these were 30px tall.
+  button and had never applied here. These were 30px tall.
 
 - **The action column is pinned, so the buttons are always on screen.** Both
   alert tables are wider than a 1400px viewport (the /alerts table measured
   2120px inside a 1360px wrapper), and the action column sat past the right
   edge behind a horizontal scroll. It is now sticky. The column budget was cut
-  as well — 2120px to 1739px — by capping the columns that were spending
+  as well, from 2120px to 1739px, by capping the columns that were spending
   width on nothing: the checkbox column alone took 75px to hold a 13px control.
 
 - **The /alerts filter form stopped eating the page.** It marks itself
   `class="grid"`, and the vendored Pico is the *classless* edition which
-  defines no such class — the identical trap already documented for
+  defines no such class. That is the identical trap already documented for
   `.container-fluid`. Eleven filter controls therefore stacked full-width and
   pushed the first alert roughly 450px down the page. The stylesheet now
   supplies the grid the template always asked for, and the page is 5863px tall
@@ -397,17 +395,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **The homepage got navigation tiles and a chart worth reading.** Six tiles
   carry live counts and link to each section, so "is anything wrong over
-  there?" is answerable without clicking. The alerts-per-day strip — one flat
-  colour, no axis, no dates, so a busy day and a bad day drew the same bar — is
-  now stacked by severity with a labelled axis and a legend, backed by a new
-  `alerts_per_day_by_severity` query. The screenshots in `docs/images/` were
+  there?" is answerable without clicking. The alerts-per-day strip was one flat
+  colour with no axis and no dates, so a busy day and a bad day drew the same
+  bar. It is now stacked by severity with a labelled axis and a legend, backed
+  by a new `alerts_per_day_by_severity` query. The screenshots in
+  `docs/images/` were
   regenerated: all five were taken at v0.9.4, before the dashboard restructure,
   and showed a homepage that no longer existed.
 
 - **Relicensed from MIT to AGPL-3.0-or-later, with a commercial licence
   available.** The intent is unchanged from what the project has always been:
   use it, run it, modify it, sell it. What the new licence adds is
-  reciprocity — everyone you pass it to gets the same freedoms and the same
+  reciprocity. Everyone you pass it to gets the same freedoms and the same
   source. AGPL rather than plain GPL because §13 extends that obligation to
   people who only ever reach the software *over a network*, and a daemon whose
   primary interface is a web UI is exactly the case GPL leaves open.
@@ -501,16 +500,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **The home page's alerts tile denied the count printed inside it.** The note
   was chosen from the 30-day high-severity count alone, so a board with seven
   unacknowledged medium alerts and no highs rendered `alerts | 7 | none
-  unacknowledged`. The colour was already right — the tile was flagged `warn` —
-  which is how this survived being looked at. The accessible name mattered more
-  than the layout here: the template's own note says the count is inside the
-  link text precisely so a screen-reader user hears "alerts, 42 unacknowledged,
-  3 high", and what they actually heard was "alerts, 7, none unacknowledged".
+  unacknowledged`. The colour was already right, since the tile was flagged
+  `warn`, which is how this survived being looked at. The accessible name
+  mattered more than the layout here: the template's own note says the count is
+  inside the link text precisely so a screen-reader user hears "alerts, 42
+  unacknowledged, 3 high", and what they actually heard was "alerts, 7, none
+  unacknowledged".
 
   **Two pages sent the operator to `/rules` to lift a snooze under a name that
   page does not use.** `/settings` said *"You silenced `ssid` from the rules
   page"* and `/watchlist` said *"you snoozed `ssid`. Lift it on the rules
-  page"* — but a snooze is keyed on the **rule type**, `watchlist_ssid`, and
+  page"*, but a snooze is keyed on the **rule type**, `watchlist_ssid`, and
   `/rules` offers no control called `ssid`. The helper that maps between the two
   already exists, and its docstring records this exact sentence being wrong
   once before; it was fixed on the watchlist detail page and nowhere else. Both
@@ -520,7 +520,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **"Remove from allowlist" was offered for entries it cannot remove.** The
   allowlist page has an add form with a `pattern_type` dropdown, so an operator
   can put an `oui` or `mac_range` entry in the UI file; it then covers a device,
-  and the alert and device pages offered a removal button — while both remove
+  and the alert and device pages offered a removal button, while both remove
   endpoints delete an exact `mac` entry. Measured: the click returned a success
   redirect, the file was byte-identical afterwards, and the device was still
   silenced.
@@ -531,7 +531,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that is covering the device, the file it lives in, and points at `/allowlist`,
   which removes UI entries properly. The alert-side endpoint also now passes the
   canonical stored pattern, per the contract its device-side twin already
-  followed — a raw MAC could miss a normalised entry and no-op.
+  followed. A raw MAC could miss a normalised entry and no-op.
 
   **`/settings` showed a config path it had not loaded.** The row rendered the
   user-scope default location under a heading calling the page "a read-only view
@@ -540,14 +540,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   entry point requires `--config`, so the real answer was always available and
   simply discarded; it now travels with the config. When it genuinely is not
   known the row says so rather than dressing the default up as the active file,
-  and the log path — which nothing here can resolve, since the scope is an
-  assumption — is labelled as the default it is.
+  and the log path is labelled as the default it is, because nothing here can
+  resolve it: the scope is an assumption.
 
   **A rules file that would not parse became a promise on one page and an
   invisible snooze on another.** Two faults from one flag, found by asking what
   the deliberate three-state liveness verdict turns into downstream.
 
-  `is_pattern_type_snoozed` gated on `known` — the **ruleset** verdict — while
+  `is_pattern_type_snoozed` gated on `known`, the **ruleset** verdict, while
   a snooze is established independently and the same dict was already carrying
   it. So with an unreadable rules file the watchlist list page showed the
   snoozed badge and the detail page one click away showed no snooze at all: two
@@ -556,20 +556,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   That flag also fed `entry_can_alert`, which is now three-valued. The liveness
   verdict returns "live" for an unknown ruleset on purpose, so that an
-  unreadable file cannot mark every row inert — and the detail page turned that
+  unreadable file cannot mark every row inert, and the detail page turned that
   benefit of the doubt into *"This entry alerts at a different severity"* and
   *"what an alert will actually carry"*, a present-tense promise about a daemon
   that cannot load its rules, while `/settings` one click away correctly said
   the verdict could not be read. Collapsing it to false would have been the
   opposite lie, since that branch points at "the reason given elsewhere on this
-  page" and under an unknown verdict there is none. A definite blocker — a
-  snooze, an override suppression, a reserved OUI, an allowlist match — is
+  page" and under an unknown verdict there is none. A definite blocker, meaning
+  a snooze, an override suppression, a reserved OUI or an allowlist match, is
   established without reading the ruleset and still wins outright.
 
   **A snooze could become unliftable from the UI, while two pages told the
   operator where to lift it.** The rules page iterates the rule types present in
-  the loaded ruleset — a deliberate scope, since that file is the authoritative
-  view — so a snooze on a rule type with no rule in the file got no row and no
+  the loaded ruleset, a deliberate scope since that file is the authoritative
+  view, so a snooze on a rule type with no rule in the file got no row and no
   button. Measured: zero unsnooze controls on the default view, on
   `?status=snoozed`, on `?status=all`, and filtered by the type itself, while
   `/watchlist` and `/settings` both said "lift it on the rules page".
@@ -581,13 +581,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   suppressed with nothing on any page saying why.
 
   Such snoozes now get their own block on the rules page with a working
-  unsnooze button — the endpoint already accepted them, since it validates
+  unsnooze button. The endpoint already accepted them, since it validates
   against the rule-type list rather than the loaded file, so nothing but the
   page was missing. With no `rules_path` at all, every active snooze is listed
   there, since none of them can have a row.
 
   **The severity-overrides card retracted itself three lines later.** Its path
-  and status rows are carefully conditional — they say *"the default location —
+  and status rows are carefully conditional. They say *"the default location,
   nothing is configured, so the runtime override layer is off"* and mark the
   file `missing`. The paragraph beneath them was not: *"Edit the file directly
   to customize severity rules. Two layers read this file… restart the daemon to
@@ -602,14 +602,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   **"showing all entries" was printed over a filtered watchlist.** When the page
   is given a `pattern_type` it does not recognise it drops that filter and says
-  so — correctly, and that banner exists because dropping it silently was itself
+  so, correctly, and that banner exists because dropping it silently was itself
   a finding. But the sentence claims the view is unfiltered, and the *other*
   filters survive. Measured: `?pattern_type=bogus&severity=high` on a three-row
   watchlist rendered **one** row under a banner saying all three were shown.
 
   On the list of devices an operator is specifically watching for, a false
   "nothing else is here" points at inaction. The banner now says the
-  unrecognised filter was dropped and that the remaining ones still apply — and
+  unrecognised filter was dropped and that the remaining ones still apply, and
   keeps the original wording for the case where the dropped filter really was
   the only one.
 
@@ -617,7 +617,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   asking what branch the fix newly reaches.** Making the snooze visible under an
   unknown ruleset routed the row into a block whose text asserts *"This entry
   matches, but its alerts are being dropped"* and *"The rule still runs and
-  still matches this pattern"* — four claims about a ruleset that could not be
+  still matches this pattern"*, four claims about a ruleset that could not be
   read, because the liveness predicate returns "live" for unknown as well as for
   delegated. The snooze is known; the matching is not, and they are now reported
   separately.
@@ -625,11 +625,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ⭐ **A cold cross-model read of this branch's own diff found three more, two
   of them real.** The refuted one is worth recording too: it claimed the Find My
   panel could render an empty filename with no `rules_path`, and the test it
-  named to refute itself showed the panel correctly reporting *"unknown — no
+  named to refute itself showed the panel correctly reporting *"unknown, no
   `rules_path` is configured"* instead, with zero empty elements on four pages.
 
   **Three remedies still named `lynceus.yaml`** while `lynceus-ui --config` can
-  point anywhere — the *config path row* had been corrected and the *sentences
+  point anywhere. The *config path row* had been corrected and the *sentences
   telling you to edit it* had not. Same class, one direction only, reintroduced
   by two sentences this change set added itself.
 
@@ -640,8 +640,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   them; the sentence now asks.
 
   **A success message reported a number nothing had established.** The
-  bulk-removal flash takes its count from the query string — the ordinary
-  post/redirect/get shape — and printed it unchecked. Measured, with the
+  bulk-removal flash takes its count from the query string, the ordinary
+  post/redirect/get shape, and printed it unchecked. Measured, with the
   allowlist file byte-identical in every case:
 
   | URL | rendered |
@@ -660,12 +660,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The token was already effectively whitelisted, so an unknown `success` value
   renders nothing; it was only the count that was echoed. An implausible or
   absent one now loses its number instead of being printed as one, and a real
-  bulk removal still reports its count — driven end to end, not simulated by
-  visiting the redirect address.
+  bulk removal still reports its count, driven end to end rather than simulated
+  by visiting the redirect address.
 
   **A snooze affordance told the operator a disabled rule still evaluates.**
   *"Suppresses all alerts from `watchlist_mac` until expiry. The rule still
-  evaluates; only alert emit is gated"* sits on every rule card — including a
+  evaluates; only alert emit is gated"* sits on every rule card, including a
   disabled rule's, where it is flatly false. The snooze is type-level either
   way, so from a disabled rule's card it is also a **wider** action than "the
   rule" suggests: it silences every enabled rule of that type.
@@ -673,25 +673,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The same sentence sits one section up in the per-type summary, where a type
   whose rules are *all* disabled hits the identical falsehood. Both are fixed,
   and the test walks every affordance on the page rather than the one that was
-  reported — fixing the reported site alone is how this class survives.
+  reported. Fixing the reported site alone is how this class survives.
 
   **"The source is dated ahead of this clock" was said about timestamps that
   could not be read at all.** The watchlist-freshness age is unknown in two
-  situations — the reference is stamped ahead of this machine, or it cannot be
-  parsed — and the computation's own comment says so. All three sentences
+  situations, when the reference is stamped ahead of this machine or when it
+  cannot be parsed, and the computation's own comment says so. All three sentences
   rendering that state named only the first. Measured on an import row whose
-  `imported_at` and `exported_at` are both unparseable: *"(not established — the
+  `imported_at` and `exported_at` are both unparseable: *"(not established, the
   source is dated ahead of this clock)"*, with nothing ahead of anything, sending
   the operator to compare host clocks and check NTP over corrupt metadata.
 
   The card now carries which of the two it is, the way the liveness verdict
   already carries its reason. ⭐ The home page needed no change and did not get
-  one: it says "age unknown" and links here, which is honest for both — only a
+  one: it says "age unknown" and links here, which is honest for both. Only a
   surface that names a cause has to know which.
 
   **Three surfaces promised a recurrence alert that the operator's own snooze
   quietly spends.** `watchful_recurrence` is snoozeable from the rules page, and
-  the poller does not *defer* the escalation while it is — it **consumes** it.
+  the poller does not *defer* the escalation while it is. It **consumes** it.
   Its own comment says so: the entry is stamped escalated, no alert row is
   written, and the fire-once guard means lifting the snooze later cannot produce
   it. The escalation is spent, not held.
@@ -704,7 +704,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   half is the part about recovery: lifting it afterwards does not bring the
   alert back.
 
-  This is the stalker-detection surface, so the direction matters — an operator
+  This is the stalker-detection surface, so the direction matters. An operator
   who silenced the type is otherwise waiting for something that will never
   arrive and leaves no trace on the page they are watching.
 
@@ -717,8 +717,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   ⚠️ The obvious implementation would have been wrong, and the wrong version was
   written and run to prove it. `watchlist_liveness` narrows every verdict to the
-  pattern types the operator **already stores** — right for reporting on
-  existing rows, wrong here: on an install with no `mac` rows yet, which is
+  pattern types the operator **already stores**, which is right for reporting on
+  existing rows and wrong here: on an install with no `mac` rows yet, which is
   exactly the install where someone clicks Add for the first time, `mac` is
   absent from the inert set and the liveness predicate answers "live" for a type
   no rule delegates to. The caveat reads the ruleset directly instead, and a
@@ -726,15 +726,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   **And one fix to a fix.** The orphaned-snooze block added above says
   *"re-adding a rule of that type while the snooze stands would leave it
-  silenced"* — which reads as *harmless until you add a rule*. That is true of
+  silenced"*, which reads as *harmless until you add a rule*. That is true of
   every rule type except one: `watchful_recurrence` is raised by the poller
   directly, with no ruleset lookup at all, so a snooze on it is consuming
-  escalations **today** — and a suppressed escalation is spent, not deferred.
+  escalations **today**, and a suppressed escalation is spent, not deferred.
   Those rows now say so.
 
   It came out of a cold read whose stated finding was **refuted**: the claim was
   that the rules summary could see a type with no rule object behind it, and it
-  cannot — that list is built by iterating the loaded rules, so every entry has
+  cannot. That list is built by iterating the loaded rules, so every entry has
   one. Chasing the refutation is what surfaced the real one.
 
   Each fix ships with its control pinned as well as its treatment: the tile
@@ -751,9 +751,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `paths.default_config_dir(scope) / "<name>"` while the shared helper stubbed
   only `resolve_config_path`, which covers `lynceus.yaml` and nothing else.
 
-  ⛔ **CI could not have caught this class.** On a clean HOME — every CI runner
-  — the write silently *succeeds* and the test passes, so green CI was being
-  bought by writing outside the sandbox. It surfaced only on a box with an
+  ⛔ **CI could not have caught this class.** On a clean HOME, which is every CI
+  runner, the write silently *succeeds* and the test passes, so green CI was
+  being bought by writing outside the sandbox. It surfaced only on a box with an
   existing `rules.yaml`, where the overwrite confirmation added in this release
   consumed an answer the test never scripted and it died on `StopIteration`,
   reading like a broken test rather than a test escaping its sandbox.
@@ -763,13 +763,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   prompt, and the prompt is the only reason anyone found out.
 
   Fixed by isolating the **environment** rather than stubbing
-  `default_config_dir` — `tests/test_paths.py` asserts what that function
+  `default_config_dir`. `tests/test_paths.py` asserts what that function
   derives, so stubbing it would gut the tests covering path resolution itself.
   An autouse fixture gives every test its own HOME, per-test rather than
   per-session so one test's leftovers cannot change what the next observes.
 
 - **That isolation was then a guard nothing asserted.** Disarmed, the pollution
-  returns and *every* test still passes — so no future refactor that dropped it
+  returns and *every* test still passes, so no future refactor that dropped it
   would have failed anything. `tests/test_home_isolation_guard.py` now fails if
   it stops working, checking the config directory, each sidecar path, that HOME
   and `XDG_CONFIG_HOME` agree, and that each test gets a distinct home.
@@ -784,24 +784,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A published claim withdrawn: the live Find My proof's power check named the
   wrong controller.** `--address` (the power guard) and `--index` (the scanner)
   were independent arguments, so the recorded run guarded one adapter while
-  scanning another — and a before/after power check never proved *continuous*
+  scanning another, and a before/after power check never proved *continuous*
   operation regardless. Both harnesses now refuse to start unless the two agree.
   ⭐ **The result is unaffected and does not need the claim:** an advert
   arriving and raising an alert proves the scanner was live at that moment,
   which is stronger than either endpoint check.
-- **Twenty-one places where the web UI named a config file the daemon does
-  not load.** `rules_path` and `allowlist_path` are free-form settings — an operator
-  can point either at any filename, and the UI-side allowlist is a *derived*
-  sibling that carries the stem and the extension across, so the companion of
-  `site-devices.yml` is `site-devices_ui.yml`. Seven templates named
-  `rules.yaml`, `allowlist.yaml` and `allowlist_ui.yaml` regardless, across the
-  seven routes that render them.
+- **Twenty-one places where the web UI named a config file the daemon does not
+  load.** `rules_path` and `allowlist_path` are free-form settings. An
+  operator can point either at any filename, and the UI-side allowlist is a
+  *derived* sibling that carries the stem and the extension across, so the
+  companion of `site-devices.yml` is `site-devices_ui.yml`. Seven templates
+  named `rules.yaml`, `allowlist.yaml` and `allowlist_ui.yaml` regardless,
+  across the seven routes that render them.
 
   Seven of the twenty-one were remedies, which is what makes this more than a
   naming slip: *"edit that file directly to remove"* on an alert and on a
   device, and *"Edit rules.yaml on disk and restart lynceus to apply changes"*
   on the rules page. An operator with a non-default path was told to edit a file that does
-  not exist on their machine, and then to restart — so the device stayed
+  not exist on their machine, and then to restart, so the device stayed
   silenced, the restart confirmed nothing had changed, and the page still said
   what it said before.
 
@@ -815,14 +815,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the config the app is actually holding; the nineteenth was the rules page's
   sort label, which meant *file order* and now says so, naming no file at all.
 
-  Two sites can be reached with no `rules_path` set at all — the rules page's
-  footer, and the note on a watchlist row whose OUI prefix can never match — and
-  those two say so in words rather than rendering a blank filename, which would
+  Two sites can be reached with no `rules_path` set at all, the rules page's
+  footer and the note on a watchlist row whose OUI prefix can never match. Those
+  two say so in words rather than rendering a blank filename, which would
   read as a name the operator failed to notice.
 
   ⭐ Two more instances arrived from another branch while this was being
   written, and the new source-level guard named both by file and line within
-  seconds of the rebase — which is the entire reason it is there beside the
+  seconds of the rebase, which is the entire reason it is there beside the
   per-page tests rather than instead of them.
 
   One exemption is recorded, with its reason: the BLE bridge's own remedy names
@@ -834,8 +834,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ⚠️ The guard that covered this text asserted `"allowlist.yaml" in r.text`
   against a fixture whose file *was* named `allowlist.yaml`, so it passed on the
   hard-coded literal it was supposed to be checking. The new tests use
-  deliberately non-default filenames, assert both directions — the configured
-  path present, the default name absent — and were run against nine planted
+  deliberately non-default filenames, assert both directions (the configured
+  path present, the default name absent) and were run against nine planted
   reversions, each of which they caught.
 
 - **Three more ways a hostile number could 500 a page, and a row that could be
@@ -848,8 +848,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The page-number one is worth spelling out because the obvious bound would not
   have worked. The database is asked to skip `(page - 1) x page size` rows, so
   the largest usable page number is the database's own ceiling *divided by* the
-  page size — about twenty times smaller than the ceiling itself at the largest
-  page size. A limit set to the ceiling would have looked correct and fixed
+  page size, which is about twenty times smaller than the ceiling itself at the
+  largest page size. A limit set to the ceiling would have looked correct and fixed
   nothing. The clamp now lives in the shared pagination helper, so every list
   page is covered rather than the one that happened to be reported.
 
@@ -858,7 +858,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already described. The allowlist page could label an entry "snoozed" in the
   table and "expired" in the warning above it. The watchlist detail page was
   worse: it could say a device "cannot alert because it is allowlisted" while
-  listing nothing that was allowlisting it — a state that is impossible if both
+  listing nothing that was allowlisting it, a state that is impossible if both
   answers come from the same moment. Each page now reads the clock once and uses
   that one reading everywhere, and a new check refuses any future page that reads
   it twice without a written reason.
@@ -869,21 +869,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   clock, so it can boot believing the date is days in the future until the
   network corrects it. If the recurrence alert was raised during that window and
   its delivery failed, the retry was spaced using the difference between "now"
-  and the alert's own timestamp — which, once the clock was corrected, was
-  negative. That is always less than the required wait, so the retry declined to
+  and the alert's own timestamp, which was negative once the clock had been
+  corrected. That is always less than the required wait, so the retry declined to
   fire on every subsequent check for as long as the original error had been.
   Measured with a clock a week fast: the alert went undelivered for the whole
   week, while an otherwise identical install re-sent it normally.
 
   A timestamp in the future relative to the current clock can only mean the
-  clock moved backwards, so the elapsed time is not slightly wrong — it is
+  clock moved backwards, so the elapsed time is not slightly wrong. It is
   unknowable, and the spacing no longer suppresses delivery on it. The spacing
   itself is unchanged whenever the clock is sane, which is deliberately covered
   by its own test: without one, simply removing the spacing would look like a
   fix while letting a single outage burn every retry in twenty minutes.
 
 - **Two detections of the same device could lose one of the networks it probed
-  for.** Lynceus records the Wi-Fi network names a device calls out for — useful
+  for.** Lynceus records the Wi-Fi network names a device calls out for, useful
   corroborating evidence when you are working out whether the same device keeps
   turning up around you. It watches through two independent paths, and when both
   saw the same device at the same moment, each read the stored list, added its
@@ -891,7 +891,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   first, so one network name vanished with nothing logged.
 
   Each path now checks the list has not changed underneath it before writing,
-  and if it has, re-reads and merges on top of the other path's result — so both
+  and if it has, re-reads and merges on top of the other path's result, so both
   findings survive rather than one winning. ⛔ Deliberately not the simpler fix
   of "whoever is second gives up": that loses exactly the same evidence, just on
   purpose instead of by accident. In the case that should never happen, where
@@ -900,14 +900,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   earn.
 
 - **A notification that had to be re-sent could reach you twice.** When a
-  notification fails to go out — the usual cause is your phone or the ntfy
-  broker being briefly unreachable — lynceus keeps the record and re-sends it
+  notification fails to go out, and the usual cause is your phone or the ntfy
+  broker being briefly unreachable, lynceus keeps the record and re-sends it
   the next time it sees the device. Deciding to re-send is a read: *this one
   was never delivered, and it has attempts left*. Lynceus watches through two
   independent paths, the main scan loop and the Bluetooth listener, each with
   its own connection to the database, and both could pass that check at the
   same moment and both send. Measured: one detection, two notifications. The
-  same applied to the recurrence escalation — the "this device keeps showing
+  same applied to the recurrence escalation, the "this device keeps showing
   up" message, which is the most serious thing lynceus sends and the one you
   can least afford to see duplicated.
 
@@ -915,7 +915,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to win the right to send before sending, and the one that loses stands down
   because the other is already delivering. ⛔ A re-send is still never skipped
   for any other reason. If the winner's send then fails, nothing is marked
-  delivered and the next pass retries it — a fix for duplicates that quietly
+  delivered and the next pass retries it. A fix for duplicates that quietly
   cost you a notification would be the worse bug, and there is a test that
   races both paths with delivery down to prove it did not.
 
@@ -924,7 +924,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   count over", and it deliberately stops that escalation being re-sent. But the
   scan loop decided whether to re-send from a copy of the device's record taken
   a moment *before* the reset landed, so a reset arriving in that window was
-  ignored and the message went out anyway — from the very record the reset had
+  ignored and the message went out anyway, from the very record the reset had
   retired.
 
   The decision now reads the record as it stands after the update, and a
@@ -935,8 +935,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A row id larger than SQLite can hold returned 500 instead of 404.** FastAPI's
   `int` path converter is an unbounded Python integer; SQLite's INTEGER is signed
   64-bit. So `/alerts/9223372036854775808` reached the query layer and raised
-  `OverflowError` out of the route, on **all fifteen** routes that take a row id —
-  while `9223372036854775807`, one lower, returned 404 correctly.
+  `OverflowError` out of the route, on **all fifteen** routes that take a row
+  id, while `9223372036854775807`, one lower, returned 404 correctly.
 
   The response body was Starlette's plain "Internal Server Error" and leaked
   nothing, the daemon kept serving, and nothing was written before the raise, so
@@ -947,7 +947,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
 - **One device, seen once, could alert you twice.** Lynceus watches through two
-  independent paths — the main scan loop and the Bluetooth listener — and each
+  independent paths, the main scan loop and the Bluetooth listener, and each
   keeps its own connection to the database. Before writing an alert it checks
   whether it has already alerted about that device recently. When both paths
   handled the same detection at the same moment, each check ran before either
@@ -956,28 +956,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   The check and the write are now a single step, so the second one finds the
   first and stands down. The suppression is deliberately narrow: an alert that
-  was written but never actually delivered is still retried, exactly as before —
-  that retry is the thing standing between you and a notification lost to a
+  was written but never actually delivered is still retried, exactly as before.
+  That retry is the thing standing between you and a notification lost to a
   brief network failure, and quietly skipping it would be a worse bug than the
   duplicate this fixes.
 
 - **A monitoring tool could not tell a broken rules file from an empty one.**
-  `/healthz.json` reported `active_rules: 0` for both — a `rules.yaml` that
-  failed to parse, and one that legitimately contains no enabled rules. The two
+  `/healthz.json` reported `active_rules: 0` for both a `rules.yaml` that
+  failed to parse and one that legitimately contains no enabled rules. The two
   payloads were identical, and the field documentation told you to treat
   "configured, zero rules" as the broken signal, which an empty file also
   matches. So a tool following that advice alerts on the harmless case and stays
   silent on the one that matters: a ruleset that failed to load means **no alert
   can fire at all**.
 
-  The endpoint now reports `rules_loaded`, so the three states — no path set,
-  file loaded, file broken — are distinguishable. The home page already made
+  The endpoint now reports `rules_loaded`, so the three states of no path set,
+  file loaded and file broken are distinguishable. The home page already made
   this distinction; only the machine-readable surface did not.
 
 - **One damaged row in the watchlist import history could take down the home
   page.** Lynceus records when your watchlist was last imported. If that stored
   time was damaged and could not be read back as a number, the code that reads
-  it stopped with an error rather than coping — and because the home page and
+  it stopped with an error rather than coping, and because the home page and
   the settings page both read it, both answered `500 Internal Server Error`.
   The home page is where you look to see whether anything is being watched at
   all, so a single unreadable value took away the whole view.
@@ -1002,8 +1002,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   because the heartbeat is off unless you turn it on.
 
   The same read also threw away the counts sitting beside it. One damaged
-  timestamp reported "0 admitted, 0 dropped" while the real numbers — 42 seen,
-  7 dropped — were undamaged and readable.
+  timestamp reported "0 admitted, 0 dropped" while the real numbers, 42 seen
+  and 7 dropped, were undamaged and readable.
 
   Now an unreadable timestamp is reported as what it is: the page says the
   recorded time could not be read and that nothing can be concluded from it
@@ -1021,7 +1021,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   are meant to say the same thing, so that a warning you see in `journalctl`
   matches what you find when you open the page. When the web UI was taught that
   a watchlist dated in the future has no knowable age, the startup line was left
-  clamping it to zero — so for the same watchlist, at the same moment, the page
+  clamping it to zero, so for the same watchlist, at the same moment, the page
   said "cannot tell" and the log said "most recent Argus import 0 days ago", at
   INFO, with no warning at all.
 
@@ -1047,8 +1047,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existed. When the two disagree it says so, names the device and the duration
   you asked for, and tells you to check the machine's time source.
 
-  It reports rather than repairs — it will not silently re-apply a suppression
-  on a machine whose clock you cannot trust — and it says it **once** per
+  It reports rather than repairs, refusing to silently re-apply a suppression
+  on a machine whose clock you cannot trust, and it says it **once** per
   device rather than on every poll, because a warning that repeats forever is
   one you learn to scroll past. It also stays quiet about a snooze that is
   still working, one you set for "forever", and one on a machine whose clock
@@ -1064,27 +1064,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bogus date, and the daemon can send its first heartbeat before the network
   corrects it. When that timestamp landed exactly on the Unix epoch, the
   settings card treated "zero" as "nothing" and showed the milder "none has
-  arrived yet" — about a heartbeat that had in fact been delivered, and whose
+  arrived yet", about a heartbeat that had in fact been delivered, and whose
   age the code had already worked out correctly. It now says **stopped**, which
   is what a delivery from 1970 means.
 
 
 - **A device you had snoozed *and* then reset could still send you the alert.**
   When the recurrence alert type is snoozed, lynceus deliberately runs the
-  detection but sends nothing — and it records that the escalation was used up,
+  detection but sends nothing, and it records that the escalation was used up,
   so it cannot come back when the snooze expires. That record is what the reset
   button then acts on. But because a snoozed escalation writes no alert, there
   was nothing on file to stop a scan already in flight from writing and sending
   that same escalation moments after you reset it.
 
-  So the one alert you had silenced twice over — once by snoozing it, once by
-  resetting it — could still arrive. The escalation is now only recorded if the
+  So the one alert you had silenced twice over, once by snoozing it and once by
+  resetting it, could still arrive. The escalation is now only recorded if the
   device is still on the watch generation the scan was actually about, so a
   reset, a dismissal, or a snooze that has already consumed it all stop it.
 
 - **A watchlist dated in the future was reported as brand new, so the "your data
   is old" warning never appeared.** Lynceus tells you when your Argus watchlist
-  has gone stale. To do that it works out how old the data is — and if the
+  has gone stale. To do that it works out how old the data is, and if the
   answer came out negative, it used zero instead. Zero means "imported today",
   which means fresh, which means no warning, forever.
 
@@ -1096,11 +1096,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   Measured on a watchlist imported 365 days ago whose export was dated 30 days
   ahead: `/settings` said **fresh**, the home page said **fresh**, and
-  `/healthz.json` said **stale** — three surfaces, two verdicts, one watchlist,
+  `/healthz.json` said **stale**. Three surfaces, two verdicts, one watchlist,
   at the same instant.
 
   All three now say the same thing, and where the age cannot be worked out they
-  say that rather than guessing: "cannot tell — the source timestamp is ahead of
+  say that rather than guessing: "cannot tell, the source timestamp is ahead of
   this machine's clock", with a note that Argus stamps that field so the two
   hosts are worth comparing. Ordinary second-or-two differences between the
   machines still read as a zero-day-old import, exactly as before.
@@ -1115,8 +1115,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **One sighting of a device could be counted twice, bringing forward a warning
   you had not earned.** Lynceus only counts a watched device once per 24 hours,
   so that "seen on four separate days" means what it says. But it watches
-  through two independent paths — the main scan loop and the Bluetooth listener
-  — and each keeps its own connection to the database. When both handled the
+  through two independent paths, the main scan loop and the Bluetooth listener,
+  and each keeps its own connection to the database. When both handled the
   same sighting at the same moment, each could check the 24-hour rule against
   the same starting point, each conclude the sighting counted, and both increment
   the tally. Measured: one sighting, counter moved by two.
@@ -1131,14 +1131,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   writer has already changed, and likewise will not bump a device you closed
   from another tab while the sighting was in flight.
 
-- **One unreadable row could take the whole health check offline.** `/healthz.json`
-  is what you — or a monitoring tool — ask to find out whether lynceus is still
-  watching. It reports six things: the database, the poller, the watchlist, the
-  ruleset, the clock and alert delivery. If the stored timestamp of your last
-  watchlist import could not be read as a number, the watchlist check raised an
-  error that escaped the whole endpoint: it answered `500 Internal Server Error`
-  with no report at all. The other five checks were fine and went down with it,
-  so the one question you were asking — is it alive? — got no answer.
+- **One unreadable row could take the whole health check offline.**
+  `/healthz.json` is what you, or a monitoring tool, ask to find out whether
+  lynceus is still watching. It reports six things: the database, the poller,
+  the watchlist, the ruleset, the clock and alert delivery. If the stored
+  timestamp of your last watchlist import could not be read as a number, the
+  watchlist check raised an error that escaped the whole endpoint: it answered
+  `500 Internal Server Error` with no report at all. The other five checks
+  were fine and went down with it, so the one question you were asking, is it
+  alive, got no answer.
 
   Each check is now isolated. A check that fails is reported as failed, beside
   the ones that still work, and the endpoint still answers `503` so a monitor
@@ -1149,7 +1150,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The dead-man's switch could stop and the page that watches it stayed green.**
   The heartbeat exists so that silence means something: with it armed, lynceus
   pushes a periodic "still watching", and a heartbeat that *stops* arriving is
-  itself the warning. `/settings` is where you check that guarantee is real —
+  itself the warning. `/settings` is where you check that guarantee is real,
   and it was answering a different question. It reported whether the heartbeat
   was enabled, and whether any had ever failed to send. It never asked when the
   last one actually arrived. Measured: a heartbeat on a 24-hour interval whose
@@ -1164,7 +1165,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The card now has the two states it was missing. If nothing has arrived for
   more than two intervals it says **stopped**, names how long it has been, and
   says what to check. If the last delivery is stamped *ahead* of this machine's
-  clock — the RTC-less Raspberry Pi case again — it says the clock disagrees and
+  clock, which is the RTC-less Raspberry Pi case again, it says the clock
+  disagrees and
   that liveness cannot be read from that timestamp, rather than guessing. One
   missed beat is still reported as healthy: that is a transient delivery
   failure, which the existing counter already reports separately and which has a
@@ -1172,7 +1174,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   The "none delivered yet" state changed too, for the same reason. It used to be
   green. That is right on a fresh install and wrong on one where you enabled the
-  heartbeat months ago and it has never once fired — and the page genuinely
+  heartbeat months ago and it has never once fired, and the page genuinely
   cannot tell those apart, because the config records that the heartbeat is on
   and never when you turned it on. So it now says so, and gives you the one test
   it cannot run itself: if you enabled this more than an interval ago, it is not
@@ -1181,8 +1183,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **A "reset" on a device left a complaint about it that nothing could ever
   clear.** When lynceus tries to warn you that a device keeps following you and
-  the notification does not get through, it keeps retrying — up to four times,
-  spaced out, driven by seeing the device again. But pressing *reset* on that
+  the notification does not get through, it keeps retrying, up to four times,
+  spaced out and driven by seeing the device again. But pressing *reset* on that
   device cancelled the retry with three attempts unspent, and nothing else could
   ever spend them. The alert stayed recorded as "written but never delivered",
   and the heartbeat and settings page went on reporting it forever.
@@ -1192,10 +1194,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   where real problems appear.
 
   ⛔ The obvious fix was the wrong one. Making that count only cover the last few
-  days would clear the line — and would equally hide a genuinely broken ntfy
+  days would clear the line, and would equally hide a genuinely broken ntfy
   topic, which is the exact silence the count exists to break. Instead there is
   now a third state. An alert can be delivered, undelivered, or *undelivered and
-  abandoned because you actioned it* — and only the third stops being counted.
+  abandoned because you actioned it*, and only the third stops being counted.
   It is deliberately not recorded as "delivered": nothing here established that
   the notification arrived, and saying so would corrupt the one record that
   tells you whether your notifications work at all.
@@ -1207,8 +1209,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   daemon said it had polled "just now".** Both come from one rule in the display
   code: any timestamp *ahead* of the machine's clock was written as "just now",
   originally as a defence against small clock differences between lynceus and
-  Kismet. The defence is worth having — those two can be seconds apart — but it
-  was applied at any distance, and two kinds of field are routinely far ahead.
+  Kismet. The defence is worth having, since those two can be seconds apart, but
+  it was applied at any distance, and two kinds of field are routinely far ahead.
 
   An expiry is in the future for **every suppression that is still in force**, so
   `/rules`, `/devices` and `/watchful` all announced that a snooze, a device
@@ -1216,7 +1218,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   working. You could not tell how much quiet you had left, and "until just now"
   reads like it has run out.
 
-  A poll timestamp is only ahead when the clock has moved backwards — and that is
+  A poll timestamp is only ahead when the clock has moved backwards, and that is
   precisely when nothing can be concluded about the daemon. Measured: with the
   daemon dead for a year and the clock reading behind, the home page said the
   last poll was "just now" and `/healthz.json` reported `is_stale: false`. That is
@@ -1225,8 +1227,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   line is often the only thing telling you the daemon is alive.
 
   Now: a timestamp more than a minute ahead is shown as the actual instant
-  ("2026-08-18 03:56 UTC") rather than as "now" — matching what the browser-side
-  formatter already did — and the poll-tick reading has a third state. Instead of
+  ("2026-08-18 03:56 UTC") rather than as "now", matching what the browser-side
+  formatter already did, and the poll-tick reading has a third state. Instead of
   choosing between "fresh" and "stale" when it can support neither, the home page
   and `/healthz` say the clock disagrees and that liveness cannot be read from
   that timestamp, and `/healthz.json` reports `is_stale: null` beside a new
@@ -1235,7 +1237,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`lynceus-quickstart` read your config without telling you a setting had been
   typed twice.** If the same key appears twice in `lynceus.yaml`, YAML keeps the
-  last one and discards the first without complaint — so the line you were
+  last one and discards the first without complaint, so the line you were
   looking at while you edited need not be the line in force. Every other place
   that reads your config already warns about this; the two quickstart loaders
   did not, having been marked as reading a machine-generated file when they
@@ -1246,7 +1248,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   collapses the duplicate for good: measured, a config with `heartbeat_enabled`
   set twice produced a copy keeping only the second value, with no record that
   the first had ever existed. Both now name the duplicated key and the two line
-  numbers before anything is rewritten. Which value wins is unchanged — this
+  numbers before anything is rewritten. Which value wins is unchanged. This
   reports, it does not decide for you.
 
 - **Two ways a "someone is following you" warning could have gone silent, both
@@ -1255,7 +1257,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   model to attack, and both were reproduced before being changed.
 
   The first needs an unlucky moment. Lynceus watches for devices in two places
-  at once — the main scan loop and the Bluetooth listener — and they run
+  at once, the main scan loop and the Bluetooth listener, and they run
   independently. If both were partway through raising the same escalation when
   you pressed *reset* on that device, the slower one could mark the *restarted*
   watch as "already escalated". That watch had never actually warned you about
@@ -1274,12 +1276,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **"Reset" on a device you had just said you were still watching could quietly
   stop watching it.** The reset button on `/watchful` means "I have seen this
   escalation, it looks benign, keep tracking". It works by stamping the entry as
-  last seen *now* — and that same timestamp is the only clock deciding when an
+  last seen *now*, and that same timestamp is the only clock deciding when an
   untouched entry is auto-archived after 90 quiet days. So if the machine's
   clock read behind real time when you clicked, the entry was stamped into the
   past: it got less continued tracking than the button promised, and an entry
   already near the 90-day mark was archived outright at the next housekeeping
-  pass. Measured, for 90 days asked: 60 days, 1 day, and none at all — with the
+  pass. Measured, for 90 days asked: 60 days, 1 day, and none at all, with the
   page reporting success every time.
 
   Same battery-less Raspberry Pi clock as the snooze entry below, but the
@@ -1288,10 +1290,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   asks you to trust.
 
   The other five places a wrong clock could spoil a write already refuse it and
-  explain why. This one now does too — with a message written for a reset rather
+  explain why. This one now does too, with a message written for a reset rather
   than for a snooze, because nothing here expires and the snooze wording would
   have sent you hunting for a suppression that does not exist. The entry is not
-  dismissed and nothing is deleted while you check the clock — but if it was
+  dismissed and nothing is deleted while you check the clock, but if it was
   already at the end of its 90 days, ordinary housekeeping can archive it while
   you are away, and an archived entry cannot be reset. So the refusal says to go
   and fix the clock, rather than to wait for it.
@@ -1302,7 +1304,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   those overlapped, both read the same starting file and the second write
   discarded the first one's entry. Measured: two clicks close together, one
   suppression kept, one gone, and *both* requests reported success. A
-  double-click or two open browser tabs is enough — no unusual activity is
+  double-click or two open browser tabs is enough. No unusual activity is
   needed.
 
   The worse case needed no double-click at all. The daemon repairs entries
@@ -1310,7 +1312,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   against the same file from a *different process*. Measured: a single click
   landing inside that window was discarded outright. Since the file it silently
   reverted is the list of devices you have chosen not to be warned about, the
-  failure was invisible in exactly the direction that matters — you would find
+  failure was invisible in exactly the direction that matters. You would find
   out from an alert you thought you had already silenced.
 
   Every path that rewrites that file now holds a lock across the whole
@@ -1320,7 +1322,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   traded a lost entry for a stale one would be no better.
 
 - **A device could tell you twice that it appears to be following you.** The
-  recurrence escalation — the highest-priority thing lynceus sends — is written
+  recurrence escalation, the highest-priority thing lynceus sends, is written
   in two steps: the alert is recorded and sent, and then the watched entry is
   marked as having escalated. If the database was busy at that exact moment, the
   second step could fail while the first had already happened. The next time
@@ -1335,7 +1337,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ⛔ The obvious fix was the dangerous one. "Don't send it if there is already an
   escalation for this device" also silences the device you *deliberately went
   back to watching*: resetting a watched entry clears its count but leaves the
-  old alert behind, so that device could never escalate again — and suppression
+  old alert behind, so that device could never escalate again, and suppression
   is the direction that hides someone following you. Lynceus now records each
   escalation against the *generation* of the watch, incremented every time you
   reset one, and records it in the same single write as the alert itself, so the
@@ -1350,8 +1352,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   duplicate alert.
 
 - **A "snooze this for 24 hours" could last no time at all, and nothing told
-  you.** A snooze is stored as a deadline — the moment it expires — not as a
-  length of time. If the machine's clock was wrong when you set one, that
+  you.** A snooze is stored as a deadline, the moment it expires, rather than as
+  a length of time. If the machine's clock was wrong when you set one, that
   deadline was wrong by the same amount, and a clock reading *behind* real time
   produced a deadline that had already passed. The snooze did nothing from the
   moment you set it, then was cleaned up as ordinary expired junk. Measured: you
@@ -1371,7 +1373,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   would rather hear about. You are told, and you decide.
 
   ⚠️ A machine whose clock has been wrong since the day it was set up still
-  cannot be caught this way — there is nothing correct on it to compare against.
+  cannot be caught this way, because there is nothing correct on it to compare
+  against.
   That limit is written down rather than papered over.
 
 - **A background repair could stretch a snooze you had just shortened.** When
@@ -1379,13 +1382,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   deadline to run for the length you originally asked for. If you changed that
   snooze in the web interface in the moment between the daemon reading it and
   rewriting it, the daemon wrote the *old* length over your new one. Measured: a
-  fresh one-hour snooze silently became twenty-four — nearly a day of extra
+  fresh one-hour snooze silently became twenty-four, nearly a day of extra
   silence nobody asked for. The daemon now checks the entry has not changed
   underneath it and leaves it alone if it has.
 
   The same flaw was in two sibling repairs covering watched devices. In one, it
   could overwrite the "last seen" time that decides when an unattended entry is
-  retired — so an entry you had just said you were *still* watching could be
+  retired, so an entry you had just said you were *still* watching could be
   archived instead. All three are fixed the same way.
 
 - **Clicking "reset" on a watched device could stop it being watched.** Reset
@@ -1401,7 +1404,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to the database. Because of how that connection tracks work in progress, one
   request finishing could also save a *different* request's half-finished work.
   Measured: a request that failed, and reported failure, had its change kept
-  anyway — and the reverse was equally possible, a request reporting success
+  anyway, and the reverse was equally possible, a request reporting success
   having its change discarded when an unrelated one failed.
 
   Either direction matters here: a suppression you never completed could stick,
@@ -1409,14 +1412,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   are now serialised so one cannot end another's work.
 
   ⚠️ This stops requests interfering with each other's *saving*. It does not make
-  a whole multi-step action atomic — two clicks at the same instant can still
+  a whole multi-step action atomic. Two clicks at the same instant can still
   each act on a value the other just changed. Fixing that is a deeper change to
   how the web interface talks to the database and is not attempted here.
 
 - **A device's remembered network names could be wiped without a word.** Lynceus
   stores the Wi-Fi network names a device has asked for. If that stored value was
   damaged, or simply not in the shape expected, it was read as an empty list and
-  written back as one — silently converting damage into the perfectly ordinary
+  written back as one, silently converting damage into the perfectly ordinary
   state "this device has never asked for a network", with no way to tell the two
   apart afterwards. It now says so in the log, naming the device, before
   replacing the value.
@@ -1440,12 +1443,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Three neighbouring claims are corrected with it. The `sightings` counter had
   the same defect as the column beside it: a reset seeds the count at one
   **without a sighting**, so a freshly reset row said `sightings: 1` while the
-  timestamp next to it said *not a sighting* — it now says which it is. If the
+  timestamp next to it said *not a sighting*. It now says which it is. If the
   delivery lookup itself fails, the row reads **delivery unknown** rather than
   looking like an ordinary delivered escalation, because a diagnostic that
   cannot run must not be reported as a clean bill. And the never-sent copy now
-  states what is actually recorded — that no alert was ever written, so you were
-  not notified — before naming the snooze as the cause, rather than asserting a
+  states what is actually recorded, that no alert was ever written so you were
+  not notified, before naming the snooze as the cause, rather than asserting a
   snooze nobody observed. `notified_at` means the notifier reported success,
   which is not the same as a human receiving anything, and the wording no longer
   claims otherwise.
@@ -1454,7 +1457,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   doing so the first time you snoozed the wrong thing.** `live_rows`,
   `inert_rows` and `snoozed_rows` are independent flags, not a partition: a
   pattern type that is *both* inert and snoozed has its rows counted twice. The
-  payload never said so — and the sum happens to equal the total on an install
+  payload never said so, and the sum happens to equal the total on an install
   with no snooze **and** on a snoozed type that is still live, so a dashboard
   that stacks the three validates fine and only breaks later. Measured on a
   three-row watchlist: `1 + 2 + 2 = 5` against a total of `3`.
@@ -1463,17 +1466,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `both_inert_and_snoozed_pattern_types`, which makes
   `live + inert + snoozed - double_counted_rows == total_rows` something a
   consumer can check rather than infer. Like the three counts beside it, the new
-  number is `null` — never `0` — when liveness is unknown, because a zero there
+  number is `null`, never `0`, when liveness is unknown, because a zero there
   would be a claim nothing established.
 
 - **A duplicate key in a hand-edited config file silently changed what the
   daemon enforced.** `yaml.safe_load` keeps the LAST of a duplicate mapping key
   with no error and no warning, so the value you read at the top of your file
   need not be the value in force. Only the allowlist checked for this. Measured,
-  every case fail-OPEN: a second top-level `rules:` block — the natural way to
-  append to a file whose top-level key is a list — **discards every rule above
-  it**; a stray second `patterns:` line swaps the watched addresses; a duplicate
-  `heartbeat_enabled:` disarms the dead-man's switch.
+  every case fail-OPEN: a second top-level `rules:` block, which is the natural
+  way to append to a file whose top-level key is a list, **discards every rule
+  above it**; a stray second `patterns:` line swaps the watched addresses; a
+  duplicate `heartbeat_enabled:` disarms the dead-man's switch.
 
   None of it was visible, and the reason generalises: every startup line lynceus
   prints narrates a **count**, so a duplicate that changes a *value* inside a
@@ -1481,12 +1484,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `patterns:` case logged a line byte-identical to the correct file's. The
   daemon now warns at load, naming the key path, every line the key appears on,
   and which line actually won; `lynceus-validate` still reports the same finding
-  as an error with exit 1. Files are loaded, not refused — one stray line should
-  not drop every other rule you wrote.
+  as an error with exit 1. Files are loaded, not refused, because one stray line
+  should not drop every other rule you wrote.
 
   ⚠️ The same check now covers `allowlist_ui.yaml`, the file the web UI writes.
   It had been left out on the assumption that a daemon-managed file is not
-  hand-edited — measured, a duplicate there moves a suppression exactly as it
+  hand-edited. Measured: a duplicate there moves a suppression exactly as it
   does in the file you curate yourself, and it is **worse**: the UI rewrites
   that file on every click, so one "Allowlist this device" leaves only the
   winning address behind. The line you actually typed disappears and the file
@@ -1494,7 +1497,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before that rewrite happens.
 
 - **`watchful` reported a device as last seen at the moment you clicked a
-  button.** Resetting an escalated entry walks its count back — and, because the
+  button.** Resetting an escalated entry walks its count back, and because the
   same column is also the recurrence debounce and the 90-day auto-archive clock,
   the reset stamps `last_seen_at` with the current time. Both watchful pages
   rendered that column as **last seen**, so a device nobody had observed for
@@ -1508,8 +1511,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one-hour window it did not belong in.
 
   The column is now called **last activity** on both pages, which is what it has
-  always been — a counted sighting, an operator reset, or a clock repair — and
-  a row whose timestamp is one of those rather than a sighting says so beside
+  always been: a counted sighting, an operator reset, or a clock repair. A
+  row whose timestamp is one of those rather than a sighting says so beside
   the time. If the clock is corrected after a reset, the correction overwrites
   the timestamp again, and the note says that too rather than blaming the reset
   for a time it no longer set. The page states the three sources rather than
@@ -1521,10 +1524,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Two nearby sentences were wrong for the same reason and are corrected with it.
   The page said an entry escalates **on its fourth sighting**; a reset puts the
   count back to one *without* a sighting, so a reset entry escalates on its
-  **third** sighting afterwards — the page now says both. And resetting an entry
-  does not simply move it up the list: it clears the escalation, so on the
-  `escalated` filter — the view you are most likely to be on when you click
-  reset — the row leaves the list entirely.
+  **third** sighting afterwards, and the page now says both. Resetting an entry
+  does not simply move it up the list either: it clears the escalation, so on the
+  `escalated` filter, the view you are most likely to be on when you click
+  reset, the row leaves the list entirely.
 
 - **A repeated line in a config file was silently obeyed, and it could point a
   suppression at the wrong device.** YAML resolves a repeated key by keeping the
@@ -1532,8 +1535,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   file could read one way at the top and behave another way entirely.
 
   It matters most in `allowlist.yaml`. A stray second `pattern:` line inside an
-  entry — a duplicated line during an edit, a half-finished copy-paste — leaves
-  the entry looking exactly as intended, note and all, while the address in
+  entry, from a duplicated line during an edit or a half-finished copy-paste,
+  leaves the entry looking exactly as intended, note and all, while the address in
   force is the second one. Measured: the device you meant to allowlist **keeps
   alerting**, a device you never named is **silently suppressed**, and
   `lynceus-validate` called the file `OK (1 entry valid)`. A repeated top-level
@@ -1543,7 +1546,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Lynceus now warns on load, naming the line whose value was lost, and
   `lynceus-validate` reports it as an error with the key and both line numbers
   so you can see which value is actually in force. The daemon still loads the
-  file — one stray line should not cost you every other suppression in it.
+  file, because one stray line should not cost you every other suppression.
 
   The check runs over every config file the validator reads, not just the
   allowlist. Your existing files are unaffected unless they already contain a
@@ -1556,8 +1559,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   described the result as though it were yours alone.
 
   So a single damaged entry in the sibling made your own file come back invalid,
-  with the message "would empty the allowlist at startup" — which was not going
-  to happen; suppression from both files kept working throughout. The advice
+  with the message "would empty the allowlist at startup", which was not going
+  to happen: suppression from both files kept working throughout. The advice
   pointed at the wrong file, and the real problem was reported further down the
   page as a separate line. The same merge also made the count wrong: two entries
   of yours beside three of the UI's were reported as "5 entries valid" on your
@@ -1566,33 +1569,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   Each file is now validated and counted on its own. A genuine problem in your
   file still says "would empty the allowlist at startup", because for that file
-  it is true — the daemon does start with suppression disabled and logs it.
+  it is true, since the daemon does start with suppression disabled and logs it.
 
 - **"This device keeps following you" is no longer lost for good if the database
   is busy at the moment it is written.** When a device you asked Lynceus to watch
   reaches the recurrence threshold, it sends the most important message this tool
-  produces. That message is written down first, then delivered — and a failure to
+  produces. That message is written down first, then delivered, and a failure to
   *write* it was previously shrugged off, while the entry was already marked as
   escalated. Nothing ever tried again: the retry that exists for a failed
   *delivery* looks for the written record, and there wasn't one.
 
   ⚠️ It was invisible, which is what made it serious. A failed delivery shows up
   on your heartbeat as "1 alert written but never delivered". A failed write left
-  nothing to count, so the heartbeat said **"Still watching."** — the same thing
+  nothing to count, so the heartbeat said **"Still watching."**, the same thing
   it says when everything is fine. Measured on a device under a "forever" snooze,
   where the recurrence warning is the only signal left: seen every day for eight
   more days, told nothing, health reported good throughout.
 
   Lynceus now marks the entry as escalated only once the record exists, so a
-  database that was briefly busy means the next sighting tries again — within
-  minutes, not the next day — rather than the warning disappearing.
+  database that was briefly busy means the next sighting tries again within
+  minutes rather than the next day, instead of the warning disappearing.
 
   ⛔ Not retroactive. An entry already left in that state by an earlier version
   cannot be told apart from one you deliberately silenced, so it stays silent.
 
 - **A watchlist entry Lynceus could never act on is now refused when you add it,
   instead of being accepted and quietly ignored.** Some vendor prefixes cannot
-  belong to a real device — placeholder and broadcast addresses, and the range
+  belong to a real device: placeholder and broadcast addresses, and the range
   reserved for addresses a device makes up for itself. Lynceus has always
   discarded sightings on those prefixes, because a match there is never the
   device you are looking for. But nothing stopped you *adding* one to your
@@ -1603,14 +1606,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   looking at the screen rather than by never being warned about something.
 
   ⚠️ This is a deliberate refusal, not a validation tidy-up: it rejects a write
-  that used to succeed. The bundled threat data is unaffected — all of it uses
-  real vendor prefixes, checked before the refusal was written. Hand-seeding a
+  that used to succeed. The bundled threat data is unaffected, since all of it
+  uses real vendor prefixes, checked before the refusal was written. Hand-seeding a
   file that contains such a prefix will now skip that line and tell you, rather
   than importing an entry that watches nothing.
 
 - **A typo in your config could stop Lynceus starting after you re-ran setup.**
   The wizard had just learned to keep the settings it does not ask you about,
-  which is what you want — except that it kept *everything* it did not
+  which is what you want, except that it kept *everything* it did not
   recognise, including misspellings. Write `heartbeat_interal_hours` instead of
   `heartbeat_interval_hours`, re-run `lynceus-setup --reconfigure`, and the
   misspelled line came through untouched into a file the daemon then refused to
@@ -1620,8 +1623,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wrong instead of hunting a daemon that will not start.
 
 - **A config Lynceus could not read was overwritten without a copy being kept.**
-  If your `lynceus.yaml` had a YAML mistake in it — or was momentarily
-  unreadable — re-running setup replaced it and told you afterwards that its
+  If your `lynceus.yaml` had a YAML mistake in it, or was momentarily
+  unreadable, re-running setup replaced it and told you afterwards that its
   settings were gone. Which they were, including any notification token in it.
   The old file is now copied to `lynceus.yaml.unreadable-<timestamp>` before
   anything is written, and setup tells you where the copy is. If the copy cannot
@@ -1637,7 +1640,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   adapter fix below: when the interface you named turned up in the wrong place,
   Lynceus offered the other kind. But `/sys/class/net` holds ethernet ports,
   bridges and virtual devices as well as Wi-Fi adapters, so naming a wired NIC
-  got you told to configure it as Wi-Fi — advice that produces a source Kismet
+  got you told to configure it as Wi-Fi, advice that produces a source Kismet
   cannot use. Lynceus now checks the interface really is wireless before
   suggesting that, and says plainly when a device simply cannot do the job.
   Interface names that are not names at all (empty, `.`, or a file path) are
@@ -1650,11 +1653,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `wifi`, so Lynceus looked for `hci0` among the *network* interfaces, did not
   find it, and said: *"hci0 is not present … otherwise check the name."* That
   sentence was word for word the one you get for a name that genuinely does not
-  exist — and here the name was right. It was the *kind* that was wrong.
+  exist, and here the name was right. It was the *kind* that was wrong.
 
   So the advice sent you back to the one thing that was already correct. Check
   it, find it correct, conclude the warning is spurious, and you end up with a
-  Kismet source of `hci0:type=linuxwifi` — which Kismet cannot open. The result
+  Kismet source of `hci0:type=linuxwifi`, which Kismet cannot open. The result
   is a sensor that is configured, reports success, and captures nothing:
   exactly the state that warning exists to prevent, reached by following it.
 
@@ -1664,25 +1667,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for that case the advice was right.
 
 - **"Ignore this device" worked or didn't depending on where you wrote it in
-  the file.** If you allowlisted a device by its MAC address — the strongest,
-  most deliberate way to say "this one is mine, leave it alone" — and somewhere
+  the file.** If you allowlisted a device by its MAC address, the strongest and
+  most deliberate way to say "this one is mine, leave it alone", and somewhere
   *above* it in the same file you had a softer entry that also happened to match
   that device, say your headphones silenced by their advertised name, the softer
   one won. Lynceus kept alerting on a device you had explicitly told it to
   ignore, and nothing anywhere said why.
 
   The cause is that a recent change made the *kind* of allowlist entry decide
-  how much it is allowed to silence — a name a device chooses for itself can no
+  how much it is allowed to silence. A name a device chooses for itself can no
   longer suppress a deliberate watchlist hit, because anything can claim any
   name. That was the right change, but the code picking which entry to consult
   still returned whichever one came first in the file, so an unrelated soft
   entry could answer on behalf of a device you had named by address. Measured on
-  the shipped rules: the same device, the same two entries, swapped order — no
+  the shipped rules: the same device, the same two entries, swapped order. No
   alerts one way, two alerts and two notifications the other.
 
   Now the strongest matching entry answers, wherever it sits. Order still breaks
   ties between entries of equal strength, so nothing else changes. ⚠️ An
-  *expired* entry is still no match at all and cannot outrank a live one — the
+  *expired* entry is still no match at all and cannot outrank a live one. The
   obvious version of this fix would have let a lapsed one-day snooze start
   silencing real watchlist hits permanently, which is worse than the bug.
 
@@ -1691,12 +1694,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   either edit it directly or re-run `lynceus-setup --reconfigure`. Both are
   offered as equally good ways to change something. But the wizard only ever
   asks about ten settings, and there are forty, so re-running it wrote those ten
-  back and let every other one fall to its default — and reported success.
+  back and let every other one fall to its default, and reported success.
   Measured on a hand-edited config: rotating the Kismet API key, and changing
   nothing else, **silently reverted eight settings**.
 
   Two of the eight matter more than the rest. `heartbeat_enabled` went back to
-  off — that is the dead-man's switch, the one feature whose entire job is to
+  off, and that is the dead-man's switch, the one feature whose entire job is to
   tell you when nothing is happening, so losing it looks exactly like a quiet
   week. And `ntfy_auth_token` was dropped while `ntfy_url` and `ntfy_topic`
   survived, which leaves a config that still looks complete and delivers nothing
@@ -1712,29 +1715,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **A watchlist entry for a Bluetooth tracker could never match anything.**
   This is the one that matters most, because it is the thing the tool is for.
-  Bluetooth devices announce themselves with a short service code — `fd5a` is
+  Bluetooth devices announce themselves with a short service code, and `fd5a` is
   Apple's Find My, the one an AirTag uses. When you added `fd5a` to your
   watchlist, Lynceus expanded it to the full-length form the standard defines.
   When it *saw* that same code on the air, it did not: it rejected the short
   form as invalid and quietly discarded it. So the two halves of the tool were
   writing the same thing down in two different ways, and a tracker following
   you could sit in range all day without ever matching the rule you had written
-  to catch it. There was no error to notice — the discard was logged at debug
-  level, which nobody reads.
+  to catch it. There was no error to notice, because the discard was logged at
+  debug level, which nobody reads.
 
   Both halves now write it the same way. ⚠️ The first attempt at this fix went
   too far: it reused the watchlist's text handling on the incoming-signal side
   as well, and that handling also strips a piece of commentary the surveillance
   database is allowed to attach to a code. Correct when reading a watchlist
-  file, wrong when reading the air — it would have accepted, as a genuine
-  sighting, something that was never broadcast. The incoming side is now
+  file, wrong when reading the air, where it would have accepted as a genuine
+  sighting something that was never broadcast. The incoming side is now
   strict again and only the shared expansion is shared.
 
 - **A clock jump no longer deletes a rule you silenced.** If you tell Lynceus
   to stop alerting on a category for a week, that instruction is stored with an
   expiry date and checked against the system clock. When the clock leapt
-  forward — an NTP correction after boot on a Pi with no battery-backed clock —
-  the housekeeping pass read those expiry dates against the wrong time and
+  forward, from an NTP correction after boot on a Pi with no battery-backed
+  clock, the housekeeping pass read those expiry dates against the wrong time and
   deleted the ones it thought had lapsed. Measured: a snooze set to last seven
   days was **erased at a jump of eight**, and putting the clock right did not
   bring it back. You would simply start receiving alerts you had deliberately
@@ -1748,7 +1751,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   again.** Lynceus watches Kismet, and when Kismet disappears it pushes one
   "Kismet unreachable" message. That message is the only thing standing between
   you and hours of silence that looks exactly like a quiet street. It was sent
-  once and then recorded as delivered whether or not it actually arrived — so
+  once and then recorded as delivered whether or not it actually arrived, so
   if your phone was out of signal at that moment, which is likeliest while you
   are moving, the warning was gone and nothing tried again. Measured with
   notifications failing: **one attempt, nothing delivered, and no retry across
@@ -1763,8 +1766,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Your watchlist total was wrong, and it under-counted the newest entries.**
   The list of pattern types the app knew about had drifted two migrations behind
-  the database, which accepts ten. Rows of the two newest types — SSID patterns
-  and IMEI TACs — were counted as zero rather than reported, so `/healthz.json`
+  the database, which accepts ten. Rows of the two newest types, SSID patterns
+  and IMEI TACs, were counted as zero rather than reported, so `/healthz.json`
   under-reported the watchlist and the `/settings` breakdown hid them. Measured
   on three entries of three types:
 
@@ -1781,22 +1784,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Filtering the watchlist by a type the page did not recognise silently showed
   you everything.** `/watchlist` and `/watchlist.csv` dropped an unrecognised
   filter and answered with every row, with nothing saying the filter had been
-  ignored. The filter is still lenient — old bookmarks keep working — but the
-  page now says *"filter ignored — showing all entries"* and names it, and the
+  ignored. The filter is still lenient, so old bookmarks keep working, but the
+  page now says *"filter ignored, showing all entries"* and names it, and the
   CSV export logs a warning rather than quietly exporting everything.
 
 - **A clock jump no longer deletes data inside your retention window.** If the
-  system clock leapt forward — an NTP correction after boot on a Pi with no
-  real-time clock — pruning computed its cutoff from the wrong time and deleted
+  system clock leapt forward, from an NTP correction after boot on a Pi with no
+  real-time clock, pruning computed its cutoff from the wrong time and deleted
   sightings that were well inside the window. Measured: with a 30-day retention
   and 30 daily sightings, a +30d jump deleted **29 of 30**. Evidence snapshots
   had the same fault and are on by default: a +90d jump deleted **9 of 10**
-  snapshots less than ten days old. A jump *backwards* was the mirror image —
+  snapshots less than ten days old. A jump *backwards* was the mirror image:
   pruning stalled for the entire excursion, measured at a full year.
 
 - **A clock jump no longer blinds the daemon to every device.** The poll cursor
   was written from the jumped clock, so later polls asked Kismet for devices
-  "since the future" and got nothing back — for as long as the excursion lasted,
+  "since the future" and got nothing back for as long as the excursion lasted,
   looking exactly like a quiet environment. Unlike a skipped prune this was
   persistent: the bad value was already stored, so correcting the clock did not
   undo it.
@@ -1805,33 +1808,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hardened config.** `lynceus-bootstrap-kismet` rewrote `kismet_site.conf` by
   replacing the file, which reset it to world-readable each time. Kismet honours
   `httpd_password=` there, so an operator who had correctly locked that file to
-  `0600` had it reopened to `0644` — password still inside — by an unrelated
+  `0600` had it reopened to `0644`, password still inside, by an unrelated
   `--add-source` run. Measured `0600 → 0644`. It now keeps whatever permissions
   the file already had.
 
 - **Re-writing the main config no longer leaves your Kismet API key
   world-readable.** `lynceus.yaml` was written in a way that only set safe
-  permissions when creating the file for the first time. Every rewrite —
-  including `--reconfigure` — left an already-permissive file exactly as it was
+  permissions when creating the file for the first time. Every rewrite,
+  including `--reconfigure`, left an already-permissive file exactly as it was
   and put the Kismet API key and ntfy topic back into it. Measured: a `0644`
   config stayed `0644` with the secrets in cleartext.
 
 - **`/healthz.json` no longer hands a raw database error to anyone who asks.**
   The endpoint is unauthenticated and reachable from the network once
   `ui_allow_remote` is set, and it returned the underlying SQLite driver message
-  — including the database file path — on failure. The real error still goes to
+  including the database file path, on failure. The real error still goes to
   the server log.
 
 - **`--interface` now warns when the device you named is not there.** It used to
   accept any name without checking, write a capture source for it, and report
-  success — so a typo produced a sensor that captured nothing while looking
+  success, so a typo produced a sensor that captured nothing while looking
   healthy. It is a **warning, not a refusal**: the flag exists to configure
   adapters that are not plugged in yet, and blocking that would break the reason
   it was added.
 
 - **Acknowledging every alert at once now asks first.** The bulk acknowledge
   button on `/alerts` took a single click to acknowledge every matching alert,
-  and there is no bulk undo — reversing it meant acknowledging each alert back
+  and there is no bulk undo, so reversing it meant acknowledging each alert back
   individually.
 
 - **"← Previous" is visually distinct from "Next" again in the setup wizard.**
@@ -1842,7 +1845,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **A device whose sighting fails to persist is no longer lost forever.** The
   poll watermark advanced to the tick time unconditionally, and the next tick
-  asks Kismet only for devices seen since that value — so any observation that
+  asks Kismet only for devices seen since that value, so any observation that
   failed to persist was never asked for again. That is the normal case, not an
   edge one: Kismet reports devices seen *during* the window while the watermark
   is set to the window's **end**, so nearly every observation has a `last_seen`
@@ -1862,7 +1865,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it: holding the watermark until everything persists lets a record that fails
   *every* time freeze it forever, leaving the daemon alive and permanently
   blind to everything after it. Both extremes lose capture data, so the bound
-  is the design — the failed window is retried for up to three consecutive
+  is the design: the failed window is retried for up to three consecutive
   ticks, then abandoned with an **ERROR**, because a permanent hole in
   detection coverage is not a warning. Verified by planting both extremes.
 
@@ -1875,14 +1878,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   Measured with a notifier failing a single poll while the device stayed in
   range for five: two send attempts, **zero delivered**, no further attempt.
-  This is the product's reason to exist failing on its most likely error — the
+  This is the product's reason to exist failing on its most likely error. The
   deployment is mobile, so a data blip is *most* likely exactly when something
   worth detecting is nearby.
 
   Dedup now keys on **delivery**. Migration 024 adds `notified_at` (NULL means
   written but nobody told) and `notify_attempts`. Three states, and collapsing
   any two reintroduces a defect: delivered in-window suppresses; undelivered
-  with attempts left **retries the existing row** — emitting a new one would
+  with attempts left **retries the existing row**, because emitting a new one would
   fill `/alerts` with duplicates of one detection every time ntfy hiccuped;
   undelivered with attempts spent stops retrying but stays `NULL`, so it is
   still counted rather than quietly forgotten. Bounded at four attempts,
@@ -1891,7 +1894,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Re-measured on the same scenario: delivered on the very next poll, one alert
   row, correctly deduplicated thereafter.
 
-  ⚠️ A one-shot rule cannot be retried by construction —
+  ⚠️ A one-shot rule cannot be retried by construction.
   `new_non_randomized_device` only fires on a device's first sighting, so a
   failed send there has no later poll to retry on. That row stays undelivered
   and is reported as such, which is why the count exists and not just a retry.
@@ -1899,7 +1902,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **`/settings` now shows undelivered alerts.** Reachability is a *liveness*
   probe: it says the broker answered just now, not that anything arrived. A
   wrong topic or a stale auth token passes reachability and drops every
-  notification, and the operator's only symptom is silence — which for this
+  notification, and the operator's only symptom is silence, which for this
   tool is indistinguishable from "nothing is out there".
 
   Why it survived a green suite: **every notifier double in the repo returned
@@ -1908,15 +1911,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **The dashboard tells you when it cannot alert at all.** Argus-backed
   alerting is opt-in and defaults to *no*, and declining it writes no
-  `rules.yaml` — so accepting every setup default produces a daemon that
+  `rules.yaml`, so accepting every setup default produces a daemon that
   captures, populates the dashboard, and can never raise an alert. Measured
   two ways against a device placed on the watchlist: **0 rule hits** on the
   default path, **1** with the shipped ruleset wired.
 
   The home page did surface it, as an unstyled tile reading "no ruleset
-  configured" — ranked *below* a merely-stale watchlist, which gets a warning.
+  configured", ranked *below* a merely-stale watchlist, which gets a warning.
   The one condition meaning nothing can ever alert was the only one not
-  flagged. It now reads **"no ruleset — nothing will alert"** and carries the
+  flagged. It now reads **"no ruleset, nothing will alert"** and carries the
   warning treatment, in words as well as colour. It stays short of the red
   reserved for a ruleset that is configured and will not load: an unset path
   is a legitimate fresh-install state, not a fault.
@@ -1925,14 +1928,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pages.** Pico gives a bare `<button>` a 20px bottom margin, and the grid
   aligns *margin* boxes, so the button floated exactly its own margin above the
   inputs beside it. It had also kept Pico's full ~3rem height while its
-  neighbours were deliberately reduced — so fixing only the margin would have
+  neighbours were deliberately reduced, so fixing only the margin would have
   bottom-aligned a button standing 16px proud instead. Both corrected;
   measured `bottomSpread=0, topSpread=0` across `/alerts`, `/allowlist`,
   `/devices`, `/probes`, `/watchful`, `/watchlist` and `/rules`.
 
 - **One co-observation page no longer re-scans the whole capture 25 times.**
   `shared_probe_ssids` counted, for each shared network name, how many devices
-  in the entire capture had ever probed it — a correlated subquery expanding
+  in the entire capture had ever probed it, via a correlated subquery expanding
   `probe_ssids` with `json_each`, and no index can find a JSON array element by
   value, so every call visited the whole corpus. The page then called it once
   per candidate, up to 25 per render.
@@ -1944,12 +1947,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   at 9× corpus; this one measured 8.85× and shipped, because the corpus-cost
   guard its sibling query got was never extended to it.
 
-  The corpus scan itself is irreducible while SSIDs live in a JSON array —
-  exact rarity is a question about the whole capture. What is gone is the
+  The corpus scan itself is irreducible while SSIDs live in a JSON array,
+  because exact rarity is a question about the whole capture. What is gone is the
   per-candidate multiplier: one scan per page instead of 25. A page render with
   25 candidates against an 8,000-device capture drops from 240,763 progress
-  ticks to 8,826, a **27× reduction**, and the displayed numbers are unchanged —
-  the new query is checked row-for-row against the implementation it replaced,
+  ticks to 8,826, a **27× reduction**, and the displayed numbers are unchanged.
+  The new query is checked row-for-row against the implementation it replaced,
   including the malformed-payload, non-array, non-string-element and
   no-shared-names cases.
 
@@ -1969,8 +1972,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   The inversion was the tell: with the capability *off* every request was
   logged, so the trail was complete when there was nothing to steal and full of
-  holes when there was. Every branch now logs, and the drill-down — which
-  returns the exact times two devices were logged together — is recorded
+  holes when there was. Every branch now logs, and the drill-down, which
+  returns the exact times two devices were logged together, is recorded
   separately with its target named, instead of hiding behind the generic query
   line.
 
@@ -1983,7 +1986,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   protected only by Jinja autoescaping, which escapes HTML metacharacters and
   not URL ones. A site called `Home & Office` rendered `loc=Home &amp; Office`,
   so the browser sent `loc=Home` plus a stray parameter, the exact-match gate
-  failed, and the drill-down silently rendered nothing — 200, no error, evidence
+  failed, and the drill-down silently rendered nothing: 200, no error, evidence
   section simply absent. The panel exists so a count can be checked against the
   rows behind it rather than taken on trust, and for any site with an ampersand
   in its name it had quietly stopped being checkable.
@@ -1996,8 +1999,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ampersand in a place name.
 
 - **The co-observation coverage split no longer promotes the weaker
-  association.** The rule was a single condition — at least 20 runs *and* a
-  shared share of 25% or less — so the run-count gate produced a cliff that ran
+  association.** The rule was a single condition, at least 20 runs *and* a
+  shared share of 25% or less, so the run-count gate produced a cliff that ran
   backwards. A device sharing 1 of its own 19 runs (5.3%) was shown as a primary
   candidate, while one sharing 5 of its own 20 (25%), a five times stronger
   overlap by the panel's own measure, was set aside as explained away. Nothing
@@ -2007,7 +2010,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rendered identically to "not explained away". There is now a third group,
   **Too few runs to say**, which states plainly that it is not a weaker version
   of the main table but the set the panel cannot place either way. The 20-run
-  threshold is kept rather than tuned — it is the right caution, it was simply
+  threshold is kept rather than tuned. It is the right caution. It was simply
   being used to make a claim it cannot support. A thin record with a *high*
   share deliberately stays a primary candidate: a short record is a reason to
   withhold judgement about a small share, never a reason to set aside a large
@@ -2016,8 +2019,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ⚠️ The thresholds themselves (20 runs, 25%) are still validated only against
   seeded data, never a real capture.
 
-- **A clean BLE shutdown no longer reports itself as a crash.** On bleak 3.x —
-  which is what a fresh `pip install 'lynceus[ble]'` gets you — stopping the
+- **A clean BLE shutdown no longer reports itself as a crash.** On bleak 3.x,
+  which is what a fresh `pip install 'lynceus[ble]'` gets you, stopping the
   scanner raises a D-Bus error on the *normal* path, because BlueZ has already
   discarded the scan monitor by the time it is asked to. The bridge treated
   that as a scan failure, logged "BLE scan failed; restarting in 5s", and

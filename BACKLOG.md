@@ -250,21 +250,22 @@ persists until reload.
   is already fragile; adding filter-aware swap logic on top risks tangled
   debugging. Sequence after styling is stable.
 
-## Co-observation red team, 2026-08-06 — unfixed items
+## Co-observation red team, 2026-08-06: unfixed items
 
 Findings from adversarially attacking the co-observation explorer. The four confirmed defects were
-fixed in PR #16, and `shared_probe_ssids`'s corpus-linear cost — the one item listed here that was a
-defect rather than a judgement — was fixed straight after and is no longer on this list. What
-remains is hardening and one product question. Full register with every measurement is in those PRs.
+fixed in PR #16, and `shared_probe_ssids`'s corpus-linear cost was fixed straight after and is no
+longer on this list. That was the one item listed here that was a defect rather than a judgement.
+What remains is hardening and one product question. Full register with every measurement is in
+those PRs.
 
-### ~~No `Cache-Control` on the co-observation 404~~ — ✅ FIXED 2026-08-14 (#34)
+### ~~No `Cache-Control` on the co-observation 404~~ ✅ FIXED 2026-08-14 (#34)
 `_absent()` now sends `Cache-Control: no-store`. It is the shared response for **both** "capability
-off" and "no such device", so it is a statement about which MACs the operator has seen — the exact
-fact the shared response exists to withhold. The previous protection was incidental (the CSRF
+off" and "no such device", so it is a statement about which MACs the operator has seen. That is the
+exact fact the shared response exists to withhold. The previous protection was incidental (the CSRF
 `Set-Cookie`) and would have vanished silently the day those cookies moved or became conditional.
 
-### ~~The audit line is written before the query it describes~~ — ✅ FIXED 2026-08-14 (#34)
-⭐ **The fix was NOT "move the line after the query"** — that re-introduces red-team finding 1 (fixed
+### ~~The audit line is written before the query it describes~~ ✅ FIXED 2026-08-14 (#34)
+⭐ **The fix was NOT "move the line after the query".** That re-introduces red-team finding 1 (fixed
 in #16), where a failed query leaves no trace at all and an attacker who can provoke failures erases
 themselves from the one control Decision 6 kept after rejecting rate limiting. The attempt is now
 logged *as* an attempt and the outcome recorded separately; the exception is re-raised unchanged, so
@@ -281,15 +282,15 @@ The panel promises counts only, no ranking. Verified facts: the default sort is
 prominence but **inclusion** ("Showing 25 of N"); the set-aside groups are a classification; shared
 SSIDs are ordered rarest-first; the demoted group has no drill-down affordance. Whether that
 amounts to a suspicion ranking expressed through layout is a **product judgement**, not a code
-defect — recorded so it is argued once, deliberately, rather than rediscovered.
+defect. It is recorded so it is argued once, deliberately, rather than rediscovered.
 
-## Production-readiness pass, 2026-08-13 — unfixed items
+## Production-readiness pass, 2026-08-13: unfixed items
 
 Findings from the shippable/shareable audit at `d66d844`. The defects that were fixed are recorded
 in `docs/AUDIT_REGISTER.md` (Wave 5, Findings 12–17) with their measurements. What follows is what
 was found and deliberately **not** taken on in that remediation.
 
-### Web UI has no authentication — 23 unauthenticated state-changing routes
+### Web UI has no authentication: 23 unauthenticated state-changing routes
 Measured: nothing in `src/lynceus/webui/` implements auth of any kind; loopback binding is the only
 control, and `ui_allow_remote: true` (`config.py:178,368`) removes it. There are 23 `@app.post`
 routes, including `/devices/{mac}/allowlist`, `/rules/{rule_type}/snooze` and
@@ -324,7 +325,7 @@ permitting remote access while staying on loopback stays quiet.
 - **Estimated**: real work. Session auth + a login surface + rate limiting, or delegate it to a
   reverse proxy and document that as the only supported remote mode.
 
-### Silent pipeline death — the daemon stays alive with ingest stopped
+### Silent pipeline death: the daemon stays alive with ingest stopped
 A persistent DB lock, disk-full, or a changed Kismet devices-schema is caught per-tick by
 `run_forever` and logged, while the runtime-loss state machine deliberately stays quiet because
 Kismet's health endpoint is still reachable (`poller.py:1257+`). Process alive, Kismet alive,
@@ -335,18 +336,19 @@ prevents a *false* "Kismet down" for DB failures, but nothing requires a truthfu
   reports this case explicitly rather than staying quiet: a watermark held at
   `POLL_WATERMARK_MAX_HOLDS` renders as "observations are failing to persist (capture data is being
   lost)", and the heartbeat is sent at raised priority instead of the low-priority path. ⛔ It never
-  claims health it has not verified — forcing `healthy = True` fails five tests.
+  claims health it has not verified. Forcing `healthy = True` fails five tests.
 
-### Test gaps worth pinning (analysis only — no tests written)
+### Test gaps worth pinning (analysis only, no tests written)
 Ranked by consequence. The suite is ~3,260 tests and genuinely strong on rules, UI, import and
 evidence; these are gaps *between* well-tested units, on failure paths.
 
-- ~~**Watermark advances past a failed record.**~~ ✅ **FIXED 2026-08-14** — and it was a live
-  defect, not just a coverage gap: the device was measured permanently lost, because the watermark
-  is set to the tick time while `last_seen` is older. Bounded hold (`POLL_WATERMARK_MAX_HOLDS`),
-  which retries transient failures without reintroducing the poison-record livelock the
-  unconditional advance was defending against. See audit register Finding 19.
-- ~~**BLE flush → alert handoff.**~~ ✅ **COVERED 2026-08-14** — measured: with the handoff broken,
+- ~~**Watermark advances past a failed record.**~~ ✅ **FIXED 2026-08-14**, and it was a live
+  defect rather than just a coverage gap: the device was measured permanently lost, because the
+  watermark is set to the tick time while `last_seen` is older. Bounded hold
+  (`POLL_WATERMARK_MAX_HOLDS`), which retries transient failures without reintroducing the
+  poison-record livelock the unconditional advance was defending against. See audit register
+  Finding 19.
+- ~~**BLE flush → alert handoff.**~~ ✅ **COVERED 2026-08-14.** Measured: with the handoff broken,
   45 existing BLE tests still passed and the new suite caught it. See Finding 20.
 - ~~**Migration replay atomicity.**~~ ✅ **PINNED 2026-08-14 (#29).** ⚠️ And the finding it
   produced had a **real state under a false cause**: a crash cannot reach the lossy replay, because
@@ -354,30 +356,30 @@ evidence; these are gaps *between* well-tested units, on failure paths.
   and the column-adding migration has not run yet. The state (*schema ahead of stamp*) is real but
   reachable only via `rollback_to`'s skip-but-unstamp branches. #37 closes the accidental one.
 - ~~**The real Kismet HTTP client.**~~ ✅ **PINNED 2026-08-14 (#29).**
-- **`cli/bootstrap_kismet.py` (now 1,607 lines) — PARTIALLY covered.** ✅ File modes (#25) and
+- **`cli/bootstrap_kismet.py` (now 1,607 lines), PARTIALLY covered.** ✅ File modes (#25) and
   ✅ the named case above, `--interface` pointing at a device that is not present, which now warns
   rather than silently configuring a source Kismet cannot open (#36). ⚠️ **Still unpinned:** distro
   detection, source-line generation, backup/atomic patching and dry-run.
 - ~~**Clock jumps.**~~ ✅ **FIXED 2026-08-14 (#35)** for the retention half, and it was a live
   defect: measured **29 of 30** in-window sightings deleted on a +30d excursion, with `evidence.py`
-  worse because it is on by default. ⛔ **Not fixable inside `retention.py`** — from there, "the
+  worse because it is on by default. ⛔ **Not fixable inside `retention.py`.** From there, "the
   clock jumped forward" and "the table holds only old rows" are the same observation, and an
   existing test *requires* the second to delete everything. Fixed with a `time.monotonic()` anchor
   in `Poller`, which declines to call the prunes at all while the clock is untrusted, with a bounded
-  hold. ⚠️ **Still open:** the `last_poll_ts` cursor half — a forward excursion still makes later
+  hold. ⚠️ **Still open:** the `last_poll_ts` cursor half. A forward excursion still makes later
   polls ask Kismet for devices "since the future".
 
-### ~~Heartbeat / dead-man's switch~~ — ✅ SHIPPED 2026-08-14 (#31)
+### ~~Heartbeat / dead-man's switch~~ ✅ SHIPPED 2026-08-14 (#31)
 Built on migration 024's delivery-tracked path, as the sequencing below required. `heartbeat_enabled`
 (default **false**) and `heartbeat_interval_hours` (default 24); migration 025 adds a `heartbeats`
 table mirroring the alert delivery columns, and `/settings` reports whether the switch is armed and
 when it last arrived.
 
 ⛔ **The invariant it rests on: it never claims health it has not verified.** A cheerful "still
-watching" sent while ingest is dead is *worse* than no heartbeat — it converts unease into false
-confidence on the one channel the operator trusts. It names a wedged poll loop, failing persists and
-undelivered alerts, and raises priority when unhealthy. 🪤 A quiet RF environment is deliberately
-**not** unhealthy.
+watching" sent while ingest is dead is *worse* than no heartbeat, because it converts unease into
+false confidence on the one channel the operator trusts. It names a wedged poll loop, failing
+persists and undelivered alerts, and raises priority when unhealthy. 🪤 A quiet RF environment is
+deliberately **not** unhealthy.
 
 ⚠️ **Open, and Kev's call: nothing prompts for it.** It is off by default and the setup wizard does
 not offer it, so a safety feature ships unused. Adding a prompt is a UX decision with 200+ wizard
@@ -386,16 +388,16 @@ tests behind it.
 The original rationale, kept because the sequencing argument is what made it correct:
 
 The one genuinely new feature worth building, deferred until the delivery path is trustworthy
-(audit register Finding 12). Every other failure mode now alerts — Kismet loss alerts and recovers,
+(audit register Finding 12). Every other failure mode now alerts. Kismet loss alerts and recovers,
 systemd restarts on failure, the allowlist fails safe. But if the daemon dies, the host loses power,
-the SD card wears out, or ntfy delivery itself breaks, the operator's phone simply goes quiet — **and
-quiet is indistinguishable from "you are safe"**, which is the worst possible failure for this
+the SD card wears out, or ntfy delivery itself breaks, the operator's phone simply goes quiet.
+**Quiet is indistinguishable from "you are safe"**, which is the worst possible failure for this
 product.
 
 A configurable low-priority "still watching, N devices seen, last alert Xh ago" push makes silence
 falsifiable, and continuously exercises the delivery path so a broken topic or auth token surfaces
 within a day instead of at the moment it matters.
-- **Trigger**: after Finding 12's delivery fix lands — building it on the current fire-and-forget
+- **Trigger**: after Finding 12's delivery fix lands. Building it on the current fire-and-forget
   path would inherit the same defect.
 - **Estimated**: ~150 LOC + config knob + tests. Cheap; the value is in the sequencing.
 
@@ -530,7 +532,7 @@ Currently a single failed poll is silently logged and the next poll
 proceeds. If transient failures become noisy, add exponential backoff
 with a circuit breaker.
 
-### ~~Kismet-died notification~~ — ✅ SHIPPED in 0.9.1, entry was stale
+### ~~Kismet-died notification~~ ✅ SHIPPED in 0.9.1, entry was stale
 Verified 2026-08-13: `poller.py:1257-1310` implements exactly this. A runtime
 loss alerts once after `RUNTIME_KISMET_LOSS_THRESHOLD = 3` consecutive failed
 ticks (~3 min at the default interval), re-probes `health_check()` to avoid
@@ -542,7 +544,7 @@ watchlist hits. Original text kept below for provenance:
 > currently alert via ntfy when this happens. Add a "lynceus infrastructure
 > alert" tier that fires on kismet-down, db-locked, etc.
 
-⚠️ The "db-locked, etc." half is **not** done — see "Silent pipeline death"
+⚠️ The "db-locked, etc." half is **not** done. See "Silent pipeline death"
 under the 2026-08-13 items below.
 
 ### Per-channel filtering
@@ -598,7 +600,7 @@ gate: every NON-Apple company id is still uncurated and would storm the same
 way.
 - **Trigger**: blocking. Must be resolved before `ble_bridge.enabled` is ever
   set in a real deployment.
-- **Notes**: ⚠️ **CORRECTED 2026-08-20 — this said BOTH rules were commented
+- **Notes**: ⚠️ **CORRECTED 2026-08-20. This said BOTH rules were commented
   out "so the repo default is safe", and #182 made half of that false.**
   `apple_find_my` now ships **LIVE** (`config/rules.yaml:206`); only
   `argus_ble_manufacturer_id` is still commented out (`:148`). The repo default
@@ -606,7 +608,7 @@ way.
   `apple_find_my` matches `ble_device_class`, which **nothing but the passive
   BLE bridge populates**, so with the bridge off it cannot fire by
   construction. That is an argument from the capture path, not from the rule
-  being disabled — and it is the reason #182 was allowed to ship it enabled.
+  being disabled, and it is the reason #182 was allowed to ship it enabled.
   ⇒ A note that is right for the wrong reason survives the change that
   falsifies it. **Verify the deployed rig config separately**. If
   `argus_ble_manufacturer_id` is uncommented there,
@@ -624,7 +626,7 @@ scan, and buffer correctly while contributing nothing, with only DEBUG-level
 drop logging to show for it. The alias-map expansion does not rescue this:
 aliases come from Kismet's own `list_sources()`, which has no knowledge of the
 bridge's synthetic source name.
-⭐ **MEASURED 2026-08-21 — this entry OVERSTATES the severity, and the gate is
+⭐ **MEASURED 2026-08-21. This entry OVERSTATES the severity, and the gate is
 already built.** The read-only verification it asks for was done; here is what
 is actually true:
 
@@ -642,12 +644,12 @@ is actually true:
 3. **It reaches the UI too**: `/healthz` renders `dropped (allowlist mismatch)`
    (`healthz.html:54`) and the home page branches on it (`index.html:97`).
 
-⇒ **The MECHANISM is real** — `ble:hci1` fails an exact-membership test against
+⇒ **The MECHANISM is real.** `ble:hci1` fails an exact-membership test against
 `hci1` at `poller.py:1963` and every bridge observation is dropped. **The
 "silent failure" framing is not.** Left here rather than deleted because the
 mechanism still bites an operator who does not read logs or check `/settings`.
 
-⚠️ **BLE-G6 and BLE-G8 are likewise already implemented** —
+⚠️ **BLE-G6 and BLE-G8 are likewise already implemented:**
 `CHECK_ADAPTER_CONTENTION` and `check_bluez_advertisement_monitor`, both wired
 into `collect_bridge_warnings`, and correctly **ordered** (G8 upstream of G6,
 because contention presumes an adapter the monitor interface could open).
@@ -739,8 +741,8 @@ operator reaches without misconfiguring anything.
 The failure mode that actually bit, and the one no other gate could see.
 bleak's passive scan needs `org.bluez.AdvertisementMonitorManager1`, which
 BlueZ publishes only when `bluetoothd` runs with experimental features on.
-Measured on the Linux dev box with **BlueZ 5.72 and kernel 7.0.0 — both
-comfortably above the minimums the bridge's own error text quotes** — with
+Measured on the Linux dev box with **BlueZ 5.72 and kernel 7.0.0, both
+comfortably above the minimums the bridge's own error text quotes**, with
 bleak installed, the adapter free and the config clean: all four other gates
 returned green and the bridge captured nothing, looping `BLE scan failed
 (passive scanning on Linux requires BlueZ >= 5.56 with --experimental
@@ -764,7 +766,7 @@ interface was absent while `Experimental` was commented out in
   `busctl`, bluetoothd down, D-Bus refusal). It also requires positive proof
   the object is a real adapter (`org.bluez.Adapter1` present), because
   `busctl introspect` **exits 0 and prints only its header** for a path that
-  does not exist — without that check a typo'd adapter name would draw a
+  does not exist. Without that check a typo'd adapter name would draw a
   confident "enable experimental features" remedy.
   Status on the dev box as of 2026-08-02: `Experimental = true` is now set and
   both adapters publish the interface, so this box can finally test whether
@@ -777,7 +779,7 @@ describes, for a DB whose 014 row is missing but whose table was already
 rebuilt), recreates `devices` at the 014-era shape and silently drops every
 column added since. That is currently **`ble_device_class` alone**.
 ⚠️ This entry also named `ble_name` until 2026-08-14. Measured: `ble_name`
-**survives** — it predates 014 and appears in 014's own `INSERT` list, so the
+**survives.** It predates 014 and appears in 014's own `INSERT` list, so the
 rebuild carries it. Only columns added *after* 014 are dropped, which is the
 whole point of the defect; naming a survivor beside the casualty made this read
 as a broader data loss than it is. Verified: 11 columns before the replay, 10
