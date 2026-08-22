@@ -73,9 +73,18 @@ rather than the 10 a push SHA gets; CodeQL reports on pull requests only):
 | `test (ubuntu-24.04-arm, py3.11)` | **4582 passed, 1 skipped, 54 deselected**, 10m30s |
 | all checks | **11/11 `completed` + `success`**, list non-empty |
 
-The 54 deselected is 47 `diagnostic` plus the 7 host-only gates: 1 `install` and
-6 `browser`. If that number drops without a gate being deleted, a gate stopped
-being deselected and is now running somewhere it cannot pass.
+At that SHA the 54 deselected was 47 `diagnostic` plus 7 host-only gates.
+
+⛔ **Do not treat that 7 as the number.** It was 8 within the hour, because #209
+added a browser gate. A count of gates rots every time somebody adds one, and a
+reader who checks the literal will either get a false alarm or start ignoring it.
+
+The invariant worth holding is not a count, it is **no test carrying a host-only
+marker may appear in the default collection**. `tests/test_release_gates.py`
+asserts exactly that, by collecting `-m "install or browser"` and the default run
+and intersecting them, so it grows on its own when a gate is added. That is the
+thing to trust; the numbers above are a dated measurement, not a contract.
+⇒ [[date-every-number-you-publish]]
 
 `addopts` carries `-m 'not diagnostic and not browser and not install'`, so the
 default suite deselects both. `make release-gates` runs them together; a
