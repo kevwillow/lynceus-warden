@@ -28,6 +28,7 @@ from ..patterns import (
     normalize_pattern,
     parse_mac_range_pattern,
 )
+from ..rules import normalize_override_key
 from ..yaml_duplicates import warn_duplicate_keys
 
 logger = logging.getLogger(__name__)
@@ -311,9 +312,28 @@ def load_override_config(path: str | None) -> OverrideConfig:
         accept_list = None
     else:
         accept_list = [str(v) for v in raw_accept]
+    # ⛔ Normalise the KEYS, and the row value at the lookup below. This file
+    # has its OWN override loader and its own lookup, separate from rules.py's
+    # -- and the vendor half, which rules.py normalises correctly on both
+    # sides, was raw on both sides here. A packet scoped to one module cannot
+    # see that; it was found by sweeping the class across files.
     return OverrideConfig(
-        vendor_overrides=dict(raw.get("vendor_overrides") or {}),
-        device_category_severity=dict(raw.get("device_category_severity") or {}),
+        vendor_overrides={
+            key: value
+            for key, value in (
+                (normalize_override_key(k), v)
+                for k, v in (raw.get("vendor_overrides") or {}).items()
+            )
+            if key is not None
+        },
+        device_category_severity={
+            key: value
+            for key, value in (
+                (normalize_override_key(k), v)
+                for k, v in (raw.get("device_category_severity") or {}).items()
+            )
+            if key is not None
+        },
         geographic_filter=list(raw.get("geographic_filter") or []),
         confidence_downgrade_threshold=int(
             raw.get("confidence_downgrade_threshold", DEFAULT_CONFIDENCE_DOWNGRADE_THRESHOLD)
@@ -342,12 +362,17 @@ def resolve_severity(
     Returns one of ``"high"``, ``"med"``, ``"low"``, or the literal ``"drop"``
     when an override demands the record be skipped.
     """
-    if manufacturer and manufacturer in overrides.vendor_overrides:
-        sev = overrides.vendor_overrides[manufacturer]
-    elif device_category and device_category in overrides.device_category_severity:
-        sev = overrides.device_category_severity[device_category]
-    elif device_category in DEFAULT_CATEGORY_SEVERITIES:
-        sev = DEFAULT_CATEGORY_SEVERITIES[device_category]
+    normalized_vendor = normalize_override_key(manufacturer)
+    normalized_category = normalize_override_key(device_category)
+    if normalized_vendor and normalized_vendor in overrides.vendor_overrides:
+        sev = overrides.vendor_overrides[normalized_vendor]
+    elif normalized_category and normalized_category in overrides.device_category_severity:
+        sev = overrides.device_category_severity[normalized_category]
+    elif normalized_category in DEFAULT_CATEGORY_SEVERITIES:
+        # ⚠️ DEFAULT_CATEGORY_SEVERITIES' keys are lowercase literals, so this
+        # arm was one-sided: an Argus export carrying `ALPR` fell through to
+        # the "low" default instead of the built-in "high".
+        sev = DEFAULT_CATEGORY_SEVERITIES[normalized_category]
     else:
         sev = "low"
     if sev == "drop":

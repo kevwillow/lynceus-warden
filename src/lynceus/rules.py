@@ -405,6 +405,30 @@ class RuntimeSeverityOverride(BaseModel):
         )
 
 
+def normalize_override_key(value: str | None) -> str | None:
+    """Canonicalise an operator-config key or the row value it is matched against.
+
+    ⛔ **Both sides of every override lookup must call this.** That is the whole
+    point of it being a function rather than two `.strip().lower()` calls: a
+    normalisation that lives in two places is a normalisation that will
+    eventually disagree with itself, silently, and the failure mode is an
+    override the operator configured that simply never fires.
+
+    🪤 This repo has already shipped that exact defect once, with BLE service
+    UUIDs: the watchlist side expanded 16-bit UUIDs to the 128-bit base form and
+    the observation side did not, so every advertisement of a watchlisted
+    tracker was rejected and dropped with a DEBUG line. The fix there was to
+    make both sides call one function. This is the same fix for the same shape.
+
+    Returns None for a non-string or an empty-after-strip value, so a caller can
+    skip the lookup entirely rather than match on "".
+    """
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip().lower()
+    return stripped or None
+
+
 def load_runtime_severity_overrides(
     path: str | Path | None,
 ) -> RuntimeSeverityOverride | None:
@@ -497,11 +521,29 @@ def load_runtime_severity_overrides(
     # anywhere a raise could be mistaken for "could not read".
     warn_duplicate_keys(p, logger=logger, subject="severity overrides file")
     runtime_kwargs: dict = {}
+    # ⛔ Normalise the KEYS here, and the row value at the lookup. Three of the
+    # five override containers (suppress_vendors, vendor_severity,
+    # pattern_overrides) already normalised at load time and their lookups
+    # normalise the row too; these two did neither, so an operator who wrote
+    # `ALPR:` in YAML got an override that silently never fired against the
+    # lowercase categories the watchlist actually carries. Fixing only the key
+    # would have been a REGRESSION for anyone whose rows really are uppercase,
+    # because the lookup compares against the raw row value -- which is why
+    # both halves move together, in this commit, calling one function.
     if isinstance(raw.get("device_category_severity"), dict):
-        runtime_kwargs["device_category_severity"] = raw["device_category_severity"]
+        runtime_kwargs["device_category_severity"] = {
+            key: value
+            for key, value in (
+                (normalize_override_key(k), v)
+                for k, v in raw["device_category_severity"].items()
+            )
+            if key is not None
+        }
     if isinstance(raw.get("suppress_categories"), list):
         runtime_kwargs["suppress_categories"] = frozenset(
-            s for s in raw["suppress_categories"] if isinstance(s, str)
+            key
+            for key in (normalize_override_key(s) for s in raw["suppress_categories"])
+            if key is not None
         )
     if isinstance(raw.get("suppress_vendors"), list):
         # Normalize at load time (lowercase + strip) so the eval-time
@@ -767,10 +809,8 @@ def _apply_runtime_overrides(
                 rule_name,
             )
             return None
-    if (
-        match_device_category is not None
-        and match_device_category in overrides.suppress_categories
-    ):
+    normalized_category = normalize_override_key(match_device_category)
+    if normalized_category is not None and normalized_category in overrides.suppress_categories:
         logger.info(
             "runtime override: suppressing category=%s alert for "
             "watchlist_id=%d (rule=%s)",
@@ -794,11 +834,12 @@ def _apply_runtime_overrides(
         normalized_vendor_remap = match_manufacturer.strip().lower()
         if normalized_vendor_remap in overrides.vendor_severity:
             return overrides.vendor_severity[normalized_vendor_remap]
+    normalized_category_remap = normalize_override_key(match_device_category)
     if (
-        match_device_category is not None
-        and match_device_category in overrides.device_category_severity
+        normalized_category_remap is not None
+        and normalized_category_remap in overrides.device_category_severity
     ):
-        return overrides.device_category_severity[match_device_category]
+        return overrides.device_category_severity[normalized_category_remap]
     return match_severity
 
 
