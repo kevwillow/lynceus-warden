@@ -39,6 +39,7 @@ sets the pragma deliberately, this test should be the thing that notices.
 from __future__ import annotations
 
 import ast
+import logging
 import re
 import sqlite3
 import subprocess
@@ -291,3 +292,132 @@ def test_the_live_connection_really_carries_that_timeout(locked_db):
     """
     assert locked_db._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
     assert locked_db._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+# --- Database.run(): the retry policy -------------------------------------
+#
+# The tests above establish the defect: the loser of a write race waits out
+# `busy_timeout` and its write is GONE. `run()` is the retryable form. It does
+# not change `busy_timeout` (which one guard pins at 5000ms in one place) and
+# it does not make contention cheaper. It converts "lost write" into "slower
+# successful write", bounded by a deadline the CALLER derives from its own
+# budget.
+
+
+def test_run_RECOVERS_the_write_the_old_path_loses(tmp_path, locked_db):
+    """⭐ The whole point, against a real second process.
+
+    The holder keeps the lock for 6s, which is just past the 5s busy timeout.
+    The old path loses this write outright -- that is
+    ``test_a_write_held_past_the_busy_timeout_is_LOST_in_the_other_process``
+    directly above. Through ``run()`` the same write survives.
+    """
+    proc = _start_holder(tmp_path, release_name="go", max_hold=6.0)
+    try:
+        time.sleep(0.3)
+        started = time.monotonic()
+        locked_db.run(
+            lambda conn: conn.execute(
+                "INSERT INTO alerts (ts, rule_name, message, severity) VALUES (?,?,?,?)",
+                (2, "retrier", "retrier", "low"),
+            ),
+            deadline_seconds=20,
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        (tmp_path / "go").touch()
+        proc.wait(timeout=30)
+
+    rows = sorted(r[0] for r in locked_db._conn.execute("SELECT rule_name FROM alerts"))
+    assert rows == ["holder", "retrier"], f"the retried write did not survive: {rows}"
+
+    # ⭐ The barrier, same discipline as the tests above: prove it really
+    # contended. A sub-second success would mean the holder never had the lock
+    # and this test proves nothing about retrying.
+    assert elapsed >= 4.0, (
+        f"succeeded in {elapsed:.2f}s, so it never waited out a busy timeout "
+        "and never actually retried"
+    )
+
+
+def test_run_gives_up_at_the_deadline_and_RAISES_rather_than_returning(tmp_path, locked_db, caplog):
+    """Exhaustion must surface. A caller that could not write has to find out.
+
+    ⚠️ This also pins the documented overshoot: the deadline is checked BETWEEN
+    attempts, so a 1s deadline still costs one whole 5s busy timeout because an
+    attempt cannot be interrupted once SQLite is waiting inside it. That is the
+    real worst case and the docstring says so rather than rounding it off.
+    """
+    proc = _start_holder(tmp_path, release_name="go", max_hold=30)
+    try:
+        time.sleep(0.3)
+        started = time.monotonic()
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(sqlite3.OperationalError) as excinfo:
+                locked_db.run(
+                    lambda conn: conn.execute(
+                        "INSERT INTO alerts (ts, rule_name, message, severity) "
+                        "VALUES (?,?,?,?)",
+                        (3, "doomed", "doomed", "low"),
+                    ),
+                    deadline_seconds=1.0,
+                )
+        elapsed = time.monotonic() - started
+    finally:
+        (tmp_path / "go").touch()
+        proc.wait(timeout=30)
+
+    assert "locked" in str(excinfo.value)
+    assert 4.0 <= elapsed <= 12.0, (
+        f"expected one full busy timeout despite the 1s deadline, got {elapsed:.2f}s"
+    )
+    rows = [r[0] for r in locked_db._conn.execute("SELECT rule_name FROM alerts")]
+    assert rows == ["holder"], f"the doomed write should not be present: {rows}"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("giving up" in m for m in warnings), warnings
+
+
+def test_run_does_NOT_retry_an_error_that_is_not_contention(locked_db):
+    """⛔ The safety of the whole thing. Disk-full, corruption, a constraint
+    failure and a plain SQL mistake are all OperationalError too. Retrying one
+    turns an operational failure into a slow operational failure and then
+    reports it as contention."""
+    calls = []
+
+    def boom(conn):
+        calls.append(1)
+        conn.execute("SELECT * FROM no_such_table_at_all")
+
+    started = time.monotonic()
+    with pytest.raises(sqlite3.OperationalError) as excinfo:
+        locked_db.run(boom, deadline_seconds=30)
+    elapsed = time.monotonic() - started
+
+    assert "no such table" in str(excinfo.value)
+    assert calls == [1], f"a non-contention error was retried {len(calls)} times"
+    assert elapsed < 1.0, f"it burned {elapsed:.2f}s retrying something unretryable"
+
+
+def test_run_is_free_when_nothing_is_contending(locked_db):
+    """The control. Retry must not add cost to the uncontended path, which is
+    every write on a single-writer install."""
+    calls = []
+    started = time.monotonic()
+    locked_db.run(
+        lambda conn: calls.append(
+            conn.execute(
+                "INSERT INTO alerts (ts, rule_name, message, severity) VALUES (?,?,?,?)",
+                (4, "quiet", "quiet", "low"),
+            )
+        ),
+        deadline_seconds=30,
+    )
+    elapsed = time.monotonic() - started
+    assert len(calls) == 1, "the callable ran more than once with no contention"
+    assert elapsed < 1.0, f"an uncontended write took {elapsed:.2f}s"
+
+
+def test_run_refuses_a_deadline_that_cannot_permit_an_attempt(locked_db):
+    for bad in (0, -1, -0.5):
+        with pytest.raises(ValueError, match="deadline_seconds"):
+            locked_db.run(lambda conn: None, deadline_seconds=bad)

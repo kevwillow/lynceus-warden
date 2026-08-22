@@ -10,14 +10,17 @@ import sqlite3
 import sys
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import TracebackType
-from typing import NamedTuple
+from typing import NamedTuple, TypeVar
 
 from lynceus.patterns import mac_in_mac_range, parse_mac_range_pattern
 
 logger = logging.getLogger(__name__)
+
+#: Return type of the callable passed to ``Database.run``.
+_T = TypeVar("_T")
 
 
 class ResolvedMacRangeMatch(NamedTuple):
@@ -534,6 +537,90 @@ class Database:
         )
         self._migrations_dir = _find_migrations_dir()
         self._apply_migrations()
+
+        #: A transaction that lost the write lock is retried until this much of the
+    #: caller's deadline is gone. Not a wait: SQLite's own busy handler does the
+    #: waiting, and returns the moment the lock frees. This only decides whether
+    #: to spend ANOTHER of those waits.
+    _RETRY_FLOOR_SECONDS = 0.05
+
+    @staticmethod
+    def _is_lock_contention(exc: sqlite3.OperationalError) -> bool:
+        """Is this the one error worth retrying, or something that must surface?
+
+        ⛔ The distinction is the whole safety of ``run()``. Disk-full, an I/O
+        error, corruption, a constraint failure and a plain SQL mistake all
+        arrive as ``OperationalError`` too, and retrying any of them converts an
+        operational failure into a slow operational failure, then reports it as
+        contention. Red-team finding 10 against the superseded design named this
+        exact shape.
+        """
+        text = str(exc).lower()
+        return "locked" in text or "database is busy" in text
+
+    def run(self, fn: Callable[[sqlite3.Connection], _T], *, deadline_seconds: float) -> _T:
+        """Run ``fn(conn)`` in a write transaction, retrying if the lock is lost.
+
+        ⛔ **``fn`` MAY RUN MORE THAN ONCE.** It must touch nothing but this
+        database. No notification, no file write, no counter in memory that a
+        second pass would double. That constraint is the reason the outbox in
+        ``internal/specs/SPEC_unit_of_work.md`` exists: an external action is
+        recorded here and performed by someone else, precisely because this call
+        cannot promise to have happened exactly once.
+
+        **Why this exists.** Two writers, two connections, no shared Python
+        lock. The loser waits out ``busy_timeout`` and its write is then
+        **LOST** -- not queued, not retried, gone. That is reproduced with real
+        processes in ``test_a_write_held_past_the_busy_timeout_is_LOST_in_the_other_process``.
+        ``poll_once`` survives it by holding the Kismet watermark so the tick
+        repeats; a web route has no next tick and 500s at the operator.
+
+        ⭐ **Retry does not replace ``busy_timeout``, it spends more of them.**
+        The pragma is 5000 ms and is chosen in exactly one place, which a guard
+        pins; this does not touch it. SQLite's busy handler is not a fixed
+        sleep, it returns as soon as the lock frees, so contention that clears
+        in 50 ms still costs 50 ms. What changes is the case where the holder
+        releases just after the timeout: that used to be a lost write and is now
+        a slower successful one.
+
+        ⚠️ **``deadline_seconds`` is checked BETWEEN attempts, so the true worst
+        case is the deadline plus one ``busy_timeout``.** An attempt cannot be
+        interrupted once SQLite is waiting inside it. Stated rather than
+        rounded off, because a caller sizing this against a request budget needs
+        the real number.
+
+        ⇒ **Derive the deadline from the caller's own budget**, never a shared
+        constant: a web route from the request the operator is waiting on, the
+        poll loop from ``poll_interval_seconds`` because the next tick is
+        already its retry. The same reasoning as the prune deadline.
+
+        On exhaustion the original ``OperationalError`` is re-raised, after a
+        WARNING naming the attempts and the elapsed time. It is never converted
+        into a return value: a caller that cannot write must find out.
+        """
+        if deadline_seconds <= 0:
+            raise ValueError(f"deadline_seconds must be > 0, got {deadline_seconds!r}")
+        started = time.monotonic()
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                with self.transaction() as conn:
+                    return fn(conn)
+            except sqlite3.OperationalError as exc:
+                if not self._is_lock_contention(exc):
+                    raise
+                elapsed = time.monotonic() - started
+                if deadline_seconds - elapsed <= self._RETRY_FLOOR_SECONDS:
+                    logger.warning(
+                        "write lost the lock on all %d attempt(s) in %.2fs "
+                        "(deadline %.2fs); giving up and raising: %s",
+                        attempts,
+                        elapsed,
+                        deadline_seconds,
+                        exc,
+                    )
+                    raise
 
     @contextlib.contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
