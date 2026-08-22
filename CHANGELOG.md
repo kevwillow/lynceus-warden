@@ -429,6 +429,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+- **Turning on remote access broke every form on the site.** `ui_allow_remote:
+  true` attached `Secure` to the CSRF cookie, and nothing in lynceus serves TLS.
+  A `Secure` cookie does not come back over plain HTTP: browsers refuse to store
+  one from an insecure response at all, and a client that does store it still
+  withholds it from every `http://` request. Either way the POST arrived
+  carrying no cookie, so the CSRF middleware rejected it and the operator got
+  `403 CSRF token mismatch` on acknowledging an alert, editing the allowlist,
+  saving settings, all of it. There was no mismatch. There was nothing to
+  compare.
+
+  Measured with a cookie jar applying the same rule a browser does: with
+  `ui_allow_remote: true` over `http://`, acknowledging an alert returned **403**
+  and the alert stayed unacknowledged. The identical request over `https://`
+  returned 200 and acknowledged it. That second arm is what isolates the cause
+  as the transport rather than the flag.
+
+  `Secure` now comes from the scheme of the request that set the cookie, which
+  is what the flag has always meant. `ui_allow_remote` describes the bind
+  address and never described the transport. Requests that genuinely arrive over
+  HTTPS still get the flag, including behind a trusted local proxy such as
+  `tailscale serve`, because uvicorn reports the forwarded scheme.
+
+  ⚠️ Two things hid this. Every existing CSRF test ran with the flag off, so the
+  suite covered only loopback. And in a real browser loopback is unaffected
+  anyway, because `http://localhost` counts as a trustworthy origin, so anyone
+  testing over an SSH forward would never see it. It bites exactly where
+  `ui_allow_remote` exists to help: reaching the UI by hostname or IP.
+
+  The new guard asserts the **behaviour**, that a form submitted over plain HTTP
+  with remote access enabled still works, rather than how the header is spelled.
+  It fails against the old code. A second test proves the flag is still set over
+  HTTPS, so simply deleting `Secure` does not pass in its place.
+
+  ⛔ **The fix does not ship alone, and that is deliberate.** `BACKLOG.md`
+  recorded this breakage as making the no-auth exposure "partially
+  self-limiting, by a bug rather than by design", and warned that repairing it
+  without adding authentication would make things strictly worse. It was never
+  a control. It stopped browsers, which means it stopped the operator, while a
+  caller using curl sets both halves of the double-submit itself and was never
+  impeded for a moment. `SameSite=Strict` already covered the browser-driven
+  case. What the bug actually bought was that remote deployments stayed broken
+  enough that nobody left one running, which is an accident rather than a
+  defence. So the accident is replaced by saying it out loud, below, and that
+  backlog entry is corrected rather than left asserting something that had
+  quietly stopped being true.
+
+- **`lynceus-ui` now says so, loudly, when it is listening where other machines
+  can reach it.** A startup banner naming the bind address, the fact that there
+  is no authentication of any kind, and that `/probes` is a record of where
+  bystanders have been. It prints the exact `ssh -L` line for the configured
+  port and names Tailscale as the other supported path.
+
+  Two decisions in it carry weight. It goes to **stderr rather than the
+  logger**, because `log_level: ERROR` is exactly what an operator running this
+  unattended is likely to have set, and a compensating control that a config
+  value can silence is not one. And it is keyed on the **bind host** rather than
+  on `ui_allow_remote`: the flag is a permission, the bind is the fact. Setting
+  the flag while staying on loopback exposes nothing and stays quiet, because a
+  banner that cries wolf is one people learn to scroll past.
+
+  `LOOPBACK_HOSTS` in `config.py` is now the single definition of what loopback
+  means, read both by the validator that refuses a wide bind and by the warning
+  that describes one. A test iterates that constant rather than restating it, so
+  the two cannot drift into a state where the daemon refuses a bind it would
+  then have called safe.
+
 - **Four surfaces promised the operator something they could not get.** Each was
   measured on a rendered page, not reasoned about.
 

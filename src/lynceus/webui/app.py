@@ -2497,8 +2497,11 @@ def create_app(
         name="static",
     )
 
-    cookie_secure = bool(config.ui_allow_remote)
-    app.add_middleware(CSRFMiddleware, cookie_secure=cookie_secure)
+    # ⭐ No cookie_secure argument: the flag is decided per request from the
+    # scheme, not from config. It was wired to ui_allow_remote, which meant
+    # enabling remote access 403'd every form on the site. See
+    # CSRFMiddleware._build_cookie_value.
+    app.add_middleware(CSRFMiddleware)
     # ⭐ Added AFTER CSRFMiddleware, which means it runs OUTSIDE it: Starlette
     # applies middleware in reverse registration order, so the CSP wrapper sees
     # every response including the 403 CSRFMiddleware itself returns. Register

@@ -165,7 +165,9 @@ def create_wizard_app(
     # added is OUTERMOST. We want the token gate to run first (cheap
     # reject of unauth requests before CSRF state setup), so CSRF is
     # added first and Token second.
-    app.add_middleware(CSRFMiddleware, cookie_secure=False)
+    # Secure is decided per request from the scheme (see CSRFMiddleware).
+    # This wizard is reached over plain HTTP, so in practice that is off here.
+    app.add_middleware(CSRFMiddleware)
     app.add_middleware(
         SetupTokenMiddleware,
         setup_token=setup_token,

@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 # default). Single source of truth for both config defaults and the wizard.
 DEFAULT_KISMET_URL = "http://127.0.0.1:2501"
 
+# The host values that mean "nothing off this machine can reach the UI".
+# ⭐ Defined once because TWO things read it and they must not drift: the
+# validator below, which refuses a non-loopback bind unless ui_allow_remote is
+# set, and the startup exposure warning in webui/server.py. If those two ever
+# disagreed, the daemon would either refuse a bind it then called safe, or bind
+# wide open and say nothing.
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
+
 
 def _validate_url_scheme_and_host(value: str, field_name: str) -> None:
     """Reject scheme-less or non-http(s) URLs at the config layer.
@@ -398,11 +406,11 @@ class Config(BaseModel):
     def _validate_ui_bind(self) -> Config:
         if self.ui_bind_port < 1 or self.ui_bind_port > 65535:
             raise ValueError("ui_bind_port must be between 1 and 65535")
-        if self.ui_bind_host not in ("127.0.0.1", "localhost") and not self.ui_allow_remote:
+        if self.ui_bind_host not in LOOPBACK_HOSTS and not self.ui_allow_remote:
             raise ValueError(
                 "ui_bind_host is non-loopback but ui_allow_remote is False. "
                 "Set ui_allow_remote: true explicitly to bind to a non-loopback address. "
-                "This is a footgun — lynceus has no auth layer, so anything that "
+                "This is a footgun. Lynceus has no auth layer, so anything that "
                 "can reach the bound address can read the UI."
             )
         return self
