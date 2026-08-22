@@ -580,40 +580,157 @@ separately as the Find My / Apple Continuity decoder arc.
   still needs a live drone capture.
 
 ### BLE-G1: watchlist curation before enabling the bridge (BLOCKING)
-A watchlist matching raw `ble_manufacturer_id` values is an alert storm, not a
-detection: company id `004c` is *every* Apple device in range, `0075` every
-Samsung, and so on. Enabling the bridge against an uncurated company-id
-watchlist would alert on every passer-by's phone and earbuds. The curation
-decision, which company ids (or which id + payload-shape pairs) are a
-surveillance signal rather than consumer noise, is Argus-side data work, not
-lynceus-side code.
-**Substantially reduced for Apple by the Continuity decoder (unreleased).**
-`lynceus.ble_continuity` now resolves `004c` to `find_my_separated` /
-`find_my` / `find_my_paired` / `airpods` / `nearby` / `apple_unknown`, and
-the `ble_device_class` rule type alerts on named classes, so the Apple case
-is a classification problem rather than a vendor blocklist, and the
-alert-storm risk for Apple is gone. The separated-from-owner refinement that
-makes this precise is no longer pending: it is length-based and rig-validated
-as of 2026-08-01, so `find_my_separated` is the class an operator actually
-wants and `find_my_paired` is the noise to leave out. What remains for this
-gate: every NON-Apple company id is still uncurated and would storm the same
-way.
-- **Trigger**: blocking. Must be resolved before `ble_bridge.enabled` is ever
-  set in a real deployment.
-- **Notes**: ⚠️ **CORRECTED 2026-08-20. This said BOTH rules were commented
-  out "so the repo default is safe", and #182 made half of that false.**
-  `apple_find_my` now ships **LIVE** (`config/rules.yaml:206`); only
-  `argus_ble_manufacturer_id` is still commented out (`:148`). The repo default
-  is still safe, but for a different and narrower reason than this note gave:
-  `apple_find_my` matches `ble_device_class`, which **nothing but the passive
-  BLE bridge populates**, so with the bridge off it cannot fire by
-  construction. That is an argument from the capture path, not from the rule
-  being disabled, and it is the reason #182 was allowed to ship it enabled.
-  ⇒ A note that is right for the wrong reason survives the change that
-  falsifies it. **Verify the deployed rig config separately**. If
-  `argus_ble_manufacturer_id` is uncommented there,
-  enabling the bridge storms immediately with no further warning, and the
-  decoder does not help because that rule matches company id, not class.
+
+⭐ **MEASURED 2026-08-22 against the shipped `default_watchlist.csv` (41,508 rows,
+schema_version=31). The gate is real and its PREMISE is wrong.** Every number
+below is counted from the CSV in the wheel, not estimated.
+
+**The premise that fails.** This entry used to say the curation decision "is
+Argus-side data work, not lynceus-side code". The decision is Argus-side. The
+mechanism to express it does not exist in lynceus, so the code half is not
+optional:
+
+    ble_manufacturer_id   3969 rows   3967 unknown, 2 cctv_camera
+    ble_company_id         715 rows    713 unknown, 1 drone, 1 hacking_tool
+
+Both Argus types collapse to the single watchlist `pattern_type`
+`ble_manufacturer_id` (`IDENTIFIER_TYPE_MAP`, `import_argus.py:72`), so the rule
+consumes **4,684 rows of which 4 carry an actionable category**. 0.085% signal.
+3,969 distinct company ids is the Bluetooth SIG registry, which is to say every
+Apple, Samsung, Google and Xiaomi device in range.
+
+⚠️ **Those rows are in the database on every install TODAY.** The commented-out
+rule is the only thing holding the storm back, and a commented YAML line is not
+a safety boundary.
+
+**Why no existing knob can fix it.** 80.3% of the whole corpus (33,329 rows) is
+`device_category=unknown`, and of those, 17,778 are `mac_range` and 8,904 are
+hostnames. So `suppress_categories: [unknown]` or
+`device_category_severity: {unknown: drop}` would take out the backbone of the
+detection that works. Checked one at a time, and each fails on a different
+dimension:
+
+    vendor_overrides       4,193 distinct BLE manufacturers, 180 of them also
+                           own non-BLE rows, so dropping by vendor is collateral
+    geographic_filter      BLE rows are scope '' (3969) / global (707) / US (8);
+                           31,435 non-BLE rows are ALSO ''. Not disjoint
+    confidence_*           3,968 of 3,969 sit at a flat 85. No discrimination
+    pattern_overrides      assigns severity, does not suppress. "low" still fires
+
+⇒ **No knob keys on `pattern_type`.** The needed predicate is the conjunction
+`(pattern_type, device_category)` and the config language cannot say it.
+
+**The gate is applied to three rules and describes only one.** The alert-storm
+argument is about company ids. It is currently blocking two rules it does not
+describe:
+
+Counted at the watchlist `pattern_type` level, which is what a delegation rule
+actually sees, across the whole shipped corpus:
+
+    pattern_type          rows  actionable        rule state
+    mac_range            17806    28 (0.16%)      commented
+    ble_manufacturer_id   4684     4 (0.09%)      commented  <- this gate
+    oui                    444   144 (32.4%)      commented
+    drone_id_prefix        427   427 (100%)       commented, capture-path caveat
+    ble_uuid               140   130 (92.9%)      commented, NO STATED REASON
+    ssid_pattern            24    18 (75.0%)      LIVE
+    ble_local_name          21    21 (100%)       commented
+    ssid                     6     6 (100%)       LIVE
+    mac                      4     4 (100%)       LIVE
+
+⭐ **34 of the 23,556 imported rows can fire an alert today.** Everything else is
+inert, because the only live delegation rules are `argus_mac`, `argus_ssid` and
+`apple_find_my`. That is the context this gate sits in: the argument for keeping
+a rule off has to be better than "its corpus is mostly noise", because by that
+measure `oui`, `drone_id_prefix`, `ble_uuid` and `ble_local_name` are all being
+held back by a gate written about company ids.
+
+`argus_drone_id_prefix` is the one with a different and legitimate reason: it
+shares the Kismet-surface caveat printed above it in `rules.yaml`, so it is a
+capture-path question rather than a curation one. `argus_ble_uuid` is not.
+
+`argus_ble_uuid` is commented out with **no stated reason at all**, sitting in a
+block beside `argus_mac` and `argus_oui`. Its rule type is implemented end to
+end, delegation included (`rules.py:1128`, `db.resolve_matched_ble_uuid_for_eval`),
+and it does not need the BLE bridge, because Kismet surfaces
+`kismet.device.base.service_uuids` directly (`kismet.py:566`) and the bridge
+supplies the same field. Its 130 categorised rows are Hikvision and Dahua
+cameras, Motorola police radio, and SoundThinking gunshot detection. For
+comparison, `argus_ssid` was switched on in rc6+ on the strength of **10** Flock
+rows.
+
+🪤 **Do not read that 87% as permission to enable it.** The 10 uncategorised
+`ble_uuid` rows are consumer platforms, all at confidence 65:
+
+    fd44 / 0000fd44                        Apple Find My
+    7dfc9000 .. 7dfc9003                   Tile
+    fd5a / 0x0075                          Samsung
+    fe9f                                   Google
+    74278bda-b644-4520-8f0c-720eaf059935   Xiaomi
+
+Enabling `argus_ble_uuid` as it ships storms on every Apple device in range. It
+is the same defect as the company ids at 1/400th the scale, hiding inside the
+type that otherwise looks clean. ⇒ **the same eligibility mechanism is needed
+either way**, which is the argument for building it rather than curating a CSV.
+
+🪤 **Two of those consumer UUIDs are harmless today only because they are
+malformed.** Four rows in the shipped corpus are rejected by lynceus's own
+normaliser, so they never reach the watchlist at all:
+
+    fd5a / 0x0075                            two identifiers in one field
+    fdcd / 0x02d0                            two identifiers in one field
+    0002AB8-0000-1000-8000-00805f9b34fb      7 hex digits in the first group
+    0x3080                                   0x prefix on a UUID
+
+The first two are Samsung and Xiaomi. If Argus corrects the formatting, two more
+consumer platforms land in the corpus uncategorised and the storm surface grows
+with no change on this side. ⇒ a data-quality defect upstream is currently doing
+a safety job, which is not a thing to rely on.
+
+**This gate is now ENFORCED, not just described.** `tests/test_watchlist_rule_safety.py`
+fails if any delegation rule ships enabled while its corpus still holds an
+uncategorised consumer-platform identifier. It is keyed on the identifiers rather
+than on a ratio, because `ble_uuid` is 92.9% categorised and still storms. It is
+a take-effect pair, not a blocklist: the same rule against a corpus where Argus
+has categorised `004c` passes, so curating the data is what unblocks the gate.
+
+**What to build**, red-teamed with `gpt-5.6-sol` before writing any of it:
+
+1. A **positive eligibility test on the matched row**, enforced in the rule, not
+   in config. It protects databases that are already imported, needs no
+   re-import, and cannot be defeated by import and runtime configuration
+   disagreeing. ⛔ Do NOT express it as `device_category != 'unknown'`: that
+   conflates taxonomy completeness with alert eligibility and assumes every
+   named category is worth an alert. Name the eligible categories.
+2. An **exact company-id allow override that outranks it**, so an operator can
+   enable one known tracker vendor without enabling its category or its
+   manufacturer.
+3. Curating the shipped CSV is worth doing and **cannot be the gate**: it does
+   nothing for installed databases, for a deployed config with the rule on, or
+   for an operator importing a raw Argus export.
+
+⛔ **The deeper point, and the reason not to just widen the allowlist later.** A
+company id names a payload namespace, not a device that is following someone.
+Apple was solved by DECODING the Continuity payload into `find_my_separated`,
+not by listing `004c`. Alert-worthy evidence is a decoded role plus persistence
+plus co-movement, and company id belongs upstream of that as a decoder hint. A
+filter built to stop a storm is one edit away from hiding the tracker it was
+looking for.
+
+- **Trigger**: blocking for `argus_ble_manufacturer_id`. Must be resolved before
+  `ble_bridge.enabled` is ever set in a real deployment.
+- **Notes**: ⚠️ **CORRECTED 2026-08-20.** This said BOTH rules were commented out
+  "so the repo default is safe", and #182 made half of that false. `apple_find_my`
+  now ships **LIVE** (`config/rules.yaml:206`); only `argus_ble_manufacturer_id`
+  is still commented out (`:148`). The repo default is still safe, but for a
+  narrower reason than this note gave: `apple_find_my` matches `ble_device_class`,
+  which **nothing but the passive BLE bridge populates**, so with the bridge off
+  it cannot fire by construction. That is an argument from the capture path, not
+  from the rule being disabled. ⇒ A note that is right for the wrong reason
+  survives the change that falsifies it. **Verify the deployed rig config
+  separately.** If `argus_ble_manufacturer_id` is uncommented there, enabling the
+  bridge storms immediately, and the Continuity decoder does not help because that
+  rule matches company id, not class.
 
 ### BLE-G2: kismet_sources source-gate vs bridge provenance (BLOCKING)
 Latent silent failure. The bridge stamps its observations with
