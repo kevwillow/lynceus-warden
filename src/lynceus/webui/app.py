@@ -2733,6 +2733,21 @@ def create_app(
         # pre-rc5 filters and stay byte-identical -- bookmarked URLs
         # keep working. rule_type / q / window are new in rc5
         # alongside the unified-pagination upgrade.
+        # ⛔ The severity and acknowledged dropdowns both render
+        # ``<option value="" selected>any</option>`` as their default
+        # state in alerts_list.html, so a click on "filter" without
+        # changing them posts ``severity=`` / ``acknowledged=``.
+        # The validators below rejected the empty string with 400, so an
+        # operator landed on a styled error page after submitting a form
+        # they never changed. /devices, /watchlist and the rest of the
+        # list pages all normalize empty to None at route entry; do the
+        # same here so the default form render reaches the unfiltered
+        # list. An actual typo (``severity=bogus``) still 400s — only
+        # the form's own 'any' value is treated as unselected.
+        if severity == "":
+            severity = None
+        if acknowledged == "":
+            acknowledged = None
         if severity is not None and severity not in ("low", "med", "high"):
             raise HTTPException(status_code=400, detail="invalid severity")
         ack_bool = _parse_bool_str(acknowledged, "acknowledged")
@@ -2927,6 +2942,13 @@ def create_app(
         # (the operator opted into the YAML cost by clicking the
         # download link), unlike the list route which only loads
         # them when has_action is engaged.
+        # ⛔ Empty filter values from the form's 'any' dropdowns must be
+        # accepted as 'unselected', matching the HTML route above. See
+        # the alerts_list handler for the rationale.
+        if severity == "":
+            severity = None
+        if acknowledged == "":
+            acknowledged = None
         if severity is not None and severity not in ("low", "med", "high"):
             raise HTTPException(status_code=400, detail="invalid severity")
         ack_bool = _parse_bool_str(acknowledged, "acknowledged")
