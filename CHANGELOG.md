@@ -429,6 +429,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+- **Turning on remote access broke every form on the site.** `ui_allow_remote:
+  true` attached `Secure` to the CSRF cookie, and nothing in lynceus serves TLS.
+  A `Secure` cookie does not come back over plain HTTP: browsers refuse to store
+  one from an insecure response at all, and a client that does store it still
+  withholds it from every `http://` request. Either way the POST arrived
+  carrying no cookie, so the CSRF middleware rejected it and the operator got
+  `403 CSRF token mismatch` on acknowledging an alert, editing the allowlist,
+  saving settings, all of it. There was no mismatch. There was nothing to
+  compare.
+
+  Measured with a cookie jar applying the same rule a browser does: with
+  `ui_allow_remote: true` over `http://`, acknowledging an alert returned **403**
+  and the alert stayed unacknowledged. The identical request over `https://`
+  returned 200 and acknowledged it. That second arm is what isolates the cause
+  as the transport rather than the flag.
+
+  `Secure` now comes from the scheme of the request that set the cookie, which
+  is what the flag has always meant. `ui_allow_remote` describes the bind
+  address and never described the transport. Requests that genuinely arrive over
+  HTTPS still get the flag, including behind a trusted local proxy such as
+  `tailscale serve`, because uvicorn reports the forwarded scheme.
+
+  ⚠️ Two things hid this. Every existing CSRF test ran with the flag off, so the
+  suite covered only loopback. And in a real browser loopback is unaffected
+  anyway, because `http://localhost` counts as a trustworthy origin, so anyone
+  testing over an SSH forward would never see it. It bites exactly where
+  `ui_allow_remote` exists to help: reaching the UI by hostname or IP.
+
+  The new guard asserts the **behaviour**, that a form submitted over plain HTTP
+  with remote access enabled still works, rather than how the header is spelled.
+  It fails against the old code. A second test proves the flag is still set over
+  HTTPS, so simply deleting `Secure` does not pass in its place.
 - **Four surfaces promised the operator something they could not get.** Each was
   measured on a rendered page, not reasoned about.
 

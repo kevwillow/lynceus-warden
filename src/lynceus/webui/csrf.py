@@ -125,18 +125,33 @@ async def _send_403(send) -> None:
 class CSRFMiddleware:
     """ASGI middleware enforcing CSRF on state-changing requests."""
 
-    def __init__(self, app, *, cookie_secure: bool = False) -> None:
+    def __init__(self, app) -> None:
         self.app = app
-        self.cookie_secure = cookie_secure
 
-    def _build_cookie_value(self, token: str) -> str:
+    def _build_cookie_value(self, token: str, *, secure: bool) -> str:
+        """Build the Set-Cookie value. ``secure`` describes the TRANSPORT.
+
+        ⭐ ``Secure`` used to be derived from ``ui_allow_remote``, which
+        describes the BIND ADDRESS, not the transport. Nothing in lynceus
+        serves TLS, so that combination set a flag no plain-HTTP client may
+        return: the browser stored the cookie and then withheld it from every
+        subsequent request, the POST arrived with no cookie at all, and the
+        operator got ``403 CSRF token mismatch`` on every form. Turning on the
+        one documented way to reach the UI off-host broke the whole UI, and
+        the 403 named a mismatch when there was nothing to mismatch.
+
+        Deriving it from the request scheme is the honest mapping, and it
+        keeps the flag where it is real: uvicorn reports ``https`` both when
+        it terminates TLS itself and, via its proxy-header handling, when a
+        trusted local proxy such as ``tailscale serve`` did.
+        """
         parts = [
             f"{CSRF_COOKIE_NAME}={token}",
             f"Max-Age={CSRF_COOKIE_MAX_AGE}",
             "Path=/",
             "SameSite=Strict",
         ]
-        if self.cookie_secure:
+        if secure:
             parts.append("Secure")
         return "; ".join(parts)
 
@@ -165,7 +180,9 @@ class CSRFMiddleware:
         if method in _SAFE_METHODS:
             if cookie_value is None:
                 token_to_set = generate_token()
-                cookie_str = self._build_cookie_value(token_to_set).encode("latin-1")
+                cookie_str = self._build_cookie_value(
+                    token_to_set, secure=scope.get("scheme") == "https"
+                ).encode("latin-1")
                 injected_headers: list[tuple[bytes, bytes]] = []
                 cookie_seen = False
                 for name, value in headers:

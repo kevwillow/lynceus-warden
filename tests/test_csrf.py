@@ -170,15 +170,68 @@ def test_post_with_cookie_but_mismatched_token_returns_403(tmp_path):
         db.close()
 
 
+def _csrf_set_cookie_headers(response) -> list[str]:
+    raw = [v.decode("latin-1") for k, v in response.headers.raw if k.lower() == b"set-cookie"]
+    return [text for text in raw if text.startswith(f"{CSRF_COOKIE_NAME}=")]
+
+
 @pytest.mark.webui
-def test_csrf_cookie_secure_flag_when_remote_allowed(tmp_path):
+def test_forms_still_work_over_plain_http_when_remote_is_allowed(tmp_path):
+    """The regression guard for the whole defect, stated as BEHAVIOUR.
+
+    This asserts what the operator experiences, not how the header is spelled.
+    ``ui_allow_remote: true`` used to attach ``Secure`` to the CSRF cookie
+    while the server only ever speaks HTTP, so the cookie jar accepted the
+    cookie and then withheld it from every later request. The POST arrived
+    carrying no cookie at all and the middleware answered ``403 CSRF token
+    mismatch`` -- naming a mismatch when there was nothing to compare.
+
+    The cookie jar here applies the same rule a browser does, which is what
+    makes this a real reproduction rather than a restatement of the fix.
+    """
     app, db = _make_app(tmp_path, allow_remote=True)
     try:
-        with TestClient(app) as client:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app, base_url="http://testserver") as client:
+            client.cookies.clear()
+            client.get("/alerts")
+            token = client.cookies.get(CSRF_COOKIE_NAME)
+            assert token, "no CSRF cookie survived the GET, so the form cannot be submitted"
+            posted = client.post(f"/alerts/{aid}/ack", data={CSRF_FORM_FIELD: token})
+        assert posted.status_code == 200
+        assert db.get_alert(aid)["acknowledged"] == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_csrf_cookie_has_no_secure_flag_over_plain_http_when_remote_allowed(tmp_path):
+    """``ui_allow_remote`` describes the bind address, never the transport."""
+    app, db = _make_app(tmp_path, allow_remote=True)
+    try:
+        with TestClient(app, base_url="http://testserver") as client:
             client.cookies.clear()
             r = client.get("/alerts")
-        set_cookies = [v.decode("latin-1") for k, v in r.headers.raw if k.lower() == b"set-cookie"]
-        csrf_headers = [text for text in set_cookies if text.startswith(f"{CSRF_COOKIE_NAME}=")]
+        csrf_headers = _csrf_set_cookie_headers(r)
+        assert len(csrf_headers) >= 1
+        for h in csrf_headers:
+            assert "Secure" not in h
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_csrf_cookie_keeps_secure_flag_when_the_request_arrived_over_https(tmp_path):
+    """The permit half. Dropping ``Secure`` everywhere would also pass the two
+    tests above, so prove the flag is still set where it is genuinely earned:
+    a request whose scheme is https, which is what uvicorn reports when it
+    terminates TLS or when a trusted local proxy forwarded the scheme."""
+    app, db = _make_app(tmp_path, allow_remote=True)
+    try:
+        with TestClient(app, base_url="https://testserver") as client:
+            client.cookies.clear()
+            r = client.get("/alerts")
+        csrf_headers = _csrf_set_cookie_headers(r)
         assert len(csrf_headers) >= 1
         assert all("Secure" in h for h in csrf_headers)
     finally:
