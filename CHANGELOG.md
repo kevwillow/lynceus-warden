@@ -25,6 +25,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The fresh-install gate is in the suite now, behind a `release_gate` marker.**
+  `scripts/audit/repro_fresh_install.py` drives the only path a first-time user
+  ever takes: build the wheel, install it into a clean venv, run the wizard,
+  validate what it wrote, serve the UI. It went green before 1.0.0 and then sat
+  there as a script somebody had to remember. `make release-gates` runs it.
+
+  `addopts` deselects the marker, because the gate needs a host with a capture
+  interface and a hosted runner has none. That makes it easy to forget, so four
+  UNMARKED tests ship beside it and do run in CI: they collect the gate, assert
+  the default run still excludes it, import the audit script for real and check
+  the API the gate calls, and prove the hermeticity guard reads the operator's
+  real account rather than the `HOME` that `conftest` redirects per test.
+
+  The gate asserts what the run observed, not its exit code. Exit 0 cannot tell
+  a working install apart from a run that quietly did nothing. The wheel name
+  comes from `lynceus.__version__` and the console scripts from
+  `[project.scripts]`, so a version bump or a new entry point needs no edit.
+
 - **A banner and logo mark, and a README that reads like a person wrote it.**
   `scripts/make_banner.py` draws both, so they can be regenerated when the
   numbers in the strapline move rather than being a binary nobody can edit.
@@ -428,6 +446,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+- **The fresh-install gate's "clean venv" was not clean, and it lied about
+  where the failure was.** The step inherited `PYTHONPATH`. With
+  `<checkout>/src` on that path, the `src/lynceus.egg-info` sitting there makes
+  pip resolve `lynceus` as already installed: it pulls every dependency, skips
+  the package, exits 0, and writes no console scripts. The run then died on a
+  missing `lynceus-setup` two stages later, which reads as a broken wizard.
+
+  Not an exotic setup. This repo is worked from git worktrees and the shared
+  `.venv` pins the primary checkout's `src` absolutely, so
+  `PYTHONPATH=<worktree>/src` is the only way to test a worktree at all. The
+  people most likely to run the gate were the people it would mislead.
+
+  Every subprocess now gets an environment with `PYTHONPATH` stripped, and the
+  console scripts are checked at the stage that creates them rather than being
+  discovered missing later. The exit-code table also said `3` meant the wizard
+  did not complete; it has always covered the wheel build and the install too,
+  and now says so.
+
 - **Turning on remote access broke every form on the site.** `ui_allow_remote:
   true` attached `Secure` to the CSRF cookie, and nothing in lynceus serves TLS.
   A `Secure` cookie does not come back over plain HTTP: browsers refuse to store
