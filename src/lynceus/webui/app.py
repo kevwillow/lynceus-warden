@@ -605,6 +605,48 @@ SQLITE_MAX_ROWID = 2**63 - 1
 RowId = Annotated[int, PathParam(le=SQLITE_MAX_ROWID)]
 
 
+#: The four characters that flag a CSV cell as a formula to Excel, Google
+#: Sheets, and LibreOffice Calc when the CSV is opened. The CSV standard does
+#: not require these to be quoted, so ``csv.QUOTE_MINIMAL`` emits them verbatim
+#: and the spreadsheet interprets the cell as a formula on open — CWE-1236.
+_CSV_FORMULA_PREFIXES: frozenset[str] = frozenset(("=", "+", "-", "@"))
+
+
+def _csv_safe_cell(value) -> str:
+    """Neutralise CSV formula injection at the leading character.
+
+    ⛔ **Cells whose first character is one of ``=``, ``+``, ``-`` or ``@``
+    are RUN AS FORMULAS by Excel, Google Sheets and LibreOffice Calc when
+    the export is opened.** Measured against an unmodified
+    ``/alerts.csv`` / ``/watchlist.csv``: a message of ``=2+3`` or a
+    watchlist description of ``=HYPERLINK("http://...","Click")`` was
+    written verbatim, with no quoting, because ``csv.QUOTE_MINIMAL`` only
+    quotes on a delimiter, line-break or quote-character and none of the
+    four prefixes trigger any of those. The watchlist description column
+    is the worst case — the Argus importer populates it from
+    externally-controlled CSV/JSON, so a malicious export or rule could
+    plant a payload that fires when an operator opens the file.
+
+    A leading single quote (U+0027) is the spreadsheet convention for
+    "treat this as a text literal": Excel and Sheets hide the quote and
+    display the rest as a string, and the cell survives a round-trip
+    through the csv module's own quoting rules without further mutation.
+    Non-string inputs are stringified first so numeric / boolean cells
+    that happen to be formatted as a string get the same treatment.
+
+    ⚠️ ``None`` stays ``""`` — that is the file's NULL stand-in, set at
+    the writer sites, and leading with a quote there would silently turn
+    every empty column into a literal apostrophe in the export. Empty
+    cells are not formula cells.
+    """
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else str(value)
+    if text and text[0] in _CSV_FORMULA_PREFIXES:
+        return "'" + text
+    return text
+
+
 def unix_to_iso(ts) -> str:
     """Format a unix epoch int as ISO 8601 UTC with 'Z' suffix.
 
@@ -3080,19 +3122,19 @@ def create_app(
                         alert.get("rule_name") or "",
                         alert.get("rule_type") or "",
                         mac or "",
-                        alert.get("message") or "",
+                        _csv_safe_cell(alert.get("message") or ""),
                         "true" if alert.get("acknowledged") else "false",
-                        alert.get("note") or "",
+                        _csv_safe_cell(alert.get("note") or ""),
                         _iso_utc(alert.get("note_updated_at")),
                         alert.get("matched_watchlist_id") or "",
-                        wl.get("pattern") or "",
+                        _csv_safe_cell(wl.get("pattern") or ""),
                         wl.get("pattern_type") or "",
-                        meta.get("vendor") or "",
+                        _csv_safe_cell(meta.get("vendor") or ""),
                         meta.get("confidence") if meta.get("confidence") is not None else "",
-                        meta.get("device_category") or "",
+                        _csv_safe_cell(meta.get("device_category") or ""),
                         meta.get("argus_record_id") or "",
                         (device or {}).get("device_type") or "",
-                        (device or {}).get("oui_vendor") or "",
+                        _csv_safe_cell((device or {}).get("oui_vendor") or ""),
                         "true" if _mac_is_actioned(mac) else "false",
                     ]
                 )
@@ -5752,25 +5794,25 @@ def create_app(
                         row.get("pattern") or "",
                         row.get("pattern_type") or "",
                         row.get("severity") or "",
-                        row.get("description") or "",
+                        _csv_safe_cell(row.get("description") or ""),
                         row.get("mac_range_prefix") or "",
                         row.get("mac_range_prefix_length")
                         if row.get("mac_range_prefix_length") is not None
                         else "",
                         row.get("argus_record_id") or "",
-                        row.get("device_category") or "",
+                        _csv_safe_cell(row.get("device_category") or ""),
                         row.get("confidence") if row.get("confidence") is not None else "",
-                        row.get("vendor") or "",
+                        _csv_safe_cell(row.get("vendor") or ""),
                         row.get("source") or "",
-                        row.get("source_url") or "",
-                        row.get("source_excerpt") or "",
-                        row.get("fcc_id") or "",
-                        row.get("geographic_scope") or "",
+                        _csv_safe_cell(row.get("source_url") or ""),
+                        _csv_safe_cell(row.get("source_excerpt") or ""),
+                        _csv_safe_cell(row.get("fcc_id") or ""),
+                        _csv_safe_cell(row.get("geographic_scope") or ""),
                         _iso_utc(row.get("first_seen")),
                         row.get("first_seen") if row.get("first_seen") is not None else "",
                         _iso_utc(row.get("last_verified")),
                         row.get("last_verified") if row.get("last_verified") is not None else "",
-                        row.get("notes") or "",
+                        _csv_safe_cell(row.get("notes") or ""),
                         _can_fire(row.get("pattern_type") or ""),
                         "yes"
                         if is_row_suppressed_by_overrides(

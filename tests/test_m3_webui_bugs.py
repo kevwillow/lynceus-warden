@@ -14,6 +14,8 @@ against the fix, is the contract the packet requires; ``git log
 
 from __future__ import annotations
 
+import csv
+import io
 import warnings
 from pathlib import Path
 
@@ -143,3 +145,164 @@ def test_alerts_form_default_post_renders_unfiltered(client):
         "is selected by default; clicking 'filter' without changing them "
         f"posts {form_defaults} and is currently rejected."
     )
+
+
+# ---------------------------------------------------------------------------
+# Bug 2 — CSV formula injection in /alerts.csv and /watchlist.csv
+#
+# The streaming CSV writers use ``csv.QUOTE_MINIMAL`` and write every
+# row cell verbatim. A value whose first character is =, +, - or @ is
+# left unquoted by the standard csv module (those characters are not
+# quote triggers) and a spreadsheet application — Excel, Google Sheets,
+# LibreOffice Calc — interprets the leading character as the start of a
+# formula. An operator exporting their alerts or watchlist to CSV and
+# opening the file in a spreadsheet therefore executes attacker-supplied
+# payloads.
+#
+# The watchlist description, alerts.message and alerts.note columns all
+# carry externally-controllable data: the watchlist description arrives
+# via the Argus importer (operator-controlled, but a hostile export file
+# could plant any string); alerts.message is produced by the rules
+# engine from Kismet-captured radio frames; alerts.note is set by the
+# operator through the alert detail form. A leading '=' in any of those
+# is enough.
+#
+# The fix is to prefix any cell whose first character is one of =, +, -
+# or @ with a single quote (') — Excel/Sheets render the quote as a
+# hidden string prefix and display the rest as text.
+# ---------------------------------------------------------------------------
+
+
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _parse_csv(text: str) -> tuple[list[str], list[list[str]]]:
+    reader = csv.reader(io.StringIO(text))
+    rows = list(reader)
+    return rows[0], rows[1:]
+
+
+def _seed_alert(db: Database, *, mac: str, message: str, ts: int = 1_700_000_000) -> int:
+    db.upsert_device(
+        mac=mac, device_type="wifi", oui_vendor="V",
+        is_randomized=0, now_ts=ts,
+    )
+    return db.add_alert(
+        ts=ts, rule_name="r", mac=mac, message=message, severity="high",
+    )
+
+
+def db_path(client: TestClient) -> Database:
+    """Reach back from the TestClient to the Database fixture.
+
+    The DB is closed in the ``client`` fixture's teardown, so this
+    accessor is only valid inside a test body.
+    """
+    # The FastAPI app stores its Database on app.state.db. The TestClient
+    # carries the app on ``client.app`` (httpx/Starlette convention); from
+    # there we read the same instance the route handlers see.
+    return client.app.state.db
+
+
+@pytest.mark.parametrize("prefix", _FORMULA_PREFIXES)
+def test_alerts_csv_neutralises_a_formula_in_the_message_column(
+    client, prefix: str,
+):
+    """A message that begins with =, +, - or @ is a CSV injection (CWE-1236).
+
+    Reproduced against unmodified ``/alerts.csv``: the cell is emitted
+    verbatim and a spreadsheet interprets the leading character as the
+    start of a formula. After the fix, the leading character is preceded
+    by a single quote so the spreadsheet shows the value as text.
+    """
+    payload = f"{prefix}2+3"
+    _seed_alert(db_path(client), mac="aa:bb:cc:dd:ee:01", message=payload)
+
+    r = client.get("/alerts.csv")
+    assert r.status_code == 200
+    header, data = _parse_csv(r.text)
+    msg_col = header.index("message")
+    cells = [row[msg_col] for row in data]
+    assert any(payload in c for c in cells), (
+        f"payload {payload!r} was not echoed in /alerts.csv at all; "
+        "this test is now stale"
+    )
+    # The cell must NOT begin with the dangerous character. A single
+    # quote prefix renders safely in Excel/Sheets/LibreOffice; a CSV-
+    # standard quoting ('"=2+3"') would also neutralise but the standard
+    # csv module only quotes when the cell contains delimiters, which
+    # '=' alone does not.
+    for cell in cells:
+        if cell.startswith("'"):
+            continue  # fix applied
+        assert not cell.startswith(prefix), (
+            f"/alerts.csv leaked a CSV-formula payload {cell!r} "
+            f"(prefix {prefix!r}). When opened in Excel, Google Sheets or "
+            "LibreOffice Calc, that cell will be interpreted as a formula "
+            "and executed — a CSV formula injection (CWE-1236)."
+        )
+
+
+@pytest.mark.parametrize("prefix", _FORMULA_PREFIXES)
+def test_watchlist_csv_neutralises_a_formula_in_the_description_column(
+    client, prefix: str,
+):
+    """Same defect on /watchlist.csv, against a column the Argus importer
+    populates with externally-controlled strings.
+    """
+    db_path(client).add_watchlist(
+        pattern="AA:BB:CC:DD:EE:FF",
+        pattern_type="mac",
+        severity="high",
+        description=f"{prefix}SUM(1,1)",
+    )
+
+    r = client.get("/watchlist.csv")
+    assert r.status_code == 200
+    header, data = _parse_csv(r.text)
+    desc_col = header.index("description")
+    cells = [row[desc_col] for row in data]
+    assert cells, "watchlist row was not exported"
+    for cell in cells:
+        if cell.startswith("'"):
+            continue  # fix applied
+        assert not cell.startswith(prefix), (
+            f"/watchlist.csv leaked a CSV-formula payload {cell!r} "
+            f"(prefix {prefix!r}) in the description column. The Argus "
+            "importer populates this column from externally-supplied "
+            "data, so a malicious import file could deliver a formula "
+            "that fires when an operator opens the export in a "
+            "spreadsheet — a CSV formula injection (CWE-1236)."
+        )
+
+
+def test_alerts_csv_does_not_mutate_normal_message_cells(client):
+    """Sanity: the fix must not rewrite plain text values. A normal
+    message should still appear verbatim — only the leading-character
+    rule applies. Without this guard a fix that wraps every cell in
+    quotes (or strips the first char) would 'pass' the other tests
+    vacuously.
+    """
+    _seed_alert(db_path(client), mac="aa:bb:cc:dd:ee:01", message="plain alert")
+    r = client.get("/alerts.csv")
+    assert r.status_code == 200
+    header, data = _parse_csv(r.text)
+    msg_col = header.index("message")
+    cells = [row[msg_col] for row in data]
+    assert "plain alert" in cells, cells
+
+
+def test_watchlist_csv_does_not_mutate_normal_description_cells(client):
+    """Same guard for the watchlist export."""
+    db_path(client).add_watchlist(
+        pattern="AA:BB:CC:DD:EE:FF",
+        pattern_type="mac",
+        severity="high",
+        description="normal description",
+    )
+    r = client.get("/watchlist.csv")
+    assert r.status_code == 200
+    header, data = _parse_csv(r.text)
+    desc_col = header.index("description")
+    cells = [row[desc_col] for row in data]
+    assert "normal description" in cells, cells
