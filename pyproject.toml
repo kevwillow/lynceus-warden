@@ -110,13 +110,14 @@ lynceus = [
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = "-ra --strict-markers --strict-config -m 'not diagnostic'"
+addopts = "-ra --strict-markers --strict-config -m 'not diagnostic and not browser'"
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "slow: tests that build a wheel or do other slow setup",
     "webui: tests that exercise the FastAPI app",
     "diagnostic: pre-push observation-only tests; dump actual behavior, don't assert content. Excluded from default suite -- run explicitly with `pytest -m diagnostic`.",
+    "browser: drives a real Chromium via playwright. Needs a browser and the playwright package, neither of which is a dependency of lynceus or present on a stock CI runner. Excluded from the default suite -- run explicitly with `pytest -m browser`.",
 ]
 
 [tool.ruff]
