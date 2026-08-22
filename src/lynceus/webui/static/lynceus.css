@@ -1346,16 +1346,32 @@ main.container-fluid { min-width: 0; }
 
    ⚠️ Scoped to .alerts-table-full (the /alerts table). The home page's
    .alerts-table has its own narrower column set and must not inherit these. */
-.alerts-table-full th:first-child,
-.alerts-table-full td:first-child { width: 2.2rem; padding-right: 0; }
-.alerts-table-full th:nth-child(2),
-.alerts-table-full td:nth-child(2) { width: 7rem; }
-.alerts-table-full th:nth-child(3),
-.alerts-table-full td:nth-child(3) { width: 4.5rem; }
+/* ⛔ KEYED, not positional. These were `th/td:nth-child(N)` rules, which name
+   a POSITION. The table now carries `data-table-id`, and lynceus.js binds its
+   reorder handler to any keyed table, so a column dragged to a new position
+   would have inherited the previous occupant's width and cap. Widths live on
+   the <col> elements, which carry the column's own key and move with it.
+
+   ⚠️ A <col> can only style a handful of properties -- width, background,
+   border, visibility -- which is exactly why the ellipsis rules below stay on
+   the cells. Those are per-cell behaviour, not per-column geometry. */
+.alerts-table-full col[data-col-key="select"]    { width: 2.2rem; }
+.alerts-table-full col[data-col-key="timestamp"] { width: 6.5rem; }
+.alerts-table-full col[data-col-key="severity"]  { width: 4rem; }
+.alerts-table-full col[data-col-key="message"]   { width: 14.5rem; }
+.alerts-table-full col[data-col-key="rule"]      { width: 9rem; }
+.alerts-table-full col[data-col-key="device"]    { width: 9rem; }
+.alerts-table-full col[data-col-key="category"]  { width: 4.5rem; }
+.alerts-table-full col[data-col-key="status"]    { width: 3rem; }
+.alerts-table-full th[data-col-key="select"],
+.alerts-table-full td:first-child { padding-right: 0; }
 /* ⚠️ max-width alone does NOT clip a table cell — the content simply
    overflows into its neighbour, which is how "new_device_alert" ended up
    printed across the Device column. Capping a column means capping it AND
-   telling it what to do with the excess. */
+   telling it what to do with the excess.
+
+   The <col> widths above set the geometry; these tell the cells in those two
+   columns what to do with the excess. Both halves are still needed. */
 .alerts-table-full th:nth-child(4),
 .alerts-table-full td:nth-child(4),
 .alerts-table-full th:nth-child(5),
@@ -1374,12 +1390,16 @@ main.container-fluid { min-width: 0; }
     text-overflow: ellipsis;
     vertical-align: bottom;
 }
-.alerts-table-full th:nth-child(7),
-.alerts-table-full td:nth-child(7) { width: 5rem; }
-.alerts-table-full th:nth-child(9),
-.alerts-table-full td:nth-child(9) { width: 3.5rem; }
 /* The message is the one column worth giving the remaining room to, but it
    must not be allowed to set the table's minimum width — that is what pushed
    the actions off screen. Truncation keeps it to one line; the full text is
-   on the alert's own page. */
+   on the alert's own page.
+
+   🪤 MEASURED, and it must stay a bare length. `min(22ch, 100%)` was tried
+   here to stop the span overflowing its cell, and it did the opposite: a
+   percentage inside the max-width makes the value indeterminate while the
+   column width is still being computed, so it stopped capping the intrinsic
+   width entirely. The message column went 208px -> 303px and took 64px off
+   the action column, which is precisely the failure this cap exists to
+   prevent. The column is sized to fit this span instead, above. */
 .alerts-table-full .truncate { max-width: 22ch; }

@@ -173,20 +173,64 @@
       </p>
     </form>
 
+    <div class="table-controls">
+      <details class="columns-menu" data-cols-for="alerts">
+        <summary><svg class="columns-funnel" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1 2h14l-5.5 6.5V14h-3V8.5L1 2z" fill="currentColor"/></svg>columns</summary>
+        <div class="columns-menu-list" role="group" aria-label="show or hide columns">
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="select" checked> select</label>
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="timestamp" checked> Timestamp</label>
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="severity" checked> Severity</label>
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="rule" checked> Rule</label>
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="device" checked> Device</label>
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="mac" checked> MAC</label>
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="category" checked> Category</label>
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="message" checked> Message</label>
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="status" checked> Status</label>
+          <label><input type="checkbox" class="col-toggle" data-col-toggle="action" checked> action</label>
+        </div>
+      </details>
+      <button type="button" class="table-reset" data-table-reset="alerts">reset columns</button>
+    </div>
     <div class="table-scroll">
-        <table class="alerts-table-full" aria-label="alerts matching the current filters">
+        <table class="alerts-table-full" data-table-id="alerts" aria-label="alerts matching the current filters">
+          {# Keyed colgroup. This table does NOT use the data_table macro -- it is
+             hand-written, and adopting the macro would regenerate every cell,
+             which is exactly what SPEC_ui_redesign §1 forbids: the wording in
+             these rows is where #188 and #193 put their honesty fixes, and the
+             tests guarding it assert text, not layout. So the column layer is
+             adopted by hand instead: the <col> keys, the matching per-<th> keys
+             and the applier call below are the infrastructure lynceus.js binds
+             to, and not one <td> is touched.
+
+             ⛔ The column widths live on these <col> elements, in lynceus.css,
+             keyed by name. They used to be th/td:nth-child() rules, which are
+             POSITIONAL -- and the reorder handler binds to any [data-table-id]
+             table, so a reordered column would have taken the previous
+             occupant's width. #}
+          <colgroup>
+            <col data-col-key="select">
+            <col data-col-key="timestamp">
+            <col data-col-key="severity">
+            <col data-col-key="rule">
+            <col data-col-key="device">
+            <col data-col-key="mac">
+            <col data-col-key="category">
+            <col data-col-key="message">
+            <col data-col-key="status">
+            <col data-col-key="action">
+          </colgroup>
           <thead>
             <tr>
-              <th scope="col"><input type="checkbox" id="select-all-noop" disabled aria-label="select rows individually" title="select rows individually"></th>
-              <th scope="col">Timestamp</th>
-              <th scope="col">Severity</th>
-              <th scope="col">Rule</th>
-              <th scope="col">Device</th>
-              <th scope="col">MAC</th>
-              <th scope="col">Category</th>
-              <th scope="col">Message</th>
-              <th scope="col">Status</th>
-              <th scope="col" class="alert-action-cell">action</th>
+              <th scope="col" data-col-key="select"><input type="checkbox" id="select-all-noop" disabled aria-label="select rows individually" title="select rows individually"></th>
+              <th scope="col" data-col-key="timestamp">Timestamp</th>
+              <th scope="col" data-col-key="severity">Severity</th>
+              <th scope="col" data-col-key="rule">Rule</th>
+              <th scope="col" data-col-key="device">Device</th>
+              <th scope="col" data-col-key="mac">MAC</th>
+              <th scope="col" data-col-key="category">Category</th>
+              <th scope="col" data-col-key="message">Message</th>
+              <th scope="col" data-col-key="status">Status</th>
+              <th scope="col" class="alert-action-cell" data-col-key="action">action</th>
             </tr>
           </thead>
           <tbody>
@@ -196,6 +240,9 @@
           </tbody>
         </table>
       </div>
+      {# Pre-paint: apply persisted order/widths/hidden state synchronously,
+         before the table paints, so a reload never flashes default->persisted. #}
+      <script nonce="{{ request.state.csp_nonce }}">window.__lynTableApply && window.__lynTableApply("alerts");</script>
   {% else %}
     <p>
       <em>No alerts match the current filters.</em>
