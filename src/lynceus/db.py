@@ -704,6 +704,84 @@ class Database:
             finally:
                 self._txn_depth -= 1
 
+    @contextlib.contextmanager
+    def unit(self, *, readonly: bool = False) -> Iterator[sqlite3.Connection]:
+        """A unit of work: one logical operation, read and write, atomic.
+
+        ``internal/specs/SPEC_unit_of_work.md`` §6 step 2. Added ALONGSIDE
+        ``transaction()``; nothing is migrated onto it yet, and both are safe to
+        use in the same process because both take the same lock and use the same
+        connection.
+
+        ⭐ **What it adds over ``transaction()`` is ``BEGIN IMMEDIATE``, and
+        that is not a detail.** This class sets no ``isolation_level``, so
+        ``sqlite3`` opens a DEFERRED transaction lazily, on the first statement
+        that writes. A ``SELECT`` inside ``transaction()`` therefore runs in
+        **autocommit, outside the block**. Measured on this class:
+
+            with db.transaction() as conn:
+                before = conn.execute("SELECT last_seen ...").fetchone()[0]
+                # conn.in_transaction is False here.
+                # another connection commits last_seen=9999, unblocked
+                conn.execute("UPDATE devices SET last_seen=?", (before + 1,))
+            # final last_seen == 1001. The other writer's 9999 is GONE.
+
+        A read-then-decide-then-write sequence is exactly the shape every rule
+        in this product uses, so that is a silent lost update inside something
+        that reads like a transaction. ``BEGIN IMMEDIATE`` takes the write lock
+        at the START, so the other writer waits out ``busy_timeout`` instead of
+        interleaving, and the read is genuinely inside the transaction.
+
+        ⚠️ The cost is real and is the point: a unit holds the write lock for
+        its whole body, so its body must stay short. ⛔ A unit MUST NOT be held
+        across an external call -- see §4 of the spec. That is what the outbox
+        is for.
+
+        ``readonly=True`` issues a plain ``BEGIN``. It cannot deadlock a writer
+        and does not take the write lock; use it when the block only reads.
+
+        ⛔ **Nesting is refused**, for the same reason ``transaction()`` refuses
+        it, and the two share one depth counter so interleaving them is refused
+        too. ⛔ **Exceptions roll back and propagate**, always. A lock timeout,
+        disk-full or integrity error is never converted into a return value: a
+        caller that could not write has to find out.
+        """
+        with self._lock:
+            if self._txn_depth:
+                raise RuntimeError(
+                    "Database.unit() cannot nest, and cannot open inside "
+                    "Database.transaction(): the inner block's exit would "
+                    "COMMIT the outer block's partial work instead of nesting. "
+                    "Pass the connection you already have down to the inner "
+                    "code, or split the work into separate units."
+                )
+            self._txn_depth += 1
+            # ⛔ Manual transaction control, restored in the `finally`. With the
+            # default `isolation_level=''` sqlite3 inserts its own BEGIN before
+            # the next write, so an explicit `BEGIN IMMEDIATE` here would raise
+            # "cannot start a transaction within a transaction". Setting it to
+            # None hands the BEGIN/COMMIT to us. Safe on the shared connection
+            # because we hold the RLock for the whole block, so no other thread
+            # in this process can reach it meanwhile.
+            previous_isolation = self._conn.isolation_level
+            self._conn.isolation_level = None
+            try:
+                self._conn.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
+                try:
+                    yield self._conn
+                except BaseException:
+                    # ⚠️ BaseException, not Exception. A KeyboardInterrupt or a
+                    # GeneratorExit mid-unit must still roll back; leaving the
+                    # transaction open would hold the write lock until the
+                    # connection died and block every other process.
+                    self._conn.rollback()
+                    raise
+                else:
+                    self._conn.commit()
+            finally:
+                self._conn.isolation_level = previous_isolation
+                self._txn_depth -= 1
+
     # How many rows one prune batch deletes before releasing the write lock.
     # ⛔ Derived from measurement, not taste. With a single unbounded DELETE,
     # `prune_old_evidence` was measured holding the write lock for **5.67s at
@@ -4251,9 +4329,9 @@ class Database:
     ) -> bool:
         """Insert (or replace) the rule_type snooze row.
 
-        INSERT OR REPLACE semantic: re-snoozing a rule_type that
-        already has an active snooze overwrites ``expires_at`` /
-        ``added_at`` / ``note`` rather than failing — the operator
+        Upsert semantic: re-snoozing a rule_type that already has an
+        active snooze overwrites ``expires_at`` / ``added_at`` /
+        ``note`` rather than failing — the operator
         clicking "snooze 24h" on an already-snoozed rule_type wants
         the new window applied, not an error. Returns True on success.
 
@@ -4274,9 +4352,27 @@ class Database:
         if not isinstance(added_at, int) or isinstance(added_at, bool):
             raise ValueError("added_at must be an int (epoch seconds)")
         with self._lock, self._conn:
+            # ⛔ An upsert, not `INSERT OR REPLACE`. The two are equivalent
+            # for this row today -- both statements set all four columns -- so
+            # this is a change of MECHANISM, not of behaviour, and it buys two
+            # things.
+            #
+            # 1. `REPLACE` is invisible to `sqlite3.set_authorizer`: it reports
+            #    `SQLITE_INSERT` on the table with no column and no delete,
+            #    indistinguishable from a legitimate insert. An upsert reports
+            #    `SQLITE_UPDATE` per column, so the runtime gate that
+            #    SPEC_unit_of_work.md §7 is built on can actually see it.
+            # 2. `REPLACE` deletes the old row first. It is only harmless here
+            #    because the statement happens to name every column; add a
+            #    column to `rule_type_snoozes` and a re-snooze would silently
+            #    reset it to its default. The upsert touches what it names.
             self._conn.execute(
-                "INSERT OR REPLACE INTO rule_type_snoozes("
-                "rule_type, expires_at, added_at, note) VALUES (?, ?, ?, ?)",
+                "INSERT INTO rule_type_snoozes("
+                "rule_type, expires_at, added_at, note) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(rule_type) DO UPDATE SET "
+                "expires_at = excluded.expires_at, "
+                "added_at = excluded.added_at, "
+                "note = excluded.note",
                 (rule_type, expires_at, added_at, note),
             )
         return True

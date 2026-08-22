@@ -25,6 +25,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`Database.unit()`, a read-and-write block that is actually atomic.**
+  A read followed by a decision followed by a write is the shape every rule in
+  this product uses, and until now the read was not inside the transaction. The
+  class sets no isolation level, so Python opens the transaction lazily on the
+  first write and every SELECT before that runs in autocommit. Measured: inside
+  a `db.transaction()` block, a second connection could commit a change between
+  our read and our write, and our write then overwrote it with no error
+  anywhere. A silent lost update, inside something that reads like a
+  transaction.
+
+  A unit takes the write lock at the start instead, so the competing writer
+  waits and is refused rather than quietly interleaving. `unit(readonly=True)`
+  takes no write lock and blocks nobody. Nesting is refused in all three
+  directions, including mixing it with the older `transaction()`, because an
+  inner block's exit would commit the outer block's partial work. An exception
+  rolls back and propagates, and a lock timeout raises rather than being turned
+  into a result: a caller that could not write has to find out.
+
+  Nothing is migrated onto it yet. Both APIs work side by side, so callers move
+  one at a time.
+
+- **`REPLACE` is banned from this codebase's SQL, and one was already there.**
+  `INSERT OR REPLACE` cannot be gated at runtime: SQLite reports it as a plain
+  insert with no column and no delete, so a connection-level authorizer cannot
+  tell it from a legitimate one. It is also a delete in disguise, destroying the
+  row it replaces along with any column the statement did not name, and firing
+  cascades on children.
+
+  The rule found a live use in the rule-type snooze writer, which has been
+  converted to an upsert. That is the same behaviour today, because the old
+  statement named all four columns, but it is visible to the authorizer and it
+  will not silently reset a column added to that table later.
+
+
 - **The alerts table can hide columns now, like the other four data tables.**
   `/devices`, `/watchful`, `/allowlist` and `/watchlist` have had a show/hide
   columns menu since 0.9.2. `/alerts` is hand-written rather than built from the
