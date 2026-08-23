@@ -36,13 +36,27 @@ permissions:
 
 jobs:
   # ------------------------------------------------------------------
-  # 604 lines of hand-written browser JS that nothing has ever parsed.
+  # Hand-written browser JS that nothing has ever parsed.
+  #
+  # ⛔ In TWO places, and the second was invisible for the same reason the
+  # first was: this job listed `git ls-files '*.js'`, which is a gate keyed on
+  # a file EXTENSION, so it reported on the extension. That is two files. The
+  # other 10.6 KB of first-party JavaScript this product ships lives inline in
+  # `<script>` blocks inside Jinja templates, and the CSP work in this repo
+  # deliberately moved behaviour OUT of `on*=` attributes and INTO those
+  # blocks -- so they are where the interaction now lives, and nothing parsed
+  # any of it. A syntax error there reaches the operator as a silently dead
+  # page.
   # ------------------------------------------------------------------
   web-assets:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
 
       # Ubuntu runners ship node. Asserting rather than assuming keeps this
       # from degrading into a no-op if that ever changes -- the same trap
@@ -69,6 +83,19 @@ jobs:
             fi
           done
           exit "$fail"
+
+      # The templates are Jinja, not JavaScript, so the blocks have to be
+      # de-sugared before node can read them. scripts/check_inline_js.py uses
+      # Jinja's own lexer to do that -- a regex over `{{`/`{%` gets it wrong in
+      # a way that silently swallows real code, which is documented at length
+      # in that file because it produced a confidently wrong answer once.
+      - name: jinja2 is available
+        run: |
+          python -m pip install --quiet jinja2
+          python -c "import jinja2; print('jinja2', jinja2.__version__)"
+
+      - name: Every inline <script> in a template parses
+        run: python scripts/check_inline_js.py
 
   # ------------------------------------------------------------------
   # The units an operator's machine actually runs.

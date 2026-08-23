@@ -18,7 +18,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from lynceus.config import Config
+from lynceus.config import Config, CoObservationConfig
 from lynceus.db import Database
 from lynceus.webui.app import create_app
 from lynceus.webui.csp import build_policy, generate_nonce
@@ -223,6 +223,9 @@ def test_csp_header_is_present_even_on_a_csrf_rejection(client):
 
 _EVENT_ATTR = re.compile(r"\son[a-z]+\s*=", re.I)
 _MAC = "aa:bb:cc:dd:ee:02"
+#: A second device, so the watchful fixture below does not alter which forms
+#: `_MAC`'s own page renders.
+_WATCHED_MAC = "aa:bb:cc:dd:ee:03"
 
 #: Action suffixes that suppress alerting or change watch state. `/ack` and a
 #: note SAVE are deliberately absent -- they are not destructive and have never
@@ -240,7 +243,16 @@ def rich_client(tmp_path):
     passed 12/12 because the form carrying the defect never rendered."""
     allowlist = tmp_path / "allow.yaml"
     allowlist.write_text("entries: []\n")
-    config = Config(db_path=str(tmp_path / "csp2.db"), allowlist_path=str(allowlist))
+    config = Config(
+        db_path=str(tmp_path / "csp2.db"),
+        allowlist_path=str(allowlist),
+        # ⚠️ ON for the sweep, OFF in the product. The co-observation explorer
+        # is a capability toggle, and while it is off the route answers 404 --
+        # deliberately, so the toggle cannot be used as a probe oracle. That
+        # means a real HTML page ships whose markup nothing would ever see,
+        # because the sweep would read the 404 as "nothing to check here".
+        co_observation=CoObservationConfig(enabled=True),
+    )
     db = Database(config.db_path)
     db.upsert_device(_MAC, "wifi", "Acme", 0, 1700000000)
     alert_id = db.add_alert(
@@ -252,15 +264,124 @@ def rich_client(tmp_path):
         matched_watchlist_id=None,
         rule_type="watchlist_mac",
     )
+    # ⚠️ A SECOND device carries the watchful entry. Watching `_MAC` itself
+    # changes which forms its device page renders, and
+    # `test_every_destructive_form_still_carries_a_confirmation` counts those
+    # -- a fixture that quietly removes two of them would weaken that test
+    # while this one looked like it was only adding coverage.
+    db.upsert_device(_WATCHED_MAC, "wifi", "Acme", 0, 1700000000)
+    watched_alert_id = db.add_alert(
+        ts=1700000000,
+        rule_name="r1",
+        mac=_WATCHED_MAC,
+        message="m",
+        severity="high",
+        matched_watchlist_id=None,
+        rule_type="watchlist_mac",
+    )
+    with db._conn:
+        cur = db._conn.execute(
+            "INSERT INTO watchlist(pattern, pattern_type, severity, description) "
+            "VALUES (?, ?, ?, ?)",
+            # ⚠️ NOT `_MAC`. Watchlisting the device under test removes the
+            # "add to watchlist" form from its own page, and
+            # `test_every_destructive_form_still_carries_a_confirmation`
+            # counts forms — the fixture would have weakened that test while
+            # appearing only to add coverage. Measured: 6 forms -> 5.
+            ("aa:bb:cc:dd:ee:04", "mac", "high", "fixture row"),
+        )
+        watchlist_id = int(cur.lastrowid)
+    watchful_id = db.create_watchful_from_alert(
+        watched_alert_id, snooze_duration_seconds=None, now_ts=1700000000
+    )
     app = create_app(config, db)
     with TestClient(app) as c:
         c.alert_id = alert_id
+        c.watchlist_id = watchlist_id
+        c.watchful_id = watchful_id
+        c.app_under_test = app
         yield c
     db.close()
 
 
+#: Routes deliberately excluded from the sweep below, each with the reason it
+#: cannot carry an inline handler. ⛔ An exclusion is a claim: anything added
+#: here is a page nobody is checking, so it needs a reason that is checkable
+#: rather than a name on a list.
+_NOT_HTML = {
+    "/alerts.csv": "text/csv download, not a rendered page",
+    "/watchlist.csv": "text/csv download, not a rendered page",
+    "/healthz": "text/plain liveness probe",
+    "/healthz.json": "application/json health document",
+}
+
+
+def _rendered_pages(client) -> list[str]:
+    """Every HTML GET route the app actually serves, DERIVED from the app.
+
+    ⛔ This used to be a hand-written list of five paths against an app that
+    serves eighteen GET routes. A tripwire keyed on a transcribed list reports
+    on the list: `/watchful`, `/watchlist`, `/probes`, `/settings`, `/`,
+    `/allowlist`, the co-observations panel and all three detail pages were
+    outside it, so an inline handler on any of them was invisible to the guard
+    that exists to catch exactly that.
+
+    Deriving from `app.routes` means a route added tomorrow is swept the day it
+    exists, without anyone remembering to widen a literal.
+    """
+    params = {
+        "{mac:path}": _MAC,
+        "{alert_id}": str(client.alert_id),
+        "{entry_id}": str(client.watchful_id),
+        "{watchlist_id}": str(client.watchlist_id),
+    }
+    pages = []
+    for route in client.app_under_test.routes:
+        if "GET" not in (getattr(route, "methods", None) or set()):
+            continue
+        path = route.path
+        if path in _NOT_HTML:
+            continue
+        for placeholder, value in params.items():
+            path = path.replace(placeholder, value)
+        if "{" in path:
+            raise AssertionError(
+                f"route {route.path!r} has a path parameter this sweep cannot "
+                "fill, so it would be silently skipped. Add it to `params` or "
+                "to `_NOT_HTML` with a reason."
+            )
+        pages.append(path)
+    return sorted(set(pages))
+
+
 def _action_pages(client):
-    return [f"/devices/{_MAC}", f"/alerts/{client.alert_id}", "/devices", "/alerts", "/rules"]
+    return _rendered_pages(client)
+
+
+def test_the_page_sweep_is_not_vacuous(rich_client):
+    """The sweep below is only a guard if its universe is real, and its
+    universe is now computed. Pin the floor and the specific pages the
+    hand-written list left out."""
+    pages = _rendered_pages(rich_client)
+    assert len(pages) >= 12, f"only {len(pages)} pages derived: {pages}"
+    for path in ("/", "/watchful", "/watchlist", "/probes", "/settings", "/allowlist"):
+        assert path in pages, f"{path} is served but not swept"
+    assert f"/watchful/{rich_client.watchful_id}" in pages
+    assert f"/watchlist/{rich_client.watchlist_id}" in pages
+
+
+def test_every_swept_page_actually_renders(rich_client):
+    """⛔ The sweep must not tolerate a non-200. The old loop did
+    `if r.status_code != 200: continue`, so a page that started 500ing dropped
+    out of the guard silently and the suite stayed green while the page was
+    both broken AND unchecked. A page that will not render is a failure here,
+    not a skip."""
+    broken = {
+        path: rich_client.get(path).status_code
+        for path in _rendered_pages(rich_client)
+        if rich_client.get(path).status_code != 200
+    }
+    assert not broken, f"pages that did not render, so nothing was checked: {broken}"
 
 
 def test_no_inline_event_handlers_survive_anywhere(rich_client):
@@ -271,8 +392,10 @@ def test_no_inline_event_handlers_survive_anywhere(rich_client):
     offenders = []
     for path in _action_pages(rich_client):
         r = rich_client.get(path)
-        if r.status_code != 200:
-            continue
+        assert r.status_code == 200, (
+            f"{path} returned {r.status_code}; a page that does not render is "
+            "not a page that passed. See test_every_swept_page_actually_renders."
+        )
         for m in _EVENT_ATTR.finditer(r.text):
             start = max(0, m.start() - 90)
             offenders.append(f"{path}: ...{r.text[start:m.end() + 40]}...")
@@ -284,8 +407,8 @@ def test_no_javascript_scheme_urls(rich_client):
     hashes do not apply to them either."""
     for path in _action_pages(rich_client):
         r = rich_client.get(path)
-        if r.status_code == 200:
-            assert "javascript:" not in r.text.lower(), f"javascript: URL on {path}"
+        assert r.status_code == 200, f"{path} returned {r.status_code}"
+        assert "javascript:" not in r.text.lower(), f"javascript: URL on {path}"
 
 
 def test_every_destructive_form_still_carries_a_confirmation(rich_client):
