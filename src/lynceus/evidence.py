@@ -22,7 +22,7 @@ from typing import Any
 
 from .config import CaptureConfig
 from .db import Database, PruneResult
-from .kismet import _TYPE_MAP
+from .kismet import _PROBED_SSID_MAP_FIELD, _PROBED_SSID_RECORD_FIELD, _TYPE_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +44,27 @@ _LOCATION_TIME_KEY = "kismet.common.location.time_sec"
 # capture toggles are meant to gate. These can appear at any nesting
 # depth (inside seenby blocks, nested probed-SSID maps, etc.) so the
 # walker recurses over both dicts and lists.
+# ⚠️ `dot11.device.last_probed_ssid_csum_map` is NOT a key Kismet emits.
+# Checked against this repo's own real-capture fixture
+# (kismet_devices_real_2025_09.json, Kismet 2025.09.0): the container is
+# `dot11.device.probed_ssid_map` and it is a LIST of records, which is exactly
+# what the parser reads (kismet._PROBED_SSID_MAP_FIELD). So the container half
+# of this opt-out matched nothing, and `probe_ssids: false` held only because
+# the leaf key below strips the SSID strings wherever they nest.
+#
+# ⭐ That is one rule deep. Derive both names from the ingest layer instead of
+# restating them, so the redactor cannot drift from what is actually being
+# stored -- the same transcription mistake that left "BR/EDR" out of
+# _BLE_DEVICE_TYPES, in the same function.
+#
+# The csum-map name is KEPT as a legacy alias rather than deleted: older Kismet
+# builds may have emitted it, it costs one set membership test, and it cannot
+# produce a false positive because nothing else uses that name.
 _PROBE_SSID_KEYS = frozenset(
     {
-        "dot11.device.last_probed_ssid_csum_map",
-        "dot11.probedssid.ssid",
+        _PROBED_SSID_MAP_FIELD,
+        _PROBED_SSID_RECORD_FIELD,
+        "dot11.device.last_probed_ssid_csum_map",  # legacy, pre-2025 Kismet
     }
 )
 _BLE_NAME_KEYS = frozenset(

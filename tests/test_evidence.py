@@ -12,11 +12,17 @@ from pydantic import ValidationError
 from lynceus.config import CaptureConfig, Config
 from lynceus.db import Database
 from lynceus.evidence import (
+    _PROBE_SSID_KEYS,
     STATE_KEY_LAST_EVIDENCE_PRUNE,
     capture_evidence,
     prune_old_evidence,
 )
-from lynceus.kismet import _TYPE_MAP, FakeKismetClient
+from lynceus.kismet import (
+    _PROBED_SSID_MAP_FIELD,
+    _PROBED_SSID_RECORD_FIELD,
+    _TYPE_MAP,
+    FakeKismetClient,
+)
 from lynceus.poller import STATE_KEY_LAST_POLL, poll_once
 from lynceus.rules import Rule, Ruleset
 
@@ -649,6 +655,78 @@ def test_capture_keeps_wifi_ssid_in_base_name_when_ble_names_disabled(db, alert_
         "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
     ).fetchone()
     assert json.loads(row["kismet_record_json"])["kismet.device.base.name"] == "Hendricks_Home"
+
+
+# The probe-SSID opt-out, checked against REAL Kismet output rather than
+# against a fixture that encodes our belief about its shape. That distinction
+# is not academic here: the hand-built fixture above nests the probed SSIDs in
+# a DICT under `dot11.device.last_probed_ssid_csum_map`, and real Kismet
+# 2025.09 emits a LIST under `dot11.device.probed_ssid_map`. The redactor named
+# the fixture's key, the parser named Kismet's, and the existing test passed
+# because it was testing the fixture.
+_REAL_CAPTURE = Path(__file__).parent / "fixtures" / "kismet_devices_real_2025_09.json"
+
+
+def _real_record_with_probes() -> dict:
+    devices = json.loads(_REAL_CAPTURE.read_text(encoding="utf-8"))
+    for device in devices:
+        dot11 = device.get("dot11.device")
+        if isinstance(dot11, dict) and dot11.get("dot11.device.probed_ssid_map"):
+            return device
+    raise AssertionError(
+        "the real-capture fixture no longer contains a probed-SSID map; this "
+        "test is now vacuous and needs a fixture that does"
+    )
+
+
+def test_the_redactor_covers_every_probe_key_the_parser_reads():
+    """Derived, not transcribed. Two lists of Kismet key names drifting apart
+    is what put `dot11.device.last_probed_ssid_csum_map` -- a key Kismet does
+    not emit -- in the redactor while the parser read a different one."""
+    assert _PROBED_SSID_MAP_FIELD in _PROBE_SSID_KEYS
+    assert _PROBED_SSID_RECORD_FIELD in _PROBE_SSID_KEYS
+
+
+def test_the_real_probed_ssid_names_do_not_survive_the_opt_out(db, alert_id):
+    """⭐ Against real Kismet output. The operator said do not keep these."""
+    record = _real_record_with_probes()
+    probed = record["dot11.device"]["dot11.device.probed_ssid_map"]
+    names = [e.get("dot11.probedssid.ssid") for e in probed]
+    names = [n for n in names if n]
+    assert names, "the fixture's probed records carry no SSID string — vacuous"
+
+    rid = capture_evidence(
+        db, alert_id, MAC, record, capture=CaptureConfig(probe_ssids=False)
+    )
+    assert rid is not None
+    blob = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()["kismet_record_json"]
+
+    for name in names:
+        assert name not in blob, f"probed SSID {name!r} survived probe_ssids=False"
+    # And the container itself is gone, not merely emptied of its leaf keys.
+    assert "dot11.device.probed_ssid_map" not in json.loads(blob).get("dot11.device", {})
+
+
+def test_the_real_probed_ssids_ARE_kept_when_the_operator_opted_in(db, alert_id):
+    """The CONTROL. Redaction that always fires is not redaction, it is loss —
+    and this data is the point of the capture for an operator who wants it."""
+    record = _real_record_with_probes()
+    names = [
+        e.get("dot11.probedssid.ssid")
+        for e in record["dot11.device"]["dot11.device.probed_ssid_map"]
+    ]
+    names = [n for n in names if n]
+
+    rid = capture_evidence(
+        db, alert_id, MAC, record, capture=CaptureConfig(probe_ssids=True)
+    )
+    blob = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()["kismet_record_json"]
+    for name in names:
+        assert name in blob, f"probed SSID {name!r} was dropped despite opt-IN"
 
 
 def test_capture_does_not_mutate_upstream_record(db, alert_id):
