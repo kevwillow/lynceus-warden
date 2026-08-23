@@ -62,6 +62,8 @@ surveilled are neither. Lynceus is one of the second kind.
 
 The dashboard, running against the repo's own synthetic fixtures plus the
 bundled Argus snapshot. Every MAC below is a test value, not a real capture.
+Some shots are the dark theme and some the light one: both ship, both are
+what the product renders from your OS setting, and neither is a mock-up.
 
 ![Lynceus dashboard: health, last poll, devices seen, alert severity matrix, a
 30-day alerts-per-day sparkline, and recent unacknowledged alerts](docs/images/dashboard.png)
@@ -78,8 +80,8 @@ its Argus record id, vendor, and confidence score, and links through to the
 public source it came from:
 
 ![The watchlist filtered to the alpr category, showing Flock Safety
-signatures across BLE UUID, MAC, MAC range, SSID pattern, and BLE local name
-types, each with an argus id and a confidence score](docs/images/watchlist-argus.png)
+signatures across BLE UUID, OUI, MAC, SSID pattern, and BLE local name types,
+each with an argus id and a confidence score](docs/images/watchlist-argus.png)
 
 Probe history on `/probes`, exactly as the page opens: three devices, and the
 networks each one asked for kept behind a `reveal` control rather than printed
