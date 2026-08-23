@@ -18,7 +18,6 @@ from .allowlist import (
     Allowlist,
     AllowlistParseError,
     _load_allowlist_with_counts,
-    derive_ui_path,
     is_soft_attribute,
     repair_future_dated_ui_entries,
 )
@@ -2233,7 +2232,7 @@ def poll_once(
         if config.allowlist_path is not None:
             try:
                 for pattern, duration in repair_future_dated_ui_entries(
-                    derive_ui_path(Path(config.allowlist_path)), now_ts
+                    config.resolved_ui_allowlist_path(), now_ts
                 ):
                     logger.warning(
                         "UI suppression for %s was created on a clock that read "
@@ -2748,7 +2747,18 @@ class Poller:
             Path(config.allowlist_path) if config.allowlist_path else None
         )
         self._allowlist_ui_path: Path | None = (
-            derive_ui_path(self._allowlist_primary_path)
+            self.config.resolved_ui_allowlist_path()
+            if self._allowlist_primary_path is not None
+            else None
+        )
+        # ⚠️ The pre-move location is WATCHED as well as read. During the
+        # migration window it is the live file, and an operator hand-editing
+        # it there would otherwise never trip a reload -- the daemon would keep
+        # serving a merge from a file that had changed underneath it. Costs one
+        # extra stat per tick, and is None once the two resolve to the same
+        # directory (a user-scope install, or any test).
+        self._allowlist_legacy_ui_path: Path | None = (
+            self.config.legacy_ui_allowlist_path()
             if self._allowlist_primary_path is not None
             else None
         )
@@ -2762,6 +2772,8 @@ class Poller:
                 merged, _primary_count, _ui_count = _load_allowlist_with_counts(
                     str(self._allowlist_primary_path),
                     raise_on_parse_error=True,
+                    ui_path=self._allowlist_ui_path,
+                    legacy_path=self.config.legacy_ui_allowlist_path(),
                 )
             except AllowlistParseError as exc:
                 # Corrupt-but-present primary at startup. There is no
@@ -3055,7 +3067,11 @@ class Poller:
         moving to 0.0) both register as changes that trip a reload.
         """
         result: dict[Path, float] = {}
-        for p in (self._allowlist_primary_path, self._allowlist_ui_path):
+        for p in (
+            self._allowlist_primary_path,
+            self._allowlist_ui_path,
+            self._allowlist_legacy_ui_path,
+        ):
             if p is None:
                 continue
             try:
@@ -3082,6 +3098,8 @@ class Poller:
             merged, primary_count, ui_count = _load_allowlist_with_counts(
                 str(self._allowlist_primary_path),
                 raise_on_parse_error=True,
+                ui_path=self._allowlist_ui_path,
+                legacy_path=self.config.legacy_ui_allowlist_path(),
             )
         except FileNotFoundError:
             # Operator deleted the primary file mid-run. Hold the

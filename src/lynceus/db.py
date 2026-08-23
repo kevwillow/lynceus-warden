@@ -5396,6 +5396,7 @@ class Database:
         entry_id: int,
         *,
         allowlist_path,
+        legacy_allowlist_path=None,
         pattern: str,
         pattern_type: str,
         note: str | None,
@@ -5462,7 +5463,7 @@ class Database:
             added_at=now_ts,
             expires_at=expires_at,
         )
-        add_ui_entry(allowlist_path, entry)
+        add_ui_entry(allowlist_path, entry, legacy_allowlist_path)
         # Pattern stored is post-normalization; keep it for the rollback path.
         stored_pattern = entry.pattern
         stored_pattern_type = entry.pattern_type
@@ -5477,7 +5478,12 @@ class Database:
                 # Concurrent archive between our precondition check
                 # and the UPDATE. Best-effort rollback of the yaml write.
                 try:
-                    remove_ui_entry(allowlist_path, stored_pattern, stored_pattern_type)
+                    remove_ui_entry(
+                        allowlist_path,
+                        stored_pattern,
+                        stored_pattern_type,
+                        legacy_allowlist_path,
+                    )
                 except Exception:
                     pass
                 raise RuntimeError(
