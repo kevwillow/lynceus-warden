@@ -22,6 +22,7 @@ from typing import Any
 
 from .config import CaptureConfig
 from .db import Database, PruneResult
+from .kismet import _TYPE_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,20 @@ _BLE_NAME_KEYS = frozenset(
 # friendly name for BLE/Bluetooth devices. Strip it only when the device
 # type at the top level is BLE-related; this preserves Wi-Fi SSIDs that
 # are needed for triage.
-_BLE_DEVICE_TYPES = frozenset({"BTLE", "Bluetooth"})
+#
+# DERIVED from the ingest layer's own type map, not transcribed from it.
+# The transcribed version listed "BTLE" and "Bluetooth" and silently
+# omitted "BR/EDR" — a string kismet.py documents as live in a real
+# capture — so an operator who switched ble_friendly_names OFF still had
+# Bluetooth Classic friendly names written to the evidence table. Deriving
+# it means a new Bluetooth type string added to _TYPE_MAP is redacted the
+# moment it can be ingested, instead of waiting for someone to notice two
+# lists drifting apart.
+_BLE_DEVICE_TYPES = frozenset(
+    kismet_type
+    for kismet_type, family in _TYPE_MAP.items()
+    if family in {"ble", "bt_classic"}
+)
 _DEVICE_TYPE_KEY = "kismet.device.base.type"
 _DEVICE_NAME_KEY = "kismet.device.base.name"
 

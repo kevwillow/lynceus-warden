@@ -16,7 +16,7 @@ from lynceus.evidence import (
     capture_evidence,
     prune_old_evidence,
 )
-from lynceus.kismet import FakeKismetClient
+from lynceus.kismet import _TYPE_MAP, FakeKismetClient
 from lynceus.poller import STATE_KEY_LAST_POLL, poll_once
 from lynceus.rules import Rule, Ruleset
 
@@ -573,6 +573,82 @@ def test_capture_redacts_ble_friendly_names_when_toggle_disabled(db, alert_id):
     assert "btle.device.name" not in blob
     assert "btle.advertised.name" not in blob
     assert "John's iPhone" not in blob
+
+
+# Every Kismet device-type string whose kismet.device.base.name carries a
+# Bluetooth friendly name rather than a Wi-Fi SSID, DERIVED from the ingest
+# layer's own map rather than transcribed. The redactor must cover the whole
+# family: a hand-copied subset is how "BR/EDR" was missed, and a hand-copied
+# subset here would be blind to the same mistake made again.
+_BLUETOOTH_KISMET_TYPES = frozenset(
+    kismet_type
+    for kismet_type, family in _TYPE_MAP.items()
+    if family in {"ble", "bt_classic"}
+)
+
+
+def test_bluetooth_type_derivation_is_not_vacuous():
+    """The parametrised sweep below is only a guard if its universe is real.
+
+    An empty or one-element derived set would make every case pass while
+    proving nothing, so pin the floor AND the specific string that was
+    missing: Kismet emits "BR/EDR" for Bluetooth Classic depending on
+    version and datasource (kismet.py documents it as live in the Parrot-OS
+    probe's device-type frequency table).
+    """
+    assert len(_BLUETOOTH_KISMET_TYPES) >= 3
+    assert "BR/EDR" in _BLUETOOTH_KISMET_TYPES
+    assert "BTLE" in _BLUETOOTH_KISMET_TYPES
+    assert "Bluetooth" in _BLUETOOTH_KISMET_TYPES
+    # And it must NOT swallow the Wi-Fi family, whose base.name is an SSID
+    # the operator needs for triage.
+    assert "Wi-Fi AP" not in _BLUETOOTH_KISMET_TYPES
+
+
+@pytest.mark.parametrize("kismet_type", sorted(_BLUETOOTH_KISMET_TYPES))
+def test_capture_redacts_friendly_name_for_every_bluetooth_type(db, alert_id, kismet_type):
+    """ble_friendly_names=False must strip base.name for the WHOLE family.
+
+    The operator opted out of storing Bluetooth friendly names. Honouring
+    that for "BTLE" alone still writes "John's iPhone" to disk for a device
+    Kismet happened to type "BR/EDR".
+    """
+    record = _ble_record_with_friendly_names()
+    record["kismet.device.base.type"] = kismet_type
+    rid = capture_evidence(
+        db,
+        alert_id,
+        MAC,
+        record,
+        capture=CaptureConfig(probe_ssids=False, ble_friendly_names=False),
+    )
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    blob = row["kismet_record_json"]
+    assert "kismet.device.base.name" not in json.loads(blob)
+    assert "John's iPhone" not in blob
+
+
+def test_capture_keeps_wifi_ssid_in_base_name_when_ble_names_disabled(db, alert_id):
+    """The CONTROL for the sweep above: opting out of Bluetooth friendly
+    names must not strip a Wi-Fi SSID out of the same key. Without this, a
+    fix that stripped base.name unconditionally would pass every case."""
+    record = _kismet_record()
+    record["kismet.device.base.name"] = "Hendricks_Home"
+    rid = capture_evidence(
+        db,
+        alert_id,
+        MAC,
+        record,
+        capture=CaptureConfig(probe_ssids=False, ble_friendly_names=False),
+    )
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    assert json.loads(row["kismet_record_json"])["kismet.device.base.name"] == "Hendricks_Home"
 
 
 def test_capture_does_not_mutate_upstream_record(db, alert_id):
