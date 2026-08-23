@@ -41,6 +41,7 @@ NON_DEFAULT: dict = {
     "log_level": "DEBUG",
     "rules_path": "/tmp/lynceus-rules.yaml",
     "allowlist_path": "/tmp/lynceus-allowlist.yaml",
+    "ui_allowlist_path": "/tmp/lynceus-allowlist_ui.yaml",
     "severity_overrides_path": "/tmp/lynceus-overrides.yaml",
     "alert_dedup_window_seconds": 111,
     "ntfy_url": "https://ntfy.example.org",
