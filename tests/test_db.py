@@ -2613,14 +2613,58 @@ def test_resolve_matched_ble_local_name_for_eval_none_and_empty(db):
     assert db.resolve_matched_ble_local_name_for_eval("") is None
 
 
-def test_resolve_matched_ble_local_name_for_eval_case_sensitive(db):
-    """Case is significant per BLE Core Spec §4.5.2; 'Flock' must not
-    match a stored 'FLOCK' row. Guards against a regression where
-    someone adds COLLATE NOCASE to the SQL lookup."""
+def test_resolve_matched_ble_local_name_for_eval_case_insensitive(db):
+    """⛔ THIS TEST ASSERTED THE OPPOSITE, DELIBERATELY, AND IS INVERTED ON PURPOSE.
+
+    It read: *"Case is significant per BLE Core Spec §4.5.2; 'Flock' must not
+    match a stored 'FLOCK' row. Guards against a regression where someone adds
+    COLLATE NOCASE to the SQL lookup."* That is exactly what changed here, so
+    the premise gets argued rather than the guard quietly deleted.
+
+    The premise conflates two different things. §4.5.2 says the Complete Local
+    Name is a UTF-8 string, so case is part of the VALUE -- true, and this
+    matcher still stores and returns it verbatim. It says nothing about
+    whether a THREAT SIGNATURE should care, and the answer in this codebase is
+    already recorded one column over: SSIDs are equally case-significant as
+    data, and `test_resolve_matched_ssid_pattern_for_eval_case_insensitive`
+    calls case-insensitive substring matching *"the central correctness
+    invariant for this matcher"*. The two columns did the same job under
+    opposite rules.
+
+    ⭐ And case sensitivity would re-kill the column. Under the old equality
+    matcher all 21 bundled ble_local_name rows were dead -- a real device
+    advertises `Flock-1234`, never the bare `Flock` that was stored. The
+    re-cut stems are lowercase (`flock`, `fs ext battery`); matched
+    case-sensitively they match nothing at all.
+
+    Symmetry on both sides, mirroring the ssid_pattern pair: stored case must
+    not matter and observed case must not matter.
+    """
     _add_simple(db, "FLOCK", "ble_local_name", severity="high")
-    assert db.resolve_matched_ble_local_name_for_eval("FLOCK") is not None
-    assert db.resolve_matched_ble_local_name_for_eval("Flock") is None
-    assert db.resolve_matched_ble_local_name_for_eval("flock") is None
+    for observed in ("FLOCK", "Flock-1234", "flock-a7", "MY-FLOCK"):
+        assert db.resolve_matched_ble_local_name_for_eval(observed) is not None, (
+            f"observation {observed!r} should match stored 'FLOCK'"
+        )
+
+
+def test_resolve_matched_ble_local_name_for_eval_stored_case_preserved(db):
+    """The other direction: a lowercase stored stem must match a device that
+    advertises mixed case, which is how every bundled row is now cut."""
+    _add_simple(db, "flock", "ble_local_name", severity="med")
+    match = db.resolve_matched_ble_local_name_for_eval("Flock-1234")
+    assert match is not None
+    assert match.severity == "med"
+
+
+def test_resolve_matched_ble_local_name_for_eval_still_needs_the_needle_present(db):
+    """The CONTROL for the two above. Case-insensitive substring is not
+    'matches anything' -- a name that does not contain the stem must miss, or
+    the whole column becomes a permanent alert."""
+    _add_simple(db, "flock", "ble_local_name", severity="high")
+    for observed in ("Albatross", "Galaxy Buds", "John's iPhone", "floc"):
+        assert db.resolve_matched_ble_local_name_for_eval(observed) is None, (
+            f"observation {observed!r} must not match stored 'flock'"
+        )
 
 
 def test_resolve_matched_ble_local_name_for_eval_only_matches_own_pattern_type(db):
