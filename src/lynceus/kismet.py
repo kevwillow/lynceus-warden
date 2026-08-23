@@ -561,27 +561,26 @@ def parse_kismet_device(
             evidence_capture_enabled=evidence_capture_enabled,
         )
     except Exception:
-        # ⚠️ The OUI, not the MAC. What a reader needs from this line is
-        # WHICH KIND of device shape broke the parser, and the first three
-        # octets carry the vendor -- which is the actionable half. The full
-        # address would identify a specific device in a log this tool writes
-        # constantly, for no diagnostic gain the traceback does not already
-        # give. CodeQL flags the full form as py/clear-text-logging-sensitive-
-        # data and it is right that the narrower value is enough.
+        # ⚠️ The record's SHAPE, not any value out of it.
+        #
+        # This branch means "the parser raised on a shape nobody predicted",
+        # so the thing needed to reproduce it is which KEYS the record had --
+        # those are Kismet schema names, identical across every install, and
+        # they carry no device data. The traceback gives the rest. An earlier
+        # version logged the MAC and then the OUI; CodeQL flagged both as
+        # py/clear-text-logging-sensitive-data, and on reflection neither was
+        # the useful field: a device identifier does not tell you what shape
+        # broke the parser, and this is a log the product writes constantly.
         try:
-            raw_mac_hint = raw.get("kismet.device.base.macaddr")
-            oui_hint = (
-                raw_mac_hint[:8]
-                if isinstance(raw_mac_hint, str) and len(raw_mac_hint) >= 8
-                else f"<{type(raw_mac_hint).__name__}>"
-            )
+            keys = sorted(raw)[:12] if isinstance(raw, dict) else []
+            shape_hint = f"{len(raw)} keys, first: {keys}" if keys else "<unreadable>"
         except Exception:
-            oui_hint = "<unreadable>"
+            shape_hint = "<unreadable>"
         logger.error(
             "dropping kismet device, parser raised on an unhandled record "
-            "shape: oui=%s — this is a defect in the parser or a change in "
+            "shape (%s) — this is a defect in the parser or a change in "
             "Kismet's output, not a normal drop",
-            oui_hint,
+            shape_hint,
             exc_info=True,
         )
         return None

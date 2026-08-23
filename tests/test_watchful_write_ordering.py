@@ -162,15 +162,13 @@ def test_a_failed_allowlist_write_does_not_archive_the_entry(db, tmp_path, monke
     entry that vanished from the operator's list without doing anything is its
     own bug.
     """
-    import lynceus.allowlist as allowlist_mod
-
     _primary, ui_path = _allowlist_paths(tmp_path)
     entry_id = _insert_watchful(db)
 
     def boom(*a, **kw):
         raise OSError("read-only file system")
 
-    monkeypatch.setattr(allowlist_mod, "add_ui_entry", boom)
+    monkeypatch.setattr("lynceus.allowlist.add_ui_entry", boom)
 
     with pytest.raises(OSError):
         db.promote_watchful_to_allowlist(
