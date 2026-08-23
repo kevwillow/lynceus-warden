@@ -259,6 +259,121 @@ def test_ssid_exact_wildcard_logs_warning_and_imports_anyway(tmp_path, db, caplo
     assert row["pattern_type"] == "ssid"
 
 
+def test_a_regex_shaped_substring_needle_is_dropped(tmp_path, db, caplog):
+    """⛔ The S1 guard, and it DROPS rather than importing-and-warning.
+
+    `ssid_pattern` and `ble_local_name` are matched with
+    `LIKE '%' || pattern || '%'`, so an identifier of `dji[-_].+` requires an
+    SSID literally containing those characters. 32 bundled rows shipped that
+    way — the whole drone fleet, the forensic-extraction tools, the in-vehicle
+    routers — and `/watchlist` and `/healthz.json` graded every one of them
+    LIVE while nothing could match.
+
+    ⚠️ Contrast with the `ssid_exact` wildcard case above, which imports the
+    row anyway. A dormant row is only harmless while somebody is reading the
+    warnings; this class was counted as live threat coverage for months, which
+    is the lie the drop exists to stop.
+    """
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="s-regex",
+                identifier_type="ssid_pattern",
+                identifier="dji[-_].+",
+            )
+        ],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+
+    assert report.dropped_regex_shaped_needle == 1
+    assert report.imported_new == 0
+    assert (
+        db._conn.execute(
+            "SELECT COUNT(*) FROM watchlist WHERE pattern = ?", ("dji[-_].+",)
+        ).fetchone()[0]
+        == 0
+    )
+    assert any(
+        "DROPPED" in r.getMessage() and "dji[-_].+" in r.getMessage()
+        for r in caplog.records
+    ), "the row was dropped with nothing in the log saying why"
+    assert "regex_shaped_needle" in report.render()
+
+
+def test_a_literal_substring_needle_is_imported(tmp_path, db, caplog):
+    """⭐ THE CONTROL, and it is the half that matters.
+
+    A guard that dropped every ssid_pattern row would satisfy the test above
+    and leave the product with no substring detection at all — which is
+    strictly worse than the defect, and would look identical in a one-case
+    check. The re-cut literal stems must land.
+    """
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="s-lit",
+                identifier_type="ssid_pattern",
+                identifier="cradlepoint",
+            )
+        ],
+    )
+    with caplog.at_level(_logging.WARNING, logger="lynceus.cli.import_argus"):
+        report = import_csv(db, path, OverrideConfig())
+
+    assert report.dropped_regex_shaped_needle == 0
+    assert report.imported_new == 1
+    assert db.resolve_matched_ssid_pattern_for_eval("cradlepoint-9f") is not None
+
+
+def test_a_hyphen_anchored_needle_is_not_mistaken_for_a_regex(tmp_path, db):
+    """The re-cut relies on `phantom-` and `phantom_` being importable. A
+    metacharacter set that included `-` or `_` would drop exactly the rows the
+    re-cut produced, and the drop would look like the guard working."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(argus_record_id="a1", identifier_type="ssid_pattern", identifier="phantom-"),
+            _row(argus_record_id="a2", identifier_type="ssid_pattern", identifier="phantom_"),
+            _row(
+                argus_record_id="a3",
+                identifier_type="ssid_pattern",
+                identifier="oxygen-forensic",
+            ),
+            _row(
+                argus_record_id="a4",
+                identifier_type="ble_local_name",
+                identifier="fs ext battery",
+            ),
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.dropped_regex_shaped_needle == 0
+    assert report.imported_new == 4
+
+
+def test_a_regex_in_a_NON_substring_column_is_untouched(tmp_path, db):
+    """The guard is scoped to the columns that are matched literally as a
+    substring. Widening it to every pattern_type would start dropping rows for
+    types whose matcher has different semantics, on a rule derived from the
+    wrong one."""
+    path = _write_csv(
+        tmp_path / "wl.csv",
+        [
+            _row(
+                argus_record_id="s-ssid",
+                identifier_type="ssid_exact",
+                identifier="Flock-*",
+            )
+        ],
+    )
+    report = import_csv(db, path, OverrideConfig())
+    assert report.dropped_regex_shaped_needle == 0
+    assert report.imported_new == 1
+
+
 def test_ssid_exact_without_wildcard_emits_no_warning(tmp_path, db, caplog):
     """Guard: ordinary ssid_exact rows must NOT trip the wildcard warning
     path. Catches accidental over-broadening of the trigger (e.g. if

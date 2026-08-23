@@ -12,6 +12,7 @@ import argparse
 import csv
 import datetime as _dt
 import logging
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -61,6 +62,12 @@ EXPECTED_HEADER: list[str] = [
 # The alias is one-way at import — the canonical pattern_type stored in
 # watchlist.pattern_type is the Lynceus side of the map, never the Argus
 # alias, and downstream (rules, poller, webui) sees only the Lynceus type.
+#: Characters that mean an identifier was written as a REGEX rather than as
+#: a literal needle. `.` is excluded deliberately: it is legal and common
+#: inside a literal hostname or product string, so flagging it would be
+#: noise on rows that are perfectly fine.
+_REGEX_SHAPED = re.compile(r"[\[\]\(\)\*\+\?\{\}\|\\^$]")
+
 IDENTIFIER_TYPE_MAP: dict[str, str] = {
     "mac": "mac",
     "oui": "oui",
@@ -100,7 +107,7 @@ IDENTIFIER_TYPE_MAP: dict[str, str] = {
 # it carries hostnames, cloud endpoints, certificate hashes, firmware
 # strings, and regulatory codes that identify surveillance equipment but
 # cannot be recovered from a Kismet sighting or a BLE advertisement. The
-# bundled snapshot is ~43% such rows (17,952 of 41,508 at
+# bundled snapshot is ~43% such rows (17,952 of 41,518 at
 # schema_version=31), so a bare "dropped 17952 unknown_type" line reads
 # as breakage when it is in fact the expected split.
 #
@@ -505,6 +512,11 @@ class ImportReport:
     # per-type counts the wizard reads. Skip them at import time and
     # let the operator see the drop in the run summary.
     dropped_placeholder_oui: int = 0
+    #: Identifiers written as regexes into a column matched as a literal
+    #: substring. Dropped, not imported-and-warned: a dormant row is only
+    #: harmless while somebody reads the warnings, and this class shipped
+    #: for months counted as live threat coverage.
+    dropped_regex_shaped_needle: int = 0
     normalization_failed: int = 0
     ssid_exact_wildcard_warn: int = 0
     errors: int = 0
@@ -529,6 +541,8 @@ class ImportReport:
             f"{prefix}Dropped (peer_collision): {self.dropped_peer_collision}",
             f"{prefix}Dropped (in_import_dup): {self.dropped_in_import_dup}",
             f"{prefix}Dropped (placeholder_oui): {self.dropped_placeholder_oui}",
+            f"{prefix}Dropped (regex_shaped_needle): "
+            f"{self.dropped_regex_shaped_needle}",
             f"{prefix}Dropped (normalization_failed): {self.normalization_failed}",
             f"{prefix}Warned (ssid_exact wildcard, imported anyway): "
             f"{self.ssid_exact_wildcard_warn}",
@@ -546,6 +560,7 @@ class ImportReport:
             + self.dropped_peer_collision
             + self.dropped_in_import_dup
             + self.dropped_placeholder_oui
+            + self.dropped_regex_shaped_needle
             + self.normalization_failed
         )
         lines.append(
@@ -1051,6 +1066,43 @@ def _classify_row(
         # matches a real WiFi observation, so the row sits dormant
         # until Argus fixes the typing — and warn loudly so the
         # operator (and the next Argus refresh diff) sees it.
+        # ⛔ A needle for a LITERAL matcher must be literal, or the row lands,
+        # is graded LIVE by /watchlist and /healthz.json, and can never fire.
+        # 32 bundled rows shipped this way -- the whole drone fleet, the
+        # forensic-extraction tools and the in-vehicle routers -- cut as Python
+        # regexes into columns matched with `LIKE '%' || pattern || '%'`, so
+        # `dji[-_].+` required an SSID literally containing `dji[-_].+`.
+        # Measured: `DJI-Phantom4`, `DJI_Mavic`, `Phantom-3` and `MP70_a1b2`
+        # all returned None through the real matcher, with zero import
+        # warnings and no log line at any level.
+        #
+        # ⭐ Same CLASS as Finding 37 (221 bundled OUI rows that could never
+        # fire). The guard added then was keyed to the OUI column, so it
+        # reported on the OUI column. This one is keyed on the property --
+        # a literal matcher needs a literal needle -- and derives its universe
+        # from Database.SUBSTRING_PATTERN_TYPES, so a third substring-matched
+        # column added later is covered without anyone widening a list.
+        #
+        # ⚠️ DROP rather than import-and-warn, unlike the `*` case below. A
+        # dormant row is only harmless while somebody is reading the warnings;
+        # this class shipped for months with the row counted as live threat
+        # coverage, which is the lie the drop exists to stop.
+        if pattern_type in Database.SUBSTRING_PATTERN_TYPES and _REGEX_SHAPED.search(
+            raw_pattern
+        ):
+            report.dropped_regex_shaped_needle += 1
+            logger.warning(
+                "argus import: %s identifier %r contains regex metacharacters, "
+                "but %s is matched as a LITERAL case-insensitive substring — "
+                "the row could never match anything, so it is DROPPED rather "
+                "than counted as live coverage. Re-cut it upstream as a literal "
+                "stem. argus_record_id=%s",
+                argus_type,
+                raw_pattern,
+                pattern_type,
+                argus_id,
+            )
+            return None
         if argus_type == "ssid_exact" and "*" in raw_pattern:
             report.ssid_exact_wildcard_warn += 1
             logger.warning(
@@ -1129,7 +1181,7 @@ def _classify_row(
         # ⛔ This comment used to say "~40 rows in the bundled
         # default_watchlist.csv, all CCTV vendors". Measured
         # 2026-08-15 on the shipped snapshot (schema_version=31,
-        # exported 2026-06-03): across all 41,508 rows,
+        # exported 2026-06-03, locally re-cut 2026-08-22): across all 41,518 rows,
         # `identifier == '00:00:00'` appears **ZERO** times, so this
         # branch drops nothing from the bundled data and
         # `dropped_placeholder_oui` is always 0 for it. The claim was
