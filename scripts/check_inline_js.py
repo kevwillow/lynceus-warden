@@ -47,11 +47,16 @@ from pathlib import Path
 
 from jinja2 import Environment
 
-# ⛔ `</script\s*>`, not `</script>`. HTML permits whitespace before the `>` of
-# a closing tag, and CodeQL's py/bad-tag-filter caught this in the first
-# version of this file. Measured against `<script>var a = 1;</script >`
-# followed by prose and a second block, the tight pattern produced ONE match
-# whose body was:
+# ⛔ `</script\b[^>]*>`, not `</script>`. Two ways an end tag legally differs
+# from the tight form, and CodeQL's py/bad-tag-filter caught BOTH -- the
+# second only after the first was fixed, which is the argument for reading the
+# alert rather than patching until it goes quiet:
+#
+#   </script >     whitespace before the `>`
+#   </script bar>  attributes, which HTML permits in an end tag and ignores
+#
+# Measured against `<script>var a = 1;</script >` followed by prose and a
+# second block, the tight pattern produced ONE match whose body was:
 #
 #     'var a = 1;</script >\n<p>not javascript at all, this is prose</p>\n<script>var b = 2;'
 #
@@ -59,7 +64,7 @@ from jinja2 import Environment
 # so the gate would report a parse failure on prose, or merge two blocks and
 # stop checking one of them. A malformed-input bug in the tool that exists to
 # catch malformed input.
-_SCRIPT_RE = re.compile(r"<script\b([^>]*)>(.*?)</script\s*>", re.S | re.I)
+_SCRIPT_RE = re.compile(r"<script\b([^>]*)>(.*?)</script\b[^>]*>", re.S | re.I)
 
 # autoescape is irrelevant here -- this Environment is used ONLY as a lexer
 # (`env.lex`) and never renders anything, so no output reaches a browser. It

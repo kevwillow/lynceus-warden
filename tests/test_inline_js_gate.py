@@ -50,6 +50,18 @@ def test_a_close_tag_with_whitespace_is_still_a_close_tag(gate):
     )
 
 
+@pytest.mark.parametrize(
+    "close_tag", ["</script>", "</script >", "</script\n>", "</script bar>", "</SCRIPT  >"]
+)
+def test_every_legal_close_tag_ends_the_block(gate, close_tag):
+    """⛔ CodeQL flagged this TWICE: once for the whitespace form, and again on
+    the fix, because HTML also permits attributes in an end tag and ignores
+    them. Patching until the alert went quiet would have shipped the second
+    hole. Each of these must terminate the block it terminates."""
+    html = f"<script>var a = 1;{close_tag}<p>prose, not javascript</p>"
+    assert gate.inline_blocks(html) == ["var a = 1;"], close_tag
+
+
 def test_the_ordinary_close_tag_still_works(gate):
     """The CONTROL. A pattern loosened until it matches nothing useful would
     satisfy the guard above by returning two empty bodies."""
