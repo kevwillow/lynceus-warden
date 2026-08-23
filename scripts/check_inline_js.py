@@ -47,8 +47,25 @@ from pathlib import Path
 
 from jinja2 import Environment
 
-_SCRIPT_RE = re.compile(r"<script\b([^>]*)>(.*?)</script>", re.S | re.I)
-_env = Environment()
+# ⛔ `</script\s*>`, not `</script>`. HTML permits whitespace before the `>` of
+# a closing tag, and CodeQL's py/bad-tag-filter caught this in the first
+# version of this file. Measured against `<script>var a = 1;</script >`
+# followed by prose and a second block, the tight pattern produced ONE match
+# whose body was:
+#
+#     'var a = 1;</script >\n<p>not javascript at all, this is prose</p>\n<script>var b = 2;'
+#
+# i.e. it swallowed the closing tag, the HTML between, and the next block --
+# so the gate would report a parse failure on prose, or merge two blocks and
+# stop checking one of them. A malformed-input bug in the tool that exists to
+# catch malformed input.
+_SCRIPT_RE = re.compile(r"<script\b([^>]*)>(.*?)</script\s*>", re.S | re.I)
+
+# autoescape is irrelevant here -- this Environment is used ONLY as a lexer
+# (`env.lex`) and never renders anything, so no output reaches a browser. It
+# is set anyway: leaving a HIGH `py/jinja2/autoescape-false` alert standing
+# because "we know it is fine" is how a real one later gets waved through.
+_env = Environment(autoescape=True)
 
 
 def dejinja(text: str) -> str:
