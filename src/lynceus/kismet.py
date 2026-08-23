@@ -561,15 +561,27 @@ def parse_kismet_device(
             evidence_capture_enabled=evidence_capture_enabled,
         )
     except Exception:
+        # ⚠️ The OUI, not the MAC. What a reader needs from this line is
+        # WHICH KIND of device shape broke the parser, and the first three
+        # octets carry the vendor -- which is the actionable half. The full
+        # address would identify a specific device in a log this tool writes
+        # constantly, for no diagnostic gain the traceback does not already
+        # give. CodeQL flags the full form as py/clear-text-logging-sensitive-
+        # data and it is right that the narrower value is enough.
         try:
-            mac_hint = raw.get("kismet.device.base.macaddr")
+            raw_mac_hint = raw.get("kismet.device.base.macaddr")
+            oui_hint = (
+                raw_mac_hint[:8]
+                if isinstance(raw_mac_hint, str) and len(raw_mac_hint) >= 8
+                else f"<{type(raw_mac_hint).__name__}>"
+            )
         except Exception:
-            mac_hint = "<unreadable>"
+            oui_hint = "<unreadable>"
         logger.error(
             "dropping kismet device, parser raised on an unhandled record "
-            "shape: mac=%r — this is a defect in the parser or a change in "
+            "shape: oui=%s — this is a defect in the parser or a change in "
             "Kismet's output, not a normal drop",
-            mac_hint,
+            oui_hint,
             exc_info=True,
         )
         return None
@@ -598,9 +610,11 @@ def _parse_kismet_device(
     # re-fetches. Finding A1's livelock, arriving one line earlier than the
     # site that was fixed for it.
     if not isinstance(kismet_type, str):
+        # The TYPE is the diagnostic here; the MAC is not. A record whose type
+        # is unusable is unidentifiable anyway, and the sibling missing-field
+        # drop above already logs the address for the records where it helps.
         logger.warning(
-            "dropping kismet device, non-string type: type=%r mac=%r",
-            kismet_type, raw_mac,
+            "dropping kismet device, non-string type: type=%r", kismet_type
         )
         return None
     device_type = _TYPE_MAP.get(kismet_type)
