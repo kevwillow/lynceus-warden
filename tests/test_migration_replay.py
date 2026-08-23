@@ -156,7 +156,11 @@ LOSSY_VICTIM_COLUMN = "ble_device_class"  # added by 023, destroyed by a 014 rep
 # Genuinely idempotent: IF NOT EXISTS guards (007, 008, 022), a pure UPDATE
 # normalisation (010), or the newest watchlist rebuild, whose CHECK constraint
 # still matches head (021).
-REPLAY_CLEAN = {7, 8, 10, 21, 22}
+# 028 joins them: its UPDATE selects the rows that violate the invariant, and
+# after the first run there are none, so a replay updates 0 rows; the index is
+# CREATE UNIQUE INDEX IF NOT EXISTS. Verified by this census rather than
+# asserted from reading the SQL.
+REPLAY_CLEAN = {7, 8, 10, 21, 22, 28}
 
 # Crash-injection targets: one additive (ADD COLUMN) migration and one that
 # creates a table, so both defect shapes are pinned end to end.

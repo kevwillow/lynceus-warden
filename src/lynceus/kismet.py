@@ -216,7 +216,18 @@ class DeviceObservation(BaseModel):
 
     @model_validator(mode="after")
     def _drop_uuids_for_non_ble(self) -> DeviceObservation:
-        if self.device_type != "ble":
+        # ⛔ "remote_id" is a CLASSIFICATION, not a radio. Kismet's UAV phy
+        # decorates a device the BTLE phy already tracks, so a BT-RID drone is
+        # promoted to remote_id while its service UUIDs remain genuine BLE
+        # advertisement data. Blanking them here re-stripped exactly what
+        # parse_kismet_device had just been fixed to keep -- the extraction
+        # gate and this validator are two paths to the same mechanism, and
+        # closing one is not closing it.
+        #
+        # wifi and bt_classic CANNOT have carried a BLE advert, so they keep
+        # the original guard: a wrong caller still cannot persist BLE-only
+        # fields on an observation whose radio has no such concept.
+        if self.device_type not in ("ble", "remote_id"):
             if self.ble_service_uuids:
                 object.__setattr__(self, "ble_service_uuids", ())
             # A decoded Continuity class is meaningless on a non-BLE
@@ -518,6 +529,59 @@ def parse_kismet_device(
     capture_ble_name: bool = False,
     evidence_capture_enabled: bool = False,
 ) -> DeviceObservation | None:
+    """Parse one Kismet device record, or None if it cannot be understood.
+
+    ⛔ **This function must not raise.** The client parses EAGERLY inside the
+    fetch, so anything that escapes here escapes `poll_once` entirely: the tick
+    aborts, `last_poll` never advances, and the next tick re-fetches the same
+    record. The daemon stays alive and never progresses — finding A1's
+    livelock, where one malformed record stops capture forever.
+
+    ⚠️ That containment was closed for `ValidationError` at the model
+    construction site and nowhere else, which left three measured escapes
+    (`normalize_mac` on a non-string or bytes mac; `_TYPE_MAP.get` on an
+    unhashable type). Those now have named guards, in `_parse_kismet_device`,
+    so the journal names the real cause.
+
+    ⭐ The net below exists because enumerating shapes is the move that left
+    `ValidationError` alone in the first place. It catches what nobody
+    predicted, at ERROR with a traceback — a parser raising on its own bug
+    should be loud, and contained is not the same as silent.
+
+    ⚠️ It is deliberately the OUTERMOST layer and nothing else widened. A
+    blanket except placed inside would turn records with junk in a skippable
+    field — which parse correctly today — into silent drops, and the product
+    would stop seeing devices Kismet reported perfectly well.
+    """
+    try:
+        return _parse_kismet_device(
+            raw,
+            capture_probe_ssids=capture_probe_ssids,
+            capture_ble_name=capture_ble_name,
+            evidence_capture_enabled=evidence_capture_enabled,
+        )
+    except Exception:
+        try:
+            mac_hint = raw.get("kismet.device.base.macaddr")
+        except Exception:
+            mac_hint = "<unreadable>"
+        logger.error(
+            "dropping kismet device, parser raised on an unhandled record "
+            "shape: mac=%r — this is a defect in the parser or a change in "
+            "Kismet's output, not a normal drop",
+            mac_hint,
+            exc_info=True,
+        )
+        return None
+
+
+def _parse_kismet_device(
+    raw: dict,
+    *,
+    capture_probe_ssids: bool = False,
+    capture_ble_name: bool = False,
+    evidence_capture_enabled: bool = False,
+) -> DeviceObservation | None:
     raw_mac = raw.get("kismet.device.base.macaddr")
     kismet_type = raw.get("kismet.device.base.type")
     first_time = raw.get("kismet.device.base.first_time")
@@ -527,6 +591,18 @@ def parse_kismet_device(
         logger.warning("dropping kismet device, missing required field: mac=%r", raw_mac)
         return None
 
+    # ⛔ isinstance BEFORE the dict lookup. Kismet is not the only writer of
+    # these records — plugin extensions and proxies sit in the path — and
+    # _TYPE_MAP.get(unhashable) raises TypeError, which escapes this function,
+    # aborts the eager fetch, and freezes last_poll on a record the next tick
+    # re-fetches. Finding A1's livelock, arriving one line earlier than the
+    # site that was fixed for it.
+    if not isinstance(kismet_type, str):
+        logger.warning(
+            "dropping kismet device, non-string type: type=%r mac=%r",
+            kismet_type, raw_mac,
+        )
+        return None
     device_type = _TYPE_MAP.get(kismet_type)
     if device_type is None:
         logger.debug(
@@ -534,6 +610,25 @@ def parse_kismet_device(
             kismet_type, raw_mac,
         )
         return None
+
+    # The radio family this record ARRIVED on, captured before the
+    # Remote-ID promotion below can overwrite device_type.
+    #
+    # ⛔ Every extraction gate further down asks "which radio carried
+    # this advert", NOT "how is this device classified". Those are
+    # different questions and the promotion only answers the second.
+    # Gating them on device_type meant promoting a drone to 'remote_id'
+    # silently switched off all five of ssid, probe_ssids,
+    # ble_service_uuids, ble_local_name and ble_manufacturer_id --
+    # measured against two records differing only by the uav component:
+    #
+    #   wifi drone        type=wifi      ssid='DJI-Phantom4'
+    #   wifi drone + uav  type=remote_id ssid=None
+    #
+    # which is the SSID the bundled ssid_pattern signatures match a DJI
+    # airframe on, deleted on precisely the aircraft that announce
+    # themselves. See tests/test_remote_id_promotion_keeps_radio_fields.py.
+    radio_family = device_type
 
     # Kismet's UAV phy decorates rather than types: a Remote-ID drone
     # arrives as "Wi-Fi Device" or "BTLE" carrying an extra
@@ -545,9 +640,12 @@ def parse_kismet_device(
     if isinstance(raw.get("uav.device"), dict) or "uav.serialnumber" in raw:
         device_type = "remote_id"
 
+    # normalize_mac calls .strip() and matches a str regex, so a non-string
+    # mac raises AttributeError (int / list / dict) or TypeError (bytes) —
+    # neither of which `except ValueError` catches. Measured: all four escaped.
     try:
         mac = normalize_mac(raw_mac)
-    except ValueError:
+    except (ValueError, TypeError, AttributeError):
         logger.warning("dropping kismet device, malformed mac: %r", raw_mac)
         return None
 
@@ -556,13 +654,13 @@ def parse_kismet_device(
 
     oui_vendor = raw.get("kismet.device.base.manuf")
 
-    if device_type == "wifi":
+    if radio_family == "wifi":
         ssid = raw.get("kismet.device.base.name")
     else:
         ssid = None
 
     ble_service_uuids: tuple[str, ...] = ()
-    if device_type == "ble":
+    if radio_family == "ble":
         raw_uuids = raw.get("kismet.device.base.service_uuids") or []
         if isinstance(raw_uuids, list):
             normalized: list[str] = []
@@ -626,11 +724,11 @@ def parse_kismet_device(
         seen_by_sources = tuple(collected)
 
     probe_ssids: tuple[str, ...] | None = None
-    if capture_probe_ssids and device_type == "wifi":
+    if capture_probe_ssids and radio_family == "wifi":
         probe_ssids = _extract_probe_ssids(raw)
 
     ble_name: str | None = None
-    if capture_ble_name and device_type == "ble":
+    if capture_ble_name and radio_family == "ble":
         ble_name = _extract_ble_name(raw)
 
     # BLE manufacturer id is BLE-specific. Probe the advertisement
@@ -641,7 +739,7 @@ def parse_kismet_device(
     # transmitters or 'BTLE' for BT-RID, depending on broadcast
     # variant), so it runs on every record that reaches this point.
     ble_manufacturer_id: str | None = None
-    if device_type == "ble":
+    if radio_family == "ble":
         ble_manufacturer_id = _extract_ble_manufacturer_id(raw)
     drone_id_prefix = _extract_drone_id_prefix(raw)
 

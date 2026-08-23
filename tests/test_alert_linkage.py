@@ -354,6 +354,66 @@ def test_resolve_ssid_when_no_mac_or_oui(db):
     assert db.resolve_matched_watchlist_id(mac="aa:bb:cc:dd:ee:ff", ssid="EvilSSID") == ssid_id
 
 
+def test_resolve_ssid_pattern_when_the_exact_row_misses(db):
+    """⭐ The eval path fires on ssid_pattern; the annotation path could not see it.
+
+    `resolve_matched_ssid_pattern_for_eval` is what makes a substring SSID row
+    raise an alert, and `rules.evaluate` reaches for it as a fallback after the
+    exact `ssid` lookup misses. The annotation walk had no such fallback, so an
+    alert raised by a `ssid_pattern` row was written with
+    `matched_watchlist_id = NULL` — and every surface that reads the linkage
+    (the alert's vendor, its device_category, the ntfy push body) lost the row
+    that actually fired it.
+
+    ⚠️ It bites harder than it looks: 24 of the bundled rows are ssid_pattern,
+    and they are the whole drone and forensic-tool fleet.
+    """
+    pat_id = _add_watchlist(db, "flocksafety", "ssid_pattern", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff", ssid="FlockSafety-Cam-14"
+        )
+        == pat_id
+    )
+
+
+def test_resolve_prefers_the_exact_ssid_row_over_a_pattern_row(db):
+    """Ordering must mirror the eval path, or the annotated row disagrees with
+    the row that fired the rule — which is the one thing the linkage is for.
+    The engine treats ssid_pattern as a FALLBACK after exact ssid misses."""
+    exact_id = _add_watchlist(db, "FlockSafety-Cam-14", "ssid", "high")
+    _add_watchlist(db, "flocksafety", "ssid_pattern", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff", ssid="FlockSafety-Cam-14"
+        )
+        == exact_id
+    )
+
+
+def test_resolve_ssid_pattern_returns_none_on_a_real_miss(db):
+    """The PERMIT half. A substring row that does not occur in the SSID must
+    still walk through to None, or "always annotate" would pass the guard."""
+    _add_watchlist(db, "flocksafety", "ssid_pattern", "high")
+    assert (
+        db.resolve_matched_watchlist_id(mac="aa:bb:cc:dd:ee:ff", ssid="Hendricks_Home")
+        is None
+    )
+
+
+def test_resolve_ssid_pattern_is_case_insensitive_like_the_matcher(db):
+    """The eval-path SQL is `? LIKE '%'||pattern||'%' COLLATE NOCASE`. An
+    annotation walk that matched case-sensitively would return NULL for
+    exactly the alerts the engine did raise."""
+    pat_id = _add_watchlist(db, "FLOCKSAFETY", "ssid_pattern", "high")
+    assert (
+        db.resolve_matched_watchlist_id(
+            mac="aa:bb:cc:dd:ee:ff", ssid="flocksafety-cam-14"
+        )
+        == pat_id
+    )
+
+
 def test_resolve_ble_uuid_when_no_other_match(db):
     uuid = "0000fd5a-0000-1000-8000-00805f9b34fb"
     ble_id = _add_watchlist(db, uuid, "ble_uuid", "high")
