@@ -98,6 +98,7 @@ include = ["lynceus*"]
 
 [tool.setuptools.package-data]
 lynceus = [
+    "demo/*.json",
     "migrations/*.sql",
     "webui/templates/*.html",
     "webui/static/*",
