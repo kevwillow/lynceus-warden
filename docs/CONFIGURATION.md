@@ -66,7 +66,7 @@ Observations from the bridge are stamped with a synthetic source of `ble:<adapte
 
 Nested block, **off by default**. A read-only panel showing which other devices keep turning up at the same time as a given device. It adds no capture path, raises no alerts, and changes no schema.
 
-**It makes no statistical claim, deliberately.** There is no labelled corpus, no ground truth, and — decisively — sensor uptime is not recorded anywhere, so absence of data cannot be distinguished from absence of a device. The panel reports counts the operator reads; it does not score, rank by suspicion, or label a relationship. An earlier scored design was withdrawn after it was measured returning maximum confidence for the always-present neighbour it existed to demote.
+**It makes no statistical claim, deliberately.** There is no labelled corpus, no ground truth, and, decisively, sensor uptime is not recorded anywhere, so absence of data cannot be distinguished from absence of a device. The panel reports counts the operator reads; it does not score, rank by suspicion, or label a relationship. An earlier scored design was withdrawn after it was measured returning maximum confidence for the always-present neighbour it existed to demote.
 
 ⚠️ `enabled` is a **security control, not a preference**. Iterating the route across every MAC reconstructs an association graph, and a stolen operator session can request thousands of endpoints even though each page shows 25. A capability that is off cannot be enumerated at all. Leave it off unless you need it.
 
@@ -88,9 +88,9 @@ Run boundaries are **inferred from observations**, never arrival and departure: 
 
 ⛔ **This deletes evidence, and the deletion is irreversible.** It is off by default deliberately: an upgrade must never silently discard an operator's observation history. Nothing is pruned until you set it.
 
-Why you might: at a 60-second poll interval one continuously-present device contributes roughly 1,440 rows a day, so `sightings` grows without bound and eventually fills a Pi. That unbounded growth is also why `co_observation.window_days` exists — the query has to supply a horizon the schema does not.
+Why you might: at a 60-second poll interval one continuously-present device contributes roughly 1,440 rows a day, so `sightings` grows without bound and eventually fills a Pi. That unbounded growth is also why `co_observation.window_days` exists: the query has to supply a horizon the schema does not.
 
-The prune runs from the poll loop at most once per 24 hours, and logs what it deleted at INFO so a run leaves a trail in `journalctl`. The cutoff is exclusive: a row exactly at the boundary is kept. Only `sightings` is touched — alerts are your record of what was decided and outlive the observations behind them, and devices keep their identity after their rows age out.
+The prune runs from the poll loop at most once per 24 hours, and logs what it deleted at INFO so a run leaves a trail in `journalctl`. The cutoff is exclusive: a row exactly at the boundary is kept. Only `sightings` is touched. Alerts are your record of what was decided and outlive the observations behind them, and devices keep their identity after their rows age out.
 
 ⚠️ Once set, `/devices/<mac>` states that older sightings were deleted. Without that line the existing "showing N of M" count would imply the rest are still retrievable.
 

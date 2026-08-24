@@ -27,7 +27,13 @@ shells out to `lynceus-import-argus` by name, the harness left the ambient `PATH
 alone, so the binary was unresolvable from the clean venv and
 `import_bundled_watchlist` took its `FileNotFoundError` branch. The wizard prints
 "Bundled threat-data import failed" and **exits 0**, so nothing noticed. With
-`PATH` sandboxed the same run takes 8m40s and lands 23,441 watchlist rows.
+`PATH` sandboxed the same run takes 8m40s and lands 23,441 watchlist rows
+(measured 2026-08-22). Re-measured 2026-08-24 at `750d2b3`, load ~11:
+**3m29s, 23,430 rows, 16 tables, 16.1 MB**. The row count moved because #220
+re-cut the bundled signatures AND widened the importer's metacharacter check to
+drop identifiers that are still regex-shaped, which is the count becoming
+honest rather than data going missing. ⇒ Both figures are dated measurements,
+not contracts; the assertion below is `> 0` deliberately.
 
 ⇒ **Every assertion below is on evidence the run OBSERVED, never on its exit code
 and never on a line it printed.** Exit 0 cannot tell a working install from a run
