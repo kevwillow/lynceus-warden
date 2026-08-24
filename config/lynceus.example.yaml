@@ -16,6 +16,12 @@ kismet_api_key: null
 # for offline development and tests. Leave commented out in production.
 # kismet_fixture_path: tests/fixtures/kismet_devices.json
 
+# Optional: only relevant when kismet_fixture_path is set. Shifts every
+# timestamp in that fixture by one constant offset so it reads as a fresh
+# capture instead of a stale one. Used by development and demo setups, not
+# by real deployments. Leave commented out in production.
+# kismet_fixture_shift_to_now: true
+
 # --- Storage ---
 
 # Path to the SQLite database file. Typically overridden to a stable
