@@ -91,6 +91,42 @@ the PR titles: the first attempt at this line credited #217, which touches the
 JS-extension gate and adds no browser test at all.
 ⇒ [[date-every-number-you-publish]] — a dated measurement, not a contract.
 
+## v1.0.0 release baseline
+
+⭐ **Measured 2026-08-24 on `a7a5598`, the tree `v1.0.0` tags.** Taken on the
+release tree itself rather than carried forward from an earlier SHA, and the
+import was asserted to come from that worktree before the run, because a shared
+`.venv` pins the PRIMARY checkout absolutely.
+
+| Gate | Result |
+| --- | --- |
+| full suite, local | **4847 passed, 4 skipped, 56 deselected**, exit 0, 32m47s |
+| `ruff check .` | All checks passed! |
+| CI on the PR head | **11/11 success**, 0 non-success, list non-empty |
+| browser crawl (host-only) | **8 passed**, 25.4s, sentinel listed all 8 bodies |
+| fresh install (host-only) | **1 passed**, 6m15s, sentinel listed the body |
+
+The install gate landed **23,430 watchlist rows, 16 tables, 16.1 MB** from a real
+wizard run in a sandboxed venv. ⭐ The same run measured **3m29s / 23,430 rows**
+on a quiet box and **6m15s / 23,430 rows** with the full suite running beside it:
+the duration moved by a factor of ~1.8 and the row count did not move at all.
+⇒ When this gate is fast, check the ROW COUNT, not the clock. It spent a day
+passing in 21 seconds by skipping the import entirely.
+
+⚠️ 23,430 is **lower** than the 23,441 this file's install section used to cite,
+while `default_watchlist.csv` GAINED 50 rows. Both are #220: it re-cut the
+bundled signatures and widened the importer's metacharacter check to drop
+identifiers that are still regex-shaped. That is the count becoming honest, not
+data going missing.
+
+The 4 skips are environment, checked by name: `test_packaging.py:19` (python not
+on PATH), `test_setup_wizard.py:2037` (a real `/sys/class/bluetooth` exists), and
+`test_forms_submit_their_own_defaults.py:204` twice (`/watchful` and `/probes`
+render no constrained select). The 56 deselected is exactly 47 `diagnostic` plus
+9 host-only (8 browser + 1 install).
+
+---
+
 ⭐ **Current CI number, measured 2026-08-22 at `c363a01`** (PR head, so 11 checks
 rather than the 10 a push SHA gets; CodeQL reports on pull requests only):
 
