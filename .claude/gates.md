@@ -93,10 +93,17 @@ JS-extension gate and adds no browser test at all.
 
 ## v1.0.0 release baseline
 
-⭐ **Measured 2026-08-24 on `a7a5598`, the tree `v1.0.0` tags.** Taken on the
-release tree itself rather than carried forward from an earlier SHA, and the
-import was asserted to come from that worktree before the run, because a shared
-`.venv` pins the PRIMARY checkout absolutely.
+⭐ **Measured 2026-08-24 on `a7a5598`.** That is the release branch commit, not
+the tagged commit: `v1.0.0` points at the squash of this branch onto `main`,
+whose source tree is identical to `a7a5598` apart from THIS file. So the numbers
+below are a statement about the code the tag ships, taken on the release tree
+itself rather than carried forward from an earlier SHA.
+
+⚠️ Said precisely because the alternative is the failure this file keeps
+recording: a measurement quoted against a SHA it was not taken at. The import
+was also asserted to come from the release worktree before the run, because the
+shared `.venv` pins the PRIMARY checkout absolutely and a run from a worktree
+silently tests the wrong tree without it.
 
 | Gate | Result |
 | --- | --- |
