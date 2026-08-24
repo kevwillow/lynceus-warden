@@ -1752,7 +1752,8 @@ class Database:
 
         Tiebreaker order:
           mac > oui > ble_manufacturer_id > mac_range >
-          drone_id_prefix > ble_local_name > ssid > ble_uuid
+          drone_id_prefix > ble_local_name > ssid > ssid_pattern >
+          ble_uuid
 
         Returns the watchlist row id, or None when no row matches.
 
@@ -1823,7 +1824,12 @@ class Database:
             if match is not None:
                 return match.watchlist_id
         if ble_local_name:
-            match = self._lookup_simple_watchlist_match(
+            # Substring, matching the eval path. ⛔ These two must move
+            # together: an annotation walk that equality-matched while the
+            # engine substring-matched would write matched_watchlist_id = NULL
+            # for exactly the alerts the engine did raise -- which is the
+            # defect ssid_pattern had, fixed separately in #216.
+            match = self._lookup_substring_watchlist_match(
                 "ble_local_name", ble_local_name
             )
             if match is not None:
@@ -1832,6 +1838,26 @@ class Database:
             match = self._lookup_simple_watchlist_match("ssid", ssid)
             if match is not None:
                 return match.watchlist_id
+            # ssid_pattern is the eval path's FALLBACK after the exact ssid
+            # lookup misses (rules.evaluate's watchlist_ssid branch), so it
+            # falls in the same place here.
+            #
+            # ⛔ Calls the eval-path resolver itself rather than restating its
+            # SQL. The two sides agreeing is the entire point of the linkage —
+            # an annotation walk that matched case-sensitively, or that escaped
+            # LIKE wildcards differently, would return NULL for exactly the
+            # alerts the engine did raise — and they can only be guaranteed to
+            # agree by calling one function.
+            #
+            # Without this branch every alert raised by a ssid_pattern row was
+            # written with matched_watchlist_id = NULL, so the alert, the
+            # /alerts detail and the ntfy push all lost the vendor and
+            # device_category of the row that fired them. 24 of the bundled
+            # rows are ssid_pattern, and they are the drone and forensic-tool
+            # fleet.
+            pattern_match = self.resolve_matched_ssid_pattern_for_eval(ssid)
+            if pattern_match is not None:
+                return pattern_match.watchlist_id
         for uuid in ble_service_uuids:
             match = self._lookup_simple_watchlist_match("ble_uuid", uuid)
             if match is not None:
@@ -2020,7 +2046,59 @@ class Database:
         fix is at write time (escape on insert) rather than read
         time.
         """
-        if not ssid:
+        return self._lookup_substring_watchlist_match("ssid_pattern", ssid)
+
+    #: pattern_types whose stored value is a case-insensitive SUBSTRING needle
+    #: rather than a value to equality-match. ⛔ Every one of these is matched
+    #: by `_lookup_substring_watchlist_match` and by nothing else, and the
+    #: import-time guard in cli/import_argus.py refuses regex metacharacters
+    #: for exactly this set -- a needle of `dji[-_].+` in a column matched
+    #: literally is a row that can never fire while being graded LIVE.
+    SUBSTRING_PATTERN_TYPES = frozenset({"ssid_pattern", "ble_local_name"})
+
+    def _lookup_substring_watchlist_match(
+        self, pattern_type: str, haystack: str | None
+    ) -> ResolvedWatchlistMatch | None:
+        """Single shared SELECT for the substring-matched pattern_types.
+
+        The observation's value is the haystack; the watchlist row's
+        ``pattern`` column is the substring needle. ``COLLATE NOCASE``
+        provides the ASCII-insensitive matching SQLite documents for
+        LIKE (and makes the intent self-documenting in case
+        ``PRAGMA case_sensitive_like`` is ever flipped elsewhere).
+
+        ⛔ ONE implementation for both types, deliberately. `ssid_pattern`
+        carried this SQL inline and `ble_local_name` equality-matched
+        through ``_lookup_simple_watchlist_match``, which meant the two
+        columns disagreed about what a stored needle MEANS -- and the
+        bundled data was cut for the substring reading in both.
+
+        Defensive ``pattern != ''`` filter: an empty needle would match
+        every observation.
+
+        ⛔ LIKE wildcards in the STORED needle are escaped. The previous
+        version said they were not, and that "SSIDs containing those
+        chars as literals are vanishingly rare -- if this surfaces as a
+        real problem, the fix is at write time". It surfaced, measured:
+        `_` is LIKE's any-single-character wildcard, so a needle of
+        `phantom_` -- written deliberately to require a separator, so
+        that the dictionary word `phantom` could not fire on its own --
+        matched `phantom ` and alerted on **Phantom Gaming 5G**. Same for
+        `inspire_` on *InspireWiFi* and `parrot_` on *Parrot Cafe*.
+
+        That inverts the intent exactly: the separator was the thing
+        making a generic stem safe, and `_` was the separator that made
+        it generic again. Every anchored needle in the bundled data uses
+        both `-` and `_`, so this is not a corner case.
+
+        Escaping in the SELECT rather than on insert, deliberately: it
+        fixes rows already in an operator's database, including
+        hand-curated ones, with no migration and no chance of a
+        half-escaped table. The three ``replace`` calls run per candidate
+        row of one pattern_type -- 55 bundled rows today -- against a
+        query that was already scanning them.
+        """
+        if not haystack:
             return None
         row = self._conn.execute(
             "SELECT w.id AS id, w.severity AS severity, "
@@ -2029,11 +2107,13 @@ class Database:
             "m.argus_record_id AS argus_record_id "
             "FROM watchlist w "
             "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
-            "WHERE w.pattern_type = 'ssid_pattern' "
+            "WHERE w.pattern_type = ? "
             "AND w.pattern != '' "
-            "AND ? LIKE '%' || w.pattern || '%' COLLATE NOCASE "
+            "AND ? LIKE '%' || replace(replace(replace("
+            "w.pattern, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' "
+            "ESCAPE '\\' COLLATE NOCASE "
             "LIMIT 1",
-            (ssid,),
+            (pattern_type, haystack),
         ).fetchone()
         if row is None:
             return None
@@ -2093,22 +2173,37 @@ class Database:
     def resolve_matched_ble_local_name_for_eval(
         self, ble_local_name: str | None
     ) -> ResolvedWatchlistMatch | None:
-        """Watchlist row for an exact BLE local-name match, or None.
+        """Watchlist row whose needle is a substring of ``ble_local_name``.
 
         ``ble_local_name`` is the BLE Core Spec §4.5.2 Complete Local
-        Name in the canonical persistent form (case-sensitive, outer
-        whitespace stripped — see patterns._normalize_ble_local_name).
-        Callers passing an observation field can use it directly: the
-        Kismet extraction in kismet._extract_ble_name returns a
-        non-empty trimmed string, which is already in canonical form
-        for equality lookup. Used by rules.evaluate's
-        watchlist_ble_local_name branch when rule.patterns is empty
-        (delegation mode). Falsy ``ble_local_name`` short-circuits to
-        None.
+        Name in the canonical persistent form (outer whitespace
+        stripped — see patterns._normalize_ble_local_name). Used by
+        rules.evaluate's watchlist_ble_local_name branch when
+        rule.patterns is empty (delegation mode). Falsy
+        ``ble_local_name`` short-circuits to None.
+
+        ⛔ This was strict SQL EQUALITY (``w.pattern = ?``) and is now a
+        case-insensitive substring test, matching ssid_pattern. Equality
+        made the whole column dead in practice: a real Flock device
+        advertises ``Flock-1234`` or ``Penguin-A7``, so a stored needle
+        of ``Flock`` matched nothing, and the 21 bundled rows -- the 13
+        regex-shaped ones AND the 8 already-literal ones -- could not
+        fire between them. The register recorded 13 dead rows here; the
+        measured number was 21, because equality is the wrong reading of
+        a needle for a name that carries a serial.
+
+        ⚠️ This WIDENS matching for operator-curated rows too. Someone who
+        added ``Flock`` expecting an exact match now also matches
+        ``MyFlockOfBirds``. That is the direction that produces false
+        alarms rather than misses, which is why the bundled data was
+        re-cut in the same change: every generic stem is either anchored
+        to the separator the vendor actually uses or dropped. See
+        tests/test_watchlist_literal_stems.py, which refuses to let a
+        bare dictionary word ship as a substring needle.
         """
         if not ble_local_name:
             return None
-        return self._lookup_simple_watchlist_match("ble_local_name", ble_local_name)
+        return self._lookup_substring_watchlist_match("ble_local_name", ble_local_name)
 
     def resolve_matched_drone_id_prefix_for_eval(
         self, drone_id: str | None
@@ -5413,17 +5508,38 @@ class Database:
 
         Achieving this against a yaml file + sqlite row is a
         best-effort coupling, not a true distributed transaction.
-        Ordering:
+        What that buys is a CHOICE of which way it fails, and the two
+        directions are not equally bad:
+
+          yaml first, DB write raises
+              the entry stays active, the device is allowlisted
+              anyway, and it is SILENCED permanently while the
+              operator's UI says they are watching it.
+          DB first, yaml write raises
+              compensate; worst case the entry is archived and
+              nothing was allowlisted, so the device KEEPS ALERTING.
+
+        So the DB row is claimed first. Ordering:
 
           1. Precondition check: the row exists and is active. If
-             archived or missing, raise before any side effect so
-             the caller gets a clean failure with no yaml write.
-          2. Allowlist write. If this raises, the DB row is
-             untouched (we have not yet started the transaction).
-          3. DB UPDATE under ``WHERE archived_at IS NULL``. If a
-             concurrent archive snuck in between (1) and (3), the
-             rowcount will be 0; we best-effort remove the yaml
-             entry we just wrote and raise.
+             archived or missing, raise before any side effect.
+          2. DB UPDATE under ``WHERE archived_at IS NULL``. A
+             concurrent archive between (1) and (2) gives rowcount 0;
+             nothing has been written outside the DB yet, so there is
+             nothing to roll back and we raise.
+          3. Allowlist write. If this raises, un-archive the row and
+             re-raise. If the un-archive ALSO fails, that is logged at
+             ERROR naming the exact state the operator is in, because
+             it is the one outcome they cannot infer from the UI.
+
+        ⚠️ The previous ordering wrote the yaml first. It reasoned
+        about (3) failing and about the concurrent-archive case, but
+        not about the DB write itself raising -- a lock timeout, a
+        busy database, a full disk -- which propagates out of the
+        ``with`` and leaves the yaml entry behind. A suppression
+        nobody asked for is the one failure this product cannot let
+        through quietly: its symptom is silence, and silence is also
+        what a quiet RF environment looks like.
 
         The allowlist module is imported inside the function rather
         than at the top of db.py so the foundation module retains no
@@ -5445,7 +5561,7 @@ class Database:
         if not isinstance(pattern_type, str) or not pattern_type:
             raise ValueError("pattern_type must be a non-empty string")
 
-        from lynceus.allowlist import AllowlistEntry, add_ui_entry, remove_ui_entry
+        from lynceus.allowlist import AllowlistEntry, add_ui_entry
 
         row = self._conn.execute(
             "SELECT archived_at FROM watchful_recurrence WHERE id = ?",
@@ -5463,11 +5579,22 @@ class Database:
             added_at=now_ts,
             expires_at=expires_at,
         )
-        add_ui_entry(allowlist_path, entry, legacy_allowlist_path)
-        # Pattern stored is post-normalization; keep it for the rollback path.
-        stored_pattern = entry.pattern
-        stored_pattern_type = entry.pattern_type
-
+        # ⛔ ARCHIVE FIRST, then write the file. The two orders fail in
+        # opposite directions and only one of them is survivable:
+        #
+        #   yaml first, DB write raises -> the entry is still active, the
+        #       device is allowlisted anyway, and it is now SILENCED
+        #       permanently while the operator's UI says they are watching it.
+        #   DB first, yaml write raises -> compensate; worst case the entry is
+        #       archived and nothing was allowlisted, so the device KEEPS
+        #       ALERTING and the operator can watch it again.
+        #
+        # The old ordering reasoned about the yaml write failing and about the
+        # row being concurrently archived, but not about the DB write itself
+        # raising -- a lock timeout, a busy database, a full disk -- which
+        # propagates out of the `with` and leaves the yaml entry behind. A
+        # suppression nobody asked for is the one failure this product cannot
+        # let through quietly, because its symptom is silence.
         with self._lock, self._conn:
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET archived_at = ? "
@@ -5475,20 +5602,38 @@ class Database:
                 (now_ts, entry_id),
             )
             if cur.rowcount == 0:
-                # Concurrent archive between our precondition check
-                # and the UPDATE. Best-effort rollback of the yaml write.
-                try:
-                    remove_ui_entry(
-                        allowlist_path,
-                        stored_pattern,
-                        stored_pattern_type,
-                        legacy_allowlist_path,
-                    )
-                except Exception:
-                    pass
+                # Concurrent archive between our precondition check and the
+                # UPDATE. Nothing has been written outside the DB yet, so
+                # there is nothing to roll back.
                 raise RuntimeError(
                     f"watchful entry {entry_id} was concurrently archived during promote"
                 )
+        try:
+            add_ui_entry(allowlist_path, entry, legacy_allowlist_path)
+        except Exception:
+            # Compensate: the archive claimed a promote that did not happen.
+            try:
+                with self._lock, self._conn:
+                    self._conn.execute(
+                        "UPDATE watchful_recurrence SET archived_at = NULL "
+                        "WHERE id = ? AND archived_at = ?",
+                        (entry_id, now_ts),
+                    )
+            except Exception:
+                # ⚠️ Named precisely, because the operator has to be able to
+                # act on it. The device is NOT allowlisted -- it keeps
+                # alerting, which is the safe direction -- but the entry has
+                # vanished from the watchful list and only this line says why.
+                logger.error(
+                    "watchful entry %s was archived, the allowlist write then "
+                    "failed, AND un-archiving it failed too. The device is NOT "
+                    "allowlisted (it will keep alerting) but the entry is no "
+                    "longer listed; re-create it from the alert to resume "
+                    "tracking.",
+                    entry_id,
+                    exc_info=True,
+                )
+            raise
         return True
 
     def reset_watchful_recurrence(
@@ -5749,22 +5894,42 @@ class Database:
             if snooze_duration_seconds is not None
             else None
         )
-        with self._lock, self._conn:
-            cur = self._conn.execute(
-                "INSERT INTO watchful_recurrence("
-                "mac, created_at, first_seen_at, last_seen_at, sighting_count, "
-                "snooze_expires_at, source_alert_id, matched_watchlist_id) "
-                "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
-                (
-                    mac,
-                    now_ts,
-                    now_ts,
-                    now_ts,
-                    snooze_expires_at,
-                    alert_id,
-                    alert_row["matched_watchlist_id"],
-                ),
-            )
+        # ⚠️ The check above is a courtesy, not the enforcement. It reads
+        # OUTSIDE this transaction, so two callers can both see None. Moving it
+        # inside `self._lock` would not help either: that is a threading.Lock,
+        # and the poller, the BLE bridge and the web UI are separate PROCESSES
+        # with separate connections. Migration 028's partial unique index is
+        # what actually holds the invariant, across all three.
+        #
+        # Its IntegrityError is translated back into the same ValueError the
+        # courtesy check raises, so the operator double-clicking "watch" gets
+        # the readable message on both paths rather than a raw sqlite
+        # traceback on the one that loses the race.
+        try:
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "INSERT INTO watchful_recurrence("
+                    "mac, created_at, first_seen_at, last_seen_at, sighting_count, "
+                    "snooze_expires_at, source_alert_id, matched_watchlist_id) "
+                    "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+                    (
+                        mac,
+                        now_ts,
+                        now_ts,
+                        now_ts,
+                        snooze_expires_at,
+                        alert_id,
+                        alert_row["matched_watchlist_id"],
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            if "idx_watchful_one_active_per_mac" not in str(exc):
+                raise
+            winner = self.get_active_watchful_recurrence_by_mac(mac)
+            raise ValueError(
+                f"MAC {mac} already has active watchful entry "
+                f"{winner.id if winner is not None else '?'}"
+            ) from exc
         return cur.lastrowid
 
     def get_watchful_recurrence(

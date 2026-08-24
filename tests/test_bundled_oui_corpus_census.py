@@ -286,9 +286,9 @@ def test_a_bundled_prefix_that_CAN_fire_actually_does(tmp_path):
 # so a re-export carrying a new type would reach every install having produced
 # no signal anybody saw. This fails in CI instead.
 
-EXPECTED_TOTAL_ROWS = 41_508
+EXPECTED_TOTAL_ROWS = 41_518
 EXPECTED_NON_RF_ROWS = 17_952
-EXPECTED_MAPPED_ROWS = 23_556
+EXPECTED_MAPPED_ROWS = 23_566
 
 
 def _identifier_types() -> Counter[str]:

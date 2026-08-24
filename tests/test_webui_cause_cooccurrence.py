@@ -70,8 +70,8 @@ SNOOZE_ALSO_EXPLANATION = "You have also snoozed this entry's rule type."
 def _rules_file_is_fine(cfg, *, tail: str = ".") -> str:
     """The "your rules file is fine" sentence, with the path the app loaded.
 
-    ⚠️ The `tail` needles moved from " — lift it" to ". Lift it" on
-    2026-08-22 with the em dash sweep across `webui/**`. The SENTENCE is
+    ⚠️ The `tail` needles moved to ". Lift it" on 2026-08-22 with the
+    house-style prose pass across `webui/**`. The SENTENCE is
     unchanged; only the punctuation joining its two halves is, and this needle
     embeds that punctuation. Both assertions still compare the whole sentence
     against rendered prose, one positively and one negatively.
