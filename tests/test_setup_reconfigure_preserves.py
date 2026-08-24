@@ -34,6 +34,7 @@ NON_DEFAULT: dict = {
     "kismet_url": "http://10.0.0.9:2501",
     "kismet_api_key": "SECRETKEY",
     "kismet_fixture_path": "/tmp/lynceus-fixture.json",
+    "kismet_fixture_shift_to_now": True,
     "db_path": "/tmp/lynceus-custom.db",
     "location_id": "safehouse",
     "location_label": "Safe House",
