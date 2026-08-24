@@ -1823,7 +1823,12 @@ class Database:
             if match is not None:
                 return match.watchlist_id
         if ble_local_name:
-            match = self._lookup_simple_watchlist_match(
+            # Substring, matching the eval path. ⛔ These two must move
+            # together: an annotation walk that equality-matched while the
+            # engine substring-matched would write matched_watchlist_id = NULL
+            # for exactly the alerts the engine did raise -- which is the
+            # defect ssid_pattern had, fixed separately in #216.
+            match = self._lookup_substring_watchlist_match(
                 "ble_local_name", ble_local_name
             )
             if match is not None:
@@ -2020,7 +2025,59 @@ class Database:
         fix is at write time (escape on insert) rather than read
         time.
         """
-        if not ssid:
+        return self._lookup_substring_watchlist_match("ssid_pattern", ssid)
+
+    #: pattern_types whose stored value is a case-insensitive SUBSTRING needle
+    #: rather than a value to equality-match. ⛔ Every one of these is matched
+    #: by `_lookup_substring_watchlist_match` and by nothing else, and the
+    #: import-time guard in cli/import_argus.py refuses regex metacharacters
+    #: for exactly this set -- a needle of `dji[-_].+` in a column matched
+    #: literally is a row that can never fire while being graded LIVE.
+    SUBSTRING_PATTERN_TYPES = frozenset({"ssid_pattern", "ble_local_name"})
+
+    def _lookup_substring_watchlist_match(
+        self, pattern_type: str, haystack: str | None
+    ) -> ResolvedWatchlistMatch | None:
+        """Single shared SELECT for the substring-matched pattern_types.
+
+        The observation's value is the haystack; the watchlist row's
+        ``pattern`` column is the substring needle. ``COLLATE NOCASE``
+        provides the ASCII-insensitive matching SQLite documents for
+        LIKE (and makes the intent self-documenting in case
+        ``PRAGMA case_sensitive_like`` is ever flipped elsewhere).
+
+        ⛔ ONE implementation for both types, deliberately. `ssid_pattern`
+        carried this SQL inline and `ble_local_name` equality-matched
+        through ``_lookup_simple_watchlist_match``, which meant the two
+        columns disagreed about what a stored needle MEANS -- and the
+        bundled data was cut for the substring reading in both.
+
+        Defensive ``pattern != ''`` filter: an empty needle would match
+        every observation.
+
+        ⛔ LIKE wildcards in the STORED needle are escaped. The previous
+        version said they were not, and that "SSIDs containing those
+        chars as literals are vanishingly rare -- if this surfaces as a
+        real problem, the fix is at write time". It surfaced, measured:
+        `_` is LIKE's any-single-character wildcard, so a needle of
+        `phantom_` -- written deliberately to require a separator, so
+        that the dictionary word `phantom` could not fire on its own --
+        matched `phantom ` and alerted on **Phantom Gaming 5G**. Same for
+        `inspire_` on *InspireWiFi* and `parrot_` on *Parrot Cafe*.
+
+        That inverts the intent exactly: the separator was the thing
+        making a generic stem safe, and `_` was the separator that made
+        it generic again. Every anchored needle in the bundled data uses
+        both `-` and `_`, so this is not a corner case.
+
+        Escaping in the SELECT rather than on insert, deliberately: it
+        fixes rows already in an operator's database, including
+        hand-curated ones, with no migration and no chance of a
+        half-escaped table. The three ``replace`` calls run per candidate
+        row of one pattern_type -- 55 bundled rows today -- against a
+        query that was already scanning them.
+        """
+        if not haystack:
             return None
         row = self._conn.execute(
             "SELECT w.id AS id, w.severity AS severity, "
@@ -2029,11 +2086,13 @@ class Database:
             "m.argus_record_id AS argus_record_id "
             "FROM watchlist w "
             "LEFT JOIN watchlist_metadata m ON m.watchlist_id = w.id "
-            "WHERE w.pattern_type = 'ssid_pattern' "
+            "WHERE w.pattern_type = ? "
             "AND w.pattern != '' "
-            "AND ? LIKE '%' || w.pattern || '%' COLLATE NOCASE "
+            "AND ? LIKE '%' || replace(replace(replace("
+            "w.pattern, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' "
+            "ESCAPE '\\' COLLATE NOCASE "
             "LIMIT 1",
-            (ssid,),
+            (pattern_type, haystack),
         ).fetchone()
         if row is None:
             return None
@@ -2093,22 +2152,37 @@ class Database:
     def resolve_matched_ble_local_name_for_eval(
         self, ble_local_name: str | None
     ) -> ResolvedWatchlistMatch | None:
-        """Watchlist row for an exact BLE local-name match, or None.
+        """Watchlist row whose needle is a substring of ``ble_local_name``.
 
         ``ble_local_name`` is the BLE Core Spec §4.5.2 Complete Local
-        Name in the canonical persistent form (case-sensitive, outer
-        whitespace stripped — see patterns._normalize_ble_local_name).
-        Callers passing an observation field can use it directly: the
-        Kismet extraction in kismet._extract_ble_name returns a
-        non-empty trimmed string, which is already in canonical form
-        for equality lookup. Used by rules.evaluate's
-        watchlist_ble_local_name branch when rule.patterns is empty
-        (delegation mode). Falsy ``ble_local_name`` short-circuits to
-        None.
+        Name in the canonical persistent form (outer whitespace
+        stripped — see patterns._normalize_ble_local_name). Used by
+        rules.evaluate's watchlist_ble_local_name branch when
+        rule.patterns is empty (delegation mode). Falsy
+        ``ble_local_name`` short-circuits to None.
+
+        ⛔ This was strict SQL EQUALITY (``w.pattern = ?``) and is now a
+        case-insensitive substring test, matching ssid_pattern. Equality
+        made the whole column dead in practice: a real Flock device
+        advertises ``Flock-1234`` or ``Penguin-A7``, so a stored needle
+        of ``Flock`` matched nothing, and the 21 bundled rows -- the 13
+        regex-shaped ones AND the 8 already-literal ones -- could not
+        fire between them. The register recorded 13 dead rows here; the
+        measured number was 21, because equality is the wrong reading of
+        a needle for a name that carries a serial.
+
+        ⚠️ This WIDENS matching for operator-curated rows too. Someone who
+        added ``Flock`` expecting an exact match now also matches
+        ``MyFlockOfBirds``. That is the direction that produces false
+        alarms rather than misses, which is why the bundled data was
+        re-cut in the same change: every generic stem is either anchored
+        to the separator the vendor actually uses or dropped. See
+        tests/test_watchlist_literal_stems.py, which refuses to let a
+        bare dictionary word ship as a substring needle.
         """
         if not ble_local_name:
             return None
-        return self._lookup_simple_watchlist_match("ble_local_name", ble_local_name)
+        return self._lookup_substring_watchlist_match("ble_local_name", ble_local_name)
 
     def resolve_matched_drone_id_prefix_for_eval(
         self, drone_id: str | None

@@ -640,7 +640,20 @@ actually sees, across the whole shipped corpus:
 
 ⭐ **34 of the 23,556 imported rows can fire an alert today.** Everything else is
 inert, because the only live delegation rules are `argus_mac`, `argus_ssid` and
-`apple_find_my`. That is the context this gate sits in: the argument for keeping
+`apple_find_my`.
+
+> ⚠️ **Both numbers above are pre-2026-08-22 and the table above them is too.**
+> The corpus is now **23,566** admitted rows (the S1 re-cut added 10), and the
+> `ssid_pattern` row of that table is wrong in a way that mattered: it reads
+> "24 rows, 18 categorised, LIVE", but **19 of those 24 were Python regexes in
+> a column matched as a literal substring, so they could not fire at all** --
+> the LIVE grading was the defect, not the summary. `ble_local_name` is worse:
+> it was matched by strict SQL equality, so all 21 rows were dead including
+> the 8 that were already literal. Both columns are re-cut and
+> `ble_local_name` is now a substring match.
+> ⇒ **The "34 that can fire" figure needs re-measuring against the new data
+> and the current rule set before it is quoted again.** It is left here rather
+> than guessed at. That is the context this gate sits in: the argument for keeping
 a rule off has to be better than "its corpus is mostly noise", because by that
 measure `oui`, `drone_id_prefix`, `ble_uuid` and `ble_local_name` are all being
 held back by a gate written about company ids.
