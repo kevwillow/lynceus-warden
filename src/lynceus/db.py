@@ -1752,7 +1752,8 @@ class Database:
 
         Tiebreaker order:
           mac > oui > ble_manufacturer_id > mac_range >
-          drone_id_prefix > ble_local_name > ssid > ble_uuid
+          drone_id_prefix > ble_local_name > ssid > ssid_pattern >
+          ble_uuid
 
         Returns the watchlist row id, or None when no row matches.
 
@@ -1837,6 +1838,26 @@ class Database:
             match = self._lookup_simple_watchlist_match("ssid", ssid)
             if match is not None:
                 return match.watchlist_id
+            # ssid_pattern is the eval path's FALLBACK after the exact ssid
+            # lookup misses (rules.evaluate's watchlist_ssid branch), so it
+            # falls in the same place here.
+            #
+            # ⛔ Calls the eval-path resolver itself rather than restating its
+            # SQL. The two sides agreeing is the entire point of the linkage —
+            # an annotation walk that matched case-sensitively, or that escaped
+            # LIKE wildcards differently, would return NULL for exactly the
+            # alerts the engine did raise — and they can only be guaranteed to
+            # agree by calling one function.
+            #
+            # Without this branch every alert raised by a ssid_pattern row was
+            # written with matched_watchlist_id = NULL, so the alert, the
+            # /alerts detail and the ntfy push all lost the vendor and
+            # device_category of the row that fired them. 24 of the bundled
+            # rows are ssid_pattern, and they are the drone and forensic-tool
+            # fleet.
+            pattern_match = self.resolve_matched_ssid_pattern_for_eval(ssid)
+            if pattern_match is not None:
+                return pattern_match.watchlist_id
         for uuid in ble_service_uuids:
             match = self._lookup_simple_watchlist_match("ble_uuid", uuid)
             if match is not None:
@@ -5486,17 +5507,38 @@ class Database:
 
         Achieving this against a yaml file + sqlite row is a
         best-effort coupling, not a true distributed transaction.
-        Ordering:
+        What that buys is a CHOICE of which way it fails, and the two
+        directions are not equally bad:
+
+          yaml first, DB write raises
+              the entry stays active, the device is allowlisted
+              anyway, and it is SILENCED permanently while the
+              operator's UI says they are watching it.
+          DB first, yaml write raises
+              compensate; worst case the entry is archived and
+              nothing was allowlisted, so the device KEEPS ALERTING.
+
+        So the DB row is claimed first. Ordering:
 
           1. Precondition check: the row exists and is active. If
-             archived or missing, raise before any side effect so
-             the caller gets a clean failure with no yaml write.
-          2. Allowlist write. If this raises, the DB row is
-             untouched (we have not yet started the transaction).
-          3. DB UPDATE under ``WHERE archived_at IS NULL``. If a
-             concurrent archive snuck in between (1) and (3), the
-             rowcount will be 0; we best-effort remove the yaml
-             entry we just wrote and raise.
+             archived or missing, raise before any side effect.
+          2. DB UPDATE under ``WHERE archived_at IS NULL``. A
+             concurrent archive between (1) and (2) gives rowcount 0;
+             nothing has been written outside the DB yet, so there is
+             nothing to roll back and we raise.
+          3. Allowlist write. If this raises, un-archive the row and
+             re-raise. If the un-archive ALSO fails, that is logged at
+             ERROR naming the exact state the operator is in, because
+             it is the one outcome they cannot infer from the UI.
+
+        ⚠️ The previous ordering wrote the yaml first. It reasoned
+        about (3) failing and about the concurrent-archive case, but
+        not about the DB write itself raising -- a lock timeout, a
+        busy database, a full disk -- which propagates out of the
+        ``with`` and leaves the yaml entry behind. A suppression
+        nobody asked for is the one failure this product cannot let
+        through quietly: its symptom is silence, and silence is also
+        what a quiet RF environment looks like.
 
         The allowlist module is imported inside the function rather
         than at the top of db.py so the foundation module retains no
@@ -5518,7 +5560,7 @@ class Database:
         if not isinstance(pattern_type, str) or not pattern_type:
             raise ValueError("pattern_type must be a non-empty string")
 
-        from lynceus.allowlist import AllowlistEntry, add_ui_entry, remove_ui_entry
+        from lynceus.allowlist import AllowlistEntry, add_ui_entry
 
         row = self._conn.execute(
             "SELECT archived_at FROM watchful_recurrence WHERE id = ?",
@@ -5536,11 +5578,22 @@ class Database:
             added_at=now_ts,
             expires_at=expires_at,
         )
-        add_ui_entry(allowlist_path, entry)
-        # Pattern stored is post-normalization; keep it for the rollback path.
-        stored_pattern = entry.pattern
-        stored_pattern_type = entry.pattern_type
-
+        # ⛔ ARCHIVE FIRST, then write the file. The two orders fail in
+        # opposite directions and only one of them is survivable:
+        #
+        #   yaml first, DB write raises -> the entry is still active, the
+        #       device is allowlisted anyway, and it is now SILENCED
+        #       permanently while the operator's UI says they are watching it.
+        #   DB first, yaml write raises -> compensate; worst case the entry is
+        #       archived and nothing was allowlisted, so the device KEEPS
+        #       ALERTING and the operator can watch it again.
+        #
+        # The old ordering reasoned about the yaml write failing and about the
+        # row being concurrently archived, but not about the DB write itself
+        # raising -- a lock timeout, a busy database, a full disk -- which
+        # propagates out of the `with` and leaves the yaml entry behind. A
+        # suppression nobody asked for is the one failure this product cannot
+        # let through quietly, because its symptom is silence.
         with self._lock, self._conn:
             cur = self._conn.execute(
                 "UPDATE watchful_recurrence SET archived_at = ? "
@@ -5548,15 +5601,38 @@ class Database:
                 (now_ts, entry_id),
             )
             if cur.rowcount == 0:
-                # Concurrent archive between our precondition check
-                # and the UPDATE. Best-effort rollback of the yaml write.
-                try:
-                    remove_ui_entry(allowlist_path, stored_pattern, stored_pattern_type)
-                except Exception:
-                    pass
+                # Concurrent archive between our precondition check and the
+                # UPDATE. Nothing has been written outside the DB yet, so
+                # there is nothing to roll back.
                 raise RuntimeError(
                     f"watchful entry {entry_id} was concurrently archived during promote"
                 )
+        try:
+            add_ui_entry(allowlist_path, entry)
+        except Exception:
+            # Compensate: the archive claimed a promote that did not happen.
+            try:
+                with self._lock, self._conn:
+                    self._conn.execute(
+                        "UPDATE watchful_recurrence SET archived_at = NULL "
+                        "WHERE id = ? AND archived_at = ?",
+                        (entry_id, now_ts),
+                    )
+            except Exception:
+                # ⚠️ Named precisely, because the operator has to be able to
+                # act on it. The device is NOT allowlisted -- it keeps
+                # alerting, which is the safe direction -- but the entry has
+                # vanished from the watchful list and only this line says why.
+                logger.error(
+                    "watchful entry %s was archived, the allowlist write then "
+                    "failed, AND un-archiving it failed too. The device is NOT "
+                    "allowlisted (it will keep alerting) but the entry is no "
+                    "longer listed; re-create it from the alert to resume "
+                    "tracking.",
+                    entry_id,
+                    exc_info=True,
+                )
+            raise
         return True
 
     def reset_watchful_recurrence(
@@ -5817,22 +5893,42 @@ class Database:
             if snooze_duration_seconds is not None
             else None
         )
-        with self._lock, self._conn:
-            cur = self._conn.execute(
-                "INSERT INTO watchful_recurrence("
-                "mac, created_at, first_seen_at, last_seen_at, sighting_count, "
-                "snooze_expires_at, source_alert_id, matched_watchlist_id) "
-                "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
-                (
-                    mac,
-                    now_ts,
-                    now_ts,
-                    now_ts,
-                    snooze_expires_at,
-                    alert_id,
-                    alert_row["matched_watchlist_id"],
-                ),
-            )
+        # ⚠️ The check above is a courtesy, not the enforcement. It reads
+        # OUTSIDE this transaction, so two callers can both see None. Moving it
+        # inside `self._lock` would not help either: that is a threading.Lock,
+        # and the poller, the BLE bridge and the web UI are separate PROCESSES
+        # with separate connections. Migration 028's partial unique index is
+        # what actually holds the invariant, across all three.
+        #
+        # Its IntegrityError is translated back into the same ValueError the
+        # courtesy check raises, so the operator double-clicking "watch" gets
+        # the readable message on both paths rather than a raw sqlite
+        # traceback on the one that loses the race.
+        try:
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "INSERT INTO watchful_recurrence("
+                    "mac, created_at, first_seen_at, last_seen_at, sighting_count, "
+                    "snooze_expires_at, source_alert_id, matched_watchlist_id) "
+                    "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+                    (
+                        mac,
+                        now_ts,
+                        now_ts,
+                        now_ts,
+                        snooze_expires_at,
+                        alert_id,
+                        alert_row["matched_watchlist_id"],
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            if "idx_watchful_one_active_per_mac" not in str(exc):
+                raise
+            winner = self.get_active_watchful_recurrence_by_mac(mac)
+            raise ValueError(
+                f"MAC {mac} already has active watchful entry "
+                f"{winner.id if winner is not None else '?'}"
+            ) from exc
         return cur.lastrowid
 
     def get_watchful_recurrence(
