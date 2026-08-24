@@ -4,16 +4,22 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0], UNRELEASED
+## [1.0.0] - 2026-08-24
 
-> ⚠️ **The version literals are now `1.0.0`, but this release is NOT cut.**
-> Updated 2026-08-20: `pyproject.toml`, `src/lynceus/__init__.py` and the
-> `test_smoke.py` guard now read `1.0.0`, and the README badge, `SECURITY.md`
-> and `config/rules.yaml`'s `argus_mac` note were moved with them. **There is
-> still no `v1.0.0` tag and no published artefact.**
+> **Cut 2026-08-24, tagged `v1.0.0`.** The version literals moved to `1.0.0` on
+> 2026-08-20 and this section carried a warning, for four days, that `1.0.0`
+> was the version in the tree and not a shipped release. The tag now exists, so
+> that warning is retired and this section is dated.
 >
-> ⛔ So `1.0.0` is *claimable as the version in the tree* and **not** as a
-> shipped release. Do not date this section until the tag exists.
+> Gated on this tree before tagging: the full suite, `ruff check`, and the two
+> host-only gates no runner can execute, the browser crawl and the fresh
+> install, both sentinel-verified so a pass cannot mean "collected nothing".
+> The numbers are recorded in `.claude/gates.md` against the SHA they were
+> measured at, rather than repeated here where they would rot.
+>
+> ⛔ The install path is `git clone` + `./install.sh`; there is no published
+> wheel or GitHub Release for this tag, and `packaging.yml` does not run on
+> tags. The tag is the artefact.
 >
 > 🪤 Deliberately left at `0.9.5`, because each is a statement about history
 > rather than about the current version: the MIT grant in `README.md` and
