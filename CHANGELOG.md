@@ -25,6 +25,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Two CI gates that reported on their own lists rather than on the product.**
+  The `web-assets` job checked `git ls-files '*.js'`, which is two files, while
+  the first-party JavaScript this product actually ships includes **10.6 KB
+  across 11 inline `<script>` blocks in 6 templates**, parsed by nothing. The
+  CSP work in this repo deliberately moved behaviour out of `on*=` attributes
+  and into those blocks, so a syntax error in one reaches the operator as a
+  silently dead page. `scripts/check_inline_js.py` now de-sugars each block
+  through Jinja's own lexer and hands it to `node --check`. Separately, the
+  inline-handler guard scanned 5 of 15 HTML pages from a hand-written list; it
+  now derives the page set instead of naming it.
+
+- **A regression test for the promote path's migration.**
+  `_seed_from_legacy` requires every mutating path to carry the pre-move file
+  forward, and the two obvious ones did. `Database.promote_watchful_to_allowlist`
+  is the third, takes its paths as keyword arguments, and defaults the legacy
+  one to `None`, so omitting it is silent at every level: no type error, no
+  lint error, no failing test. Keyed on behaviour rather than on the call site.
+
 - **`Database.unit()`, a read-and-write block that is actually atomic.**
   A read followed by a decision followed by a write is the shape every rule in
   this product uses, and until now the read was not inside the transaction. The
@@ -454,6 +472,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The README screenshots are re-shot against the current UI, in both themes.**
+  The five images predated the token layer and the form work, so they showed a
+  product that no longer looked like the one being installed.
+
+- **`.claude/gates.md` no longer puts the playwright prerequisite in `/tmp`.**
+  A reboot clears it, and because the browser gate fails rather than skips,
+  `make release-gates` goes red for a reason unrelated to the code, at exactly
+  the moment someone is cutting a release. Documented at a persistent path,
+  with two traps recorded: a surviving `~/.cache/ms-playwright` is not a working
+  one, since the browser revision is pinned to the playwright version; and the
+  venv must be built on the same Python minor as `.venv`.
+
 - **The web UI's prose follows the house style now.**
   99 sentences across 22 templates were restructured rather than having their
   punctuation swapped, so a clause join became either two sentences or an
@@ -586,6 +616,108 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incompatible. The vendored Pico CSS keeps its own MIT licence.
 
 ### Fixed
+
+- **Threat signatures that were regexes in columns matched literally could never fire.**
+  `default_watchlist.csv` stored Python regexes in two columns Lynceus matches
+  as plain text: `ssid_pattern` is a `LIKE '%…%'` substring test and
+  `ble_local_name` was strict SQL equality. A needle of `dji[-_].+` therefore
+  required an SSID containing those characters literally. Measured through the
+  real matcher, `DJI-Phantom4`, `DJI_Mavic`, `Phantom-3` and `MP70_a1b2` all
+  returned `None`: the whole drone fleet, the forensic-extraction tools and the
+  in-vehicle routers were dead rows. Nothing reported it, and `/watchlist` and
+  `/healthz.json` graded every one of them LIVE.
+
+  The identifiers are re-cut as literal stems, because dropping the bad rows
+  makes the count honest while only re-cutting makes the product work.
+  `ble_local_name` was worse than first recorded: matched by equality, **all 21**
+  rows were dead rather than 13, since a real device advertises `Flock-1234`
+  and never the bare `Flock` that was stored. That column now uses the same
+  substring resolver as `ssid_pattern`, on both the eval path and the
+  annotation path. ⚠️ This widens matching for operator-curated rows too, in
+  the direction that produces false alarms rather than misses.
+
+- **Promoting a drone to `remote_id` blinded five other rule types.**
+  Kismet's UAV phy decorates rather than types, so a Remote-ID drone arrives
+  typed `Wi-Fi Device` or `BTLE` with an extra `uav.device` component.
+  `parse_kismet_device` promoted `device_type` to `remote_id` before the
+  field-extraction block, every gate of which keyed on `device_type`. So the
+  SSID, BLE local name, service UUIDs and manufacturer id were all stripped.
+  Measured against two records differing only by that component, the wifi drone
+  kept `ssid='DJI-Phantom4'` and the same record with the component present had
+  `ssid=None`. Those are exactly the columns the bundled drone signatures match
+  on. A current airframe broadcasting Remote-ID, which is the point of
+  Remote-ID and is required by law, could not match the rows aimed at it.
+  Extraction now reads `radio_family`, captured before the promotion.
+
+- **Bluetooth friendly names were stored after the operator opted out.**
+  `evidence.py` carried a hand-copied `frozenset({"BTLE", "Bluetooth"})` while
+  the ingest layer's own type map carries a third Kismet type, `BR/EDR`, which
+  `kismet.py` documents as appearing in real captures. `base.name` is the
+  friendly name on a Bluetooth record, which is why the redactor strips it for
+  the Bluetooth family. So an operator who set `ble_friendly_names: false`
+  still had names written for every device Kismet typed `BR/EDR`. The redacted
+  set is now derived from the ingest map rather than transcribed from it, and
+  the test derives its parametrisation the same way, because a transcribed list
+  is what produced the gap.
+
+- **The heartbeat reported "still watching" while the BLE bridge failed every scan.**
+  Liveness was `thread.is_alive()`, which stays true for a thread that is
+  running and failing. A stopped component and a broken one looked identical to
+  the operator.
+
+- **`ssid_pattern` alerts were written with `matched_watchlist_id = NULL`.**
+  The annotation walk had no `ssid_pattern` branch while the rules engine
+  reached for it as a fallback, so an alert raised by one of the 24 bundled
+  `ssid_pattern` rows was annotated with nothing, and the alert, its `/alerts`
+  detail and the ntfy push body all lost the vendor and category of the row
+  that fired them.
+
+- **Every web-UI suppression returned HTTP 500 on a `--system` install.**
+  `allowlist_ui.yaml` was written beside the operator's allowlist, which under
+  `--system` is `/etc/lynceus`, deliberately excluded from the units'
+  `ReadWritePaths`, and the atomic write needs directory permission for its
+  lock and tmp file. The file is daemon-written state rather than operator
+  config, so it now lives beside the database, which the units already grant on
+  every install scope. ⚠️ The dangerous half was the migration, not the move:
+  an install that already had suppressions has them in the old place, and
+  getting that wrong silently un-suppresses every device the operator had told
+  the product to ignore. The old location is read until the first UI write,
+  which carries its entries across.
+
+- **A cancelled apply told the completion page and left the live stream silent.**
+  The setup wizard's apply task synthesized a failed step for the cancellation
+  path and wrote it to the session report, so `/apply-complete` rendered, but
+  never put it on the queue the SSE endpoint drains. Every other terminal path
+  enqueues. So an operator watching `/apply-progress` while an apply was
+  cancelled saw the stream open, emit its closing `event: end` and shut, with
+  no record that anything had happened: the entire payload was
+  `event: end\ndata: {}`. The two surfaces describing one apply disagreed.
+
+- **A poison record could abort every poll tick forever.**
+  The parser's guard caught `ValidationError` only; three other exception
+  classes reaching the same path aborted the tick, and the record was still
+  there on the next one.
+
+- **Two simultaneous "watch" clicks could create a duplicate active row.**
+  The duplicate check ran outside the lock, and a second active row for one MAC
+  carries its own snooze, which the poller resolves by MAC. So a row the
+  operator never created could suppress their own HIGH alerts. Refused at the
+  database now, rather than by a check-then-insert.
+
+- **Promoting a watchful entry wrote the allowlist file before claiming the DB row.**
+  The two orders fail in opposite directions and only one is survivable: yaml
+  first and the DB write raising leaves the device allowlisted while the UI
+  says it is being watched, silenced permanently. DB first and the yaml write
+  raising leaves it alerting, which is the direction that keeps telling the
+  operator things.
+
+- **Two shipped documents advertised limitations that no longer existed.**
+  `PROJECT_STATUS.md` claimed there was no automatic database pruning, when
+  both prune helpers run from the poll loop and `evidence_retention_days`
+  defaults to 90; and claimed BLE 16-bit short-UUID expansion was absent, which
+  is backwards: that describes the defect the `ble_uuid` fix removed. The
+  second was also listed under "What's deferred", so one shipped feature was
+  advertised as unbuilt in two places.
 
 - **The home page's activity section said what it was counting.**
   It showed alert counts by severity and then device counts, under one heading,
