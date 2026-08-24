@@ -26,7 +26,10 @@ tag. Where it names a version, read it as "as of that cycle".
   identifiers to friendlier location IDs.
 - Upserts devices and inserts sightings into SQLite.
 - Evaluates rules (MAC, OUI, SSID, BLE service UUID, first-sighting of a
-  non-randomized device).
+  non-randomized device). 16- and 32-bit assigned BLE UUIDs are expanded
+  to the 128-bit base form per Core Spec §3.2.1 through one shared
+  function, so an operator who watchlists `fd5a` matches an
+  advertisement carrying `fd5a`.
 - Suppresses allowlisted devices.
 - Deduplicates alerts within a configurable window.
 - Sends ntfy notifications with severity-based priority and emoji tags.
@@ -85,11 +88,14 @@ See [BACKLOG.md](../BACKLOG.md) for full detail and trigger conditions.
 The headlines:
 
 - Stingray / IMSI-catcher hunter bridge.
-- Web UI editing for rules and allowlist (currently read-only; YAML is
-  the only edit path).
+- Web UI editing for the RULESET and for the operator's own
+  `allowlist.yaml`; the YAML is the only edit path for both. ⚠️ Not the
+  same as "the UI writes nothing": suppressions made from the UI
+  (allowlist this device, snooze, promote a watchful entry) are written
+  by the daemon to its own `allowlist_ui.yaml`, which does change
+  alerting behaviour.
 - Multi-location stalking heuristics (cross-Pi correlation).
 - Allowlist auto-learn mode for early-deployment FP suppression.
-- BLE 16-bit short-UUID expansion.
 - Kismet retry policy with backoff and circuit breaker.
 - Kismet-died ntfy alert tier.
 - Reverse-proxy path-prefix support.
@@ -124,13 +130,15 @@ Things lynceus explicitly does not do today:
   the infra-alert tier that would ping you is on the backlog.
 - **No retry policy on transient Kismet failures.** A failed poll is
   logged and the next one proceeds.
-- **No automatic database pruning.** SQLite grows indefinitely; manual
-  rotation is the workaround.
+- **Sightings retention is opt-in and defaults to OFF.** Set
+  `sightings_retention_days` to bound the table; while it is unset,
+  `sightings` grows without limit and manual rotation is the workaround.
+  Evidence retention is different: `evidence_retention_days` defaults to
+  **90**, so that half prunes on a stock install. Both run from the poll
+  loop at most once a day, not from cron.
 - **No web UI authentication.** Localhost-only binding is the security
   boundary. Remote access requires the operator to put their own
   reverse proxy and auth in front.
-- **No BLE 16-bit short-UUID expansion.** Shorts are logged at DEBUG
-  and skipped.
 - **No reverse-proxy path-prefix support.** `/static/` is hardcoded.
 
 ## Hardware tested vs untested

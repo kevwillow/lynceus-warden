@@ -56,12 +56,40 @@ is correct for a gate and does mean `make release-gates` is red until you set it
 up. playwright is not a lynceus dependency and is not in `.venv`:
 
 ```
-python -m venv /tmp/pw-venv && /tmp/pw-venv/bin/pip install playwright
-/tmp/pw-venv/bin/playwright install chromium
-LYNCEUS_PLAYWRIGHT_SITE=/tmp/pw-venv/lib/python3.11/site-packages make release-gates
+PW=~/.local/share/lynceus-playwright
+python3.11 -m venv $PW && $PW/bin/pip install playwright
+$PW/bin/playwright install chromium
+LYNCEUS_PLAYWRIGHT_SITE=$PW/lib/python3.11/site-packages make release-gates
 ```
 
-Measured 2026-08-22 with that set: browser gate **6 passed in 21.9s**.
+⛔ **Not `/tmp`.** This block used to say `/tmp/pw-venv`, and on 2026-08-24 that
+cost a session the gate: the box had rebooted, `/tmp` was cleared, and
+`make release-gates` was therefore RED for a reason that had nothing to do with
+the code. Because the browser half FAILS rather than skips, the symptom is a
+red release gate at exactly the moment you are trying to cut a release. Put it
+somewhere that survives a reboot.
+
+🪤 **The browser cache is versioned, so a surviving cache is not a working one.**
+Same session: `~/.cache/ms-playwright` still held `chromium-1228` from a previous
+install, but the freshly resolved playwright (1.62.0) wanted `chromium_headless_shell-1234`
+and failed with `Executable doesn't exist at .../chromium_headless_shell-1234/...`.
+⇒ Re-run `playwright install chromium` after any playwright upgrade; it is a
+no-op when the revision already matches.
+
+⚠️ **Build the venv on the same minor as `.venv` (3.11).** `LYNCEUS_PLAYWRIGHT_SITE`
+is injected onto the path of the project interpreter, so a `site-packages` built
+by another minor is the wrong ABI for anything compiled.
+
+Measured 2026-08-22: browser gate **6 passed in 21.9s**.
+Measured 2026-08-24 from the persistent path above: **8 passed in 28.2s**,
+sentinel listing all 8 bodies — the same 8 on `main` at `f4dd3da` and on the
+combined tree of PRs #215-#221, neither of which adds a browser test.
+
+⇒ The count moved 6 -> 8 because #209 and #211 each added one on top of the six
+#204 shipped. ⭐ Derived from `git log -- tests/test_browser_ui.py`, not from
+the PR titles: the first attempt at this line credited #217, which touches the
+JS-extension gate and adds no browser test at all.
+⇒ [[date-every-number-you-publish]] — a dated measurement, not a contract.
 
 ⭐ **Current CI number, measured 2026-08-22 at `c363a01`** (PR head, so 11 checks
 rather than the 10 a push SHA gets; CodeQL reports on pull requests only):
