@@ -27,6 +27,12 @@ ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
 LockPersonality=true
+# ⛔ /etc/lynceus is NOT here, deliberately: the daemon must not be able to
+# rewrite the operator's own config or the secrets in it. The UI allowlist
+# (allowlist_ui.yaml) is daemon-written STATE and lives in /var/lib/lynceus
+# for exactly that reason — it used to be written beside allowlist.yaml, and
+# every web-UI suppression returned HTTP 500 on this install mode because the
+# atomic write needs DIRECTORY write permission for its lock and tmp files.
 ReadWritePaths=/var/lib/lynceus /var/log/lynceus
 
 [Install]

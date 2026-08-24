@@ -5491,6 +5491,7 @@ class Database:
         entry_id: int,
         *,
         allowlist_path,
+        legacy_allowlist_path=None,
         pattern: str,
         pattern_type: str,
         note: str | None,
@@ -5608,7 +5609,7 @@ class Database:
                     f"watchful entry {entry_id} was concurrently archived during promote"
                 )
         try:
-            add_ui_entry(allowlist_path, entry)
+            add_ui_entry(allowlist_path, entry, legacy_allowlist_path)
         except Exception:
             # Compensate: the archive claimed a promote that did not happen.
             try:

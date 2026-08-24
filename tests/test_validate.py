@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from lynceus.allowlist import derive_ui_path
 from lynceus.cli import validate as v
 
 
@@ -621,7 +622,10 @@ def test_a_malformed_sibling_entry_leaves_the_primary_report_clean(tmp_path):
             "    pattern_type: mac\n"
         ),
     )
-    sibling = v.derive_ui_path(primary)
+    # Imported from its real home: `validate` no longer re-exports it, because
+# validate now resolves the LIVE ui path through Config and keeps
+# derive_ui_path only for the pre-move location.
+    sibling = derive_ui_path(primary)
     _write(
         sibling,
         (
@@ -666,7 +670,10 @@ def test_the_primary_entry_count_excludes_the_sibling(tmp_path):
             "    pattern_type: mac\n"
         ),
     )
-    sibling = v.derive_ui_path(primary)
+    # Imported from its real home: `validate` no longer re-exports it, because
+# validate now resolves the LIVE ui path through Config and keeps
+# derive_ui_path only for the pre-move location.
+    sibling = derive_ui_path(primary)
     _write(
         sibling,
         (

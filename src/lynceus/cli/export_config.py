@@ -163,8 +163,12 @@ def _resolved_config_paths(
     When ``lynceus.yaml`` parses cleanly its ``rules_path`` /
     ``allowlist_path`` / ``severity_overrides_path`` settings are
     followed; otherwise we fall back to ``<config_dir>/<name>.yaml``.
-    The ``allowlist_ui.yaml`` sibling is derived from the (resolved)
-    allowlist path via ``derive_ui_path``.
+    ``allowlist_ui.yaml`` is the daemon-written file, resolved through
+    ``Config.resolved_ui_allowlist_path`` -- the STATE directory, not beside
+    the allowlist. An install that has not written a suppression since the
+    move is still reading the pre-move file, so that one is bundled instead
+    when the new path does not exist yet: the bundle should contain the file
+    the daemon is actually reading, under the name a reader will look for.
 
     Parse failures are non-fatal here — the operator may have a broken
     config and still want a backup. The caller records the parse error
@@ -175,6 +179,7 @@ def _resolved_config_paths(
     rules = config_dir / "rules.yaml"
     overrides = paths.default_overrides_path(scope)
     allowlist = config_dir / "allowlist.yaml"
+    ui_allowlist = paths.default_data_dir(scope) / "allowlist_ui.yaml"
 
     if lynceus_yaml.exists():
         try:
@@ -192,6 +197,10 @@ def _resolved_config_paths(
                 overrides = Path(cfg.severity_overrides_path)
             if cfg.allowlist_path:
                 allowlist = Path(cfg.allowlist_path)
+                resolved_ui = cfg.resolved_ui_allowlist_path()
+                if resolved_ui is not None:
+                    ui_allowlist = resolved_ui
+
         except Exception:
             # Malformed lynceus.yaml — fall through with canonical defaults.
             # The reader records the malformed content as raw bytes (still
@@ -199,12 +208,30 @@ def _resolved_config_paths(
             # in the restored copy.
             pass
 
+    # ⚠️ ONE key, and it must name the file that is actually LIVE.
+    #
+    # The dict key becomes the FILENAME inside the support bundle, so a second
+    # entry for the pre-move location would put "allowlist_ui.yaml (pre-move
+    # location)" in the archive and break every consumer keyed on the real
+    # name. And an install that has not written a suppression since the
+    # state-directory move is still READING the old file -- bundling the new
+    # path, which does not exist yet, would ship a support archive missing the
+    # operator's actual suppressions.
+    #
+    # ⛔ Applied HERE and not inside the config-parse branch above. That branch
+    # only runs when lynceus.yaml exists AND parses AND sets allowlist_path;
+    # the fallback has to hold on the paths that skip it, which is exactly the
+    # broken-config case a support bundle is usually being taken for.
+    legacy_ui = derive_ui_path(allowlist)
+    if legacy_ui.exists() and not ui_allowlist.exists():
+        ui_allowlist = legacy_ui
+
     return {
         "lynceus.yaml": lynceus_yaml,
         "rules.yaml": rules,
         "severity_overrides.yaml": overrides,
         "allowlist.yaml": allowlist,
-        "allowlist_ui.yaml": derive_ui_path(allowlist),
+        "allowlist_ui.yaml": ui_allowlist,
     }
 
 

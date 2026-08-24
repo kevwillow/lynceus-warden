@@ -453,8 +453,13 @@ rule_type snooze treats every other rule type: detection runs;
 notification doesn't.
 
 **Allowlist promotion path.** "Promote to permanent allowlist" appends
-to the daemon-managed `allowlist_ui.yaml` (the UI-write sibling file
-derived by `derive_ui_path`). The operator-curated primary
+to the daemon-managed `allowlist_ui.yaml`, resolved through
+`Config.resolved_ui_allowlist_path`. That file lives in the STATE
+directory, beside the database, not beside `allowlist.yaml`. It used to
+be a sibling of the operator's allowlist, and on a `--system` install
+that put it in `/etc/lynceus` — which the units deliberately exclude
+from `ReadWritePaths`, so every suppression the UI offered returned
+HTTP 500. The operator-curated primary
 `allowlist.yaml` is read-only from the daemon's perspective per the
 existing allowlist module contract. The daemon never edits it, which
 is the property that lets operators hand-format and comment the file

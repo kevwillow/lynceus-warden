@@ -349,12 +349,42 @@ def _entry_matches(entry: AllowlistEntry, obs: DeviceObservation) -> bool:
     return False
 
 
-def derive_ui_path(primary_path: Path) -> Path:
-    """Sibling path for the daemon-managed allowlist file.
+def ui_filename(primary_path: Path) -> str:
+    """Filename for the daemon-managed allowlist file.
 
-    Example: ``/etc/lynceus/allowlist.yaml`` → ``/etc/lynceus/allowlist_ui.yaml``.
-    Uses ``Path.with_stem`` so an unusual extension (``.yml``) carries
-    across cleanly rather than being silently rewritten.
+    ``allowlist.yaml`` → ``allowlist_ui.yaml``. Uses ``Path.with_stem`` so
+    an unusual extension (``.yml``) carries across cleanly rather than being
+    silently rewritten.
+    """
+    return primary_path.with_stem(primary_path.stem + "_ui").name
+
+
+def derive_ui_path(primary_path: Path) -> Path:
+    """⛔ The LEGACY location: beside the operator's own allowlist.
+
+    ``/etc/lynceus/allowlist.yaml`` → ``/etc/lynceus/allowlist_ui.yaml``.
+
+    This is where the file lived until the state-directory move, and it is
+    kept for exactly two jobs: the read-fallback that lets an existing
+    install keep its suppressions, and the seed on first write. Nothing
+    should WRITE here.
+
+    Why it moved. The file is daemon-written STATE, not operator config, and
+    it was being written into the operator's config directory. On a
+    ``--system`` install that is ``/etc/lynceus``, and the units grant
+    ``ReadWritePaths=/var/lib/lynceus /var/log/lynceus`` -- ``/etc/lynceus``
+    is excluded deliberately, so the daemon must not be able to rewrite the
+    operator's own config or the secrets in it.
+
+    The atomic write needs DIRECTORY write permission for its lock file and
+    its tmp file, not just write permission on the target, so the whole
+    suppression surface failed. Measured end to end, real route, real CSRF
+    token, config dir chmod 0500:
+
+        POST /devices/<mac>/allowlist  ->  500
+
+    ⇒ On the documented install mode, "allowlist this device" and "snooze"
+    both returned a server error. Every one of them.
     """
     return primary_path.with_stem(primary_path.stem + "_ui")
 
@@ -447,7 +477,9 @@ def _validate_ui_entries(raw: object, ui_path: Path) -> list[AllowlistEntry]:
     return good
 
 
-def _load_ui_entries(ui_path: Path) -> list[AllowlistEntry]:
+def _load_ui_entries(
+    ui_path: Path, legacy_path: Path | None = None
+) -> list[AllowlistEntry]:
     """Read entries from the daemon-managed UI file.
 
     Absent file → empty list (the normal state before any UI write).
@@ -462,8 +494,27 @@ def _load_ui_entries(ui_path: Path) -> list[AllowlistEntry]:
     `pattern:` here does exactly what it does in the primary -- the device the
     operator meant keeps alerting, one they never named is silenced, and the
     note still reads what they wrote.
+
+    ``legacy_path`` is the file's home before it moved to the state directory.
+    It is read ONLY when the active file does not exist, which is exactly the
+    state an install upgrading across the move is in. The first UI write seeds
+    the new file from it (``add_ui_entry``), so the fallback stops being
+    consulted the moment the operator touches a suppression.
+
+    ⛔ Never a MERGE of the two. Two files that both counted would mean an
+    entry the operator deleted through the UI staying live in the other one --
+    a suppression they can neither see nor remove, on the surface whose whole
+    job is to stop alerts.
     """
     if not ui_path.exists():
+        if legacy_path is not None and legacy_path.exists():
+            logger.info(
+                "reading UI allowlist from its pre-move location %s; it will "
+                "be copied to %s on the next suppression written from the UI",
+                legacy_path,
+                ui_path,
+            )
+            return _load_ui_entries(legacy_path)
         return []
     try:
         with open(ui_path, encoding="utf-8") as f:
@@ -576,12 +627,24 @@ def _load_primary(
 
 
 def _load_allowlist_with_counts(
-    path: str, *, raise_on_parse_error: bool = False
+    path: str,
+    *,
+    raise_on_parse_error: bool = False,
+    ui_path: Path | None = None,
+    legacy_path: Path | None = None,
 ) -> tuple[Allowlist, int, int]:
     """Load the merged allowlist along with per-source entry counts.
 
     Returns ``(allowlist, primary_count, ui_count)``. The poller uses
     the counts for its reload INFO line; ``load_allowlist`` drops them.
+
+
+    ``ui_path`` is where the daemon-written UI file actually lives, and
+    ``legacy_path`` is its home before the state-directory move (read only when
+    ``ui_path`` does not exist yet). Both default to None, which reproduces the
+    pre-move behaviour of a plain sibling -- that keeps every caller that has no
+    Config in scope working unchanged, and the callers that DO have one
+    (`Config.resolved_ui_allowlist_path` / `legacy_ui_allowlist_path`) pass them.
 
     ``raise_on_parse_error`` is forwarded to ``_load_primary``: when
     True a malformed primary raises ``AllowlistParseError`` instead of
@@ -591,20 +654,34 @@ def _load_allowlist_with_counts(
     """
     primary_path = Path(path)
     primary = _load_primary(primary_path, raise_on_parse_error=raise_on_parse_error)
-    ui_entries = _load_ui_entries(derive_ui_path(primary_path))
+    ui_entries = _load_ui_entries(
+        ui_path if ui_path is not None else derive_ui_path(primary_path),
+        legacy_path,
+    )
     if not ui_entries:
         return primary, len(primary.entries), 0
     merged = Allowlist(entries=list(primary.entries) + ui_entries)
     return merged, len(primary.entries), len(ui_entries)
 
 
-def load_allowlist(path: str) -> Allowlist:
+def load_allowlist(
+    path: str, *, ui_path: Path | None = None, legacy_path: Path | None = None
+) -> Allowlist:
     """Load the allowlist from the operator file plus its UI sibling.
 
-    ``path`` is the operator-curated primary file. The UI sibling is
-    derived (``derive_ui_path``) and merged in transparently if present.
+    ``path`` is the operator-curated primary file; the UI file is merged in
+    transparently if present.
+
+    ``ui_path`` is where the daemon-written UI file actually lives, and
+    ``legacy_path`` is its home before the state-directory move (read only when
+    ``ui_path`` does not exist yet). Both default to None, which reproduces the
+    pre-move behaviour of a plain sibling -- that keeps every caller that has no
+    Config in scope working unchanged, and the callers that DO have one
+    (`Config.resolved_ui_allowlist_path` / `legacy_ui_allowlist_path`) pass them.
     """
-    merged, _primary_count, _ui_count = _load_allowlist_with_counts(path)
+    merged, _primary_count, _ui_count = _load_allowlist_with_counts(
+        path, ui_path=ui_path, legacy_path=legacy_path
+    )
     return merged
 
 
@@ -614,7 +691,9 @@ def load_allowlist(path: str) -> Allowlist:
 EntrySource = Literal["primary", "ui"]
 
 
-def load_allowlist_with_source(path: str) -> list[tuple[AllowlistEntry, EntrySource]]:
+def load_allowlist_with_source(
+    path: str, *, ui_path: Path | None = None, legacy_path: Path | None = None
+) -> list[tuple[AllowlistEntry, EntrySource]]:
     """Load all allowlist entries tagged by source file.
 
     Returns a list of ``(entry, "primary" | "ui")`` tuples preserving
@@ -625,12 +704,22 @@ def load_allowlist_with_source(path: str) -> list[tuple[AllowlistEntry, EntrySou
     rows are read-only from the UI by construction.
 
     Missing primary still raises ``FileNotFoundError`` for parity
-    with ``load_allowlist``; a missing UI sibling silently contributes
+    with ``load_allowlist``; a missing UI file silently contributes
     zero entries (the normal pre-first-UI-write state).
+
+    ``ui_path`` is where the daemon-written UI file actually lives, and
+    ``legacy_path`` is its home before the state-directory move (read only when
+    ``ui_path`` does not exist yet). Both default to None, which reproduces the
+    pre-move behaviour of a plain sibling -- that keeps every caller that has no
+    Config in scope working unchanged, and the callers that DO have one
+    (`Config.resolved_ui_allowlist_path` / `legacy_ui_allowlist_path`) pass them.
     """
     primary_path = Path(path)
     primary = _load_primary(primary_path)
-    ui_entries = _load_ui_entries(derive_ui_path(primary_path))
+    ui_entries = _load_ui_entries(
+        ui_path if ui_path is not None else derive_ui_path(primary_path),
+        legacy_path,
+    )
     tagged: list[tuple[AllowlistEntry, EntrySource]] = [
         (e, "primary") for e in primary.entries
     ]
@@ -803,7 +892,47 @@ def _read_ui_yaml(ui_path: Path) -> dict:
     return data
 
 
-def add_ui_entry(ui_path: Path, entry: AllowlistEntry) -> None:
+def _seed_from_legacy(
+    data: dict, ui_path: Path, legacy_path: Path | None
+) -> dict:
+    """Fold the pre-move file's entries into ``data``, once, before a write.
+
+    ⛔ Every mutating path must call this, not just the ADD path, and the
+    removals are the reason. While only the legacy file exists, the reader
+    falls back to it — so an operator sees those suppressions in the UI. If
+    "remove" wrote a fresh active file without carrying them, the removal
+    would report success, the entry the operator deleted would come back the
+    moment the fallback stopped applying... and every OTHER suppression they
+    had would vanish in the same instant. Fixing a fail-open by hand is how a
+    fail-closed gets shipped.
+
+    Copy, not move. The legacy file lives in the operator's config directory,
+    which the units deliberately keep the daemon out of — deleting it is not
+    something this process can or should do. It simply stops being read once
+    the active file exists.
+
+    Must be called INSIDE ``_ui_write_lock`` so two processes cannot both
+    decide the active file is absent and both seed it.
+    """
+    if legacy_path is None or ui_path.exists() or not legacy_path.exists():
+        return data
+    carried = _read_ui_yaml(legacy_path).get("entries") or []
+    if not carried:
+        return data
+    logger.info(
+        "carrying %d UI allowlist entr%s forward from %s to %s",
+        len(carried),
+        "y" if len(carried) == 1 else "ies",
+        legacy_path,
+        ui_path,
+    )
+    data["entries"] = list(carried) + list(data["entries"])
+    return data
+
+
+def add_ui_entry(
+    ui_path: Path, entry: AllowlistEntry, legacy_path: Path | None = None
+) -> None:
     """Append ``entry`` to the daemon-managed UI file.
 
     File is created on first call. Existing entries are preserved.
@@ -819,6 +948,7 @@ def add_ui_entry(ui_path: Path, entry: AllowlistEntry) -> None:
     """
     with _ui_write_lock(ui_path):
         data = _read_ui_yaml(ui_path)
+        data = _seed_from_legacy(data, ui_path, legacy_path)
         data["entries"].append(entry.model_dump(mode="json", exclude_none=True))
         _atomic_write_yaml(ui_path, data)
 
@@ -1088,6 +1218,7 @@ def remove_ui_entry(
     ui_path: Path,
     pattern: str,
     pattern_type: str,
+    legacy_path: Path | None = None,
 ) -> bool:
     """Remove a matching entry from the UI file.
 
@@ -1100,11 +1231,16 @@ def remove_ui_entry(
     pass ``entry.pattern`` here, so a raw "AA:BB:CC:..." from a user
     form does not silently miss a stored "aa:bb:cc:...". Pattern_type
     is an exact string match against the stored value.
+
+    ``legacy_path`` is the pre-move location. It is folded in before the
+    removal, because while only that file exists its entries are the ones the
+    operator can see — removing one of them has to carry the rest across, or
+    the click that deletes one suppression silently deletes them all.
     """
-    if not ui_path.exists():
+    if not ui_path.exists() and not (legacy_path is not None and legacy_path.exists()):
         return False
     with _ui_write_lock(ui_path):
-        data = _read_ui_yaml(ui_path)
+        data = _seed_from_legacy(_read_ui_yaml(ui_path), ui_path, legacy_path)
         before = len(data["entries"])
         data["entries"] = [
             e
@@ -1122,6 +1258,7 @@ def remove_ui_entry(
 def bulk_remove_ui_entries(
     ui_path: Path,
     keys: list[tuple[str, str]],
+    legacy_path: Path | None = None,
 ) -> int:
     """Remove every UI entry whose ``(pattern, pattern_type)`` is in ``keys``.
 
@@ -1142,10 +1279,12 @@ def bulk_remove_ui_entries(
     with nothing checked land here; the caller is responsible for
     surfacing the empty-selection case to the user before this call.
     """
-    if not keys or not ui_path.exists():
+    if not keys or not (
+        ui_path.exists() or (legacy_path is not None and legacy_path.exists())
+    ):
         return 0
     with _ui_write_lock(ui_path):
-        data = _read_ui_yaml(ui_path)
+        data = _seed_from_legacy(_read_ui_yaml(ui_path), ui_path, legacy_path)
         before = len(data["entries"])
         key_set = set(keys)
         data["entries"] = [

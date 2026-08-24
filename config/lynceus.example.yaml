@@ -48,6 +48,21 @@ log_level: INFO
 # here are exempted from alerting. When unset, nothing is allowlisted.
 # allowlist_path: config/allowlist.yaml
 
+# Where the daemon writes the suppressions you make from the web UI
+# ("allowlist this device", "snooze"). Leave it unset unless you have a
+# reason: the default puts it in the STATE directory beside db_path, which
+# is the one place every install scope grants the daemon write access.
+#
+# It is daemon-written state, not operator config, which is why it does NOT
+# live beside allowlist_path. On a --system install that would be
+# /etc/lynceus, and the units deliberately keep the daemon out of your
+# config directory.
+#
+# Upgrading from a version that wrote it beside allowlist_path needs no
+# action: that file keeps being read until the first suppression you make
+# from the UI, which copies its entries across.
+# ui_allowlist_path: /var/lib/lynceus/allowlist_ui.yaml
+
 # Path to operator-local severity tuning (vendor overrides, per-category
 # severity bumps, the confidence-downgrade threshold, and the Argus CSV
 # schema-version accept-list). Read by lynceus-import-argus --override-file,

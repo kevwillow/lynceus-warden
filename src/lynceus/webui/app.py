@@ -31,7 +31,6 @@ from lynceus.allowlist import (
     ImpossibleUiEntry,
     add_ui_entry,
     bulk_remove_ui_entries,
-    derive_ui_path,
     find_impossible_ui_entries,
     load_allowlist_with_source,
     remove_ui_entry,
@@ -1549,7 +1548,9 @@ def _merged_allowlist_entries(config: Config) -> list:
     except FileNotFoundError:
         primary_entries = []
     return primary_entries + list(
-        allowlist_mod._load_ui_entries(derive_ui_path(primary_path))
+        allowlist_mod._load_ui_entries(
+            config.resolved_ui_allowlist_path(), config.legacy_ui_allowlist_path()
+        )
     )
 
 
@@ -1614,7 +1615,9 @@ def _load_actioned_patterns(
         primary_entries = allowlist_mod._load_primary(primary_path).entries
     except FileNotFoundError:
         primary_entries = []
-    ui_entries = allowlist_mod._load_ui_entries(derive_ui_path(primary_path))
+    ui_entries = allowlist_mod._load_ui_entries(
+        config.resolved_ui_allowlist_path(), config.legacy_ui_allowlist_path()
+    )
     macs: list[str] = []
     ouis: list[str] = []
     mac_ranges: list[str] = []
@@ -1751,7 +1754,9 @@ def _resolve_allowlist_match(
         primary_entries = allowlist_mod._load_primary(primary_path).entries
     except FileNotFoundError:
         primary_entries = []
-    ui_entries = allowlist_mod._load_ui_entries(derive_ui_path(primary_path))
+    ui_entries = allowlist_mod._load_ui_entries(
+        config.resolved_ui_allowlist_path(), config.legacy_ui_allowlist_path()
+    )
     primary_match = _match_mac_in_entries(primary_entries, alert_mac, now_ts)
     if primary_match is not None:
         return primary_match, False, True, "primary"
@@ -1786,7 +1791,9 @@ def _resolve_silence_states(
         primary_entries = allowlist_mod._load_primary(primary_path).entries
     except FileNotFoundError:
         primary_entries = []
-    ui_entries = allowlist_mod._load_ui_entries(derive_ui_path(primary_path))
+    ui_entries = allowlist_mod._load_ui_entries(
+        config.resolved_ui_allowlist_path(), config.legacy_ui_allowlist_path()
+    )
     all_entries = list(primary_entries) + list(ui_entries)
     states: dict[str, AllowlistEntry] = {}
     for mac in macs:
@@ -2480,9 +2487,10 @@ def create_app(
     # ⛔ The FILE the daemon actually loads, for every surface that names one.
     #
     # `rules_path` and `allowlist_path` are free-form config: an operator can
-    # point them at any filename, and `derive_ui_path` carries the stem AND the
-    # extension across, so the UI sibling of `site-devices.yml` is
-    # `site-devices_ui.yml`. Twelve renderings across five pages hard-coded
+    # point them at any filename, and `ui_filename` carries the stem AND the
+    # extension across, so the UI file for `site-devices.yml` is
+    # `site-devices_ui.yml` -- in the STATE directory, not beside it.
+    # Twelve renderings across five pages hard-coded
     # `rules.yaml` / `allowlist.yaml` / `allowlist_ui.yaml` instead, including
     # four REMEDIES -- "edit that file directly to remove", "Edit rules.yaml on
     # disk and restart". Measured at cca7c5c against
@@ -2509,7 +2517,7 @@ def create_app(
 
     def _allowlist_ui_file() -> str | None:
         primary = app.state.config.allowlist_path
-        return str(derive_ui_path(Path(primary))) if primary else None
+        return str(config.resolved_ui_allowlist_path()) if primary else None
 
     def _config_file() -> str | None:
         """The lynceus.yaml this process loaded, or None when it was not told.
@@ -3640,8 +3648,8 @@ def create_app(
             added_at=now_ts,
             expires_at=expires_at,
         )
-        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
-        add_ui_entry(ui_path, entry)
+        ui_path = app.state.config.resolved_ui_allowlist_path()
+        add_ui_entry(ui_path, entry, app.state.config.legacy_ui_allowlist_path())
 
     @app.post("/alerts/{alert_id}/allowlist")
     def allowlist_alert_post(request: Request, alert_id: RowId):
@@ -3698,7 +3706,7 @@ def create_app(
         result = _load_alert_for_triage(alert_id, request)
         if not isinstance(result, dict):
             return result
-        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
+        ui_path = app.state.config.resolved_ui_allowlist_path()
         # Idempotent: return value discarded. Operators clicking Cancel
         # twice (or removing an entry that's actually in the primary
         # operator file) get the same 303 back to /alerts/<id>. The
@@ -3710,7 +3718,12 @@ def create_app(
         # could miss a normalised stored entry and no-op. The device-side
         # route has always done this; this one passed the raw column.
         entry = AllowlistEntry(pattern=result["mac"], pattern_type="mac")
-        remove_ui_entry(ui_path, entry.pattern, "mac")
+        remove_ui_entry(
+            ui_path,
+            entry.pattern,
+            "mac",
+            app.state.config.legacy_ui_allowlist_path(),
+        )
         return RedirectResponse(f"/alerts/{alert_id}", status_code=303)
 
     @app.post("/alerts/{alert_id}/note")
@@ -3914,11 +3927,12 @@ def create_app(
         full_note = (
             f"{provenance} -- {operator_note}" if operator_note else provenance
         )
-        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
+        ui_path = app.state.config.resolved_ui_allowlist_path()
         try:
             db.promote_watchful_to_allowlist(
                 entry_id,
                 allowlist_path=ui_path,
+                legacy_allowlist_path=app.state.config.legacy_ui_allowlist_path(),
                 pattern=result.mac,
                 pattern_type="mac",
                 note=full_note,
@@ -5119,9 +5133,14 @@ def create_app(
                 status_code=400,
                 detail="allowlist_path is not configured; nothing to write to",
             )
-        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
+        ui_path = app.state.config.resolved_ui_allowlist_path()
         entry = AllowlistEntry(pattern=normalized, pattern_type="mac")
-        remove_ui_entry(ui_path, entry.pattern, "mac")
+        remove_ui_entry(
+            ui_path,
+            entry.pattern,
+            "mac",
+            app.state.config.legacy_ui_allowlist_path(),
+        )
         return _device_actions_response(request, normalized)
 
     @app.get("/rules", response_class=HTMLResponse)
@@ -6074,7 +6093,11 @@ def create_app(
             notice = "No allowlist_path configured. Set allowlist_path in lynceus.yaml."
         else:
             try:
-                tagged = load_allowlist_with_source(allowlist_path)
+                tagged = load_allowlist_with_source(
+                    allowlist_path,
+                    ui_path=app.state.config.resolved_ui_allowlist_path(),
+                    legacy_path=app.state.config.legacy_ui_allowlist_path(),
+                )
             except FileNotFoundError:
                 notice = f"Allowlist file not found at {allowlist_path}."
                 tagged = []
@@ -6107,7 +6130,7 @@ def create_app(
             # the discriminator is only valid within the UI file's own append
             # order. A merged list is not that order.
             clock_disagreements = find_impossible_ui_entries(
-                derive_ui_path(Path(allowlist_path)), render_now_ts
+                app.state.config.resolved_ui_allowlist_path(), render_now_ts
             )
 
         # Pagination is applied in Python on the already-filtered list
@@ -6274,8 +6297,8 @@ def create_app(
                 add_error=_first_validation_error(exc),
                 http_status=400,
             )
-        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
-        add_ui_entry(ui_path, entry)
+        ui_path = app.state.config.resolved_ui_allowlist_path()
+        add_ui_entry(ui_path, entry, app.state.config.legacy_ui_allowlist_path())
         actor = request.client.host if request.client else "unknown"
         logger.info(
             "allowlist UI add: actor=%s pattern_type=%s pattern=%s expires_at=%s",
@@ -6312,7 +6335,11 @@ def create_app(
                 )
             keys.append((pat, ptype))
         try:
-            tagged = load_allowlist_with_source(app.state.config.allowlist_path)
+            tagged = load_allowlist_with_source(
+                app.state.config.allowlist_path,
+                ui_path=app.state.config.resolved_ui_allowlist_path(),
+                legacy_path=app.state.config.legacy_ui_allowlist_path(),
+            )
         except FileNotFoundError:
             raise HTTPException(
                 status_code=400,
@@ -6335,8 +6362,10 @@ def create_app(
                     "edit allowlist.yaml directly to remove those rows."
                 ),
             )
-        ui_path = derive_ui_path(Path(app.state.config.allowlist_path))
-        removed = bulk_remove_ui_entries(ui_path, keys)
+        ui_path = app.state.config.resolved_ui_allowlist_path()
+        removed = bulk_remove_ui_entries(
+            ui_path, keys, app.state.config.legacy_ui_allowlist_path()
+        )
         actor = request.client.host if request.client else "unknown"
         logger.info(
             "allowlist UI bulk_remove: actor=%s removed=%d requested=%d",

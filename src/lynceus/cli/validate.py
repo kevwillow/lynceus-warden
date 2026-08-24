@@ -47,7 +47,7 @@ import yaml
 from pydantic import ValidationError
 
 from .. import __version__, paths
-from ..allowlist import Allowlist, _load_primary, derive_ui_path
+from ..allowlist import Allowlist, _load_primary
 from ..cli.import_argus import DEFAULT_CATEGORY_SEVERITIES
 from ..config import Config, load_config
 from ..rules import (
@@ -1022,9 +1022,22 @@ def _collect_reports(scope: str, *, now_ts: int | None = None) -> list[FileRepor
     if cfg.allowlist_path:
         primary_path = Path(cfg.allowlist_path)
         reports.append(validate_allowlist_yaml(primary_path, now_ts=now_ts))
-        reports.append(
-            validate_allowlist_ui_yaml(derive_ui_path(primary_path), now_ts=now_ts)
-        )
+        active_ui = cfg.resolved_ui_allowlist_path()
+        if active_ui is not None:
+            reports.append(validate_allowlist_ui_yaml(active_ui, now_ts=now_ts))
+        # ⚠️ The pre-move location is validated too, and only while it is still
+        # the live one. An install upgrading across the state-directory move is
+        # reading its suppressions from there until the first UI write carries
+        # them across, so a corrupt file there is a live problem — and validate
+        # reporting only on a path that does not exist yet would say the
+        # allowlist was fine while the operator's actual suppressions were
+        # unreadable. Once the active file exists the legacy one stops being
+        # read, so it stops being reported on.
+        legacy_ui = cfg.legacy_ui_allowlist_path()
+        if legacy_ui is not None and legacy_ui.exists() and (
+            active_ui is None or not active_ui.exists()
+        ):
+            reports.append(validate_allowlist_ui_yaml(legacy_ui, now_ts=now_ts))
     return reports
 
 

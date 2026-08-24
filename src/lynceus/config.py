@@ -176,6 +176,20 @@ class Config(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     rules_path: str | None = None
     allowlist_path: str | None = None
+    #: Where the daemon-written ``allowlist_ui.yaml`` lives. None means
+    #: "derive it", which puts it in the STATE directory beside the database
+    #: rather than beside ``allowlist_path``.
+    #:
+    #: ⛔ It used to be a sibling of ``allowlist_path``. On a ``--system``
+    #: install that is ``/etc/lynceus``, which the units deliberately exclude
+    #: from ``ReadWritePaths`` -- so every web-UI suppression returned HTTP
+    #: 500. It is daemon-written state, not operator config, and it belongs
+    #: with the database. See allowlist.derive_ui_path for the measurement.
+    #:
+    #: Operators who genuinely want it elsewhere can set this explicitly;
+    #: an existing install needs nothing, because the read-fallback and the
+    #: seed-on-first-write in allowlist.py carry the old file forward.
+    ui_allowlist_path: str | None = None
     # Path to severity_overrides.yaml — the same file lynceus-import-argus
     # consumes via --override-file. The poller reads the runtime-relevant
     # subset (device_category_severity, suppress_categories) at startup
@@ -238,6 +252,49 @@ class Config(BaseModel):
     # who enables evidence capture does not silently start a 90-day
     # high-resolution self-movement log.
     evidence_store_gps: bool = False
+
+    def resolved_ui_allowlist_path(self) -> Path | None:
+        """Where the daemon WRITES its allowlist entries, or None.
+
+        ⛔ Everything that reads or writes the UI allowlist must resolve it
+        through here. There is exactly one thing worse than the file being in
+        the wrong place, and that is half the processes finding it in one
+        place and half in another: the poller would go on suppressing a device
+        the web UI had just un-suppressed, and nothing would say so.
+
+        Defaults into the STATE directory -- the parent of ``db_path`` -- which
+        is what the units already grant ``ReadWritePaths`` for. It follows the
+        operator's actual database location, so a user-scope install, a
+        system-scope install and a test's tmp_path all land somewhere writable
+        without any of them special-casing.
+
+        Returns None when no primary allowlist is configured, which is the
+        state where there is no UI allowlist to speak of either.
+        """
+        if self.allowlist_path is None:
+            return None
+        if self.ui_allowlist_path:
+            return Path(self.ui_allowlist_path)
+        from .allowlist import ui_filename
+
+        return Path(self.db_path).parent / ui_filename(Path(self.allowlist_path))
+
+    def legacy_ui_allowlist_path(self) -> Path | None:
+        """The pre-move location: beside the operator's own allowlist.
+
+        Read-only, and only for the migration -- the read-fallback and the
+        seed-on-first-write. An install upgrading from a version that wrote
+        here keeps its suppressions without the operator doing anything, and
+        without the daemon needing write access to a directory the units
+        deliberately keep it out of.
+        """
+        if self.allowlist_path is None:
+            return None
+        from .allowlist import derive_ui_path
+
+        legacy = derive_ui_path(Path(self.allowlist_path))
+        active = self.resolved_ui_allowlist_path()
+        return None if active is not None and legacy == active else legacy
 
     @field_validator("kismet_url")
     @classmethod

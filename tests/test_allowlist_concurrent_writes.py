@@ -56,6 +56,7 @@ from lynceus.allowlist import (  # noqa: E402
     repair_future_dated_ui_entries,
     ui_lock_path,
 )
+from lynceus.config import Config as _Config  # noqa: E402
 from lynceus.poller import Poller as _Poller  # noqa: E402
 
 M1 = "ac:de:48:00:00:01"
@@ -492,7 +493,8 @@ class _WatchStub:
 
     ⚠️ The methods are bound from `Poller` rather than reimplemented, so this
     exercises the shipped code path and cannot drift from it. Only the four
-    attributes those methods touch are supplied.
+    attributes those methods touch are supplied, plus a real Config -- the
+    reload path resolves the UI file through it now.
 
     An earlier version of these tests asserted proxies — that the yaml's mtime
     moved, and that two paths were unequal — and a cold read correctly pointed
@@ -508,6 +510,22 @@ class _WatchStub:
     def __init__(self, primary: Path, ui: Path) -> None:
         self._allowlist_primary_path = primary
         self._allowlist_ui_path = ui
+        # ⚠️ A REAL Config, not a stub attribute. `_maybe_reload_allowlist`
+        # now resolves the UI file and its pre-move location through
+        # `Config.resolved_ui_allowlist_path` / `legacy_ui_allowlist_path`,
+        # and hand-faking those would let this test pass against a poller that
+        # resolved them differently from the web UI -- which is the exact
+        # split-brain the single resolver exists to prevent.
+        #
+        # db_path's directory IS the state directory, so pointing it at the
+        # same tmp_path as the primary makes the two locations coincide and
+        # `legacy_ui_allowlist_path()` correctly returns None: there is
+        # nothing to migrate when the file has not moved.
+        self.config = _Config(
+            db_path=str(primary.parent / "lynceus.db"),
+            allowlist_path=str(primary),
+        )
+        self._allowlist_legacy_ui_path = self.config.legacy_ui_allowlist_path()
         self._allowlist_mtimes: dict[Path, float] = {}
         self.allowlist = None
 
