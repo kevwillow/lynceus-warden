@@ -169,14 +169,26 @@ the Argus issue tracker when convenient; the next Argus refresh after
 the fix will pick it up naturally and the lynceus-side warning counter
 should drop to zero.
 
-### BLE 16-bit short UUID expansion
-Extend `normalize_uuid` to accept 16-bit shorts and expand to full 128-bit
-form via the standard base UUID (`0000XXXX-0000-1000-8000-00805F9B34FB`).
-- **Trigger**: when we observe a real-world miss caused by Kismet emitting
-  only the short form for a tracker we care about.
-- **Estimated**: 1 prompt, ~50 LOC + tests.
-- **Notes**: currently parser drops shorts at DEBUG level. If we observe
-  meaningful misses, lift this to a real feature.
+### BLE 16-bit short UUID expansion, SHIPPED
+Was: extend `normalize_uuid` to accept 16-bit shorts and expand to the full
+128-bit form via the standard base UUID (`0000XXXX-0000-1000-8000-00805F9B34FB`),
+triggered when we observe a real-world miss.
+
+The trigger fired and the work landed. The miss was total and silent: the
+observation side required the dashed 128-bit form while the watchlist side
+already expanded shorts, so an operator who watchlisted `fd5a` stored
+`0000fd5a-0000-1000-8000-00805f9b34fb` and every advertisement of that device
+arrived as `fd5a`, was rejected, and was dropped with a DEBUG line. The entry
+could never fire. Both sides now call one function, measured on `main`:
+
+    patterns.normalize_pattern('ble_uuid', 'fd5a') -> 0000fd5a-0000-1000-8000-00805f9b34fb
+    kismet.normalize_uuid('fd5a')                  -> 0000fd5a-0000-1000-8000-00805f9b34fb
+
+⚠️ Kept here rather than deleted because the old "parser drops shorts at DEBUG
+level" note sat in this file long enough to be quoted as current, and was still
+being repeated in `docs/PROJECT_STATUS.md` (in the shipped-limitations list AND
+the deferred list) until 2026-08-24. An entry that describes a defect the
+project has since removed is worse than no entry.
 
 ### Web UI editing for rules and allowlist
 Currently read-only views exist; YAML editing is the only path to change them.
