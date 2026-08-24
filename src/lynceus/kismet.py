@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any, Literal
 
 import requests
@@ -938,8 +939,22 @@ class KismetClient:
         return sources
 
 
+#: A shifted fixture anchors its NEWEST record this far in the past, never at
+#: `now`. Measured reason: the poll loop treats future-dated records as a clock
+#: problem (``CLOCK_JUMP_TOLERANCE_SECONDS``), so anchoring at `now` puts every
+#: record one scheduling delay away from being distrusted. Mirrors the anchor
+#: ``scripts/rebump_dev_fixture.py`` has used since v0.2.
+FIXTURE_ANCHOR_LAG_SECONDS = 3600
+
+#: Every key whose value is an epoch-seconds clock, at any depth. Matched by
+#: SUFFIX rather than by a hand-written list of full key names, because a
+#: transcribed list is how the redaction gap in #215 happened: the ingest layer
+#: grew a third Bluetooth type and the copied set did not.
+_FIXTURE_TIME_KEY_SUFFIXES = ("first_time", "last_time")
+
+
 class FakeKismetClient(KismetClient):
-    def __init__(self, fixture_path: str) -> None:
+    def __init__(self, fixture_path: str, *, shift_to_now: bool = False) -> None:
         super().__init__(base_url="", api_key=None)
         self._fixture_path = fixture_path
         with open(fixture_path, encoding="utf-8") as f:
@@ -947,6 +962,48 @@ class FakeKismetClient(KismetClient):
         if not isinstance(data, list):
             raise ValueError(f"fixture must be a list, got {type(data).__name__}")
         self._fixture: list[dict] = data
+        if shift_to_now:
+            self._shift_fixture_to_now()
+
+    def _shift_fixture_to_now(self) -> None:
+        """Move every clock in the fixture forward by one offset.
+
+        ⛔ ONE offset for the whole fixture, applied to every timestamp at every
+        depth. Shifting records independently would flatten the spread, and the
+        spread is the point: clustering every device at one instant makes the
+        sparkline and the per-hour counters uninformative, which is exactly the
+        empty-looking dashboard this exists to prevent.
+        """
+        clocks = list(self._iter_time_values())
+        if not clocks:
+            return
+        offset = (int(time.time()) - FIXTURE_ANCHOR_LAG_SECONDS) - max(clocks)
+        self._apply_time_offset(self._fixture, offset)
+
+    def _iter_time_values(self):
+        def walk(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if isinstance(value, int) and key.endswith(_FIXTURE_TIME_KEY_SUFFIXES):
+                        yield value
+                    else:
+                        yield from walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    yield from walk(item)
+
+        yield from walk(self._fixture)
+
+    def _apply_time_offset(self, node, offset: int) -> None:
+        if isinstance(node, dict):
+            for key, value in list(node.items()):
+                if isinstance(value, int) and key.endswith(_FIXTURE_TIME_KEY_SUFFIXES):
+                    node[key] = value + offset
+                else:
+                    self._apply_time_offset(value, offset)
+        elif isinstance(node, list):
+            for item in node:
+                self._apply_time_offset(item, offset)
 
     def get_devices_since(
         self,
