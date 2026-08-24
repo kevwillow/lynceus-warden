@@ -253,3 +253,66 @@ def test_the_legacy_file_stops_counting_once_the_new_one_exists(install):
         legacy_path=config.legacy_ui_allowlist_path(),
     )
     assert "99:99:99:99:99:99" not in {e.pattern for e in merged.entries}
+
+
+def test_promoting_a_watchful_entry_carries_the_legacy_ones_forward(install):
+    """⛔ The promote path is a MUTATING path, so it must seed too.
+
+    `_seed_from_legacy` says every mutating path has to call it, and the two
+    obvious ones -- the add and the remove above -- do. `Database.
+    promote_watchful_to_allowlist` is the third, and it is the easiest to miss:
+    it lives in `db.py` rather than in the web layer, it takes its paths as
+    keyword arguments, and `legacy_path` defaults to `None`, so dropping it is
+    silent at every level. No type error, no lint error, no failing test.
+
+    The cost of missing it is the same as the cost of missing the add path, and
+    it is the worst outcome this file exists to prevent: on an upgraded install
+    the operator promotes one watched device, that first write creates the
+    active file without seeding, the read-fallback stops applying, and every
+    suppression they already had is gone in the same instant -- while the click
+    reports success.
+
+    ⚠️ Keyed on BEHAVIOUR (are the old entries in the merged view afterwards)
+    and not on the call site, so a future path that writes the UI file some
+    other way is covered by the same assertion.
+    """
+    config, db, config_dir, _state_dir = install
+    legacy = config_dir / "allowlist_ui.yaml"
+    add_ui_entry(legacy, AllowlistEntry(pattern=MAC, pattern_type="mac", note="old"))
+
+    active = config.resolved_ui_allowlist_path()
+    assert not active.exists(), "precondition: the move has not happened yet"
+
+    promoted = "11:22:33:44:55:66"
+    db.upsert_device(promoted, "wifi", "Acme", 0, 1_700_000_000)
+    alert_id = db.add_alert(
+        ts=1_700_000_000,
+        rule_name="watchlist_mac",
+        mac=promoted,
+        message="seen",
+        severity="high",
+    )
+    entry_id = db.create_watchful_from_alert(
+        alert_id, snooze_duration_seconds=None, now_ts=1_700_000_000
+    )
+
+    assert db.promote_watchful_to_allowlist(
+        entry_id,
+        allowlist_path=active,
+        legacy_allowlist_path=config.legacy_ui_allowlist_path(),
+        pattern=promoted,
+        pattern_type="mac",
+        note="known device",
+        expires_at=None,
+        now_ts=1_700_000_100,
+    )
+
+    merged = load_allowlist(
+        config.allowlist_path,
+        ui_path=active,
+        legacy_path=config.legacy_ui_allowlist_path(),
+    )
+    assert sorted(e.pattern for e in merged.entries) == [promoted, MAC], (
+        "promoting one watchful entry dropped the operator's pre-move "
+        "suppressions: the promote path did not seed from the legacy file"
+    )
