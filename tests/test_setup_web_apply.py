@@ -1238,3 +1238,57 @@ def test_new_apply_routes_require_token(path, method):
             assert c.get(path).status_code == 403
         else:
             assert c.post(path).status_code == 403
+
+
+@pytest.mark.webui
+def test_apply_stream_reports_a_cancelled_apply_instead_of_going_silent():
+    """A CANCELLED apply must still say so on the stream, not just in the report.
+
+    ⛔ The regression this pins is a disagreement between two surfaces
+    describing the same apply. `_run_apply_task`'s `finally` synthesized a
+    failed step for the cancellation path and wrote it to
+    ``session.apply_report`` -- so ``/apply-complete`` rendered correctly --
+    but never put it on ``session.apply_queue``. The SSE stream therefore
+    opened, emitted its closing ``event: end`` and shut, and the operator
+    watching the live progress page was told nothing at all.
+
+    Measured before the fix, the entire payload was::
+
+        'event: end\\ndata: {}\\n\\n'
+
+    which is one ``data:`` (the end event's own empty object) and zero step
+    records. ⭐ That is also the exact shape the weekly `latest-deps (3.13)`
+    job failed with -- ``assert 1 >= 2`` against that literal payload --
+    which is how this path was found.
+
+    ⚠️ Keyed on the stream CONTENT rather than on a queue length, so a future
+    refactor that changes how the step is enqueued still has to keep the
+    operator-visible promise: a terminal apply says which way it ended.
+    """
+    app = _make_app()
+    session = app.state.session_store.get_or_create(TOKEN)
+    session.answers.update(_valid_answers())
+    with _client(app) as c:
+        csrf = _csrf_get(c, "/review")
+        c.post(f"/apply?token={TOKEN}", data={"_csrf": csrf})
+        task = session.apply_task
+        assert task is not None, "precondition: the apply task must exist to be cancelled"
+        task.get_loop().call_soon_threadsafe(task.cancel)
+        _wait_for_state(session, ("completed", "failed"), timeout=5.0)
+        with c.stream("GET", f"/apply-stream?token={TOKEN}") as resp:
+            assert resp.status_code == 200
+            chunks = list(resp.iter_text())
+    payload = "".join(chunks)
+
+    assert session.apply_state == "failed", (
+        f"a cancelled apply must land terminal-failed, got {session.apply_state!r}"
+    )
+    assert "event: end" in payload, "the stream must still close cleanly"
+    assert "cancelled" in payload, (
+        "the cancellation never reached the stream, so the operator watching "
+        f"/apply-progress saw nothing explain it. payload={payload!r}"
+    )
+    assert payload.count("data:") >= 2, (
+        "only the end event's own `data: {}` was present, i.e. zero step "
+        f"records. payload={payload!r}"
+    )

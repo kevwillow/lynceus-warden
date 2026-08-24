@@ -478,6 +478,25 @@ async def _run_apply_task(
                 session.apply_report = ApplyReport(
                     steps=(*prior_records, cancel_step),
                 )
+            # ⛔ The step must reach the QUEUE as well as the report, and
+            # this is the only terminal path that used to skip it. The
+            # success path emits its records through the sink and the
+            # `except Exception` path above pushes its synthetic step at
+            # line ~454; a cancel pushed nothing, so an operator watching
+            # /apply-progress saw the stream open, emit `event: end` and
+            # close, with no record that anything had happened at all.
+            # Measured before this line existed: the whole payload was
+            # `event: end\ndata: {}\n\n`.
+            #
+            # 🪤 Finding 7.2 fixed the STATE on this path and stopped
+            # there, so the completion page rendered while the live view
+            # stayed silent. The two surfaces disagreed about the same
+            # apply -- ⇒ [[audit-a-fix-against-its-own-principle]].
+            #
+            # put_nowait for the same reason as the sentinel below: this
+            # runs during a CancelledError unwind, where an await can be
+            # re-cancelled before it completes.
+            queue.put_nowait(serialize_step(cancel_step))
             new_state = "failed"
         # Finding 1.5: put_nowait (not await put) so a CancelledError
         # landing right at the sentinel-push point cannot skip the
