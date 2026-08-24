@@ -407,6 +407,20 @@ behind it. [CONTRIBUTING.md](CONTRIBUTING.md) and `.claude/gates.md` record
 the traps that make a green run mean less than it looks like. In particular,
 check *which* test skipped rather than the skip count.
 
+## Try it without hardware
+
+Lynceus normally needs Kismet and a monitor-mode adapter. To see what it does
+before setting any of that up:
+
+```sh
+git clone https://github.com/kevwillow/lynceus-warden
+cd lynceus-warden && ./install.sh --user
+lynceus-quickstart --demo
+```
+
+That replays a bundled recording into a throwaway database and opens the UI. It
+touches no config of yours and captures no radio traffic. Ctrl+C ends it.
+
 ## Installation
 
 **Linux is the supported target.**
