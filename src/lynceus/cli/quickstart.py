@@ -15,6 +15,7 @@ import ctypes
 import logging
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -544,11 +545,18 @@ def _filter_watchlist_csv_for_demo(
     kept = []
     for row in rows:
         identifier = row["identifier"]
+        # ⛔ These are the RAW Argus identifier_type values (what's actually in
+        # the CSV column), not the mapped watchlist.pattern_type -- import_csv
+        # applies IDENTIFIER_TYPE_MAP downstream of this filter (ssid_exact ->
+        # "ssid"). Testing against "ssid" here instead of "ssid_exact" silently
+        # dropped every ssid_exact row (6 of 41 SSID rows in the bundled CSV):
+        # "ssid" never occurs as a raw identifier_type. Do not "helpfully"
+        # normalize these to the mapped names.
         id_type = row["identifier_type"]
         if id_type == "mac":
             if identifier.lower() in macs:
                 kept.append(row)
-        elif id_type in ("ssid", "ssid_pattern"):
+        elif id_type in ("ssid_exact", "ssid_pattern"):
             needle = identifier.lower()
             if needle and any(needle in name.lower() for name in names):
                 kept.append(row)
@@ -762,9 +770,28 @@ def _no_config_error() -> str:
     return "\n".join(lines)
 
 
+def _cleanup_demo_dir(demo_dir: Path | None) -> None:
+    """Remove a ``--demo``-created temp directory. No-op if None (--demo
+    was not used) or already gone.
+
+    Called from every early-return in ``main()`` between the point ``--demo``
+    creates the directory and the daemon/UI ``try/finally`` that would
+    otherwise be the only cleanup path -- ``check_not_root``,
+    ``check_no_systemd``, and ``check_port_free`` can all still fail (return
+    2) before that ``try`` is even entered, e.g. re-running ``--demo`` while
+    a previous demo instance still holds the port. Without this, that
+    ordinary "ran it twice" mistake leaks a ~16 MB throwaway database per
+    attempt, contradicting the README's "throwaway" / "touches no config of
+    yours" claims for a demo whose whole point is leaving no trace.
+    """
+    if demo_dir is not None:
+        shutil.rmtree(demo_dir, ignore_errors=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    demo_dir: Path | None = None
     if args.demo:
         demo_dir = Path(tempfile.mkdtemp(prefix="lynceus-demo-"))
         args.config = str(build_demo_config(demo_dir))
@@ -782,6 +809,7 @@ def main(argv: list[str] | None = None) -> int:
                 "error: --system config scope is not supported on this platform.",
                 file=sys.stderr,
             )
+            _cleanup_demo_dir(demo_dir)
             return 2
         config_path = str(resolved)
     elif args.config is None:
@@ -804,6 +832,7 @@ def main(argv: list[str] | None = None) -> int:
     ):
         if err:
             print(f"error: {err}", file=sys.stderr)
+            _cleanup_demo_dir(demo_dir)
             return 2
 
     config_port = _read_ui_port_from_config(config_path)
@@ -812,6 +841,7 @@ def main(argv: list[str] | None = None) -> int:
     port_err = check_port_free(effective_port)
     if port_err:
         print(f"error: {port_err}", file=sys.stderr)
+        _cleanup_demo_dir(demo_dir)
         return 2
 
     ui_config_path = config_path
@@ -892,6 +922,7 @@ def main(argv: list[str] | None = None) -> int:
                 os.unlink(tmp_config)
             except OSError:
                 pass
+        _cleanup_demo_dir(demo_dir)
 
 
 if __name__ == "__main__":
