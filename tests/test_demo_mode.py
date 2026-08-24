@@ -1,5 +1,6 @@
 """The demo fixture must be valid, curated, and present in the WHEEL."""
 import json
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -59,6 +60,13 @@ def test_one_device_appears_at_three_locations_and_is_not_watchlisted():
 @pytest.mark.slow
 def test_the_fixture_is_actually_in_the_built_wheel(tmp_path):
     """⛔ pytest reads the source tree. Only the wheel proves what ships."""
+    # ⛔ Measured 2026-08-24: with a stale build/lib present, `python -m build`
+    # repackages the OLD tree and this guard passes with the fixture deleted
+    # from src/. A packaging guard that cannot fail is worse than no guard, so
+    # the cleanup belongs HERE and not in the caller's instructions: a guard
+    # that depends on somebody remembering to clean is not a guard.
+    for stale in (REPO / "build", REPO / "src" / "lynceus.egg-info"):
+        shutil.rmtree(stale, ignore_errors=True)
     subprocess.run(
         [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_path), str(REPO)],
         check=True,
