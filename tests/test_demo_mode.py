@@ -80,3 +80,27 @@ def test_the_fixture_is_actually_in_the_built_wheel(tmp_path):
         "the demo fixture is missing from the wheel: every test passes and the "
         "installed product has no demo"
     )
+
+
+def test_demo_needs_no_existing_config(tmp_path, monkeypatch):
+    """The whole point: a stranger with no lynceus.yaml can still see it run."""
+    from lynceus.cli import quickstart
+
+    monkeypatch.setattr(quickstart.paths, "resolve_existing_config", lambda: None)
+    cfg_path = quickstart.build_demo_config(tmp_path)
+    import yaml
+
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert cfg["kismet_fixture_path"] == str(DEMO_FIXTURE_PATH)
+    assert cfg["kismet_fixture_shift_to_now"] is True
+    assert str(tmp_path) in cfg["db_path"], "demo must not touch a real database"
+
+
+def test_demo_config_validates(tmp_path):
+    """A demo that writes an invalid config fails in front of the person we are
+    trying to impress."""
+    from lynceus.cli import quickstart
+    from lynceus.config import load_config
+
+    cfg = load_config(str(quickstart.build_demo_config(tmp_path)))
+    assert cfg.kismet_fixture_shift_to_now is True
