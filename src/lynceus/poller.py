@@ -114,6 +114,13 @@ STATE_KEY_BLE_BRIDGE_STATUS = "ble_bridge_status"
 BLE_BRIDGE_RUNNING = "running"
 BLE_BRIDGE_FAILED = "failed"
 BLE_BRIDGE_STOPPED = "stopped"
+# Alive, but not scanning. Distinct from "failed" because the two have
+# different causes and different remedies, and one sentence covering both sends
+# the operator to check whether the process is up — which, here, it is.
+BLE_BRIDGE_STALLED = "stalled"
+# Wall-clock second at which the bridge last had a scan session genuinely
+# turning. Written by the bridge's own tick, read by _observe_ble_bridge.
+STATE_KEY_BLE_BRIDGE_SCAN_TS = "ble_bridge_scan_alive_ts"
 
 #: Entry ids whose impossible watchful snooze has already been reported, as a
 #: JSON list. ⛔ Durable, and that is the point: `find_impossible_watchful_
@@ -1433,6 +1440,19 @@ def process_observation(
             )
 
 
+def effective_ble_flush_interval(config: Config) -> int:
+    """Seconds between BLE bridge tick flushes, as the bridge will actually run.
+
+    ⚠️ ONE derivation, deliberately. `_start_ble_bridge` passes this to the
+    bridge and `_observe_ble_bridge` sizes the stall window from it; two copies
+    of the same `or poll_interval_seconds` fallback would drift the moment one
+    of them changed, and the failure would be a false "stalled" verdict on a
+    healthy bridge — which is worse than the defect this window exists to catch.
+    """
+    configured = config.ble_bridge.flush_interval
+    return int(configured if configured is not None else config.poll_interval_seconds)
+
+
 def _compose_heartbeat(db: Database, config: Config, *, now_ts: int) -> tuple[bool, str]:
     """Build the heartbeat's (healthy, message) from MEASURED state.
 
@@ -1512,11 +1532,24 @@ def _compose_heartbeat(db: Database, config: Config, *, now_ts: int) -> tuple[bo
     #    and is NOT a fault; "stopped" is a clean shutdown and likewise is not.
     #    Only enabled-then-dead is a problem. The poll loop is the sole writer
     #    and only writes when the bridge is enabled.
+    #
+    #    ⚠️ "failed" and "stalled" get SEPARATE sentences. They have different
+    #    causes and different remedies: "not running" tells the operator to
+    #    check whether the bridge is up, and for a stalled bridge it IS up —
+    #    they would find nothing wrong and learn to discount the warning. The
+    #    stalled wording names the adapter instead, which is where to look.
     bridge_status = db.get_state(STATE_KEY_BLE_BRIDGE_STATUS)
     if bridge_status == BLE_BRIDGE_FAILED:
         problems.append(
             "the BLE bridge is not running (BLE-only devices, including "
             "trackers, are not being seen; Kismet capture is unaffected)"
+        )
+    elif bridge_status == BLE_BRIDGE_STALLED:
+        problems.append(
+            "the BLE bridge is up but has completed no scan for longer than "
+            "expected — the adapter has most likely gone away (BLE-only "
+            "devices, including trackers, are not being seen; Kismet capture "
+            "is unaffected)"
         )
 
     # 5. Kismet reported devices and we admitted NONE of them.
@@ -2830,6 +2863,7 @@ class Poller:
         #: writes only on CHANGE, so a healthy bridge costs one write at
         #: startup rather than one per poll for the daemon's lifetime.
         self._ble_bridge_last_status: str | None = None
+        self._ble_bridge_started_at: int | None = None
         #: Whether the "Kismet unreachable" notification was actually DELIVERED,
         #: as distinct from attempted. The recovery edge keys on this so it
         #: cannot announce the end of an outage the operator never heard about.
@@ -3314,6 +3348,13 @@ class Poller:
         bridge_thread = None
         if self.config.ble_bridge.enabled:
             try:
+                # ⛔ Clear BEFORE starting. A stamp left by the previous run
+                # is already older than the stall window, so inheriting it
+                # would grade a legitimately warming-up bridge as stalled on
+                # every daemon start. Absent routes through the bounded
+                # warm-up grace instead, which is what start means.
+                self.db.set_state(STATE_KEY_BLE_BRIDGE_SCAN_TS, "")
+                self._ble_bridge_started_at = int(time.time())
                 bridge, bridge_thread = self._start_ble_bridge()
                 self.db.set_state(STATE_KEY_BLE_BRIDGE_STATUS, BLE_BRIDGE_RUNNING)
             except Exception:
@@ -3402,19 +3443,69 @@ class Poller:
         """
         if not self.config.ble_bridge.enabled:
             return
-        alive = thread is not None and thread.is_alive()
-        status = BLE_BRIDGE_RUNNING if alive else BLE_BRIDGE_FAILED
         try:
+            if thread is None or not thread.is_alive():
+                status = BLE_BRIDGE_FAILED
+            else:
+                status = self._grade_ble_scan_liveness()
             if status != self._ble_bridge_last_status:
-                if not alive:
+                if status == BLE_BRIDGE_FAILED:
                     logger.error(
                         "BLE bridge is not running; BLE-only devices are not "
                         "being seen. Kismet capture is unaffected."
+                    )
+                elif status == BLE_BRIDGE_STALLED:
+                    logger.error(
+                        "BLE bridge thread is alive but has completed no scan "
+                        "for over %ss; BLE-only devices are not being seen. "
+                        "Kismet capture is unaffected.",
+                        2 * effective_ble_flush_interval(self.config),
                     )
                 self.db.set_state(STATE_KEY_BLE_BRIDGE_STATUS, status)
                 self._ble_bridge_last_status = status
         except Exception as e:
             logger.warning("could not record BLE bridge status: %s", e)
+
+    def _grade_ble_scan_liveness(self) -> str:
+        """RUNNING or STALLED for a bridge thread that is confirmed alive.
+
+        ⛔ `thread.is_alive()` is a liveness test for the THREAD, not for the
+        capture. `BleBridge.run` deliberately catches every bleak/BlueZ failure
+        and restarts the scan after a backoff — correct, because an adapter that
+        comes back should be picked up without a daemon restart, but it means an
+        adapter that never comes back leaves a thread that is alive forever and
+        scanning never. This reads the stamp the scan loop itself writes.
+
+        ⚠️ A QUIET room must stay RUNNING. The stamp comes from the tick flush,
+        which turns whether or not any advert was buffered, so zero devices seen
+        is not evidence of a fault — and grading on device count would report a
+        stalled bridge for most operators most of the time.
+
+        ⚠️ `0 <= age`, not `age <= window` alone. A stamp dated in the FUTURE is
+        what a clock excursion leaves behind, and a bare upper bound reads that
+        as "extremely recent" and reports healthy for the whole excursion —
+        the defect `_compose_heartbeat` clause 1 already carries a guard for,
+        and which retention.py and evidence.py bound the same way.
+        """
+        window = 2 * effective_ble_flush_interval(self.config)
+        now_ts = int(time.time())
+        stamp: int | None = None
+        raw = self.db.get_state(STATE_KEY_BLE_BRIDGE_SCAN_TS)
+        if raw:
+            try:
+                stamp = int(raw)
+            except (TypeError, ValueError):
+                stamp = None
+        if stamp is None:
+            # No scan has stamped since this bridge was started. That is normal
+            # until the first tick lands, and a fault after that: without the
+            # grace period every daemon start would report a stalled bridge.
+            started = self._ble_bridge_started_at
+            if started is None or 0 <= now_ts - started <= window:
+                return BLE_BRIDGE_RUNNING
+            return BLE_BRIDGE_STALLED
+        age = now_ts - stamp
+        return BLE_BRIDGE_RUNNING if 0 <= age <= window else BLE_BRIDGE_STALLED
 
     def _start_ble_bridge(self):
         """Construct + start the passive BLE bridge in a daemon thread.
@@ -3431,11 +3522,7 @@ class Poller:
         from .bridges.ble import BleBridge
 
         cfg = self.config.ble_bridge
-        flush_interval = (
-            cfg.flush_interval
-            if cfg.flush_interval is not None
-            else self.config.poll_interval_seconds
-        )
+        flush_interval = effective_ble_flush_interval(self.config)
         bridge = BleBridge(
             db=Database(self.config.db_path),
             config=self.config,

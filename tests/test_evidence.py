@@ -12,11 +12,17 @@ from pydantic import ValidationError
 from lynceus.config import CaptureConfig, Config
 from lynceus.db import Database
 from lynceus.evidence import (
+    _PROBE_SSID_KEYS,
     STATE_KEY_LAST_EVIDENCE_PRUNE,
     capture_evidence,
     prune_old_evidence,
 )
-from lynceus.kismet import FakeKismetClient
+from lynceus.kismet import (
+    _PROBED_SSID_MAP_FIELD,
+    _PROBED_SSID_RECORD_FIELD,
+    _TYPE_MAP,
+    FakeKismetClient,
+)
 from lynceus.poller import STATE_KEY_LAST_POLL, poll_once
 from lynceus.rules import Rule, Ruleset
 
@@ -573,6 +579,154 @@ def test_capture_redacts_ble_friendly_names_when_toggle_disabled(db, alert_id):
     assert "btle.device.name" not in blob
     assert "btle.advertised.name" not in blob
     assert "John's iPhone" not in blob
+
+
+# Every Kismet device-type string whose kismet.device.base.name carries a
+# Bluetooth friendly name rather than a Wi-Fi SSID, DERIVED from the ingest
+# layer's own map rather than transcribed. The redactor must cover the whole
+# family: a hand-copied subset is how "BR/EDR" was missed, and a hand-copied
+# subset here would be blind to the same mistake made again.
+_BLUETOOTH_KISMET_TYPES = frozenset(
+    kismet_type
+    for kismet_type, family in _TYPE_MAP.items()
+    if family in {"ble", "bt_classic"}
+)
+
+
+def test_bluetooth_type_derivation_is_not_vacuous():
+    """The parametrised sweep below is only a guard if its universe is real.
+
+    An empty or one-element derived set would make every case pass while
+    proving nothing, so pin the floor AND the specific string that was
+    missing: Kismet emits "BR/EDR" for Bluetooth Classic depending on
+    version and datasource (kismet.py documents it as live in the Parrot-OS
+    probe's device-type frequency table).
+    """
+    assert len(_BLUETOOTH_KISMET_TYPES) >= 3
+    assert "BR/EDR" in _BLUETOOTH_KISMET_TYPES
+    assert "BTLE" in _BLUETOOTH_KISMET_TYPES
+    assert "Bluetooth" in _BLUETOOTH_KISMET_TYPES
+    # And it must NOT swallow the Wi-Fi family, whose base.name is an SSID
+    # the operator needs for triage.
+    assert "Wi-Fi AP" not in _BLUETOOTH_KISMET_TYPES
+
+
+@pytest.mark.parametrize("kismet_type", sorted(_BLUETOOTH_KISMET_TYPES))
+def test_capture_redacts_friendly_name_for_every_bluetooth_type(db, alert_id, kismet_type):
+    """ble_friendly_names=False must strip base.name for the WHOLE family.
+
+    The operator opted out of storing Bluetooth friendly names. Honouring
+    that for "BTLE" alone still writes "John's iPhone" to disk for a device
+    Kismet happened to type "BR/EDR".
+    """
+    record = _ble_record_with_friendly_names()
+    record["kismet.device.base.type"] = kismet_type
+    rid = capture_evidence(
+        db,
+        alert_id,
+        MAC,
+        record,
+        capture=CaptureConfig(probe_ssids=False, ble_friendly_names=False),
+    )
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    blob = row["kismet_record_json"]
+    assert "kismet.device.base.name" not in json.loads(blob)
+    assert "John's iPhone" not in blob
+
+
+def test_capture_keeps_wifi_ssid_in_base_name_when_ble_names_disabled(db, alert_id):
+    """The CONTROL for the sweep above: opting out of Bluetooth friendly
+    names must not strip a Wi-Fi SSID out of the same key. Without this, a
+    fix that stripped base.name unconditionally would pass every case."""
+    record = _kismet_record()
+    record["kismet.device.base.name"] = "Hendricks_Home"
+    rid = capture_evidence(
+        db,
+        alert_id,
+        MAC,
+        record,
+        capture=CaptureConfig(probe_ssids=False, ble_friendly_names=False),
+    )
+    assert rid is not None
+    row = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()
+    assert json.loads(row["kismet_record_json"])["kismet.device.base.name"] == "Hendricks_Home"
+
+
+# The probe-SSID opt-out, checked against REAL Kismet output rather than
+# against a fixture that encodes our belief about its shape. That distinction
+# is not academic here: the hand-built fixture above nests the probed SSIDs in
+# a DICT under `dot11.device.last_probed_ssid_csum_map`, and real Kismet
+# 2025.09 emits a LIST under `dot11.device.probed_ssid_map`. The redactor named
+# the fixture's key, the parser named Kismet's, and the existing test passed
+# because it was testing the fixture.
+_REAL_CAPTURE = Path(__file__).parent / "fixtures" / "kismet_devices_real_2025_09.json"
+
+
+def _real_record_with_probes() -> dict:
+    devices = json.loads(_REAL_CAPTURE.read_text(encoding="utf-8"))
+    for device in devices:
+        dot11 = device.get("dot11.device")
+        if isinstance(dot11, dict) and dot11.get("dot11.device.probed_ssid_map"):
+            return device
+    raise AssertionError(
+        "the real-capture fixture no longer contains a probed-SSID map; this "
+        "test is now vacuous and needs a fixture that does"
+    )
+
+
+def test_the_redactor_covers_every_probe_key_the_parser_reads():
+    """Derived, not transcribed. Two lists of Kismet key names drifting apart
+    is what put `dot11.device.last_probed_ssid_csum_map` -- a key Kismet does
+    not emit -- in the redactor while the parser read a different one."""
+    assert _PROBED_SSID_MAP_FIELD in _PROBE_SSID_KEYS
+    assert _PROBED_SSID_RECORD_FIELD in _PROBE_SSID_KEYS
+
+
+def test_the_real_probed_ssid_names_do_not_survive_the_opt_out(db, alert_id):
+    """⭐ Against real Kismet output. The operator said do not keep these."""
+    record = _real_record_with_probes()
+    probed = record["dot11.device"]["dot11.device.probed_ssid_map"]
+    names = [e.get("dot11.probedssid.ssid") for e in probed]
+    names = [n for n in names if n]
+    assert names, "the fixture's probed records carry no SSID string — vacuous"
+
+    rid = capture_evidence(
+        db, alert_id, MAC, record, capture=CaptureConfig(probe_ssids=False)
+    )
+    assert rid is not None
+    blob = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()["kismet_record_json"]
+
+    for name in names:
+        assert name not in blob, f"probed SSID {name!r} survived probe_ssids=False"
+    # And the container itself is gone, not merely emptied of its leaf keys.
+    assert "dot11.device.probed_ssid_map" not in json.loads(blob).get("dot11.device", {})
+
+
+def test_the_real_probed_ssids_ARE_kept_when_the_operator_opted_in(db, alert_id):
+    """The CONTROL. Redaction that always fires is not redaction, it is loss —
+    and this data is the point of the capture for an operator who wants it."""
+    record = _real_record_with_probes()
+    names = [
+        e.get("dot11.probedssid.ssid")
+        for e in record["dot11.device"]["dot11.device.probed_ssid_map"]
+    ]
+    names = [n for n in names if n]
+
+    rid = capture_evidence(
+        db, alert_id, MAC, record, capture=CaptureConfig(probe_ssids=True)
+    )
+    blob = db._conn.execute(
+        "SELECT kismet_record_json FROM evidence_snapshots WHERE id = ?", (rid,)
+    ).fetchone()["kismet_record_json"]
+    for name in names:
+        assert name in blob, f"probed SSID {name!r} was dropped despite opt-IN"
 
 
 def test_capture_does_not_mutate_upstream_record(db, alert_id):

@@ -37,7 +37,7 @@ from ..config import load_config
 from ..db import Database
 from ..kismet import DeviceObservation, normalize_mac, normalize_uuid
 from ..notify import NullNotifier, build_notifier
-from ..poller import ClockAnchor, process_observation
+from ..poller import STATE_KEY_BLE_BRIDGE_SCAN_TS, ClockAnchor, process_observation
 from ..rules import Ruleset, load_ruleset, load_runtime_severity_overrides
 
 logger = logging.getLogger(__name__)
@@ -411,7 +411,12 @@ class BleBridge:
             count += 1
         return count
 
-    # --- scan loop (rig-only; not unit-tested — no adapter off-rig) --------
+    # --- scan loop -------------------------------------------------------
+    # `_make_scanner` still needs a real adapter, but `_scan_until_stop`
+    # itself is driven off-rig against a fake scanner by
+    # tests/test_ble_bridge_stall_detection.py — the scan-liveness stamp it
+    # writes is what the poller grades the bridge on, so it cannot be a
+    # path that only ever runs where nothing is watching.
 
     def _ensure_startup_location(self) -> None:
         """Ensure the default location once at startup.
@@ -473,7 +478,29 @@ class BleBridge:
                 exc,
             )
 
-    async def _scan_until_stop(self, stop: asyncio.Event) -> None:  # pragma: no cover - rig-only
+    def _note_scan_alive(self) -> None:
+        """Stamp "a scan session is turning right now" for the poller to read.
+
+        ⛔ Called only from inside a started scan session, never from the
+        restart-with-backoff handler. That is the whole point: the bridge
+        survives a bleak/BlueZ failure by retrying forever, so the thread stays
+        alive whether or not the adapter ever comes back, and `is_alive()`
+        cannot tell an operator which of those they have.
+
+        ⚠️ Stamped on the TICK, not on advert arrival. A quiet room is the
+        normal case for this tool; keying liveness on devices seen would report
+        a fault for most operators most of the time.
+
+        Failure to stamp must not kill the scan — capture is worth more than
+        the health signal — but it must not be silent either, because a stamp
+        that never lands reads downstream as a stalled bridge.
+        """
+        try:
+            self.db.set_state(STATE_KEY_BLE_BRIDGE_SCAN_TS, str(int(time.time())))
+        except Exception as exc:
+            logger.warning("BLE bridge: could not record scan liveness: %s", exc)
+
+    async def _scan_until_stop(self, stop: asyncio.Event) -> None:
         scanner = self._make_scanner()
         # NOT `async with scanner:` — its __aexit__ calls stop() unguarded, and
         # on bleak 3.x that raises on every clean teardown, straight into the
@@ -486,11 +513,16 @@ class BleBridge:
                 self.adapter,
                 self.flush_interval,
             )
+            # The scanner is up: that alone is the liveness signal, recorded
+            # before the first flush interval elapses so a short-lived start is
+            # still visible to the poller.
+            self._note_scan_alive()
             while not stop.is_set():
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=self.flush_interval)
                 except TimeoutError:
                     self._flush(int(time.time()))  # tick flush
+                    self._note_scan_alive()
                 else:
                     break  # stop signalled
         finally:
