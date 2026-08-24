@@ -849,6 +849,12 @@ def test_run_apply_task_handles_sink_construction_failure(tmp_path):
         real_sink = review_local.SSEProgressSink
         review_local.SSEProgressSink = BoomSink
         try:
+            # ⚠️ The sentinel is SCHEDULED on the loop rather than put directly
+            # (see the finally in _run_apply_task), so it lands on the next loop
+            # turn. `await asyncio.sleep(0)` below yields exactly that one turn.
+            # The assertion is unchanged: the sentinel must still arrive, which
+            # is the guarantee Finding 2.2 is about. Real consumers block on
+            # `await queue.get()` and are unaffected either way.
             await review_local._run_apply_task(
                 app_state=FakeState(),
                 session=session,
@@ -869,6 +875,10 @@ def test_run_apply_task_handles_sink_construction_failure(tmp_path):
         assert last.status == "failed"
         assert "simulated sink init failure" in last.message
         # Sentinel posted — consumers will not hang.
+        # One loop turn: the sentinel is scheduled via call_soon_threadsafe so
+        # it cannot overtake pending step records. Real consumers `await
+        # queue.get()` and never need this; a synchronous drain does.
+        await asyncio.sleep(0)
         items = []
         while not queue.empty():
             items.append(queue.get_nowait())

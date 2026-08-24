@@ -496,14 +496,40 @@ async def _run_apply_task(
             # put_nowait for the same reason as the sentinel below: this
             # runs during a CancelledError unwind, where an await can be
             # re-cancelled before it completes.
-            queue.put_nowait(serialize_step(cancel_step))
+            # Deferred for the same ordering reason as the sentinel below: a
+            # direct put here would jump ahead of step records still pending as
+            # scheduled callbacks, and the generator would emit them out of
+            # order or, if this were the last item before the sentinel, not at
+            # all.
+            loop.call_soon_threadsafe(queue.put_nowait, serialize_step(cancel_step))
             new_state = "failed"
         # Finding 1.5: put_nowait (not await put) so a CancelledError
         # landing right at the sentinel-push point cannot skip the
         # sentinel and leave SSE consumers blocked on the never-
         # arriving None. The queue is unbounded so QueueFull cannot
         # fire.
-        queue.put_nowait(None)
+        # ⛔ The sentinel must be scheduled through the loop's ready queue, NOT
+        # put directly, or it can overtake step records that are still pending.
+        #
+        # Measured on Python 3.13 (2026-08-24), ~50% of isolated runs:
+        # `SSEProgressSink.record()` enqueues via
+        # `loop.call_soon_threadsafe(queue.put_nowait, ...)` from the worker
+        # thread, which SCHEDULES the put. A bare `queue.put_nowait(None)` here
+        # executes IMMEDIATELY, because this `finally` already runs on the loop.
+        # So the sentinel could land while record callbacks were still sitting
+        # in the ready queue; the SSE generator then drained the sentinel first,
+        # emitted `event: end` and stopped. The whole payload was
+        # `event: end\ndata: {}` and every step record was lost.
+        #
+        # `call_soon_threadsafe` from ON the loop appends to the SAME ready
+        # queue, so the sentinel is now guaranteed to run AFTER every record
+        # already scheduled. The ordering is FIFO, which is the property the
+        # generator depends on.
+        #
+        # 🪤 This is what the weekly `latest-deps (3.13)` job was catching. It
+        # is NOT the cancelled-apply defect fixed in #222; that fix was real but
+        # addressed a different route to the same empty-stream symptom.
+        loop.call_soon_threadsafe(queue.put_nowait, None)
         # Schedule the walked-away grace timer (Touch 3). If Done
         # POSTs first, it cancels this task. The scheduling lives in
         # a module-local helper so Touch 3 can import + override it
