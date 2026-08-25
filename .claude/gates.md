@@ -91,11 +91,37 @@ the PR titles: the first attempt at this line credited #217, which touches the
 JS-extension gate and adds no browser test at all.
 ⇒ [[date-every-number-you-publish]] — a dated measurement, not a contract.
 
-## v1.1.0 release baseline
+## v1.1.1 release baseline
 
-⭐ **Measured 2026-08-25 on the MERGED `main`, `3e2adef`** (#229's squash), which
-is the tree `v1.1.0` is cut from. Taken on `main` rather than on a branch head,
-because a baseline taken on a branch head is how this line rotted three times.
+⭐ **Measured 2026-08-25 on `cbb4681`, the tree `v1.1.1` is tagged at.** Also
+measured identically on `3e2adef` (#229's squash) and `1f9361e` (the `v1.1.0`
+tag's tree): the same three numbers on all three, because the only differences
+between them are version literals, prose and a workflow. Taken on `main` rather
+than on a branch head, because a baseline taken on a branch head is how this line
+rotted three times.
+
+⛔ **`v1.1.1`, not `v1.1.0`, is the shipped release of this line**, and the
+reason is a GitHub behaviour worth knowing before the next tag:
+
+- This repository has **immutable releases** enabled. A published release cannot
+  gain an asset afterwards: `gh release upload` fails with
+  `HTTP 422: Cannot upload assets to an immutable release`. Artifacts must go
+  into the `gh release create` call itself.
+- 🪤 **Deleting an immutable release does NOT free its tag name.** Recreating it
+  fails with `HTTP 422: tag_name was used by an immutable release`. The name is
+  spent permanently. `v1.1.0` published with zero assets, a recovery path deleted
+  it, and that name can now never carry a release.
+- ⇒ `packaging.yml` no longer deletes anything. It refuses an assetless release
+  and says the only way forward is a new patch tag. The `v1.1.0` tag is intact
+  and points at `1f9361e`; it is a valid tag with no release page, exactly like
+  `v1.0.0`.
+
+⭐ **Verified from the PUBLISHED artifact, not from CI's word.** Downloaded
+`lynceus-1.1.1-py3-none-any.whl` from the release, installed it into a clean venv
+with no inherited `PYTHONPATH`, and ran a real export end to end: version 1.1.1,
+all 10 console scripts present, `casefile/templates/case_file.html` packaged, a
+bundle written, and the planted bystander absent from every file in it.
+
 
 | Gate | Result |
 | --- | --- |
