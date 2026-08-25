@@ -1,0 +1,233 @@
+[
+  {
+    "kismet.device.base.macaddr": "b4:1e:52:aa:11:01",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.first_time": 1785000000,
+    "kismet.device.base.last_time": 1786731600,
+    "kismet.device.base.signal": {
+      "kismet.common.signal.last_signal": -45
+    },
+    "kismet.device.base.manuf": "Flock Group Inc",
+    "kismet.device.base.name": "FlockSafety-Falcon",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.uuid": "11111111-1111-1111-1111-111111111111",
+        "kismet.common.seenby.first_time": 1785000000,
+        "kismet.common.seenby.last_time": 1785003600,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "home",
+          "kismet.datasource.uuid": "11111111-1111-1111-1111-111111111111",
+          "kismet.datasource.interface": "home"
+        }
+      },
+      {
+        "kismet.common.seenby.uuid": "22222222-2222-2222-2222-222222222222",
+        "kismet.common.seenby.first_time": 1786728000,
+        "kismet.common.seenby.last_time": 1786731600,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "commute",
+          "kismet.datasource.uuid": "22222222-2222-2222-2222-222222222222",
+          "kismet.datasource.interface": "commute"
+        }
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "00:25:df:88:19:22",
+    "kismet.device.base.type": "BTLE",
+    "kismet.device.base.first_time": 1785345600,
+    "kismet.device.base.last_time": 1785349200,
+    "kismet.device.base.signal": {
+      "kismet.common.signal.last_signal": -68
+    },
+    "kismet.device.base.manuf": "Axon",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.uuid": "33333333-3333-3333-3333-333333333333",
+        "kismet.common.seenby.first_time": 1785345600,
+        "kismet.common.seenby.last_time": 1785349200,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "commute",
+          "kismet.datasource.uuid": "33333333-3333-3333-3333-333333333333",
+          "kismet.datasource.interface": "commute"
+        }
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "7c:67:a2:33:44:55",
+    "kismet.device.base.type": "BTLE",
+    "kismet.device.base.first_time": 1785086400,
+    "kismet.device.base.last_time": 1786472400,
+    "kismet.device.base.signal": {
+      "kismet.common.signal.last_signal": -78
+    },
+    "kismet.device.base.manuf": null,
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.uuid": "44444444-4444-4444-4444-444444444444",
+        "kismet.common.seenby.first_time": 1785086400,
+        "kismet.common.seenby.last_time": 1785090000,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "home",
+          "kismet.datasource.uuid": "44444444-4444-4444-4444-444444444444",
+          "kismet.datasource.interface": "home"
+        }
+      },
+      {
+        "kismet.common.seenby.uuid": "55555555-5555-5555-5555-555555555555",
+        "kismet.common.seenby.first_time": 1785777600,
+        "kismet.common.seenby.last_time": 1785781200,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "work",
+          "kismet.datasource.uuid": "55555555-5555-5555-5555-555555555555",
+          "kismet.datasource.interface": "work"
+        }
+      },
+      {
+        "kismet.common.seenby.uuid": "66666666-6666-6666-6666-666666666666",
+        "kismet.common.seenby.first_time": 1786468800,
+        "kismet.common.seenby.last_time": 1786472400,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "gym",
+          "kismet.datasource.uuid": "66666666-6666-6666-6666-666666666666",
+          "kismet.datasource.interface": "gym"
+        }
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "b8:27:eb:11:22:33",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.first_time": 1785000000,
+    "kismet.device.base.last_time": 1785003600,
+    "kismet.device.base.signal": {
+      "kismet.common.signal.last_signal": -55
+    },
+    "kismet.device.base.manuf": "Netgear",
+    "kismet.device.base.name": "HomeRouter",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.uuid": "77777777-7777-7777-7777-777777777777",
+        "kismet.common.seenby.first_time": 1785000000,
+        "kismet.common.seenby.last_time": 1785003600,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "home",
+          "kismet.datasource.uuid": "77777777-7777-7777-7777-777777777777",
+          "kismet.datasource.interface": "home"
+        }
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "dc:a6:32:aa:bb:cc",
+    "kismet.device.base.type": "Wi-Fi Client",
+    "kismet.device.base.first_time": 1785518400,
+    "kismet.device.base.last_time": 1785522000,
+    "kismet.device.base.signal": {
+      "kismet.common.signal.last_signal": -62
+    },
+    "kismet.device.base.manuf": "Samsung",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.uuid": "88888888-8888-8888-8888-888888888888",
+        "kismet.common.seenby.first_time": 1785518400,
+        "kismet.common.seenby.last_time": 1785522000,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "work",
+          "kismet.datasource.uuid": "88888888-8888-8888-8888-888888888888",
+          "kismet.datasource.interface": "work"
+        }
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "f4:f5:e8:dd:ee:ff",
+    "kismet.device.base.type": "BTLE",
+    "kismet.device.base.first_time": 1785691200,
+    "kismet.device.base.last_time": 1785694800,
+    "kismet.device.base.signal": {
+      "kismet.common.signal.last_signal": -71
+    },
+    "kismet.device.base.manuf": "Fitbit",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.uuid": "99999999-9999-9999-9999-999999999999",
+        "kismet.common.seenby.first_time": 1785691200,
+        "kismet.common.seenby.last_time": 1785694800,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "gym",
+          "kismet.datasource.uuid": "99999999-9999-9999-9999-999999999999",
+          "kismet.datasource.interface": "gym"
+        }
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "00:1d:df:99:88:77",
+    "kismet.device.base.type": "Bluetooth",
+    "kismet.device.base.first_time": 1785950400,
+    "kismet.device.base.last_time": 1785954000,
+    "kismet.device.base.signal": {
+      "kismet.common.signal.last_signal": -66
+    },
+    "kismet.device.base.manuf": "Bose",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "kismet.common.seenby.first_time": 1785950400,
+        "kismet.common.seenby.last_time": 1785954000,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "commute",
+          "kismet.datasource.uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "kismet.datasource.interface": "commute"
+        }
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "24:a4:3c:cc:11:22",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.first_time": 1786123200,
+    "kismet.device.base.last_time": 1786126800,
+    "kismet.device.base.signal": {
+      "kismet.common.signal.last_signal": -58
+    },
+    "kismet.device.base.manuf": "Ubiquiti",
+    "kismet.device.base.name": "CafeWiFi",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        "kismet.common.seenby.first_time": 1786123200,
+        "kismet.common.seenby.last_time": 1786126800,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "cafe",
+          "kismet.datasource.uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+          "kismet.datasource.interface": "cafe"
+        }
+      }
+    ]
+  },
+  {
+    "kismet.device.base.macaddr": "f0:9f:c2:55:66:77",
+    "kismet.device.base.type": "Wi-Fi Client",
+    "kismet.device.base.first_time": 1786296000,
+    "kismet.device.base.last_time": 1786299600,
+    "kismet.device.base.signal": {
+      "kismet.common.signal.last_signal": -73
+    },
+    "kismet.device.base.manuf": "Google",
+    "kismet.device.base.seenby": [
+      {
+        "kismet.common.seenby.uuid": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        "kismet.common.seenby.first_time": 1786296000,
+        "kismet.common.seenby.last_time": 1786299600,
+        "kismet.common.seenby.source": {
+          "kismet.datasource.name": "cafe",
+          "kismet.datasource.uuid": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+          "kismet.datasource.interface": "cafe"
+        }
+      }
+    ]
+  }
+]

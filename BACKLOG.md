@@ -438,25 +438,22 @@ deployment behind a reverse proxy at a non-root path, switch to
 url_for('static', path=...) and update tests to assert the resolved
 path rather than the literal substring.
 
-### Auto-shift-to-now in FakeKismetClient
-The dev fixture (tests/fixtures/dev_kismet.json) currently requires
-manual rebumping when its timestamps age out (see scripts/rebump_dev_fixture.py
-and docs/WINDOWS_DEV.md). The durable fix:
+### Auto-shift-to-now in FakeKismetClient, SHIPPED
+Was: extend FakeKismetClient with auto_shift_to_now / auto_shift_anchor_seconds
+params, applied lazily on the first get_devices_since call, surfaced through
+Config as kismet_fixture_auto_shift.
 
-- Add FakeKismetClient(auto_shift_to_now: bool = False,
-  auto_shift_anchor_seconds: float | None = None) constructor params.
-- When auto_shift_to_now is True, on first get_devices_since call,
-  compute the offset = now - max(last_time across fixture) and apply
-  that delta to all timestamps before parsing into observations.
-- Surface the flag through Config as kismet_fixture_auto_shift: bool.
-- Default to False to preserve current FakeKismetClient behavior for
-  integration tests that depend on frozen timestamps.
-
-Trigger: next time someone has to manually rebump the fixture, OR when
-v0.3 work touches kismet.py for other reasons (rolling both into one
-prompt is cheap).
-Estimated: 1 prompt, ~50 LOC + ~15 tests, including a regression test
-that proves integration test fixtures are NOT shifted (default off).
+What shipped differs from the proposal above. FakeKismetClient now takes
+shift_to_now: bool = False, applied eagerly in __init__ rather than lazily on
+first get_devices_since, and surfaced through Config as
+kismet_fixture_shift_to_now rather than kismet_fixture_auto_shift. The shift
+anchors to FIXTURE_ANCHOR_LAG_SECONDS (one hour) before now rather than to
+now itself, because the poll loop distrusts future-dated records: a fixture
+shifted flush to the current instant produces timestamps that race ahead of
+the poll interval and look like clock skew to the ingest path. Consumed by
+`lynceus-quickstart --demo` (kismet_fixture_shift_to_now: true in the
+generated demo config) so the bundled fixture always reads as fresh instead
+of needing manual rebumping.
 
 ### Brittle position-sensitive layout tests
 Several gitignored layout tests assert CSS rules via naive first-occurrence

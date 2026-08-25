@@ -169,6 +169,10 @@ class Config(BaseModel):
     kismet_url: str = DEFAULT_KISMET_URL
     kismet_api_key: str | None = None
     kismet_fixture_path: str | None = None
+    #: Shift the fixture's clocks so its newest record is one hour old at load.
+    #: Off by default: the test suites assert against fixed fixture timestamps,
+    #: and a demo is the only caller that wants a moving clock.
+    kismet_fixture_shift_to_now: bool = False
     db_path: str = "lynceus.db"
     location_id: str = "default"
     location_label: str = "Default Location"

@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import argparse
 import collections
+import csv
 import ctypes
 import logging
 import os
+import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -482,6 +485,215 @@ def _write_port_override_config(config_path: str, port: int) -> str:
     return tmp
 
 
+def _demo_watchlist_candidates(fixture_path: Path) -> tuple[set[str], set[str]]:
+    """Derive the (macs, ssid-ish names) the demo fixture can ever match
+    against, straight from the fixture JSON -- not a hardcoded literal.
+
+    Mirrors the two fields the real match path actually reads: ``kismet.
+    device.base.macaddr`` (exact, case-insensitive) and ``kismet.device.
+    base.name`` (substring haystack for ``ssid``/``ssid_pattern``, see
+    ``kismet.py``'s ``ssid = raw.get("kismet.device.base.name")`` and
+    ``db.py``'s ``_lookup_substring_watchlist_match``). Kept in lockstep
+    with the fixture on purpose: whatever devices Task 2 curates in, this
+    derives the right filter with no second place to update.
+    """
+    import json
+
+    records = json.loads(fixture_path.read_text(encoding="utf-8"))
+    macs = {
+        r["kismet.device.base.macaddr"].lower()
+        for r in records
+        if r.get("kismet.device.base.macaddr")
+    }
+    names = {
+        r["kismet.device.base.name"]
+        for r in records
+        if r.get("kismet.device.base.name")
+    }
+    return macs, names
+
+
+def _filter_watchlist_csv_for_demo(
+    src_csv: Path, fixture_path: Path, out_csv: Path
+) -> bool:
+    """Write ``out_csv`` containing only the bundled-watchlist rows the demo
+    fixture can actually match, and report whether any survived.
+
+    ⛔ Importing the full bundled CSV works -- measured, it fires the real
+    Flock-SSID alert -- but ``import_csv`` does per-row DB validation and
+    writes, and at the bundled corpus's real size (41,518 rows) that
+    measured 4m27s from launch to the UI's first response. That defeats a
+    "no hardware, watch it run" demo: someone evaluating the product
+    watches a blank terminal for four and a half minutes. Filtering here
+    costs one read of the full CSV (~0.25s, measured, pure ``csv`` parsing,
+    no DB) and hands ``import_csv`` only the handful of rows that were ever
+    going to survive contact with a 9-device fixture, so the DB-write cost
+    scales with the demo, not with the corpus.
+
+    identifier_type coverage matches the two delegation rule_types
+    ``build_demo_config`` enables (``watchlist_mac``, ``watchlist_ssid``):
+    ``mac`` rows need an exact (case-insensitive) hit against a fixture
+    MAC; ``ssid`` / ``ssid_pattern`` rows need the identifier to be a
+    case-insensitive substring of a fixture device name -- the same
+    direction ``_lookup_substring_watchlist_match`` tests in the real
+    matcher (needle=identifier, haystack=observed name).
+    """
+    from ..cli.import_argus import EXPECTED_HEADER, parse_argus_csv
+
+    macs, names = _demo_watchlist_candidates(fixture_path)
+    rows = parse_argus_csv(str(src_csv))
+    kept = []
+    for row in rows:
+        identifier = row["identifier"]
+        # ⛔ These are the RAW Argus identifier_type values (what's actually in
+        # the CSV column), not the mapped watchlist.pattern_type -- import_csv
+        # applies IDENTIFIER_TYPE_MAP downstream of this filter (ssid_exact ->
+        # "ssid"). Testing against "ssid" here instead of "ssid_exact" silently
+        # dropped every ssid_exact row (6 of 41 SSID rows in the bundled CSV):
+        # "ssid" never occurs as a raw identifier_type. Do not "helpfully"
+        # normalize these to the mapped names.
+        id_type = row["identifier_type"]
+        if id_type == "oui":
+            # ⭐ OUI rows are why the demo can demonstrate MAC-prefix matching at
+            # all. Measured 2026-08-24: before this branch the filter kept only
+            # `mac` and the two SSID types, so the ONLY thing the demo could
+            # ever fire was a substring hit on an SSID -- the weakest and most
+            # trivially spoofed mechanism the product has -- while
+            # `watchlist_mac` was enabled and structurally inert.
+            #
+            # The bundled corpus carries the real vendor OUIs (Flock Safety
+            # b4:1e:52, Axon 00:25:df), so the fixture uses those and this keeps
+            # the rows that match them.
+            prefix = identifier.lower().replace("-", ":")
+            if any(m.startswith(prefix) for m in macs):
+                kept.append(row)
+                continue
+        if id_type == "mac":
+            if identifier.lower() in macs:
+                kept.append(row)
+        elif id_type in ("ssid_exact", "ssid_pattern"):
+            needle = identifier.lower()
+            if needle and any(needle in name.lower() for name in names):
+                kept.append(row)
+
+    with src_csv.open(encoding="utf-8") as f:
+        meta_line = f.readline()
+    # ⛔ record_count in the meta line becomes import_runs.record_count, which
+    # the dashboard's "watchlist" freshness figure reads verbatim (app.py's
+    # watchlist_records = watchlist_freshness["record_count"]) -- it is NOT a
+    # re-COUNT(*) of the watchlist table. Copying the original corpus's
+    # record_count (41,518) through unchanged would make the demo dashboard
+    # claim a full corpus while only `len(kept)` rows actually exist: honest
+    # about the row count is the entire point of filtering, so the count in
+    # the meta line has to track what this function actually kept.
+    meta_line = re.sub(r"record_count=\d+", f"record_count={len(kept)}", meta_line)
+    with out_csv.open("w", encoding="utf-8", newline="") as f:
+        f.write(meta_line)
+        writer = csv.writer(f)
+        writer.writerow(EXPECTED_HEADER)
+        for row in kept:
+            writer.writerow([row[col] for col in EXPECTED_HEADER])
+    return bool(kept)
+
+
+def _seed_demo_watchlist(db_path: Path, state_dir: Path) -> Path | None:
+    """Import the demo-relevant slice of the bundled Argus watchlist into
+    the demo DB, and render a rules.yaml enabling the two delegation
+    rule_types the demo actually has watchlist rows for.
+
+    ``lynceus-setup`` normally does both of these -- via ``import_bundled_
+    watchlist`` and the interactive enable-alerting wizard in
+    ``lynceus.setup.core`` -- but the demo path exists specifically so a
+    stranger never has to run the wizard. Without this, the demo db has 0
+    watchlist rows and no ``rules_path``: the daemon logs "ruleset is empty",
+    and the curated fixture's Flock-style AP (matched via a bundled
+    ssid_pattern stem -- see BACKLOG's SHIPPED entry and tests/test_demo_
+    mode.py) never alerts. That is the exact "tests pass, dashboard shows
+    nothing real" gap this task exists to catch, so this reproduces the two
+    non-interactive halves of the wizard's closing arc directly, in-process
+    (not via the ``lynceus-import-argus`` console script -- that would need
+    PATH resolution the daemon/UI subprocesses get from ``_resolve_entry_
+    point`` and this call site has no equivalent for) -- and against a CSV
+    already filtered down to what the demo can match, not the full corpus
+    (see ``_filter_watchlist_csv_for_demo``).
+
+    Returns the rules.yaml path to wire into the config, or None if the
+    bundled watchlist CSV is not present (source builds without bundled
+    threat data), nothing in it matches the demo fixture, or the import
+    failed for any reason -- either way the demo still runs, just without
+    alerts, rather than crashing.
+    """
+    import importlib.resources
+
+    from ..cli.import_argus import import_csv, load_override_config
+    from ..db import Database
+    from ..demo import DEMO_FIXTURE_PATH
+    from ..setup.core import render_rules_yaml
+
+    try:
+        resource = importlib.resources.files("lynceus.data").joinpath(
+            "default_watchlist.csv"
+        )
+        if not resource.is_file():
+            return None
+    except (ModuleNotFoundError, FileNotFoundError, OSError):
+        return None
+
+    try:
+        with importlib.resources.as_file(resource) as csv_path:
+            filtered_csv = state_dir / "demo_watchlist.csv"
+            if not _filter_watchlist_csv_for_demo(
+                Path(csv_path), DEMO_FIXTURE_PATH, filtered_csv
+            ):
+                return None
+            db = Database(str(db_path))
+            try:
+                import_csv(
+                    db,
+                    str(filtered_csv),
+                    load_override_config(None),
+                    source="lynceus-quickstart --demo (bundled watchlist, filtered to fixture)",
+                )
+            finally:
+                db.close()
+    except Exception:
+        logger.warning("demo: bundled watchlist import failed", exc_info=True)
+        return None
+
+    rules_path = state_dir / "rules.yaml"
+    rules_path.write_text(
+        render_rules_yaml({"watchlist_mac", "watchlist_oui", "watchlist_ssid"}), encoding="utf-8"
+    )
+    return rules_path
+
+
+def build_demo_config(state_dir: Path) -> Path:
+    """Write a self-contained demo config into ``state_dir`` and return its path.
+
+    ⛔ Everything lives under ``state_dir``, which the caller creates fresh. The
+    demo must never point at, migrate, or prune a database the operator cares
+    about: someone evaluating the product for the first time should not be able
+    to damage an install they do not yet have.
+    """
+    from ..demo import DEMO_FIXTURE_PATH
+
+    db_path = state_dir / "demo.db"
+    rules_path = _seed_demo_watchlist(db_path, state_dir)
+
+    config = {
+        "db_path": str(db_path),
+        "kismet_fixture_path": str(DEMO_FIXTURE_PATH),
+        "kismet_fixture_shift_to_now": True,
+        "poll_interval_seconds": 5,
+        "ui_bind_host": "127.0.0.1",
+    }
+    if rules_path is not None:
+        config["rules_path"] = str(rules_path)
+    path = state_dir / "lynceus-demo.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+    return path
+
+
 # --- CLI entry point ----------------------------------------------------------
 
 
@@ -524,6 +736,34 @@ def _build_parser() -> argparse.ArgumentParser:
         default=config_default,
         help=f"Path to lynceus.yaml (default: {config_default_help}).",
     )
+    # ⛔ --demo belongs in the SCOPE group, not beside it.
+    #
+    # Measured 2026-08-24: with --demo outside this group, `--demo --system`
+    # parsed happily. main() built the throwaway demo config, assigned it to
+    # args.config, and the very next `if args.system:` overwrote config_path
+    # with /etc/lynceus/lynceus.yaml. The demo directory was created, never
+    # used, and deleted in the finally, while what actually STARTED was the
+    # daemon and UI against the operator's real database, real rules and real
+    # Kismet URL. `--demo --config real.yaml` was the same bug pointing the
+    # other way: the demo silently won and the explicit --config was ignored.
+    #
+    # That directly falsified README's "It touches no config of yours". Putting
+    # --demo in the group makes argparse refuse both combinations, so the
+    # guarantee is structural rather than dependent on statement order in main().
+    #
+    # 🪤 A non-None default on --config does NOT trip the group: argparse
+    # conflicts only on arguments actually seen on the command line, so plain
+    # `--demo` still works on a machine that has a config. Asserted in
+    # tests/test_demo_mode.py.
+    scope_group.add_argument(
+        "--demo",
+        action="store_true",
+        help=(
+            "Run the bundled demo: no Kismet, no adapter and no config needed. "
+            "Seeds a throwaway database in a temp directory and replays a "
+            "curated fixture with its clocks shifted to now."
+        ),
+    )
     scope_group.add_argument(
         "--system",
         action="store_true",
@@ -564,9 +804,32 @@ def _no_config_error() -> str:
     return "\n".join(lines)
 
 
+def _cleanup_demo_dir(demo_dir: Path | None) -> None:
+    """Remove a ``--demo``-created temp directory. No-op if None (--demo
+    was not used) or already gone.
+
+    Called from every early-return in ``main()`` between the point ``--demo``
+    creates the directory and the daemon/UI ``try/finally`` that would
+    otherwise be the only cleanup path -- ``check_not_root``,
+    ``check_no_systemd``, and ``check_port_free`` can all still fail (return
+    2) before that ``try`` is even entered, e.g. re-running ``--demo`` while
+    a previous demo instance still holds the port. Without this, that
+    ordinary "ran it twice" mistake leaks a ~16 MB throwaway database per
+    attempt, contradicting the README's "throwaway" / "touches no config of
+    yours" claims for a demo whose whole point is leaving no trace.
+    """
+    if demo_dir is not None:
+        shutil.rmtree(demo_dir, ignore_errors=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    demo_dir: Path | None = None
+    if args.demo:
+        demo_dir = Path(tempfile.mkdtemp(prefix="lynceus-demo-"))
+        args.config = str(build_demo_config(demo_dir))
+        print(f"demo: throwaway database and config under {demo_dir}")
     if args.system:
         # Explicit system-scope: point quickstart at /etc regardless of the
         # user-scope-first default. This is an explicit override, not a
@@ -580,6 +843,7 @@ def main(argv: list[str] | None = None) -> int:
                 "error: --system config scope is not supported on this platform.",
                 file=sys.stderr,
             )
+            _cleanup_demo_dir(demo_dir)
             return 2
         config_path = str(resolved)
     elif args.config is None:
@@ -602,6 +866,7 @@ def main(argv: list[str] | None = None) -> int:
     ):
         if err:
             print(f"error: {err}", file=sys.stderr)
+            _cleanup_demo_dir(demo_dir)
             return 2
 
     config_port = _read_ui_port_from_config(config_path)
@@ -610,6 +875,7 @@ def main(argv: list[str] | None = None) -> int:
     port_err = check_port_free(effective_port)
     if port_err:
         print(f"error: {port_err}", file=sys.stderr)
+        _cleanup_demo_dir(demo_dir)
         return 2
 
     ui_config_path = config_path
@@ -690,6 +956,7 @@ def main(argv: list[str] | None = None) -> int:
                 os.unlink(tmp_config)
             except OSError:
                 pass
+        _cleanup_demo_dir(demo_dir)
 
 
 if __name__ == "__main__":

@@ -628,7 +628,10 @@ def _retry_watchful_escalation(
 
 def build_kismet_client(config: Config) -> KismetClient:
     if config.kismet_fixture_path:
-        return FakeKismetClient(config.kismet_fixture_path)
+        return FakeKismetClient(
+            config.kismet_fixture_path,
+            shift_to_now=config.kismet_fixture_shift_to_now,
+        )
     return KismetClient(
         config.kismet_url,
         api_key=config.kismet_api_key,

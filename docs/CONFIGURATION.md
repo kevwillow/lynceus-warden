@@ -11,6 +11,7 @@ The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and r
 | `kismet_url` | string | `http://127.0.0.1:2501` | Base URL of the Kismet REST API. Must include scheme (`http://` or `https://`); scheme-less values like `127.0.0.1:2501` are rejected at load. | `http://192.168.1.10:2501` |
 | `kismet_api_key` | string \| null | `null` | Kismet API key (sent as the `KISMET` cookie). Required for any Kismet instance with auth enabled. | `abc123def456...` |
 | `kismet_fixture_path` | string \| null | `null` | Path to a JSON fixture matching the Kismet device-list shape. When set, lynceus uses `FakeKismetClient` and never makes HTTP calls. Useful for offline development and tests. | `tests/fixtures/kismet_devices.json` |
+| `kismet_fixture_shift_to_now` | boolean | `false` | Development and demo flag. When true, shifts every timestamp in the loaded `kismet_fixture_path` fixture by one constant offset so the newest record reads as about an hour old, keeping the fixture's relative spread but making an old capture look current. It has no effect unless `kismet_fixture_path` is also set, and it is not something a real deployment turns on. | `true` |
 | `db_path` | string | `lynceus.db` | Path to the SQLite database file. Override to a stable absolute path on production. | `/var/lib/lynceus/lynceus.db` |
 | `location_id` | string | `default` | Identifier recorded on every sighting. Use to distinguish multiple Pis. | `home` |
 | `location_label` | string | `Default Location` | Human-readable label paired with `location_id`. | `Living Room` |
