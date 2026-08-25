@@ -223,6 +223,16 @@ def _readme(case) -> bytes:
             f"  {withheld} evidence snapshot(s) were withheld: the operator marked them",
             "  do not publish. They are counted here rather than silently dropped.",
         ]
+    fields_withheld = case.excluded_counts.get("evidence_fields_withheld", 0)
+    if fields_withheld:
+        lines += [
+            "",
+            f"  {fields_withheld} field(s) were withheld from the evidence records. The",
+            "  captured record describes the observed device, but it also carries the",
+            "  addresses of other devices associated with it, and those belong to",
+            "  members of the public. Only fields describing the observed device",
+            "  itself are published.",
+        ]
     if over_cap:
         lines += [
             "",

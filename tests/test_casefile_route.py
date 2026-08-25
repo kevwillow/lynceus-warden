@@ -21,7 +21,7 @@ from lynceus.casefile import bundle as bundle_mod
 from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.webui.app import create_app
-from tests.test_casefile_query import BYSTANDER, TARGET, _add_evidence, _seed
+from tests.test_casefile_query import BYSTANDER, NESTED_BYSTANDER, TARGET, _add_evidence, _seed
 
 pytestmark = pytest.mark.webui
 
@@ -74,8 +74,12 @@ def test_the_bystander_is_absent_from_every_file_in_the_stream(client):
         assert zf.namelist(), "an empty zip would make this vacuous"
         for name in zf.namelist():
             body = zf.read(name)
-            assert BYSTANDER.encode() not in body, f"bystander leaked into {name}"
-            assert BYSTANDER.replace(":", "").encode() not in body, name
+            for label, needle in (
+                ("co-observed", BYSTANDER),
+                ("nested in the evidence record", NESTED_BYSTANDER),
+            ):
+                assert needle.encode() not in body, f"{label} bystander leaked into {name}"
+                assert needle.replace(":", "").encode() not in body, f"{label}: {name}"
 
 
 def test_an_oversized_export_refuses_and_names_the_cli(client, monkeypatch):

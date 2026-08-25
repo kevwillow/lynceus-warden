@@ -63,6 +63,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   asserting its address appears in no file of the finished bundle on either
   path, not by reading the code.
 
+- **Evidence snapshots are published as a projection, not verbatim.** Kismet's
+  `/devices/last-time/N/devices.json` is not field-limited, so the record
+  Lynceus stores is the WHOLE device record, and `evidence.py`'s capture-time
+  redactor strips probe SSIDs and BLE friendly names and nothing else. For a
+  Wi-Fi access point the rest of that record includes
+  `dot11.device.associated_client_map`, which is keyed by the MAC address of
+  every device associated to it.
+
+  ⛔ Those are members of the public, by exactly the argument that keeps
+  unwatchlisted co-observers out of this document, and shipping the record
+  verbatim would have handed them to whoever the case file was given to. A case
+  file now publishes an ALLOWLIST of scalar fields that describe the observed
+  device itself, and counts what it withheld. An allowlist rather than a
+  denylist because a denylist is wrong the next time Kismet adds a field, and
+  that failure is silent and unrecoverable: the document has already been
+  handed over.
+
 - **`do_not_publish` finally has a consumer.** Migration 009 added the column in
   v0.5.0 as forward-compat for a hypothetical public-feed export and it has had
   no producer and no consumer since. A marked evidence row is now excluded from

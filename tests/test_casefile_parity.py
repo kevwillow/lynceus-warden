@@ -33,7 +33,7 @@ from lynceus.casefile.bundle import build_artifacts, write_directory
 from lynceus.casefile.query import build_case_file
 from lynceus.config import Config
 from lynceus.webui.app import create_app
-from tests.test_casefile_query import BYSTANDER, TARGET, _add_evidence, _seed
+from tests.test_casefile_query import BYSTANDER, NESTED_BYSTANDER, TARGET, _add_evidence, _seed
 
 pytestmark = pytest.mark.webui
 
@@ -85,7 +85,11 @@ def test_the_bystander_is_absent_from_EVERY_file_on_both_paths(rig):
         "no bystander was co-observed, so this guard would be checking nothing"
     )
 
-    needles = (BYSTANDER.encode(), BYSTANDER.replace(":", "").encode())
+    needles = tuple(
+        form
+        for mac in (BYSTANDER, NESTED_BYSTANDER)
+        for form in (mac.encode(), mac.replace(":", "").encode())
+    )
     for label, artifacts in (
         ("cli", build_artifacts(case)),
         ("ui", _streamed(client)),

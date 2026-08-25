@@ -17,7 +17,7 @@ import pytest
 from lynceus.casefile.bundle import build_artifacts, build_zip_bytes, write_directory
 from lynceus.casefile.manifest import build_manifest
 from lynceus.casefile.query import build_case_file
-from tests.test_casefile_query import BYSTANDER, NOW, TARGET, _add_evidence, _seed
+from tests.test_casefile_query import BYSTANDER, NESTED_BYSTANDER, NOW, TARGET, _add_evidence, _seed
 
 
 @pytest.fixture
@@ -77,8 +77,12 @@ def test_the_bystander_is_absent_from_every_artifact(sample_case_file):
         "fixture rather than on the aggregation rule"
     )
     for name, payload in build_artifacts(sample_case_file).items():
-        assert BYSTANDER.encode() not in payload, f"bystander leaked into {name}"
-        assert BYSTANDER.replace(":", "").encode() not in payload, name
+        for label, needle in (
+            ("co-observed", BYSTANDER),
+            ("nested in the evidence record", NESTED_BYSTANDER),
+        ):
+            assert needle.encode() not in payload, f"{label} bystander leaked into {name}"
+            assert needle.replace(":", "").encode() not in payload, f"{label}: {name}"
 
 
 def test_the_data_files_carry_the_rows_the_document_summarises(sample_case_file):

@@ -121,6 +121,14 @@ from that: this says what the database holds, not where the device was.</p>
   {{ excluded.do_not_publish }} snapshot(s) were withheld because the operator
   marked them do not publish. They are counted here rather than silently dropped.
   {% endif %}
+  {% if excluded.evidence_fields_withheld %}
+  Each snapshot is a PROJECTION of the record that was captured, not the whole
+  of it: {{ excluded.evidence_fields_withheld }} field(s) across these snapshots
+  were withheld. The captured record describes the observed device, but it also
+  carries the addresses of other devices that were associated with it, and those
+  belong to members of the public. Only fields that describe the observed device
+  itself are published here.
+  {% endif %}
 </p>
 {% if case.evidence %}
 <table>

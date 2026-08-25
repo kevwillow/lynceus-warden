@@ -80,12 +80,25 @@ def _add_evidence(db, alert_id, mac, *, do_not_publish=0, captured_at=START + 11
     never sets it. Seeding it by SQL is the only way to exercise the
     exclusion rule, and it is honest about that.
     """
+    import json as _json
+
     with db.transaction() as conn:
         conn.execute(
             "INSERT INTO evidence_snapshots("
             "alert_id, mac, captured_at, kismet_record_json, rssi_history_json, "
             "do_not_publish) VALUES (?, ?, ?, ?, ?, ?)",
-            (alert_id, mac, captured_at, '{"k": "v"}', "[-50]", do_not_publish),
+            (
+                alert_id,
+                mac,
+                captured_at,
+                # ⛔ A REALISTIC record, not a toy one. Every bundle-level
+                # guard that greps for a bystander is only worth something
+                # if the fixture actually contains one to find, and the
+                # eight-field fixtures elsewhere in this repo do not.
+                _json.dumps(_REALISTIC_AP_RECORD),
+                "[-50]",
+                do_not_publish,
+            ),
         )
 
 
@@ -234,3 +247,81 @@ def test_retention_limits_are_conditioned_on_the_actual_config(casefile_db):
     boilerplate that says 'retention may have pruned' regardless."""
     cf = build_case_file(casefile_db, TARGET, now_ts=NOW)
     assert "sightings_retention_days" in cf.parameters
+
+
+#: A Wi-Fi access point's real Kismet record is nothing like the eight
+#: base fields the repo's fixtures carry. Kismet's
+#: ``/devices/last-time/N/devices.json`` is not field-limited, so
+#: ``DeviceObservation.raw_record`` is the WHOLE record, and for an AP
+#: that includes a client map keyed by the MAC of every device
+#: associated to it. ``evidence.py``'s capture-time redactor strips probe
+#: SSIDs and BLE names and nothing else, so those addresses are in the
+#: database.
+#:
+#: ⛔ Every one of them belongs to a member of the public.
+NESTED_BYSTANDER = "de:ad:be:ef:00:98"
+
+_REALISTIC_AP_RECORD = {
+    "kismet.device.base.macaddr": TARGET,
+    "kismet.device.base.name": "FlockSafety-ALPR",
+    "kismet.device.base.manuf": "Acme Surveillance",
+    "kismet.device.base.type": "Wi-Fi AP",
+    "kismet.device.base.signal": {"kismet.common.signal.last_signal": -50},
+    "dot11.device": {
+        "dot11.device.associated_client_map": {
+            NESTED_BYSTANDER: {"dot11.client.bssid": TARGET},
+        },
+        "dot11.device.num_associated_clients": 1,
+    },
+}
+
+
+@pytest.fixture
+def casefile_db_nested_bystander(tmp_path):
+    db, alert_id = _seed(tmp_path, name="nested.db")
+    import json as _json
+
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO evidence_snapshots("
+            "alert_id, mac, captured_at, kismet_record_json, rssi_history_json, "
+            "do_not_publish) VALUES (?, ?, ?, ?, ?, ?)",
+            (alert_id, TARGET, START + 11, _json.dumps(_REALISTIC_AP_RECORD), "[-50]", 0),
+        )
+    return db
+
+
+def test_a_bystander_nested_in_the_evidence_record_is_not_disclosed(
+    casefile_db_nested_bystander,
+):
+    """⛔ The co-observation rule is not the only way a bystander's address
+    reaches the bundle. A stored Kismet record carries other devices'
+    addresses in its own nested structures, and shipping it verbatim
+    discloses them to whoever the case file is handed to.
+
+    Asserted against the whole rendered dataclass, so it fails wherever
+    the address survives.
+    """
+    cf = build_case_file(casefile_db_nested_bystander, TARGET, now_ts=NOW)
+    assert cf.evidence, "no evidence to check, the guard would be vacuous"
+    assert NESTED_BYSTANDER not in repr(cf), (
+        "an associated client's address reached the case file"
+    )
+
+
+def test_the_evidence_a_case_file_publishes_is_an_allowlist(casefile_db_nested_bystander):
+    """The target's own identifying fields survive, so the exclusion above
+    is a projection and not simply dropping the evidence."""
+    cf = build_case_file(casefile_db_nested_bystander, TARGET, now_ts=NOW)
+    record = cf.evidence[0]["kismet_record"]
+    assert record["kismet.device.base.macaddr"] == TARGET
+    assert record["kismet.device.base.manuf"] == "Acme Surveillance"
+    assert "dot11.device" not in record
+
+
+def test_withheld_evidence_fields_are_counted_not_silently_dropped(
+    casefile_db_nested_bystander,
+):
+    """Same rule as do_not_publish: exclude, and say that you did."""
+    cf = build_case_file(casefile_db_nested_bystander, TARGET, now_ts=NOW)
+    assert cf.excluded_counts["evidence_fields_withheld"] >= 1

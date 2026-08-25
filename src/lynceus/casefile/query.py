@@ -52,6 +52,38 @@ MAX_PAIRS_PER_CO_OBSERVER = 100
 DEFAULT_PROXIMITY_SECONDS = 300
 DEFAULT_GAP_SECONDS = 900
 
+#: The ONLY fields of a stored Kismet record a case file publishes.
+#:
+#: ⛔ An allowlist, and it has to be. Kismet's
+#: ``/devices/last-time/N/devices.json`` is not field-limited, so
+#: ``DeviceObservation.raw_record`` is the whole device record, and
+#: ``evidence.py``'s capture-time redactor strips probe SSIDs and BLE
+#: friendly names and nothing else. For a Wi-Fi access point the rest of
+#: that record includes ``dot11.device.associated_client_map``, which is
+#: keyed by the MAC of every device associated to it: members of the
+#: public, by the same argument that keeps unwatchlisted co-observers out
+#: of this document.
+#:
+#: 🪤 A denylist of the nested fields known to carry other addresses would
+#: be wrong the next time Kismet adds one, and the failure is silent and
+#: unrecoverable, because the document has already been handed to
+#: somebody. An allowlist fails the other way: a new field Kismet adds is
+#: withheld until someone decides to publish it.
+#:
+#: Scalars only, for the same reason. Every structure that has turned out
+#: to hold third-party addresses has been a dict or a list.
+PUBLISHED_EVIDENCE_FIELDS = (
+    "kismet.device.base.macaddr",
+    "kismet.device.base.name",
+    "kismet.device.base.manuf",
+    "kismet.device.base.type",
+    "kismet.device.base.first_time",
+    "kismet.device.base.last_time",
+    "kismet.device.base.channel",
+    "kismet.device.base.frequency",
+    "kismet.device.base.crypt",
+)
+
 
 @dataclass
 class CaseFile:
@@ -147,6 +179,7 @@ def build_case_file(
     # privacy control into a hole the document does not admit to.
     evidence: list[dict] = []
     dnp_excluded = 0
+    fields_withheld = 0
     for alert in alerts:
         snapshot = db.get_evidence_for_alert(alert["id"])
         if snapshot is None:
@@ -154,8 +187,11 @@ def build_case_file(
         if snapshot.get("do_not_publish"):
             dnp_excluded += 1
             continue
-        evidence.append(snapshot)
+        published, withheld = _project_evidence(snapshot)
+        fields_withheld += withheld
+        evidence.append(published)
     excluded["do_not_publish"] = dnp_excluded
+    excluded["evidence_fields_withheld"] = fields_withheld
 
     # Rule 4: co-observers. Watchlisted are named and carry their
     # underlying pairs; everything else is counted and nothing more.
@@ -204,6 +240,43 @@ def build_case_file(
         limits=_build_limits(parameters),
         excluded_counts=excluded,
     )
+
+
+def _project_evidence(snapshot: dict) -> tuple[dict, int]:
+    """Cut a stored evidence snapshot down to what may be published.
+
+    ⛔ A second disclosure rule, and it is not the co-observation one. A
+    co-observed bystander is kept out of this document by being counted
+    rather than named; a bystander whose address sits INSIDE the target's
+    own Kismet record has to be kept out here, because shipping that
+    record verbatim would hand a journalist the addresses of everyone
+    whose phone was associated to the observed access point.
+
+    Returns the projected snapshot and the number of record fields
+    withheld, because the rule everywhere else in this feature is exclude
+    AND count. A silent projection would leave a reader believing the
+    evidence is the whole record.
+    """
+    record = snapshot.get("kismet_record")
+    published = dict(snapshot)
+    if not isinstance(record, dict):
+        published["kismet_record"] = None
+        published["kismet_record_projected"] = False
+        return published, 0
+
+    kept: dict = {}
+    for key in PUBLISHED_EVIDENCE_FIELDS:
+        if key not in record:
+            continue
+        value = record[key]
+        # Scalars only. A dict or a list is where an address that is not
+        # the target's has always turned out to be hiding.
+        if isinstance(value, str | int | float | bool) or value is None:
+            kept[key] = value
+
+    published["kismet_record"] = kept
+    published["kismet_record_projected"] = True
+    return published, max(0, len(record) - len(kept))
 
 
 def _resolve_co_observers(db, norm, *, now_ts, since_ts, until_ts):
