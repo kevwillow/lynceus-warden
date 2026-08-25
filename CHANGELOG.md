@@ -4,10 +4,20 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.1.0] - unreleased
+## [1.1.0] - 2026-08-25
 
-> Not yet cut. The version literals still read `1.0.0`; they move, and this
-> heading gets its date, in the commit the tag points at.
+> **Cut 2026-08-25, tagged `v1.1.0`.** The version literals move in the commit
+> this tag points at, rather than days ahead of it: `1.0.0` spent four days in
+> the tree carrying a warning that it was not a shipped release.
+>
+> Gated on the merged `main` before tagging: the full suite, `ruff check`, and
+> the two host-only gates no runner can execute, the browser crawl and the fresh
+> install, both sentinel-verified so a pass cannot mean "collected nothing".
+> The numbers are in `.claude/gates.md` against the SHA they were measured at.
+>
+> ⭐ Unlike `v1.0.0`, this tag carries artifacts. `packaging.yml` now runs on a
+> `v*` tag and attaches a wheel and an sdist to the GitHub Release, and it
+> refuses to finish unless the release actually carries both.
 
 ### Added
 
