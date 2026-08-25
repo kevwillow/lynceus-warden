@@ -54,6 +54,23 @@ jobs:
           - runner: ubuntu-24.04-arm
             python-version: "3.11"
             coverage: false
+          # ⭐ 3.13 and 3.14 promoted from the weekly early-warning matrix into
+          # the blocking gate on 2026-08-24, once the defect that kept 3.13 red
+          # since 2026-08-17 was fixed: `_run_apply_task`'s SSE sentinel was
+          # `put_nowait` directly onto the loop while step records were enqueued
+          # via `call_soon_threadsafe`, so the sentinel could overtake them and
+          # the stream closed empty. Reproduced locally at ~50% on 3.13 and
+          # proven by revert (13/20 failures reverted, 0/20 with the fix).
+          #
+          # ⛔ A classifier is a claim. `pyproject.toml` lists 3.13 and 3.14
+          # ONLY because these legs exist and pass; if a leg is removed, remove
+          # the classifier in the same commit.
+          - runner: ubuntu-latest
+            python-version: "3.13"
+            coverage: false
+          - runner: ubuntu-latest
+            python-version: "3.14"
+            coverage: false
 
     steps:
       - uses: actions/checkout@v7
