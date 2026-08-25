@@ -580,7 +580,7 @@ def test_interface_type_accepts_only_wifi_or_bt():
     assert _parse(["--interface-type", "bt"]).interface_type == "bt"
 
     with pytest.raises(SystemExit):
-        _build_parser = bk._build_parser().parse_args(["--interface-type", "bluetooth"])
+        bk._build_parser().parse_args(["--interface-type", "bluetooth"])
 
 
 def test_version_flag_exits_with_the_documented_prog_name():

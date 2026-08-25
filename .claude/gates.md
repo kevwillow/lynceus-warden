@@ -876,3 +876,45 @@ dismissed as false positives (alerts 1322/1323/1324), after which the PR went
 output — same 7 alerts, same alert numbers — because it never modelled
 `safe_next_path` as a sanitizer. Fixing the code and clearing the check are
 separate actions here.
+
+
+## Red-team fixes + bootstrap-kismet cover — `6e7608d`, measured 2026-08-25
+
+Branch `feat/webui-auth`. Four security fixes from a cold `gpt-5.6-sol` read,
+plus an M3-built test packet for `cli/bootstrap_kismet.py`.
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` (full) | **5116 passed, 4 skipped, 63 deselected**, exit 0, 35m47s |
+| `ruff check .` | All checks passed! |
+| host-only (`install or browser`) | **16 passed**, 5167 deselected, exit 0, 4m06s |
+| CI at the pushed SHA | **15 success, 1 skipped (`release`, tag-only)** — CodeQL GREEN |
+| PR #234 | `mergeable=MERGEABLE`, `mergeState=CLEAN` |
+
+⭐ **Test count 5061 → 5116, and the +55 accounts exactly**: 4 C0-range redirect
+cases, 44 from the bootstrap-kismet packet, 2 fail-open, 1 symlink refusal,
+3 CSRF shadowing, 1 entry-point wiring. Host-only deselects moved 5116 → 5167,
+which is the same 51 non-browser additions. An unexplained move in either number
+would mean a body appeared or vanished.
+
+⛔ **The first full run at `5cd5ed8` was RED and the harness reported exit 0.**
+The failure was `test_the_ui_entry_point_passes_the_config_path_it_was_given`,
+which grepped `server.py` for the literal text
+`create_app(config, db, config_path=args.config)`. Adding `credentials=` and
+wrapping the call broke the SPELLING while every promise held. Rewritten as an
+`ast` assertion on the keyword's wired value. ⇒ Two separate times this session a
+green-looking result was a wrapper's exit code, not pytest's. Always:
+
+```sh
+... pytest ... > /tmp/log 2>&1; echo "REAL exit: $?"
+```
+
+🪤 **`bootstrap_kismet` coverage was 47%, and the BACKLOG entry naming the gap
+was stale** — `tests/test_bootstrap_kismet_behaviour.py` already covered the four
+surfaces it listed as unpinned. Measure coverage before believing a gap. After
+the packet: **59%**, 340 → 263 statements missed.
+
+⚠️ **`tests/test_bootstrap_kismet.py` is gitignored for OPSEC** (it embeds the
+rig adapter MAC and account name). New cover went into a TRACKED file with
+synthetic fixtures only, so CI actually gates it. Any new test that hard-codes a
+real adapter or host must be added to `.gitignore` instead.
