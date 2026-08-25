@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > ⭐ Unlike `v1.0.0`, this tag carries artifacts. `packaging.yml` now runs on a
 > `v*` tag and attaches a wheel and an sdist to the GitHub Release, and it
 > refuses to finish unless the release actually carries both.
+>
+> 🪤 **Attached at creation, in one call, because this repository has
+> immutable releases enabled.** Measured on this very tag: the first version
+> of that job created the release and then uploaded, and the upload failed
+> with `HTTP 422: Cannot upload assets to an immutable release`, publishing
+> `v1.1.0` with zero assets. There is no "upload afterwards" to fall back
+> on. The job also gained a `workflow_dispatch` input naming an existing
+> tag, because the workflow file that runs on a tag push is the one stored
+> AT that tag: without a dispatch path, a fix landed afterwards can never
+> reach the tag it fixes.
 
 ### Added
 
