@@ -58,7 +58,6 @@ from lynceus.patterns import mac_in_mac_range
 from lynceus.redact import redact_ntfy_topic
 from lynceus.webui.auth import (
     SESSION_ABSOLUTE_SECONDS,
-    SESSION_COOKIE_NAME,
     AuthMiddleware,
     LoginRateLimiter,
     SessionStore,
@@ -66,6 +65,7 @@ from lynceus.webui.auth import (
     clear_session_cookie,
     client_key,
     safe_next_path,
+    session_token_from_scope,
     verify_against_configured,
 )
 from lynceus.webui.clock import (
@@ -2659,7 +2659,11 @@ def create_app(
             dead end that looks like the session was lost.
             """
             target = safe_next_path(next)
-            if app.state.sessions.validate(request.cookies.get(SESSION_COOKIE_NAME)):
+            # ⛔ session_token_from_scope, NOT request.cookies. One reader — see
+            # its docstring for the three inputs on which the two parsers
+            # disagreed, and why the visible symptom of that disagreement is an
+            # infinite redirect loop between /login and /.
+            if app.state.sessions.validate(session_token_from_scope(request.scope)):
                 return RedirectResponse(target, status_code=303)
             return _render_login(request, next_path=target)
 
@@ -2748,7 +2752,7 @@ def create_app(
             is a state change on a GET, which is the thing the rest of this
             app does not do.
             """
-            app.state.sessions.revoke(request.cookies.get(SESSION_COOKIE_NAME))
+            app.state.sessions.revoke(session_token_from_scope(request.scope))
             response = RedirectResponse("/login", status_code=303)
             response.headers.append(
                 "set-cookie", clear_session_cookie(secure=request.url.scheme == "https")

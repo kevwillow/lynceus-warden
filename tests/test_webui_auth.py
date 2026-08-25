@@ -1029,3 +1029,108 @@ def test_the_session_idle_window_does_not_outlive_the_csrf_cookie():
         f"cookie ({CSRF_COOKIE_MAX_AGE}s), so a still-valid session will hit "
         f"403 CSRF errors on every form after {CSRF_COOKIE_MAX_AGE}s"
     )
+
+
+# --- One reader for the session cookie ----------------------------------------
+
+
+def _scope_with_cookie(header: str) -> dict:
+    return {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "query_string": b"",
+        "headers": [(b"cookie", header.encode("latin-1"))],
+    }
+
+
+@pytest.mark.parametrize(
+    "header,expected",
+    [
+        (f"{SESSION_COOKIE_NAME}=abc123", "abc123"),
+        (f"{SESSION_COOKIE_NAME}=abc123; other=1", "abc123"),
+        (f"other=1; {SESSION_COOKIE_NAME}=abc123", "abc123"),
+        # Quoted: stripped, for parity with Starlette's parser.
+        (f'{SESSION_COOKIE_NAME}="abc123"', "abc123"),
+        # Empty is absent, not a token.
+        (f"{SESSION_COOKIE_NAME}=", None),
+        ("other=1", None),
+        # ⛔ Ambiguous: two DIFFERENT values. Fail closed.
+        (f"{SESSION_COOKIE_NAME}=abc123; {SESSION_COOKIE_NAME}=xyz789", None),
+        # The same value twice is a duplicate, not an ambiguity.
+        (f"{SESSION_COOKIE_NAME}=abc123; {SESSION_COOKIE_NAME}=abc123", "abc123"),
+    ],
+)
+def test_the_session_cookie_reader_is_explicit_about_every_shape(header, expected):
+    from lynceus.webui.auth import session_token_from_scope
+
+    assert session_token_from_scope(_scope_with_cookie(header)) == expected
+
+
+def test_the_two_cookie_readers_agree_on_every_shape_that_reaches_them():
+    """⛔ Measured, and it is why there is only one reader now.
+
+    ``Request.cookies`` and ``session_token_from_scope`` disagreed on three
+    inputs — a quoted value, and duplicate cookies (Starlette takes the last,
+    this took the first). Neither disagreement admits an attacker; both refuse
+    rather than allow. But the middleware and the login page would reach
+    DIFFERENT answers about whether a caller is signed in, and the symptom is an
+    infinite redirect loop between /login and /.
+
+    ⚠️ The duplicate row is deliberately EXCLUDED from the agreement check,
+    because the two no longer agree there and that is the fix: Starlette picks
+    the last value, and this refuses outright. Cookie shadowing is how someone
+    who can write a cookie on a sibling origin gets to choose which parser wins,
+    and refusing is the only answer that does not depend on parser order.
+    """
+    from starlette.requests import Request
+
+    from lynceus.webui.auth import session_token_from_scope
+
+    agreeing_shapes = [
+        f"{SESSION_COOKIE_NAME}=abc123",
+        f"{SESSION_COOKIE_NAME}=abc123; other=1",
+        f"other=1; {SESSION_COOKIE_NAME}=abc123",
+        f'{SESSION_COOKIE_NAME}="abc123"',
+        f"{SESSION_COOKIE_NAME}=a%3Db",
+        f"OTHER=x; {SESSION_COOKIE_NAME}=tok; trailing=y",
+        "other=1",
+    ]
+    for header in agreeing_shapes:
+        scope = _scope_with_cookie(header)
+        starlette_says = Request(scope).cookies.get(SESSION_COOKIE_NAME) or None
+        ours_says = session_token_from_scope(scope)
+        assert starlette_says == ours_says, (
+            f"the two cookie readers disagree on {header!r}: "
+            f"Request.cookies={starlette_says!r}, ours={ours_says!r}"
+        )
+
+
+def test_a_shadowed_session_cookie_does_not_authenticate(authed_app):
+    """End to end: a second, different session cookie refuses the request.
+
+    ⛔ Asserts the REFUSAL, not merely that the attacker's token loses. Picking
+    a winner by parser order is the thing being removed.
+    """
+    import asyncio
+
+    app, _db, _cfg = authed_app
+    client = TestClient(app, follow_redirects=False)
+    _login(client)
+    real = client.cookies.get(SESSION_COOKIE_NAME)
+    assert real
+
+    # The genuine cookie alone works ...
+    ok = asyncio.run(_fire(app, "/", cookie=f"{SESSION_COOKIE_NAME}={real}"))
+    assert ok["status"] == 200, f"the control failed: a valid session got {ok['status']}"
+
+    # ... and the same cookie shadowed by a planted one does not, in either order.
+    for header in (
+        f"{SESSION_COOKIE_NAME}={real}; {SESSION_COOKIE_NAME}=planted-token",
+        f"{SESSION_COOKIE_NAME}=planted-token; {SESSION_COOKIE_NAME}={real}",
+    ):
+        result = asyncio.run(_fire(app, "/", cookie=header))
+        assert result["status"] != 200, (
+            f"an ambiguous pair of session cookies authenticated the request "
+            f"({header[:60]}...); the answer depended on parser order"
+        )

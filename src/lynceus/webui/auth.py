@@ -560,6 +560,33 @@ def _is_exempt(path: str, exempt: Iterable[str]) -> bool:
 
 
 def session_token_from_scope(scope) -> str | None:
+    """The session token in this request, or None.
+
+    ⛔ **The ONE reader.** The login handler calls this too rather than using
+    ``Request.cookies``, and the reason is measured. The two parsers disagreed
+    on three inputs:
+
+    ========================================  ================  ==============
+    Cookie header                             Request.cookies   this function
+    ========================================  ================  ==============
+    ``lynceus_session="abc"``                 ``abc``           ``"abc"``
+    ``lynceus_session=abc; lynceus_session=xyz``  ``xyz`` (last)  ``abc`` (first)
+    ========================================  ================  ==============
+
+    Neither disagreement admits an attacker — both orderings refuse rather than
+    allow — but they make the middleware and the login page reach DIFFERENT
+    answers about whether you are signed in, and the visible symptom is an
+    infinite redirect loop between ``/login`` and ``/``. An access-control
+    decision made two ways is one refactor from being made wrongly.
+
+    ⛔ **Duplicates fail closed.** Two ``lynceus_session`` cookies with
+    different values is not a request to resolve by picking one; it is an
+    ambiguous credential, and cookie shadowing is how an attacker who can write
+    a cookie on a sibling origin gets to choose which parser wins. Refusing is
+    the only answer that does not depend on parser order. Two cookies with the
+    SAME value are accepted — that is a duplicate, not an ambiguity.
+    """
+    found: list[str] = []
     for name, value in scope.get("headers") or []:
         if name.decode("latin-1").lower() != "cookie":
             continue
@@ -567,9 +594,20 @@ def session_token_from_scope(scope) -> str | None:
             if "=" not in part:
                 continue
             k, v = part.split("=", 1)
-            if k.strip() == SESSION_COOKIE_NAME:
-                return v.strip()
-    return None
+            if k.strip() != SESSION_COOKIE_NAME:
+                continue
+            v = v.strip()
+            # Strip one layer of quoting, for parity with Starlette's parser.
+            # A urlsafe-base64 token never needs quoting, so this is about the
+            # two readers agreeing rather than about a value we emit.
+            if len(v) >= 2 and v.startswith('"') and v.endswith('"'):
+                v = v[1:-1]
+            found.append(v)
+    if not found:
+        return None
+    if len(set(found)) > 1:
+        return None
+    return found[0] or None
 
 
 class AuthMiddleware:
