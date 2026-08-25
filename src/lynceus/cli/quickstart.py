@@ -553,6 +553,21 @@ def _filter_watchlist_csv_for_demo(
         # "ssid" never occurs as a raw identifier_type. Do not "helpfully"
         # normalize these to the mapped names.
         id_type = row["identifier_type"]
+        if id_type == "oui":
+            # ⭐ OUI rows are why the demo can demonstrate MAC-prefix matching at
+            # all. Measured 2026-08-24: before this branch the filter kept only
+            # `mac` and the two SSID types, so the ONLY thing the demo could
+            # ever fire was a substring hit on an SSID -- the weakest and most
+            # trivially spoofed mechanism the product has -- while
+            # `watchlist_mac` was enabled and structurally inert.
+            #
+            # The bundled corpus carries the real vendor OUIs (Flock Safety
+            # b4:1e:52, Axon 00:25:df), so the fixture uses those and this keeps
+            # the rows that match them.
+            prefix = identifier.lower().replace("-", ":")
+            if any(m.startswith(prefix) for m in macs):
+                kept.append(row)
+                continue
         if id_type == "mac":
             if identifier.lower() in macs:
                 kept.append(row)
@@ -647,7 +662,7 @@ def _seed_demo_watchlist(db_path: Path, state_dir: Path) -> Path | None:
 
     rules_path = state_dir / "rules.yaml"
     rules_path.write_text(
-        render_rules_yaml({"watchlist_mac", "watchlist_ssid"}), encoding="utf-8"
+        render_rules_yaml({"watchlist_mac", "watchlist_oui", "watchlist_ssid"}), encoding="utf-8"
     )
     return rules_path
 
@@ -705,15 +720,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Start daemon + UI but do not launch a browser.",
     )
-    parser.add_argument(
-        "--demo",
-        action="store_true",
-        help=(
-            "Run the bundled demo: no Kismet, no adapter and no config needed. "
-            "Seeds a throwaway database in a temp directory and replays a "
-            "curated fixture with its clocks shifted to now."
-        ),
-    )
     # Resolve at parse time so --help shows the path that will actually be used
     # — the user-mode XDG file under ``--user`` installs, the system-mode file
     # otherwise, or a clear "(none found)" sentinel that mirrors what main()
@@ -729,6 +735,34 @@ def _build_parser() -> argparse.ArgumentParser:
         "--config",
         default=config_default,
         help=f"Path to lynceus.yaml (default: {config_default_help}).",
+    )
+    # ⛔ --demo belongs in the SCOPE group, not beside it.
+    #
+    # Measured 2026-08-24: with --demo outside this group, `--demo --system`
+    # parsed happily. main() built the throwaway demo config, assigned it to
+    # args.config, and the very next `if args.system:` overwrote config_path
+    # with /etc/lynceus/lynceus.yaml. The demo directory was created, never
+    # used, and deleted in the finally, while what actually STARTED was the
+    # daemon and UI against the operator's real database, real rules and real
+    # Kismet URL. `--demo --config real.yaml` was the same bug pointing the
+    # other way: the demo silently won and the explicit --config was ignored.
+    #
+    # That directly falsified README's "It touches no config of yours". Putting
+    # --demo in the group makes argparse refuse both combinations, so the
+    # guarantee is structural rather than dependent on statement order in main().
+    #
+    # 🪤 A non-None default on --config does NOT trip the group: argparse
+    # conflicts only on arguments actually seen on the command line, so plain
+    # `--demo` still works on a machine that has a config. Asserted in
+    # tests/test_demo_mode.py.
+    scope_group.add_argument(
+        "--demo",
+        action="store_true",
+        help=(
+            "Run the bundled demo: no Kismet, no adapter and no config needed. "
+            "Seeds a throwaway database in a temp directory and replays a "
+            "curated fixture with its clocks shifted to now."
+        ),
     )
     scope_group.add_argument(
         "--system",

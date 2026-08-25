@@ -104,3 +104,65 @@ def test_demo_config_validates(tmp_path):
 
     cfg = load_config(str(quickstart.build_demo_config(tmp_path)))
     assert cfg.kismet_fixture_shift_to_now is True
+
+
+def test_the_demo_filter_keeps_the_rows_the_cast_can_actually_match(tmp_path):
+    """⛔ The guard the demo's only alert never had.
+
+    `_filter_watchlist_csv_for_demo` reduces the 41,518-row bundled corpus to
+    the handful the nine demo devices can match. Two defects have already lived
+    in that reduction, and NEITHER produced a failing test: the first tested the
+    MAPPED pattern_type (`"ssid"`) against the RAW `identifier_type` column and
+    so dropped every `ssid_exact` row, and before that the whole corpus was
+    imported and the demo took 4m27s to start.
+
+    The failure mode is not a red suite. It is a demo that opens with zero
+    alerts in front of the person being evaluated, which is verbatim the
+    "tests pass, dashboard shows nothing real" gap `_seed_demo_watchlist`'s
+    docstring says the demo exists to close.
+
+    ⚠️ Keyed on the row TYPES surviving the filter rather than on a literal
+    identifier, so it also fails if the bundled corpus is recut and the stems
+    the cast depends on move. The corpus carries
+    `local_recut=2026-08-22-S1-literal-stems`; it has been recut before and will
+    be again.
+    """
+    import csv as _csv
+
+    from lynceus.cli.quickstart import _filter_watchlist_csv_for_demo
+    from lynceus.demo import DEMO_FIXTURE_PATH
+
+    src = Path(__file__).resolve().parents[1] / "src/lynceus/data/default_watchlist.csv"
+    if not src.is_file():
+        pytest.skip("bundled watchlist not present in this build")
+
+    out = tmp_path / "demo_watchlist.csv"
+    _filter_watchlist_csv_for_demo(src, DEMO_FIXTURE_PATH, out)
+
+    text = out.read_text(encoding="utf-8").splitlines()
+    lines = [ln for ln in text if not ln.startswith("# meta:")]
+    rows = list(_csv.DictReader(lines))
+    kinds = {r["identifier_type"] for r in rows}
+
+    assert rows, (
+        "the filter kept NO rows: the demo would import an empty watchlist and "
+        "open with no alerts at all"
+    )
+    # ⛔ Each type asserted SEPARATELY, never as an `or`. The first version of
+    # this test said `"ssid_exact" in kinds or "ssid_pattern" in kinds`, and when
+    # the ssid_exact defect was planted back in it PASSED: the surviving
+    # ssid_pattern row satisfied the or. A guard for a specific defect has to
+    # name that defect. ⇒ [[plant-what-would-fool-the-weaker-assertion]]
+    assert "ssid_exact" in kinds, (
+        "no ssid_exact row survived the filter. That is the defect fixed in "
+        "32bf09a: testing the MAPPED pattern_type against the RAW "
+        f"identifier_type column drops every ssid_exact row. kinds={kinds}"
+    )
+    assert "ssid_pattern" in kinds, (
+        "no ssid_pattern row survived, so the Flock SSID detection the demo "
+        f"actually fires cannot happen. kinds={kinds}"
+    )
+    assert "oui" in kinds, (
+        "no OUI row survived the filter, so watchlist_oui is enabled but inert "
+        f"and the demo can only ever show a substring SSID hit. kinds={kinds}"
+    )

@@ -1,6 +1,6 @@
 [
   {
-    "kismet.device.base.macaddr": "a4:83:e7:aa:11:01",
+    "kismet.device.base.macaddr": "b4:1e:52:aa:11:01",
     "kismet.device.base.type": "Wi-Fi AP",
     "kismet.device.base.first_time": 1785000000,
     "kismet.device.base.last_time": 1786731600,
@@ -33,7 +33,7 @@
     ]
   },
   {
-    "kismet.device.base.macaddr": "06:a2:0c:88:19:22",
+    "kismet.device.base.macaddr": "00:25:df:88:19:22",
     "kismet.device.base.type": "BTLE",
     "kismet.device.base.first_time": 1785345600,
     "kismet.device.base.last_time": 1785349200,
@@ -41,7 +41,6 @@
       "kismet.common.signal.last_signal": -68
     },
     "kismet.device.base.manuf": "Axon",
-    "kismet.device.base.service_uuids": ["0000FD5A-0000-1000-8000-00805F9B34FB"],
     "kismet.device.base.seenby": [
       {
         "kismet.common.seenby.uuid": "33333333-3333-3333-3333-333333333333",
