@@ -91,6 +91,36 @@ the PR titles: the first attempt at this line credited #217, which touches the
 JS-extension gate and adds no browser test at all.
 ⇒ [[date-every-number-you-publish]] — a dated measurement, not a contract.
 
+## v1.1.0 release baseline
+
+⭐ **Measured 2026-08-25 on the MERGED `main`, `3e2adef`** (#229's squash), which
+is the tree `v1.1.0` is cut from. Taken on `main` rather than on a branch head,
+because a baseline taken on a branch head is how this line rotted three times.
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` | **4926 passed, 4 skipped, 56 deselected**, exit 0, 42m20s |
+| `ruff check .` | All checks passed! |
+| host-only (`install or browser`) | **9 passed**, 4977 deselected, exit 0, 7m31s |
+| host-only sentinel | named **all 9** bodies: 8 browser + `test_a_new_user_gets_a_working_system` |
+| CI at that SHA | **12/12 completed + success**, 0 non-success, list non-empty |
+
+⚠️ **12, not the 13 a PR head gets** — CodeQL reports on pull requests, so it is
+absent from a push-to-`main` SHA. Absent is not failed; conclusions were
+enumerated, not counted.
+
+⭐ **+65 against `main`'s previous 4861, with skips and deselects UNCHANGED.**
+The 65 is exactly the case-file test files. An unexplained rise in skips is a
+regression even on a green run, and there was none.
+
+🪤 **The browser gate's `DOWNLOAD_SUFFIXES` is a list a new route can fall off.**
+`/devices/<mac>/case-file.zip` was recorded as a broken link (`-1`) because the
+crawl called `page.goto()` on it and Chromium aborted the download navigation.
+The default suite and CI both deselect that file, so every run was green while
+the link was broken by that file's own reckoning; only `make release-gates`
+catches it, and that runs at release time. Add a suffix there whenever a route
+starts serving a download.
+
 ## v1.0.0 release baseline
 
 ⭐ **Measured 2026-08-24 on `a7a5598`.** That is the release branch commit, not
