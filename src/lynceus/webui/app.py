@@ -45,6 +45,8 @@ from lynceus.ble_bridge_checks import bridge_source_name, collect_bridge_warning
 from lynceus.casefile.bundle import ExportTooLarge, build_zip_bytes, bundle_name
 from lynceus.casefile.query import build_case_file
 from lynceus.config import Config
+from lynceus.csv_safety import _CSV_FORMULA_PREFIXES  # noqa: F401  (kept for tests)
+from lynceus.csv_safety import csv_safe_cell as _csv_safe_cell
 from lynceus.db import (
     DEVICES_DEFAULT_DIR,
     DEVICES_DEFAULT_SORT,
@@ -611,47 +613,6 @@ def _normalize_optional_note(note: str | None) -> str | None:
 SQLITE_MAX_ROWID = 2**63 - 1
 RowId = Annotated[int, PathParam(le=SQLITE_MAX_ROWID)]
 
-
-#: The four characters that flag a CSV cell as a formula to Excel, Google
-#: Sheets, and LibreOffice Calc when the CSV is opened. The CSV standard does
-#: not require these to be quoted, so ``csv.QUOTE_MINIMAL`` emits them verbatim
-#: and the spreadsheet interprets the cell as a formula on open — CWE-1236.
-_CSV_FORMULA_PREFIXES: frozenset[str] = frozenset(("=", "+", "-", "@"))
-
-
-def _csv_safe_cell(value) -> str:
-    """Neutralise CSV formula injection at the leading character.
-
-    ⛔ **Cells whose first character is one of ``=``, ``+``, ``-`` or ``@``
-    are RUN AS FORMULAS by Excel, Google Sheets and LibreOffice Calc when
-    the export is opened.** Measured against an unmodified
-    ``/alerts.csv`` / ``/watchlist.csv``: a message of ``=2+3`` or a
-    watchlist description of ``=HYPERLINK("http://...","Click")`` was
-    written verbatim, with no quoting, because ``csv.QUOTE_MINIMAL`` only
-    quotes on a delimiter, line-break or quote-character and none of the
-    four prefixes trigger any of those. The watchlist description column
-    is the worst case — the Argus importer populates it from
-    externally-controlled CSV/JSON, so a malicious export or rule could
-    plant a payload that fires when an operator opens the file.
-
-    A leading single quote (U+0027) is the spreadsheet convention for
-    "treat this as a text literal": Excel and Sheets hide the quote and
-    display the rest as a string, and the cell survives a round-trip
-    through the csv module's own quoting rules without further mutation.
-    Non-string inputs are stringified first so numeric / boolean cells
-    that happen to be formatted as a string get the same treatment.
-
-    ⚠️ ``None`` stays ``""`` — that is the file's NULL stand-in, set at
-    the writer sites, and leading with a quote there would silently turn
-    every empty column into a literal apostrophe in the export. Empty
-    cells are not formula cells.
-    """
-    if value is None:
-        return ""
-    text = value if isinstance(value, str) else str(value)
-    if text and text[0] in _CSV_FORMULA_PREFIXES:
-        return "'" + text
-    return text
 
 
 def unix_to_iso(ts) -> str:

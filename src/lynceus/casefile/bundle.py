@@ -15,11 +15,23 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 
+from ..csv_safety import csv_safe_cell
 from .manifest import build_manifest
 from .render import render_html
+
+#: Any MAC-shaped run of text, in either of the two spellings this
+#: product writes. Deliberately loose: this is a net, not a parser.
+_MAC_SHAPED = re.compile(
+    r"\b(?:[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}|[0-9a-fA-F]{12})\b"
+)
+
+#: What replaces an address the document is not allowed to disclose.
+REDACTED_ADDRESS = "[address withheld]"
+
 
 HTML_NAME = "case-file.html"
 MANIFEST_NAME = "manifest.json"
@@ -67,7 +79,12 @@ def _csv_bytes(header: list[str], rows) -> bytes:
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(header)
     for row in rows:
-        writer.writerow(row)
+        # ⛔ Through the shared helper, not raw. A cell starting =, +, -
+        # or @ is RUN AS A FORMULA by Excel, Sheets and Calc on open, and
+        # SSIDs and watchlist descriptions are externally controlled. The
+        # web UI's exports have been neutralised since the CSP work; this
+        # is the second exporter and it must not be the weak one.
+        writer.writerow([csv_safe_cell(cell) for cell in row])
     return buf.getvalue().encode("utf-8")
 
 
@@ -212,7 +229,10 @@ def _readme(case) -> bytes:
         "WHAT WAS DELIBERATELY LEFT OUT",
         "",
         f"  {named} device(s) seen alongside this one are named in the document, because",
-        "  they matched the watchlist of known surveillance equipment.",
+        "  they matched a rule in the operator's watchlist. ⚠️ That is a rule match,",
+        "  not an identification: a watchlist rule can cover a whole manufacturer",
+        "  prefix or address range, so a named device is one the watchlist SELECTED",
+        "  and not one that has been individually verified.",
         f"  {aggregate} further device(s) were seen alongside it and are NOT named. On this",
         "  record they are members of the public, and this product will not put",
         "  their addresses in a document that may be handed to a third party.",
@@ -239,6 +259,32 @@ def _readme(case) -> bytes:
             f"  {over_cap} sighting(s) are in the database but not listed, because this",
             f"  export was capped at {case.parameters.get('sighting_limit')} rows.",
         ]
+    # ⛔ Every cap that bit, reported. A cap nobody is told about reads as
+    # completeness, which is the one thing this document must never imply.
+    alerts_over = case.excluded_counts.get("alerts_over_cap", 0)
+    if alerts_over:
+        lines += [
+            "",
+            f"  {alerts_over} alert(s) matched but are not listed, because this export was",
+            "  capped. Their evidence is not here either, so the withheld-snapshot",
+            "  count above describes only the alerts that ARE listed.",
+        ]
+    co_over = case.excluded_counts.get("co_observers_over_cap", 0)
+    if co_over:
+        lines += [
+            "",
+            f"  {co_over} further co-observed device(s) were not analysed at all, because",
+            "  the co-observation scan was capped. They are counted in neither the",
+            "  named list nor the aggregate above.",
+        ]
+    redacted = case.excluded_counts.get("unapproved_addresses_redacted", 0)
+    if redacted:
+        lines += [
+            "",
+            f"  {redacted} address(es) were replaced with \"{REDACTED_ADDRESS}\" because they",
+            "  appeared in free text and belong to neither this device nor any named",
+            "  co-observer.",
+        ]
     lines += [
         "",
         "BEFORE YOU RELY ON ANY OF IT",
@@ -250,6 +296,47 @@ def _readme(case) -> bytes:
         "",
     ]
     return "\n".join(lines).encode("utf-8")
+
+
+def _redact_unapproved_addresses(payload: bytes, approved: set[str]) -> tuple[bytes, int]:
+    """Replace every MAC-shaped string that is not approved for disclosure.
+
+    ⛔ The last line of defence, and the reason it exists: the disclosure
+    rule was written as "aggregate unwatchlisted co-observers", and twice
+    an address reached an output by a route that rule did not cover. The
+    first was a co-observer; the second sat nested inside the target's own
+    stored Kismet record and was found only by auditing, after the guards
+    for the first were already written and green.
+
+    ⇒ Enforcing "no unapproved address leaves" as a property of the BYTES
+    is the only version of this contract that does not depend on somebody
+    having thought of every field. Free text is the open-ended part: an
+    SSID and a watchlist description are externally controlled, and a
+    future rule message could quote a second device.
+
+    Redacts and COUNTS, never silently, matching every other exclusion in
+    this feature.
+    """
+    if not payload:
+        return payload, 0
+    count = 0
+
+    def _sub(match):
+        nonlocal count
+        found = match.group(0).lower()
+        canonical = found if ":" in found else ":".join(
+            found[i : i + 2] for i in range(0, 12, 2)
+        )
+        if canonical in approved:
+            return match.group(0)
+        count += 1
+        return REDACTED_ADDRESS
+
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return payload, 0
+    return _MAC_SHAPED.sub(_sub, text).encode("utf-8"), count
 
 
 def build_artifacts(case) -> dict[str, bytes]:
@@ -268,9 +355,28 @@ def build_artifacts(case) -> dict[str, bytes]:
         "data/co-observation-pairs.csv": _co_observation_pairs_csv(case),
     }
     for snapshot in case.evidence:
-        artifacts[f"evidence/{snapshot['alert_id']}.json"] = json.dumps(
+        # int(), so the value can never become a path component. It is a
+        # FK to an INTEGER PRIMARY KEY today; coercing costs nothing and
+        # removes the question from the traversal argument entirely.
+        artifacts[f"evidence/{int(snapshot['alert_id'])}.json"] = json.dumps(
             snapshot, indent=2, sort_keys=True, default=str
         ).encode("utf-8")
+
+    # ⛔ Swept BEFORE the manifest is computed, so the digests cover the
+    # bytes that actually ship. Hashing first and redacting afterwards
+    # would produce a manifest that certifies a bundle nobody has.
+    approved = case.approved_addresses()
+    redacted_total = 0
+    for name in list(artifacts):
+        artifacts[name], n = _redact_unapproved_addresses(artifacts[name], approved)
+        redacted_total += n
+    if redacted_total:
+        case.excluded_counts["unapproved_addresses_redacted"] = redacted_total
+        # Rebuilt so the note below is itself inside the hashed bytes.
+        artifacts[README_NAME] = _readme(case)
+        artifacts[HTML_NAME], _ = _redact_unapproved_addresses(
+            render_html(case).encode("utf-8"), approved
+        )
 
     artifacts[MANIFEST_NAME] = json.dumps(
         build_manifest(artifacts), indent=2, sort_keys=True
@@ -294,9 +400,40 @@ def bundle_name(case) -> str:
     return f"case-{mac}-{stamp}"
 
 
-def write_directory(case, out_dir) -> Path:
-    """Write the bundle under ``out_dir`` and return the directory made."""
+class BundleExists(Exception):
+    """A bundle directory of this name is already there."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(f"{root} already exists")
+        self.root = root
+
+
+def write_directory(case, out_dir, *, overwrite: bool = False) -> Path:
+    """Write the bundle under ``out_dir`` and return the directory made.
+
+    ⛔ Refuses an existing bundle directory rather than writing over it.
+    The name is derived from the MAC and the date, so a second export of
+    the same device on the same day collides, and merging into it leaves
+    files from the FIRST export in place. That is not untidiness: an
+    evidence snapshot the operator has since marked do_not_publish would
+    still be sitting in the directory they hand over, while the new
+    manifest and the new document both say it was withheld. The bundle
+    would then contain a file the manifest does not cover, which also
+    falsifies README.txt's claim to hash every file in it.
+    """
     root = Path(out_dir) / bundle_name(case)
+    if root.exists() and any(root.iterdir()):
+        if not overwrite:
+            raise BundleExists(root)
+        # Only ever removes files inside a directory this function named
+        # and that looks like one of its own bundles.
+        if not (root / MANIFEST_NAME).exists():
+            raise BundleExists(root)
+        for existing in sorted(root.rglob("*"), key=lambda q: len(q.parts), reverse=True):
+            if existing.is_file():
+                existing.unlink()
+            elif existing.is_dir():
+                existing.rmdir()
     root.mkdir(parents=True, exist_ok=True)
     for name, payload in build_artifacts(case).items():
         target = root / name

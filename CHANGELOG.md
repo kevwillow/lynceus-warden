@@ -108,6 +108,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Seven defects an adversarial read found in the case-file work after it was
+  finished and green.** Each has a guard, and each guard was proven by planting
+  the defect back and watching it go red. They share a shape worth recording:
+  the original guards checked the disclosure rules the design had thought of,
+  so none of them could see a route the design had not.
+
+  - **A second export on the same day merged into the first.** The bundle name
+    is the MAC plus the date, so it collided, and the old files stayed. An
+    evidence snapshot since marked `do_not_publish` would still have been
+    sitting in the directory the operator handed over while the new manifest
+    and the new document both said it was withheld, which also falsified
+    `README.txt`'s claim to hash every file present. Now refused, with
+    `--force` to replace.
+  - **An old `--until` window returned nothing on a busy device.** The window
+    was applied in Python to the newest capped rows rather than in SQL, so a
+    device with more than 1000 recent sightings reported zero for a period full
+    of them, and then counted the rows it never looked at as over the cap.
+  - **`--until` excluded almost the whole day it named**, resolving to midnight
+    at the start of it. It is now inclusive of the named day.
+  - **Alerts past the cap were dropped silently**, and because evidence is
+    reached by iterating the alerts returned, so was their evidence. A
+    `do_not_publish` row beyond the cap was therefore excluded without being
+    counted: the document claimed it had withheld nothing while withholding
+    something. The alert cap is now counted and disclosed.
+  - **CSV cells could run as spreadsheet formulas.** The web UI's exports have
+    neutralised this since the CSP work; the case file was the second exporter
+    and bypassed it. The helper now lives in one module that both import, so a
+    payload the UI refuses to hand an operator is not handed to a journalist
+    instead.
+  - **An address in free text could reach a file by a route no rule covered.**
+    An SSID is whatever a nearby device calls itself. The finished artifacts are
+    now swept for MAC-shaped strings and anything that is neither this device
+    nor a named co-observer is replaced and counted, before the manifest is
+    computed. Enforcing the contract on the BYTES is the only version of it
+    that does not depend on somebody having thought of every field.
+  - **The bundle said a watchlist match meant "known surveillance equipment".**
+    A rule can cover a whole manufacturer prefix, so it selects an address
+    rather than identifying equipment. Reworded, and it is now the sixth entry
+    in the limits section.
+
+  ⛔ One reported defect was refuted rather than fixed: that the exact-MAC alert
+  filter still admits bystander addresses through alert message text. Every rule
+  message this product emits interpolates the alert's own device address and
+  none quotes a second one. The finding was right that owning a row is not the
+  same as the row's contents being safe, which is why the redaction sweep above
+  exists; it was wrong that a live path produced it. The comment justifying the
+  filter has been corrected, because it asserted the opposite.
+
 - **A cancelled setup could report an empty progress stream.**
   `SSEProgressSink.record()` enqueues from the worker thread with
   `loop.call_soon_threadsafe`, which SCHEDULES the put, while

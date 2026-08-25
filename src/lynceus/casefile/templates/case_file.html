@@ -250,7 +250,15 @@ was at that moment. They are not a fix on the observed device, which broadcasts
 no position. The two are close enough to be worth recording and they are not the
 same thing.</p>
 
-<h3>5. The hash does not prove the contents are true</h3>
+<h3>5. A watchlist match selects a device, it does not identify one</h3>
+<p>Any device named in this record is named because it matched a rule in the
+operator's watchlist. Those rules can cover a whole manufacturer prefix or an
+address range, so a match means the rule SELECTED this address. It does not mean
+the device has been individually verified as the equipment the rule describes,
+and an ordinary consumer device sharing a prefix will match in exactly the same
+way.</p>
+
+<h3>6. The hash does not prove the contents are true</h3>
 <p>The manifest in this bundle shows that these files are unchanged since the
 export was produced. It does not prove the observations are accurate, and it is
 not a third party attestation: the operator's own installation produced this

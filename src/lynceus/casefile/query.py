@@ -107,6 +107,20 @@ class CaseFile:
     limits: list[dict] = field(default_factory=list)
     excluded_counts: dict[str, int] = field(default_factory=dict)
 
+    def approved_addresses(self) -> set[str]:
+        """Every MAC this document is allowed to contain.
+
+        ⛔ The disclosure rule expressed as a SET rather than as a list of
+        fields somebody remembered to filter. `bundle.py` sweeps the
+        finished artifacts against this, so a MAC reaching an output by a
+        route nobody anticipated is redacted rather than published. Two
+        such routes have already been found, one of them after the guards
+        for the first were written.
+        """
+        approved = {str(self.device.get("mac", "")).lower()}
+        approved |= {str(c["mac"]).lower() for c in self.co_observers_named}
+        return {a for a in approved if a}
+
 
 def build_case_file(
     db,
@@ -153,11 +167,15 @@ def build_case_file(
     # Rule 1: sightings, newest first, capped. The omitted count is
     # recorded rather than the cap being applied silently.
     summary = db.summarize_sightings_for_mac(norm, since_ts=since_ts, until_ts=until_ts)
-    sightings = [
-        dict(s)
-        for s in record["sightings"]
-        if (since_ts is None or s["ts"] >= since_ts) and (until_ts is None or s["ts"] <= until_ts)
-    ]
+    # ⛔ Windowed in SQL, NOT by filtering the newest rows afterwards.
+    # `get_device_with_sightings` knows nothing about a window, so asking
+    # it for the newest 1000 rows and then filtering by `until_ts` returns
+    # zero sightings for an old window on a busy device, and then reports
+    # the rows it never looked at as "over cap". A wrong document, not a
+    # slow one.
+    sightings = db.list_sightings_for_mac(
+        norm, since_ts=since_ts, until_ts=until_ts, limit=sighting_limit
+    )
     excluded["sightings_over_cap"] = max(0, summary["total"] - len(sightings))
 
     # Rule 2: alerts by EXACT mac. `q` is a substring match across
@@ -172,6 +190,14 @@ def build_case_file(
             "limit": MAX_ALERTS,
         }
     )
+    # ⛔ Counted separately, because evidence is reached by iterating the
+    # alerts returned above. An alert past the cap takes its evidence with
+    # it, INCLUDING a do_not_publish row, whose exclusion would then go
+    # uncounted: the document would claim it withheld nothing while
+    # withholding something. Disclosing the alert cap is what keeps the
+    # do_not_publish count honest about its own scope.
+    total_alerts = db.count_alerts(mac=norm, since_ts=since_ts, until_ts=until_ts)
+    excluded["alerts_over_cap"] = max(0, int(total_alerts) - len(alerts))
 
     # Rule 3: evidence, minus do_not_publish, and the exclusions COUNTED.
     # Migration 009 added that column as forward-compat with no producer
@@ -442,6 +468,16 @@ def _build_limits(parameters: dict) -> list[dict]:
                 "Any coordinates here are where the recording sensor was, not "
                 "where the observed device was. The two are close enough to be "
                 "worth recording and they are not the same thing."
+            ),
+        },
+        {
+            "heading": "A watchlist match selects a device, it does not identify one",
+            "body": (
+                "A device is named in this record because it matched a rule in "
+                "the operator's watchlist. Rules can cover a whole manufacturer "
+                "prefix or an address range, so a match means the rule SELECTED "
+                "this address, not that the device has been individually "
+                "verified as the equipment the rule describes."
             ),
         },
         {

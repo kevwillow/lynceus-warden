@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .. import paths
-from ..casefile.bundle import build_artifacts, write_directory
+from ..casefile.bundle import BundleExists, build_artifacts, write_directory
 from ..casefile.manifest import build_manifest
 from ..casefile.query import MAX_SIGHTINGS, build_case_file
 from ..config import load_config
@@ -33,19 +33,28 @@ from ..db import Database
 PROG = "lynceus-export-case"
 
 
-def _parse_date(value: str) -> int:
+def _parse_date(value: str, *, end_of_day: bool = False) -> int:
     """A YYYY-MM-DD boundary, read as UTC.
 
     Dates rather than timestamps because the operator is thinking in
-    days, and UTC rather than local time because the document records
-    UTC and a window that meant something else than the rows it selects
-    would be a quiet lie.
+    days, and UTC rather than local time because the document records UTC
+    and a window meaning something other than the rows it selects would
+    be a quiet lie.
+
+    ⛔ ``--until`` resolves to the END of the named day. Midnight at the
+    START of it would exclude almost the whole day the operator asked
+    for, and they would have no way to tell from the output: the document
+    would print their date and then show none of it.
     """
     try:
         moment = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"expected YYYY-MM-DD, got {value!r}") from exc
-    return int(moment.timestamp())
+    return int(moment.timestamp()) + (86399 if end_of_day else 0)
+
+
+def _parse_until(value: str) -> int:
+    return _parse_date(value, end_of_day=True)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -91,7 +100,23 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--since", type=_parse_date, default=None, metavar="YYYY-MM-DD")
-    p.add_argument("--until", type=_parse_date, default=None, metavar="YYYY-MM-DD")
+    p.add_argument(
+        "--until",
+        type=_parse_until,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="inclusive: the whole of the named day, UTC",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "replace an existing bundle for this device and date. Without it "
+            "an existing directory is refused rather than merged into, "
+            "because leftover files from the earlier export would still be "
+            "handed over while the new manifest disclaims them."
+        ),
+    )
     p.add_argument(
         "--sighting-limit",
         type=int,
@@ -168,6 +193,15 @@ def _summarise(case, root: Path, digest: str) -> None:
     if over_cap:
         cap = case.parameters["sighting_limit"]
         print(f"  {over_cap} sighting(s) not listed (export capped at {cap})")
+    for key, label in (
+        ("alerts_over_cap", "alert(s) not listed (export capped)"),
+        ("co_observers_over_cap", "co-observed device(s) not analysed (scan capped)"),
+        ("evidence_fields_withheld", "evidence field(s) withheld (not about this device)"),
+        ("unapproved_addresses_redacted", "address(es) redacted from free text"),
+    ):
+        n = case.excluded_counts.get(key, 0)
+        if n:
+            print(f"  {n} {label}")
     print()
     print(f"  wrote {root}/")
     print(f"  manifest sha256:{digest}")
@@ -225,7 +259,15 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         try:
-            root = write_directory(case, out_dir)
+            root = write_directory(case, out_dir, overwrite=args.force)
+        except BundleExists as exc:
+            return _fail(
+                f"{exc.root} already exists. Nothing was written. Merging into it "
+                "would leave files from the earlier export in a bundle whose "
+                "manifest no longer covers them, including evidence that has "
+                "since been marked do_not_publish. Use --force to replace it, "
+                "or --out to write somewhere else."
+            )
         except OSError as exc:
             return _fail(f"could not write the bundle under {out_dir}: {exc}")
 
