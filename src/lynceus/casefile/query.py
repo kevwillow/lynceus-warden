@@ -29,8 +29,25 @@ MAX_SIGHTINGS = 1000
 MAX_CO_OBSERVERS = 200
 MAX_ALERTS = 1000
 
-#: ``list_co_observation_pairs`` clamps to [1, 500].
-MAX_PAIRS_PER_CO_OBSERVER = 500
+#: ``list_co_observation_pairs`` clamps to [1, 500], but 500 is not the
+#: right number here and 100 is: it matches ``webui/app.py``'s existing
+#: ``_CO_PAIRS_LIMIT``, so the case file and the co-observation page show
+#: the same depth of drill-down.
+#:
+#: ⭐ MEASURED, not chosen. At the caps (1000 sightings, 200 alerts, 200
+#: evidence rows, 200 named co-observers) on 2026-08-24:
+#:
+#:     pairs cap   pairs    artifacts   peak alloc   wall
+#:     500         100000   18.15 MB    108.7 MB     35.2s
+#:     200          40000    8.12 MB     47.1 MB     29.7s
+#:     100          20000    4.78 MB     26.3 MB     22.5s
+#:      50          10000    3.11 MB     16.0 MB     18.9s
+#:
+#: ⚠️ Note what does NOT move: the query itself costs 17 to 21 seconds at
+#: every cap, because it is 200 separate per-co-observer queries and that
+#: count is fixed by MAX_CO_OBSERVERS. Lowering this further buys memory,
+#: not time. See .claude/gates.md.
+MAX_PAIRS_PER_CO_OBSERVER = 100
 
 DEFAULT_PROXIMITY_SECONDS = 300
 DEFAULT_GAP_SECONDS = 900

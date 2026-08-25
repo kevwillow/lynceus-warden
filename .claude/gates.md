@@ -201,6 +201,40 @@ successfully is a success. The target clears `PYTEST_ADDOPTS` and then requires
 a sentinel file that an autouse fixture writes for every host-only gate that
 actually executes.
 
+### Case-file export caps, measured 2026-08-24 at `fb65d27`
+
+⭐ Spec §11.2 required these to be a measurement, not a guess. Built a database
+at every cap (1000 sightings, 200 alerts, 200 evidence snapshots of ~4 KB each,
+200 named co-observers) and exported it. Desktop, 12 cores, load average 15, so
+a Pi is materially slower.
+
+| pairs cap | pairs | artifacts | zipped | peak alloc | wall |
+| --- | --- | --- | --- | --- | --- |
+| 500 | 100,000 | 18.15 MB | 0.86 MB | 108.7 MB | 35.2s |
+| 200 | 40,000 | 8.12 MB | 0.27 MB | 47.1 MB | 29.7s |
+| **100** (shipped) | 20,000 | **4.78 MB** | 0.18 MB | **26.3 MB** | 22.5s |
+| 50 | 10,000 | 3.11 MB | 0.13 MB | 16.0 MB | 18.9s |
+
+`MAX_PAIRS_PER_CO_OBSERVER = 100` matches `webui/app.py`'s existing
+`_CO_PAIRS_LIMIT`, so the document and the co-observation page show the same
+depth of drill-down. The DB layer would allow 500.
+
+`MAX_STREAMED_BYTES = 32 MB` is derived from this: peak allocation ran at about
+**5.5x the uncompressed artifact size** across the sweep, so 32 MB of artifacts
+implies roughly 175 MB peak, which a 2 GB Pi running the daemon can absorb.
+
+⚠️ **The query cost does not move with the pairs cap: 17 to 21 seconds at every
+row of that table.** It is 200 separate per-co-observer queries and that count
+is fixed by `MAX_CO_OBSERVERS`, so lowering the pairs cap buys memory, not time.
+A worst-case export is therefore a ~20 second HTTP request on this box and
+longer on a Pi. ⇒ The CLI is the right tool for a large record, and the UI
+refusal names it.
+
+⚠️ **The byte ceiling exists for EVIDENCE, not for the rest.** At the caps the
+bundle is 4.78 MB, nowhere near 32 MB. A stored Kismet record has no size limit,
+so 200 large snapshots is the only realistic way an export reaches the ceiling.
+⇒ [[find-the-threshold-before-inventing-one]]
+
 ### Coverage baseline
 
 ⭐ **Measured in CI on 2026-08-19 at `d2a1c3d`: 86.86%** — 1534 of 11675

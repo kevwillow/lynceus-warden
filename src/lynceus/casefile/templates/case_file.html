@@ -200,9 +200,7 @@ interpolated or rounded, so the count above can be checked rather than trusted.<
   <tr><td>gap_seconds</td><td>{{ parameters.gap_seconds }}</td></tr>
   <tr><td>sighting_limit</td><td>{{ parameters.sighting_limit }}</td></tr>
   <tr><td>sightings_retention_days</td>
-      <td>{% if not parameters.sightings_retention_known %}not available
-          {% elif parameters.sightings_retention_days %}{{ parameters.sightings_retention_days }}
-          {% else %}not set{% endif %}</td></tr>
+      <td>{% if not parameters.sightings_retention_known %}not available{% elif parameters.sightings_retention_days %}{{ parameters.sightings_retention_days }}{% else %}not set{% endif %}</td></tr>
   <tr><td>evidence_retention_days</td>
       <td>{{ parameters.evidence_retention_days if parameters.evidence_retention_days else "not available" }}</td></tr>
   <tr><td>schema_version</td><td>{{ parameters.schema_version }}</td></tr>

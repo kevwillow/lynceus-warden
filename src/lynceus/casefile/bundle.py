@@ -31,15 +31,22 @@ README_NAME = "README.txt"
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
 #: Ceiling for an export the web UI will build in memory. Past it the
-#: route refuses and names the CLI, which streams to disk and has no such
-#: bound. A refusal that names the alternative beats an OOM on the box
-#: that is supposed to be doing the watching.
+#: route refuses and names the CLI, which writes straight to disk and has
+#: no such bound. A refusal that names the alternative beats an OOM on
+#: the box that is supposed to be doing the watching.
 #:
-#: ⭐ MEASURED, not chosen for roundness. See .claude/gates.md for the
-#: run, its date and its SHA. Everything reaching this point is already
-#: bounded by the caps in query.py, so this is a backstop for evidence
-#: blobs, which are the one unbounded input.
-MAX_STREAMED_BYTES = 64 * 1024 * 1024
+#: ⭐ DERIVED FROM A MEASUREMENT, not picked for roundness. At the caps on
+#: 2026-08-24 the bundle was 4.78 MB of artifacts and peak allocation was
+#: 26.3 MB, and across the whole sweep peak allocation ran at roughly
+#: 5.5x the uncompressed artifact size. 32 MB of artifacts therefore
+#: implies around 175 MB of peak allocation, which is what a 2 GB Pi
+#: already running the daemon can absorb. See .claude/gates.md.
+#:
+#: ⚠️ This is a backstop for EVIDENCE, which is the one unbounded input:
+#: everything else is bounded by the caps in query.py, and at those caps
+#: the total is 4.78 MB, nowhere near this. A stored Kismet record has no
+#: size limit, so 200 large snapshots is the way a real export gets here.
+MAX_STREAMED_BYTES = 32 * 1024 * 1024
 
 
 class ExportTooLarge(Exception):
