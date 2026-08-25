@@ -10,7 +10,7 @@
 [![code scanning](https://img.shields.io/github/actions/workflow/status/kevwillow/lynceus-warden/codeql.yml?branch=main&label=code%20scanning&logo=github&logoColor=white)](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml?query=branch%3Amain)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Status: v1.1.0](https://img.shields.io/badge/Status-v1.1.0-blue.svg)](#project-status)
+[![Status: v1.1.1](https://img.shields.io/badge/Status-v1.1.1-blue.svg)](#project-status)
 
 [![capture: Wi-Fi and BLE](https://img.shields.io/badge/capture-Wi--Fi%20and%20BLE-111111.svg)](#what-lynceus-does)
 [![network: receive only](https://img.shields.io/badge/network-receive%20only-c8102e.svg)](#privacy--threat-model)
@@ -333,7 +333,7 @@ serial. Both are tracked openly in [BACKLOG.md](BACKLOG.md).
 
 ## Project status
 
-**v1.1.0**. It adds the case file: the record this product keeps, exported as
+**v1.1.1**. It adds the case file: the record this product keeps, exported as
 a bundle an operator can hand to a journalist, a lawyer or a researcher. That
 is the one thing a proximity keychain structurally cannot produce, and until
 now the record could only be read by the operator, on the machine that

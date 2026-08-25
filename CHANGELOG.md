@@ -4,6 +4,48 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.1] - 2026-08-25
+
+> **The shipped release of the v1.1.0 line.** Identical in product terms to
+> `[1.1.0]` below, which is worth reading as the substantive entry; this section
+> exists because `v1.1.0` cannot carry a GitHub Release and never will.
+
+### Fixed
+
+- **A release must be created WITH its artifacts, and a burned tag name cannot be
+  reused.** Two facts about immutable releases, both measured the hard way on
+  `v1.1.0`.
+
+  The first: this repository has **immutable releases** enabled, so a published
+  release cannot gain an asset afterwards. The release job created the release
+  and then uploaded, and the upload failed with
+  `HTTP 422: Cannot upload assets to an immutable release`. `v1.1.0` published
+  with zero assets. ⇒ The files now go into the `gh release create` call itself.
+
+  The second, and the reason this section exists: **deleting an immutable release
+  does not free its tag name.** The recovery path deleted the assetless release
+  and tried to recreate it with the artifacts attached, and GitHub refused with
+  `HTTP 422: tag_name was used by an immutable release`. The name is spent
+  permanently. There is no state in which `v1.1.0` can be a release with
+  artifacts on it.
+
+  ⛔ The `v1.1.0` **tag** is untouched and still points at `1f9361e`, the tree the
+  full suite, both host-only gates and CI were run against. It is a valid tag with
+  no release page, which is exactly what `v1.0.0` is. Nothing about the code
+  changed between the two tags except this workflow fix.
+
+- **A fix landed after a tag can never reach that tag**, because the workflow file
+  that runs on a tag push is the one stored at the tag. The release job now takes
+  a `workflow_dispatch` input naming an existing tag and checks that tag out, so a
+  broken release can be repaired without moving the tag off the tree that was
+  gated for it. ⚠️ That path is what discovered the second fact above.
+
+  ⛔ **The delete-and-recreate recovery has been removed, not kept.** It cannot
+  succeed under immutable releases, and it is strictly worse than doing nothing:
+  it destroyed the `v1.1.0` release page and could not put it back. The job now
+  refuses an assetless release and prints the only way forward, which is a new
+  patch tag.
+
 ## [1.1.0] - 2026-08-25
 
 > **Cut 2026-08-25, tagged `v1.1.0`.** The version literals move in the commit
