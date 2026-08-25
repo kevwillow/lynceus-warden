@@ -23,6 +23,7 @@ is only half done until the case it must NOT change is pinned.
 
 from __future__ import annotations
 
+import ast
 import re
 import time
 from pathlib import Path
@@ -363,6 +364,36 @@ def test_settings_says_so_when_it_does_not_know_the_config_file(tmp_path):
     assert "not necessarily the file in use" in prose
 
 
+def _entry_point_create_app_call() -> ast.Call:
+    """The `create_app(...)` call in `webui/server.py`, as a parsed AST node.
+
+    ⛔ Parsed, not grepped. This used to be a substring test for the exact text
+    ``create_app(config, db, config_path=args.config)``, which asserted a
+    SPELLING rather than the wiring it cared about: adding a keyword argument
+    and letting the formatter wrap the call across lines turned it red while
+    every promise it exists to protect still held. A guard that a reformat can
+    break is a guard that will be silenced by whoever is inconvenienced by it.
+    """
+    src = (
+        Path(__file__).resolve().parents[1] / "src/lynceus/webui/server.py"
+    ).read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(src)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "create_app"
+        ):
+            return node
+    raise AssertionError("webui/server.py contains no create_app(...) call at all")
+
+
+def _kwarg(call: ast.Call, name: str) -> ast.expr | None:
+    for kw in call.keywords:
+        if kw.arg == name:
+            return kw.value
+    return None
+
+
 def test_the_ui_entry_point_passes_the_config_path_it_was_given():
     """The wiring, not just the template.
 
@@ -370,11 +401,35 @@ def test_the_ui_entry_point_passes_the_config_path_it_was_given():
     the page can say it, not that anything ever does. The production entry point
     is the only caller that knows the path, so it is read here.
     """
-    server = (
-        Path(__file__).resolve().parents[1] / "src/lynceus/webui/server.py"
-    ).read_text(encoding="utf-8")
-    assert "create_app(config, db, config_path=args.config)" in server, (
+    value = _kwarg(_entry_point_create_app_call(), "config_path")
+    assert value is not None, (
         "lynceus-ui builds the app without telling it which file it loaded"
+    )
+    assert ast.unparse(value) == "args.config", (
+        f"config_path is wired to {ast.unparse(value)!r}, not the parsed "
+        f"--config argument"
+    )
+
+
+def test_the_ui_entry_point_hands_over_the_credentials_it_checked():
+    """The refusal and the middleware must decide from ONE read.
+
+    ⛔ `main` calls `load_credentials` itself to decide whether to refuse a
+    non-loopback bind. If it does not pass that object on, `create_app` re-reads
+    the file and the two decisions come from two snapshots: delete
+    `ui_auth.json` in between and the bind passes the refusal, then installs no
+    AuthMiddleware at all. Pinned structurally so a future refactor that drops
+    the keyword is caught here rather than on somebody's LAN.
+    """
+    value = _kwarg(_entry_point_create_app_call(), "credentials")
+    assert value is not None, (
+        "lynceus-ui builds the app without handing over the credentials it "
+        "already checked — create_app will re-read the file, which is the "
+        "two-snapshot fail-open"
+    )
+    assert ast.unparse(value) == "credentials", (
+        f"credentials is wired to {ast.unparse(value)!r}, not the value main "
+        f"performed its refusal check against"
     )
 
 
