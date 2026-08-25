@@ -82,7 +82,14 @@ EXPECTED_STATUS = {
 }
 
 #: Routes a browser downloads rather than renders. Fetched over HTTP instead.
-DOWNLOAD_SUFFIXES = (".csv", ".json")
+#:
+#: ⚠️ Add a suffix here when a route starts serving a download, or the crawl
+#: records it as a BROKEN link rather than as a download. Measured when the
+#: case-file export landed: Chromium aborts the navigation, playwright raises,
+#: and `/devices/<mac>/case-file.zip` came back as -1. The default suite
+#: deselects this file, so nothing but this gate would have caught it, and this
+#: gate runs at release time.
+DOWNLOAD_SUFFIXES = (".csv", ".json", ".zip")
 
 #: ⭐ THE RECORDED DECISION. These controls change state and ask nothing first.
 #: It is a decision rather than a defect list, so it is written down here and
