@@ -207,7 +207,13 @@ def main(argv: list[str] | None = None) -> int:
         # ⭐ The path travels with the config. /settings used to render the
         # user-scope DEFAULT under "active configuration"; --config is required
         # here, so the real answer was always available and simply discarded.
-        app = create_app(config, db, config_path=args.config)
+        # ⛔ Hand over the credentials THIS function already checked. Re-reading
+        # them inside create_app would make the non-loopback refusal above and
+        # the AuthMiddleware decision read two different snapshots of a mutable
+        # file; see create_app's comment for the fail-open that produced.
+        app = create_app(
+            config, db, config_path=args.config, credentials=credentials
+        )
 
         import uvicorn
 

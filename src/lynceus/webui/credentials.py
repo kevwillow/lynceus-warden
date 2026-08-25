@@ -17,6 +17,7 @@ must be able to read on a system install belongs where that process has access.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -145,6 +146,15 @@ def write_credentials(path: str | Path, password_hash: str) -> Path:
     🪤 ``fchmod`` on the descriptor rather than ``chmod`` on the path: a path
     chmod can be raced by a symlink swap between the open and the chmod.
 
+    ⛔ ``O_NOFOLLOW``, because the line above only closed half of it. Guarding
+    the chmod against a symlink swap says nothing about the ``open`` itself,
+    which happily follows a symlink already sitting at the path — and it carries
+    ``O_TRUNC``, so a planted ``ui_auth.json -> /root/.ssh/authorized_keys``
+    would be truncated, chmod'd to ``0600`` and refilled with credential JSON,
+    by a privileged operator running ``lynceus-ui-passwd``. Refusing a symlink
+    outright is correct here: this file is state the daemon owns, not a config
+    an operator has a reason to redirect.
+
     ⚠️ Deliberately NOT tmpfile + ``os.replace``. That produces a new inode
     whose mode comes from the umask, which is the opposite bug, and this file
     has exactly one writer — an interactive CLI — so there is no concurrent
@@ -171,7 +181,21 @@ def write_credentials(path: str | Path, password_hash: str) -> Path:
         p.write_text(content, encoding="utf-8")
         return p
 
-    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, CREDENTIALS_MODE)
+    try:
+        fd = os.open(
+            str(p),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            CREDENTIALS_MODE,
+        )
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise CredentialsError(
+                f"{p} is a symbolic link. Refusing to write through it: the "
+                f"credentials file is daemon-owned state, and following a link "
+                f"here would truncate and overwrite whatever it points at. "
+                f"Remove the link and re-run."
+            ) from exc
+        raise
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         os.fchmod(fh.fileno(), CREDENTIALS_MODE)
         fh.write(content)

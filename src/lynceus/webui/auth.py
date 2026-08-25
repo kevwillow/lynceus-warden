@@ -262,11 +262,20 @@ class SessionStore:
             self._sessions.pop(token, None)
 
     def purge_expired(self) -> int:
-        """Drop dead rows and report how many. Bounds an unbounded dict.
+        """Drop expired rows and report how many.
 
-        Called from the login path: without it, an attacker who logs in
-        successfully many times grows the table forever, and the only thing
-        that empties it is a restart.
+        Called from the login path: without it the table only ever grows, and
+        the only thing that empties it is a restart.
+
+        ⚠️ **This bounds growth over TIME, not the number of live sessions.**
+        An earlier version of this docstring claimed it "bounds an unbounded
+        dict", which overstates it: nothing here removes a session that is
+        still inside both its idle and absolute windows, so a caller who knows
+        the password can hold open as many concurrent sessions as they like
+        until the absolute lifetime retires them. That is a marginal residual —
+        it requires the password, and anyone holding it can already do
+        everything the dashboard offers — but the claim was wrong as written,
+        and a guarantee nobody checks is how the next reader builds on sand.
         """
         now = self._now()
         dead = [

@@ -39,12 +39,38 @@ def get_csrf_token(request) -> str:
 
 
 def _parse_cookie_header(header: str) -> dict[str, str]:
+    """Parse a Cookie header, DROPPING any name that arrives ambiguously.
+
+    ⛔ **Conflicting duplicates are dropped, not resolved by picking one.** This
+    used to be a plain ``out[k] = v``, i.e. last-one-wins, while
+    ``auth.session_token_from_scope`` refuses the same situation and says why:
+    cookie shadowing is how an attacker who can write a cookie on a sibling
+    origin gets to choose which parser wins. A sibling under the same
+    registrable domain can set ``lynceus_csrf`` for the parent domain;
+    ``SameSite=Strict`` does not withhold it, because sibling origins are
+    cross-origin but same-site. Last-one-wins then let the attacker supply BOTH
+    halves of the double-submit pair and satisfy the check.
+
+    ⚠️ Two cookies with the SAME value are kept. That is a duplicate, not an
+    ambiguity — the same distinction the session reader draws.
+
+    Dropping the name (rather than returning a sentinel) is deliberate: both
+    call sites already treat a missing CSRF cookie correctly. A safe method
+    issues a fresh token, and an unsafe one answers 403. Ambiguity therefore
+    fails closed without either site needing to learn a new case.
+    """
     out: dict[str, str] = {}
+    conflicting: set[str] = set()
     for part in header.split(";"):
         if "=" not in part:
             continue
         k, v = part.split("=", 1)
-        out[k.strip()] = v.strip()
+        k, v = k.strip(), v.strip()
+        if k in out and out[k] != v:
+            conflicting.add(k)
+        out[k] = v
+    for k in conflicting:
+        del out[k]
     return out
 
 

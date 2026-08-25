@@ -12,7 +12,7 @@ import math
 import sqlite3
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from typing import get_args as _typing_get_args
 from urllib.parse import urlparse
 
@@ -73,7 +73,7 @@ from lynceus.webui.clock import (
     clock_behind_recorded_history,
     refuse_if_clock_behind,
 )
-from lynceus.webui.credentials import load_credentials
+from lynceus.webui.credentials import Credentials, load_credentials
 from lynceus.webui.csp import CSPMiddleware
 from lynceus.webui.csrf import CSRFMiddleware, build_csrf_cookie, generate_token, get_csrf_token
 from lynceus.webui.liveness import (
@@ -2423,8 +2423,18 @@ def _check_alerts(db: Database, *, now_ts: int) -> dict:
     }
 
 
+#: Sentinel meaning "no caller supplied credentials, read them from disk".
+#: Distinct from ``None``, which is a caller saying *authentication is off* —
+#: conflating the two is what let the fail-open below exist.
+_LOAD_CREDENTIALS_FROM_DISK: Any = object()
+
+
 def create_app(
-    config: Config, db: Database, *, config_path: str | Path | None = None
+    config: Config,
+    db: Database,
+    *,
+    config_path: str | Path | None = None,
+    credentials: Credentials | None | Any = _LOAD_CREDENTIALS_FROM_DISK,
 ) -> FastAPI:
     """App factory. Takes a live Config and Database. Used by both the production
     server entry point and the test client. Does NOT open the DB itself — that's the
@@ -2539,7 +2549,19 @@ def create_app(
     # ⛔ A CredentialsError propagates. A corrupt credentials file must not
     # degrade into "authentication is not configured" — that is a fail-open
     # reachable by any disk write that dies halfway.
-    credentials = load_credentials(config.resolved_ui_auth_path())
+    #
+    # ⛔ **The caller may hand us the object it already checked, and the entry
+    # point does.** `server.main` decides whether to REFUSE a non-loopback bind
+    # from its own `load_credentials` call; if this function then re-read the
+    # file, the refusal and the middleware would be deciding from two different
+    # snapshots of mutable state. Deleting the file between the two reads — a
+    # concurrent `lynceus-ui-passwd --remove` does it, no attacker required —
+    # gave a bind that passed the refusal and then installed no AuthMiddleware
+    # at all: an unauthenticated dashboard on the LAN. Reading once and passing
+    # the value is the whole fix; the sentinel keeps the load-from-disk default
+    # for tests and for any embedder that has no credentials of its own.
+    if credentials is _LOAD_CREDENTIALS_FROM_DISK:
+        credentials = load_credentials(config.resolved_ui_auth_path())
     app.state.credentials = credentials
     app.state.sessions = SessionStore() if credentials else None
     app.state.login_limiter = LoginRateLimiter() if credentials else None

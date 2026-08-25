@@ -91,6 +91,66 @@ def open_app():
         db.close()
 
 
+def test_supplied_credentials_survive_the_file_being_deleted_underneath(tmp_path):
+    """The entry point's check and the middleware must read ONE snapshot.
+
+    ⛔ `server.main` decides whether to refuse a non-loopback bind from its own
+    `load_credentials`. `create_app` used to independently re-read the same
+    path, so the two decisions came from two snapshots of a mutable file.
+    Deleting it in between — a concurrent `lynceus-ui-passwd --remove` does it,
+    no attacker required — produced a server that passed the refusal and then
+    installed NO AuthMiddleware: an unauthenticated dashboard on the LAN.
+
+    This pins the fix: credentials handed in are USED, not re-read. It fails
+    against the old code, where the deleted file made `create_app` decide
+    authentication was switched off.
+    """
+    cfg = _make_config(str(tmp_path))
+    auth_path = cfg.resolved_ui_auth_path()
+    write_credentials(auth_path, _HASH)
+
+    # What server.main does: read once, and that read is what it checked.
+    checked = load_credentials(auth_path)
+    assert checked is not None
+
+    # The race: the file goes away before the app is built.
+    Path(auth_path).unlink()
+    assert not Path(auth_path).exists()
+
+    db = Database(cfg.db_path)
+    db.ensure_location("default", "Default")
+    try:
+        app = create_app(cfg, db, credentials=checked)
+        client = TestClient(app, follow_redirects=False)
+        resp = client.get("/devices")
+        assert resp.status_code in (303, 401), (
+            f"a protected route answered {resp.status_code} with the "
+            f"credentials file deleted mid-startup — AuthMiddleware was not "
+            f"installed, which is the fail-open this test exists to stop"
+        )
+    finally:
+        db.close()
+
+
+def test_omitting_credentials_still_reads_them_from_disk(tmp_path):
+    """The sentinel default must keep the old behaviour for every other caller.
+
+    204 call sites pass no credentials; they must go on loading from disk. A
+    fix that silently turned authentication off for them would be far worse
+    than the race it closed.
+    """
+    cfg = _make_config(str(tmp_path))
+    write_credentials(cfg.resolved_ui_auth_path(), _HASH)
+    db = Database(cfg.db_path)
+    db.ensure_location("default", "Default")
+    try:
+        app = create_app(cfg, db)  # no credentials kwarg
+        client = TestClient(app, follow_redirects=False)
+        assert client.get("/devices").status_code in (303, 401)
+    finally:
+        db.close()
+
+
 def _login(client, password: str = PASSWORD):
     """Perform a real form login and return the response."""
     client.get("/login")
@@ -434,6 +494,27 @@ def test_no_c0_control_character_survives_in_a_next_target():
 
 
 # --- The credentials file -----------------------------------------------------
+
+
+def test_writing_through_a_planted_symlink_is_refused(tmp_path):
+    """`O_TRUNC` + symlink-follow = arbitrary file truncation as the operator.
+
+    ⛔ A planted `ui_auth.json -> <target>` would otherwise be followed by the
+    `os.open`, truncated, chmod'd to 0600 and refilled with credential JSON —
+    by whoever runs `lynceus-ui-passwd`. The existing docstring guarded the
+    *chmod* against a symlink swap and said nothing about the open itself.
+    """
+    target = tmp_path / "precious"
+    target.write_text("do not truncate me\n", encoding="utf-8")
+    link = tmp_path / "ui_auth.json"
+    link.symlink_to(target)
+
+    with pytest.raises(CredentialsError, match="symbolic link"):
+        write_credentials(link, _HASH)
+
+    assert target.read_text(encoding="utf-8") == "do not truncate me\n", (
+        "the symlink target was modified — O_NOFOLLOW is not in the open flags"
+    )
 
 
 def test_a_written_credentials_file_is_0600(tmp_path):
