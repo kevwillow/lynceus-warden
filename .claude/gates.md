@@ -834,6 +834,45 @@ because a skip count that matches the baseline is exactly how a permanently
 inert guard stays invisible. Not fixed on this branch; it is unrelated to
 authentication.
 
-⛔ **CI at this SHA is NOT yet measured.** Nothing has been pushed. `cancelled`
-is not `failed` and it is not `passed` either — read conclusions by bucket
-against the merged SHA, not the PR.
+⛔ ~~**CI at this SHA is NOT yet measured.** Nothing has been pushed.~~
+✅ **Superseded — see the `77feb91` section below.** `cancelled` is still not
+`failed` and not `passed` either; read conclusions by bucket against the SHA,
+not the PR.
+
+## Redirect-guard hardening — `77feb91`, measured 2026-08-25
+
+Branch `feat/webui-auth`, four commits on `79517f0`. `safe_next_path` widened
+from a three-character literal list to the whole C0 range plus DEL.
+
+| Gate | Result |
+| --- | --- |
+| `ruff check .` | All checks passed! |
+| webui surface (5 files) | **548 passed, 1 deselected**, exit 0, 4m20s |
+| host-only (`install or browser`) | **16 passed**, 5116 deselected, exit 0, 3m56s |
+| host-only sentinel | named **all 16** bodies: 15 browser + `test_a_new_user_gets_a_working_system` |
+| CI at the pushed SHA | **14 success, 1 skipped (`release`, tag-only), 1 failure (CodeQL)** |
+
+⭐ **The deselect count moved 5112 → 5116, and that +4 is the whole story**: three
+parametrized cases (`tab`/`lf`/`cr`) plus one C0 sweep, all non-browser, so they
+are collected and correctly excluded from a host-only run. An unexplained move
+here would mean a browser body appeared or vanished.
+
+🪤 **The browser half needs `LYNCEUS_PLAYWRIGHT_SITE` and FAILS rather than skips
+without it.** Run without it on 2026-08-25 and the gate reported **1 passed, 15
+errors** — `ModuleNotFoundError: No module named 'playwright'`, nothing to do with
+the code. Worse, the command piped to `tail`, so `$?` was `tail`'s and the whole
+thing reported **exit 0** while pytest had failed. Capture pytest's own status:
+
+```sh
+... pytest ... > /tmp/log 2>&1; echo "REAL exit: $?"
+```
+
+The side venv at `~/.local/share/lynceus-playwright` was intact the whole time.
+
+⛔ **CodeQL's failure was NOT a broken analysis** — it found 7 new alerts (1 high,
+2 medium, 4 notes). All three security ones were graded against the code and
+dismissed as false positives (alerts 1322/1323/1324), after which the PR went
+`mergeStateStatus: CLEAN`. The hardening commit did **not** change CodeQL's
+output — same 7 alerts, same alert numbers — because it never modelled
+`safe_next_path` as a sanitizer. Fixing the code and clearing the check are
+separate actions here.
