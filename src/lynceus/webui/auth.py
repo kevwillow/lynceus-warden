@@ -486,12 +486,20 @@ def safe_next_path(candidate: str | None, default: str = "/") -> str:
     and ``/\\evil.test`` are both read as a network-relative URL by browsers,
     so a login form that echoed them back would be an open redirect on the one
     page an operator is guaranteed to be typing a password into.
+
+    ⚠️ The control-character check rejects the whole C0 range rather than the
+    three characters that have actually bitten us, because a guard that matches
+    a spelling misses the next rendering of the same idea. The WHATWG URL parser
+    **strips** ASCII tab, LF and CR from a URL before parsing it, so
+    ``/\\t/evil.test`` is read by a browser as ``//evil.test`` — network-relative,
+    the exact shape the two checks below exist to refuse. Listing ``\\r\\n\\x00``
+    caught two of those three and let tab through.
     """
     if not candidate or not isinstance(candidate, str):
         return default
     if len(candidate) > 2048:
         return default
-    if any(ch in candidate for ch in ("\r", "\n", "\x00")):
+    if any(ch <= "\x1f" or ch == "\x7f" for ch in candidate):
         return default
     if not candidate.startswith("/"):
         return default

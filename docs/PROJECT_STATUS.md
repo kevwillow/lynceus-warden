@@ -139,9 +139,13 @@ Things lynceus explicitly does not do today:
   Evidence retention is different: `evidence_retention_days` defaults to
   **90**, so that half prunes on a stock install. Both run from the poll
   loop at most once a day, not from cron.
-- **No web UI authentication.** Localhost-only binding is the security
-  boundary. Remote access requires the operator to put their own
-  reverse proxy and auth in front.
+- **No TLS, and no multi-user authentication.** There is a
+  single-operator password (`lynceus-ui-passwd`), and a non-loopback bind
+  refuses to serve without one — but lynceus speaks plain HTTP, so off
+  loopback that password and its session cookie cross the network in the
+  clear and can be replayed. The supported remote path is therefore
+  unchanged: an SSH tunnel or a private network. One operator, one
+  password; there are no accounts, roles or per-user audit trail.
 - **No reverse-proxy path-prefix support.** `/static/` is hardcoded.
 
 ## Hardware tested vs untested

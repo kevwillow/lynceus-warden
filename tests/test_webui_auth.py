@@ -399,6 +399,40 @@ def test_a_same_site_path_survives(ok):
     assert safe_next_path(ok) == ok
 
 
+@pytest.mark.parametrize("stripped", ["\t", "\n", "\r"], ids=["tab", "lf", "cr"])
+def test_a_character_browsers_strip_cannot_smuggle_a_network_relative_target(stripped):
+    """The three characters the WHATWG URL parser removes *before* parsing.
+
+    ⛔ Each turns ``/X/evil.test`` into ``//evil.test`` in the browser's hands,
+    which is the single shape this function exists to refuse. The check that
+    caught ``\\r`` and ``\\n`` was a literal list and let ``\\t`` straight through
+    — CodeQL flagged the redirect, and the sanitizer really was short. So this
+    asserts the *reason*: what a browser strips must not leave a network-relative
+    target behind.
+    """
+    hostile = f"/{stripped}/evil.test"
+    result = safe_next_path(hostile)
+    assert result == "/", f"{hostile!r} survived as {result!r}"
+    # Spelling out why the assertion above matters: this is what the browser
+    # would have resolved the survivor to.
+    assert hostile.replace(stripped, "") == "//evil.test"
+
+
+def test_no_c0_control_character_survives_in_a_next_target():
+    """Derive the range, do not transcribe three of it.
+
+    A hand-written tuple of ``("\\r", "\\n", "\\x00")`` is how tab got through in
+    the first place. Iterating the whole C0 range plus DEL means the next
+    control character nobody thought of is covered without anyone editing a list.
+    """
+    survivors = [
+        hex(c)
+        for c in list(range(0x20)) + [0x7F]
+        if safe_next_path(f"/{chr(c)}/evil.test") != "/"
+    ]
+    assert not survivors, f"control characters survived a next target: {survivors}"
+
+
 # --- The credentials file -----------------------------------------------------
 
 
