@@ -295,8 +295,20 @@ jobs:
               echo "::notice::$tag already carries $have asset(s); nothing to do"
               exit 0
             fi
-            echo "::notice::$tag exists with no assets; recreating it so the artifacts can be attached"
-            gh release delete "$tag" --yes
+            # ⛔ Do NOT delete and recreate. Deleting an immutable release does
+            # not free its tag name:
+            #
+            #   HTTP 422: tag_name was used by an immutable release
+            #
+            # Measured on v1.1.0. An earlier version of this job did exactly
+            # that, and the result was strictly worse than doing nothing: the
+            # release page was destroyed and could never be recreated under
+            # that name. Refuse instead, and say what the only way forward is.
+            echo "::error::$tag already has a release with no assets attached."
+            echo "::error::Under immutable releases that name is spent: assets"
+            echo "::error::cannot be added, and deleting the release does NOT"
+            echo "::error::free the name. Cut a new patch tag and release that."
+            exit 1
           fi
           gh release create "$tag" --title "$tag" --notes-from-tag --verify-tag dist/*
 
