@@ -439,12 +439,20 @@ def _make_lockfile(path, *, uid_owner: bool = True, mode: int = 0o600) -> Path:
 
 
 def _patch_stat(monkeypatch, *, uid: int, mode: int):
-    """Patch `Path.stat` on a single Path instance to return a fixed uid/mode.
+    """Build a `Path.stat` replacement returning a fixed uid/mode.
 
-    `find_stale_kismet_lockfiles` calls `p.stat()` and reads `st_uid` /
-    `st_mode`; by overriding only on the Path objects we hand it, the
-    real stat behaviour continues everywhere else (including the test
-    runner's own tmp_path setup)."""
+    `find_stale_kismet_lockfiles` reads `st_uid` / `st_mode`, and the runner is
+    not root, so it cannot legitimately own a lockfile as uid 0.
+
+    ⚠️ **Callers install this on the Path CLASS**, via
+    `monkeypatch.setattr(Path, "stat", ...)` — not on individual instances. For
+    the duration of such a test EVERY `Path.stat()` returns this synthetic
+    result, including any the test itself makes. That is acceptable here only
+    because these tests touch nothing else after installing it, and because
+    `monkeypatch` restores the attribute at teardown (verified: no bleed across
+    a fixed-order run with the file-modes and webui-auth suites). An earlier
+    version of this docstring claimed the patch applied "only on the Path
+    objects we hand it", which is not what the callers do."""
 
     class _StatResult:
         def __init__(self, uid: int, mode: int) -> None:
