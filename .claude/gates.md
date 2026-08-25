@@ -799,3 +799,41 @@ Remove the `.venv` symlink **before** `git worktree remove --force`, or you
 risk deleting through it into the real venv. On Windows `rm -f` refuses the
 link because it resolves to a directory; use `rm -rf` on the link path or
 delete the worktree with the link already gone.
+
+## Web UI authentication baseline — `ab96132`, measured 2026-08-25
+
+Branch `feat/webui-auth`, three commits on `79517f0`.
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` | **5061 passed, 4 skipped, 63 deselected**, exit 0, 34m37s |
+| `ruff check .` | All checks passed! |
+| host-only (`install or browser`) | **16 passed**, 5112 deselected, exit 0, 4m54s |
+| host-only sentinel | named **all 16** bodies: 15 browser + `test_a_new_user_gets_a_working_system` |
+
+⭐ **+135 against the v1.1.1 baseline's 4926, with skips UNCHANGED at 4.** The
+deselect count rose 56 → 63, which is the 7 new browser bodies: `addopts`
+deselects `browser`, so a new browser test SHOWS UP AS A DESELECT in the
+everyday suite and only runs in the host-only gate. A rise there is expected
+here and would be a regression anywhere else.
+
+⭐ **Sentinel 9 → 16.** The handoff's "should name 9 bodies" is now stale: 8
+browser + 1 install became 15 + 1. Read the names, not the number — the point of
+the sentinel is that pytest exits 0 for a run that executed nothing.
+
+⚠️ **The 4 skips are the same 4 as the v1.1.1 baseline**, and one of them is
+worth knowing about rather than counting:
+
+```
+tests/test_packaging.py:19: python not on PATH
+```
+
+This box has `python3` but no bare `python`, so **the packaging guard has never
+run here** — it is skipped, not passed, and it predates this branch. Recorded
+because a skip count that matches the baseline is exactly how a permanently
+inert guard stays invisible. Not fixed on this branch; it is unrelated to
+authentication.
+
+⛔ **CI at this SHA is NOT yet measured.** Nothing has been pushed. `cancelled`
+is not `failed` and it is not `passed` either — read conclusions by bucket
+against the merged SHA, not the PR.
