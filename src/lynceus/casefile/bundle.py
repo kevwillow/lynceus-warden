@@ -30,6 +30,30 @@ README_NAME = "README.txt"
 #: differ from itself for no reason a recipient could check.
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
+#: Ceiling for an export the web UI will build in memory. Past it the
+#: route refuses and names the CLI, which streams to disk and has no such
+#: bound. A refusal that names the alternative beats an OOM on the box
+#: that is supposed to be doing the watching.
+#:
+#: ⭐ MEASURED, not chosen for roundness. See .claude/gates.md for the
+#: run, its date and its SHA. Everything reaching this point is already
+#: bounded by the caps in query.py, so this is a backstop for evidence
+#: blobs, which are the one unbounded input.
+MAX_STREAMED_BYTES = 64 * 1024 * 1024
+
+
+class ExportTooLarge(Exception):
+    """The bundle is too big to build in memory on this machine.
+
+    Carries the uncompressed size so the caller can tell the operator how
+    far past the line they are rather than only that they are past it.
+    """
+
+    def __init__(self, total_bytes: int, limit_bytes: int) -> None:
+        super().__init__(f"case file is {total_bytes} bytes, over the {limit_bytes} byte limit")
+        self.total_bytes = total_bytes
+        self.limit_bytes = limit_bytes
+
 
 def _csv_bytes(header: list[str], rows) -> bytes:
     buf = io.StringIO(newline="")
@@ -274,9 +298,18 @@ def build_zip_bytes(case) -> bytes:
     browsing from rather than on a headless Pi they would then have to
     copy it off, and nothing is left behind on that Pi afterwards.
     """
+    artifacts = build_artifacts(case)
+
+    # Checked BEFORE the zip is written, so the refusal costs one copy
+    # rather than two. Deciding after compression would mean the machine
+    # had already paid the memory this exists to protect.
+    total = sum(len(v) for v in artifacts.values())
+    if total > MAX_STREAMED_BYTES:
+        raise ExportTooLarge(total, MAX_STREAMED_BYTES)
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for name, payload in sorted(build_artifacts(case).items()):
+        for name, payload in sorted(artifacts.items()):
             info = zipfile.ZipInfo(filename=name, date_time=_ZIP_EPOCH)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16

@@ -62,4 +62,14 @@
       <small>which other devices keep turning up at the same time as this one</small>
     </p>
   {% endif %}
+
+  {# The disclosure lives in the label, not in a dialog after the click.
+     A modal is friction people learn to dismiss; a label tells the
+     operator what they are about to produce BEFORE they click. #}
+  <p>
+    <a href="/devices/{{ device.mac }}/case-file.zip"
+       download>Export case file (contains location history)</a>
+    <small>the full record for this device as a document, the underlying rows,
+    the captured evidence and a hash manifest</small>
+  </p>
 {% endblock %}

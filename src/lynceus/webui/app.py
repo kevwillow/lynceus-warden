@@ -18,7 +18,13 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi import Path as PathParam
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
@@ -36,6 +42,8 @@ from lynceus.allowlist import (
     remove_ui_entry,
 )
 from lynceus.ble_bridge_checks import bridge_source_name, collect_bridge_warnings
+from lynceus.casefile.bundle import ExportTooLarge, build_zip_bytes, bundle_name
+from lynceus.casefile.query import build_case_file
 from lynceus.config import Config
 from lynceus.db import (
     DEVICES_DEFAULT_DIR,
@@ -4904,6 +4912,95 @@ def create_app(
                 "since_ts": since_ts,
                 "now_ts": now_ts,
                 "w_presets": _CO_W_PRESETS,
+            },
+        )
+
+    @app.get("/devices/{mac:path}/case-file.zip")
+    def device_case_file(request: Request, mac: str):
+        """Stream the case file for one device as a zip, built in memory.
+
+        ⛔ Registered BEFORE ``/devices/{mac:path}``, which is greedy: the
+        catch-all would otherwise swallow this path and hand the detail
+        page a mac of "aa:bb:cc:dd:ee:01/case-file.zip".
+
+        ⛔ Nothing is written to disk. On a --system install the units
+        grant ReadWritePaths=/var/lib/lynceus /var/log/lynceus, and
+        writing outside that is the 500 that #218 fixed for
+        allowlist_ui.yaml. It also puts the download on the laptop the
+        operator is browsing from rather than on a headless Pi they would
+        then have to copy it off, and leaves nothing behind on that Pi.
+
+        Every disclosure decision is made in ``build_case_file``, which
+        the CLI calls too. This route decides nothing.
+        """
+        try:
+            normalized = kismet.normalize_mac(mac)
+        except ValueError:
+            # %r, not %s: raw un-normalised request input, and a bare %s
+            # would let a newline forge extra lines in the audit log.
+            logger.info("case-file request with a malformed mac: %r", mac)
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "devices",
+                    "message": f"Malformed MAC address: {mac!r}.",
+                },
+                status_code=400,
+            )
+
+        try:
+            case = build_case_file(
+                db,
+                normalized,
+                now_ts=int(time.time()),
+                config=config,
+            )
+        except LookupError:
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "devices",
+                    "message": f"Device {normalized} not found.",
+                },
+                status_code=404,
+            )
+
+        try:
+            payload = build_zip_bytes(case)
+        except ExportTooLarge as exc:
+            # A refusal that names the way forward beats an OOM on the box
+            # that is supposed to be doing the watching. The CLI writes
+            # straight to disk and has no in-memory ceiling.
+            megabytes = exc.total_bytes / (1024 * 1024)
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="not_found.html",
+                context={
+                    "version": __version__,
+                    "active": "devices",
+                    "message": (
+                        f"This case file is about {megabytes:.0f} MB, too large to "
+                        "build in memory on this machine. Export it from the "
+                        "command line instead, which writes straight to disk: "
+                        f"lynceus-export-case {normalized} --out <directory>"
+                    ),
+                },
+                status_code=413,
+            )
+
+        filename = f"{bundle_name(case)}.zip"
+        return Response(
+            content=payload,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                # A case file is a statement about which MACs this operator
+                # has seen. It must not sit in a shared cache.
+                "Cache-Control": "no-store",
             },
         )
 
