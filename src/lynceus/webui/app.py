@@ -45,7 +45,6 @@ from lynceus.ble_bridge_checks import bridge_source_name, collect_bridge_warning
 from lynceus.casefile.bundle import ExportTooLarge, build_zip_bytes, bundle_name
 from lynceus.casefile.query import build_case_file
 from lynceus.config import Config
-from lynceus.csv_safety import _CSV_FORMULA_PREFIXES  # noqa: F401  (kept for tests)
 from lynceus.csv_safety import csv_safe_cell as _csv_safe_cell
 from lynceus.db import (
     DEVICES_DEFAULT_DIR,

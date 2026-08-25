@@ -256,3 +256,38 @@ def test_until_covers_the_whole_of_the_named_day(tmp_path, capsys):
     bundle = next((tmp_path / "cases").iterdir())
     rows = (bundle / "data" / "sightings.csv").read_text().strip().splitlines()
     assert len(rows) > 1, "a same-day --since/--until window returned no rows"
+
+
+def test_building_the_artifacts_twice_is_identical(tmp_path):
+    """⛔ The CLI calls build_artifacts a second time to report the digest,
+    and build_artifacts writes the redaction count back onto the CaseFile.
+    That makes the second call see a different input from the first, so
+    "the same bytes come out" is a property that has to be asserted rather
+    than assumed: if it stopped holding, the digest printed on the
+    terminal would not be the digest of the bundle on disk.
+    """
+    db, _ = _seed(tmp_path, name="idem.db")
+    db.insert_sighting(TARGET, START + 500, -55, f"net-{STRANGER}", "loc-a")
+    case = build_case_file(db, TARGET, now_ts=NOW)
+    db.close()
+
+    first = build_artifacts(case)
+    second = build_artifacts(case)
+    assert case.excluded_counts["unapproved_addresses_redacted"] >= 1, (
+        "no redaction happened, so this would not exercise the write-back"
+    )
+    assert set(first) == set(second)
+    for name in first:
+        assert first[name] == second[name], f"second build differs: {name}"
+
+
+def test_every_file_including_a_rebuilt_one_is_swept(tmp_path):
+    """The README is rebuilt after the sweep so it can carry the count.
+    A rebuilt file that skipped the sweep would be the one file in the
+    bundle the rule had not been applied to."""
+    db, _ = _seed(tmp_path, name="sweepall.db")
+    db.insert_sighting(TARGET, START + 500, -55, f"net-{STRANGER}", "loc-a")
+    artifacts = build_artifacts(build_case_file(db, TARGET, now_ts=NOW))
+    db.close()
+    for name, payload in artifacts.items():
+        assert STRANGER.encode() not in payload, f"unswept: {name}"

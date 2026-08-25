@@ -371,9 +371,19 @@ def build_artifacts(case) -> dict[str, bytes]:
         artifacts[name], n = _redact_unapproved_addresses(artifacts[name], approved)
         redacted_total += n
     if redacted_total:
+        # ⚠️ Deliberately written back onto the CaseFile. The count is a real
+        # exclusion and belongs beside the others, and it is the only way the
+        # document and README can report it. It also makes this function
+        # idempotent, which the CLI relies on: it calls build_artifacts a
+        # second time for the digest, and a second call must produce the same
+        # bytes. Guarded by test_building_the_artifacts_twice_is_identical.
         case.excluded_counts["unapproved_addresses_redacted"] = redacted_total
-        # Rebuilt so the note below is itself inside the hashed bytes.
-        artifacts[README_NAME] = _readme(case)
+        # Rebuilt so the note is itself inside the hashed bytes, and BOTH
+        # swept: a rebuilt file that skipped the sweep would be the one file
+        # in the bundle the rule had not been applied to.
+        artifacts[README_NAME], _ = _redact_unapproved_addresses(
+            _readme(case), approved
+        )
         artifacts[HTML_NAME], _ = _redact_unapproved_addresses(
             render_html(case).encode("utf-8"), approved
         )
