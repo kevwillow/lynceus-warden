@@ -2801,11 +2801,24 @@ class Database:
         actioned_macs: tuple[str, ...] = (),
         actioned_oui_prefixes: tuple[str, ...] = (),
         actioned_mac_ranges: tuple[str, ...] = (),
+        mac: str | None = None,
         alias: str = "",
     ) -> tuple[list[str], list]:
         prefix = f"{alias}." if alias else ""
         clauses: list[str] = []
         params: list = []
+        if mac is not None and mac != "":
+            # Exact equality, deliberately NOT the `q` filter below.
+            # `q` is a substring match across mac + message + vendor, so
+            # asking it for one device's alerts also returns alerts for
+            # OTHER devices whose message happens to quote this MAC --
+            # and proximity and co-observation messages quote MACs by
+            # design. In a list view that is a cosmetic surplus; in a
+            # case file it is a wrong-record bug, the same defect class
+            # as #220 (a pattern matched by the wrong operator).
+            # Callers that want the fuzzy behaviour still have `q`.
+            clauses.append(f"{prefix}mac = ?")
+            params.append(mac)
         if severity is not None:
             clauses.append(f"{prefix}severity = ?")
             params.append(severity)
@@ -2947,6 +2960,7 @@ class Database:
         "actioned_macs",
         "actioned_oui_prefixes",
         "actioned_mac_ranges",
+        "mac",
     )
 
     _ALERT_WITH_MATCH_SELECT = (
@@ -3119,6 +3133,7 @@ class Database:
             actioned_macs=filters.get("actioned_macs", ()),
             actioned_oui_prefixes=filters.get("actioned_oui_prefixes", ()),
             actioned_mac_ranges=filters.get("actioned_mac_ranges", ()),
+            mac=filters.get("mac"),
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -3158,6 +3173,7 @@ class Database:
             actioned_macs=filters.get("actioned_macs", ()),
             actioned_oui_prefixes=filters.get("actioned_oui_prefixes", ()),
             actioned_mac_ranges=filters.get("actioned_mac_ranges", ()),
+            mac=filters.get("mac"),
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -3527,6 +3543,54 @@ class Database:
         return {
             "device": dict(dev_row),
             "sightings": [dict(r) for r in sight_rows],
+        }
+
+    def summarize_sightings_for_mac(
+        self, mac: str, *, since_ts: int | None = None, until_ts: int | None = None
+    ) -> dict:
+        """Per-location aggregates and a true row count for one device.
+
+        ⛔ Not derivable from what the caller already has, which is why
+        this exists. ``get_device_with_sightings`` returns at most
+        ``sighting_limit`` of the most recent rows, so a per-location
+        summary built from those is wrong exactly when the cap bites.
+        And ``devices.sighting_count`` is a lifetime counter incremented
+        on every upsert; retention deletes sighting ROWS without
+        decrementing it, so using it as "how many rows are there" would
+        report pruning as capping. The case file has to keep those two
+        apart, because one is a cap this export chose and the other is
+        data that no longer exists.
+
+        Counts rows, honours the same window as the rest of the export,
+        and is read-only.
+        """
+        clauses = ["mac = ?"]
+        params: list = [mac]
+        if since_ts is not None:
+            clauses.append("ts >= ?")
+            params.append(int(since_ts))
+        if until_ts is not None:
+            clauses.append("ts <= ?")
+            params.append(int(until_ts))
+        where = " AND ".join(clauses)
+        rows = self._conn.execute(
+            "SELECT location_id, COUNT(*) AS n, MIN(ts) AS first_ts, MAX(ts) AS last_ts "
+            f"FROM sightings WHERE {where} "
+            "GROUP BY location_id ORDER BY first_ts ASC, location_id ASC",
+            params,
+        ).fetchall()
+        locations = [
+            {
+                "location_id": str(r["location_id"]),
+                "sighting_count": int(r["n"]),
+                "first_seen": int(r["first_ts"]),
+                "last_seen": int(r["last_ts"]),
+            }
+            for r in rows
+        ]
+        return {
+            "total": sum(loc["sighting_count"] for loc in locations),
+            "locations": locations,
         }
 
     def list_watchlist(self) -> list[dict]:
