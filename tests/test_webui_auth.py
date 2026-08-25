@@ -866,3 +866,166 @@ def test_the_signout_control_appears_only_when_auth_is_configured(authed_app, op
 
     open_client = TestClient(open_app[0], follow_redirects=False)
     assert "sign out" not in open_client.get("/", headers={"accept": "text/html"}).text
+
+
+# --- Paths a real client can send that a test client cannot -------------------
+#
+# ⚠️ These drive the ASGI app with a HAND-BUILT scope. That is not ceremony:
+# httpx normalises `..` out of a URL before sending, so the first version of
+# this probe reported "no bypass" while testing nothing at all — the client had
+# rewritten every hostile path into its harmless form. Uvicorn does no such
+# normalisation, so `scope["path"]` for a raw `GET /healthz/../devices` is that
+# string verbatim, and only a hand-built scope reproduces it.
+
+
+async def _fire(app, path: str, *, cookie: str | None = None) -> dict:
+    headers = [(b"host", b"127.0.0.1"), (b"accept", b"*/*")]
+    if cookie:
+        headers.append((b"cookie", cookie.encode("latin-1")))
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("latin-1"),
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers,
+        "client": ("127.0.0.1", 5555),
+        "server": ("127.0.0.1", 8765),
+    }
+    captured = {"status": None, "body": b""}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            captured["status"] = message["status"]
+        elif message["type"] == "http.response.body":
+            captured["body"] += message.get("body", b"")
+
+    await app(scope, receive, send)
+    return captured
+
+
+#: Every one of these starts with an exempt prefix, or is a near-miss of one.
+HOSTILE_PATHS = [
+    "/static/../devices",
+    "/static/../../probes",
+    "/healthz/../devices",
+    "/healthz/../probes",
+    "/healthz.json/../devices",
+    "/login/../devices",
+    "/login/../../devices",
+    "/healthz/./../devices",
+    "/static/..",
+    "/healthz/.",
+]
+
+
+@pytest.mark.parametrize("path", HOSTILE_PATHS)
+def test_an_exempt_prefix_cannot_be_used_to_reach_a_protected_route(authed_app, path):
+    """⛔ A dot segment must void the exemption, whatever the path starts with.
+
+    `/healthz/../devices` begins with `/healthz/`, so a plain prefix match
+    exempts it. Today Starlette's router would then 404 it — but that is a
+    property of a DEPENDENCY declining to match, not of our access control, and
+    relying on it means a routine upgrade could open a bypass with no diff of
+    ours to review.
+    """
+    import asyncio
+
+    app = authed_app[0]
+    result = asyncio.run(_fire(app, path))
+    assert b"<table" not in result["body"], f"{path} returned dashboard content"
+    # ⛔ 401, specifically — NOT merely "something other than 200".
+    #
+    # The weaker assertion is what the first draft of this test made, and it
+    # could not fail for the defect it names: with a plain prefix match these
+    # paths ARE exempted, sail past the session check, reach the router and come
+    # back 404. "Not 200" is satisfied by that, so the test would have passed
+    # against exactly the code it exists to reject. 401 is the only answer that
+    # says the MIDDLEWARE refused, rather than the router happening not to
+    # match. Verified by planting the prefix-only matcher: this fails, the
+    # weaker form did not.
+    assert result["status"] == 401, (
+        f"{path} answered {result['status']}, not 401. Anything else means the "
+        f"exempt check let it through and something downstream declined to "
+        f"serve it — which is luck, not access control."
+    )
+
+
+def test_the_exempt_surfaces_still_answer_when_the_path_is_clean(authed_app):
+    """⛔ The control. The test above is satisfied by a middleware that exempts
+    NOTHING, which would break monitoring and the login page itself."""
+    import asyncio
+
+    app = authed_app[0]
+    for path in ("/healthz", "/healthz.json", "/login"):
+        result = asyncio.run(_fire(app, path))
+        assert result["status"] == 200, (
+            f"exempt path {path} answered {result['status']}; the dot-segment "
+            f"rule has over-reached and locked out the monitoring contract"
+        )
+
+
+def test_a_filename_that_merely_starts_with_dots_is_not_a_dot_segment():
+    """A substring search for "/../" gets this wrong in both directions.
+
+    `..hidden.css` is an ordinary filename, not a traversal, and refusing it
+    would be an over-reach that only shows up when someone ships such a file.
+    """
+    from lynceus.webui.auth import _has_dot_segment
+
+    assert not _has_dot_segment("/static/..hidden.css")
+    assert not _has_dot_segment("/static/file..name.css")
+    assert _has_dot_segment("/static/../devices")
+    assert _has_dot_segment("/static/..")
+    assert _has_dot_segment("/healthz/.")
+
+
+def test_the_app_registers_no_websocket_routes(authed_app):
+    """⛔ AuthMiddleware passes every non-HTTP scope straight through.
+
+    That is correct for `lifespan`, and it would be a hole for a WebSocket:
+    the socket would be established without a session, and
+    `test_every_route_is_behind_auth_or_deliberately_exempt` would not notice,
+    because a WebSocketRoute carries no `methods` and is skipped there.
+
+    There are none today. This fails the day someone adds one, which is the
+    moment to decide how it authenticates rather than a year later.
+    """
+    app = authed_app[0]
+    websockets = [
+        getattr(r, "path", repr(r))
+        for r in app.routes
+        if type(r).__name__ in ("WebSocketRoute", "APIWebSocketRoute")
+    ]
+    assert not websockets, (
+        f"WebSocket route(s) registered: {websockets}. AuthMiddleware passes "
+        f"non-HTTP scopes through unchecked, so these are reachable without a "
+        f"session. Handle the websocket scope in AuthMiddleware.__call__ before "
+        f"shipping this."
+    )
+
+
+def test_the_session_idle_window_does_not_outlive_the_csrf_cookie():
+    """⛔ Asserted, not transcribed.
+
+    A session that outlives its CSRF cookie leaves the operator on a page that
+    looks signed in and answers 403 "CSRF token mismatch" to every button —
+    which reads as a bug, not an expiry. The constant in `auth.py` carries a
+    comment saying the two are "deliberately equal"; this is what stops that
+    comment going on saying so after somebody changes one of them.
+    """
+    from lynceus.webui.auth import SESSION_IDLE_SECONDS
+    from lynceus.webui.csrf import CSRF_COOKIE_MAX_AGE
+
+    assert SESSION_IDLE_SECONDS <= CSRF_COOKIE_MAX_AGE, (
+        f"the session idle window ({SESSION_IDLE_SECONDS}s) outlives the CSRF "
+        f"cookie ({CSRF_COOKIE_MAX_AGE}s), so a still-valid session will hit "
+        f"403 CSRF errors on every form after {CSRF_COOKIE_MAX_AGE}s"
+    )

@@ -176,6 +176,12 @@ SESSION_COOKIE_NAME = "lynceus_session"
 #: that outlives its CSRF cookie gives the operator a page that looks logged in
 #: and answers 403 "CSRF token mismatch" to every button, which reads as a bug
 #: rather than as an expiry.
+#:
+#: ⚠️ The relationship is the point, not the number, and it is asserted rather
+#: than transcribed — see
+#: ``test_the_session_idle_window_does_not_outlive_the_csrf_cookie``. Writing
+#: ``60 * 60 * 8`` in two files and a comment claiming they match is how the
+#: comment goes on saying "deliberately equal" after somebody changes one.
 SESSION_IDLE_SECONDS = 60 * 60 * 8
 
 #: Absolute ceiling, refreshed by nothing. A session that is used every seven
@@ -202,6 +208,13 @@ class SessionStore:
     restarted by systemd rarely, being logged out on restart is the cheaper
     side of that trade. It is documented in docs/CONFIGURATION.md so it is not
     discovered as a bug.
+
+    ⭐ It also buys the property a stateless cookie would have had to build:
+    **changing the password revokes every existing session.** Not by any code
+    here — the credentials file is read once at startup, so a password change
+    requires a restart, and a restart empties this table. There is deliberately
+    no ``revoke_all``; the restart is the mechanism, and a second one would be a
+    second thing to keep correct.
 
     ⚠️ Not thread-safe against a threaded server by design of the caller:
     uvicorn runs this app on one event loop. The dict operations here are each
@@ -247,9 +260,6 @@ class SessionStore:
     def revoke(self, token: str | None) -> None:
         if token:
             self._sessions.pop(token, None)
-
-    def revoke_all(self) -> None:
-        self._sessions.clear()
 
     def purge_expired(self) -> int:
         """Drop dead rows and report how many. Bounds an unbounded dict.
@@ -514,7 +524,35 @@ def safe_next_path(candidate: str | None, default: str = "/") -> str:
 EXEMPT_PATHS: tuple[str, ...] = ("/login", "/static", "/healthz", "/healthz.json")
 
 
+def _has_dot_segment(path: str) -> bool:
+    """True when any segment is ``.`` or ``..``.
+
+    Split on ``/`` and compare whole segments, rather than substring-searching
+    for ``/../``: a substring test misses a trailing ``/..`` and reports a hit
+    for an ordinary filename like ``/static/..hidden.css``.
+    """
+    return any(part in ("..", ".") for part in path.split("/"))
+
+
 def _is_exempt(path: str, exempt: Iterable[str]) -> bool:
+    """True when ``path`` is one of the exempt surfaces.
+
+    ⛔ **A path containing a dot segment is never exempt**, whatever it starts
+    with. ``/healthz/../devices`` starts with ``/healthz/``, and a prefix match
+    alone would wave it past the session check.
+
+    ⚠️ Measured 2026-08-25 with hand-built ASGI scopes (a test client is no use
+    here — httpx normalises ``..`` away before sending, so the first probe of
+    this reported "no bypass" while testing nothing): today those paths reach
+    the router and 404, so there was no live bypass. But that safety was a
+    property of **Starlette's** matcher declining to match them, not of this
+    code. Depending on a dependency's normalisation for an access-control
+    outcome is how a bypass arrives in a routine upgrade with no diff of ours
+    to review. Pinned by
+    ``test_an_exempt_prefix_cannot_be_used_to_reach_a_protected_route``.
+    """
+    if _has_dot_segment(path):
+        return False
     for entry in exempt:
         if path == entry or path.startswith(entry + "/"):
             return True
