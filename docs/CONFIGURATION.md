@@ -28,7 +28,8 @@ The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and r
 | `ntfy_auth_token` | string \| null | `null` | Optional bearer token for protected topics. | `tk_...` |
 | `ui_bind_host` | string | `127.0.0.1` | Host interface for the web UI (`lynceus-ui`). Loopback by default. Non-loopback values require `ui_allow_remote: true`. | `0.0.0.0` |
 | `ui_bind_port` | integer | `8765` | TCP port the UI listens on. Range `[1, 65535]`. | `9000` |
-| `ui_allow_remote` | bool | `false` | Permit binding the UI to a non-loopback address. Required `true` to expose the UI off-host; lynceus has no auth layer, so this is gated explicitly. | `true` |
+| `ui_allow_remote` | bool | `false` | Permit binding the UI to a non-loopback address. Required `true` to expose the UI off-host, and gated explicitly because doing so is a decision rather than a default. A non-loopback bind **also** requires a web UI password — `lynceus-ui` refuses to start without one. | `true` |
+| `ui_auth_path` | string \| null | `null` | Where the web UI password hash is stored. `null` derives it as `ui_auth.json` in the state directory beside `db_path`. This names the **file**, it is not the password — write it with `lynceus-ui-passwd`. See [Web UI authentication](#web-ui-authentication). | `/var/lib/lynceus/ui_auth.json` |
 | `kismet_sources` | list[string] \| null | `null` | Inclusive filter on Kismet source (adapter) names. When set, only observations seen by at least one listed source are processed; others are silently dropped (DEBUG-logged). Source names match exactly. Omit or unset to accept every source. | `[alfa-2.4ghz, builtin-bt]` |
 | `kismet_source_locations` | dict[string, string] \| null | `null` | Per-source location override. Maps Kismet source names to `location_id` values; sightings observed by a matching source are recorded under that override rather than the global `location_id`. Sources not listed fall back to `location_id`. | `{alfa-2.4ghz: wifi-corner, builtin-bt: bt-corner}` |
 | `min_rssi` | integer \| null | `null` | Drop observations weaker than this RSSI threshold (dBm). Range `[-120, 0]`. Observations with no RSSI report are kept regardless. Unset disables RSSI filtering. | `-85` |
@@ -253,6 +254,55 @@ sudo -u lynceus sqlite3 /var/lib/lynceus/lynceus.db \
 ```
 
 Both `living-room-wifi` and `living-room-bt` should appear with non-zero counts within an hour. If one is missing, the corresponding Kismet `source=` line is probably failing to attach. Check `kismet -d` output for that adapter.
+
+## Web UI authentication
+
+One operator, one password. Off by default on a loopback bind; **mandatory** on any
+other bind.
+
+```bash
+lynceus-ui-passwd --config /etc/lynceus/lynceus.yaml   # set or change
+lynceus-ui-passwd --config … --check                   # is one set? (exit 0 = yes)
+lynceus-ui-passwd --config … --remove                  # turn it off again
+lynceus-ui-passwd --config … --stdin < secretfile      # for provisioning scripts
+```
+
+The hash goes in `ui_auth.json` in the state directory (mode `0600`), **not** in
+`lynceus.yaml` — that file gets quoted in bug reports and copied between machines.
+Override the location with `ui_auth_path`.
+
+### What it does and does not protect
+
+| | |
+|---|---|
+| **Default install** (loopback, no password) | Unchanged from every previous release. Every route is reachable by any local user or process on the box. Fine for a single-operator Pi; it is why the password is opt-in here rather than forced. |
+| **Password set** | Every route needs a session except `/login`, `/static`, `/healthz` and `/healthz.json`. Sessions are server-side, idle out after 8 hours, and expire absolutely after 7 days. |
+| **Non-loopback bind, no password** | `lynceus-ui` prints a refusal naming `lynceus-ui-passwd` and exits `2`. It does not start. |
+
+⛔ **A password does not encrypt anything.** lynceus serves no TLS. Bound off-loopback
+over plain HTTP, the password and the session cookie it issues cross the network in the
+clear and can be replayed — a longer-lived disclosure than the dashboard itself. An SSH
+tunnel (`ssh -L 8765:127.0.0.1:8765 you@host`) or a private network such as Tailscale
+remains the supported remote path, and both encrypt the hop this one does not.
+
+### Things worth knowing before you are surprised by them
+
+- **Setting a password does not affect a running server.** The file is read once at
+  startup. Restart `lynceus-ui`.
+- **Restarting logs you out.** Sessions live in memory, deliberately: it makes sign-out
+  and revocation real rather than a signature scheme with a revocation list bolted on.
+- **`/healthz` and `/healthz.json` stay reachable without a session.** They are the
+  documented monitoring contract and the readiness probe `lynceus-quickstart` polls.
+  Measured 2026-08-25 with a watchlist row, a device row and an alert present: neither
+  names a MAC, a vendor or a description — aggregate counts, staleness, version and
+  ruleset size only. Pinned by `tests/test_webui_auth.py`, which greps the response
+  bytes rather than trusting this paragraph.
+- **Five wrong passwords locks that client address out for five minutes.** The lockout
+  is checked before the password is verified, so a guessing loop cannot pin a Pi's CPU
+  down with scrypt work it was going to be refused for anyway.
+- **Lost the password?** There is no recovery flow and no reset link. Delete
+  `ui_auth.json` (or `lynceus-ui-passwd --remove`) on the host and set a new one. If the
+  bind is non-loopback, the UI will refuse to start in the window between the two.
 
 ## Web UI routes
 

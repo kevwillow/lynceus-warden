@@ -10,4 +10,15 @@
   <a href="/settings"{% if active == 'settings' %} class="active"{% endif %}>settings</a>
   <a href="/healthz"{% if active == 'healthz' %} class="active"{% endif %}>healthz</a>
   <button type="button" class="theme-toggle" data-theme-toggle aria-label="cycle theme: auto, light, dark" aria-pressed="false">theme: auto</button>
+  {# Only rendered when a password is configured. On a loopback single-operator
+     install there is no session to end, and a "sign out" that does nothing is
+     worse than its absence. `auth_enabled` is an env global (see create_app),
+     not per-route context, for the reason written there: a route that forgets
+     a context key renders the falsy branch silently. #}
+  {% if auth_enabled() %}
+  <form class="signout" method="post" action="/logout">
+    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+    <button type="submit">sign out</button>
+  </form>
+  {% endif %}
 </nav>

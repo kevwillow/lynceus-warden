@@ -216,6 +216,15 @@ class Config(BaseModel):
     ui_bind_host: str = "127.0.0.1"
     ui_bind_port: int = 8765
     ui_allow_remote: bool = False
+    #: Where the web UI's password hash lives. None means "derive it", which
+    #: puts it in the STATE directory beside the database — same reasoning as
+    #: ``ui_allowlist_path``, and see ``webui/credentials.py`` for why it is not
+    #: a field in this file.
+    #:
+    #: ⚠️ The PATH is config; the SECRET is not. Setting this points lynceus at
+    #: a different credentials file, it does not contain one. Write the file
+    #: with ``lynceus-ui-passwd``.
+    ui_auth_path: str | None = None
     kismet_sources: list[str] | None = None
     kismet_source_locations: dict[str, str] | None = None
     min_rssi: int | None = None
@@ -282,6 +291,27 @@ class Config(BaseModel):
         from .allowlist import ui_filename
 
         return Path(self.db_path).parent / ui_filename(Path(self.allowlist_path))
+
+    def resolved_ui_auth_path(self) -> Path:
+        """Where the web UI reads its password hash from.
+
+        ⛔ Everything that reads or writes the credential must resolve it
+        through here, for the reason written on
+        ``resolved_ui_allowlist_path``: the failure mode of two callers
+        disagreeing is not "it breaks", it is that ``lynceus-ui-passwd``
+        cheerfully writes a password to one path while ``lynceus-ui`` reads
+        another and reports that authentication is not configured.
+
+        Unlike the allowlist this never returns None: a database path always
+        exists, so the credentials path is always derivable, and "no
+        credentials" is the file being absent rather than the path being
+        unknown.
+        """
+        if self.ui_auth_path:
+            return Path(self.ui_auth_path)
+        from .webui.credentials import default_credentials_path
+
+        return default_credentials_path(self.db_path)
 
     def legacy_ui_allowlist_path(self) -> Path | None:
         """The pre-move location: beside the operator's own allowlist.
@@ -471,8 +501,11 @@ class Config(BaseModel):
             raise ValueError(
                 "ui_bind_host is non-loopback but ui_allow_remote is False. "
                 "Set ui_allow_remote: true explicitly to bind to a non-loopback address. "
-                "This is a footgun. Lynceus has no auth layer, so anything that "
-                "can reach the bound address can read the UI."
+                "Anything that can reach the bound address can read the UI, and "
+                "/probes is the probe-SSID history of every device in range — "
+                "bystanders, not just you. lynceus-ui additionally REFUSES to "
+                "start on a non-loopback host until a password is set with "
+                "lynceus-ui-passwd."
             )
         return self
 

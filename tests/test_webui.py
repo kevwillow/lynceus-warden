@@ -9510,6 +9510,20 @@ def test_startup_warning_is_silent_when_remote_is_permitted_but_bind_is_loopback
 
 
 def test_startup_warning_fires_and_names_the_exposure_when_bound_off_host(tmp_path):
+    """⭐ REWRITTEN 2026-08-25, because the fact it asserted stopped being true.
+
+    This used to require the word "NONE" — "authentication NONE. There is no
+    login and no password." That was accurate for every version before
+    authentication existed. It is now reachable only when a password IS set,
+    because ``remote_bind_refusal`` turns back the other case, so demanding
+    "NONE" would have pinned the banner to a lie.
+
+    ⛔ What replaces it is the thing a password does NOT fix: lynceus serves no
+    TLS, so off-loopback the password and its session cookie cross the network
+    in cleartext. That is a longer-lived disclosure than the dashboard was, and
+    it is the conclusion an operator who has just set a password is least
+    likely to reach unaided.
+    """
     from lynceus.webui.server import remote_exposure_warning
 
     config = Config(
@@ -9519,10 +9533,15 @@ def test_startup_warning_fires_and_names_the_exposure_when_bound_off_host(tmp_pa
     assert text, "a wide-open bind produced no warning at all"
     # Name the specific facts, not a vague caution. A warning that says
     # "be careful" is one an operator can dismiss without learning anything.
-    assert "NONE" in text
     assert "/probes" in text
     assert "bystanders" in text
     assert "0.0.0.0" in text
+    # The transport is the live exposure now that a credential exists.
+    assert "not encrypted" in text.lower()
+    assert "clear" in text.lower()
+    # And it must NOT still claim there is no authentication, which is the
+    # specific rot this rewrite exists to prevent.
+    assert "authentication  NONE" not in text
     # The remedy has to be in it, with the port the operator actually configured.
     assert f"ssh -L {config.ui_bind_port}:127.0.0.1:{config.ui_bind_port}" in text
 

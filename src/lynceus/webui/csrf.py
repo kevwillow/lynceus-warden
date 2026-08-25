@@ -122,6 +122,40 @@ async def _send_403(send) -> None:
     await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
+def build_csrf_cookie(token: str, *, secure: bool) -> str:
+    """Build the Set-Cookie value. ``secure`` describes the TRANSPORT.
+
+    ⭐ Module-level so the login handler can ROTATE the token on a successful
+    sign-in without duplicating the attribute list. A double-submit token that
+    survives authentication is one an attacker who could set a cookie before
+    login still knows afterwards, and two copies of this attribute list is how
+    one of them quietly loses ``SameSite``.
+
+    ⛔ ``Secure`` used to be derived from ``ui_allow_remote``, which describes
+    the BIND ADDRESS, not the transport. Nothing in lynceus serves TLS, so that
+    combination set a flag no plain-HTTP client may return: the browser stored
+    the cookie and then withheld it from every subsequent request, the POST
+    arrived with no cookie at all, and the operator got ``403 CSRF token
+    mismatch`` on every form. Turning on the one documented way to reach the UI
+    off-host broke the whole UI, and the 403 named a mismatch when there was
+    nothing to mismatch.
+
+    Deriving it from the request scheme is the honest mapping, and it keeps the
+    flag where it is real: uvicorn reports ``https`` both when it terminates TLS
+    itself and, via its proxy-header handling, when a trusted local proxy such
+    as ``tailscale serve`` did.
+    """
+    parts = [
+        f"{CSRF_COOKIE_NAME}={token}",
+        f"Max-Age={CSRF_COOKIE_MAX_AGE}",
+        "Path=/",
+        "SameSite=Strict",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
 class CSRFMiddleware:
     """ASGI middleware enforcing CSRF on state-changing requests."""
 
@@ -144,16 +178,13 @@ class CSRFMiddleware:
         keeps the flag where it is real: uvicorn reports ``https`` both when
         it terminates TLS itself and, via its proxy-header handling, when a
         trusted local proxy such as ``tailscale serve`` did.
+
+        ⚠️ Kept as a method delegating to ``build_csrf_cookie`` rather than
+        deleted: it is named by ``webui/app.py``'s middleware-ordering comment
+        and by ``webui/auth.build_session_cookie``'s docstring, both of which
+        point here for the measurement. The indirection costs nothing.
         """
-        parts = [
-            f"{CSRF_COOKIE_NAME}={token}",
-            f"Max-Age={CSRF_COOKIE_MAX_AGE}",
-            "Path=/",
-            "SameSite=Strict",
-        ]
-        if secure:
-            parts.append("Secure")
-        return "; ".join(parts)
+        return build_csrf_cookie(token, secure=secure)
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":

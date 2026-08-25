@@ -56,13 +56,26 @@ from lynceus.db import (
 )
 from lynceus.patterns import mac_in_mac_range
 from lynceus.redact import redact_ntfy_topic
+from lynceus.webui.auth import (
+    SESSION_ABSOLUTE_SECONDS,
+    SESSION_COOKIE_NAME,
+    AuthMiddleware,
+    LoginRateLimiter,
+    SessionStore,
+    build_session_cookie,
+    clear_session_cookie,
+    client_key,
+    safe_next_path,
+    verify_against_configured,
+)
 from lynceus.webui.clock import (
     CLOCK_BEHIND_TOLERANCE_SECONDS,
     clock_behind_recorded_history,
     refuse_if_clock_behind,
 )
+from lynceus.webui.credentials import load_credentials
 from lynceus.webui.csp import CSPMiddleware
-from lynceus.webui.csrf import CSRFMiddleware, get_csrf_token
+from lynceus.webui.csrf import CSRFMiddleware, build_csrf_cookie, generate_token, get_csrf_token
 from lynceus.webui.liveness import (
     POLLER_DRIVEN_RULE_TYPES,
     allowlist_answerable_for,
@@ -2515,15 +2528,57 @@ def create_app(
         name="static",
     )
 
+    # --- Authentication ----------------------------------------------------
+    #
+    # Loaded ONCE, at app build. Setting a password on a running server does
+    # not take effect until it is restarted, which is stated in
+    # docs/CONFIGURATION.md rather than left to be discovered: re-reading the
+    # file per request would put a disk read on every route and give an
+    # operator's half-written file a window in which it authenticates nobody.
+    #
+    # ⛔ A CredentialsError propagates. A corrupt credentials file must not
+    # degrade into "authentication is not configured" — that is a fail-open
+    # reachable by any disk write that dies halfway.
+    credentials = load_credentials(config.resolved_ui_auth_path())
+    app.state.credentials = credentials
+    app.state.sessions = SessionStore() if credentials else None
+    app.state.login_limiter = LoginRateLimiter() if credentials else None
+
+    # ⚠️ A callable, and an env global rather than per-route context, for the
+    # reason written beside the other globals above: a route that forgets a
+    # context key renders the FALSY branch, and the falsy branch here hides the
+    # sign-out control on a page that does have a session.
+    def _auth_enabled() -> bool:
+        return app.state.credentials is not None
+
+    app.state.templates.env.globals["auth_enabled"] = _auth_enabled
+
     # ⭐ No cookie_secure argument: the flag is decided per request from the
     # scheme, not from config. It was wired to ui_allow_remote, which meant
     # enabling remote access 403'd every form on the site. See
     # CSRFMiddleware._build_cookie_value.
     app.add_middleware(CSRFMiddleware)
-    # ⭐ Added AFTER CSRFMiddleware, which means it runs OUTSIDE it: Starlette
-    # applies middleware in reverse registration order, so the CSP wrapper sees
-    # every response including the 403 CSRFMiddleware itself returns. Register
-    # it first and a rejected request would come back with no policy at all.
+    # ⭐ Added AFTER CSRFMiddleware, so it runs OUTSIDE it — Starlette applies
+    # middleware in reverse registration order. That ordering is the point:
+    #
+    #   * OUTSIDE CSRF, so an unauthenticated POST is refused for the reason it
+    #     is actually wrong ("401 authentication required") instead of
+    #     "403 CSRF token mismatch", which names a control the caller was never
+    #     going to satisfy and sends whoever reads the log hunting a token bug.
+    #   * INSIDE CSP, so the 401 and the 303-to-login still carry a policy.
+    #   * /login is exempt, so it reaches CSRFMiddleware, which issues the
+    #     token cookie on the GET and validates it on the POST. The login form
+    #     is CSRF-protected like every other form; nothing special-cases it.
+    #
+    # Registered only when a password is configured. An install with no
+    # credentials file gets the app it had before this feature existed, with no
+    # middleware in the path and no /login route to find.
+    if credentials:
+        app.add_middleware(AuthMiddleware, sessions=app.state.sessions)
+    # ⭐ Added AFTER the two above, which means it runs OUTSIDE both: the CSP
+    # wrapper sees every response including the 403 CSRFMiddleware itself
+    # returns and the 401 AuthMiddleware returns. Register it first and a
+    # rejected request would come back with no policy at all.
     # Pinned by test_csp_header_is_present_even_on_a_csrf_rejection.
     app.add_middleware(CSPMiddleware)
 
@@ -2562,6 +2617,143 @@ def create_app(
                 "back_href": back_href,
             },
         )
+
+    # --- Sign in / sign out -------------------------------------------------
+    #
+    # Registered only when a password is configured, so on a default loopback
+    # install the POST-route surface is byte-for-byte what it was before this
+    # feature landed. `tests/test_webui_post_routes_are_classified.py` asserts
+    # both halves of that: 23 POST routes with no credentials file, 25 with.
+
+    if credentials:
+        #: One message for every failure mode. "No password configured",
+        #: "wrong password" and "unknown user" must be indistinguishable, or
+        #: the login page answers questions for an unauthenticated caller.
+        LOGIN_FAILED = "Incorrect password."
+
+        def _render_login(
+            request: Request,
+            *,
+            next_path: str,
+            error: str | None = None,
+            status_code: int = 200,
+        ):
+            return app.state.templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                status_code=status_code,
+                context={
+                    "version": __version__,
+                    "active": "",
+                    "next_path": next_path,
+                    "error": error,
+                },
+            )
+
+        @app.get("/login", response_class=HTMLResponse)
+        async def login_form(request: Request, next: str | None = Query(default=None)):
+            """The sign-in page.
+
+            ⚠️ An operator who already has a live session is sent on rather
+            than shown the form again. Without it, a bookmarked /login is a
+            dead end that looks like the session was lost.
+            """
+            target = safe_next_path(next)
+            if app.state.sessions.validate(request.cookies.get(SESSION_COOKIE_NAME)):
+                return RedirectResponse(target, status_code=303)
+            return _render_login(request, next_path=target)
+
+        @app.post("/login")
+        async def login_submit(
+            request: Request,
+            password: str = Form(default=""),
+            next: str = Form(default="/"),
+        ):
+            """Verify the password and start a session.
+
+            ⛔ The lockout is checked BEFORE the password is verified, not
+            after. Checking afterwards still runs scrypt on every attempt,
+            which means the rate limiter stops the guessing but not the CPU
+            burn — an unauthenticated caller could hold a Pi's core down with
+            a loop that was already being refused.
+            """
+            target = safe_next_path(next)
+            limiter = app.state.login_limiter
+            client = client_key(request.scope)
+
+            if limiter.is_locked(client):
+                wait = limiter.seconds_remaining(client)
+                return _render_login(
+                    request,
+                    next_path=target,
+                    # ⚠️ The one failure that is deliberately distinguishable.
+                    # An operator who has locked themselves out needs to know
+                    # to wait rather than keep typing, and an attacker learns
+                    # nothing they could not infer from being refused anyway.
+                    error=f"Too many attempts. Try again in {wait} seconds.",
+                    status_code=429,
+                )
+
+            stored = app.state.credentials.password_hash if app.state.credentials else None
+            if not verify_against_configured(password, stored):
+                limiter.record_failure(client)
+                logger.warning(
+                    "web UI login failed from %s", client
+                )
+                return _render_login(
+                    request, next_path=target, error=LOGIN_FAILED, status_code=401
+                )
+
+            limiter.record_success(client)
+            # Bounds the session table: without it, repeated successful logins
+            # grow a dict that only a restart empties.
+            app.state.sessions.purge_expired()
+            token = app.state.sessions.create()
+            logger.info("web UI login succeeded from %s", client)
+
+            secure = request.url.scheme == "https"
+            response = RedirectResponse(target, status_code=303)
+            # ⚠️ Max-Age is the ABSOLUTE lifetime, not the idle one, and the
+            # difference is a real bug in the obvious version. The server
+            # refreshes a session's idle clock on every request, but a cookie's
+            # Max-Age is fixed when it is set — so an 8-hour Max-Age logs out an
+            # operator who has been using the dashboard continuously for 8
+            # hours, which reads as a session bug rather than an expiry. The
+            # cookie is a bearer token; both timeouts are enforced server-side
+            # in SessionStore.validate, and a cookie that outlives its session
+            # is simply rejected and redirected to /login.
+            response.headers.append(
+                "set-cookie",
+                build_session_cookie(
+                    token, secure=secure, max_age=SESSION_ABSOLUTE_SECONDS
+                ),
+            )
+            # ⛔ Rotate the CSRF token too. The double-submit token is
+            # self-issued to anyone who can GET a page, so one collected before
+            # sign-in is still valid after it unless it is replaced here. Same
+            # reasoning as rotating the session id: nothing an unauthenticated
+            # caller planted may survive authentication.
+            response.headers.append(
+                "set-cookie", build_csrf_cookie(generate_token(), secure=secure)
+            )
+            return response
+
+        @app.post("/logout")
+        async def logout(request: Request):
+            """End the session and clear the cookie.
+
+            ⛔ POST, not GET, and CSRF-protected like every other state change.
+            A GET logout is fired by any ``<img src="/logout">`` on any page
+            the operator happens to have open — harmless as attacks go, but it
+            is a state change on a GET, which is the thing the rest of this
+            app does not do.
+            """
+            app.state.sessions.revoke(request.cookies.get(SESSION_COOKIE_NAME))
+            response = RedirectResponse("/login", status_code=303)
+            response.headers.append(
+                "set-cookie", clear_session_cookie(secure=request.url.scheme == "https")
+            )
+            return response
 
     @app.get("/healthz", response_class=HTMLResponse)
     async def healthz(request: Request):

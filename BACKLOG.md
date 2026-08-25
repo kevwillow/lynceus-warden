@@ -337,6 +337,34 @@ permitting remote access while staying on loopback stays quiet.
 - **Estimated**: real work. Session auth + a login surface + rate limiting, or delegate it to a
   reverse proxy and document that as the only supported remote mode.
 
+### ✅ RESOLVED 2026-08-25 — single-operator password + session shipped
+
+Kev chose the second of the three shapes above. `webui/auth.py` implements it: scrypt password
+hashing, server-side sessions (8h idle / 7d absolute), per-client login rate limiting with a
+lockout, and an **ASGI middleware** rather than per-route `Depends()` — 42 routes is a list a new
+route falls off, and this repo has shipped that failure twice already. `lynceus-ui-passwd` writes
+the hash to `ui_auth.json` in the state directory at `0600`.
+
+⭐ **What actually closes the exposure is the refusal, not the password.** A password nobody sets
+is a feature shipped switched off. `webui/server.remote_bind_refusal` makes `lynceus-ui` **exit 2
+rather than start** on a non-loopback bind with no credential, printing the command that fixes it.
+On loopback it stays opt-in, because there the bind is the control and forcing a password on every
+existing single-operator install would be an upgrade that locks people out of their own dashboard.
+
+⚠️ **Two things this deliberately does NOT do**, recorded so they are not mistaken for oversights:
+
+1. **No TLS.** A password authenticates the operator; it does nothing about the wire. Off-loopback
+   over plain HTTP the password and its session cookie are readable and replayable in transit —
+   *worse* than the old exposure in one respect, because a credential outlives a snapshot. The
+   startup banner now says exactly this, and the supported remote path is unchanged: tunnel it.
+2. **No accounts, roles or per-user audit.** One operator, one password. If that stops being true,
+   `webui/auth.py` is the wrong shape and should be replaced rather than extended.
+
+Residual, and the honest limit: the rate limiter keys on the peer socket address, so behind a
+reverse proxy every caller shares one bucket and one attacker can lock the operator out. Not a
+supported deployment — both documented remote paths preserve the peer — and trusting an
+`X-Forwarded-For` any unauthenticated caller can write would be worse. Stated in `auth.py`.
+
 ### Silent pipeline death: the daemon stays alive with ingest stopped
 A persistent DB lock, disk-full, or a changed Kismet devices-schema is caught per-tick by
 `run_forever` and logged, while the runtime-loss state machine deliberately stays quiet because

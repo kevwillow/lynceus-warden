@@ -4,6 +4,53 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **The web UI can require a password, and on a non-loopback bind it now
+  insists.** One operator, one password: scrypt hash, server-side sessions (8h
+  idle, 7d absolute), a login form, and a per-client lockout after five wrong
+  attempts. Set it with the new `lynceus-ui-passwd`; the hash lands in
+  `ui_auth.json` in the state directory at `0600`, never in `lynceus.yaml`.
+
+  **On loopback it is opt-in and OFF by default.** An install with no
+  credentials file behaves exactly as every previous release did, because there
+  the bind is the control and forcing a password on upgrade would lock existing
+  operators out of their own dashboard.
+
+  ⛔ **On any other bind it is mandatory.** `lynceus-ui` now exits `2` rather
+  than starting when `ui_bind_host` is non-loopback and no password is set, and
+  prints the command that fixes it. The previous behaviour was a loud banner and
+  a server that started anyway — which is how a security feature ships switched
+  off precisely where the exposure is.
+
+  Enforcement is **ASGI middleware, not per-route `Depends()`**: there are 42
+  routes, and a per-route list is a list a new route silently falls off. A route
+  added tomorrow is behind authentication without anyone remembering. The exempt
+  set is four entries — `/login`, `/static`, `/healthz`, `/healthz.json` — pinned
+  as a set (not a count, so an entry cannot be swapped) and each justified in
+  `webui/auth.py`. The two health surfaces were **measured**, with a watchlist
+  row, a device row and an alert present, to name no MAC, vendor or description;
+  the guard greps the response bytes rather than trusting that sentence.
+
+  ⚠️ **A password is not TLS, and lynceus serves none.** Bound off-loopback over
+  plain HTTP the password and its session cookie cross the network in the clear
+  and can be replayed — a longer-lived disclosure than the dashboard itself. The
+  startup banner now says exactly that instead of "authentication NONE", and the
+  supported remote path is unchanged: an SSH tunnel or a private network.
+
+### Fixed
+
+- **`lynceus-export-case` was never symlinked onto `PATH` by a `--system`
+  install.** `install.sh`'s `CONSOLE_SCRIPTS` array is meant to mirror
+  `[project.scripts]`, and the only thing holding the two together was a comment
+  asking future authors to remember. It did not hold: the command shipped in
+  v1.1.1 and was missing from the array, so on a system install the feature that
+  release was built around was a command-not-found. Both lists are now derived
+  and compared by `tests/test_install_console_scripts_parity.py`, in both
+  directions.
+
 ## [1.1.1] - 2026-08-25
 
 > **The shipped release of the v1.1.0 line.** Identical in product terms to

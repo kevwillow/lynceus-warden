@@ -1,25 +1,31 @@
-"""Every web-UI POST route must be classified against the open auth decision.
+"""Every web-UI POST route must be classified against the auth decision.
 
-⭐ Why this exists. Web UI authentication is reserved for Kev (register item 5)
-and the evidence is complete: **22 of the 23 POST routes change persistent state
-for a caller with no credential of any kind.** A decision that large stays open
-for a while, and the risk while it does is not that someone implements the wrong
-thing — it is that the surface **grows** in the meantime and nobody notices,
-because adding a route is a one-line change that no existing test objects to.
+⭐ **UPDATED 2026-08-25: the decision is no longer open.** Kev chose shape (b),
+single-operator password + session (register item 5). ``webui/auth.py`` ships
+it. What this file measures therefore changed, and the change is deliberate
+rather than a relaxation:
 
-So this pins the surface, not the verdict. Adding a POST route fails here until
-someone names it, at which point they are looking at the auth decision.
+  * **With NO credentials file** — the default loopback install — the surface is
+    exactly what it was: 23 POST routes, 22 of which change persistent state for
+    a caller with no credential. That is still true, still measured here, and
+    still the shipped default. Authentication is opt-in on loopback and
+    MANDATORY off it (``webui/server.remote_bind_refusal``).
+  * **With a credentials file**, the same POST is refused 401 and changes
+    nothing, and the surface gains exactly ``/login`` and ``/logout``.
 
-⚠️ Deliberately NOT asserting "22 of 23 must keep mutating". That would make
-implementing auth fail the suite, which is backwards. What it asserts is that the
-SET is known, plus one behavioural anchor so the register cannot quietly become
-wrong in the reassuring direction either.
+⚠️ The original framing of this file said "auth lands and the register goes
+stale -> test_the_register_claim_is_still_true". That fired as designed: the
+register's evidence needed rewriting the moment auth existed. It has been, and
+the anchor below now pins BOTH configurations so the register cannot rot in
+either direction — neither by asserting an exposure that is gone, nor by
+implying a protection the default install does not have.
 
 Both directions fail:
 
   * a NEW POST route nobody classified       -> test_every_post_route_is_classified
   * a classified route disappears            -> test_every_post_route_is_classified
-  * auth lands and the register goes stale   -> test_the_register_claim_is_still_true
+  * auth stops refusing the same POST        -> test_a_configured_password_refuses_the_same_post
+  * auth starts applying with no password    -> test_the_register_claim_is_still_true
 """
 
 from __future__ import annotations
@@ -150,11 +156,15 @@ def test_the_two_classes_do_not_overlap():
 
 
 def test_the_register_claim_is_still_true(app_and_db):
-    """The behavioural anchor, and the direction the structural check misses.
+    """The behavioural anchor for the DEFAULT install, with no password set.
 
-    ⚠️ If authentication lands, this fails — and that is the point. The register
-    would otherwise keep asserting an exposure that no longer exists, which is
-    the same rot as asserting one that does.
+    ⚠️ This used to read "if authentication lands, this fails — and that is the
+    point". It fired, the register was rewritten, and what it pins now is the
+    narrower and still-true claim: with no credentials file, an unauthenticated
+    caller changes persistent state. Its counterpart,
+    ``test_a_configured_password_refuses_the_same_post``, pins the other
+    configuration, and the pair is what stops the register rotting in either
+    direction.
 
     ⛔ It asserts a PERSISTENT MUTATION, not a status code. An earlier version
     accepted 200-or-303, and a cold read caught that **a login redirect is a
@@ -228,4 +238,88 @@ def test_csrf_refuses_a_tokenless_request_and_is_not_authentication(app):
         f"a tokenless POST returned {refused.status_code}, expected 403 — the CSRF "
         "control changed, and the register's 'CSRF works and is not auth' line "
         "needs re-measuring"
+    )
+
+
+# --- The other configuration: a password IS set -------------------------------
+#
+# ⭐ Added 2026-08-25 with the auth feature. The tests above measure the default
+# install and would go on passing untouched if the middleware were deleted
+# tomorrow, because nothing in them ever builds an app that has a credential.
+# These are the half that notices.
+
+
+@pytest.fixture()
+def authed_app_and_db():
+    """The same fixture, plus a credentials file, so auth is switched on."""
+    from lynceus.webui.auth import hash_password
+    from lynceus.webui.credentials import write_credentials
+
+    td = tempfile.mkdtemp()
+    allowlist = Path(td) / "allowlist.yaml"
+    allowlist.write_text("entries: []\n", encoding="utf-8")
+    cfg = Config(
+        db_path=td + "/s.db",
+        rules_path=str(REPO_ROOT / "config" / "rules.yaml"),
+        allowlist_path=str(allowlist),
+    )
+    write_credentials(cfg.resolved_ui_auth_path(), hash_password("a-long-enough-password"))
+    db = Database(cfg.db_path)
+    db.ensure_location("default", "Default")
+    try:
+        yield create_app(cfg, db), db
+    finally:
+        db.close()
+
+
+def test_a_configured_password_refuses_the_same_post(authed_app_and_db):
+    """The mirror of ``test_the_register_claim_is_still_true``.
+
+    ⛔ Asserts the ABSENCE of a persistent mutation, not merely a status code —
+    the same reasoning that made the original anchor stop accepting 200-or-303.
+    A refusal that still wrote the row would be the worst of both.
+    """
+    from starlette.testclient import TestClient
+
+    app, db = authed_app_and_db
+
+    def _snoozed() -> int:
+        return db._conn.execute("SELECT COUNT(*) FROM rule_type_snoozes").fetchone()[0]
+
+    before = _snoozed()
+    assert before == 0, "fixture is not clean"
+
+    client = TestClient(app, follow_redirects=False)
+    response = client.post(
+        "/rules/watchlist_mac/snooze",
+        data={"duration_seconds": "86400"},
+        headers={"accept": "*/*"},
+    )
+    assert response.status_code == 401, (
+        f"POST with no session returned {response.status_code}, not 401"
+    )
+    assert _snoozed() == before, (
+        "an unauthenticated POST created a rule_type_snoozes row even though a "
+        "password is configured — the middleware is not in the path"
+    )
+
+
+def test_the_post_surface_gains_exactly_login_and_logout_when_auth_is_on(
+    app_and_db, authed_app_and_db
+):
+    """Derived from both live apps, so the delta is measured, not asserted.
+
+    ⚠️ The point is that enabling auth adds the credential routes and NOTHING
+    else. A middleware that also registered, say, a password-reset endpoint
+    would be a new unauthenticated surface nobody classified.
+    """
+    open_routes = _post_routes(app_and_db[0])
+    authed_routes = _post_routes(authed_app_and_db[0])
+    assert open_routes == CLASSIFIED, "the no-credential surface drifted"
+    assert authed_routes - open_routes == {"/login", "/logout"}, (
+        f"enabling auth changed the POST surface by "
+        f"{sorted(authed_routes - open_routes)}, expected exactly /login and /logout"
+    )
+    assert not (open_routes - authed_routes), (
+        f"enabling auth REMOVED POST routes: {sorted(open_routes - authed_routes)}"
     )

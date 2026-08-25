@@ -48,8 +48,11 @@ tag. Where it names a version, read it as "as of that cycle".
   escalation, flag for investigation, confirm safe), per-alert "Watch"
   triage button, recurrence digest grouped by ISO week.
 - CSRF middleware on POST routes.
+- Optional single-operator password + server-side sessions
+  (`lynceus-ui-passwd`). Off by default on loopback; **required** on any
+  non-loopback bind, which `lynceus-ui` refuses to serve without one.
 - Localhost-bound by default; non-loopback bind requires an explicit
-  `ui_allow_remote: true` flag (intentional friction, v0.2 has no auth).
+  `ui_allow_remote: true` flag (intentional friction).
 
 **Setup (`lynceus-setup`)**
 
