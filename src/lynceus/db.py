@@ -2733,6 +2733,7 @@ class Database:
         actioned_macs: tuple[str, ...] = (),
         actioned_oui_prefixes: tuple[str, ...] = (),
         actioned_mac_ranges: tuple[str, ...] = (),
+        mac: str | None = None,
     ) -> int:
         # COUNT and the page query (list_alerts_with_match) must
         # apply the same filters or "K total" is a lie and the
@@ -2754,6 +2755,7 @@ class Database:
             actioned_macs=actioned_macs,
             actioned_oui_prefixes=actioned_oui_prefixes,
             actioned_mac_ranges=actioned_mac_ranges,
+            mac=mac,
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -2801,11 +2803,31 @@ class Database:
         actioned_macs: tuple[str, ...] = (),
         actioned_oui_prefixes: tuple[str, ...] = (),
         actioned_mac_ranges: tuple[str, ...] = (),
+        mac: str | None = None,
         alias: str = "",
     ) -> tuple[list[str], list]:
         prefix = f"{alias}." if alias else ""
         clauses: list[str] = []
         params: list = []
+        if mac is not None and mac != "":
+            # Exact equality, deliberately NOT the `q` filter below.
+            # `q` is a SEARCH predicate: a substring match across mac +
+            # message + vendor, three columns OR'd together. It answers
+            # "show me alerts mentioning this", which is the right
+            # question for a list view and the wrong one for a document
+            # that asserts these alerts belong to this device. Row
+            # ownership needs equality on the row's own mac column.
+            #
+            # ⚠️ Checked rather than assumed: no rule message this
+            # product currently emits quotes a SECOND device's address,
+            # every one interpolates `obs.mac`. But `rule.description` is
+            # externally sourced (the Argus importer populates it), so
+            # deriving identity from message text is wrong in principle
+            # even where it happens to work today. Same defect class as
+            # #220, a pattern matched by the wrong operator.
+            # Callers that want the fuzzy behaviour still have `q`.
+            clauses.append(f"{prefix}mac = ?")
+            params.append(mac)
         if severity is not None:
             clauses.append(f"{prefix}severity = ?")
             params.append(severity)
@@ -2947,6 +2969,7 @@ class Database:
         "actioned_macs",
         "actioned_oui_prefixes",
         "actioned_mac_ranges",
+        "mac",
     )
 
     _ALERT_WITH_MATCH_SELECT = (
@@ -3119,6 +3142,7 @@ class Database:
             actioned_macs=filters.get("actioned_macs", ()),
             actioned_oui_prefixes=filters.get("actioned_oui_prefixes", ()),
             actioned_mac_ranges=filters.get("actioned_mac_ranges", ()),
+            mac=filters.get("mac"),
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -3158,6 +3182,7 @@ class Database:
             actioned_macs=filters.get("actioned_macs", ()),
             actioned_oui_prefixes=filters.get("actioned_oui_prefixes", ()),
             actioned_mac_ranges=filters.get("actioned_mac_ranges", ()),
+            mac=filters.get("mac"),
             alias="a",
         )
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -3527,6 +3552,93 @@ class Database:
         return {
             "device": dict(dev_row),
             "sightings": [dict(r) for r in sight_rows],
+        }
+
+    def list_sightings_for_mac(
+        self,
+        mac: str,
+        *,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """The most recent sightings for one device WITHIN a window.
+
+        ⛔ Not the same as filtering ``get_device_with_sightings`` after
+        the fact, and the difference is a wrong document rather than a
+        slow one. That method takes the newest ``sighting_limit`` rows
+        for the device and knows nothing about a window, so a caller
+        asking for an old window on a busy device gets the newest rows,
+        filters them all away, and reports zero sightings for a period
+        that has plenty. Applying the window in SQL is the only way the
+        limit means "the newest rows IN THE WINDOW".
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            raise ValueError("limit must be int")
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be in [1, 1000]")
+        clauses = ["mac = ?"]
+        params: list = [mac]
+        if since_ts is not None:
+            clauses.append("ts >= ?")
+            params.append(int(since_ts))
+        if until_ts is not None:
+            clauses.append("ts <= ?")
+            params.append(int(until_ts))
+        params.append(limit)
+        rows = self._conn.execute(
+            "SELECT id, ts, rssi, ssid, location_id FROM sightings "
+            f"WHERE {' AND '.join(clauses)} ORDER BY ts DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def summarize_sightings_for_mac(
+        self, mac: str, *, since_ts: int | None = None, until_ts: int | None = None
+    ) -> dict:
+        """Per-location aggregates and a true row count for one device.
+
+        ⛔ Not derivable from what the caller already has, which is why
+        this exists. ``get_device_with_sightings`` returns at most
+        ``sighting_limit`` of the most recent rows, so a per-location
+        summary built from those is wrong exactly when the cap bites.
+        And ``devices.sighting_count`` is a lifetime counter incremented
+        on every upsert; retention deletes sighting ROWS without
+        decrementing it, so using it as "how many rows are there" would
+        report pruning as capping. The case file has to keep those two
+        apart, because one is a cap this export chose and the other is
+        data that no longer exists.
+
+        Counts rows, honours the same window as the rest of the export,
+        and is read-only.
+        """
+        clauses = ["mac = ?"]
+        params: list = [mac]
+        if since_ts is not None:
+            clauses.append("ts >= ?")
+            params.append(int(since_ts))
+        if until_ts is not None:
+            clauses.append("ts <= ?")
+            params.append(int(until_ts))
+        where = " AND ".join(clauses)
+        rows = self._conn.execute(
+            "SELECT location_id, COUNT(*) AS n, MIN(ts) AS first_ts, MAX(ts) AS last_ts "
+            f"FROM sightings WHERE {where} "
+            "GROUP BY location_id ORDER BY first_ts ASC, location_id ASC",
+            params,
+        ).fetchall()
+        locations = [
+            {
+                "location_id": str(r["location_id"]),
+                "sighting_count": int(r["n"]),
+                "first_seen": int(r["first_ts"]),
+                "last_seen": int(r["last_ts"]),
+            }
+            for r in rows
+        ]
+        return {
+            "total": sum(loc["sighting_count"] for loc in locations),
+            "locations": locations,
         }
 
     def list_watchlist(self) -> list[dict]:

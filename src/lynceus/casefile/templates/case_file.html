@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Case file: {{ device.mac }}</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: Georgia, "Times New Roman", serif; line-height: 1.5;
+         max-width: 50rem; margin: 2rem auto; padding: 0 1rem; color: #16181d;
+         background: #fff; }
+  h1 { font-size: 1.6rem; margin-bottom: 0.2rem; }
+  h2 { font-size: 1.2rem; margin-top: 2rem; border-bottom: 1px solid #d7dae0;
+       padding-bottom: 0.2rem; }
+  h3 { font-size: 1rem; margin-bottom: 0.2rem; }
+  .sub { color: #545a66; margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem;
+          font-family: "DejaVu Sans Mono", Menlo, Consolas, monospace; }
+  th, td { border: 1px solid #d7dae0; padding: 0.3rem 0.45rem; text-align: left; }
+  th { background: #f2f4f7; }
+  .mac { font-family: "DejaVu Sans Mono", Menlo, Consolas, monospace; }
+  .limits { border: 2px solid #16181d; padding: 0.5rem 1rem; margin-top: 2rem; }
+  .limits h3 { margin-top: 1rem; }
+  .empty { border-left: 4px solid #16181d; padding-left: 0.8rem; font-style: italic; }
+  .note { color: #545a66; font-size: 0.9rem; }
+  dt { font-weight: bold; }
+  dd { margin: 0 0 0.4rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Case file: <span class="mac">{{ device.mac }}</span></h1>
+<p class="sub">
+  Produced by Lynceus on {{ parameters.generated_at_ts | ts }}.
+  Database schema version {{ parameters.schema_version }}.
+</p>
+
+<h2>Device</h2>
+<dl>
+  <dt>MAC address</dt><dd class="mac">{{ device.mac }}</dd>
+  <dt>Type</dt><dd>{{ device.device_type or "unknown" }}</dd>
+  <dt>Vendor (from the address prefix)</dt><dd>{{ device.oui_vendor or "unknown" }}</dd>
+  <dt>Randomised address</dt><dd>{{ "yes" if device.is_randomized else "no" }}</dd>
+  <dt>First seen</dt><dd>{{ device.first_seen | ts }}</dd>
+  <dt>Last seen</dt><dd>{{ device.last_seen | ts }}</dd>
+</dl>
+
+<h2>Window</h2>
+<p>
+  {% if window.since_ts %}
+    {{ window.since_ts | date }} to {{ window.until_ts | date }}.
+  {% else %}
+    All retained history, up to {{ window.until_ts | date }}.
+  {% endif %}
+  This window is {{ window.reason }}.
+</p>
+
+<h2>Places</h2>
+{% if case.locations %}
+<table>
+  <tr><th>Location</th><th>First seen</th><th>Last seen</th><th>Sightings</th></tr>
+  {% for loc in case.locations %}
+  <tr>
+    <td>{{ loc.location_id }}</td>
+    <td>{{ loc.first_seen | ts }}</td>
+    <td>{{ loc.last_seen | ts }}</td>
+    <td>{{ loc.sighting_count }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="empty">No sightings retained for this device in this window, so there
+are no places to report. Read the limits below before drawing any conclusion
+from that: this says what the database holds, not where the device was.</p>
+{% endif %}
+
+<h2>Sightings</h2>
+{% if case.sightings %}
+<p class="note">
+  Showing {{ case.sightings | length }} sightings, newest first.
+  {% if excluded.sightings_over_cap %}
+  {{ excluded.sightings_over_cap }} further sightings are in the database and are
+  not listed here: this export was capped at {{ parameters.sighting_limit }} rows.
+  {% endif %}
+</p>
+<table>
+  <tr><th>Time</th><th>Location</th><th>Signal</th><th>Network name</th></tr>
+  {% for s in case.sightings %}
+  <tr>
+    <td>{{ s.ts | ts }}</td>
+    <td>{{ s.location_id }}</td>
+    <td>{{ s.rssi if s.rssi is not none else "" }}</td>
+    <td>{{ s.ssid or "" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="empty">No sightings retained for this device in this window.</p>
+{% endif %}
+
+<h2>Alerts</h2>
+{% if case.alerts %}
+<table>
+  <tr><th>Time</th><th>Rule</th><th>Severity</th><th>Message</th></tr>
+  {% for a in case.alerts %}
+  <tr>
+    <td>{{ a.ts | ts }}</td>
+    <td>{{ a.rule_name }}</td>
+    <td>{{ a.severity }}</td>
+    <td>{{ a.message }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="empty">No alerts recorded for this device in this window.</p>
+{% endif %}
+
+<h2>Evidence snapshots</h2>
+<p class="note">
+  {{ case.evidence | length }} snapshot(s) included.
+  {% if excluded.do_not_publish %}
+  {{ excluded.do_not_publish }} snapshot(s) were withheld because the operator
+  marked them do not publish. They are counted here rather than silently dropped.
+  {% endif %}
+  {% if excluded.evidence_fields_withheld %}
+  Each snapshot is a PROJECTION of the record that was captured, not the whole
+  of it: {{ excluded.evidence_fields_withheld }} field(s) across these snapshots
+  were withheld. The captured record describes the observed device, but it also
+  carries the addresses of other devices that were associated with it, and those
+  belong to members of the public. Only fields that describe the observed device
+  itself are published here.
+  {% endif %}
+</p>
+{% if case.evidence %}
+<table>
+  <tr><th>Captured</th><th>Alert</th><th>Position recorded</th></tr>
+  {% for e in case.evidence %}
+  <tr>
+    <td>{{ e.captured_at | ts }}</td>
+    <td>{{ e.alert_id }}</td>
+    <td>{{ "yes" if e.gps_lat is not none else "no" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Devices seen alongside this one</h2>
+<p class="note">
+  Two devices are counted as seen together when both were logged at the same
+  place within {{ parameters.proximity_seconds }} seconds of each other
+  (proximity_seconds = {{ parameters.proximity_seconds }}), with separate
+  visits divided by a gap of {{ parameters.gap_seconds }} seconds
+  (gap_seconds = {{ parameters.gap_seconds }}). Different thresholds give
+  different counts, which is why these are printed rather than assumed.
+</p>
+<p>
+  {{ case.co_observers_named | length }} watchlisted device(s) are named below.
+  A further {{ case.co_observers_aggregate }} device(s) were seen alongside this
+  one and are deliberately NOT named: they did not match the watchlist, so on
+  this record they are members of the public rather than surveillance equipment,
+  and naming them in a document that may be handed to a third party is not
+  something this product will do.
+</p>
+{% for c in case.co_observers_named %}
+<h3 class="mac">{{ c.mac }}</h3>
+{% if c.watchlist %}
+<p class="note">
+  Watchlist entry: {{ c.watchlist.description or c.watchlist.pattern }}
+  ({{ c.watchlist.pattern_type }}, severity {{ c.watchlist.severity }}){% if c.watchlist.device_category %},
+  category {{ c.watchlist.device_category }}{% endif %}{% if c.watchlist.vendor %},
+  vendor {{ c.watchlist.vendor }}{% endif %}{% if c.watchlist.source %},
+  source {{ c.watchlist.source }}{% endif %}.
+</p>
+{% endif %}
+<table>
+  <tr><th>Location</th><th>Shared visits</th><th>Days</th><th>Closest</th><th>Median</th></tr>
+  {% for loc in c.locations %}
+  <tr>
+    <td>{{ loc.location_id }}</td>
+    <td>{{ loc.shared_anchor_runs }}</td>
+    <td>{{ loc.shared_days }}</td>
+    <td>{{ loc.delta_min }}s</td>
+    <td>{{ loc.delta_median }}s</td>
+  </tr>
+  {% endfor %}
+</table>
+{% if c.pairs %}
+<p class="note">The individual logged sightings behind those counts. Each row is
+two real recorded sightings and the true interval between them. Nothing is
+interpolated or rounded, so the count above can be checked rather than trusted.</p>
+<table>
+  <tr><th>Location</th><th>This device</th><th>That device</th><th>Interval</th></tr>
+  {% for p in c.pairs %}
+  <tr>
+    <td>{{ p.location_id }}</td>
+    <td>{{ p.anchor_ts | ts }}</td>
+    <td>{{ p.candidate_ts | ts }}</td>
+    <td>{{ p.delta_seconds }}s</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endfor %}
+
+<h2>How this record was produced</h2>
+<table>
+  <tr><th>Setting</th><th>Value</th></tr>
+  <tr><td>proximity_seconds</td><td>{{ parameters.proximity_seconds }}</td></tr>
+  <tr><td>gap_seconds</td><td>{{ parameters.gap_seconds }}</td></tr>
+  <tr><td>sighting_limit</td><td>{{ parameters.sighting_limit }}</td></tr>
+  <tr><td>sightings_retention_days</td>
+      <td>{% if not parameters.sightings_retention_known %}not available{% elif parameters.sightings_retention_days %}{{ parameters.sightings_retention_days }}{% else %}not set{% endif %}</td></tr>
+  <tr><td>evidence_retention_days</td>
+      <td>{{ parameters.evidence_retention_days if parameters.evidence_retention_days else "not available" }}</td></tr>
+  <tr><td>schema_version</td><td>{{ parameters.schema_version }}</td></tr>
+</table>
+
+<div class="limits">
+<h2>Limits of this record</h2>
+<p>Read this section before relying on anything above. Every point here is a
+limit of the method, not a caveat added out of caution.</p>
+
+<h3>1. The record is keyed on MAC address</h3>
+<p>A device that rotates its address appears in this record as unrelated rows,
+and this document cannot tell you that they are the same device. This works for
+surveillance infrastructure, which broadcasts from a stable address because it is
+not trying to hide. It does not work for consumer trackers, and a reader who
+treats an absence here as proof that nothing was present is reading the method
+rather than the world.</p>
+
+<h3>2. Retention may have removed earlier sightings</h3>
+{% for limit in limits %}
+{% if "Retention" in limit.heading %}
+<p>{{ limit.body }}</p>
+{% endif %}
+{% endfor %}
+<p>Where a retention limit is in force, the first seen date in this document is
+the earliest RETAINED sighting and not necessarily the earliest observation.</p>
+
+<h3>3. A gap is not an absence</h3>
+<p>Sensor uptime is not recorded anywhere, so
+absence of data cannot be distinguished from absence of a device.
+A gap in this record may mean the device
+was elsewhere. It may equally mean nothing was listening: the sensor was off,
+the adapter had dropped, or the operator was not there. Reading a gap as
+"it stopped following me" is reading an artifact of the recording.</p>
+
+<h3>4. GPS is the receiver's position, not the device's</h3>
+<p>Coordinates recorded with an evidence snapshot are where the recording sensor
+was at that moment. They are not a fix on the observed device, which broadcasts
+no position. The two are close enough to be worth recording and they are not the
+same thing.</p>
+
+<h3>5. A watchlist match selects a device, it does not identify one</h3>
+<p>Any device named in this record is named because it matched a rule in the
+operator's watchlist. Those rules can cover a whole manufacturer prefix or an
+address range, so a match means the rule SELECTED this address. It does not mean
+the device has been individually verified as the equipment the rule describes,
+and an ordinary consumer device sharing a prefix will match in exactly the same
+way.</p>
+
+<h3>6. The hash does not prove the contents are true</h3>
+<p>The manifest in this bundle shows that these files are unchanged since the
+export was produced. It does not prove the observations are accurate, and it is
+not a third party attestation: the operator's own installation produced this
+bundle, and the operator controls the database it was produced from.</p>
+</div>
+
+</body>
+</html>

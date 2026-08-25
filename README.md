@@ -586,6 +586,7 @@ browser auto-launch, clean Ctrl+C shutdown. Not for unattended use.
 | `lynceus-validate` | Config preflight, plus `rollback --target-version N`. |
 | `lynceus-bootstrap-kismet` | Configure Kismet capture + group; `--install` adds the apt repo. |
 | `lynceus-export-config` | Bundle config + rules + allowlist into one YAML for backup or diffing. |
+| `lynceus-export-case` | Export one device's recorded history as a case file bundle. |
 
 ## Privacy / threat model
 

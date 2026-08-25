@@ -88,6 +88,7 @@ lynceus-setup = "lynceus.cli.setup:main"
 lynceus-validate = "lynceus.cli.validate:main"
 lynceus-bootstrap-kismet = "lynceus.cli.bootstrap_kismet:main"
 lynceus-export-config = "lynceus.cli.export_config:main"
+lynceus-export-case = "lynceus.cli.export_case:main"
 
 [project.urls]
 Homepage = "https://github.com/kevwillow/lynceus-warden"
@@ -100,6 +101,7 @@ include = ["lynceus*"]
 
 [tool.setuptools.package-data]
 lynceus = [
+    "casefile/templates/*.html",
     "demo/*.json",
     "migrations/*.sql",
     "webui/templates/*.html",

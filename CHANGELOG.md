@@ -4,6 +4,196 @@ All notable changes to this project will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - unreleased
+
+> Not yet cut. The version literals still read `1.0.0`; they move, and this
+> heading gets its date, in the commit the tag points at.
+
+### Added
+
+- **Case-file export: the record, as something you can hand to somebody.**
+  Lynceus is differentiated from the $10 to $25 ESP32 keychains in exactly one
+  way, and it is that it is a RECORDER. Those devices cap at around 50 MACs and
+  thirty minutes of retention with no persistent database. This product has
+  SQLite, retention, a `location_id` per sighting, co-observation across places
+  and an escalation lifecycle. But a record nobody can hand to anyone is not yet
+  an advantage: until now it could only be read by the operator, in a web UI, on
+  the machine that collected it.
+
+  `lynceus-export-case <mac> --out <dir>` and a button on the device detail page
+  now produce a bundle: an HTML document that opens in any browser with no
+  network, the underlying rows as CSV, the captured evidence as JSON, a
+  `README.txt` saying plainly what the bundle holds, and a `manifest.json` with
+  a SHA-256 per file.
+
+  **What the manifest proves is narrow and the document says so in those words.**
+  It shows the bundle is unchanged since export. It does not show the
+  observations are accurate, and it is not a third party attestation: the
+  operator controls the database and the operator's own installation produced
+  the bundle. Signing it would prove the same install produced it, which is
+  self-attestation dressed up as assurance, and would add key generation,
+  storage and rotation to a product with no key management at all.
+
+- **"Limits of this record", which is the most important page in the document.**
+  Five points, carried as static prose so an empty export cannot quietly drop
+  them: the record is keyed on MAC address and a rotating address appears as
+  unrelated rows; retention may have removed earlier sightings, so "first seen"
+  may be the earliest RETAINED sighting; a gap is not an absence, because sensor
+  uptime is not recorded anywhere and absence of data cannot be told apart from
+  absence of a device; any coordinates are the RECEIVER's position, not the
+  observed device's; and the hash does not prove the contents are true.
+
+  The retention point is built from what the database actually shows, and it has
+  three states rather than two. Retention configured, retention off, and "the
+  setting was not available" are three different claims, and collapsing the
+  third into the second would have the document assert that nothing was pruned
+  on the strength of an argument nobody made.
+
+  ⛔ The empty record is treated as a correctness case, not an edge case. A
+  device with no retained sightings leads with "no sightings retained" and still
+  carries the full limits section, because a professional-looking blank document
+  is exactly how a recipient concludes "it was not there".
+
+- **Bystanders are counted, never named.** A co-observed device that matched the
+  watchlist is surveillance infrastructure and documenting it is the point. An
+  unmatched device is somebody's phone, and it is aggregated to a count that the
+  document explains rather than merely prints. This mirrors the probe-SSID
+  default's stated rationale: capturing by default would aim Lynceus at
+  bystanders instead of at surveillance gear. Proven by planting a bystander and
+  asserting its address appears in no file of the finished bundle on either
+  path, not by reading the code.
+
+- **Evidence snapshots are published as a projection, not verbatim.** Kismet's
+  `/devices/last-time/N/devices.json` is not field-limited, so the record
+  Lynceus stores is the WHOLE device record, and `evidence.py`'s capture-time
+  redactor strips probe SSIDs and BLE friendly names and nothing else. For a
+  Wi-Fi access point the rest of that record includes
+  `dot11.device.associated_client_map`, which is keyed by the MAC address of
+  every device associated to it.
+
+  ⛔ Those are members of the public, by exactly the argument that keeps
+  unwatchlisted co-observers out of this document, and shipping the record
+  verbatim would have handed them to whoever the case file was given to. A case
+  file now publishes an ALLOWLIST of scalar fields that describe the observed
+  device itself, and counts what it withheld. An allowlist rather than a
+  denylist because a denylist is wrong the next time Kismet adds a field, and
+  that failure is silent and unrecoverable: the document has already been
+  handed over.
+
+- **`do_not_publish` finally has a consumer.** Migration 009 added the column in
+  v0.5.0 as forward-compat for a hypothetical public-feed export and it has had
+  no producer and no consumer since. A marked evidence row is now excluded from
+  a case file AND the exclusion is counted in the document and on the terminal.
+  Excluding silently would turn an operator's privacy control into a hole the
+  document does not admit to.
+
+- **Named co-observers ship the sighting pairs behind their counts.**
+  `list_co_observation_pairs` returns two real logged sightings and the true
+  delta between them, with nothing interpolated, floored or bucketed. A count
+  alone has to be taken on trust; this product already built the alternative, so
+  the bundle ships it as `data/co-observation-pairs.csv`.
+
+- **`lynceus-quickstart --demo`: evaluate Lynceus in about four seconds with no
+  hardware.** The first five minutes used to require Kismet, a monitor-mode
+  adapter and a Pi, which is the single largest adoption barrier for a product
+  whose value only appears over weeks. A curated fixture of six devices across
+  three locations over three weeks now ships in the wheel, with clocks shifted
+  to land relative to now rather than opening on a dashboard of three-week-old
+  data. It fires three alerts and demonstrates OUI matching, and it includes one
+  unwatchlisted device seen at three places: the identity-agnostic finding a
+  proximity keychain structurally cannot produce.
+
+- **Python 3.13 and 3.14 in the blocking CI matrix**, and both added to the
+  package classifiers.
+
+### Fixed
+
+- **Seven defects an adversarial read found in the case-file work after it was
+  finished and green.** Each has a guard, and each guard was proven by planting
+  the defect back and watching it go red. They share a shape worth recording:
+  the original guards checked the disclosure rules the design had thought of,
+  so none of them could see a route the design had not.
+
+  - **A second export on the same day merged into the first.** The bundle name
+    is the MAC plus the date, so it collided, and the old files stayed. An
+    evidence snapshot since marked `do_not_publish` would still have been
+    sitting in the directory the operator handed over while the new manifest
+    and the new document both said it was withheld, which also falsified
+    `README.txt`'s claim to hash every file present. Now refused, with
+    `--force` to replace.
+  - **An old `--until` window returned nothing on a busy device.** The window
+    was applied in Python to the newest capped rows rather than in SQL, so a
+    device with more than 1000 recent sightings reported zero for a period full
+    of them, and then counted the rows it never looked at as over the cap.
+  - **`--until` excluded almost the whole day it named**, resolving to midnight
+    at the start of it. It is now inclusive of the named day.
+  - **Alerts past the cap were dropped silently**, and because evidence is
+    reached by iterating the alerts returned, so was their evidence. A
+    `do_not_publish` row beyond the cap was therefore excluded without being
+    counted: the document claimed it had withheld nothing while withholding
+    something. The alert cap is now counted and disclosed.
+  - **CSV cells could run as spreadsheet formulas.** The web UI's exports have
+    neutralised this since the CSP work; the case file was the second exporter
+    and bypassed it. The helper now lives in one module that both import, so a
+    payload the UI refuses to hand an operator is not handed to a journalist
+    instead.
+  - **An address in free text could reach a file by a route no rule covered.**
+    An SSID is whatever a nearby device calls itself. The finished artifacts are
+    now swept for MAC-shaped strings and anything that is neither this device
+    nor a named co-observer is replaced and counted, before the manifest is
+    computed. Enforcing the contract on the BYTES is the only version of it
+    that does not depend on somebody having thought of every field.
+  - **The bundle said a watchlist match meant "known surveillance equipment".**
+    A rule can cover a whole manufacturer prefix, so it selects an address
+    rather than identifying equipment. Reworded, and it is now the sixth entry
+    in the limits section.
+
+  ⛔ One reported defect was refuted rather than fixed: that the exact-MAC alert
+  filter still admits bystander addresses through alert message text. Every rule
+  message this product emits interpolates the alert's own device address and
+  none quotes a second one. The finding was right that owning a row is not the
+  same as the row's contents being safe, which is why the redaction sweep above
+  exists; it was wrong that a live path produced it. The comment justifying the
+  filter has been corrected, because it asserted the opposite.
+
+- **A cancelled setup could report an empty progress stream.**
+  `SSEProgressSink.record()` enqueues from the worker thread with
+  `loop.call_soon_threadsafe`, which SCHEDULES the put, while
+  `_run_apply_task`'s `finally` called `queue.put_nowait(None)` directly and
+  that `finally` already runs ON the loop. The sentinel could therefore overtake
+  step records still sitting in the ready queue, and the SSE generator, which
+  drains until it sees the sentinel, emitted `event: end` and stopped. Every
+  step record was lost and the whole response body was two lines.
+
+  ⭐ It reproduces only when the test runs in isolation: the full suite adds
+  enough delay for the pending callbacks to drain, which is why earlier attempts
+  found nothing. Proven by revert on 3.13.12 with latest dependencies: 20 of 20
+  passed with the fix, 7 of 20 with it reverted.
+
+  ⚠️ The `v1.0.0` tag annotation implies #222 addressed this. It did not. #222
+  was a real defect fix for a different route to the same empty-stream symptom,
+  and a pushed tag cannot be amended, so the correction is recorded here.
+
+- **Alerts could not be filtered by an exact MAC.** The `q` filter is a
+  substring match across MAC, message and vendor, and proximity and
+  co-observation messages quote other devices' MACs by design. Filtering one
+  device's alerts that way therefore returned other devices' alerts. In a list
+  view that is a cosmetic surplus; in a document handed to a lawyer it is a
+  wrong-record bug, and the same defect class as the shipped signatures that
+  were regexes matched literally. `list_alerts_with_match` and
+  `iter_alerts_with_match` now take a `mac` filter that compares for equality.
+  Callers wanting the fuzzy behaviour still have `q`.
+
+### Changed
+
+- **`Database.summarize_sightings_for_mac`**, because neither number a case file
+  needs was previously available. `get_device_with_sightings` returns at most
+  `sighting_limit` of the most recent rows, so a per-location summary built from
+  those is wrong exactly when the cap bites, and `devices.sighting_count` is a
+  lifetime counter that retention never decrements, so using it as a row count
+  would report pruning as capping. A case file has to keep those apart: one is a
+  cap the export chose, the other is data that no longer exists.
+
 ## [1.0.0] - 2026-08-24
 
 > **Cut 2026-08-24, tagged `v1.0.0`.** The version literals moved to `1.0.0` on
