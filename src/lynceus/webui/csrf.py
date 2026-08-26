@@ -97,6 +97,16 @@ def _parse_form_token(body: bytes) -> str | None:
 # Do not remove the replay wrapper. Without it, the route's form parser will
 # wait forever on a stream that's already been drained — the failure shows up
 # as a hang, not an exception, so a regression test would just time out and
+#: Ceiling on a body this middleware will buffer, in bytes.
+#:
+#: ⭐ **Derived from the app's own cap, not invented.** The largest legitimate
+#: POST is ``/alerts/bulk-ack``, which refuses more than 1000 ``alert_ids``
+#: (``app.py``) — about 17 KB on the wire — plus a free-text note. 1 MiB is
+#: roughly 60x that, so this cannot refuse a real form, while still bounding
+#: what an unauthenticated caller can make the process allocate. No route
+#: accepts an upload; every POST here is ``application/x-www-form-urlencoded``.
+MAX_CSRF_BODY_BYTES = 1024 * 1024
+
 # get killed by CI rather than fail loudly. Verified empirically.
 #
 # ASGI receive is single-shot. To validate the CSRF token from the request
@@ -106,13 +116,39 @@ def _parse_form_token(body: bytes) -> str | None:
 # cause downstream form parsing to hang indefinitely waiting on an
 # exhausted stream. Verified empirically; do not "simplify" without
 # re-validating with a manual hang test.
-async def _read_body(receive) -> bytes:
+async def _read_body(receive, *, limit: int = MAX_CSRF_BODY_BYTES) -> bytes | None:
+    """Read the request body, or return ``None`` if it exceeds ``limit``.
+
+    ⛔ **Bounded, because this runs BEFORE authentication on ``/login``.**
+    ``/login`` is auth-exempt, so an unauthenticated caller who can reach the
+    port reaches this line by sending any CSRF cookie at all — no session, no
+    password, not even a matching token pair, because the comparison happens
+    after the read. An unbounded accumulate then let a single
+    ``Content-Length: 2147483648`` (or an endless chunked stream) drive a Pi
+    into memory pressure. The rate limiter does not help: it is consulted in
+    the route, which this never reaches.
+
+    ⚠️ Counted as it arrives rather than trusted from ``Content-Length``, which
+    a chunked request does not send and a hostile one may lie about.
+
+    Returning ``None`` rather than raising keeps the caller's shape: it already
+    distinguishes "no usable body" from "token mismatch", and the two answer
+    with different status codes.
+    """
     chunks: list[bytes] = []
+    total = 0
     while True:
         msg = await receive()
         msg_type = msg.get("type")
         if msg_type == "http.request":
-            chunks.append(msg.get("body", b"") or b"")
+            chunk = msg.get("body", b"") or b""
+            total += len(chunk)
+            if total > limit:
+                # Stop reading AND stop buffering. Draining the rest would keep
+                # the connection and the CPU busy for exactly as long as the
+                # attacker likes, which is most of what they wanted.
+                return None
+            chunks.append(chunk)
             if not msg.get("more_body", False):
                 break
         elif msg_type == "http.disconnect":
@@ -131,6 +167,27 @@ def _replay_receive(body: bytes):
         return {"type": "http.disconnect"}
 
     return receive
+
+
+async def _send_413(send) -> None:
+    """Refuse an over-large body by its actual reason.
+
+    Not 403: answering "CSRF token mismatch" would name a control the caller was
+    never going to satisfy and send whoever reads the log hunting a token bug —
+    the same reasoning that puts AuthMiddleware outside this one.
+    """
+    body = b"request body too large"
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"text/plain; charset=utf-8"),
+                (b"content-length", str(len(body)).encode("latin-1")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
 async def _send_403(send) -> None:
@@ -277,6 +334,9 @@ class CSRFMiddleware:
 
         if content_type.startswith("application/x-www-form-urlencoded"):
             body = await _read_body(receive)
+            if body is None:
+                await _send_413(send)
+                return
             form_token = _parse_form_token(body)
             if form_token and constant_time_compare(cookie_value, form_token):
                 await self.app(scope, _replay_receive(body), send)
