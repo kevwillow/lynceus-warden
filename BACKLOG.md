@@ -708,10 +708,13 @@ hardware-validated end to end from inside the daemon. See the CHANGELOG
 the matching strategy.** Company-id alone is too coarse, one id covers a
 whole vendor, so the bridge is built but must not be enabled against a raw
 company-id watchlist. The remaining work is split into the numbered
-enablement gates below (BLE-G1 … BLE-G8); BLE-G1 and BLE-G2 are blocking.
+enablement gates below (BLE-G1 … BLE-G8); ~~BLE-G1 and BLE-G2 are blocking~~
+**BLE-G1 is the only blocking gate left** — BLE-G2 was decided 2026-08-25 (keep
+the source gate explicit), and G3/G4/G6/G8 were all found already implemented.
 The payload-format-signature work that makes company ids useful is tracked
 separately as the Find My / Apple Continuity decoder arc.
-- **Trigger**: gates BLE-G1 and BLE-G2 cleared, then flip `ble_bridge.enabled`.
+- **Trigger**: ~~gates BLE-G1 and BLE-G2 cleared~~ **BLE-G1 cleared** (G2 decided),
+  then flip `ble_bridge.enabled`.
 - **Notes**: passive-only, consistent with the project stance. Observe and
   match, never connect/pair/probe; the shipped scanner is passive-mode with no
   connect path. Pairs with the README-integrity follow-up (the README already
@@ -885,7 +888,7 @@ looking for.
   bridge storms immediately, and the Continuity decoder does not help because that
   rule matches company id, not class.
 
-### BLE-G2: kismet_sources source-gate vs bridge provenance (BLOCKING)
+### ✅ DECIDED 2026-08-25 — BLE-G2: kismet_sources source-gate vs bridge provenance
 Latent silent failure. The bridge stamps its observations with
 `seen_by_sources=(f"ble:{adapter}",)`. E.g. `ble:hci1`. The poller's step-1
 source gate admits an observation only when one of its `seen_by_sources` is a
@@ -926,9 +929,27 @@ because contention presumes an adapter the monitor interface could open).
 ⇒ ⭐ **Grep the shipped code before scoping a gate from this file.** Three gates
 were scoped as work here and all three were already done.
 
-- **Trigger**: ~~blocking~~ **satisfied by the readiness check**; what remains is
-  whether the gate should *exempt* bridge-stamped provenance rather than make the
-  operator hand-write `ble:<adapter>`. That is a contract decision, not a defect.
+- ✅ **DECIDED 2026-08-25 by Kev: keep the gate explicit. NO LONGER BLOCKING.**
+  The open question was whether the gate should *exempt* bridge-stamped provenance
+  rather than make the operator hand-write `ble:<adapter>`. It should not.
+  ⛔ Auto-exempting would widen what a `kismet_sources` ENTRY MEANS: an operator
+  who listed `hci1` to mean "only Kismet's HCI source" would silently start
+  admitting a second, differently-sourced stream. That is a semantics change to a
+  filter whose entire job is to be explicit, traded for removing a footgun that is
+  already announced in four places.
+  ⭐ **Four independent operator-facing surfaces, each re-verified 2026-08-25:**
+  the readiness warning from `collect_bridge_warnings`, wired into the CLI wizard
+  (`cli/setup.py:1188`), the web wizard (`setup/web/steps_capture.py:96`) **and**
+  `/settings` (`webui/app.py:1309`); a per-tick **INFO** line naming both sides
+  (`poller.py:2068` — `logger.info`, not DEBUG); `dropped (allowlist mismatch)` on
+  `/healthz` (`healthz.html:54`); and the home-page branch (`index.html:98`).
+  ⚠️ The mechanism is unchanged and still real — `ble:hci1` fails exact membership
+  against `hci1` and every bridge observation is dropped. It is now a documented
+  configuration requirement rather than an open gate. An operator whose
+  `kismet_sources` is unset has no gate at all and is unaffected.
+  🪤 **This entry was mis-scoped as work TWICE**, both times by reading its opening
+  paragraph and stopping before the ⭐ MEASURED section that says the gate is
+  already built. It is the fourth gate scoped from this file that was already done.
 - **Notes**: an operator whose `kismet_sources` is unset has no gate at all
   (`None` means no filter) and is unaffected.
 
