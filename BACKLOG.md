@@ -302,7 +302,7 @@ Findings from the shippable/shareable audit at `d66d844`. The defects that were 
 in `docs/AUDIT_REGISTER.md` (Wave 5, Findings 12–17) with their measurements. What follows is what
 was found and deliberately **not** taken on in that remediation.
 
-### Web UI has no authentication: 23 unauthenticated state-changing routes
+### ✅ RESOLVED 2026-08-25 (#234) — Web UI has no authentication: 23 unauthenticated state-changing routes
 Measured: nothing in `src/lynceus/webui/` implements auth of any kind; loopback binding is the only
 control, and `ui_allow_remote: true` (`config.py:178,368`) removes it. There are 23 `@app.post`
 routes, including `/devices/{mac}/allowlist`, `/rules/{rule_type}/snooze` and
@@ -408,7 +408,7 @@ recorded here so they are argued once rather than rediscovered by the next reade
   and a hard cap risks locking out an operator with several devices.
   - **Trigger**: if sessions ever stop being one-operator.
 
-### Silent pipeline death: the daemon stays alive with ingest stopped
+### ✅ RESOLVED 2026-08-14 (#31) — Silent pipeline death: the daemon stays alive with ingest stopped
 A persistent DB lock, disk-full, or a changed Kismet devices-schema is caught per-tick by
 `run_forever` and logged, while the runtime-loss state machine deliberately stays quiet because
 Kismet's health endpoint is still reachable (`poller.py:1257+`). Process alive, Kismet alive,
@@ -467,8 +467,14 @@ evidence; these are gaps *between* well-tested units, on failure paths.
   clock jumped forward" and "the table holds only old rows" are the same observation, and an
   existing test *requires* the second to delete everything. Fixed with a `time.monotonic()` anchor
   in `Poller`, which declines to call the prunes at all while the clock is untrusted, with a bounded
-  hold. ⚠️ **Still open:** the `last_poll_ts` cursor half. A forward excursion still makes later
-  polls ask Kismet for devices "since the future".
+  hold. ⚠️ ~~**Still open:** the `last_poll_ts` cursor half. A forward excursion still makes later
+  polls ask Kismet for devices "since the future".~~ ✅ **STALE — the cursor half landed.**
+  Verified 2026-08-25 against `c64a194`: `poller.py` takes the `watermark = None` branch when
+  `clock_is_trusted` is false and logs that it is deliberately NOT advancing, so a jumped clock
+  cannot poison `last_poll_ts`. Pinned by six tests in `tests/test_clock_jump_poll_watermark.py`,
+  including that the hold neither spends nor resets the PERSIST-retry budget (`POLL_WATERMARK_HOLDS`
+  belongs to PR #24, and an operator with a jumped clock AND a failing disk must not silently lose
+  it). Both halves of the wall-clock class are now closed.
 
 ### ~~Heartbeat / dead-man's switch~~ ✅ SHIPPED 2026-08-14 (#31)
 Built on migration 024's delivery-tracked path, as the sequencing below required. `heartbeat_enabled`
@@ -570,6 +576,14 @@ matched selector literal before the real rule, forcing comment rewordings
 that don't reflect a real code problem. Harden the matching to target the
 actual rule (e.g. match a selector-plus-brace pattern, or parse the rule
 block) rather than first textual occurrence.
+⚠️ **NOT stale, and broader than written — audited 2026-08-25.** A cold pass proposed closing this
+on the strength of `tests/test_webui.py:4036`, which *is* hardened
+(`content.find("\n.table-scroll {")`, anchored on selector-plus-brace). But the naive form
+survives in the same TRACKED file at `tests/test_webui.py:1812`
+(`body.find(".ack-button-inline")`), so the entry should say "layout tests" rather than
+"gitignored layout tests".
+🪤 **The audit could not see the gitignored half at all**: all ten `tests/*.py` entries in
+`.gitignore` are ABSENT from this checkout, so neither a local sweep nor CI can speak for them.
 - **Trigger**: next time one of these tests trips on a comment, OR any arc
   that already touches these test files.
 - **Notes**: tests are gitignored (OPSEC), so this is local-only test
@@ -587,8 +601,14 @@ make the claims true: the bridge is OFF by default (BLE-G1 curation), so in a
 default deployment the claims remain inert. "BLE service UUID matching" becomes
 accurate once the bridge is enabled and curated; **"AirTag-class tracker
 recognition" needs more than that**. Distinguishing an AirTag from any other
-Apple device is exactly the Find My / Apple Continuity decoder arc, which has
-not started. Softening that claim should not wait on it.
+Apple device is exactly the Find My / Apple Continuity decoder arc, ~~which has
+not started~~ ⚠️ **which has since LANDED (verified 2026-08-25):
+`src/lynceus/ble_continuity.py` classifies an Apple advert into
+`find_my_separated` / `find_my` / `find_my_paired` / `airpods` / `nearby`, and
+its own entry below is marked "landed (unreleased), and now actually
+reachable."** The remaining blocker for the README claim is therefore the
+bridge being OFF by default (BLE-G1), not the decoder. Softening that claim
+should not wait on either.
 - **Trigger**: now actionable. The bridge decision resolved in the "build it"
   direction. Re-check the claims once the bridge is enabled + curated, and
   again after the Find My decoder lands.
@@ -631,9 +651,13 @@ asymmetry, explicitly left unfixed in v0.9.2.
 moved into the `_alert_row.html` partial, so it fails pre-existingly under
 `pytest -m diagnostic`. Not a regression. The assertions are stale against the
 current template split.
-- **Trigger**: next time the diagnostic suite is run pre-push, or any arc
-  touching the home-page ack flow / alert-row partial.
-- **Notes**: tests are gitignored (OPSEC); local-only test maintenance.
+- ✅ **STALE ON BOTH COUNTS — verified 2026-08-25 at `c64a194`.**
+  1. It does not fail. `pytest tests/test_diag_home_ack_flow.py -m diagnostic` → **1 passed**.
+  2. It is not gitignored. `tests/test_diag_home_ack_flow.py` is **tracked**; `git check-ignore`
+     returns nothing for it. The gitignored set is the ten files listed in `.gitignore`, and this
+     is not one of them.
+  ⇒ Nothing to do. Kept rather than deleted because the entry is the record of a belief that was
+  acted on twice.
 
 ## Network capture features
 
@@ -684,10 +708,13 @@ hardware-validated end to end from inside the daemon. See the CHANGELOG
 the matching strategy.** Company-id alone is too coarse, one id covers a
 whole vendor, so the bridge is built but must not be enabled against a raw
 company-id watchlist. The remaining work is split into the numbered
-enablement gates below (BLE-G1 … BLE-G8); BLE-G1 and BLE-G2 are blocking.
+enablement gates below (BLE-G1 … BLE-G8); ~~BLE-G1 and BLE-G2 are blocking~~
+**BLE-G1 is the only blocking gate left** — BLE-G2 was decided 2026-08-25 (keep
+the source gate explicit), and G3/G4/G6/G8 were all found already implemented.
 The payload-format-signature work that makes company ids useful is tracked
 separately as the Find My / Apple Continuity decoder arc.
-- **Trigger**: gates BLE-G1 and BLE-G2 cleared, then flip `ble_bridge.enabled`.
+- **Trigger**: ~~gates BLE-G1 and BLE-G2 cleared~~ **BLE-G1 cleared** (G2 decided),
+  then flip `ble_bridge.enabled`.
 - **Notes**: passive-only, consistent with the project stance. Observe and
   match, never connect/pair/probe; the shipped scanner is passive-mode with no
   connect path. Pairs with the README-integrity follow-up (the README already
@@ -861,7 +888,7 @@ looking for.
   bridge storms immediately, and the Continuity decoder does not help because that
   rule matches company id, not class.
 
-### BLE-G2: kismet_sources source-gate vs bridge provenance (BLOCKING)
+### ✅ DECIDED 2026-08-25 — BLE-G2: kismet_sources source-gate vs bridge provenance
 Latent silent failure. The bridge stamps its observations with
 `seen_by_sources=(f"ble:{adapter}",)`. E.g. `ble:hci1`. The poller's step-1
 source gate admits an observation only when one of its `seen_by_sources` is a
@@ -902,9 +929,27 @@ because contention presumes an adapter the monitor interface could open).
 ⇒ ⭐ **Grep the shipped code before scoping a gate from this file.** Three gates
 were scoped as work here and all three were already done.
 
-- **Trigger**: ~~blocking~~ **satisfied by the readiness check**; what remains is
-  whether the gate should *exempt* bridge-stamped provenance rather than make the
-  operator hand-write `ble:<adapter>`. That is a contract decision, not a defect.
+- ✅ **DECIDED 2026-08-25 by Kev: keep the gate explicit. NO LONGER BLOCKING.**
+  The open question was whether the gate should *exempt* bridge-stamped provenance
+  rather than make the operator hand-write `ble:<adapter>`. It should not.
+  ⛔ Auto-exempting would widen what a `kismet_sources` ENTRY MEANS: an operator
+  who listed `hci1` to mean "only Kismet's HCI source" would silently start
+  admitting a second, differently-sourced stream. That is a semantics change to a
+  filter whose entire job is to be explicit, traded for removing a footgun that is
+  already announced in four places.
+  ⭐ **Four independent operator-facing surfaces, each re-verified 2026-08-25:**
+  the readiness warning from `collect_bridge_warnings`, wired into the CLI wizard
+  (`cli/setup.py:1188`), the web wizard (`setup/web/steps_capture.py:96`) **and**
+  `/settings` (`webui/app.py:1309`); a per-tick **INFO** line naming both sides
+  (`poller.py:2068` — `logger.info`, not DEBUG); `dropped (allowlist mismatch)` on
+  `/healthz` (`healthz.html:54`); and the home-page branch (`index.html:98`).
+  ⚠️ The mechanism is unchanged and still real — `ble:hci1` fails exact membership
+  against `hci1` and every bridge observation is dropped. It is now a documented
+  configuration requirement rather than an open gate. An operator whose
+  `kismet_sources` is unset has no gate at all and is unaffected.
+  🪤 **This entry was mis-scoped as work TWICE**, both times by reading its opening
+  paragraph and stopping before the ⭐ MEASURED section that says the gate is
+  already built. It is the fourth gate scoped from this file that was already done.
 - **Notes**: an operator whose `kismet_sources` is unset has no gate at all
   (`None` means no filter) and is unaffected.
 
@@ -929,8 +974,12 @@ wrong once the bridge is a real capture path rather than an experiment.
 `bluez=BlueZScannerArgs(or_patterns=...)`. bleak is folding adapter selection
 into the backend-args kwarg and will drop the standalone `adapter=` parameter,
 at which point the scanner construction breaks on upgrade.
-- **Trigger**: before any bleak major-version bump, or on the first deprecation
-  warning observed on the rig.
+- ✅ **DONE — verified 2026-08-25.** `bridges/ble.py::_make_scanner` no longer passes a top-level
+  `adapter=`; it constructs `bluez=BlueZScannerArgs(or_patterns=..., adapter=self.adapter)`, which
+  is exactly the fix this entry proposes, with an inline note verifying against bleak 3.0.2 that
+  the old form warns and this one does not.
+- ~~**Trigger**: before any bleak major-version bump, or on the first deprecation
+  warning observed on the rig.~~
 - **Estimated**: a few lines. Fold the adapter into the `bluez=` kwarg. The
   module already carries an import-layout fallback for older/newer bleak module
   paths, so the compatibility pattern to follow is in place.
@@ -1094,8 +1143,15 @@ The `drone_id_prefix` leading-substring matcher (v0.9.2) is correct but inert:
 the live Kismet Remote-ID JSON field path (`kismet._DRONE_ID_PATHS`) is still an
 unverified guess. No drone has been captured, so which path carries the serial
 is unknown. `_DRONE_ID_PATHS` is unchanged until a live capture proves it.
-- **Trigger**: a live drone Remote-ID capture on the rig, or a confirmed Kismet
-  field-path reference.
+- ⚠️ **HALF STALE — verified 2026-08-25.** The premise "still an unverified guess" is no longer
+  true: `kismet.py:467` records the paths as **VERIFIED against Kismet's source, 2026-08-02**
+  (`phy_uav_drone.cc:128`, `phy_uav_drone.h:323`), and the five paths it replaced do not exist in
+  Kismet at all — so the matcher could never have fired before. ⇒ The SECOND of this entry's own
+  two trigger conditions is already met.
+  ⛔ What remains is only the first: no drone has been captured, so the mapping is confirmed
+  against source rather than against the wire. That is a smaller claim than the entry made.
+- **Trigger**: ~~a live drone Remote-ID capture on the rig, or~~ a confirmed Kismet
+  field-path reference ✅ — a live capture would now only raise confidence.
 - **Notes**: blocks nothing else. The matcher, capture coercion, and allowlist
   mirror are all in place and tested; this is the one runtime fact that can only
   come from real hardware. Likely confirmed alongside the BLE advertisement-

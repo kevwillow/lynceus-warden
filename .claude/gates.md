@@ -918,3 +918,46 @@ the packet: **59%**, 340 → 263 statements missed.
 rig adapter MAC and account name). New cover went into a TRACKED file with
 synthetic fixtures only, so CI actually gates it. Any new test that hard-codes a
 real adapter or host must be added to `.gitignore` instead.
+
+
+## Post-merge gate of `main` — `c64a194`, measured 2026-08-25
+
+#234 merged. Gated in a throwaway worktree at the merged SHA, `git status` clean.
+
+| Gate | Result |
+| --- | --- |
+| `ruff check .` | All checks passed! |
+| `pytest -q` (full) | **5115 passed, 5 skipped, 63 deselected**, exit 0, 31m58s |
+
+🪤 **The worktree gate SKIPS a test the main checkout RUNS, and the totals hide
+it.** Branch at `6e7608d`: 5116 passed / 4 skipped. Merged main in the worktree:
+5115 passed / **5** skipped. Both total 5120, so a glance at "passed" alone reads
+as a one-test regression and a glance at the total reads as no change. Neither is
+what happened — one test moved from PASSED to SKIPPED.
+
+The test is `tests/test_import_argus.py::test_cross_repo_live_argus_csv_imports_without_errors`.
+`_find_live_argus_csv` resolves its search root from `__file__`:
+
+```python
+repo_root = Path(__file__).resolve().parents[1]
+... repo_root.parent / "argus-db-main" / "exports" / "argus_export.csv"
+... repo_root.parent / "argus"         / "exports" / "argus_export.csv"
+```
+
+From `/home/kev/lynceus-warden` that is `/home/kev/argus/...`, which **exists**.
+From `.claude/worktrees/verify` it is `.claude/worktrees/argus/...`, which does
+not. ⇒ **The gating location this file tells you to use is the reason the test
+does not run.**
+
+✅ Remedy — pass the override when gating in a worktree:
+
+```sh
+LYNCEUS_ARGUS_CSV=/home/kev/argus/exports/argus_export.csv \
+  .venv/bin/python -m pytest -q
+```
+
+⚠️ **Read the skip REASONS, not the skip count.** The count matched the v1.1.1
+baseline at 4 for most of this branch and still does not mean the same four
+tests. Current set: two `/watchful` + `/probes` form probes, `test_packaging`
+(no bare `python` on PATH — that guard has never run here), `test_setup_wizard`
+(real `/sys/class/bluetooth` present), and this Argus one in worktree runs only.
