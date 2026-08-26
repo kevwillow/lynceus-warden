@@ -8,8 +8,13 @@ codebases consistent: a fix to the fallback ladder or a new sysfs field
 lands once and both surfaces pick it up.
 
 The helpers are kept as raw sysfs readers (no Linux-specific imports)
-so the unit tests work on any host — the wizard's existing matrix tests
-already exercise every fallback combination via tmp_path fixtures.
+so the unit tests work on any host — the wizard's matrix tests exercise
+every fallback combination via tmp_path fixtures. ⚠️ Those matrix tests
+embed the operator's real capture adapter and are withheld by
+``.gitignore``, so they are not in this repo and CI cannot run them.
+The published contract for this module is
+``tests/test_adapter_descriptor_format.py``; anything you change here
+must stay true of that file.
 
 ``format_adapter_descriptor`` mirrors the row-rendering convention in
 ``kismet_sources.html`` line-for-line so the wizard and bootstrap show
