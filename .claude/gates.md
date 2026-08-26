@@ -920,7 +920,7 @@ synthetic fixtures only, so CI actually gates it. Any new test that hard-codes a
 real adapter or host must be added to `.gitignore` instead.
 
 
-## Post-merge gate of `main` — `c64a194`, measured 2026-08-26
+## Post-merge gate of `main` — `c64a194`, measured 2026-08-25
 
 #234 merged. Gated in a throwaway worktree at the merged SHA, `git status` clean.
 

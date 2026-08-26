@@ -469,7 +469,7 @@ evidence; these are gaps *between* well-tested units, on failure paths.
   in `Poller`, which declines to call the prunes at all while the clock is untrusted, with a bounded
   hold. ⚠️ ~~**Still open:** the `last_poll_ts` cursor half. A forward excursion still makes later
   polls ask Kismet for devices "since the future".~~ ✅ **STALE — the cursor half landed.**
-  Verified 2026-08-26 against `c64a194`: `poller.py` takes the `watermark = None` branch when
+  Verified 2026-08-25 against `c64a194`: `poller.py` takes the `watermark = None` branch when
   `clock_is_trusted` is false and logs that it is deliberately NOT advancing, so a jumped clock
   cannot poison `last_poll_ts`. Pinned by six tests in `tests/test_clock_jump_poll_watermark.py`,
   including that the hold neither spends nor resets the PERSIST-retry budget (`POLL_WATERMARK_HOLDS`
@@ -576,7 +576,7 @@ matched selector literal before the real rule, forcing comment rewordings
 that don't reflect a real code problem. Harden the matching to target the
 actual rule (e.g. match a selector-plus-brace pattern, or parse the rule
 block) rather than first textual occurrence.
-⚠️ **NOT stale, and broader than written — audited 2026-08-26.** A cold pass proposed closing this
+⚠️ **NOT stale, and broader than written — audited 2026-08-25.** A cold pass proposed closing this
 on the strength of `tests/test_webui.py:4036`, which *is* hardened
 (`content.find("\n.table-scroll {")`, anchored on selector-plus-brace). But the naive form
 survives in the same TRACKED file at `tests/test_webui.py:1812`
@@ -602,7 +602,7 @@ default deployment the claims remain inert. "BLE service UUID matching" becomes
 accurate once the bridge is enabled and curated; **"AirTag-class tracker
 recognition" needs more than that**. Distinguishing an AirTag from any other
 Apple device is exactly the Find My / Apple Continuity decoder arc, ~~which has
-not started~~ ⚠️ **which has since LANDED (verified 2026-08-26):
+not started~~ ⚠️ **which has since LANDED (verified 2026-08-25):
 `src/lynceus/ble_continuity.py` classifies an Apple advert into
 `find_my_separated` / `find_my` / `find_my_paired` / `airpods` / `nearby`, and
 its own entry below is marked "landed (unreleased), and now actually
@@ -651,7 +651,7 @@ asymmetry, explicitly left unfixed in v0.9.2.
 moved into the `_alert_row.html` partial, so it fails pre-existingly under
 `pytest -m diagnostic`. Not a regression. The assertions are stale against the
 current template split.
-- ✅ **STALE ON BOTH COUNTS — verified 2026-08-26 at `c64a194`.**
+- ✅ **STALE ON BOTH COUNTS — verified 2026-08-25 at `c64a194`.**
   1. It does not fail. `pytest tests/test_diag_home_ack_flow.py -m diagnostic` → **1 passed**.
   2. It is not gitignored. `tests/test_diag_home_ack_flow.py` is **tracked**; `git check-ignore`
      returns nothing for it. The gitignored set is the ten files listed in `.gitignore`, and this
@@ -953,7 +953,7 @@ wrong once the bridge is a real capture path rather than an experiment.
 `bluez=BlueZScannerArgs(or_patterns=...)`. bleak is folding adapter selection
 into the backend-args kwarg and will drop the standalone `adapter=` parameter,
 at which point the scanner construction breaks on upgrade.
-- ✅ **DONE — verified 2026-08-26.** `bridges/ble.py::_make_scanner` no longer passes a top-level
+- ✅ **DONE — verified 2026-08-25.** `bridges/ble.py::_make_scanner` no longer passes a top-level
   `adapter=`; it constructs `bluez=BlueZScannerArgs(or_patterns=..., adapter=self.adapter)`, which
   is exactly the fix this entry proposes, with an inline note verifying against bleak 3.0.2 that
   the old form warns and this one does not.
@@ -1122,7 +1122,7 @@ The `drone_id_prefix` leading-substring matcher (v0.9.2) is correct but inert:
 the live Kismet Remote-ID JSON field path (`kismet._DRONE_ID_PATHS`) is still an
 unverified guess. No drone has been captured, so which path carries the serial
 is unknown. `_DRONE_ID_PATHS` is unchanged until a live capture proves it.
-- ⚠️ **HALF STALE — verified 2026-08-26.** The premise "still an unverified guess" is no longer
+- ⚠️ **HALF STALE — verified 2026-08-25.** The premise "still an unverified guess" is no longer
   true: `kismet.py:467` records the paths as **VERIFIED against Kismet's source, 2026-08-02**
   (`phy_uav_drone.cc:128`, `phy_uav_drone.h:323`), and the five paths it replaced do not exist in
   Kismet at all — so the matcher could never have fired before. ⇒ The SECOND of this entry's own
