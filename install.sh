@@ -35,9 +35,18 @@ SYSTEM_BIN_DIR="/usr/local/bin"
 
 # Mirrors [project.scripts] in pyproject.toml. Any new entry point added
 # there must be appended here so the symlink layer keeps it on PATH.
+#
+# ⛔ That sentence was the ONLY thing holding these two lists together, and it
+# did not hold: `lynceus-export-case` shipped in v1.1.1 and was never added
+# here, so on a --system install it was the one console script that never
+# reached /usr/local/bin. Found 2026-08-25 while adding `lynceus-ui-passwd` —
+# an instruction in a comment is not a control. Parity is now derived and
+# asserted by tests/test_install_console_scripts_parity.py, which reads both
+# files, so this list can no longer drift in silence.
 CONSOLE_SCRIPTS=(
     lynceus
     lynceus-ui
+    lynceus-ui-passwd
     lynceus-quickstart
     lynceus-setup
     lynceus-seed-watchlist
@@ -45,6 +54,7 @@ CONSOLE_SCRIPTS=(
     lynceus-validate
     lynceus-bootstrap-kismet
     lynceus-export-config
+    lynceus-export-case
 )
 
 ACTION=install

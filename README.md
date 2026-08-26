@@ -604,18 +604,25 @@ browser auto-launch, clean Ctrl+C shutdown. Not for unattended use.
   POST carrying a CSRF token behind a confirmation prompt, and every
   allowlisting is written to the audit log, because suppressing an alert is
   exactly the action an attacker would want.
-- **⚠️ The UI has no authentication, so keep it on loopback.** It binds
-  `127.0.0.1` by default and that is the only thing protecting it. To reach a
-  headless box, forward the port over SSH (`ssh -L 8765:127.0.0.1:8765
-  you@your-pi`), or put it on a private network such as Tailscale that
-  authenticates before any traffic reaches the process. Either way the bind
-  stays on loopback. Setting `ui_allow_remote: true` instead exposes an
-  unauthenticated dashboard to your whole network: anyone on it can read
-  `/probes` (a partial location history of every device in range, most of them
-  bystanders') and can silence a device by allowlisting it, which you would
-  never be alerted about. Treat it as "I have my own reverse proxy with auth in
-  front of this", not as a remote-access switch. If you do set it with a
-  non-loopback bind, the server prints a banner at startup saying so.
+- **⚠️ The UI ships unauthenticated on loopback, and that is deliberate.** It
+  binds `127.0.0.1` by default, and on a single-operator Pi the bind is the
+  control: everything on the box is already you. There is a password if you
+  want one — `lynceus-ui-passwd` — and it is **required**, not optional, the
+  moment you bind anywhere else: `lynceus-ui` refuses to start on a
+  non-loopback host with no password set, and tells you the command to fix it.
+  Without a password, anyone who can reach the port can read `/probes` (a
+  partial location history of every device in range, most of them bystanders'),
+  download a device's complete case file in one request, and silence a device
+  by allowlisting it — which you would never be alerted about.
+- **⚠️ A password is not encryption, and lynceus serves no TLS.** Over a
+  plain-HTTP bind your password and its session cookie cross the network in the
+  clear, which is a *longer-lived* disclosure than the dashboard was. So the
+  supported way to reach a headless box is unchanged: forward the port over SSH
+  (`ssh -L 8765:127.0.0.1:8765 you@your-pi`), or put it on a private network
+  such as Tailscale that authenticates before any traffic reaches the process.
+  Either way the bind stays on loopback and the hop is encrypted. Treat
+  `ui_allow_remote: true` as "I have thought about the transport", not as a
+  remote-access switch; the server prints what you have exposed at startup.
 - **Probe SSID capture is OFF by default.** Probe lists are a partial Wi-Fi
   history of *other people's* devices. On by default would make Lynceus the
   thing it exists to detect. `/settings` shows a recording warning when it's

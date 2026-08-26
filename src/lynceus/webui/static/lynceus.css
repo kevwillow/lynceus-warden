@@ -1452,3 +1452,76 @@ form button[type="submit"] {
        that are not grid items, which is why it can sit in the same rule. */
     justify-self: start;
 }
+
+/* --- Sign-in page ---------------------------------------------------------
+ *
+ * The one page an operator sees before they are authenticated, and the only
+ * one with a single job. It is centred and narrow rather than reusing the
+ * dashboard's full-bleed grid, because a 1408px-wide password field reads as a
+ * broken layout — the same slab problem the submit rule above exists to fix.
+ *
+ * ⚠️ `min-height` uses `svh` with a `vh` fallback: on mobile Safari `100vh` is
+ * the viewport WITHOUT the retracted URL bar, so a centred card sits visibly
+ * low and the page scrolls for no reason. Browsers that do not know `svh`
+ * simply keep the first declaration. */
+.login-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    min-height: 60svh;
+    padding: var(--lyn-space-6) var(--lyn-space-5);
+}
+
+.login-card {
+    width: 100%;
+    max-width: 22rem;
+    background: var(--lyn-surface);
+    border: var(--lyn-hairline) solid var(--lyn-line);
+    border-radius: var(--lyn-radius);
+    padding: var(--lyn-space-6);
+}
+
+.login-card h1 {
+    font-size: var(--lyn-text-xl);
+    font-weight: var(--lyn-weight-bold);
+    margin-bottom: var(--lyn-space-5);
+}
+
+/* Full width here, deliberately against the rule above: this form has one
+   field and one action, so a content-sized button would float oddly beside a
+   full-width input. Scoped to .login-card so it cannot leak to the dashboard
+   forms that rule was written for. */
+.login-card form button[type="submit"] {
+    width: 100%;
+    justify-self: stretch;
+    margin-top: var(--lyn-space-4);
+}
+
+.login-error {
+    border-left: 3px solid var(--lyn-accent);
+    background: var(--lyn-accent-quiet);
+    padding: var(--lyn-space-3) var(--lyn-space-4);
+    margin-bottom: var(--lyn-space-5);
+    font-size: var(--lyn-text-base);
+}
+
+/* The sign-out control sits in the primary nav, pushed to the far end so it is
+   never adjacent to a destructive dashboard action. It is a form, not a link,
+   because signing out is a state change and must carry the CSRF token — a GET
+   logout is fired by any <img src> on any page the operator has open. */
+.topnav .signout {
+    margin-left: auto;
+}
+
+.topnav .signout button {
+    width: auto;
+    min-width: 0;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+}

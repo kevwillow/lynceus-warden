@@ -4333,7 +4333,28 @@ findings this round were all expressible as a CAS, which is evidence about the s
    (b) single-user password + session; (c) leave it and document that the port is
    trusted-equivalent. ⚠️ **(c) is the current de-facto posture and is defensible for a
    loopback-only install** — the real gap there is that nothing says so anywhere an operator would
-   read it. **Nothing has been implemented. This is Kev's call and it is large.**
+   read it.
+
+   ✅ **DECIDED AND IMPLEMENTED 2026-08-25. Kev chose (b).** See BACKLOG.md, "RESOLVED
+   2026-08-25". The measurement above is **still exactly true for the default install**, which is
+   why it is preserved rather than rewritten: with no credentials file, 22 of 23 POST routes still
+   change persistent state for a caller with no credential, and that is the shipped default on a
+   loopback bind. What changed is that a password now exists, and that a **non-loopback bind
+   refuses to start without one** — so the configuration this measurement was frightening about is
+   no longer reachable.
+
+   ⭐ **The register's own claim is now pinned in BOTH directions**, which it was not before:
+   `test_the_register_claim_is_still_true` measures the no-credential install, and
+   `test_a_configured_password_refuses_the_same_post` measures the other one. Previously a single
+   anchor asserted the exposure, so the file could rot only in the reassuring direction — and the
+   note below (line ~2326) records that an earlier version of that anchor would have gone on
+   passing the moment auth arrived.
+
+   ⚠️ **What (b) does not buy, stated so it is not double-counted the way CSRF nearly was:**
+   lynceus serves **no TLS**. Off-loopback over plain HTTP the password and its session cookie are
+   readable and replayable in transit. A credential in the clear is a *longer-lived* disclosure
+   than an unauthenticated snapshot, so the supported remote path is unchanged — tunnel it. The
+   startup banner was rewritten to say this instead of "authentication NONE".
 
    📌 The full per-route consequence table lives in `internal/session2-harnesses/auth_table.md`,
    which is **gitignored** — that is why the measurement is summarised here rather than referenced.

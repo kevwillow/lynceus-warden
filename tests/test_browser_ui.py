@@ -798,3 +798,277 @@ def test_the_co_observation_page_renders_when_the_capability_is_on(co_observatio
         "graded an empty page. The fixture seeds two devices at one location "
         "within the proximity window, which must produce at least one candidate."
     )
+
+
+# --- Authentication, in a real browser ----------------------------------------
+#
+# ⛔ A third app, for the same reason `_served_ui_with_co_observation` is a
+# second one: the main crawl must go on proving the UI serves every route with
+# NO credential, because that is the shipped default on a loopback bind. One
+# fixture cannot assert both answers.
+#
+# ⭐ Why this is worth a browser at all. `/login` is the only page an operator
+# sees before they can get in, and it is the one page where a CSS or CSP mistake
+# is not a cosmetic bug but a locked-out operator with no way to report it. It
+# also carries brand-new styles (`.login-card`, `.topnav .signout`) that no
+# other test renders. The unit tests prove the middleware refuses; only this
+# proves a human can then get past it.
+
+
+@pytest.fixture(scope="module")
+def _served_ui_with_auth(_isolated_home, tmp_path_factory):
+    """The app with a password configured, on a real socket."""
+    from lynceus.webui.auth import hash_password
+    from lynceus.webui.credentials import write_credentials
+
+    tmp = tmp_path_factory.mktemp("browser-auth")
+    allowlist = tmp / "allowlist.yaml"
+    allowlist.write_text(
+        "entries:\n"
+        '  - pattern: "99:99:99:00:00:01"\n'
+        "    pattern_type: mac\n"
+        "    note: deliberately unrelated to the seeded devices\n"
+    )
+    config = Config(db_path=str(tmp / "auth.db"), allowlist_path=str(allowlist))
+    write_credentials(config.resolved_ui_auth_path(), hash_password(BROWSER_PASSWORD))
+    db = Database(config.db_path)
+    now = int(time.time())
+    db.ensure_location("default", "Default")
+    mac = kismet.normalize_mac("12:34:56:DD:EE:10")
+    db.upsert_device(
+        mac=mac, device_type="wifi", oui_vendor="Test Vendor Ltd", is_randomized=0, now_ts=now
+    )
+    db.add_alert(
+        ts=now,
+        rule_name="watchlist_mac_hit",
+        mac=mac,
+        message="Watchlisted MAC observed near the perimeter sensor",
+        severity="high",
+    )
+    try:
+        with _serve(create_app(config, db)) as base:
+            yield base
+    finally:
+        db.close()
+
+
+#: Long enough to clear MIN_PASSWORD_LENGTH, and obviously not a real one.
+BROWSER_PASSWORD = "browser-gate-passphrase"
+
+
+@pytest.fixture(scope="module")
+def login_journey(_served_ui_with_auth):
+    """Drive the whole sign-in journey once and report what the browser saw.
+
+    Ordered deliberately: an unauthenticated dashboard visit FIRST, so the
+    redirect is measured before any session exists, then the login page, then
+    the submit, then the authenticated page. A journey that logged in first
+    could not tell a working redirect from a route that was never protected.
+    """
+    base = _served_ui_with_auth
+    sync_playwright = _sync_playwright()
+    executable = _chromium_executable()
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=executable)
+        # 1280 is the narrower of the two widths the layout work targets, so a
+        # card that overflows anywhere overflows here first.
+        ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+        page = ctx.new_page()
+        js_errors: list[str] = []
+        page.on(
+            "console",
+            lambda m, sink=js_errors: sink.append(m.text) if m.type == "error" else None,
+        )
+        page.on("pageerror", lambda exc, sink=js_errors: sink.append(str(exc)))
+        page.add_init_script(
+            """
+            window.__cspv = [];
+            document.addEventListener('securitypolicyviolation', e => {
+                window.__cspv.push(e.violatedDirective + ' <- ' + (e.blockedURI || ''));
+            });
+            """
+        )
+
+        # 1. An unauthenticated browser asking for the dashboard.
+        page.goto(base + "/alerts", wait_until="networkidle", timeout=15000)
+        landed_on = page.url
+
+        # 2. The login page itself.
+        page.goto(base + "/login", wait_until="networkidle", timeout=15000)
+        page.wait_for_timeout(300)
+        login_metrics = page.evaluate(
+            """() => {
+                const card = document.querySelector('.login-card');
+                const field = document.querySelector('input[type="password"]');
+                const submit = document.querySelector('.login-card button[type="submit"]');
+                const r = card ? card.getBoundingClientRect() : null;
+                return {
+                    hasCard: !!card,
+                    hasField: !!field,
+                    hasSubmit: !!submit,
+                    // ⚠️ Measured, not reasoned about. A card wider than the
+                    // viewport is the failure mode of a max-width that lost to
+                    // a Pico rule, and it is invisible in a unit test.
+                    cardWidth: r ? Math.round(r.width) : 0,
+                    cardLeft: r ? Math.round(r.left) : 0,
+                    viewport: document.documentElement.clientWidth,
+                    bodyScrollWidth: document.body.scrollWidth,
+                    // The password must never be rendered into the page.
+                    fieldValue: field ? field.value : null,
+                    submitWidth: submit ? Math.round(submit.getBoundingClientRect().width) : 0,
+                };
+            }"""
+        )
+        login_csp = page.evaluate("window.__cspv || []")
+
+        # 3. Sign in the way an operator does: type it and press the button.
+        page.fill('input[type="password"]', BROWSER_PASSWORD)
+        page.click('.login-card button[type="submit"]')
+        page.wait_for_load_state("networkidle", timeout=15000)
+        page.wait_for_timeout(300)
+        after_login_url = page.url
+
+        # 4. And now a guarded page, with the nav that only exists when auth is on.
+        page.goto(base + "/alerts", wait_until="networkidle", timeout=15000)
+        page.wait_for_timeout(300)
+        authed_metrics = page.evaluate(
+            """() => {
+                const nav = document.querySelector('.topnav');
+                const out = document.querySelector('.topnav .signout');
+                const navR = nav ? nav.getBoundingClientRect() : null;
+                const outR = out ? out.getBoundingClientRect() : null;
+                return {
+                    status: 200,
+                    hasSignout: !!out,
+                    // ⛔ The sign-out control must sit INSIDE the nav strip.
+                    // margin-left:auto only works because .topnav is flex, and
+                    // "it's flex" is exactly the kind of assumption this repo
+                    // has been wrong about every time it was not measured.
+                    signoutRight: outR ? Math.round(outR.right) : 0,
+                    navRight: navR ? Math.round(navR.right) : 0,
+                    navScrollWidth: nav ? nav.scrollWidth : 0,
+                    navClientWidth: nav ? nav.clientWidth : 0,
+                    bodyScrollWidth: document.body.scrollWidth,
+                    viewport: document.documentElement.clientWidth,
+                    alertRows: document.querySelectorAll('table tbody tr').length,
+                };
+            }"""
+        )
+        authed_csp = page.evaluate("window.__cspv || []")
+        ctx.close()
+        browser.close()
+
+    return {
+        "base": base,
+        "landed_on": landed_on,
+        "login": login_metrics,
+        "login_csp": login_csp,
+        "after_login_url": after_login_url,
+        "authed": authed_metrics,
+        "authed_csp": authed_csp,
+        "js_errors": js_errors,
+    }
+
+
+def test_an_unauthenticated_browser_lands_on_the_login_page(login_journey):
+    assert "/login" in login_journey["landed_on"], (
+        f"an unauthenticated browser asking for /alerts ended up at "
+        f"{login_journey['landed_on']}, not the login page"
+    )
+
+
+def test_the_login_page_draws_a_usable_form(login_journey):
+    """⛔ Non-vacuity first. A 200 with an empty body passes every CSP and JS
+    assertion below, so the controls are asserted before the absences are."""
+    m = login_journey["login"]
+    assert m["hasCard"], "no .login-card rendered"
+    assert m["hasField"], "no password field rendered"
+    assert m["hasSubmit"], "no submit button rendered"
+    assert not m["fieldValue"], "the password field came pre-filled from the server"
+    assert m["submitWidth"] > 0, "the submit button has no width; it cannot be clicked"
+
+
+def test_the_login_card_fits_its_viewport(login_journey):
+    """Measured, because the last four CSS assumptions in this repo were wrong.
+
+    ``form button[type=submit] { width: auto }`` exists precisely because Pico's
+    classless defaults outrank class selectors, and `.login-card` opts back into
+    full width. That interaction is only observable in a browser.
+    """
+    m = login_journey["login"]
+    assert m["cardWidth"] <= m["viewport"], (
+        f"the login card is {m['cardWidth']}px in a {m['viewport']}px viewport"
+    )
+    assert m["cardLeft"] >= 0, f"the login card starts at x={m['cardLeft']}, off-screen left"
+    assert m["bodyScrollWidth"] <= m["viewport"] + 1, (
+        f"the login page scrolls horizontally: body is {m['bodyScrollWidth']}px "
+        f"in a {m['viewport']}px viewport"
+    )
+
+
+def test_the_login_page_violates_no_policy_and_throws_nothing(login_journey):
+    assert not login_journey["login_csp"], (
+        f"the CSP blocked something the login page needs: {login_journey['login_csp']}"
+    )
+    assert not login_journey["js_errors"], f"JavaScript failed: {login_journey['js_errors']}"
+
+
+def test_signing_in_through_the_form_reaches_the_dashboard(login_journey):
+    """The half the unit tests cannot reach: a real browser, a real form POST,
+    a real Set-Cookie that the browser then chooses to return.
+
+    ⚠️ **What this canNOT catch, measured rather than assumed.** An earlier draft
+    of this docstring claimed it would have caught the ``Secure``-on-plain-HTTP
+    bug this repo already shipped once. It would not. Planting that defect —
+    forcing ``Secure`` onto the session cookie unconditionally — left all 15
+    browser tests passing, because **Chromium treats ``http://127.0.0.1`` as a
+    secure context** and returns ``Secure`` cookies over it anyway. This harness
+    serves on loopback, so it is structurally blind to that class, and the real
+    bug only ever bit an operator browsing to a NON-loopback address.
+
+    ⇒ The guard for that property is
+    ``tests/test_webui_auth.py::test_the_session_cookie_is_httponly_and_samesite_and_not_secure_over_http``,
+    which reads the ``Set-Cookie`` header directly instead of asking a browser
+    that has been told to be lenient. Recorded here so nobody reads this test as
+    covering it.
+
+    What this DOES prove: the form exists, the POST is accepted, the cookie
+    round-trips, and the operator ends up somewhere other than the login page.
+    """
+    assert "/login" not in login_journey["after_login_url"], (
+        f"after submitting the correct password the browser was still at "
+        f"{login_journey['after_login_url']} — the session cookie was not "
+        f"accepted or was not returned"
+    )
+
+
+def test_the_authenticated_nav_carries_a_sign_out_control_inside_the_strip(login_journey):
+    m = login_journey["authed"]
+    assert m["hasSignout"], "no sign-out control in the nav of an authenticated page"
+    assert m["signoutRight"] <= m["navRight"] + 1, (
+        f"the sign-out control ends at x={m['signoutRight']} but the nav ends at "
+        f"x={m['navRight']} — it is overflowing the strip"
+    )
+    assert m["navScrollWidth"] <= m["navClientWidth"] + 1, (
+        f"the nav scrolls: {m['navScrollWidth']}px of content in "
+        f"{m['navClientWidth']}px. Adding sign-out pushed the strip over."
+    )
+    assert m["bodyScrollWidth"] <= m["viewport"] + 1, (
+        f"the authenticated page scrolls horizontally: {m['bodyScrollWidth']}px "
+        f"in {m['viewport']}px"
+    )
+
+
+def test_the_authenticated_page_actually_rendered_its_data(login_journey):
+    """⛔ Non-vacuity for the test above. A logged-in page that rendered an
+    empty table also has a well-placed sign-out button."""
+    m = login_journey["authed"]
+    assert m["alertRows"] > 0, (
+        "the authenticated /alerts page rendered no rows, so the layout "
+        "assertions above graded an empty page"
+    )
+    assert not login_journey["authed_csp"], (
+        f"the CSP blocked something the authenticated page needs: "
+        f"{login_journey['authed_csp']}"
+    )

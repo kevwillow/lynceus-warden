@@ -272,6 +272,39 @@ time you edit a YAML file. (`lynceus-validate` also hosts the
 [docs/CONFIGURATION.md §Database migration rollback](CONFIGURATION.md#database-migration-rollback)
 for that operator-facing flow.)
 
+## 7a. Optional: set a web UI password
+
+**Action:**
+
+```sh
+sudo -u lynceus lynceus-ui-passwd --config /etc/lynceus/lynceus.yaml
+```
+
+**Expected:** two prompts, then `Web UI password set.` and a reminder to restart
+`lynceus-ui`.
+
+**Explanation.** On a loopback bind this is optional — the bind is the control,
+and everything on the box is already the operator. Set one if the machine has
+other users or other processes you would rather not have acknowledging alerts.
+
+⛔ **On a non-loopback bind it is not optional.** `lynceus-ui` refuses to start
+with `ui_bind_host` set to anything but loopback and no password configured; it
+exits `2` and prints this command. That is deliberate: the previous behaviour was
+a loud banner and a server that started anyway.
+
+⚠️ **A password is not TLS.** lynceus serves plain HTTP. Over a non-loopback bind
+the password and its session cookie cross the network in the clear, which is a
+longer-lived disclosure than the dashboard itself. Prefer keeping the bind on
+loopback and reaching it through an SSH tunnel or Tailscale — see
+[docs/CONFIGURATION.md §Web UI authentication](CONFIGURATION.md#web-ui-authentication)
+for the full trade-off, the session lifetimes, and what to do if the password is
+lost (there is no reset link, by design).
+
+Run as the user that owns the state directory — `sudo -u lynceus` above for a
+system install — so the credentials file lands owned by the account
+`lynceus-ui` runs as. The file is written `0600`; `lynceus-ui` prints a warning
+at startup if it later finds it readable by anyone else.
+
 ## 8a. Enable the systemd units (system install only)
 
 **Action:**

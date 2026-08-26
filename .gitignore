@@ -68,3 +68,9 @@ htmlcov/
 # Kept on disk, out of the repo.
 /docs/superpowers/
 .release-gate-ran
+
+# Web UI credentials. Normally lives in the STATE directory beside the database
+# and never near a checkout — but `db_path: ":memory:"` and any db_path inside
+# the repo derive it into the working directory, so a dev run can create one
+# here. It holds the operator's password hash; it must never be committed.
+ui_auth.json

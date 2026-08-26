@@ -799,3 +799,122 @@ Remove the `.venv` symlink **before** `git worktree remove --force`, or you
 risk deleting through it into the real venv. On Windows `rm -f` refuses the
 link because it resolves to a directory; use `rm -rf` on the link path or
 delete the worktree with the link already gone.
+
+## Web UI authentication baseline — `ab96132`, measured 2026-08-25
+
+Branch `feat/webui-auth`, three commits on `79517f0`.
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` | **5061 passed, 4 skipped, 63 deselected**, exit 0, 34m37s |
+| `ruff check .` | All checks passed! |
+| host-only (`install or browser`) | **16 passed**, 5112 deselected, exit 0, 4m54s |
+| host-only sentinel | named **all 16** bodies: 15 browser + `test_a_new_user_gets_a_working_system` |
+
+⭐ **+135 against the v1.1.1 baseline's 4926, with skips UNCHANGED at 4.** The
+deselect count rose 56 → 63, which is the 7 new browser bodies: `addopts`
+deselects `browser`, so a new browser test SHOWS UP AS A DESELECT in the
+everyday suite and only runs in the host-only gate. A rise there is expected
+here and would be a regression anywhere else.
+
+⭐ **Sentinel 9 → 16.** The handoff's "should name 9 bodies" is now stale: 8
+browser + 1 install became 15 + 1. Read the names, not the number — the point of
+the sentinel is that pytest exits 0 for a run that executed nothing.
+
+⚠️ **The 4 skips are the same 4 as the v1.1.1 baseline**, and one of them is
+worth knowing about rather than counting:
+
+```
+tests/test_packaging.py:19: python not on PATH
+```
+
+This box has `python3` but no bare `python`, so **the packaging guard has never
+run here** — it is skipped, not passed, and it predates this branch. Recorded
+because a skip count that matches the baseline is exactly how a permanently
+inert guard stays invisible. Not fixed on this branch; it is unrelated to
+authentication.
+
+⛔ ~~**CI at this SHA is NOT yet measured.** Nothing has been pushed.~~
+✅ **Superseded — see the `77feb91` section below.** `cancelled` is still not
+`failed` and not `passed` either; read conclusions by bucket against the SHA,
+not the PR.
+
+## Redirect-guard hardening — `77feb91`, measured 2026-08-25
+
+Branch `feat/webui-auth`, four commits on `79517f0`. `safe_next_path` widened
+from a three-character literal list to the whole C0 range plus DEL.
+
+| Gate | Result |
+| --- | --- |
+| `ruff check .` | All checks passed! |
+| webui surface (5 files) | **548 passed, 1 deselected**, exit 0, 4m20s |
+| host-only (`install or browser`) | **16 passed**, 5116 deselected, exit 0, 3m56s |
+| host-only sentinel | named **all 16** bodies: 15 browser + `test_a_new_user_gets_a_working_system` |
+| CI at the pushed SHA | **14 success, 1 skipped (`release`, tag-only), 1 failure (CodeQL)** |
+
+⭐ **The deselect count moved 5112 → 5116, and that +4 is the whole story**: three
+parametrized cases (`tab`/`lf`/`cr`) plus one C0 sweep, all non-browser, so they
+are collected and correctly excluded from a host-only run. An unexplained move
+here would mean a browser body appeared or vanished.
+
+🪤 **The browser half needs `LYNCEUS_PLAYWRIGHT_SITE` and FAILS rather than skips
+without it.** Run without it on 2026-08-25 and the gate reported **1 passed, 15
+errors** — `ModuleNotFoundError: No module named 'playwright'`, nothing to do with
+the code. Worse, the command piped to `tail`, so `$?` was `tail`'s and the whole
+thing reported **exit 0** while pytest had failed. Capture pytest's own status:
+
+```sh
+... pytest ... > /tmp/log 2>&1; echo "REAL exit: $?"
+```
+
+The side venv at `~/.local/share/lynceus-playwright` was intact the whole time.
+
+⛔ **CodeQL's failure was NOT a broken analysis** — it found 7 new alerts (1 high,
+2 medium, 4 notes). All three security ones were graded against the code and
+dismissed as false positives (alerts 1322/1323/1324), after which the PR went
+`mergeStateStatus: CLEAN`. The hardening commit did **not** change CodeQL's
+output — same 7 alerts, same alert numbers — because it never modelled
+`safe_next_path` as a sanitizer. Fixing the code and clearing the check are
+separate actions here.
+
+
+## Red-team fixes + bootstrap-kismet cover — `6e7608d`, measured 2026-08-25
+
+Branch `feat/webui-auth`. Four security fixes from a cold `gpt-5.6-sol` read,
+plus an M3-built test packet for `cli/bootstrap_kismet.py`.
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` (full) | **5116 passed, 4 skipped, 63 deselected**, exit 0, 35m47s |
+| `ruff check .` | All checks passed! |
+| host-only (`install or browser`) | **16 passed**, 5167 deselected, exit 0, 4m06s |
+| CI at the pushed SHA | **15 success, 1 skipped (`release`, tag-only)** — CodeQL GREEN |
+| PR #234 | `mergeable=MERGEABLE`, `mergeState=CLEAN` |
+
+⭐ **Test count 5061 → 5116, and the +55 accounts exactly**: 4 C0-range redirect
+cases, 44 from the bootstrap-kismet packet, 2 fail-open, 1 symlink refusal,
+3 CSRF shadowing, 1 entry-point wiring. Host-only deselects moved 5116 → 5167,
+which is the same 51 non-browser additions. An unexplained move in either number
+would mean a body appeared or vanished.
+
+⛔ **The first full run at `5cd5ed8` was RED and the harness reported exit 0.**
+The failure was `test_the_ui_entry_point_passes_the_config_path_it_was_given`,
+which grepped `server.py` for the literal text
+`create_app(config, db, config_path=args.config)`. Adding `credentials=` and
+wrapping the call broke the SPELLING while every promise held. Rewritten as an
+`ast` assertion on the keyword's wired value. ⇒ Two separate times this session a
+green-looking result was a wrapper's exit code, not pytest's. Always:
+
+```sh
+... pytest ... > /tmp/log 2>&1; echo "REAL exit: $?"
+```
+
+🪤 **`bootstrap_kismet` coverage was 47%, and the BACKLOG entry naming the gap
+was stale** — `tests/test_bootstrap_kismet_behaviour.py` already covered the four
+surfaces it listed as unpinned. Measure coverage before believing a gap. After
+the packet: **59%**, 340 → 263 statements missed.
+
+⚠️ **`tests/test_bootstrap_kismet.py` is gitignored for OPSEC** (it embeds the
+rig adapter MAC and account name). New cover went into a TRACKED file with
+synthetic fixtures only, so CI actually gates it. Any new test that hard-codes a
+real adapter or host must be added to `.gitignore` instead.

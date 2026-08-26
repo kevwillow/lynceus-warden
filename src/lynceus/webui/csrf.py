@@ -39,12 +39,38 @@ def get_csrf_token(request) -> str:
 
 
 def _parse_cookie_header(header: str) -> dict[str, str]:
+    """Parse a Cookie header, DROPPING any name that arrives ambiguously.
+
+    ⛔ **Conflicting duplicates are dropped, not resolved by picking one.** This
+    used to be a plain ``out[k] = v``, i.e. last-one-wins, while
+    ``auth.session_token_from_scope`` refuses the same situation and says why:
+    cookie shadowing is how an attacker who can write a cookie on a sibling
+    origin gets to choose which parser wins. A sibling under the same
+    registrable domain can set ``lynceus_csrf`` for the parent domain;
+    ``SameSite=Strict`` does not withhold it, because sibling origins are
+    cross-origin but same-site. Last-one-wins then let the attacker supply BOTH
+    halves of the double-submit pair and satisfy the check.
+
+    ⚠️ Two cookies with the SAME value are kept. That is a duplicate, not an
+    ambiguity — the same distinction the session reader draws.
+
+    Dropping the name (rather than returning a sentinel) is deliberate: both
+    call sites already treat a missing CSRF cookie correctly. A safe method
+    issues a fresh token, and an unsafe one answers 403. Ambiguity therefore
+    fails closed without either site needing to learn a new case.
+    """
     out: dict[str, str] = {}
+    conflicting: set[str] = set()
     for part in header.split(";"):
         if "=" not in part:
             continue
         k, v = part.split("=", 1)
-        out[k.strip()] = v.strip()
+        k, v = k.strip(), v.strip()
+        if k in out and out[k] != v:
+            conflicting.add(k)
+        out[k] = v
+    for k in conflicting:
+        del out[k]
     return out
 
 
@@ -122,6 +148,40 @@ async def _send_403(send) -> None:
     await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
+def build_csrf_cookie(token: str, *, secure: bool) -> str:
+    """Build the Set-Cookie value. ``secure`` describes the TRANSPORT.
+
+    ⭐ Module-level so the login handler can ROTATE the token on a successful
+    sign-in without duplicating the attribute list. A double-submit token that
+    survives authentication is one an attacker who could set a cookie before
+    login still knows afterwards, and two copies of this attribute list is how
+    one of them quietly loses ``SameSite``.
+
+    ⛔ ``Secure`` used to be derived from ``ui_allow_remote``, which describes
+    the BIND ADDRESS, not the transport. Nothing in lynceus serves TLS, so that
+    combination set a flag no plain-HTTP client may return: the browser stored
+    the cookie and then withheld it from every subsequent request, the POST
+    arrived with no cookie at all, and the operator got ``403 CSRF token
+    mismatch`` on every form. Turning on the one documented way to reach the UI
+    off-host broke the whole UI, and the 403 named a mismatch when there was
+    nothing to mismatch.
+
+    Deriving it from the request scheme is the honest mapping, and it keeps the
+    flag where it is real: uvicorn reports ``https`` both when it terminates TLS
+    itself and, via its proxy-header handling, when a trusted local proxy such
+    as ``tailscale serve`` did.
+    """
+    parts = [
+        f"{CSRF_COOKIE_NAME}={token}",
+        f"Max-Age={CSRF_COOKIE_MAX_AGE}",
+        "Path=/",
+        "SameSite=Strict",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
 class CSRFMiddleware:
     """ASGI middleware enforcing CSRF on state-changing requests."""
 
@@ -144,16 +204,13 @@ class CSRFMiddleware:
         keeps the flag where it is real: uvicorn reports ``https`` both when
         it terminates TLS itself and, via its proxy-header handling, when a
         trusted local proxy such as ``tailscale serve`` did.
+
+        ⚠️ Kept as a method delegating to ``build_csrf_cookie`` rather than
+        deleted: it is named by ``webui/app.py``'s middleware-ordering comment
+        and by ``webui/auth.build_session_cookie``'s docstring, both of which
+        point here for the measurement. The indirection costs nothing.
         """
-        parts = [
-            f"{CSRF_COOKIE_NAME}={token}",
-            f"Max-Age={CSRF_COOKIE_MAX_AGE}",
-            "Path=/",
-            "SameSite=Strict",
-        ]
-        if secure:
-            parts.append("Secure")
-        return "; ".join(parts)
+        return build_csrf_cookie(token, secure=secure)
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":

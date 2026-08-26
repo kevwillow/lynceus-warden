@@ -252,3 +252,42 @@ def test_csrf_cookie_no_secure_flag_when_loopback(tmp_path):
             assert "Secure" not in h
     finally:
         db.close()
+
+
+def test_a_shadowed_csrf_cookie_cannot_satisfy_the_double_submit():
+    """Sibling-origin cookie shadowing must not let one caller supply both halves.
+
+    ⛔ The session reader refuses conflicting duplicate cookies and names this
+    exact attacker: someone who can write a cookie on a sibling origin under the
+    same registrable domain. `SameSite=Strict` does not withhold such a cookie,
+    because sibling origins are cross-origin but SAME-site. The CSRF parser was
+    last-one-wins, so the attacker's `KNOWN` value overwrote the genuine
+    `SECRET`, matched their own form field, and the double-submit check passed.
+
+    Dropping the ambiguous name makes the POST answer 403 instead.
+    """
+    from lynceus.webui.csrf import _parse_cookie_header
+
+    genuine = "lynceus_csrf=SECRET; lynceus_csrf=KNOWN"
+    assert _parse_cookie_header(genuine).get("lynceus_csrf") is None, (
+        "a conflicting duplicate CSRF cookie resolved to a value; last-one-wins "
+        "lets a sibling origin choose which half of the double-submit wins"
+    )
+
+
+def test_an_identical_duplicate_cookie_is_not_treated_as_ambiguous():
+    """Same value twice is a duplicate, not an ambiguity — the session reader
+    draws the same distinction, and refusing it would break ordinary clients
+    that repeat a cookie."""
+    from lynceus.webui.csrf import _parse_cookie_header
+
+    assert _parse_cookie_header("lynceus_csrf=A; lynceus_csrf=A")["lynceus_csrf"] == "A"
+
+
+def test_unrelated_cookies_are_unaffected_by_a_conflict():
+    """A conflict must drop ONLY the conflicting name."""
+    from lynceus.webui.csrf import _parse_cookie_header
+
+    out = _parse_cookie_header("a=1; lynceus_csrf=X; lynceus_csrf=Y; b=2")
+    assert out["a"] == "1" and out["b"] == "2"
+    assert "lynceus_csrf" not in out

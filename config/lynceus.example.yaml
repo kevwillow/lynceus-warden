@@ -104,8 +104,8 @@ heartbeat_interval_hours: 24
 
 # Host interface the UI binds to. Default 127.0.0.1 (loopback only). To
 # expose the UI to other machines on the LAN, change this AND set
-# ui_allow_remote: true (Lynceus has no auth layer, so binding non-loopback
-# without that flag is a footgun and is rejected at config load).
+# ui_allow_remote: true (binding non-loopback without that flag is a footgun
+# and is rejected at config load).
 ui_bind_host: 127.0.0.1
 
 # TCP port the UI listens on. Must be in [1, 65535].
@@ -113,9 +113,29 @@ ui_bind_port: 8765
 
 # Permit binding to a non-loopback address. Leave false on a single-Pi
 # install. Required true for any setup where a separate machine will
-# fetch the UI; only set true when you have placed lynceus behind your
-# own auth layer (e.g. a reverse proxy with HTTP basic auth or VPN).
+# fetch the UI.
+#
+# A non-loopback bind ALSO requires a web UI password: lynceus-ui refuses to
+# start without one and prints how to set it. See ui_auth_path below.
+#
+# Note what a password does not do: lynceus serves no TLS, so over a plain
+# HTTP bind the password and its session cookie cross the network in the
+# clear. An SSH tunnel or a private network such as Tailscale stays the
+# supported remote path, and both encrypt the hop this one does not.
 ui_allow_remote: false
+
+# Where the web UI password hash is stored. Commented out means "derive it",
+# which puts ui_auth.json in the state directory beside the database.
+#
+# ⚠️ This names the FILE. It is not the password and it is not a secret --
+# write the file with:
+#
+#     lynceus-ui-passwd --config /etc/lynceus/lynceus.yaml
+#
+# With no such file the UI runs unauthenticated, which is the default and is
+# fine for a loopback single-operator install. Setting or changing a password
+# takes effect at the next lynceus-ui restart, not immediately.
+# ui_auth_path: /var/lib/lynceus/ui_auth.json
 
 # --- Multi-source / multi-adapter ---
 

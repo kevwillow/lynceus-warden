@@ -43,6 +43,7 @@ NON_DEFAULT: dict = {
     "rules_path": "/tmp/lynceus-rules.yaml",
     "allowlist_path": "/tmp/lynceus-allowlist.yaml",
     "ui_allowlist_path": "/tmp/lynceus-allowlist_ui.yaml",
+    "ui_auth_path": "/tmp/lynceus-ui_auth.json",
     "severity_overrides_path": "/tmp/lynceus-overrides.yaml",
     "alert_dedup_window_seconds": 111,
     "ntfy_url": "https://ntfy.example.org",

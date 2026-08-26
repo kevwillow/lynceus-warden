@@ -434,7 +434,16 @@ def test_a_new_secret_bearing_config_field_cannot_be_forgotten():
         for name in Config.model_fields
         if any(t in name.lower() for t in ("key", "token", "secret", "password", "topic", "auth"))
     ]
-    reviewed_not_secret: set[str] = set()
+    reviewed_not_secret: set[str] = {
+        # ⛔ A PATH, not a credential. `ui_auth_path` names the file the web UI
+        # password hash lives in; the hash itself is never in lynceus.yaml,
+        # which is the whole reason it is a separate file (see
+        # webui/credentials.py). Redacting the path would hide from a shared
+        # config exactly which file an operator needs to protect, so this is
+        # reviewed-and-not-a-secret rather than an oversight. It matches the
+        # "auth" substring above, which is the guard doing its job.
+        "ui_auth_path",
+    }
     unhandled = [
         n
         for n in suspicious
