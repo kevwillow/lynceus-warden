@@ -365,6 +365,49 @@ reverse proxy every caller shares one bucket and one attacker can lock the opera
 supported deployment — both documented remote paths preserve the peer — and trusting an
 `X-Forwarded-For` any unauthenticated caller can write would be worse. Stated in `auth.py`.
 
+### Web UI auth red-team, 2026-08-25: findings deliberately NOT taken
+
+A cold `gpt-5.6-sol` read of the auth surface at `f4e4f3b` returned 8 findings.
+Four were real and fixed in #234 (the credentials double-read fail-open, the
+last-one-wins CSRF cookie parser, the symlink-following credentials write, and a
+`purge_expired` docstring that claimed a bound it does not provide). The rest are
+recorded here so they are argued once rather than rediscovered by the next reader.
+
+- **Unbounded request body on `/login`.** `csrf._read_body` accumulates every
+  chunk into a list with no size limit, and `/login` is auth-exempt, so any caller
+  who can reach the port can drive a Pi into memory pressure without a password,
+  a session, or even a valid CSRF pair. ⚠️ **Pre-existing, not introduced by the
+  auth work** — `_read_body` is untouched by #234 and the whole UI was
+  unauthenticated before it. Genuinely worth fixing.
+  - **Trigger**: any off-loopback deployment, or the first time the UI is put
+    behind something that does not itself cap request bodies.
+  - **Estimated**: small. A byte ceiling in `_read_body` plus a 413.
+
+- **The login lockout is bypassed by rotating the source address.** The limiter
+  keys on the peer address, so an attacker with a `/64` (or simply several hosts)
+  sends four wrong passwords from each and never fills a bucket. ⭐ This is the
+  MIRROR IMAGE of the residual recorded directly above, and both follow from the
+  same key: a peer-keyed limiter over-groups behind a proxy and under-groups
+  across a prefix. scrypt and the minimum length still bound useful guessing.
+  - **Estimated**: a global failure budget alongside the per-client one, or
+    per-prefix bucketing for v6. Both add a way to lock out the real operator, so
+    this is a design conversation, not a patch.
+
+- **Group/world-writable credentials are reported, never refused.** ⛔ **Not a
+  defect — a deliberate decision**, stated in `server.py`: "refusing to start on a
+  file they chmod'd themselves turns advice into an outage." The red team's added
+  angle is fair and was not in the original reasoning: an over-broad mode is an
+  **integrity** problem, not only a disclosure one, because a local principal who
+  can write the file can substitute a hash they know and simply log in. POSIX ACLs
+  are not examined at all. Recorded as a decision to revisit, not a bug.
+
+- **`purge_expired` does not bound concurrent live sessions.** The misleading
+  docstring was corrected in #234; the behaviour was not. Nothing removes a
+  session inside both its idle and absolute windows, so a caller who knows the
+  password can hold open arbitrarily many. Marginal — it requires the password —
+  and a hard cap risks locking out an operator with several devices.
+  - **Trigger**: if sessions ever stop being one-operator.
+
 ### Silent pipeline death: the daemon stays alive with ingest stopped
 A persistent DB lock, disk-full, or a changed Kismet devices-schema is caught per-tick by
 `run_forever` and logged, while the runtime-loss state machine deliberately stays quiet because
@@ -379,7 +422,8 @@ prevents a *false* "Kismet down" for DB failures, but nothing requires a truthfu
   claims health it has not verified. Forcing `healthy = True` fails five tests.
 
 ### Test gaps worth pinning (analysis only, no tests written)
-Ranked by consequence. The suite is ~3,260 tests and genuinely strong on rules, UI, import and
+Ranked by consequence. The suite is **5,116 tests as measured 2026-08-25** (this line read
+"~3,260" until then) and genuinely strong on rules, UI, import and
 evidence; these are gaps *between* well-tested units, on failure paths.
 
 - ~~**Watermark advances past a failed record.**~~ ✅ **FIXED 2026-08-14**, and it was a live
@@ -396,10 +440,27 @@ evidence; these are gaps *between* well-tested units, on failure paths.
   and the column-adding migration has not run yet. The state (*schema ahead of stamp*) is real but
   reachable only via `rollback_to`'s skip-but-unstamp branches. #37 closes the accidental one.
 - ~~**The real Kismet HTTP client.**~~ ✅ **PINNED 2026-08-14 (#29).**
-- **`cli/bootstrap_kismet.py` (now 1,607 lines), PARTIALLY covered.** ✅ File modes (#25) and
+- **`cli/bootstrap_kismet.py` (now 1,759 lines), PARTIALLY covered.** ✅ File modes (#25) and
   ✅ the named case above, `--interface` pointing at a device that is not present, which now warns
-  rather than silently configuring a source Kismet cannot open (#36). ⚠️ **Still unpinned:** distro
-  detection, source-line generation, backup/atomic patching and dry-run.
+  rather than silently configuring a source Kismet cannot open (#36).
+  ⚠️ ~~**Still unpinned:** distro detection, source-line generation, backup/atomic patching and
+  dry-run.~~ ✅ **STALE — measured 2026-08-25 and all four were already covered** by
+  `tests/test_bootstrap_kismet_behaviour.py`, which this entry predates. Believing it cost a
+  session the start of a packet it did not need.
+  ⇒ **Coverage is a number, so measure it rather than reasoning from this list.** Measured at
+  `f9e7e3c`: **47%**, 340 of 643 statements missed. The genuinely-uncovered probe surfaces
+  (`parse_iw_dev`, `parse_iw_phy_info_supports_monitor`, `filter_kismet_monitor_vifs`,
+  `detect_bluetooth_interfaces`, `_shell_quote`, `backup_kismet_site_conf`,
+  `find_stale_kismet_lockfiles`, `_build_parser`) were then pinned by 44 tests in
+  `tests/test_bootstrap_kismet_probes.py`, taking it to **59%** (263 missed).
+  ⚠️ **Still uncovered, counted rather than estimated** (statements missed, measured 2026-08-25):
+  `run` 86, `install_kismet_apt_repo` 58, `_select_interfaces` 32, `install_kismet_package` 26,
+  `detect_wifi_monitor_capable` 25, `print_unsupported_pointer` 15, `_prompt_yes_no` 13, `main` 12.
+  These want subprocess mocking and an `input_fn` harness rather than pure-function
+  input/output, which is why they were left: a different kind of test, not more of the same.
+  🪤 `tests/test_bootstrap_kismet.py` is **gitignored** (it embeds the rig adapter MAC and account
+  name), so anything written there is invisible to CI. New cover belongs in a tracked file with
+  synthetic fixtures only.
 - ~~**Clock jumps.**~~ ✅ **FIXED 2026-08-14 (#35)** for the retention half, and it was a live
   defect: measured **29 of 30** in-window sightings deleted on a +30d excursion, with `evidence.py`
   worse because it is on by default. ⛔ **Not fixable inside `retention.py`.** From there, "the
@@ -443,9 +504,27 @@ within a day instead of at the moment it matters.
 
 ## Followups for technical debt
 
-### CSRF token rotation on session boundaries
-v0.2 ships a single token per cookie session (8 hours). Rotation on
-auth events comes when auth lands.
+### ✅ RESOLVED 2026-08-25 — CSRF token rotation on session boundaries
+~~v0.2 ships a single token per cookie session (8 hours). Rotation on
+auth events comes when auth lands.~~
+
+Auth landed (#234), and it landed **with** the rotation: a successful `/login`
+appends a second `set-cookie` carrying a freshly generated CSRF token, because
+the double-submit token is self-issued to anyone who can GET a page and one
+collected before sign-in would otherwise still be valid after it.
+`build_csrf_cookie` was lifted to module scope precisely so the login handler
+could reuse the attribute list rather than grow a second copy that quietly loses
+`SameSite`.
+
+⚠️ **Logout does NOT rotate it**, and that asymmetry is deliberate rather than
+overlooked: the login-side rule is "nothing an unauthenticated caller planted may
+survive authentication", and a CSRF token with no session cookie beside it is
+inert. Recorded so it is argued once rather than rediscovered.
+
+⭐ A separate defect in the same area WAS found and fixed in #234: the CSRF
+cookie parser was last-one-wins on duplicates while the session reader refuses
+them, so a sibling origin under the same registrable domain could supply both
+halves of the double-submit pair. Conflicting names are now dropped.
 
 ### Per-request DB connection pool
 v0.2 uses a single shared connection with `check_same_thread=False`.
