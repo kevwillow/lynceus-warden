@@ -12,6 +12,7 @@ from lynceus.webui.csrf import (
     CSRF_COOKIE_NAME,
     CSRF_FORM_FIELD,
     CSRF_HEADER_NAME,
+    MAX_CSRF_BODY_BYTES,
     constant_time_compare,
     generate_token,
 )
@@ -291,3 +292,63 @@ def test_unrelated_cookies_are_unaffected_by_a_conflict():
     out = _parse_cookie_header("a=1; lynceus_csrf=X; lynceus_csrf=Y; b=2")
     assert out["a"] == "1" and out["b"] == "2"
     assert "lynceus_csrf" not in out
+
+
+@pytest.mark.webui
+def test_an_oversized_body_is_refused_before_it_is_buffered(tmp_path):
+    """⛔ Reachable with NO credentials, because `/login` is auth-exempt.
+
+    An unauthenticated caller who can reach the port needs only to send some
+    CSRF cookie: the token comparison happens AFTER the body is read, and the
+    login rate limiter lives in the route, which is never reached. An unbounded
+    accumulate therefore let one request drive a Pi into memory pressure.
+
+    413, not 403 — answering "CSRF token mismatch" would name a control the
+    caller was never going to satisfy and send whoever reads the log hunting a
+    token bug.
+    """
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            client.get("/")  # obtain a CSRF cookie the honest way
+            oversized = b"x" * (MAX_CSRF_BODY_BYTES + 1)
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                content=oversized,
+                headers={"content-type": "application/x-www-form-urlencoded"},
+            )
+        assert r.status_code == 413, (
+            f"an oversized body answered {r.status_code}; it was buffered whole "
+            f"before the token was even compared"
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.webui
+def test_a_body_just_under_the_ceiling_is_not_refused(tmp_path):
+    """The ceiling must not refuse a legitimate form.
+
+    Sized from the app's own cap: `/alerts/bulk-ack` refuses more than 1000
+    `alert_ids` (~17 KB), so a real form never approaches this. Pins that the
+    limit is an upper bound rather than an off-by-one that clips valid posts.
+    """
+    app, db = _make_app(tmp_path)
+    try:
+        aid = db.add_alert(ts=100, rule_name="r", mac=None, message="m", severity="low")
+        with TestClient(app) as client:
+            client.get("/")
+            token = client.cookies.get(CSRF_COOKIE_NAME)
+            assert token
+            prefix = f"{CSRF_FORM_FIELD}={token}&pad=".encode()
+            body = prefix + b"x" * (MAX_CSRF_BODY_BYTES - len(prefix))
+            assert len(body) == MAX_CSRF_BODY_BYTES
+            r = client.post(
+                f"/alerts/{aid}/ack",
+                content=body,
+                headers={"content-type": "application/x-www-form-urlencoded"},
+            )
+        assert r.status_code != 413, "a body exactly at the ceiling was refused"
+    finally:
+        db.close()
