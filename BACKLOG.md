@@ -467,8 +467,14 @@ evidence; these are gaps *between* well-tested units, on failure paths.
   clock jumped forward" and "the table holds only old rows" are the same observation, and an
   existing test *requires* the second to delete everything. Fixed with a `time.monotonic()` anchor
   in `Poller`, which declines to call the prunes at all while the clock is untrusted, with a bounded
-  hold. ⚠️ **Still open:** the `last_poll_ts` cursor half. A forward excursion still makes later
-  polls ask Kismet for devices "since the future".
+  hold. ⚠️ ~~**Still open:** the `last_poll_ts` cursor half. A forward excursion still makes later
+  polls ask Kismet for devices "since the future".~~ ✅ **STALE — the cursor half landed.**
+  Verified 2026-08-26 against `c64a194`: `poller.py` takes the `watermark = None` branch when
+  `clock_is_trusted` is false and logs that it is deliberately NOT advancing, so a jumped clock
+  cannot poison `last_poll_ts`. Pinned by six tests in `tests/test_clock_jump_poll_watermark.py`,
+  including that the hold neither spends nor resets the PERSIST-retry budget (`POLL_WATERMARK_HOLDS`
+  belongs to PR #24, and an operator with a jumped clock AND a failing disk must not silently lose
+  it). Both halves of the wall-clock class are now closed.
 
 ### ~~Heartbeat / dead-man's switch~~ ✅ SHIPPED 2026-08-14 (#31)
 Built on migration 024's delivery-tracked path, as the sequencing below required. `heartbeat_enabled`
