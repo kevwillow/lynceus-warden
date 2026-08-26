@@ -302,7 +302,7 @@ Findings from the shippable/shareable audit at `d66d844`. The defects that were 
 in `docs/AUDIT_REGISTER.md` (Wave 5, Findings 12–17) with their measurements. What follows is what
 was found and deliberately **not** taken on in that remediation.
 
-### Web UI has no authentication: 23 unauthenticated state-changing routes
+### ✅ RESOLVED 2026-08-25 (#234) — Web UI has no authentication: 23 unauthenticated state-changing routes
 Measured: nothing in `src/lynceus/webui/` implements auth of any kind; loopback binding is the only
 control, and `ui_allow_remote: true` (`config.py:178,368`) removes it. There are 23 `@app.post`
 routes, including `/devices/{mac}/allowlist`, `/rules/{rule_type}/snooze` and
@@ -408,7 +408,7 @@ recorded here so they are argued once rather than rediscovered by the next reade
   and a hard cap risks locking out an operator with several devices.
   - **Trigger**: if sessions ever stop being one-operator.
 
-### Silent pipeline death: the daemon stays alive with ingest stopped
+### ✅ RESOLVED 2026-08-14 (#31) — Silent pipeline death: the daemon stays alive with ingest stopped
 A persistent DB lock, disk-full, or a changed Kismet devices-schema is caught per-tick by
 `run_forever` and logged, while the runtime-loss state machine deliberately stays quiet because
 Kismet's health endpoint is still reachable (`poller.py:1257+`). Process alive, Kismet alive,
@@ -576,6 +576,14 @@ matched selector literal before the real rule, forcing comment rewordings
 that don't reflect a real code problem. Harden the matching to target the
 actual rule (e.g. match a selector-plus-brace pattern, or parse the rule
 block) rather than first textual occurrence.
+⚠️ **NOT stale, and broader than written — audited 2026-08-26.** A cold pass proposed closing this
+on the strength of `tests/test_webui.py:4036`, which *is* hardened
+(`content.find("\n.table-scroll {")`, anchored on selector-plus-brace). But the naive form
+survives in the same TRACKED file at `tests/test_webui.py:1812`
+(`body.find(".ack-button-inline")`), so the entry should say "layout tests" rather than
+"gitignored layout tests".
+🪤 **The audit could not see the gitignored half at all**: all ten `tests/*.py` entries in
+`.gitignore` are ABSENT from this checkout, so neither a local sweep nor CI can speak for them.
 - **Trigger**: next time one of these tests trips on a comment, OR any arc
   that already touches these test files.
 - **Notes**: tests are gitignored (OPSEC), so this is local-only test
@@ -593,8 +601,14 @@ make the claims true: the bridge is OFF by default (BLE-G1 curation), so in a
 default deployment the claims remain inert. "BLE service UUID matching" becomes
 accurate once the bridge is enabled and curated; **"AirTag-class tracker
 recognition" needs more than that**. Distinguishing an AirTag from any other
-Apple device is exactly the Find My / Apple Continuity decoder arc, which has
-not started. Softening that claim should not wait on it.
+Apple device is exactly the Find My / Apple Continuity decoder arc, ~~which has
+not started~~ ⚠️ **which has since LANDED (verified 2026-08-26):
+`src/lynceus/ble_continuity.py` classifies an Apple advert into
+`find_my_separated` / `find_my` / `find_my_paired` / `airpods` / `nearby`, and
+its own entry below is marked "landed (unreleased), and now actually
+reachable."** The remaining blocker for the README claim is therefore the
+bridge being OFF by default (BLE-G1), not the decoder. Softening that claim
+should not wait on either.
 - **Trigger**: now actionable. The bridge decision resolved in the "build it"
   direction. Re-check the claims once the bridge is enabled + curated, and
   again after the Find My decoder lands.
@@ -637,9 +651,13 @@ asymmetry, explicitly left unfixed in v0.9.2.
 moved into the `_alert_row.html` partial, so it fails pre-existingly under
 `pytest -m diagnostic`. Not a regression. The assertions are stale against the
 current template split.
-- **Trigger**: next time the diagnostic suite is run pre-push, or any arc
-  touching the home-page ack flow / alert-row partial.
-- **Notes**: tests are gitignored (OPSEC); local-only test maintenance.
+- ✅ **STALE ON BOTH COUNTS — verified 2026-08-26 at `c64a194`.**
+  1. It does not fail. `pytest tests/test_diag_home_ack_flow.py -m diagnostic` → **1 passed**.
+  2. It is not gitignored. `tests/test_diag_home_ack_flow.py` is **tracked**; `git check-ignore`
+     returns nothing for it. The gitignored set is the ten files listed in `.gitignore`, and this
+     is not one of them.
+  ⇒ Nothing to do. Kept rather than deleted because the entry is the record of a belief that was
+  acted on twice.
 
 ## Network capture features
 
@@ -935,8 +953,12 @@ wrong once the bridge is a real capture path rather than an experiment.
 `bluez=BlueZScannerArgs(or_patterns=...)`. bleak is folding adapter selection
 into the backend-args kwarg and will drop the standalone `adapter=` parameter,
 at which point the scanner construction breaks on upgrade.
-- **Trigger**: before any bleak major-version bump, or on the first deprecation
-  warning observed on the rig.
+- ✅ **DONE — verified 2026-08-26.** `bridges/ble.py::_make_scanner` no longer passes a top-level
+  `adapter=`; it constructs `bluez=BlueZScannerArgs(or_patterns=..., adapter=self.adapter)`, which
+  is exactly the fix this entry proposes, with an inline note verifying against bleak 3.0.2 that
+  the old form warns and this one does not.
+- ~~**Trigger**: before any bleak major-version bump, or on the first deprecation
+  warning observed on the rig.~~
 - **Estimated**: a few lines. Fold the adapter into the `bluez=` kwarg. The
   module already carries an import-layout fallback for older/newer bleak module
   paths, so the compatibility pattern to follow is in place.
@@ -1100,8 +1122,15 @@ The `drone_id_prefix` leading-substring matcher (v0.9.2) is correct but inert:
 the live Kismet Remote-ID JSON field path (`kismet._DRONE_ID_PATHS`) is still an
 unverified guess. No drone has been captured, so which path carries the serial
 is unknown. `_DRONE_ID_PATHS` is unchanged until a live capture proves it.
-- **Trigger**: a live drone Remote-ID capture on the rig, or a confirmed Kismet
-  field-path reference.
+- ⚠️ **HALF STALE — verified 2026-08-26.** The premise "still an unverified guess" is no longer
+  true: `kismet.py:467` records the paths as **VERIFIED against Kismet's source, 2026-08-02**
+  (`phy_uav_drone.cc:128`, `phy_uav_drone.h:323`), and the five paths it replaced do not exist in
+  Kismet at all — so the matcher could never have fired before. ⇒ The SECOND of this entry's own
+  two trigger conditions is already met.
+  ⛔ What remains is only the first: no drone has been captured, so the mapping is confirmed
+  against source rather than against the wire. That is a smaller claim than the entry made.
+- **Trigger**: ~~a live drone Remote-ID capture on the rig, or~~ a confirmed Kismet
+  field-path reference ✅ — a live capture would now only raise confidence.
 - **Notes**: blocks nothing else. The matcher, capture coercion, and allowlist
   mirror are all in place and tested; this is the one runtime fact that can only
   come from real hardware. Likely confirmed alongside the BLE advertisement-
