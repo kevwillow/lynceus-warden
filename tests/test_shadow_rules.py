@@ -215,3 +215,100 @@ def test_a_raising_sink_is_reported_not_silent():
     assert any("shadow sink rejected" in m for m in records), (
         f"a lost count was not reported anywhere: {records}"
     )
+
+
+# --- the denominator: a zero count must be interpretable -------------------
+
+
+class _FakeDB:
+    """Minimal key/value stand-in for the poller_state accessors."""
+
+    def __init__(self):
+        self.kv: dict[str, str] = {}
+
+    def get_state(self, key):
+        return self.kv.get(key)
+
+    def set_state(self, key, value):
+        self.kv[key] = value
+
+
+def test_field_presence_is_counted_so_zero_is_interpretable():
+    """⛔ Without a denominator, a shadow count of zero means two opposite
+    things: nothing was in range, or the field is never populated so the rule
+    cannot fire. `kismet.py` records the BLE manufacturer-ID probe paths as
+    UNVERIFIED against a real capture, so the second is a live possibility.
+    """
+    from lynceus.poller import _record_shadow_field_presence
+
+    db = _FakeDB()
+    _record_shadow_field_presence(db, _obs(), 1_700_000_000)
+    assert db.kv.get("shadow_seen:ssid") is None, (
+        "ssid was None on this observation and must not be counted as carried"
+    )
+
+
+def test_a_carried_field_increments_its_denominator():
+    from lynceus.poller import _record_shadow_field_presence
+
+    db = _FakeDB()
+    obs = _obs().model_copy(update={"ble_manufacturer_id": "0x004C"})
+    _record_shadow_field_presence(db, obs, 1_700_000_000)
+    _record_shadow_field_presence(db, obs, 1_700_000_001)
+    assert db.kv["shadow_seen:ble_manufacturer_id"] == "2"
+
+
+def test_an_empty_tuple_is_absent_not_present():
+    """`ble_service_uuids` defaults to `()`. Counting that as carried would
+    manufacture a denominator out of nothing and hide the exact broken-plumbing
+    case this exists to expose."""
+    from lynceus.poller import _record_shadow_field_presence
+
+    db = _FakeDB()
+    obs = _obs()
+    assert obs.ble_service_uuids == ()
+    _record_shadow_field_presence(db, obs, 1_700_000_000)
+    assert "shadow_seen:ble_service_uuids" not in db.kv
+
+
+def test_the_denominator_is_not_paid_for_without_a_shadow_rule():
+    from lynceus.poller import _any_shadow_rule
+
+    assert _any_shadow_rule(Ruleset(rules=[_rule()])) is False
+    assert _any_shadow_rule(Ruleset(rules=[_rule(shadow=True)])) is True
+    assert _any_shadow_rule(Ruleset(rules=[_rule(shadow=True, enabled=False)])) is False, (
+        "a disabled shadow rule is not running, so its denominator is not owed"
+    )
+
+
+def test_presence_accounting_never_raises():
+    """A counter that fails must not take down the poll tick it measures.
+
+    ⚠️ The observation MUST carry a denominator field. An earlier version of
+    this test passed `_obs()`, whose fields are all absent, so the loop
+    `continue`d on every one, the database was never touched, and no exception
+    could be raised. It passed trivially and survived a plant that narrowed the
+    `except` clause to a type it would never see. A test whose subject is never
+    reached is not a test.
+    """
+    from lynceus.poller import _record_shadow_field_presence
+
+    class Exploding:
+        def get_state(self, key):
+            raise RuntimeError("db gone")
+
+        def set_state(self, key, value):
+            raise RuntimeError("db gone")
+
+    obs = _obs().model_copy(update={"ble_manufacturer_id": "0x004C"})
+
+    # Control: prove this observation really does reach the database, so the
+    # assertion below is about the except clause and not about an empty loop.
+    reached = _FakeDB()
+    _record_shadow_field_presence(reached, obs, 1_700_000_000)
+    assert reached.kv.get("shadow_seen:ble_manufacturer_id") == "1", (
+        "the control observation never reached the db, so this test would be "
+        "vacuous again"
+    )
+
+    _record_shadow_field_presence(Exploding(), obs, 1_700_000_000)

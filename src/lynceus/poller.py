@@ -1143,6 +1143,8 @@ def process_observation(
     # an operator has NOT enabled, so a leak fires exactly the alert storm they
     # were trying to size without firing.
     shadow_hits: list = []
+    if _any_shadow_rule(ruleset):
+        _record_shadow_field_presence(db, obs, now_ts)
     hits = evaluate(
         ruleset,
         obs,
@@ -1903,6 +1905,67 @@ def _report_impossible_watchful_snoozes(db: Database, now_ts: int) -> None:
             "reported (they may be reported again): %s",
             e,
         )
+
+
+#: Observation fields a shadow count's DENOMINATOR is drawn from.
+#:
+#: ⛔ Without these, a shadow count of zero is uninterpretable. It means either
+#: "nothing watchlisted was in range" or "this field is never populated, so the
+#: rule cannot fire at all", and those demand opposite responses. The second is
+#: not hypothetical: `kismet.py` records `_BLE_MANUFACTURER_ID_PATHS` and
+#: `_DRONE_ID_PATHS` as UNVERIFIED against a real capture, so on live hardware
+#: `ble_manufacturer_id` may read None on every observation. An operator who
+#: read "0 hits in 24h" as "safe to enable" would switch on a rule that does
+#: nothing and gain false confidence in their coverage.
+#:
+#: ⇒ Publish the universe beside the number. 0 of 4,200 observations that
+#: carried a manufacturer ID is quiet. 0 of 0 is broken plumbing.
+_SHADOW_DENOMINATOR_FIELDS: tuple[str, ...] = (
+    "ble_manufacturer_id",
+    "drone_id_prefix",
+    "ble_local_name",
+    "ble_service_uuids",
+    "ssid",
+)
+
+
+def _any_shadow_rule(ruleset) -> bool:
+    """Only pay for the denominator when a shadow rule is actually configured.
+
+    ⛔ Guarded rather than unconditional: this runs on EVERY observation, and an
+    install with no shadow rule must not carry a per-observation write it can
+    never read.
+    """
+    return any(getattr(r, "shadow", False) and r.enabled for r in ruleset.rules)
+
+
+def _record_shadow_field_presence(db, obs, now_ts: int) -> None:
+    """Count how many observations carried each field a shadow rule keys on.
+
+    Cheap: one integer per field per tick, into the same key/value table. Runs
+    for every observation, not just matching ones, because the denominator is
+    the whole point.
+
+    ⚠️ Best-effort, for the same reason the hit counter is: a counter that
+    fails must not take down the poll tick it measures.
+    """
+    try:
+        for field in _SHADOW_DENOMINATOR_FIELDS:
+            value = getattr(obs, field, None)
+            # An empty tuple/string is ABSENT, not present. `ble_service_uuids`
+            # defaults to (), and counting that as "carried the field" would
+            # manufacture a denominator out of nothing and hide the exact
+            # broken-plumbing case this exists to expose.
+            if value is None or value == () or value == "":
+                continue
+            key = f"shadow_seen:{field}"
+            try:
+                current = int(db.get_state(key) or 0)
+            except ValueError:
+                current = 0
+            db.set_state(key, str(current + 1))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("shadow field-presence accounting failed: %s", exc)
 
 
 def _record_shadow_hits(db, shadow_hits: list, now_ts: int) -> None:
