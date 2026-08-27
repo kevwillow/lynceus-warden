@@ -456,6 +456,7 @@ def test_unwritable_target_produces_clean_error_not_traceback(
 # --- sanitiser: dump the live state of what we are testing -----------------
 
 
+@pytest.mark.diagnostic
 def test_inventory_dump_for_diagnostic_review(tmp_path, monkeypatch, diag):
     """Diagnostic-only inventory of what this test module covers.
 
