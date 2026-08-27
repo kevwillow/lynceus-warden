@@ -55,6 +55,7 @@ CONSOLE_SCRIPTS=(
     lynceus-bootstrap-kismet
     lynceus-export-config
     lynceus-export-case
+    lynceus-reset-config
 )
 
 ACTION=install

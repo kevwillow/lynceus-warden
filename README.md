@@ -613,6 +613,7 @@ browser auto-launch, clean Ctrl+C shutdown. Not for unattended use.
 | `lynceus-bootstrap-kismet` | Configure Kismet capture + group; `--install` adds the apt repo. |
 | `lynceus-export-config` | Bundle config + rules + allowlist into one YAML for backup or diffing. |
 | `lynceus-export-case` | Export one device's recorded history as a case file bundle. |
+| `lynceus-reset-config` | Recovery path for a broken `lynceus.yaml` or `severity_overrides.yaml`. Moves the file aside to `<name>.bak-<UTC>` rather than deleting it. Default is a preview; pass `--yes` to perform the reset. Works when the daemon will not start, because it imports only `lynceus.paths` (no config parsing, no DB, no rules engine). `--what tuning` (default) targets only the severity overrides; `--what all` also resets the main config; `--config PATH` targets a specific file. Without `--yes` on a non-tty stdin, refuses and exits non-zero rather than prompting into the void. |
 
 ## Privacy / threat model
 
