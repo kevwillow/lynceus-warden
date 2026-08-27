@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [1.2.0] - 2026-08-26
+
 ### Added
 
 - **The web UI can require a password, and on a non-loopback bind it now
@@ -22,13 +26,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ⛔ **On any other bind it is mandatory.** `lynceus-ui` now exits `2` rather
   than starting when `ui_bind_host` is non-loopback and no password is set, and
   prints the command that fixes it. The previous behaviour was a loud banner and
-  a server that started anyway — which is how a security feature ships switched
-  off precisely where the exposure is.
+  a server that started anyway. That is how a security feature ships switched
+  off in the exact place the exposure is.
 
   Enforcement is **ASGI middleware, not per-route `Depends()`**: there are 42
   routes, and a per-route list is a list a new route silently falls off. A route
   added tomorrow is behind authentication without anyone remembering. The exempt
-  set is four entries — `/login`, `/static`, `/healthz`, `/healthz.json` — pinned
+  set is four entries (`/login`, `/static`, `/healthz`, `/healthz.json`), pinned
   as a set (not a count, so an entry cannot be swapped) and each justified in
   `webui/auth.py`. The two health surfaces were **measured**, with a watchlist
   row, a device row and an alert present, to name no MAC, vendor or description;
@@ -36,13 +40,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   ⚠️ **A password is not TLS, and lynceus serves none.** Bound off-loopback over
   plain HTTP the password and its session cookie cross the network in the clear
-  and can be replayed — a longer-lived disclosure than the dashboard itself. The
+  and can be replayed. That is a longer-lived disclosure than the dashboard
+  itself. The
   startup banner now says exactly that instead of "authentication NONE", and the
   supported remote path is unchanged: an SSH tunnel or a private network.
 
 - **The adapter label every operator reads now has a test CI can see.**
   `format_adapter_descriptor` renders the rows on the web wizard's step 4 and on
-  the bootstrap prompt — it is the only public symbol in
+  the bootstrap prompt. It is the only public symbol in
   `cli/_adapter_descriptors.py` and, measured at `c64a194`, it was reached by
   **nothing**: the module reported 60% line cover and the 25 missed statements
   were that function in its entirety plus one parent-resolution branch.
@@ -50,7 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   🪤 **The gap was OPSEC, not neglect.** The real tests
   (`tests/test_adapter_descriptors.py` and the two wizard sysfs matrix files)
   embed the operator's own capture adapter MAC, so they are withheld by
-  `.gitignore` — which is right for those files and left CI unable to see the
+  `.gitignore`. That is right for those files, and it left CI unable to see the
   formatter at all. `tests/test_adapter_descriptor_format.py` is the tracked
   contract: synthetic identities only, taken from the module's own published
   docstring examples, and it asserts **full-string equality** so that a drifting
@@ -61,7 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **An unauthenticated caller could make the web UI buffer a request body of any
   size.** The CSRF middleware read the whole body before comparing tokens, and
-  it runs *before* authentication — `/login` is auth-exempt, so anyone who could
+  it runs *before* authentication. `/login` is auth-exempt, so anyone who could
   reach the port needed only to send some CSRF cookie to get there. A single
   `Content-Length: 2147483648`, or an endless chunked stream, then drove the
   process into memory pressure; on a Pi that is the whole machine. The login
@@ -71,13 +76,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The read is now bounded at **1 MiB** (`MAX_CSRF_BODY_BYTES`), counted as the
   bytes arrive rather than trusted from `Content-Length`, which a chunked
   request does not send and a hostile one may lie about. Over the ceiling the
-  middleware stops reading **and** stops buffering — draining the rest would
-  keep the connection and the CPU busy for exactly as long as the caller liked,
-  which is most of what they wanted.
+  middleware stops reading **and** stops buffering. Draining the rest would keep
+  the connection and the CPU busy for as long as the caller liked, which is most
+  of what they wanted.
 
   ⭐ **The ceiling is derived from the app's own cap, not invented.** The largest
   legitimate POST is `/alerts/bulk-ack`, which refuses more than 1000
-  `alert_ids` — about 17 KB on the wire — plus a free-text note, so 1 MiB is
+  `alert_ids` (about 17 KB on the wire) plus a free-text note, so 1 MiB is
   roughly 60x the biggest real form. No route accepts an upload.
 
   ⚠️ **It answers `413`, not `403`.** Replying "CSRF token mismatch" would name a
@@ -4099,12 +4104,12 @@ off. Read the honest-status notes before you turn them on.
 
 - **Wi-Fi captures now admit correctly when Kismet stamps them with a
   monitor-mode VIF name** (e.g. `kismon0`) rather than the parent
-  adapter name (e.g. `wlx00c0cab966f8`). Kismet's `linux_wifi` capture
+  adapter name (e.g. `wlx001122334455`). Kismet's `linux_wifi` capture
   path always creates an auto-VIF for monitor mode and credits captured
   frames to the VIF's name; the v0.7.7 smoke probe on Parrot traced
   219/220 Wi-Fi observations dropping silently at the
   `source_allowlist` gate because the operator-configured
-  `kismet_sources: [wlx00c0cab966f8, hci1]` value didn't match the
+  `kismet_sources: [wlx001122334455, hci1]` value didn't match the
   stamped `kismon0` source name. The poller now resolves the allowlist
   through Kismet's `/datasource/all_sources.json` mapping, grouping
   rows by UUID so the parent name and the auto-VIF name admit
@@ -4400,11 +4405,11 @@ off. Read the honest-status notes before you turn them on.
 - **lynceus-bootstrap-kismet's adapter-selection prompts now name the
   vendor / product / bus / driver.** Each Wi-Fi or Bluetooth row in
   the interactive selection previously read as just the bare kernel
-  interface name (`Use Wi-Fi interface wlx00c0cab966f8 ...?`), which
+  interface name (`Use Wi-Fi interface wlx001122334455 ...?`), which
   left operators with two same-kind USB dongles unable to tell which
   was which. Rows now render the same disambiguating descriptor the
   web wizard's step 4 uses
-  (`Use Wi-Fi interface wlx00c0cab966f8 — Alfa AWUS036ACS (USB rt2800usb) ...?`),
+  (`Use Wi-Fi interface wlx001122334455 — Alfa AWUS036ACS (USB rt2800usb) ...?`),
   shared via a single helper so the bootstrap CLI and the web wizard
   stay aligned going forward.
 
