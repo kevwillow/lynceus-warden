@@ -1497,7 +1497,10 @@ def _entry_can_alert(
     if is_pattern_type_snoozed(entry["pattern_type"], liveness):
         return False
     if override_suppression_axes(
-        row.get("vendor"), row.get("device_category"), suppressions
+        row.get("vendor"),
+        row.get("device_category"),
+        suppressions,
+        row.get("pattern_type"),
     ):
         return False
     if oui_prefix_never_matches(row.get("pattern_type"), row.get("pattern")):
@@ -5837,7 +5840,7 @@ def create_app(
                 "suppressed_ids": {
                     r.id for r in rows
                     if is_row_suppressed_by_overrides(
-                        r.vendor, r.device_category, row_suppressions
+                        r.vendor, r.device_category, row_suppressions, r.pattern_type
                     )
                 },
                 "never_match_ids": {
@@ -5868,6 +5871,7 @@ def create_app(
                             r.argus_record_id,
                             row_suppressions,
                             overrides,
+                            r.pattern_type,
                         )
                     )
                 },
@@ -6126,6 +6130,7 @@ def create_app(
                             row.get("vendor"),
                             row.get("device_category"),
                             csv_suppressions,
+                            row.get("pattern_type"),
                         )
                         else "no",
                         _type_snoozed(row.get("pattern_type") or ""),
@@ -6136,6 +6141,7 @@ def create_app(
                             row.get("argus_record_id"),
                             csv_suppressions,
                             csv_overrides,
+                            row.get("pattern_type"),
                         )
                         or "",
                         _allowlist_suppressed(
@@ -6248,11 +6254,13 @@ def create_app(
                     row.get("argus_record_id"),
                     suppressions,
                     overrides,
+                    row.get("pattern_type"),
                 ),
                 "override_suppression_axes": override_suppression_axes(
                     row.get("vendor"),
                     row.get("device_category"),
                     suppressions,
+                    row.get("pattern_type"),
                 ),
                 # ⚠️ Whether ANY cause on this page stops the row alerting at
                 # all. The remap block used to say "an alert will actually

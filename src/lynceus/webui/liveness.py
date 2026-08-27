@@ -446,11 +446,16 @@ def load_overrides(config: Config):
 def suppression_axes_of(overrides) -> dict:
     """``runtime_suppressions``' return value, from an already-loaded object."""
     if overrides is None:
-        return {"configured": False, "vendors": (), "categories": ()}
+        return {"configured": False, "vendors": (), "categories": (), "pattern_categories": {}}
     return {
         "configured": True,
         "vendors": tuple(sorted(overrides.suppress_vendors)),
         "categories": tuple(sorted(overrides.suppress_categories)),
+        # Already normalised on both key and members by the model validator,
+        # so this is a straight copy rather than a second normalisation site.
+        "pattern_categories": {
+            k: frozenset(v) for k, v in overrides.suppress_pattern_categories.items()
+        },
     }
 
 
@@ -461,6 +466,7 @@ def effective_severity(
     argus_record_id: str | None,
     suppressions: dict,
     overrides,
+    pattern_type: str | None = None,
 ) -> str | None:
     """The severity an alert for this row would ACTUALLY carry — or ``None``
     when a suppression axis means there is no alert to carry one.
@@ -494,10 +500,11 @@ def effective_severity(
     beside "this row's alerts are discarded" would invite the operator to read
     it as what they will receive.
     """
-    if override_suppression_axes(vendor, device_category, suppressions):
+    if override_suppression_axes(vendor, device_category, suppressions, pattern_type):
         return None
     return rules_mod._apply_runtime_overrides(
         match_severity=stored_severity,
+        match_pattern_type=pattern_type,
         match_device_category=device_category,
         match_manufacturer=vendor,
         match_argus_record_id=argus_record_id,
@@ -607,6 +614,7 @@ def severity_remap(
     argus_record_id: str | None,
     suppressions: dict,
     overrides,
+    pattern_type: str | None = None,
 ) -> dict | None:
     """What a surface needs to render this row honestly, or ``None`` when the
     stored severity IS the severity the operator will receive.
@@ -638,6 +646,7 @@ def severity_remap(
         argus_record_id,
         suppressions,
         overrides,
+        pattern_type,
     )
     if effective is None or effective == stored_severity:
         return None
@@ -799,7 +808,10 @@ def runtime_suppressions(config: Config) -> dict:
 
 
 def override_suppression_axes(
-    vendor: str | None, device_category: str | None, suppressions: dict
+    vendor: str | None,
+    device_category: str | None,
+    suppressions: dict,
+    pattern_type: str | None = None,
 ) -> tuple[str, ...]:
     """EVERY axis that silences this entry — ``("vendor",)``, ``("category",)``,
     both, or empty.
@@ -839,14 +851,37 @@ def override_suppression_axes(
         axes.append("vendor")
     if device_category is not None and device_category in suppressions["categories"]:
         axes.append("category")
+    # ⛔ NORMALISED on both halves, because `_apply_runtime_overrides` runs
+    # `normalize_override_key` over the pattern_type AND the category before
+    # looking this up. The neighbouring `category` axis above compares raw and
+    # predates this function; do not copy it. A UI axis that disagrees with the
+    # engine reports a row as live while every alert it produces is discarded,
+    # which is the exact failure this module exists to prevent.
+    #
+    # ⚠️ `pattern_type` defaults to None so the two call sites that genuinely
+    # have no row context keep working, but None means "cannot answer", NOT
+    # "not suppressed". Callers that HAVE a pattern_type must pass it.
+    pattern_map = suppressions.get("pattern_categories") or {}
+    if pattern_type is not None and pattern_map:
+        normalized_pt = rules_mod.normalize_override_key(pattern_type)
+        cats = pattern_map.get(normalized_pt) if normalized_pt is not None else None
+        if cats:
+            normalized_cat = rules_mod.normalize_override_key(device_category)
+            if normalized_cat is not None and normalized_cat in cats:
+                axes.append("pattern_category")
     return tuple(axes)
 
 
 def is_row_suppressed_by_overrides(
-    vendor: str | None, device_category: str | None, suppressions: dict
+    vendor: str | None,
+    device_category: str | None,
+    suppressions: dict,
+    pattern_type: str | None = None,
 ) -> bool:
     """Whether this entry's alerts are dropped by a severity override."""
-    return bool(override_suppression_axes(vendor, device_category, suppressions))
+    return bool(
+        override_suppression_axes(vendor, device_category, suppressions, pattern_type)
+    )
 
 
 def is_pattern_type_live(pattern_type: str, liveness: dict) -> bool:
