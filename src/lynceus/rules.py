@@ -121,6 +121,10 @@ class Rule(BaseModel):
     rule_type: RuleType
     severity: Severity
     enabled: bool = True
+    #: Evaluate this rule but never alert on it. See ``evaluate``'s
+    #: ``shadow_sink``. ``enabled: false`` still skips the rule entirely; this
+    #: is a third state, not a synonym.
+    shadow: bool = False
     patterns: list[str] = []
     description: str | None = None
 
@@ -986,6 +990,7 @@ def evaluate(
     *,
     db: Database | None = None,
     severity_overrides: RuntimeSeverityOverride | None = None,
+    shadow_sink: list[RuleHit] | None = None,
 ) -> list[RuleHit]:
     """Match an observation against the ruleset; emit one RuleHit per hit.
 
@@ -1030,10 +1035,25 @@ def evaluate(
     ``device_category_severity``) apply when ``device_category`` is
     non-None. Rows with no metadata at all pass through unchanged.
     """
-    hits: list[RuleHit] = []
+    # ⛔ Shadow hits are collected into a SEPARATE list and never merged into
+    # `hits`. That is a structural guarantee, not a convention: a caller cannot
+    # alert on a shadow hit because a shadow hit is not in the value it gets
+    # back. The alternative considered was a `shadow` flag on RuleHit that
+    # every caller must remember to test, and a caller that forgets it fires
+    # the exact alert storm shadow mode exists to measure without firing.
+    #
+    # ⇒ The failure mode is therefore the boring one. Omit `shadow_sink` and
+    # you lose the counts; you can never gain an alert.
+    _real: list[RuleHit] = []
+    _shadow: list[RuleHit] = []
     for rule in ruleset.rules:
         if not rule.enabled:
             continue
+        # A shadow rule runs the full matching path below unchanged, so its
+        # counts reflect what it WOULD have produced. Rebinding `hits` here is
+        # what diverts them: every `hits.append(...)` in the body lands in the
+        # right list without the body knowing shadow mode exists.
+        hits = _shadow if rule.shadow else _real
 
         if rule.rule_type == "watchlist_mac":
             if rule.patterns:
@@ -1626,4 +1646,6 @@ def evaluate(
                         mac=obs.mac,
                     )
                 )
-    return hits
+    if shadow_sink is not None:
+        shadow_sink.extend(_shadow)
+    return _real
