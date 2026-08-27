@@ -84,6 +84,60 @@
     <p><small>To change, run <code>lynceus-setup --reconfigure</code>, then restart the daemon.</small></p>
   </article>
 
+  {# ⛔ Only rendered when a shadow rule is actually configured. An empty card
+     saying "no shadow rules" on every install would be noise, and this page is
+     read by someone looking for a specific fact. #}
+  {% if shadow.configured %}
+  <article class="settings-card">
+    <header><strong>shadow rules</strong> (evaluated, never alerting)</header>
+    <dl class="metadata-grid">
+      <dt>counting since</dt>
+      <dd>
+        {% if shadow.since_ts %}
+          <time datetime="{{ shadow.since_ts }}">{{ shadow.since_ts }}</time>
+        {% else %}
+          <em>nothing counted yet</em>
+        {% endif %}
+      </dd>
+      {% for r in shadow.rules %}
+      <dt><code>{{ r.name }}</code></dt>
+      <dd>
+        {# ⛔ Three-valued, and the middle case is the whole reason this card
+           exists. "0 hits" alone reads as "safe to enable", and acting on that
+           when the real cause is an unpopulated field switches on a rule that
+           does nothing while the operator believes they gained coverage. #}
+        {% if r.verdict == 'fired' %}
+          <strong>{{ r.hits }}</strong> alert{{ '' if r.hits == 1 else 's' }}
+          would have fired.
+          {% if r.field %}
+            <code>{{ r.field }}</code> seen {{ r.field_seen }} time(s).
+          {% endif %}
+        {% elif r.verdict == 'inert' %}
+          <strong>0 alerts, and this rule could not have fired.</strong>
+          <code>{{ r.field }}</code> was never present on any observation, so
+          the zero measures the capture path rather than your airspace.
+          Enabling this rule would change nothing.
+        {% else %}
+          <strong>0</strong> alerts.
+          {% if r.field %}
+            <code>{{ r.field }}</code> was seen {{ r.field_seen }} time(s), so
+            the rule could have fired and did not.
+          {% else %}
+            This rule keys on the MAC, which every observation carries.
+          {% endif %}
+          Quiet here, over this window.
+        {% endif %}
+      </dd>
+      {% endfor %}
+    </dl>
+    <p class="note">
+      A quiet window is evidence about this site and this window, not a
+      property of the rule. Re-check after moving, and after a watchlist
+      refresh.
+    </p>
+  </article>
+  {% endif %}
+
   <article class="settings-card">
     <header><strong>passive BLE bridge</strong></header>
     <dl class="metadata-grid">
