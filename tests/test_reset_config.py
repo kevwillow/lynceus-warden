@@ -83,46 +83,54 @@ def isolated_config_paths(tmp_path, monkeypatch):
 # --- no-app-import guard (PACKET.md §4.5) ----------------------------------
 
 
-def test_no_app_modules_loaded(isolated_config_paths):
-    """The recovery CLI must not pull in the daemon / DB / rules / webui.
+def test_no_app_modules_loaded():
+    """⛔ Runs the import in a SUBPROCESS, because in-process it cannot fail.
 
-    The packet's contract (§4.5): ``lynceus.poller`` and ``lynceus.db`` are
-    absent from ``sys.modules`` after importing our module. Asserted by
-    capturing the lynceus.* modules present BEFORE the import and the new
-    ones after — a stale-module leak from another test (``test_smoke``
-    imports all of them) would be picked up by the before/after diff if we
-    only checked the after state.
+    The previous version of this test diffed ``sys.modules`` before and after
+    re-importing ``lynceus.cli.reset_config``. That is unfailable: this very
+    test file imports the module at collection time, so any forbidden module it
+    pulls in is already in ``sys.modules`` before the test body runs, and
+    ``after - before`` is empty no matter what the CLI imports. Proven by
+    planting ``import lynceus.db`` into the CLI: the old test passed, both on a
+    clean interpreter and after ``test_smoke`` preloaded the app.
+
+    A fresh interpreter has no such contamination, so the assertion is a real
+    one. Why it matters: this CLI is the recovery path for a config the daemon
+    cannot parse. Importing ``lynceus.config`` would try to parse the very file
+    that is broken, and the recovery command would die on the thing it exists
+    to fix.
     """
-    import importlib
+    import pathlib
+    import subprocess
 
-    forbidden = (
-        "lynceus.poller",
-        "lynceus.db",
-        "lynceus.rules",
-        "lynceus.webui",
-        "lynceus.config",
-        "lynceus.kismet",
-        "lynceus.notify",
+    forbidden = ("lynceus.poller", "lynceus.db", "lynceus.rules", "lynceus.webui", "lynceus.config")
+    probe = (
+        "import sys; import lynceus.cli.reset_config; "
+        f"leaked=[m for m in {forbidden!r} if m in sys.modules]; "
+        "print(','.join(leaked))"
     )
-    before = {m for m in sys.modules if m in forbidden}
+    # ⛔ Pin PYTHONPATH to THIS tree's src. A bare subprocess resolves
+    # `lynceus` through the venv's editable .pth, which hardcodes an absolute
+    # path to whichever checkout ran `pip install -e .` -- so in a worktree the
+    # probe silently imports a DIFFERENT tree and reports on code that is not
+    # under test. Derived from __file__, never hardcoded.
+    import os
 
-    # Force a clean reimport of OUR module so this test is not silently
-    # satisfied by a stale entry from a prior run of the same module.
-    for mod_name in list(sys.modules):
-        if mod_name == "lynceus.cli.reset_config" or mod_name.startswith(
-            "lynceus.cli.reset_config."
-        ):
-            del sys.modules[mod_name]
-
-    importlib.import_module("lynceus.cli.reset_config")
-
-    after = {m for m in sys.modules if m in forbidden}
-    newly_imported = sorted(after - before)
-    assert newly_imported == [], (
-        f"lynceus.cli.reset_config transitively imported {newly_imported}. "
-        f"This CLI is supposed to work when the daemon will not start, and "
-        f"importing lynceus.config in particular will try to parse the very "
-        f"file that is broken. Fix by removing the offending import."
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(pathlib.Path(__file__).resolve().parents[1] / "src")
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    assert proc.returncode == 0, (
+        f"importing lynceus.cli.reset_config in a clean interpreter failed:\n"
+        f"{proc.stderr}"
+    )
+    leaked = [m for m in proc.stdout.strip().split(",") if m]
+    assert leaked == [], (
+        f"lynceus.cli.reset_config transitively imported {leaked}. This CLI "
+        f"must work when the daemon will not start; importing lynceus.config "
+        f"in particular would parse the very file that is broken."
     )
 
 

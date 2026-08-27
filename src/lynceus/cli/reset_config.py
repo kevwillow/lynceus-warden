@@ -75,6 +75,17 @@ def _resolve_targets(
     targets: list[Path] = [lynceus_paths.default_overrides_path(scope)]
     if what == "all":
         targets.append(lynceus_paths.default_config_path(scope))
+        # ⛔ Also target the config actually IN EFFECT, which is not always the
+        # default path for the scope. A recovery command that resets a file
+        # nobody loads, and leaves the broken one the daemon actually reads,
+        # has done nothing while reporting success. Deduped and order-stable so
+        # the preview reads the same way twice.
+        try:
+            live = lynceus_paths.resolve_existing_config()
+        except OSError:
+            live = None
+        if live is not None and live not in targets:
+            targets.append(live)
     return targets
 
 
@@ -88,7 +99,7 @@ def _describe_targets(targets: list[Path]) -> list[str]:
             lines.append(f"  {path}  (unreadable: {type(exc).__name__}: {exc})")
             continue
         if not present:
-            lines.append(f"  {path}  (missing — nothing to reset)")
+            lines.append(f"  {path}  (missing, nothing to reset)")
             continue
         try:
             size = path.stat().st_size
@@ -110,10 +121,9 @@ def _do_reset(targets: list[Path]) -> list[Path]:
     Returns the list of backups actually created (one entry per moved file).
     A target that doesn't exist is skipped — "nothing to do" is not an error.
 
-    Idempotent for the no-overwrite case: if a backup with the same timestamp
-    already exists (the operator ran ``reset-config`` twice in the same UTC
-    second, or staged something themselves), the existing backup is left
-    alone and the live file is still moved, leaving two distinct backups.
+    An existing backup is never overwritten: a same-second collision gets a
+    numeric suffix instead, so running this twice cannot destroy the first
+    backup.
     """
     timestamp = _utc_timestamp()
     backups: list[Path] = []
@@ -121,6 +131,19 @@ def _do_reset(targets: list[Path]) -> list[Path]:
         if not target.exists():
             continue
         backup = _backup_path(target, timestamp)
+        # ⛔ shutil.move REPLACES an existing destination file on POSIX, so a
+        # second reset inside the same UTC second would silently destroy the
+        # first backup -- the one thing this command exists to preserve. Walk
+        # to a free name instead. (An earlier docstring here claimed the
+        # existing backup was left alone. It was not; it was overwritten.)
+        if backup.exists():
+            for n in range(2, 1000):
+                candidate = backup.with_name(f"{backup.name}.{n}")
+                if not candidate.exists():
+                    backup = candidate
+                    break
+            else:
+                raise OSError(f"could not find a free backup name beside {target}")
         # shutil.move handles cross-device moves (it falls back to copy+unlink
         # across filesystems) but in practice config files always live on the
         # same fs as their backups. Move is atomic on the same filesystem.
@@ -139,7 +162,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Reset Lynceus config files by moving them aside to timestamped "
             "backups. The recovery path for a hand-edited lynceus.yaml or "
             "severity_overrides.yaml the daemon will no longer load. By "
-            "default, prints what would happen and changes nothing — pass "
+            "default, prints what would happen and changes nothing. Pass "
             "--yes to actually perform the reset."
         ),
     )
@@ -223,6 +246,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Targets ({args.what}):")
         for line in _describe_targets(targets):
             print(line)
+        if any(_probe(p) == "unreadable" for p in targets):
+            print(
+                "One or more targets could not be accessed (see above). "
+                "This is not the same as having nothing to reset.",
+                file=sys.stderr,
+            )
+            return 2
         if not any(_path_exists(p) for p in targets):
             print("Nothing to reset.")
             return 1
@@ -231,6 +261,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # --yes path. Inventory first (one more look), then move.
+    unreadable = [p for p in targets if _probe(p) == "unreadable"]
+    if unreadable:
+        # ⛔ NOT "nothing to reset". A target we cannot even stat is a real
+        # error (exit 2); reporting it as an empty inventory tells the operator
+        # their config is already clean when it may be the broken file itself.
+        for path in unreadable:
+            print(
+                f"lynceus-reset-config: cannot access {path}; refusing to "
+                f"report the reset as complete.",
+                file=sys.stderr,
+            )
+        return 2
     present_targets = [p for p in targets if _path_exists(p)]
     if not present_targets:
         print("lynceus-reset-config: nothing to reset.", file=sys.stderr)
@@ -260,6 +302,18 @@ def main(argv: list[str] | None = None) -> int:
             "config."
         )
     return 0
+
+
+def _probe(p: Path) -> str:
+    """Three-state probe: ``present``, ``absent`` or ``unreadable``.
+
+    ⛔ The two-state version could not tell "the file is not there" from "I was
+    not allowed to look", and the caller reported both as nothing to reset.
+    """
+    try:
+        return "present" if p.exists() else "absent"
+    except OSError:
+        return "unreadable"
 
 
 def _path_exists(p: Path) -> bool:
