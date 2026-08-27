@@ -10,7 +10,7 @@
 [![code scanning](https://img.shields.io/github/actions/workflow/status/kevwillow/lynceus-warden/codeql.yml?branch=main&label=code%20scanning&logo=github&logoColor=white)](https://github.com/kevwillow/lynceus-warden/actions/workflows/codeql.yml?query=branch%3Amain)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Status: v1.1.1](https://img.shields.io/badge/Status-v1.1.1-blue.svg)](#project-status)
+[![Status: v1.2.0](https://img.shields.io/badge/Status-v1.2.0-blue.svg)](#project-status)
 
 [![capture: Wi-Fi and BLE](https://img.shields.io/badge/capture-Wi--Fi%20and%20BLE-111111.svg)](#what-lynceus-does)
 [![network: receive only](https://img.shields.io/badge/network-receive%20only-c8102e.svg)](#privacy--threat-model)
@@ -333,12 +333,31 @@ serial. Both are tracked openly in [BACKLOG.md](BACKLOG.md).
 
 ## Project status
 
-**v1.1.1**. It adds the case file: the record this product keeps, exported as
-a bundle an operator can hand to a journalist, a lawyer or a researcher. That
-is the one thing a proximity keychain structurally cannot produce, and until
-now the record could only be read by the operator, on the machine that
-collected it. It also adds `lynceus-quickstart --demo`, which evaluates Lynceus
-in about four seconds with no Kismet, no adapter and no Pi.
+**v1.2.0**. The web UI can require a password. One operator, one password:
+scrypt hash, server-side sessions, a login form, and a lockout after five wrong
+attempts. Set it with `lynceus-ui-passwd`, and the hash lands in the state
+directory at `0600`, never in `lynceus.yaml`.
+
+On loopback it stays off unless you turn it on. There the bind is the control,
+and forcing a password at upgrade time would lock existing operators out of
+their own dashboard. Bind anywhere else and `lynceus-ui` refuses to start
+without one, printing the command that fixes it. The previous behaviour was a
+banner and a server that started anyway, which is how a security feature ships
+switched off in the exact place it was needed.
+
+⚠️ **A password is not TLS, and Lynceus serves none.** Over a non-loopback bind
+the password and its session cookie cross the network in the clear. Use an SSH
+tunnel or a private network. The startup banner now says so.
+
+This release also bounds what the anti-forgery check will buffer. That check
+reads the request body before it authenticates anyone, so a caller who could
+reach the port could make the process allocate without limit. On a Raspberry Pi
+that is the whole machine.
+
+v1.1.1 added the case file, the record this product keeps, exported as a bundle
+you can hand to a journalist, a lawyer or a researcher. It also added
+`lynceus-quickstart --demo`, which evaluates Lynceus in about four seconds with
+no Kismet, no adapter and no Pi.
 
 v1.0.0 was the first release under AGPL-3.0, closing the 0.9.x line with Find My
 tracker alerting shipped **enabled** rather than commented out.
@@ -607,13 +626,13 @@ browser auto-launch, clean Ctrl+C shutdown. Not for unattended use.
 - **⚠️ The UI ships unauthenticated on loopback, and that is deliberate.** It
   binds `127.0.0.1` by default, and on a single-operator Pi the bind is the
   control: everything on the box is already you. There is a password if you
-  want one — `lynceus-ui-passwd` — and it is **required**, not optional, the
-  moment you bind anywhere else: `lynceus-ui` refuses to start on a
+  want one, `lynceus-ui-passwd`, and it becomes **required** the moment you bind
+  anywhere else: `lynceus-ui` refuses to start on a
   non-loopback host with no password set, and tells you the command to fix it.
   Without a password, anyone who can reach the port can read `/probes` (a
   partial location history of every device in range, most of them bystanders'),
   download a device's complete case file in one request, and silence a device
-  by allowlisting it — which you would never be alerted about.
+  by allowlisting it, and you would never be alerted about any of it.
 - **⚠️ A password is not encryption, and lynceus serves no TLS.** Over a
   plain-HTTP bind your password and its session cookie cross the network in the
   clear, which is a *longer-lived* disclosure than the dashboard was. So the
