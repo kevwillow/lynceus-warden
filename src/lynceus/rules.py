@@ -1036,14 +1036,18 @@ def evaluate(
     non-None. Rows with no metadata at all pass through unchanged.
     """
     # ⛔ Shadow hits are collected into a SEPARATE list and never merged into
-    # `hits`. That is a structural guarantee, not a convention: a caller cannot
-    # alert on a shadow hit because a shadow hit is not in the value it gets
-    # back. The alternative considered was a `shadow` flag on RuleHit that
-    # every caller must remember to test, and a caller that forgets it fires
-    # the exact alert storm shadow mode exists to measure without firing.
+    # `hits`, so they are absent from this function's return value.
     #
-    # ⇒ The failure mode is therefore the boring one. Omit `shadow_sink` and
-    # you lose the counts; you can never gain an alert.
+    # ⚠️ Scope that claim honestly: it makes the DEFAULT safe, not every caller.
+    # A caller that deliberately merges `shadow_sink` back into its alert list
+    # will of course alert on shadow hits; no signature can stop that. What
+    # this shape removes is the accident. The alternative considered was a
+    # `shadow` flag on RuleHit, where the default path LEAKS and every caller
+    # must remember to filter, and one that forgets fires the exact alert storm
+    # shadow mode exists to measure without firing.
+    #
+    # ⇒ Here, forgetting costs you counts. There, forgetting costs the operator
+    # a storm. That asymmetry is the whole argument for this shape.
     _real: list[RuleHit] = []
     _shadow: list[RuleHit] = []
     for rule in ruleset.rules:
@@ -1646,6 +1650,22 @@ def evaluate(
                         mac=obs.mac,
                     )
                 )
-    if shadow_sink is not None:
-        shadow_sink.extend(_shadow)
+    if shadow_sink is not None and _shadow:
+        # ⛔ Delivery is wrapped for the SAME reason `_record_shadow_hits` is:
+        # a counter that fails must not take down the thing it is measuring.
+        # Unwrapped, a sink whose `extend` raises would propagate out of
+        # `evaluate` and `_real` would never be returned, so a genuine alert
+        # would be lost to a bookkeeping failure. That is the one direction
+        # this whole feature must never fail in.
+        #
+        # ⚠️ Found by a cold red-team of this diff, which noted the asymmetry:
+        # the accounting was protected and the delivery into it was not.
+        try:
+            shadow_sink.extend(_shadow)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "shadow sink rejected %d hit(s); counts lost, alerts unaffected",
+                len(_shadow),
+                exc_info=True,
+            )
     return _real

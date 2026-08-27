@@ -157,3 +157,61 @@ def test_the_only_difference_is_where_the_hit_lands(shadow):
     other = hits if shadow else sink
     assert len(landed) == 1 and other == []
     assert landed[0].rule_name == "r" and landed[0].severity == "high"
+
+
+# --- a bookkeeping failure must never cost an alert -----------------------
+
+
+def test_a_raising_sink_does_not_swallow_real_hits():
+    """⛔ The one direction this feature must never fail in.
+
+    `shadow_sink.extend(...)` runs before the real hits are returned. Unwrapped,
+    a sink whose `extend` raises propagates out of `evaluate` and the genuine
+    alert is lost to a counter failure.
+
+    Found by a cold red-team of the diff, which spotted the asymmetry:
+    `_record_shadow_hits` was already wrapped for exactly this reason and the
+    delivery into it was not.
+    """
+
+    class BrokenSink(list):
+        def extend(self, values):  # noqa: D102
+            raise RuntimeError("counter unavailable")
+
+    rs = Ruleset(rules=[_rule(name="real"), _rule(name="shadowed", shadow=True)])
+    hits = evaluate(rs, _obs(), True, shadow_sink=BrokenSink())
+
+    assert [h.rule_name for h in hits] == ["real"], (
+        "a broken shadow counter swallowed a genuine alert. Counts are "
+        "expendable; alerts are not."
+    )
+
+
+def test_a_raising_sink_is_reported_not_silent():
+    """Losing counts is acceptable. Losing them silently is not: the operator
+    would read a low number and conclude the rule is quiet."""
+
+    class BrokenSink(list):
+        def extend(self, values):  # noqa: D102
+            raise RuntimeError("counter unavailable")
+
+    import logging
+
+    rs = Ruleset(rules=[_rule(name="shadowed", shadow=True)])
+    logger = logging.getLogger("lynceus.rules")
+    records: list = []
+
+    class _Grab(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    h = _Grab()
+    logger.addHandler(h)
+    try:
+        evaluate(rs, _obs(), True, shadow_sink=BrokenSink())
+    finally:
+        logger.removeHandler(h)
+
+    assert any("shadow sink rejected" in m for m in records), (
+        f"a lost count was not reported anywhere: {records}"
+    )
