@@ -15,7 +15,6 @@
 [![capture: Wi-Fi and BLE](https://img.shields.io/badge/capture-Wi--Fi%20and%20BLE-111111.svg)](#what-lynceus-does)
 [![network: receive only](https://img.shields.io/badge/network-receive%20only-c8102e.svg)](#privacy--threat-model)
 [![storage: local SQLite](https://img.shields.io/badge/storage-local%20SQLite-111111.svg)](#privacy--threat-model)
-[![target: Raspberry Pi](https://img.shields.io/badge/target-Raspberry%20Pi-c8102e.svg)](#installation)
 
 </div>
 
