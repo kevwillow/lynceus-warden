@@ -362,6 +362,7 @@ class RuntimeSeverityOverride(BaseModel):
     suppress_vendors: frozenset[str] = frozenset()
     pattern_overrides: dict[str, Severity] = {}
     vendor_severity: dict[str, Severity] = {}
+    suppress_pattern_categories: dict[str, frozenset[str]] = {}
 
     @model_validator(mode="before")
     @classmethod
@@ -395,6 +396,20 @@ class RuntimeSeverityOverride(BaseModel):
                 out[field] = frozenset(
                     k2 for k2 in (normalize_override_key(x) for x in raw) if k2 is not None
                 )
+        raw = out.get("suppress_pattern_categories")
+        if isinstance(raw, dict):
+            normalized_pairs: dict[str, frozenset[str]] = {}
+            for raw_key, raw_value in raw.items():
+                normalized_key = normalize_override_key(raw_key)
+                if normalized_key is None:
+                    continue
+                if not isinstance(raw_value, (list, tuple, set, frozenset)):
+                    continue
+                normalized_set = frozenset(
+                    v for v in (normalize_override_key(x) for x in raw_value) if v is not None
+                )
+                normalized_pairs[normalized_key] = normalized_set
+            out["suppress_pattern_categories"] = normalized_pairs
         return out
 
     @model_validator(mode="after")
@@ -436,6 +451,7 @@ class RuntimeSeverityOverride(BaseModel):
             and not self.suppress_vendors
             and not self.pattern_overrides
             and not self.vendor_severity
+            and not self.suppress_pattern_categories
         )
 
 
@@ -685,6 +701,72 @@ def load_runtime_severity_overrides(
                 continue
             normalized_vendor_overrides[normalized_key] = raw_value
         runtime_kwargs["vendor_severity"] = normalized_vendor_overrides
+    if isinstance(raw.get("suppress_pattern_categories"), dict):
+        # Pattern-type × category conjunction. Suppress a delegation
+        # match only when BOTH the matched row's pattern_type equals
+        # the key AND the matched row's device_category is in the
+        # key's list. The category-only ``suppress_categories`` key is
+        # too blunt (80.3% of the shipped corpus is
+        # device_category=unknown, including the mac_range and
+        # hostname rows that carry the detection that works), so this
+        # is the narrower shape that lets an operator carve
+        # ``unknown`` away from one pattern_type without removing it
+        # from the product's backbone.
+        normalized_pattern_categories: dict[str, frozenset[str]] = {}
+        for raw_key, raw_value in raw["suppress_pattern_categories"].items():
+            if not isinstance(raw_key, str):
+                logger.warning(
+                    "severity overrides file %s: suppress_pattern_categories key "
+                    "%r is not a string; dropping. Other entries still apply.",
+                    path,
+                    raw_key,
+                )
+                continue
+            normalized_key = raw_key.strip().lower()
+            if not normalized_key:
+                logger.warning(
+                    "severity overrides file %s: suppress_pattern_categories key "
+                    "%r is empty after stripping whitespace; dropping. "
+                    "Other entries still apply.",
+                    path,
+                    raw_key,
+                )
+                continue
+            if not isinstance(raw_value, list):
+                logger.warning(
+                    "severity overrides file %s: suppress_pattern_categories[%r] "
+                    "is not a list (got %s); dropping. Other entries still apply.",
+                    path,
+                    raw_key,
+                    type(raw_value).__name__,
+                )
+                continue
+            normalized_set: set[str] = set()
+            for entry in raw_value:
+                if not isinstance(entry, str):
+                    logger.warning(
+                        "severity overrides file %s: suppress_pattern_categories"
+                        "[%r] entry %r is not a string; dropping. Other entries "
+                        "still apply.",
+                        path,
+                        raw_key,
+                        entry,
+                    )
+                    continue
+                stripped = entry.strip().lower()
+                if not stripped:
+                    logger.warning(
+                        "severity overrides file %s: suppress_pattern_categories"
+                        "[%r] entry %r is empty after stripping whitespace; "
+                        "dropping. Other entries still apply.",
+                        path,
+                        raw_key,
+                        entry,
+                    )
+                    continue
+                normalized_set.add(stripped)
+            normalized_pattern_categories[normalized_key] = frozenset(normalized_set)
+        runtime_kwargs["suppress_pattern_categories"] = normalized_pattern_categories
     try:
         overrides = RuntimeSeverityOverride(**runtime_kwargs)
     except Exception as exc:
@@ -705,9 +787,9 @@ def load_runtime_severity_overrides(
         logger.info(
             "runtime severity overrides loaded from %s but contain no active "
             "runtime keys (device_category_severity / suppress_categories / "
-            "suppress_vendors / pattern_overrides / vendor_severity); runtime "
-            "layer is effectively pass-through. Edit the file and restart the "
-            "daemon to activate.",
+            "suppress_vendors / pattern_overrides / vendor_severity / "
+            "suppress_pattern_categories); runtime layer is effectively "
+            "pass-through. Edit the file and restart the daemon to activate.",
             path,
         )
     else:
@@ -715,13 +797,15 @@ def load_runtime_severity_overrides(
             "runtime severity overrides loaded from %s: "
             "%d category remap(s), %d suppressed category(ies), "
             "%d suppressed vendor(s), %d pattern override(s), "
-            "%d vendor remap(s). Edits take effect on daemon restart.",
+            "%d vendor remap(s), %d suppressed pattern_category(ies). "
+            "Edits take effect on daemon restart.",
             path,
             len(overrides.device_category_severity),
             len(overrides.suppress_categories),
             len(overrides.suppress_vendors),
             len(overrides.pattern_overrides),
             len(overrides.vendor_severity),
+            len(overrides.suppress_pattern_categories),
         )
     return overrides
 
@@ -751,6 +835,7 @@ def load_ruleset(path: str) -> Ruleset:
 def _apply_runtime_overrides(
     *,
     match_severity: str,
+    match_pattern_type: str | None = None,
     match_device_category: str | None,
     match_manufacturer: str | None,
     match_argus_record_id: str | None,
@@ -789,23 +874,37 @@ def _apply_runtime_overrides(
        ``suppress_vendors`` → return None. INFO-log the suppression
        with rule_name, the un-normalized manufacturer string from
        the row, and watchlist_id.
-    2. Category suppression: category in ``suppress_categories``
+    2. Pattern × category suppression (NEW):
+       ``match_pattern_type`` in ``suppress_pattern_categories``
+       AND normalized ``match_device_category`` in that key's list
+       → return None. INFO-log with rule_name, pattern_type,
+       category, and watchlist_id. The conjunction exists because
+       ``suppress_categories`` alone is too blunt: 80.3% of the
+       shipped corpus is ``device_category=unknown``, including the
+       ``mac_range`` and hostname rows that carry the detection
+       that works. This lets an operator carve ``unknown`` away
+       from one pattern_type without removing it from the
+       product's backbone. Both halves must match — either alone
+       suppresses nothing. Ordered after vendor suppression (more
+       specific axis wins) and before the category-only suppression
+       (the conjunction is the narrower shape).
+    3. Category suppression: category in ``suppress_categories``
        → return None. INFO-log with rule_name, category, and
        watchlist_id.
-    3. Pattern override (row-level remap):
+    4. Pattern override (row-level remap):
        ``match_argus_record_id`` in ``pattern_overrides`` → return
        the remapped severity. More specific than the vendor /
        category remaps below; no INFO log (symmetric with
        device_category_severity — the alert itself surfaces the
        effective severity).
-    4. Vendor remap (NEW): normalized ``match_manufacturer`` in
+    5. Vendor remap (NEW): normalized ``match_manufacturer`` in
        ``vendor_severity`` → return the remapped severity. More
        specific than the category remap below; less specific than
        the row-level remap above. No INFO log (symmetric with
        pattern_overrides / device_category_severity).
-    5. Category remap: category in ``device_category_severity``
+    6. Category remap: category in ``device_category_severity``
        → return the remapped severity.
-    6. Default: no rule applies → return ``match_severity``
+    7. Default: no rule applies → return ``match_severity``
        unchanged.
 
     Vendor wins over category because manufacturer is the more
@@ -829,6 +928,23 @@ def _apply_runtime_overrides(
                 rule_name,
             )
             return None
+    normalized_pattern_type = normalize_override_key(match_pattern_type)
+    if normalized_pattern_type is not None:
+        pattern_categories = overrides.suppress_pattern_categories.get(
+            normalized_pattern_type
+        )
+        if pattern_categories is not None:
+            normalized_category = normalize_override_key(match_device_category)
+            if normalized_category in pattern_categories:
+                logger.info(
+                    "runtime override: suppressing pattern_type=%s category=%s "
+                    "alert for watchlist_id=%d (rule=%s)",
+                    match_pattern_type,
+                    match_device_category,
+                    match_watchlist_id,
+                    rule_name,
+                )
+                return None
     normalized_category = normalize_override_key(match_device_category)
     if normalized_category is not None and normalized_category in overrides.suppress_categories:
         logger.info(
@@ -955,6 +1071,7 @@ def evaluate(
                     continue
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
+                    match_pattern_type="mac",
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
                     match_argus_record_id=match.argus_record_id,
@@ -1032,6 +1149,7 @@ def evaluate(
                     continue
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
+                    match_pattern_type="oui",
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
                     match_argus_record_id=match.argus_record_id,
@@ -1101,6 +1219,7 @@ def evaluate(
                     continue
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
+                    match_pattern_type="ssid_pattern",
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
                     match_argus_record_id=match.argus_record_id,
@@ -1163,6 +1282,7 @@ def evaluate(
                 continue
             effective_severity = _apply_runtime_overrides(
                 match_severity=match.severity,
+                match_pattern_type="mac_range",
                 match_device_category=match.device_category,
                 match_manufacturer=match.manufacturer,
                 match_argus_record_id=match.argus_record_id,
@@ -1227,6 +1347,7 @@ def evaluate(
                     continue
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
+                    match_pattern_type="ble_service_uuid",
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
                     match_argus_record_id=match.argus_record_id,
@@ -1294,6 +1415,7 @@ def evaluate(
                     continue
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
+                    match_pattern_type="ble_manufacturer_id",
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
                     match_argus_record_id=match.argus_record_id,
@@ -1365,6 +1487,7 @@ def evaluate(
                     continue
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
+                    match_pattern_type="drone_id_prefix",
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
                     match_argus_record_id=match.argus_record_id,
@@ -1435,6 +1558,7 @@ def evaluate(
                     continue
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
+                    match_pattern_type="ble_local_name",
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
                     match_argus_record_id=match.argus_record_id,
