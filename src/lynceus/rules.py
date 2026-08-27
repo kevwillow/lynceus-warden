@@ -121,6 +121,10 @@ class Rule(BaseModel):
     rule_type: RuleType
     severity: Severity
     enabled: bool = True
+    #: Evaluate this rule but never alert on it. See ``evaluate``'s
+    #: ``shadow_sink``. ``enabled: false`` still skips the rule entirely; this
+    #: is a third state, not a synonym.
+    shadow: bool = False
     patterns: list[str] = []
     description: str | None = None
 
@@ -986,6 +990,7 @@ def evaluate(
     *,
     db: Database | None = None,
     severity_overrides: RuntimeSeverityOverride | None = None,
+    shadow_sink: list[RuleHit] | None = None,
 ) -> list[RuleHit]:
     """Match an observation against the ruleset; emit one RuleHit per hit.
 
@@ -1030,10 +1035,29 @@ def evaluate(
     ``device_category_severity``) apply when ``device_category`` is
     non-None. Rows with no metadata at all pass through unchanged.
     """
-    hits: list[RuleHit] = []
+    # ⛔ Shadow hits are collected into a SEPARATE list and never merged into
+    # `hits`, so they are absent from this function's return value.
+    #
+    # ⚠️ Scope that claim honestly: it makes the DEFAULT safe, not every caller.
+    # A caller that deliberately merges `shadow_sink` back into its alert list
+    # will of course alert on shadow hits; no signature can stop that. What
+    # this shape removes is the accident. The alternative considered was a
+    # `shadow` flag on RuleHit, where the default path LEAKS and every caller
+    # must remember to filter, and one that forgets fires the exact alert storm
+    # shadow mode exists to measure without firing.
+    #
+    # ⇒ Here, forgetting costs you counts. There, forgetting costs the operator
+    # a storm. That asymmetry is the whole argument for this shape.
+    _real: list[RuleHit] = []
+    _shadow: list[RuleHit] = []
     for rule in ruleset.rules:
         if not rule.enabled:
             continue
+        # A shadow rule runs the full matching path below unchanged, so its
+        # counts reflect what it WOULD have produced. Rebinding `hits` here is
+        # what diverts them: every `hits.append(...)` in the body lands in the
+        # right list without the body knowing shadow mode exists.
+        hits = _shadow if rule.shadow else _real
 
         if rule.rule_type == "watchlist_mac":
             if rule.patterns:
@@ -1626,4 +1650,22 @@ def evaluate(
                         mac=obs.mac,
                     )
                 )
-    return hits
+    if shadow_sink is not None and _shadow:
+        # ⛔ Delivery is wrapped for the SAME reason `_record_shadow_hits` is:
+        # a counter that fails must not take down the thing it is measuring.
+        # Unwrapped, a sink whose `extend` raises would propagate out of
+        # `evaluate` and `_real` would never be returned, so a genuine alert
+        # would be lost to a bookkeeping failure. That is the one direction
+        # this whole feature must never fail in.
+        #
+        # ⚠️ Found by a cold red-team of this diff, which noted the asymmetry:
+        # the accounting was protected and the delivery into it was not.
+        try:
+            shadow_sink.extend(_shadow)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "shadow sink rejected %d hit(s); counts lost, alerts unaffected",
+                len(_shadow),
+                exc_info=True,
+            )
+    return _real

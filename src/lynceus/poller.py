@@ -1137,13 +1137,22 @@ def process_observation(
                     obs.mac,
                 )
                 return
+    # ⛔ `shadow_hits` never reaches the alert path below. `evaluate` returns
+    # only alertable hits; a shadow rule's hits arrive here and nowhere else.
+    # That is the whole safety property: shadow mode exists to measure a rule
+    # an operator has NOT enabled, so a leak fires exactly the alert storm they
+    # were trying to size without firing.
+    shadow_hits: list = []
     hits = evaluate(
         ruleset,
         obs,
         is_new_device=is_new,
         db=db,
         severity_overrides=severity_overrides,
+        shadow_sink=shadow_hits,
     )
+    if shadow_hits:
+        _record_shadow_hits(db, shadow_hits, now_ts)
     matched_watchlist_id: int | None = None
     if any(h.rule_type != "new_non_randomized_device" for h in hits):
         matched_watchlist_id = db.resolve_matched_watchlist_id(
@@ -1894,6 +1903,50 @@ def _report_impossible_watchful_snoozes(db: Database, now_ts: int) -> None:
             "reported (they may be reported again): %s",
             e,
         )
+
+
+def _record_shadow_hits(db, shadow_hits: list, now_ts: int) -> None:
+    """Count what a shadow rule WOULD have alerted, and alert on none of it.
+
+    Counts live in the existing ``poller_state`` key/value table rather than a
+    new table, so this ships without a migration. Adding one is not free here:
+    a migration has previously broken hardcoded schema literals in five places
+    across four files.
+
+    Keys are ``shadow:<rule_name>`` holding a cumulative integer, plus
+    ``shadow_since`` holding the unix timestamp of the first count. The
+    timestamp is the load-bearing half: a bare total answers "how many" but not
+    "over how long", and an operator sizing an alert storm needs a rate. Two
+    correct totals over different windows look like a contradiction.
+
+    ⚠️ Best-effort. A counter that fails must never take down the poll tick it
+    is measuring, so this swallows and logs rather than propagating. The cost
+    of a lost count is a low number; the cost of a raised exception here is a
+    dead poller.
+    """
+    try:
+        if db.get_state("shadow_since") is None:
+            db.set_state("shadow_since", str(now_ts))
+        per_rule: dict[str, int] = {}
+        for hit in shadow_hits:
+            per_rule[hit.rule_name] = per_rule.get(hit.rule_name, 0) + 1
+        for rule_name, n in per_rule.items():
+            key = f"shadow:{rule_name}"
+            try:
+                current = int(db.get_state(key) or 0)
+            except ValueError:
+                current = 0
+            db.set_state(key, str(current + n))
+            logger.info(
+                "shadow rule %s would have alerted %d time(s) this tick "
+                "(cumulative %d since %s); no alert was sent",
+                rule_name,
+                n,
+                current + n,
+                db.get_state("shadow_since"),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("shadow hit accounting failed (counts only): %s", exc)
 
 
 def poll_once(
