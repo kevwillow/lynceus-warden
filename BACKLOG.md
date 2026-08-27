@@ -760,8 +760,33 @@ dimension:
     confidence_*           3,968 of 3,969 sit at a flat 85. No discrimination
     pattern_overrides      assigns severity, does not suppress. "low" still fires
 
-⇒ **No knob keys on `pattern_type`.** The needed predicate is the conjunction
-`(pattern_type, device_category)` and the config language cannot say it.
+⇒ ~~**No knob keys on `pattern_type`.** The needed predicate is the conjunction
+`(pattern_type, device_category)` and the config language cannot say it.~~
+✅ **SHIPPED 2026-08-26 (#242). The config language can now say it.**
+`suppress_pattern_categories` in `severity_overrides.yaml` takes exactly that
+conjunction:
+
+```yaml
+suppress_pattern_categories:
+  ble_manufacturer_id: [unknown]
+```
+
+Both halves must match, so this carves `unknown` away from one pattern_type
+without touching the 17,806 `mac_range` and 12,055 hostname rows that carry
+the detection which works. That was the whole reason `suppress_categories`
+could not be used.
+
+⇒ **The code half of this gate is closed. What is left is a measurement.**
+Nobody can still say whether enabling the bridge would storm *this* operator,
+because the argument above is computed against the shipped corpus rather than
+against their captures. Phase 3 of
+[docs/UI_CONFIGURATION_DESIGN.md](docs/UI_CONFIGURATION_DESIGN.md) is the
+dry-run that answers it with a number from their own data.
+
+⚠️ Re-measured 2026-08-26 and the figures below are unchanged and still
+correct: `ble_manufacturer_id` 3,969 rows / 2 actionable, `ble_company_id`
+715 / 2. Counting every `ble_*` type instead gives 4,880 / 167 / 3.42%, which
+is a different and also-correct answer, so quote the universe with the number.
 
 **The gate is applied to three rules and describes only one.** The alert-storm
 argument is about company ids. It is currently blocking two rules it does not
