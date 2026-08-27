@@ -31,9 +31,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ⛔ **The count is published with its denominator**, because zero means two
   opposite things. Zero hits with the field seen 4,200 times is a quiet site.
   Zero hits with the field never seen is broken plumbing, and enabling the rule
-  would buy nothing while hiding the gap. That case is live: the Kismet field
-  paths for `ble_manufacturer_id` and `drone_id_prefix` are still unverified
-  against a real capture, so those fields may read `None` on every observation.
+  would buy nothing while hiding the gap. That case is live for a
+  **Kismet-only** install: the Kismet field paths for `ble_manufacturer_id` and
+  `drone_id_prefix` are still unverified against a real capture, so those
+  fields may read `None` on every observation there.
+
+  ⭐ **With the BLE bridge on, the manufacturer-id half is proven.** The bridge
+  does not use those Kismet paths at all; `bleak` hands it manufacturer data as
+  `{company_id: payload}` and it emits a canonical 4-hex company id. That route
+  already fired an alert on real hardware, because Apple Continuity *is*
+  manufacturer data under company id `0x004C`. The join between the bridge's
+  `004c` and Argus's `0x004C` / `0x4C` spellings is now pinned end to end by
+  `tests/test_ble_manufacturer_id_chain.py`.
+
+  ⚠️ Drones are not covered by that. `ble_odid` is tested against the ASTM
+  spec, but no real drone has been captured, so `drone_id_prefix` stays
+  unproven end to end whichever source feeds it.
 
   `enabled: false` still skips a rule entirely and is not a synonym. Counts
   live in the existing `poller_state` table, so there is no migration.

@@ -175,12 +175,30 @@ rules:
   #   0 hits, and the field was NEVER seen -> the rule is inert. Enabling it
   #                                          buys you nothing and hides the gap.
   #
-  # The second is not hypothetical for these two rule_types. The CAVEAT above
-  # is live: the Kismet field paths are unverified against a real capture, so
-  # `ble_manufacturer_id` may read None on every observation you have. The
-  # daemon therefore also counts how many observations carried each field, and
-  # logs it beside the hit count. If the field was never seen, you have
+  # The daemon therefore also counts how many observations carried each field,
+  # and logs it beside the hit count. If the field was never seen, you have
   # measured the plumbing, not the airspace.
+  #
+  # ⭐ Which of the two you are in depends on your CAPTURE SOURCE, and the
+  # CAVEAT above is narrower than it reads:
+  #
+  #   BLE bridge ON   -> ble_manufacturer_id is PROVEN. The bridge never uses
+  #                      the Kismet field paths; bleak hands it manufacturer
+  #                      data as {company_id: payload} and it emits a canonical
+  #                      4-hex company id. That route already fired an alert on
+  #                      real hardware, because Apple Continuity IS manufacturer
+  #                      data under company id 0x004C. The join to Argus's
+  #                      0x004C / 0x4C spellings is pinned by
+  #                      tests/test_ble_manufacturer_id_chain.py.
+  #
+  #   Kismet only     -> still unproven. _BLE_MANUFACTURER_ID_PATHS walks a
+  #                      table of likely Kismet field paths taken from schema
+  #                      docs, not a live capture, so the field may read None on
+  #                      every observation and the count would be the inert kind.
+  #
+  # ⚠️ Drones are NOT covered by that. ble_odid is tested against the ASTM spec,
+  # but no real drone has been captured, so drone_id_prefix stays unproven end
+  # to end whichever source feeds it.
   #
   # ⚠️ A quiet week is evidence about your site and your week, not a property
   # of the rule. Re-measure after you move, and after a watchlist refresh.
