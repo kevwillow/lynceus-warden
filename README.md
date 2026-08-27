@@ -161,17 +161,15 @@ These are design commitments, not current limitations:
   process writes is the daemon-managed `allowlist_ui.yaml`, and `app.py`
   imports `load_credentials` without ever importing the writer.
 
-  ⚠️ **It is not "read-only", and calling it that undersold it.** Of 45 routes,
-  25 are POSTs, and they write real daemon state: acknowledgements, notes,
-  per-alert and per-device and per-rule-type snoozes, the watchful lifecycle,
-  allowlist entries, and adding a MAC to the watchlist with a severity. That
-  last one changes what alerts. It is a detection decision rather than triage,
-  so it belongs on this list rather than buried.
+  **What it does write is your triage.** Of 45 routes, 25 are POSTs:
+  acknowledgements, notes, per-alert and per-device and per-rule-type snoozes,
+  the watchful lifecycle, allowlist entries, and adding a MAC to the watchlist
+  with a severity. That last one changes what alerts, so it is a detection
+  decision rather than triage and it is listed here rather than buried.
 
   ⭐ **The boundary is the config file, not the database.** Everything the UI
   changes is state the daemon owns and can rebuild. Everything it refuses to
-  touch is a file you wrote. That is the line, and it is worth more than the
-  word "read-only", which was never quite true.
+  touch is a file you wrote.
 
   (Whether that line should move is an open design question, argued in
   [docs/UI_CONFIGURATION_DESIGN.md](docs/UI_CONFIGURATION_DESIGN.md). It has
@@ -386,12 +384,8 @@ dispatched. Nothing in that run was synthetic: the shipped `config/rules.yaml`,
 the real bridge, a real adapter, a real tracker.
 
 **Why that result stands on its own:** receiving an advertisement and raising an
-alert from it is self-validating. The scanner was live at that
-moment, or there would have been nothing to decode. ⚠️ An earlier draft of this
-paragraph also claimed the adapter was "asserted powered before and after";
-that check named a *different* controller than the one scanning, so it
-contributed nothing, and a before/after check would not have proved continuous
-operation anyway. The claim is withdrawn; the measurement does not need it.
+alert from it is self-validating. The scanner was live at that moment, or
+there would have been nothing to decode.
 
 ```
 ff:1f:9e:91:52:bc   class='find_my_separated'
@@ -405,8 +399,7 @@ the capture bridge end to end from inside the daemon, and the decoder against
 **204 real Find My frames from 5 devices**. The *joint* event could not happen
 until this release enabled the rule.
 
-⚠️ **Three things that run still did not prove, stated because a partial proof
-quoted as a whole one is how this page would stop being trustworthy:**
+**What that run did not cover:**
 
 - **Push delivery.** The notifier was called with the right payload; a real
   ntfy push was not sent. The last hop to your phone is untested.
@@ -434,20 +427,19 @@ number you cannot date is a number you cannot check. Expect the current total
 to be *higher* than the figure above: compare against the newest run on `main`,
 and treat a *lower* one as worth asking about.
 
-⚠️ Expect the *skip* to differ from ours, and check which test it is rather
-than the count. One test skips when `/sys/class/bluetooth` exists (it needs the
-directory absent) and another skips without a live Argus CSV, so a machine
-with Bluetooth and no CSV reports two skips, and CI reports one. `.claude/gates.md`
-records the traps that make a green run mean less than it looks like.
+Your *skip* count will differ from ours, and which test skipped matters more
+than how many. One skips when `/sys/class/bluetooth` exists (it needs the
+directory absent) and another skips without a live Argus CSV, so a machine with
+Bluetooth and no CSV reports two skips where CI reports one.
 
 Ten test files, plus one capture fixture, stay out of the repo because they
 embed the capture adapter's own MAC or the rig account name, which is what
 "the fixtures describe a real rig" actually meant. They are listed by name in
 `.gitignore` rather than hidden behind a glob. Everything else is tracked, so
 the number above is the number you get: there is no larger private suite
-behind it. [CONTRIBUTING.md](CONTRIBUTING.md) and `.claude/gates.md` record
-the traps that make a green run mean less than it looks like. In particular,
-check *which* test skipped rather than the skip count.
+behind it. [CONTRIBUTING.md](CONTRIBUTING.md) and `.claude/gates.md` record what to
+check beyond the headline number. In particular, check *which* test skipped
+rather than the skip count.
 
 ## Try it without hardware
 
