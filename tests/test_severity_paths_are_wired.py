@@ -28,6 +28,8 @@ Both directions fail here:
 
 from __future__ import annotations
 
+import pathlib
+import re
 import typing
 
 import pytest
@@ -115,6 +117,25 @@ CASES: dict[str, tuple[tuple[str, str] | None, dict, list[str]]] = {
 #: Each runtime override key, and what applying it should do to a matched row
 #: carrying CATEGORY / VENDOR / ARID. Every key in `RuntimeSeverityOverride` is
 #: represented; `test_every_override_key_is_exercised` holds that true.
+def _pattern_types_passed_by_rules_py() -> frozenset[str]:
+    """Every literal `match_pattern_type=` value in rules.py, read from source.
+
+    Derived, not transcribed. `evaluate` passes the pattern_type as a literal
+    at each delegating call site (and, for ssid, conditionally from one of two
+    resolvers), so the source is the only authority on the real set.
+    """
+    import lynceus.rules as _rules_mod
+
+    src = pathlib.Path(_rules_mod.__file__).read_text(encoding="utf-8")
+    literals = set(re.findall(r'match_pattern_type=["\']([a-z_]+)["\']', src))
+    literals |= set(re.findall(r'matched_pattern_type = ["\']([a-z_]+)["\']', src))
+    assert literals, "found no match_pattern_type literals in rules.py"
+    return frozenset(literals)
+
+
+_PATTERN_TYPES_IN_RULES = _pattern_types_passed_by_rules_py()
+
+
 OVERRIDES: dict[str, tuple[RuntimeSeverityOverride, str]] = {
     "device_category_severity": (
         RuntimeSeverityOverride(device_category_severity={CATEGORY: "high"}),
@@ -135,6 +156,25 @@ OVERRIDES: dict[str, tuple[RuntimeSeverityOverride, str]] = {
     "pattern_overrides": (
         RuntimeSeverityOverride(pattern_overrides={ARID: "high"}),
         "remap",
+    ),
+    # ⛔ This key is the odd one out: it keys on the CONJUNCTION of the matched
+    # row's pattern_type and its device_category, so a single pattern_type
+    # entry suppresses for exactly one delegating branch and no others. The
+    # sweep below expects one effect per key across EVERY delegating rule_type,
+    # so the instance has to cover every pattern_type a delegating branch can
+    # report.
+    #
+    # ⭐ That set is DERIVED from rules.py rather than typed out here. A
+    # hand-copied list looks derived and is not: it would silently stop
+    # covering a branch the moment someone adds a rule_type, and this guard
+    # exists precisely to catch that.
+    "suppress_pattern_categories": (
+        RuntimeSeverityOverride(
+            suppress_pattern_categories={
+                pt: frozenset({CATEGORY}) for pt in _PATTERN_TYPES_IN_RULES
+            }
+        ),
+        "suppress",
     ),
 }
 
