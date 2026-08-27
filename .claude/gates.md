@@ -961,3 +961,38 @@ baseline at 4 for most of this branch and still does not mean the same four
 tests. Current set: two `/watchful` + `/probes` form probes, `test_packaging`
 (no bare `python` on PATH — that guard has never run here), `test_setup_wizard`
 (real `/sys/class/bluetooth` present), and this Argus one in worktree runs only.
+
+
+## Post-merge gate of `main` — `c7aebac`, measured 2026-08-26
+
+#235, #236 and #237 merged (disjoint file sets, checked pairwise before merging —
+`mergeable` is per-PR against main and never tells you about another PR).
+Gated in a throwaway worktree at the merged SHA, `git status` clean.
+
+| Gate | Result |
+| --- | --- |
+| `ruff check .` | All checks passed! |
+| `pytest -q` (full) | **5133 passed, 4 skipped, 63 deselected**, exit 0, 33m11s |
+
+✅ **The `LYNCEUS_ARGUS_CSV` remedy above WORKS.** Skips are back to **4**, and the
+Argus test is absent from the skip list — it ran. Read the reasons, not the count:
+
+    test_forms_submit_their_own_defaults.py:204   /probes  — no constrained select
+    test_forms_submit_their_own_defaults.py:204   /watchful — no constrained select
+    test_packaging.py:19                          python not on PATH
+    test_setup_wizard.py:2037                     real /sys/class/bluetooth present
+
+⭐ **The +17 against the baseline is fully accounted for**, which is the check that
+makes a rising number evidence rather than noise. Baseline `c64a194` was 5115/5
+without the override, i.e. **5116/4 with it**. `tests/test_adapter_descriptor_format.py`
+collects **15** (#236: 9 plain + 6 parametrized) and `tests/test_csrf.py` went 18 → **20**
+(#237). 5116 + 15 + 2 = **5133**.
+
+🪤 **A bare `python -c 'import lynceus'` in a worktree imports the MAIN checkout,
+not the worktree.** `.venv/lib/python3.11/site-packages/__editable__.lynceus-0.9.5.pth`
+contains the literal path `/home/kev/lynceus-warden/src`, so the symlinked venv
+resolves there from anywhere. **pytest is not affected** — `pyproject.toml` sets
+`pythonpath = ["src"]`, which is relative to rootdir and takes precedence, and this
+was confirmed at `c7aebac` by asserting `lynceus.__file__` from inside a test run.
+⇒ The gate command in this file is correct as written. Do not "fix" it with
+`PYTHONPATH`; do not trust a hand-rolled `python -c` import check in a worktree.

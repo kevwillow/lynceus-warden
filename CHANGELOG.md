@@ -40,7 +40,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   startup banner now says exactly that instead of "authentication NONE", and the
   supported remote path is unchanged: an SSH tunnel or a private network.
 
+- **The adapter label every operator reads now has a test CI can see.**
+  `format_adapter_descriptor` renders the rows on the web wizard's step 4 and on
+  the bootstrap prompt — it is the only public symbol in
+  `cli/_adapter_descriptors.py` and, measured at `c64a194`, it was reached by
+  **nothing**: the module reported 60% line cover and the 25 missed statements
+  were that function in its entirety plus one parent-resolution branch.
+
+  🪤 **The gap was OPSEC, not neglect.** The real tests
+  (`tests/test_adapter_descriptors.py` and the two wizard sysfs matrix files)
+  embed the operator's own capture adapter MAC, so they are withheld by
+  `.gitignore` — which is right for those files and left CI unable to see the
+  formatter at all. `tests/test_adapter_descriptor_format.py` is the tracked
+  contract: synthetic identities only, taken from the module's own published
+  docstring examples, and it asserts **full-string equality** so that a drifting
+  `·` separator, a bus that stops being uppercased, or a lead and an annotation
+  that swap places all fail rather than satisfying a substring check.
+
 ### Fixed
+
+- **An unauthenticated caller could make the web UI buffer a request body of any
+  size.** The CSRF middleware read the whole body before comparing tokens, and
+  it runs *before* authentication — `/login` is auth-exempt, so anyone who could
+  reach the port needed only to send some CSRF cookie to get there. A single
+  `Content-Length: 2147483648`, or an endless chunked stream, then drove the
+  process into memory pressure; on a Pi that is the whole machine. The login
+  rate limiter does not help, because it is consulted in the route, which is
+  never reached.
+
+  The read is now bounded at **1 MiB** (`MAX_CSRF_BODY_BYTES`), counted as the
+  bytes arrive rather than trusted from `Content-Length`, which a chunked
+  request does not send and a hostile one may lie about. Over the ceiling the
+  middleware stops reading **and** stops buffering — draining the rest would
+  keep the connection and the CPU busy for exactly as long as the caller liked,
+  which is most of what they wanted.
+
+  ⭐ **The ceiling is derived from the app's own cap, not invented.** The largest
+  legitimate POST is `/alerts/bulk-ack`, which refuses more than 1000
+  `alert_ids` — about 17 KB on the wire — plus a free-text note, so 1 MiB is
+  roughly 60x the biggest real form. No route accepts an upload.
+
+  ⚠️ **It answers `413`, not `403`.** Replying "CSRF token mismatch" would name a
+  control the caller was never going to satisfy and send whoever reads the log
+  hunting a token bug.
 
 - **`lynceus-export-case` was never symlinked onto `PATH` by a `--system`
   install.** `install.sh`'s `CONSOLE_SCRIPTS` array is meant to mirror
