@@ -1212,14 +1212,24 @@ def evaluate(
                         rule.name,
                     )
                     continue
+                # ⛔ Two resolvers, two DIFFERENT watchlist pattern_types, and
+                # the pattern_type must follow whichever one actually matched.
+                # `resolve_matched_ssid_for_eval` filters pattern_type='ssid';
+                # the fallback filters 'ssid_pattern'. Hardcoding either one
+                # mislabels the other, so an operator's
+                # `suppress_pattern_categories: {ssid: [...]}` would silently
+                # never fire while `{ssid_pattern: [...]}` would wrongly
+                # suppress exact-ssid rows.
                 match = db.resolve_matched_ssid_for_eval(obs.ssid)
+                matched_pattern_type = "ssid"
                 if match is None:
                     match = db.resolve_matched_ssid_pattern_for_eval(obs.ssid)
+                    matched_pattern_type = "ssid_pattern"
                 if match is None:
                     continue
                 effective_severity = _apply_runtime_overrides(
                     match_severity=match.severity,
-                    match_pattern_type="ssid_pattern",
+                    match_pattern_type=matched_pattern_type,
                     match_device_category=match.device_category,
                     match_manufacturer=match.manufacturer,
                     match_argus_record_id=match.argus_record_id,
