@@ -2,7 +2,8 @@
 
 **Status:** design, not yet implemented.
 **Written:** 2026-08-26, against `main` at `42e899e`.
-**Supersedes:** the assumption, never actually decided, that the web UI is read-only.
+**Proposes reversing:** the "read-only UI is a security boundary" non-negotiable
+published at `README.md:157`. See §1 and §9.4 before treating that as settled.
 
 Every measurement below is dated and sourced. Where a number came from the
 backlog rather than from a fresh count, it says so and gives the date it was
@@ -13,10 +14,38 @@ taken, because a bare total is a claim with no expiry.
 ## 1. The problem
 
 The `/settings` page is read-only. `app.py:6318` registers a `GET` and nothing
-else; `settings.html` contains zero `<form>` elements. That was never a decision
-— it is where the product stopped.
+else, and `settings.html` contains zero `<form>` elements.
 
-It now costs three concrete things:
+⛔ **That is a deliberate, published commitment, not an accident.** An earlier
+draft of this document called it "where the product stopped". That was wrong.
+`README.md:157` states it under a heading called **Non-negotiables**, described
+there as "design commitments, not current limitations":
+
+> **The read-only UI is a security boundary.** The web UI never mutates your
+> configuration: `lynceus.yaml`, rules and capture settings change only
+> out-of-band, via `lynceus-setup` or the YAML. [...] Read-only about
+> configuration is a feature, not a missing one.
+
+So this design proposes reversing a stated non-negotiable. That is allowed, it
+is the owner's call, and it changes what the work includes: **the README must
+reverse the commitment out loud, with the reason attached.** A published
+non-negotiable that quietly disappears is worse than one that changes.
+
+⭐ **The README already draws a better line than the one this design first
+drew.** It distinguishes *operator decisions* the UI may record (acks, notes,
+snoozes, watchful entries, the daemon-managed `allowlist_ui.yaml`) from
+*configuration* it may not, and says what the UI cannot do is "change what
+Lynceus captures or how it is deployed". Detection tuning changes what alerts,
+so it falls on the configuration side. Two honest ways forward, and §9.4 records
+this as open:
+
+1. Move the boundary, and say in the README that tuning is now UI-editable and
+   why the dry-run makes that safe.
+2. Argue that suppression and severity are operator decisions rather than
+   capture configuration, and keep the boundary where it is by narrowing what
+   becomes editable to things that never change *what is captured*.
+
+The current cost of leaving it exactly as-is:
 
 1. **BLE-G1 is blocked on a judgement nobody can make.** The Bluetooth bridge is
    built and commented out in `config/rules.yaml` (lines 124–125, 148–149,
@@ -36,8 +65,8 @@ It now costs three concrete things:
    "Actionable" means `device_category` is neither empty nor `unknown`.
 
    ⚠️ **State that universe whenever the number is quoted.** Counting *every*
-   `ble_*` type instead gives 4,880 rows / 167 actionable / 3.42% — a different,
-   also-correct answer that looks like a contradiction if the set is left off.
+   `ble_*` type instead gives 4,880 rows / 167 actionable / 3.42%, a different
+   and also-correct answer that looks like a contradiction if the set is left off.
    The rule consumes only the two types above, because both collapse to the
    single watchlist `pattern_type` `ble_manufacturer_id` (`IDENTIFIER_TYPE_MAP`,
    `import_argus.py:72`).
@@ -52,7 +81,7 @@ It now costs three concrete things:
 3. **Nothing tells an operator that the tuning file exists.** `severity_overrides.yaml`
    (`config.py:211`) is invisible from the product. There is no discovery path.
 
-## 2. Scope — decided, and deliberately narrow
+## 2. Scope, decided and deliberately narrow
 
 **Editable from the UI: detection tuning only.** Rules, severities, suppression
 filters, and the settings that decide what fires an alert.
@@ -63,14 +92,14 @@ authentication, database path, Kismet connection.
 The line is drawn at a single question: *can a wrong value here make the box
 unreachable?* A dry-run can prove a detection setting is sane by scoring it
 against real stored observations. Nothing can prove you will still be able to
-reach the machine after changing its bind address — and the web UI serves no
-TLS, so the connection carrying that change is already the weaker link.
+reach the machine after changing its bind address. The web UI serves no TLS, so
+the connection carrying that change is already the weaker link.
 
 ⛔ **This is not "everything configurable, with a warning."** A warning is not a
 safety boundary. That is the same reasoning that made #234 exit `2` rather than
 print a banner and start anyway.
 
-## 3. What already exists — do not rebuild these
+## 3. What already exists, and must not be rebuilt
 
 Four of the hard parts are already built and proven in production. The design
 leans on them rather than inventing parallels.
@@ -83,7 +112,7 @@ leans on them rather than inventing parallels.
 | Config export | `cli/export_config.py` | Redaction, `manifest.json`, SHA256 per file, self-describing archive. |
 
 ⭐ **`lynceus-export-config` already covers the export half** of import/export,
-including which fields were redacted. There is **no import counterpart** — that
+including which fields were redacted. There is **no import counterpart**. That
 is the actual gap, and it must consume the manifest that export already writes.
 
 The tuning model itself also exists: `RuntimeSeverityOverride` (`rules.py:360`)
@@ -93,7 +122,7 @@ normalisation in the model rather than the loader.
 
 ## 4. Architecture
 
-### 4.1 The write path — a UI-owned sibling, never the operator's file
+### 4.1 The write path: a UI-owned sibling, never the operator's file
 
 The UI writes its own file and the loader merges, exactly as the allowlist
 already does (`allowlist.yaml` + `allowlist_ui.yaml`, per #218).
@@ -104,13 +133,13 @@ already does (`allowlist.yaml` + `allowlist_ui.yaml`, per #218).
 
 ⛔ **The UI must never rewrite a file a human hand-edits.** A round-trip through
 a YAML serialiser destroys comment blocks, and in this repo the comments are
-load-bearing — they carry the measurements and the reasons. Separate files also
+load-bearing, because they carry the measurements and the reasons. Separate files also
 mean a hand-edit and a UI edit can never race each other into a lost update.
 
 Operator-file-wins is the honest precedence: a value someone typed into a file
 on the box should not be silently overridden by a click.
 
-### 4.2 The reload path — extend the existing watch
+### 4.2 The reload path: extend the existing watch
 
 `_maybe_reload_allowlist` becomes a general mtime watch covering the tuning
 files too. Its existing failure semantics carry over unchanged and are the right
@@ -127,13 +156,13 @@ same reflex needs re-deriving rather than copying: the question is which
 direction leaves the operator less protected, and it is not automatically the
 same answer.
 
-### 4.3 The dry-run — the piece that unblocks BLE-G1
+### 4.3 The dry-run, the piece that unblocks BLE-G1
 
 Because `evaluate()` is pure, a candidate configuration can be scored without
 firing anything:
 
 1. Build the candidate `Ruleset` / `RuntimeSeverityOverride` from the unsaved
-   form state — **never** from what is on disk.
+   form state, **never** from what is on disk.
 2. Replay stored observations from the last N hours through `evaluate()`.
 3. Report: how many alerts this would have produced, broken down by rule and
    severity, and how many the *current* config produced over the same window.
@@ -150,11 +179,11 @@ than no preview.
 not interpretable without "over the last 24h, from 12,300 stored observations".
 Two correct answers computed over different windows look like a contradiction.
 
-### 4.4 The "not configurable here" panel — derived, never transcribed
+### 4.4 The "not configurable here" panel: derived, never transcribed
 
 Every setting outside the editable scope gets a panel showing: the current value,
-the file that holds it, the key name, and the exact commands to change it — each
-copy-to-clipboard.
+the file that holds it, the key name, and the exact commands to change it, each
+with a copy-to-clipboard control.
 
 ⛔ **Derive all four from the running system. Do not type them as strings.**
 
@@ -173,16 +202,16 @@ misinstruct someone at 2am.
 
 **A guard enforces completeness**, in the shape of #234's exempt-set pinning and
 #236's parity test: iterate the config model and assert every non-editable field
-has a panel. Deriving the set is the point — a hand-maintained list is a list a
-new field silently falls off.
+has a panel. Deriving the set is the point, because a hand-maintained list is a
+list a new field silently falls off.
 
 ### 4.5 Three states, one page
 
 `/settings` becomes a complete map of configuration:
 
-- **Editable here** — form, dry-run, save.
-- **File-only** — derived panel and exact commands.
-- **Built but switched off** — capability present, currently disabled, what
+- **Editable here.** Form, dry-run, save.
+- **File-only.** Derived panel and exact commands.
+- **Built but switched off.** Capability present, currently disabled, and what
   enabling it would cost. This is where the Bluetooth bridge finally becomes
   visible; today the product says nothing about it at all.
 
@@ -226,7 +255,7 @@ path from a genuinely broken config, not a mocked one.
 
 | Failure | Consequence | Mitigation |
 |---|---|---|
-| Half-written file read mid-save | Daemon loads a truncated ruleset | `_atomic_write_yaml` (`allowlist.py:730`) — already solved, reuse it |
+| Half-written file read mid-save | Daemon loads a truncated ruleset | `_atomic_write_yaml` (`allowlist.py:730`), already solved, reuse it |
 | Dry-run scores the saved config, not the form | Preview blesses something else | Build the candidate from unsaved form state; a test must plant a difference and prove the preview moves |
 | Stolen session cookie | Attacker silently disables the alert that matters | Out of scope to fix here, but this change **raises what the web surface is worth attacking**. Worth a follow-up on audit-logging config changes |
 | Corrupt UI file after a save | Suppressions dropped, storm | Retain-last-known-good, per §4.2 |
@@ -241,9 +270,9 @@ path from a genuinely broken config, not a mocked one.
 - **Dry-run fidelity:** a candidate config whose preview says N must produce N
   when actually applied to the same stored window.
 - **Reset from a genuinely broken config**, run for real (§5.2).
-- **Import rejects a tampered bundle** — flip one byte, assert the SHA256 check
+- **Import rejects a tampered bundle.** Flip one byte, assert the SHA256 check
   refuses it.
-- **The operator file is never rewritten** — assert byte-identical, comments
+- **The operator file is never rewritten.** Assert byte-identical, comments
   included, after a UI save.
 
 ## 8. Deliberately not doing
@@ -259,13 +288,18 @@ path from a genuinely broken config, not a mocked one.
 
 ## 9. Open questions
 
-1. **Dry-run window** — fixed 24h, or operator-chosen? Longer is better evidence
+1. **Dry-run window.** Fixed 24h, or operator-chosen? Longer is better evidence
    and more expensive to replay.
 2. **Does rule enablement belong in the sibling YAML or the database?** The
    allowlist precedent split: file for operator entries, DB for UI state (#218).
    Worth re-deriving rather than assuming.
-3. **Audit log for config changes** — probably yes once the UI can change
+3. **Audit log for config changes.** Probably yes once the UI can change
    detection behaviour, but it is a separate piece of work.
+4. **Does the boundary move, or does tuning get reclassified?** See §1. Either
+   the README says the read-only-configuration commitment is lifted and why, or
+   this design narrows to things that never change what is captured, and the
+   commitment survives intact. This has to be answered before phase 4, and it
+   decides what the README change says.
 
 ## 10. Implementation order
 
@@ -288,7 +322,7 @@ each land independently and leave the product working:
 `lynceus-import-config` (§5.1) can land any time after 1; it is independent of
 the UI work.
 
-## Appendix — side findings from writing this
+## Appendix: side findings from writing this
 
 Two documentation inaccuracies surfaced while checking the numbers above. Neither
 blocks this design; both are worth a cheap fix.
@@ -299,5 +333,5 @@ blocks this design; both are worth a cheap fix.
   records** across 45,703 non-comment lines. The figure is used to explain why
   `make release-gates` takes nine minutes, so it is read by people sizing a wait.
 - **The file's own `# meta:` header declares `record_count=41518`**, against
-  41,516 actually parsed. A two-row gap, origin unknown — worth a look only if
+  41,516 actually parsed. A two-row gap of unknown origin, worth a look only if
   the manifest count is ever relied on for integrity rather than description.
