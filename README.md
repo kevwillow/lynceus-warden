@@ -105,7 +105,7 @@ it](docs/images/settings-ble-bridge.png)
 
 ## What Lynceus does
 
-A small daemon plus a read-only web UI. The daemon polls a local
+A small daemon plus a web UI. The daemon polls a local
 [Kismet](https://www.kismetwireless.net/) instance for everything it has
 heard, persists sightings to SQLite, and runs each one through a rules engine
 backed by a watchlist of RF signatures. Matches become alerts, both in the UI
@@ -153,13 +153,29 @@ These are design commitments, not current limitations:
 - **Passive only.** Lynceus never transmits, probes, injects, or associates.
   It reads what Kismet already heard. That applies to Argus too: detection
   only, no jamming, no spoofing, no interference.
-- **The read-only UI is a security boundary.** The web UI never mutates your
-  configuration: `lynceus.yaml`, rules and capture settings change only
-  out-of-band, via `lynceus-setup` or the YAML. It does record operator
-  decisions: acks, notes, snoozes, watchful entries, and the daemon-managed
-  `allowlist_ui.yaml`. Triage is what the UI is for. What it cannot do
-  is change what Lynceus captures or how it is deployed. Read-only about
-  configuration is a feature, not a missing one.
+- **The UI never edits your config files.** `lynceus.yaml`, `rules.yaml` and
+  `severity_overrides.yaml` change only out of band, through `lynceus-setup`,
+  `lynceus-reset-config`, or your editor. Nothing you click can rewrite them,
+  and nothing you click can change the bind address, the capture settings or
+  the password. Measured 2026-08-27 at `3ebba56`: the only file the web
+  process writes is the daemon-managed `allowlist_ui.yaml`, and `app.py`
+  imports `load_credentials` without ever importing the writer.
+
+  ⚠️ **It is not "read-only", and calling it that undersold it.** Of 45 routes,
+  25 are POSTs, and they write real daemon state: acknowledgements, notes,
+  per-alert and per-device and per-rule-type snoozes, the watchful lifecycle,
+  allowlist entries, and adding a MAC to the watchlist with a severity. That
+  last one changes what alerts. It is a detection decision rather than triage,
+  so it belongs on this list rather than buried.
+
+  ⭐ **The boundary is the config file, not the database.** Everything the UI
+  changes is state the daemon owns and can rebuild. Everything it refuses to
+  touch is a file you wrote. That is the line, and it is worth more than the
+  word "read-only", which was never quite true.
+
+  (Whether that line should move is an open design question, argued in
+  [docs/UI_CONFIGURATION_DESIGN.md](docs/UI_CONFIGURATION_DESIGN.md). It has
+  not moved yet.)
 - **No telemetry.** Lynceus does not phone home. At runtime it connects to the
   Kismet instance you point it at (`kismet_url`, `http://127.0.0.1:2501` by
   default, but any host you configure), to the ntfy broker you configured, and
@@ -202,7 +218,8 @@ These are design commitments, not current limitations:
   with interactive confirmation. One migration (010, pattern normalisation) is
   irreversible by design and is skipped with a logged warning. **Back up the
   database before rolling anything back.**
-- **Web UI** (`lynceus-ui`). FastAPI + Jinja2, read-only, served by uvicorn.
+- **Web UI** (`lynceus-ui`). FastAPI + Jinja2, served by uvicorn. Writes
+  daemon state, never your config files.
 - **Notifier.** ntfy push, severity-mapped priority and tags.
 
 ## Features
@@ -550,7 +567,10 @@ Config lives at XDG-aware paths: `~/.config/lynceus/lynceus.yaml` for
 tuning lives alongside it in `severity_overrides.yaml`.
 
 To inspect the running configuration without touching files, open `/settings`.
-It's read-only by design; to change something, re-run the wizard.
+That page really is read-only: it serves a `GET` and nothing else. To change
+something, re-run the wizard. To get back to a known state after breaking a
+config the daemon can no longer load, run `lynceus-reset-config`, which
+previews by default and backs up rather than deletes.
 
 ## Bundled threat data
 
@@ -593,8 +613,8 @@ loop during an outage is worse than a missed window.
 ## Running Lynceus
 
 **Production (Linux + systemd).** Two hardened units running as the `lynceus`
-system user: `lynceus.service` (the poller) and `lynceus-ui.service` (the
-read-only UI). Logs under `/var/log/lynceus/`, database under
+system user: `lynceus.service` (the poller) and `lynceus-ui.service` (the web
+UI). Logs under `/var/log/lynceus/`, database under
 `/var/lib/lynceus/`.
 
 **Development / demo.** `lynceus-quickstart`. Foreground process group,
@@ -616,13 +636,14 @@ browser auto-launch, clean Ctrl+C shutdown. Not for unattended use.
 
 ## Privacy / threat model
 
-- **The UI is read-only about the *world*, not about your own triage.** It
-  never transmits, never reconfigures capture, and never edits `rules.yaml`,
-  those stay operator config on disk. It does let you act on what you are
-  shown: acknowledge, note, snooze, allowlist, watch. Every one of those is a
-  POST carrying a CSRF token behind a confirmation prompt, and every
-  allowlisting is written to the audit log, because suppressing an alert is
-  exactly the action an attacker would want.
+- **The UI is read-only about the *world*, not about your own decisions.** It
+  never transmits, never reconfigures capture, and never edits `rules.yaml` or
+  `lynceus.yaml`, which stay operator config on disk. It does let you act on
+  what you are shown: acknowledge, note, snooze, allowlist, watch, and add a
+  MAC to the watchlist. Every one of those is a POST carrying a CSRF token
+  behind a confirmation prompt, and every allowlisting is written to the audit
+  log, because suppressing an alert is exactly the action an attacker would
+  want.
 - **⚠️ The UI ships unauthenticated on loopback, and that is deliberate.** It
   binds `127.0.0.1` by default, and on a single-operator Pi the bind is the
   control: everything on the box is already you. There is a password if you
