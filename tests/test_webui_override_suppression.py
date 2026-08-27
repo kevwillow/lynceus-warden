@@ -39,7 +39,12 @@ from starlette.testclient import TestClient
 from lynceus.config import Config
 from lynceus.db import Database
 from lynceus.kismet import DeviceObservation
-from lynceus.rules import evaluate, load_ruleset, load_runtime_severity_overrides
+from lynceus.rules import (
+    _apply_runtime_overrides,
+    evaluate,
+    load_ruleset,
+    load_runtime_severity_overrides,
+)
 from lynceus.webui.app import create_app
 from lynceus.webui.liveness import (
     is_row_suppressed_by_overrides,
@@ -191,18 +196,56 @@ def test_vendor_matching_uses_the_engines_normalisation(tmp_path):
         db.close()
 
 
-def test_category_matching_is_NOT_normalised_because_the_engine_does_not(tmp_path):
-    """⚠️ Asymmetric on purpose. The engine lower-cases the vendor and compares
-    the category raw, so this must too. Pinned because "make them consistent"
-    is the obvious wrong tidy-up."""
+@pytest.mark.parametrize("row_category", ["tracker", "Tracker", "TRACKER", "  tracker  "])
+def test_category_matching_uses_the_engines_normalisation(tmp_path, row_category):
+    """⛔ This test used to assert the OPPOSITE, and was right when written.
+
+    Its previous name was ``test_category_matching_is_NOT_normalised_because_
+    the_engine_does_not``, and before #214 the engine really did compare the
+    category raw:
+
+        if match_device_category is not None
+           and match_device_category in overrides.suppress_categories
+
+    #214 changed that line to normalise both halves and did not update this
+    test. From then until #250 the assertion was false, and worse than merely
+    stale: it PINNED the disagreement in place. Its docstring called making the
+    two consistent "the obvious wrong tidy-up", so anyone who noticed the drift
+    was told by a passing test not to fix it.
+
+    ⚠️ The reason nothing else caught it: ``test_the_marker_agrees_with_whether
+    _an_alert_actually_fires`` is a real parity test, but it varies the override
+    BODY while holding the row's category constant at one lower-case spelling.
+    The single dimension on which the marker and the engine could disagree was
+    the one dimension never varied. That is why this test now parametrises the
+    case of the row value rather than the config.
+
+    ⇒ Graded against the engine itself, not against a restatement of its rules.
+    """
     cfg, db, _app, _s, _o = _build(tmp_path, "suppress_categories:\n  - tracker\n")
     try:
         sup = runtime_suppressions(cfg)
-        assert is_row_suppressed_by_overrides(None, "tracker", sup)
-        assert not is_row_suppressed_by_overrides(None, "Tracker", sup), (
-            "category matching became case-insensitive here but not in "
-            "rules._apply_runtime_overrides -- the marker now disagrees with "
-            "the engine"
+        overrides = load_runtime_severity_overrides(cfg.severity_overrides_path)
+        engine_suppresses = (
+            _apply_runtime_overrides(
+                match_severity="high",
+                match_pattern_type=None,
+                match_device_category=row_category,
+                match_manufacturer=None,
+                match_argus_record_id=None,
+                match_watchlist_id=1,
+                rule_name="test",
+                overrides=overrides,
+            )
+            is None
+        )
+        marked = is_row_suppressed_by_overrides(None, row_category, sup)
+        assert marked == engine_suppresses, (
+            f"row category {row_category!r}: the engine "
+            f"{'suppresses' if engine_suppresses else 'does not suppress'} it "
+            f"and the marker says suppressed={marked}. A row the engine "
+            f"silences that the page calls live is the defect this file exists "
+            f"for."
         )
     finally:
         db.close()
