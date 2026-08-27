@@ -145,6 +145,46 @@ rules:
   # appears in the /watchlist UI; alerting will start firing once
   # the Kismet half is wired up. See the rc5 CHANGELOG entry.
   #
+  # ---- Measuring one of these before you enable it (shadow mode) ----
+  #
+  # The reason the two rules below stay commented is an alert-storm argument:
+  # the bundled watchlist carries 4,684 rows the ble_manufacturer_id rule
+  # consumes, of which 4 have an actionable device_category. That is 0.085%
+  # signal, counted against the SHIPPED corpus (measured 2026-08-26) -- not
+  # against your airspace. Nobody can tell you what it would do on YOUR site.
+  #
+  # Shadow mode answers that. Uncomment a rule and add `shadow: true`:
+  #
+  #   - name: argus_ble_manufacturer_id
+  #     rule_type: watchlist_ble_manufacturer_id
+  #     severity: low
+  #     patterns: []
+  #     shadow: true          # <-- evaluated, counted, alerts on NOTHING
+  #
+  # Restart the daemon, leave it a day, then read the counts. The rule is
+  # evaluated in full against live traffic and cannot produce an alert or a
+  # notification while `shadow: true` is set.
+  #
+  #     journalctl -u lynceus.service | grep 'shadow rule'
+  #
+  # ⛔ READ THE DENOMINATOR, NOT JUST THE COUNT. A result of zero means one of
+  # two opposite things, and they demand opposite responses:
+  #
+  #   0 hits, and the field WAS seen      -> genuinely quiet here. Safe to
+  #                                          enable, on this site, for now.
+  #   0 hits, and the field was NEVER seen -> the rule is inert. Enabling it
+  #                                          buys you nothing and hides the gap.
+  #
+  # The second is not hypothetical for these two rule_types. The CAVEAT above
+  # is live: the Kismet field paths are unverified against a real capture, so
+  # `ble_manufacturer_id` may read None on every observation you have. The
+  # daemon therefore also counts how many observations carried each field, and
+  # logs it beside the hit count. If the field was never seen, you have
+  # measured the plumbing, not the airspace.
+  #
+  # ⚠️ A quiet week is evidence about your site and your week, not a property
+  # of the rule. Re-measure after you move, and after a watchlist refresh.
+  #
   # - name: argus_ble_manufacturer_id
   #   rule_type: watchlist_ble_manufacturer_id
   #   severity: low  # ignored, actual severity comes from the matched row

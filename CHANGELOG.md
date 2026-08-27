@@ -6,7 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Shadow rules: measure what a rule would do before you switch it on.** A
+  rule may declare `shadow: true`. It is evaluated in full against live
+  traffic, counted, and alerts on nothing. Uncomment the Bluetooth rule with
+  `shadow: true`, leave it a day, and read a real number from your own
+  airspace instead of an argument about a shipped corpus.
+
+  This exists because the honest answer could not be got any other way. The
+  Bluetooth rules stay off on an alert-storm argument computed against the
+  bundled watchlist: 4,684 rows consumed, 4 of them actionable, 0.085% signal.
+  That says nothing about your site. Replaying stored history cannot help
+  either, and the reason is circular: `ble_manufacturer_id` is never persisted,
+  the raw record is kept only when an alert fires, and a commented-out rule
+  never fires. Not having the rule enabled is exactly why the history needed to
+  evaluate it does not exist.
+
+  ⛔ **A shadow rule cannot alert, structurally rather than by convention.**
+  `evaluate()` returns only alertable hits; a shadow rule's hits go to a
+  separate sink and appear in no other return value. Forgetting the sink costs
+  you counts. It cannot cost you a storm.
+
+  ⛔ **The count is published with its denominator**, because zero means two
+  opposite things. Zero hits with the field seen 4,200 times is a quiet site.
+  Zero hits with the field never seen is broken plumbing, and enabling the rule
+  would buy nothing while hiding the gap. That case is live: the Kismet field
+  paths for `ble_manufacturer_id` and `drone_id_prefix` are still unverified
+  against a real capture, so those fields may read `None` on every observation.
+
+  `enabled: false` still skips a rule entirely and is not a synonym. Counts
+  live in the existing `poller_state` table, so there is no migration.
+
 
 ## [1.2.0] - 2026-08-26
 
