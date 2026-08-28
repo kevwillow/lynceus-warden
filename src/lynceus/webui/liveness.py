@@ -943,3 +943,86 @@ def is_pattern_type_snoozed(pattern_type: str, liveness: dict) -> bool:
     if not liveness.get("snoozes_known", True):
         return False
     return pattern_type in liveness["suppressed_types"]
+
+
+# --- shadow rules: what a rule WOULD have alerted, and whether it could ----
+
+#: Which observation field each shadow-able rule_type depends on.
+#:
+#: ⛔ This is what makes a zero interpretable. A rule keyed on a field the
+#: capture never populates reports zero hits forever, and that reads identically
+#: to "nothing was in range". `poller._SHADOW_DENOMINATOR_FIELDS` counts how
+#: often each field was actually carried; this maps a rule to the field to
+#: check.
+#:
+#: Rule types keyed on the MAC are absent deliberately: every observation has a
+#: MAC, so their denominator is the observation count itself and a zero from
+#: them is always the honest kind.
+_SHADOW_RULE_FIELD: dict[str, str] = {
+    "watchlist_ble_manufacturer_id": "ble_manufacturer_id",
+    "watchlist_drone_id_prefix": "drone_id_prefix",
+    "watchlist_ble_local_name": "ble_local_name",
+    "ble_uuid": "ble_service_uuids",
+    "watchlist_ssid": "ssid",
+}
+
+
+def shadow_report(db, ruleset) -> dict:
+    """What each shadow rule would have alerted, beside whether it could.
+
+    ⛔ Returns the denominator with every count, because a bare zero is
+    ambiguous in the dangerous direction. "0 hits" reads as "safe to enable",
+    and an operator acting on that when the real cause is an unpopulated field
+    switches on a rule that does nothing and believes they gained coverage.
+
+    ``verdict`` is three-valued for the same reason the BLE bridge card is:
+
+      "fired"   hits > 0
+      "quiet"   0 hits, but the field WAS seen. Evidence about this site.
+      "inert"   0 hits and the field was NEVER seen. Measures the plumbing,
+                not the airspace.
+
+    ⚠️ A rule whose field is not in ``_SHADOW_RULE_FIELD`` is keyed on the MAC,
+    which every observation carries, so its zero is never the "inert" kind and
+    it reports "quiet" without a denominator.
+    """
+    shadow_rules = [
+        r for r in getattr(ruleset, "rules", []) if getattr(r, "shadow", False) and r.enabled
+    ]
+    if not shadow_rules:
+        return {"configured": False, "rules": [], "since_ts": None}
+
+    def _int(key: str) -> int:
+        try:
+            return int(db.get_state(key) or 0)
+        except (ValueError, TypeError):
+            return 0
+
+    since_raw = db.get_state("shadow_since")
+    try:
+        since_ts = int(since_raw) if since_raw is not None else None
+    except ValueError:
+        since_ts = None
+
+    rows = []
+    for rule in shadow_rules:
+        hits = _int(f"shadow:{rule.name}")
+        field = _SHADOW_RULE_FIELD.get(rule.rule_type)
+        seen = _int(f"shadow_seen:{field}") if field else None
+        if hits > 0:
+            verdict = "fired"
+        elif field is not None and seen == 0:
+            verdict = "inert"
+        else:
+            verdict = "quiet"
+        rows.append(
+            {
+                "name": rule.name,
+                "rule_type": rule.rule_type,
+                "hits": hits,
+                "field": field,
+                "field_seen": seen,
+                "verdict": verdict,
+            }
+        )
+    return {"configured": True, "rules": rows, "since_ts": since_ts}

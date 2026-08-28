@@ -92,6 +92,7 @@ from lynceus.webui.liveness import (
     runtime_suppressions,
     serving_rule_types,
     severity_remap,
+    shadow_report,
     suppression_axes_of,
     watchlist_liveness,
 )
@@ -1246,16 +1247,18 @@ def _build_settings_context(
     # contrast, is a real and reportable finding: rules loaded, none enabled.
     enabled_rule_types: list[str] | None = None
     rules_unreadable = False
+    # Kept, not just projected: the shadow card below needs the rules
+    # themselves (name, rule_type, shadow flag), and re-reading the file a
+    # second time could disagree with this one if it changed in between.
+    loaded_ruleset = None
     if config.rules_path:
         try:
-            enabled_rule_types = [
-                r.rule_type
-                for r in rules_mod.load_ruleset(config.rules_path).rules
-                if r.enabled
-            ]
+            loaded_ruleset = rules_mod.load_ruleset(config.rules_path)
+            enabled_rule_types = [r.rule_type for r in loaded_ruleset.rules if r.enabled]
         except Exception:
             rules_unreadable = True
             enabled_rule_types = None
+            loaded_ruleset = None
 
     try:
         ble_class_counts = db.count_devices_by_ble_device_class()
@@ -1371,6 +1374,7 @@ def _build_settings_context(
         # The same instant every card on this page compares against.
         "now_ts": settings_now_ts,
         "runtime_suppressions": suppressions,
+        "shadow": shadow_report(db, loaded_ruleset),
         "configured_remaps": configured_remaps,
         "severity_overrides": {
             "path": str(overrides_path),
