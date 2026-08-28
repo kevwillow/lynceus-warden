@@ -837,19 +837,36 @@ def override_suppression_axes(
     this" into "the answer is no" is indistinguishable from a correct negative.
 
     ⚠️ ``is not None``, not truthiness, because that is exactly what
-    ``_apply_runtime_overrides`` tests. Measured: the loader admits ``""`` into
-    ``suppress_categories``, and the engine suppresses a row whose category is
-    ``""`` — a truthiness check here would skip it and mark the row live while
-    every alert it produces is discarded. Vendor is still ``strip().lower()``;
-    category is still compared raw. Matching the engine's exact semantics is the
-    whole job.
+    ``_apply_runtime_overrides`` tests.
+
+    ⛔ **Every axis normalises both halves, because the engine does.** Measured
+    2026-08-27: with ``suppress_categories: [cctv_camera]``, the engine
+    suppressed a row whose category read ``CCTV_Camera`` and this function
+    reported it LIVE. The UI told the operator an alert was coming and the
+    engine discarded it, which is the failure this module exists to prevent.
+    Category is now normalised like vendor and like the pattern axis.
+
+    ⚠️ No shipped row triggers it today: all 16 device_category values in the
+    bundled corpus are already lower-case, and nothing normalises the column on
+    write, so the trigger is any future source that emits mixed case. It is
+    fixed rather than filed because the disagreement is real and the cost of
+    being wrong here is a silently missed alert.
+
+    🪤 A previous version of this note justified ``is not None`` by saying the
+    loader admits ``""`` into ``suppress_categories`` and the engine suppresses
+    an empty-category row. Both halves stopped being true when key
+    normalisation moved into the model validator: ``""`` normalises to ``None``
+    and is filtered out at construction, so the set cannot contain it. Measured,
+    not assumed. ``is not None`` is still correct, for the plainer reason that
+    it mirrors the engine.
     """
     if not suppressions.get("configured"):
         return ()
     axes: list[str] = []
     if vendor is not None and vendor.strip().lower() in suppressions["vendors"]:
         axes.append("vendor")
-    if device_category is not None and device_category in suppressions["categories"]:
+    normalized_category = rules_mod.normalize_override_key(device_category)
+    if normalized_category is not None and normalized_category in suppressions["categories"]:
         axes.append("category")
     # ⛔ NORMALISED on both halves, because `_apply_runtime_overrides` runs
     # `normalize_override_key` over the pattern_type AND the category before

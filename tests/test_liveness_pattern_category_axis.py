@@ -156,3 +156,69 @@ def test_normalisation_matches_the_engine():
             f"normalisation disagreement for pattern_type={pt!r}: "
             f"engine={engine}, UI={ui}"
         )
+
+
+# --- the same parity requirement, for the plain category axis --------------
+
+
+@pytest.mark.parametrize(
+    "device_category",
+    [
+        "cctv_camera",
+        "CCTV_Camera",
+        "  cctv_camera  ",
+        "CCTV_CAMERA",
+        "drone",
+        "",
+        None,
+    ],
+)
+def test_the_category_axis_also_agrees_with_the_engine(device_category):
+    """⛔ Same requirement as the pattern axis, and it was NOT met.
+
+    Measured 2026-08-27 before the fix: with `suppress_categories:
+    [cctv_camera]`, the engine suppressed a row whose category read
+    `CCTV_Camera` and liveness reported it LIVE. The engine normalises both
+    halves; this function compared the row value raw.
+
+    ⚠️ No shipped row triggers it: all 16 device_category values in the bundled
+    corpus are already lower-case, and nothing normalises the column on write.
+    The trigger is any future source that emits mixed case. Pinned anyway,
+    because the cost of the disagreement is a silently missed alert.
+    """
+    overrides = RuntimeSeverityOverride(suppress_categories=frozenset({"cctv_camera"}))
+    s = suppression_axes_of(overrides)
+
+    engine = (
+        rules_mod._apply_runtime_overrides(
+            match_severity="high",
+            match_pattern_type=None,
+            match_device_category=device_category,
+            match_manufacturer=None,
+            match_argus_record_id=None,
+            match_watchlist_id=1,
+            rule_name="test",
+            overrides=overrides,
+        )
+        is None
+    )
+    ui = is_row_suppressed_by_overrides(None, device_category, s)
+
+    assert ui == engine, (
+        f"liveness and the engine disagree for device_category="
+        f"{device_category!r}: engine suppresses={engine}, UI reports "
+        f"suppressed={ui}. The UI would tell the operator an alert is coming "
+        f"that the engine discards."
+    )
+
+
+def test_the_empty_category_rationale_is_measured_not_inherited():
+    """A stale comment justified `is not None` by claiming the loader admits
+    `""` into suppress_categories. It does not: `""` normalises to None and the
+    model validator filters it at construction. Pinned so the claim cannot rot
+    back in."""
+    ov = RuntimeSeverityOverride(suppress_categories=frozenset({""}))
+    assert ov.suppress_categories == frozenset(), (
+        f'"" survived into suppress_categories as {ov.suppress_categories!r}; '
+        f"the comment that assumed it does was written against that behaviour"
+    )
