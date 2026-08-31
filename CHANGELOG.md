@@ -51,6 +51,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `enabled: false` still skips a rule entirely and is not a synonym. Counts
   live in the existing `poller_state` table, so there is no migration.
 
+- **A `/settings` card that reads the shadow counts, so answering BLE-G1 needs
+  no `journalctl`.** The verdict is three-valued rather than a bare number,
+  because zero means two opposite things: `fired` (hits above zero), `quiet`
+  (no hits, the field WAS seen, which is evidence about this site over this
+  window) and `inert` (no hits, the field was NEVER seen, which measures the
+  capture path rather than the air). The card renders only when a shadow rule
+  is configured, and always carries the window it counted over, because a
+  total with no window is not a rate.
+
+  ⚠️ Rules keyed on the MAC are deliberately excluded from the "inert" test.
+  Every observation carries a MAC, so their zero is always the honest kind, and
+  labelling it inert would send an operator hunting a capture problem that does
+  not exist.
+
+### Fixed
+
+- **`lynceus-validate` called working configuration keys unknown.** Its
+  known-key list was a hand-written literal and it had drifted twice.
+  `vendor_severity` and `suppress_pattern_categories` both exist on
+  `RuntimeSeverityOverride` and neither was in the list, so a
+  `severity_overrides.yaml` that was suppressing roughly 8,000 would-be alerts
+  a day was reported as containing an unknown key.
+
+  ⛔ That is worse than no validation. The tool whose job is to check your
+  config told you a setting does not exist, which invites deleting the line
+  that was doing the work.
+
+  The runtime half is now derived from `RuntimeSeverityOverride.model_fields`
+  and cannot fall behind the model, because it is the model. The import-time
+  half (`vendor_overrides`, `geographic_filter`,
+  `confidence_downgrade_threshold`, `argus_schema_version_accept_list`) is
+  modelled nowhere, so it stays an explicit literal pinned by its own test.
+
+  ⚠️ Still not fixed: the summary line reports "0 suppressed category(ies)"
+  for a file whose only content is `suppress_pattern_categories`. The key
+  validates; it is not counted.
+
+- **The `/settings` page reported a suppressed row as LIVE.** The
+  `suppress_pattern_categories` mechanism reached the engine but not the
+  liveness module, which is a different caller of `_apply_runtime_overrides`.
+
+  ⛔ The failure was one-directional and in the bad direction. An operator read
+  "this will alert", it did not, and no surface anywhere said why.
+  `pattern_type` now reaches the axis check through both public helpers, both
+  severity helpers, and all seven call sites.
+
+- **The liveness page compared `device_category` raw while the engine
+  normalised it.** With `suppress_categories: [cctv_camera]`, a row reading
+  `CCTV_Camera` was suppressed by the engine and reported LIVE by the page.
+
+  ⚠️ Not reachable on a shipped install today. All 16 device categories in
+  the bundled corpus are lower case, and nothing normalises the column on
+  write, so the trigger is a future source that emits mixed case. The function
+  reports, it does not decide.
+
+  ⛔ A test had been pinning the defect. It asserted the opposite and was
+  correct when written, because the engine did compare raw back then; the
+  change that made the engine normalise left the test behind. Its docstring
+  called making the two consistent "the obvious wrong tidy-up", so anyone who
+  spotted the drift was told by a passing test to leave it alone. It is now
+  graded against `_apply_runtime_overrides` itself rather than against a
+  restatement of its rules.
+
 
 ## [1.2.0] - 2026-08-26
 
