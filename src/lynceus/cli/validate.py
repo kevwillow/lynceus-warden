@@ -51,6 +51,7 @@ from ..allowlist import Allowlist, _load_primary
 from ..cli.import_argus import DEFAULT_CATEGORY_SEVERITIES
 from ..config import Config, load_config
 from ..rules import (
+    RuntimeSeverityOverride,
     load_ruleset,
     load_runtime_severity_overrides,
 )
@@ -62,15 +63,30 @@ from ..yaml_duplicates import find_duplicate_keys
 # (device_category_severity, suppress_categories, suppress_vendors,
 # pattern_overrides) — the file is consumed by two layers and the
 # operator may legitimately maintain either subset.
-SEVERITY_OVERRIDES_KNOWN_KEYS: tuple[str, ...] = (
+#: Import-time keys. These are NOT modelled anywhere, so they stay a literal.
+_SEVERITY_OVERRIDES_IMPORT_TIME_KEYS: tuple[str, ...] = (
     "vendor_overrides",
-    "device_category_severity",
     "geographic_filter",
     "confidence_downgrade_threshold",
     "argus_schema_version_accept_list",
-    "suppress_categories",
-    "suppress_vendors",
-    "pattern_overrides",
+)
+
+#: ⛔ The runtime half is DERIVED from the model, never transcribed.
+#:
+#: It was a literal, and it drifted twice: `vendor_severity` and
+#: `suppress_pattern_categories` both existed on
+#: ``rules.RuntimeSeverityOverride`` while this list did not know them, so
+#: `lynceus-validate` told an operator their working configuration contained an
+#: "unknown key". Being told a setting does not exist, by the tool whose job is
+#: to check your config, is worse than no validation: it invites deleting the
+#: line that was doing the work.
+#:
+#: A hand-copied list looks derived and is not. This one cannot fall behind the
+#: model, because it IS the model.
+SEVERITY_OVERRIDES_KNOWN_KEYS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        _SEVERITY_OVERRIDES_IMPORT_TIME_KEYS + tuple(RuntimeSeverityOverride.model_fields)
+    )
 )
 
 VALID_SEVERITIES: tuple[str, ...] = ("low", "med", "high")
