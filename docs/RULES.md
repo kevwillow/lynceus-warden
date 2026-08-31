@@ -17,15 +17,40 @@ Each `Rule`:
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `name` | string | (required) | Unique identifier. Used as the dedup key and recorded on every emitted alert. |
-| `rule_type` | string | (required) | One of `watchlist_mac`, `watchlist_oui`, `watchlist_ssid`, `ble_uuid`, `new_non_randomized_device`. |
+| `rule_type` | string | (required) | One of the eleven types listed below. |
 | `severity` | string | (required) | One of `low`, `med`, `high`. |
 | `enabled` | bool | `true` | When `false`, the rule is loaded but skipped during evaluation. Useful for keeping rules in the file without firing. |
+| `shadow` | bool | `false` | When `true`, the rule is evaluated in full against live traffic and counted, but **cannot produce an alert or a notification**. See [Shadow mode](#shadow-mode-measure-a-rule-before-you-enable-it). Not a synonym for `enabled: false`, which skips the rule entirely and counts nothing. |
 | `patterns` | list of string | `[]` | Required and non-empty for all `watchlist_*` and `ble_uuid` rules. Must be empty for `new_non_randomized_device`. |
 | `description` | string \| null | `null` | Free-form note. When set, it appears in the alert message body. |
 
 Pattern format depends on rule type. See the per-type sections below. Patterns are normalized at load time (e.g. MACs are lowercased and converted to colon-separated form), so `AA-BB-CC-DD-EE-FF` and `aa:bb:cc:dd:ee:ff` are equivalent.
 
-## The five rule types
+## The rule types
+
+⚠️ **There are eleven, and only five are documented in detail below.** This
+heading read "The five rule types" until 2026-08-31, which was true when
+written and stopped being true as types were added without the doc following.
+The authoritative list is the `rule_type` literal in
+[src/lynceus/rules.py](../src/lynceus/rules.py); a ruleset naming anything else
+is rejected at load.
+
+| type | documented below | notes |
+| --- | --- | --- |
+| `watchlist_mac` | ✅ | |
+| `watchlist_oui` | ✅ | |
+| `watchlist_ssid` | ✅ | |
+| `ble_uuid` | ✅ | |
+| `new_non_randomized_device` | ✅ | |
+| `watchlist_mac_range` | ⛔ not yet | |
+| `watchlist_ble_manufacturer_id` | ⛔ not yet | ships commented out; see [Shadow mode](#shadow-mode-measure-a-rule-before-you-enable-it) before enabling |
+| `watchlist_drone_id_prefix` | ⛔ not yet | ships commented out; capture path unverified against a real drone |
+| `watchlist_ble_local_name` | ⛔ not yet | ships commented out |
+| `watchful_recurrence` | ⛔ not yet | |
+| `ble_device_class` | ⛔ not yet | |
+
+Writing the six missing sections is open work. They are named here rather than
+omitted, because a list that silently stops at five reads as complete.
 
 ### `watchlist_mac`
 
@@ -127,6 +152,59 @@ Severity drives both the ntfy priority and the tag emoji:
 The ntfy notification title is always `lynceus: {SEVERITY} alert` (uppercase severity), and the body is the rule's generated message. See [src/lynceus/notify.py](../src/lynceus/notify.py) for the exact mapping.
 
 A rough calibration: reserve `high` for things you would actually drop a meeting for (Pineapple OUI, known bad MAC). Keep `low` for the broad "noticed something new" rule. Use `med` in between, sparingly.
+
+## Shadow mode: measure a rule before you enable it
+
+Set `shadow: true` on a rule. It is then evaluated in full against live traffic
+and its hits are counted, and it **alerts on nothing**.
+
+```yaml
+  - name: argus_ble_manufacturer_id
+    rule_type: watchlist_ble_manufacturer_id
+    severity: low
+    patterns: []
+    shadow: true          # evaluated, counted, alerts on NOTHING
+```
+
+Restart the daemon, leave it a day, then read the result on `/settings`, or:
+
+```
+journalctl -u lynceus.service | grep 'shadow rule'
+```
+
+**Why this exists.** Several rules ship commented out on an alert-storm
+argument computed against the *bundled* watchlist. That argument says nothing
+about your airspace, and until you can measure your own, enabling a rule is a
+guess. Shadow mode turns the guess into a number from your own site.
+
+⛔ **A shadow rule cannot alert, structurally rather than by convention.**
+`evaluate()` returns only alertable hits; a shadow rule's hits go to a separate
+sink and appear in no other return value. Forgetting the sink costs you counts.
+It cannot cost you a storm.
+
+⛔ **Read the denominator, not just the count.** Zero means two opposite things
+and they demand opposite responses:
+
+| result | meaning | what to do |
+| --- | --- | --- |
+| hits > 0 | the rule fires here | decide whether that volume is acceptable |
+| 0 hits, field **was** seen | genuinely quiet on this site, this window | reasonable to enable |
+| 0 hits, field **never** seen | the rule is inert; the capture path never populates the field | enabling it buys nothing and hides the gap |
+
+The `/settings` card is three-valued (`fired` / `quiet` / `inert`) for exactly
+this reason, and carries the window it counted over, because a total with no
+window is not a rate.
+
+⚠️ **The "inert" case is live, not theoretical.** For a Kismet-only install the
+field paths for `ble_manufacturer_id` and `drone_id_prefix` are unverified
+against a real capture, so those fields may read `None` on every observation.
+With the BLE bridge on, the manufacturer-id half is proven end to end.
+
+⚠️ **A quiet window is evidence about your site over that window**, not a
+property of the rule. Airspace changes; so does the answer.
+
+`enabled: false` is **not** a synonym. It skips the rule entirely, so it counts
+nothing and teaches you nothing.
 
 ## Allowlist semantics
 
