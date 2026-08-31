@@ -38,7 +38,7 @@ The schema is defined in [src/lynceus/config.py](../src/lynceus/config.py) and r
 | `evidence_capture_enabled` | bool | `true` | Whether to capture an evidence snapshot when an alert fires. Each snapshot stores the full Kismet device record (subject to `capture.*` redaction) plus RSSI history; storage cost grows with alert volume and `evidence_retention_days`. Set `false` on storage-constrained Pis. | `false` |
 | `evidence_retention_days` | int | `90` | How long to keep evidence rows before the daily prune deletes them. Range `[1, 3650]`. Increase for transparency-reporting use cases; decrease to reduce on-disk exposure of operator-side data. | `30` |
 | `evidence_store_gps` | bool | `false` | Whether to store the OPERATOR's GPS fix in evidence rows. Kismet's geopoint is the receiver's location, not the observed device's, so enabling this builds a high-resolution operator-movement log retained per `evidence_retention_days`. Opt-in by default. See the README privacy section. | `true` |
-| `severity_overrides_path` | string \| null | `null` | Path to a `severity_overrides.yaml` file holding operator-local vendor overrides, device-category severity bumps, the confidence-downgrade threshold, and the Argus CSV schema-version accept-list. Read by `lynceus-import-argus --override-file`, so edits take effect at the next import. | `/etc/lynceus/severity_overrides.yaml` |
+| `severity_overrides_path` | string \| null | `null` | Path to a `severity_overrides.yaml` file. It holds **ten** keys across two layers that are consumed by different code at different times. See [`severity_overrides.yaml`: two layers, one file](#severity_overridesyaml-two-layers-one-file) below, because "when does my edit take effect" has two different answers. | `/etc/lynceus/severity_overrides.yaml` |
 | `watchlist_staleness_warn_days` | integer | `30` | Age at which `/settings` marks the imported watchlist stale. The bundled `lynceus-refresh.timer` runs weekly, comfortably inside this window, so the badge stays cold on a host that has enabled it. | `14` |
 
 ### `capture`: Tier 1 passive metadata
@@ -95,6 +95,38 @@ Why you might: at a 60-second poll interval one continuously-present device cont
 The prune runs from the poll loop at most once per 24 hours, and logs what it deleted at INFO so a run leaves a trail in `journalctl`. The cutoff is exclusive: a row exactly at the boundary is kept. Only `sightings` is touched. Alerts are your record of what was decided and outlive the observations behind them, and devices keep their identity after their rows age out.
 
 ⚠️ Once set, `/devices/<mac>` states that older sightings were deleted. Without that line the existing "showing N of M" count would imply the rest are still retrievable.
+
+### `severity_overrides.yaml`: two layers, one file
+
+One file, two consumers, two different answers to "when does my edit take effect". You may maintain either subset or both; `lynceus-validate` accepts all ten keys.
+
+**Import-time layer.** Read by `lynceus-import-argus --override-file`, so an edit takes effect **at your next import** and changes what is written into the watchlist.
+
+| key | what it does |
+| --- | --- |
+| `vendor_overrides` | operator-local vendor naming |
+| `geographic_filter` | which rows are admitted by scope |
+| `confidence_downgrade_threshold` | confidence floor applied on import |
+| `argus_schema_version_accept_list` | which Argus CSV schema versions are accepted |
+
+**Runtime layer.** Read by the daemon, the BLE bridge and the web UI's liveness view. These do **not** change the stored watchlist; they change what the engine does with it at evaluation time.
+
+| key | what it does |
+| --- | --- |
+| `device_category_severity` | remap severity by device category |
+| `suppress_categories` | drop hits by device category |
+| `suppress_vendors` | drop hits by vendor |
+| `vendor_severity` | remap severity by vendor |
+| `pattern_overrides` | assign severity per pattern (does **not** suppress) |
+| `suppress_pattern_categories` | drop hits on `(pattern_type AND device_category)` together |
+
+⛔ **A runtime edit needs a daemon restart, NOT an import.** `load_runtime_severity_overrides` runs once in `Poller.__init__`, and the poller's mtime file-watch covers the allowlist files only. Re-running an import will not pick up a runtime change, and neither will waiting.
+
+```bash
+sudo systemctl restart lynceus
+```
+
+⚠️ **The list above is ten keys because the model has ten.** This enumeration named four of them until 2026-08-31 and omitted the whole runtime half, while telling operators their edits would take effect "at the next import". The same drift bit `lynceus-validate`, which called two working keys "unknown" (#254); its key list is now derived from `RuntimeSeverityOverride` rather than transcribed. This table is still transcribed, so check it against `rules.py` before trusting it.
 
 ### Cross-field validation
 
@@ -359,14 +391,24 @@ The three drop reasons map to the three silent-drop sites in the poll loop, each
 
 ## Reload semantics
 
-The config is read **once at startup**. Changes to `lynceus.yaml`, `rules.yaml`, or `allowlist.yaml` require a service restart:
+The config is read **once at startup**, with one exception that is easy to get backwards:
+
+| file | when your edit takes effect |
+| --- | --- |
+| `allowlist.yaml` / `allowlist_ui.yaml` | ⭐ **live, no restart.** The poller stats both files before every tick and reloads on an mtime change (`_maybe_reload_allowlist`). |
+| `lynceus.yaml` | restart |
+| `rules.yaml` | restart |
+| `severity_overrides.yaml`, runtime keys | restart (see [two layers, one file](#severity_overridesyaml-two-layers-one-file)) |
+| `severity_overrides.yaml`, import-time keys | next `lynceus-import-argus` run |
 
 ```bash
 sudo systemctl restart lynceus
 sudo systemctl restart lynceus-ui
 ```
 
-Live reload (SIGHUP, file-watch, or a control socket) is tracked in [BACKLOG.md](../BACKLOG.md) under web-UI editing. That work needs the validation/rollback machinery first. Until then, plan to bundle config edits and restart deliberately rather than tweaking and hoping.
+⚠️ **This section listed `allowlist.yaml` as restart-only until 2026-08-31.** That was true when written and stopped being true once the mtime watch landed; the watch exists precisely so that an operator edit, and every UI button click that writes `allowlist_ui.yaml`, take effect without a restart.
+
+General live reload (SIGHUP or a control socket) for the *other* files is tracked in [BACKLOG.md](../BACKLOG.md) under web-UI editing. That work needs the validation/rollback machinery first. Until then, plan to bundle those edits and restart deliberately rather than tweaking and hoping.
 
 ## Database migration rollback
 
