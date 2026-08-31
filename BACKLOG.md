@@ -776,12 +776,29 @@ without touching the 17,806 `mac_range` and 12,055 hostname rows that carry
 the detection which works. That was the whole reason `suppress_categories`
 could not be used.
 
-⇒ **The code half of this gate is closed. What is left is a measurement.**
+⇒ **The code half of this gate is closed. What is left is a measurement, and
+the mechanism to take it SHIPPED 2026-08-27 (#246, #248, #251).**
 Nobody can still say whether enabling the bridge would storm *this* operator,
 because the argument above is computed against the shipped corpus rather than
-against their captures. Phase 3 of
-[docs/UI_CONFIGURATION_DESIGN.md](docs/UI_CONFIGURATION_DESIGN.md) is the
-dry-run that answers it with a number from their own data.
+against their captures. **Shadow mode answers it from their own airspace.**
+Uncomment the rule with `shadow: true`, restart, leave it a day: the rule is
+evaluated in full against live traffic, counted, and alerts on nothing.
+`config/rules.yaml` carries the instructions inline; the `/settings` card
+renders the result, and `docs/RULES.md` documents the field.
+
+⛔ **Read the denominator, not just the count**, because zero means two
+opposite things. Zero hits with the field seen is a quiet site. Zero hits with
+the field never seen is broken plumbing, and enabling the rule would buy
+nothing while hiding the gap. The `/settings` card is three-valued for exactly
+this reason (`fired` / `quiet` / `inert`).
+
+⚠️ **This entry used to point at "phase 3 of the UI configuration design", the
+replay dry-run. That route cannot answer THIS question, and the reason is
+circular:** `ble_manufacturer_id` is never persisted, the raw record is kept
+only when an alert fires, and a commented-out rule never fires. Not having the
+rule enabled is exactly why the history needed to evaluate it does not exist.
+The dry-run remains the right design for rules whose inputs *are* stored; it
+was never going to work here. ⇒ [docs/UI_CONFIGURATION_DESIGN.md](docs/UI_CONFIGURATION_DESIGN.md) §4.3.
 
 ⚠️ Re-measured 2026-08-26 and the figures below are unchanged and still
 correct: `ble_manufacturer_id` 3,969 rows / 2 actionable, `ble_company_id`

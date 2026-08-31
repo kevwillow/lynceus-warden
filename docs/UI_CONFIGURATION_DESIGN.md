@@ -156,7 +156,30 @@ same reflex needs re-deriving rather than copying: the question is which
 direction leaves the operator less protected, and it is not automatically the
 same answer.
 
-### 4.3 The dry-run, the piece that unblocks BLE-G1
+### 4.3 The dry-run
+
+> ⛔ **SUPERSEDED for BLE-G1, 2026-08-27.** This section was titled "the piece
+> that unblocks BLE-G1" and it was wrong about that one case. **Replay cannot
+> answer BLE-G1, and the reason is circular:** `ble_manufacturer_id` is never
+> persisted, the raw record is kept only when an alert fires, and a
+> commented-out rule never fires. Not having the rule enabled is exactly why
+> the history needed to evaluate it does not exist. No amount of window
+> widening fixes that; the rows are not there.
+>
+> BLE-G1 was unblocked instead by **shadow rules** (#246, #248, #251): the rule
+> runs in full against *live* traffic, is counted, and cannot alert. Forward
+> measurement, not replay. See `config/rules.yaml` and `docs/RULES.md`.
+>
+> ⚠️ **The dry-run below is still the right design for its actual scope**:
+> tuning rules whose inputs *are* stored (severity overrides, suppression, the
+> `watchlist_*` types that already fire). It is no longer a prerequisite for
+> anything, so it drops out of the critical path. Kept because §10's ordering
+> and §4.4 still refer to it.
+>
+> ⭐ The general lesson, worth carrying into the next design: **a replay
+> dry-run can only score a rule whose inputs were recorded while it was off.**
+> Check that before promising one, because the rules most worth measuring
+> before enabling are exactly the ones nobody has been storing data for.
 
 Because `evaluate()` is pure, a candidate configuration can be scored without
 firing anything:
@@ -306,18 +329,31 @@ path from a genuinely broken config, not a mocked one.
 This is more than one plan's worth of work. It decomposes into four phases that
 each land independently and leave the product working:
 
-1. **`lynceus-reset-config` + README.** The backstop everything else leans on,
-   and the only phase with no prerequisites. Built first precisely because later
-   phases are safer once it exists.
-2. **The `(pattern_type, device_category)` suppression filter.** One new field on
-   `RuntimeSeverityOverride` (`rules.py:360`), following the existing
-   `suppress_categories` pattern, plus the loader and reload wiring. **This alone
-   unblocks BLE-G1** even with no UI work at all.
-3. **Dry-run scoring**, exposed first as a CLI subcommand so it can be tested
-   without any web surface, then surfaced in the UI.
-4. **The editable settings page and the derived "not configurable here" panel.**
-   Last, because it depends on 2 and 3, and because it is the phase that widens
-   the security surface.
+> **Status, measured 2026-08-31 at `19fdc9d`.** Two of the four shipped, and the
+> third was overtaken. Stamped here because a phase list is a set of claims
+> about what is still unbuilt, and shipping refutes claims.
+
+1. ✅ **SHIPPED 2026-08-26 (#243). `lynceus-reset-config` + README.** The
+   backstop everything else leans on, and the only phase with no prerequisites.
+   Built first precisely because later phases are safer once it exists.
+2. ✅ **SHIPPED 2026-08-26 (#242). The `(pattern_type, device_category)`
+   suppression filter**, as `suppress_pattern_categories`. One new field on
+   `RuntimeSeverityOverride`, following the existing `suppress_categories`
+   pattern, plus the loader and reload wiring. This closed the **code** half of
+   BLE-G1 with no UI work at all. ⚠️ It did not unblock the gate on its own: a
+   measurement was still owed, which is what phase 3 was supposed to supply.
+3. ⚠️ **NOT BUILT, and no longer on the critical path. Dry-run scoring**,
+   exposed first as a CLI subcommand so it can be tested without any web
+   surface, then surfaced in the UI. **BLE-G1 was unblocked without it**, by
+   shadow rules (#246, #248, #251), because replay structurally cannot score a
+   rule whose inputs are only stored when it fires. See the banner on §4.3. The
+   dry-run keeps its value for rules whose inputs *are* stored; it is now a
+   nice-to-have rather than a prerequisite.
+4. ⛔ **NOT BUILT. The editable settings page and the derived "not configurable
+   here" panel.** Last, because it depends on 2 and 3, and because it is the
+   phase that widens the security surface. ⚠️ Do not read the `/settings` cards
+   shipped in #245 and #251 as this phase: they are **readouts**. `/settings`
+   has no POST route, and no web request writes a config file.
 
 `lynceus-import-config` (§5.1) can land any time after 1; it is independent of
 the UI work.
