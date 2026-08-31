@@ -1084,7 +1084,22 @@ details:has(> .probe-reveal) > summary::after {
    below the fold — i.e. it wrecks the density target precisely when something
    IS wrong and the operator most needs to see the alerts. Measured at 1280x900:
    the alerts block bottom sat at 969px with the traceback, 900px is the target.
-   Clamp it to one line; the full string stays available via title=. */
+   The full string stays available via title=.
+
+   ⛔ This comment used to close HERE, four lines early, with a stray
+   star-slash terminator. Everything below it then parsed as CSS source, and
+   the browser swallowed the next selector into an invalid one and DROPPED
+   the `.status-line .status-error` rule.
+
+   Measured 2026-08-31 in Chromium: 0 parsed rules referenced `status-error`
+   while the source plainly declared one. The rule below had been dead since
+   the stray was introduced; nothing failed, because CSS error recovery is
+   silent. `tests/test_css_comments_are_well_formed.py` now catches it.
+
+   (Written as "star-slash" on purpose: the literal characters cannot appear
+   inside a comment that describes them, which is exactly how the first
+   attempt at this fix re-introduced the bug. The guard caught that too.)
+
    The character cap lives in index.html (a `truncate` filter), not here: CSS
    clamping this inside the flex row fixed one viewport and broke the other,
    both measured. All this rule does is let the already-short string wrap
