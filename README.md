@@ -401,8 +401,11 @@ until this release enabled the rule.
 
 **What that run did not cover:**
 
-- **Push delivery.** The notifier was called with the right payload; a real
-  ntfy push was not sent. The last hop to your phone is untested.
+- **Push delivery, in that run only.** The notifier was called with the right
+  payload; that particular run sent no real ntfy push. The hop itself is not
+  untested: a live alert for a Flock Safety camera, detected in the field, has
+  arrived on a phone as an ntfy notification. What that one run did not
+  re-prove, it did not re-prove.
 - **The daemon's own scheduling.** The flush was driven directly. That logic is
   production, but the long-running restart-and-retry loop was not exercised.
 - **Identity across rotations**, described further up. One
