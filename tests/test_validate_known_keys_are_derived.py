@@ -7,9 +7,25 @@ operator's WORKING configuration as containing an "unknown key".
 
 That is worse than no validation. The tool whose job is to check your config
 told you a setting does not exist, which invites deleting the line that was
-doing the work. Measured 2026-08-27 with a real
-`suppress_pattern_categories: {ble_manufacturer_id: [unknown]}` file that was
-suppressing ~8,000 would-be alerts a day at the time it was called unknown.
+doing the work. The file was a real
+`suppress_pattern_categories: {ble_manufacturer_id: [unknown]}` holding back a
+continuous alert storm at the time it was called unknown.
+
+⚠️ **This docstring used to claim "~8,000 would-be alerts a day". That figure
+was never measured.** It was ``shadow_seen`` (the denominator: how often the
+field was OBSERVED) read as a hit count, extrapolated from 65 seconds, taken
+from a run whose database contains no ``shadow:<rule>`` key and no
+``shadow_since`` at all, meaning zero hits were ever recorded there.
+
+Re-measured 2026-08-31, one adapter, same corpus, 350s per arm:
+
+    suppression OFF -> 22 hits / 22 observations   (100%, ~4,200/day here)
+    suppression ON  ->  0 hits / 19 observations
+
+So the storm is real and the suppression removes it completely; only the
+published number was wrong. ⇒ The three-valued reading exists for exactly this
+reason: a count is meaningless without its denominator, and the denominator is
+not the count.
 """
 
 from __future__ import annotations
