@@ -71,11 +71,11 @@ dev = [
     # a separate extra so `make install` gives a contributor the same tooling
     # CI has, and `pytest --cov` works from a fresh clone without a second
     # install step.
-    "pytest-cov>=7.0",
+    "pytest-cov>=7.1.0",
     "httpx>=0.28.1",
     "freezegun>=1.5.5",
-    "ruff>=0.16.2",
-    "build>=1.5.0",
+    "ruff>=0.16.5",
+    "build>=1.6.0",
 ]
 
 [project.scripts]
