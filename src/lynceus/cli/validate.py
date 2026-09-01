@@ -493,6 +493,51 @@ def validate_rules_yaml(path: Path) -> FileReport:
     )
 
 
+#: Human labels for the runtime override fields, keyed by model field name.
+#:
+#: ⛔ This map is a LABEL lookup, never the list of what to report. The set of
+#: things reported is iterated from ``RuntimeSeverityOverride.model_fields``,
+#: so a field added to the model cannot go missing from the summary; the worst
+#: a missing label can do is print the raw field name.
+#:
+#: That distinction is the whole point. The previous summary transcribed four
+#: field names by hand and silently omitted ``vendor_severity`` and
+#: ``suppress_pattern_categories`` -- the SAME two keys, in the same file, that
+#: #254 had just fixed in ``SEVERITY_OVERRIDES_KNOWN_KEYS``. Measured
+#: 2026-09-01 against a real file whose only content was
+#: ``suppress_pattern_categories``: the validator called it
+#: "0 suppressed category(ies), 0 suppressed vendor(s), 0 pattern override(s)",
+#: i.e. it reported an operator's load-bearing suppression as nothing at all.
+_RUNTIME_OVERRIDE_LABELS: dict[str, str] = {
+    "device_category_severity": "remap(s)",
+    "suppress_categories": "suppressed category(ies)",
+    "suppress_vendors": "suppressed vendor(s)",
+    "pattern_overrides": "pattern override(s)",
+    "vendor_severity": "vendor remap(s)",
+    "suppress_pattern_categories": "suppressed pattern_category(ies)",
+}
+
+
+def _summarise_runtime_overrides(loaded: RuntimeSeverityOverride) -> str:
+    """One count per field the model declares, derived rather than transcribed.
+
+    Fields are iterated from the model so the summary cannot fall behind it.
+    Every field is reported, including the zeros: an operator reading this line
+    is checking that the setting they wrote is being seen, and omitting the
+    zeros would make "not present" and "present but empty" look identical.
+    """
+    parts = []
+    for name in RuntimeSeverityOverride.model_fields:
+        value = getattr(loaded, name, None)
+        label = _RUNTIME_OVERRIDE_LABELS.get(name, name)
+        try:
+            count = len(value)
+        except TypeError:  # pragma: no cover -- a future non-sized field
+            count = 0 if value is None else 1
+        parts.append(f"{count} {label}")
+    return ", ".join(parts)
+
+
 def validate_severity_overrides_yaml(path: Path) -> FileReport:
     """Validate ``severity_overrides.yaml``.
 
@@ -793,12 +838,7 @@ def validate_severity_overrides_yaml(path: Path) -> FileReport:
         if loaded is None or loaded.is_empty():
             summary = "valid (no active runtime keys)"
         else:
-            summary = (
-                f"{len(loaded.device_category_severity)} remap(s), "
-                f"{len(loaded.suppress_categories)} suppressed category(ies), "
-                f"{len(loaded.suppress_vendors)} suppressed vendor(s), "
-                f"{len(loaded.pattern_overrides)} pattern override(s)"
-            )
+            summary = _summarise_runtime_overrides(loaded)
     else:
         summary = "validation failed"
     return FileReport(
