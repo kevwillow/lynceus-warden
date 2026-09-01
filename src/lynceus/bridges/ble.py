@@ -190,6 +190,11 @@ class _BufferEntry:
     # Derived Remote-ID serial only, on the same terms: the ODID service-data
     # payload is decoded in ble_odid and dropped there. Never the raw bytes.
     drone_id_prefix: str | None = None
+    # GAP Complete/Shortened Local Name. STICKY, like drone_id_prefix and for
+    # the same reason: a device typically carries its name in the SCAN RESPONSE
+    # rather than in every advertisement, so most adverts in a window decode to
+    # None and clearing on those would blank the name before the flush.
+    local_name: str | None = None
 
 
 class BleBridge:
@@ -272,6 +277,7 @@ class BleBridge:
         manufacturer_data,
         service_uuids,
         service_data,
+        local_name=None,
     ) -> None:
         """Fold one advertisement into the per-MAC buffer (latest wins)."""
         try:
@@ -291,6 +297,12 @@ class BleBridge:
         # in service data, not manufacturer data, which is why this field has
         # to be plumbed at all — see ble_odid's module docstring.
         drone_id_prefix = decode_service_data(service_data)
+        # ⛔ Same "non-empty string else None" contract as Kismet's
+        # ``_extract_ble_name``, deliberately. The two sources feed the SAME
+        # ``watchlist_ble_local_name`` rule, which matches by case-sensitive
+        # equality, so any normalisation difference between them would make the
+        # same device match from one source and miss from the other.
+        name = local_name if isinstance(local_name, str) and local_name else None
         existing = self._buffer.get(mac)
         if existing is None:
             self._buffer[mac] = _BufferEntry(
@@ -301,6 +313,7 @@ class BleBridge:
                 service_uuids=uuids,
                 device_class=device_class,
                 drone_id_prefix=drone_id_prefix,
+                local_name=name,
             )
         else:
             # Keep the latest advert's fields; preserve the window's first_seen.
@@ -316,6 +329,13 @@ class BleBridge:
             # the flush. A newly decoded serial still replaces the old one.
             if drone_id_prefix is not None:
                 existing.drone_id_prefix = drone_id_prefix
+            # STICKY for the same reason, and it is not the same reason as
+            # ODID's. The name usually rides in the SCAN RESPONSE, so a device
+            # that named itself once will send many later adverts with no name
+            # at all. Overwriting on those would blank it before the flush and
+            # the rule would see None on a device that did identify itself.
+            if name is not None:
+                existing.local_name = name
 
     @staticmethod
     def _select_manufacturer_id(manufacturer_ids) -> str | None:
@@ -358,6 +378,11 @@ class BleBridge:
             is_randomized=_derive_is_randomized(mac),
             ble_manufacturer_id=self._select_manufacturer_id(entry.manufacturer_ids),
             ble_service_uuids=self._normalize_uuids(entry.service_uuids),
+            # ⛔ Gated on capture.ble_friendly_names, mirroring the Kismet path
+            # (kismet.py: `if capture_ble_name and radio_family == "ble"`). An
+            # operator who opted out must get None from BOTH sources, or the
+            # opt-out means "opted out of one capture backend".
+            ble_local_name=(entry.local_name if self.config.capture.ble_friendly_names else None),
             seen_by_sources=(bridge_source_name(self.adapter),),
             ble_device_class=entry.device_class,
             drone_id_prefix=entry.drone_id_prefix,
@@ -441,6 +466,14 @@ class BleBridge:
             # 2026-08-03); _record_advert takes it as a required argument so a
             # future caller cannot quietly drop it again.
             service_data=getattr(advertisement_data, "service_data", None),
+            # ⛔ bleak exposes this as the FIRST field of AdvertisementData and
+            # the bridge dropped it, so `watchlist_ble_local_name` could never
+            # fire on a bridge-only deployment: `ble_local_name` stayed None on
+            # every observation the bridge produced. Measured 2026-09-01 with a
+            # live scan, `shadow_seen:ble_local_name` sat at 0 while BLE devices
+            # were being captured. That rule's whole corpus is Flock Safety
+            # device names, 12 rows and 100% actionable.
+            local_name=getattr(advertisement_data, "local_name", None),
         )
 
     def _make_scanner(self):  # pragma: no cover - rig-only path
