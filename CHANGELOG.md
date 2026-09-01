@@ -71,8 +71,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   known-key list was a hand-written literal and it had drifted twice.
   `vendor_severity` and `suppress_pattern_categories` both exist on
   `RuntimeSeverityOverride` and neither was in the list, so a
-  `severity_overrides.yaml` that was suppressing roughly 8,000 would-be alerts
-  a day was reported as containing an unknown key.
+  `severity_overrides.yaml` that was suppressing a real and continuous alert
+  storm was reported as containing an unknown key.
+
+  ⚠️ **An earlier draft of this entry said "roughly 8,000 would-be alerts a
+  day" and that figure was not measured.** It was `shadow_seen` (the
+  denominator, i.e. how often the field was OBSERVED) read as a hit count, over
+  a 65-second window, from a run whose database records no shadow hit at all.
+  Re-measured properly 2026-08-31 on one adapter, `suppress_pattern_categories`
+  removed for the control arm: **22 hits over 22 observations in 350s, a 100%
+  match rate, about 4,200/day in that airspace.** With the suppression back on
+  and the same rule and corpus: **0 hits over 19 observations.** The storm is
+  real and the suppression removes it entirely; only the published number was
+  wrong. Rates are per-site and per-window, so quote the window.
 
   ⛔ That is worse than no validation. The tool whose job is to check your
   config told you a setting does not exist, which invites deleting the line

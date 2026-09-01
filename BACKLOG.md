@@ -776,13 +776,38 @@ without touching the 17,806 `mac_range` and 12,055 hostname rows that carry
 the detection which works. That was the whole reason `suppress_categories`
 could not be used.
 
-⇒ **The code half of this gate is closed. What is left is a measurement, and
-the mechanism to take it SHIPPED 2026-08-27 (#246, #248, #251).**
-Nobody can still say whether enabling the bridge would storm *this* operator,
-because the argument above is computed against the shipped corpus rather than
-against their captures. **Shadow mode answers it from their own airspace.**
-Uncomment the rule with `shadow: true`, restart, leave it a day: the rule is
-evaluated in full against live traffic, counted, and alerts on nothing.
+⇒ **The code half of this gate is closed, the mechanism to measure it SHIPPED
+2026-08-27 (#246, #248, #251), and the measurement has now been TAKEN.**
+
+⭐ **MEASURED 2026-08-31 on one adapter (`hci0`), against the 23,430-row
+watchlist above, 350 seconds per arm, run as an A/B with the suppression as the
+only variable:**
+
+    suppress_pattern_categories OFF ->  22 hits / 22 observations   100%
+    suppress_pattern_categories ON  ->   0 hits / 19 observations     0%
+
+**The storm is real, and it is total.** Every single observation of the
+manufacturer-ID field matched the rule. In that airspace and window that is
+roughly 4,200 alerts a day, all of them `device_category=unknown`, and it is
+why the rule ships commented out.
+
+**The shipped remedy removes it completely.** With
+`suppress_pattern_categories: {ble_manufacturer_id: [unknown]}` the rule
+produced zero hits while the field was still seen 19 times: the honest `quiet`,
+not the `inert` that would mean the capture path is broken.
+
+⚠️ **Both arms had a non-zero denominator.** That is what makes the zero in arm
+B evidence rather than an absence of data, and it is the whole reason #248
+publishes the denominator.
+
+⇒ **This gate's question is answered.** Enabling `argus_ble_manufacturer_id`
+requires the suppression alongside it; enabling it bare would storm. The
+remaining step is an operator decision, not a measurement: take the rule out of
+`shadow: true` with the suppression in place, on a site that has run its own
+measurement. **Rates are per-site and per-window; re-measure, do not inherit
+this number.**
+
+Reproduce it: uncomment the rule with `shadow: true`, restart, leave it running.
 `config/rules.yaml` carries the instructions inline; the `/settings` card
 renders the result, and `docs/RULES.md` documents the field.
 
