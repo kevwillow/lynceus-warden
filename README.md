@@ -31,8 +31,14 @@
 A passive RF watchtower for the airspace you live in. It listens to the Wi-Fi
 and Bluetooth traffic already flying past your antenna, matches every device it
 hears against a curated database of surveillance hardware, and pushes an alert
-to your phone when something interesting turns up. License-plate readers,
-drones, gunshot-detection nodes, body cams, trackers.
+to your phone when something interesting turns up.
+
+**Out of the box that means license-plate readers, drones and Apple trackers.**
+The database also carries gunshot-detection nodes, body cams, fixed cameras and
+police radios, and the matchers for them are built and tested, but the rules
+that read them ship switched off and each says why in `config/rules.yaml`. The
+table further down gives the exact count of what a stock install can alert on,
+which is smaller than the corpus and is stated rather than implied.
 
 It never transmits. It never probes. It never associates. It listens, and it
 tells you the truth about what it heard.
@@ -118,8 +124,8 @@ tool, not a tracking tool, and not a substitute for paying attention.
 ### What it's looking for
 
 The bundled watchlist is a snapshot of [Argus](https://github.com/kevwillow/argus-db),
-the companion RF-signature database. **23,441 identifiers** land in your
-database from a 41,508-record export. Nearly all of the difference is
+the companion RF-signature database. **23,430 identifiers** land in your
+database from a 41,518-record export (measured 2026-09-01). Nearly all of the difference is
 intelligence Argus carries that cannot be recovered from passive RF at all:
 hostnames, firmware strings, certificate hashes, FCC codes. The import report
 names each dropped type and its count, rather than filing 43% of your download
@@ -128,19 +134,41 @@ under "unknown" and leaving you to wonder what broke.
 Of what lands, most rows are vendor-level identifiers without a confirmed
 device category. The categorised set is smaller and sharper:
 
-| Category | Rows | Representative hardware |
-| --- | ---: | --- |
-| `drone` | 473 | DJI and friends, plus Remote-ID broadcast prefixes |
-| `cctv_camera` | 143 | Hikvision-class fixed cameras |
-| `alpr` | 62 | Flock Safety and other plate readers |
-| `gunshot_detect` | 41 | SoundThinking / ShotSpotter-class nodes |
-| `police_radio` | 13 | |
-| `hacking_tool` | 13 | Known-bad pentest hardware |
-| `persistent_surveillance` | 12 | |
-| `drone_detect` | 8 | Counter-UAS equipment |
-| `body_cam` | 7 | |
-| `gps_tracker` | 1 | |
-| `unknown` | 22,774 | Vendor-attributed identifiers, category not yet assigned |
+Counted 2026-09-01 from a real import of the shipped CSV, not from the export.
+**Rows** is what lands in your database. **Reachable by default** is how many of
+those a stock `rules.yaml` can actually alert on, which is a different and much
+smaller number, and the honest one. See the note below the table.
+
+| Category | Rows | Reachable by default | Representative hardware |
+| --- | ---: | ---: | --- |
+| `unknown` | 22,759 | 5 | Vendor-attributed identifiers, category not yet assigned |
+| `drone` | 464 | 8 | DJI and friends, plus Remote-ID broadcast prefixes |
+| `cctv_camera` | 60 | 0 | Hikvision-class fixed cameras |
+| `alpr` | 55 | 10 | Flock Safety and other plate readers |
+| `gunshot_detect` | 38 | 0 | SoundThinking / ShotSpotter-class nodes |
+| `police_radio` | 12 | 0 | |
+| `hacking_tool` | 11 | 6 | Known-bad pentest hardware |
+| `automotive_telematics` | 9 | 0 | |
+| `persistent_surveillance` | 8 | 0 | |
+| `drone_detect` | 8 | 0 | Counter-UAS equipment |
+| `body_cam` | 6 | 0 | |
+| **total** | **23,430** | **29** | |
+
+⛔ **Only 29 of those 23,430 rows can fire an alert on a stock install**, and
+that is a configuration default rather than a limit of the detection code.
+A stock `rules.yaml` enables two delegation rules, `argus_mac` and `argus_ssid`,
+which read the `mac`, `ssid` and `ssid_pattern` pattern types. Everything else
+in the corpus sits behind `argus_oui`, `argus_mac_range`, `argus_ble_uuid`,
+`argus_ble_manufacturer_id`, `argus_ble_local_name` and
+`argus_drone_id_prefix`, all of which **ship commented out** in
+`config/rules.yaml`, each with its reason written above it.
+
+⚠️ **The previous version of this table was wrong in ten of its eleven rows.**
+It counted CSV records rather than database rows, was never recomputed after
+the corpus was re-cut, listed a `gps_tracker` category that lands **zero** rows,
+and omitted `automotive_telematics`. It is regenerated here from a real import
+by the query in `docs/TESTING.md`. If you are checking this page, that is the
+number to reproduce.
 
 Every one of those rows traces back to a verifiable public source through
 Argus's audit trail. That is the whole point of the project. See
@@ -210,7 +238,7 @@ These are design commitments, not current limitations:
   and drone Remote-ID prefix. Plus allowlist suppression, first-sighting
   heuristics, watchful recurrence tracking, and per-alert / per-rule-type
   snooze gates.
-- **Database.** SQLite with 23 versioned migrations and XDG-aware path
+- **Database.** SQLite with 28 versioned migrations and XDG-aware path
   resolution. Every migration ships a paired `_down.sql`, and
   `lynceus-validate rollback --target-version N` walks the chain in reverse
   with interactive confirmation. One migration (010, pattern normalisation) is
@@ -333,6 +361,16 @@ it will not tell you that the tracker in your bag today is the one that was in i
 last Tuesday. If that ever changes it will be a feature with a version number,
 not an implication left lying around on this page.
 
+⛔ **The bigger version of the same point, and it needs no BLE hardware at
+all.** `argus_oui` and `argus_mac_range` read Wi-Fi identifiers off the ordinary
+Kismet capture path, and both **ship commented out**. That is what makes
+`cctv_camera` (29 OUI rows), `police_radio` (10 OUI rows), `drone_detect` (8
+mac_range rows) and `automotive_telematics` unreachable on a stock install, and
+none of it is a BLE problem. `argus_mac_range` is off because it would fire on
+17,786 IEEE-registry rows at `low` severity, which is a real alert-storm
+argument; `argus_oui` is off because vendor-level matching is coarse. Both are
+one uncomment away, and the reasons are written above each rule.
+
 The same honesty applies elsewhere: the BLE service-UUID and manufacturer-id
 matchers are built and tested, but they are **inert unless you enable the BLE
 bridge**, because Kismet's classic capture path never hands them any payload.
@@ -415,13 +453,17 @@ A default install also ships without `bleak`, so the bridge captures nothing
 until you `pip install 'lynceus[ble]'`, and `/settings` will tell you so.
 
 **The test suite ships, so you can check the claims on this page yourself.**
-CI runs `pytest -q`, `ruff check .` and `python -m build` on Python 3.11 and
-3.12 for every push and pull request, in about nine minutes, and on **arm64**
-as well as x86-64, because the machine this is built for is a Raspberry Pi. Most recently
-measured: **4447 passed, 1 skipped, 47 deselected**, at commit
-[`7958b28`](https://github.com/kevwillow/lynceus-warden/actions/runs/32403708354)
-with the same total on all three legs, x86-64 Python 3.11 and 3.12 and arm64.
-That is the version-bump commit itself, not its parent and not a branch head.
+CI runs `pytest -q`, `ruff check .` and `python -m build` for every push and
+pull request, in about ten minutes, across **five blocking legs**: x86-64 on
+Python 3.11, 3.12, 3.13 and 3.14, plus **arm64** on 3.11, because the machine
+this is built for is a Raspberry Pi. Most recently measured: **5303 passed, 4
+skipped, 64 deselected**, at commit
+[`3dfa7b6`](https://github.com/kevwillow/lynceus-warden/actions/runs/33546606795)
+on 2026-09-01, the same total on every leg.
+
+⭐ **A local `make test` gives that same 5303**, measured on the same commit.
+The ten files withheld for OPSEC are not in the maintainer's checkout either,
+so your clone is not missing coverage that exists somewhere else.
 
 The commit is named on purpose. A bare total is a claim that quietly stops
 being true at the next merge. This one had drifted to 3294 against an actual
@@ -570,8 +612,9 @@ previews by default and backs up rather than deletes.
 ## Bundled threat data
 
 A point-in-time Argus snapshot ships inside the wheel at
-`src/lynceus/data/default_watchlist.csv`. That is 41,508 records exported
-2026-06-03, of which 23,441 are RF-matchable and land in your database.
+`src/lynceus/data/default_watchlist.csv`. That is 41,518 records exported
+2026-06-03, of which 23,430 are RF-matchable and land in your database
+(re-counted 2026-09-01 from the shipped CSV and a real import).
 Lynceus is **not** redistributing the full Argus corpus.
 
 Refresh from the latest published export:

@@ -1,30 +1,50 @@
 # Testing
 
-## The suite is not in this repository
+## The suite IS in this repository
 
-`tests/` is gitignored and is not part of a clone. `make test` on a fresh
-checkout will not run anything, and nothing here can be independently
-verified by a reader. That is a deliberate trade, not an oversight.
+⚠️ **This section said the exact opposite until 2026-09-01, and had been wrong
+since 2026-08-02**, when the tests were tracked. It talked readers out of the
+one thing this project most wants them to do: check the claims by running them.
+The `Makefile` was corrected at the time and this file was not.
 
-The suite carries fixtures and diagnostics shaped around a specific
-physical rig. Adapter names, MAC addresses, capture artifacts, and
-watchlist entries reflecting a real deployment. Publishing it would
-publish that, which is a poor trade for a tool whose whole point is not
-handing an observer your RF environment. So the tests are maintained
-alongside the repo rather than inside it, and they gate every release.
+`tests/` is tracked. A clone gets **254 test files** and `make test` runs them:
+
+```bash
+pip install -e ".[dev]"
+make test          # about 18 minutes
+```
+
+**Ten files stay out**, listed by name in `.gitignore` rather than hidden behind
+a glob, because they embed the rig's own capture-adapter MAC or account name.
+Publishing those would publish exactly what this tool exists to keep private.
+They are disproportionately the capture-path tests, so a clone gets the least
+coverage where the product's value is. `git check-ignore -v tests/<name>` tells
+you whether a given file is one of them.
 
 What this means in practice:
 
-- **Every behavioural change still ships with a test.** That is a hard
-  rule in this project; it just lands out-of-tree.
-- **Test-count and pass-rate claims in the docs are unverifiable from a
-  clone.** Take them as the maintainer's word, weigh them accordingly,
-  and read the source, which *is* published in full.
-- **Contributors** should describe the behaviour a change relies on in
-  the PR. Coverage gets added on the maintainer's side.
-- The parts a clone *can* check are the shipped artifact and the code
-  itself: `ruff check .` and `python -m build` both run from a clean
-  checkout.
+- **Every behavioural change ships with a test**, and almost all of them are
+  in your clone where you can read and run them.
+- **Test-count and pass-rate claims are checkable, and your number should match
+  ours exactly.** Measured 2026-09-01 at `3dfa7b6`: a local `make test` and all
+  five CI legs each report **5303 passed, 4 skipped, 64 deselected**. The ten
+  withheld files are not present in this checkout either, so a clone is not
+  missing anything the maintainer's tree has.
+- **Two gates need a real machine** and are deselected by default:
+  `make release-gates` needs a capture interface for the install gate and
+  Chromium for the browser one. See the `Makefile` for the playwright setup.
+- The shipped artifact is checkable too: `ruff check .` and `python -m build`
+  both run from a clean checkout.
+
+### Reproducing the README's corpus table
+
+```bash
+lynceus-import-argus --from-bundled       # or your own export
+sqlite3 ~/.local/share/lynceus/lynceus.db \
+  "SELECT COALESCE(m.device_category,'unknown'), COUNT(*)
+     FROM watchlist w LEFT JOIN watchlist_metadata m ON m.watchlist_id=w.id
+    GROUP BY 1 ORDER BY 2 DESC;"
+```
 
 ## Historical audit: pre-0.5.0
 

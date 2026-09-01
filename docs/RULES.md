@@ -21,10 +21,33 @@ Each `Rule`:
 | `severity` | string | (required) | One of `low`, `med`, `high`. |
 | `enabled` | bool | `true` | When `false`, the rule is loaded but skipped during evaluation. Useful for keeping rules in the file without firing. |
 | `shadow` | bool | `false` | When `true`, the rule is evaluated in full against live traffic and counted, but **cannot produce an alert or a notification**. See [Shadow mode](#shadow-mode-measure-a-rule-before-you-enable-it). Not a synonym for `enabled: false`, which skips the rule entirely and counts nothing. |
-| `patterns` | list of string | `[]` | Required and non-empty for all `watchlist_*` and `ble_uuid` rules. Must be empty for `new_non_randomized_device`. |
+| `patterns` | list of string | `[]` | Depends on the rule type. See the three cases below; the old one-line rule here was wrong for ten of the eleven types. |
 | `description` | string \| null | `null` | Free-form note. When set, it appears in the alert message body. |
 
 Pattern format depends on rule type. See the per-type sections below. Patterns are normalized at load time (e.g. MACs are lowercased and converted to colon-separated form), so `AA-BB-CC-DD-EE-FF` and `aa:bb:cc:dd:ee:ff` are equivalent.
+
+### When `patterns` must be empty, and when it must not
+
+⛔ **Getting this wrong stops the daemon**, it does not disable one rule.
+`load_ruleset` raises and the process exits non-zero, so you lose all detection
+until the file is fixed. Run `lynceus-validate validate` after editing; it
+catches the same error without taking the daemon down.
+
+| case | types | `patterns` |
+| --- | --- | --- |
+| **must be EMPTY** | `new_non_randomized_device`, `watchlist_mac_range`, `watchful_recurrence` | `patterns: []` |
+| **must be NON-EMPTY** | `ble_device_class` | at least one value |
+| **either** (empty means DB delegation) | `watchlist_mac`, `watchlist_oui`, `watchlist_ssid`, `ble_uuid`, `watchlist_ble_manufacturer_id`, `watchlist_ble_local_name`, `watchlist_drone_id_prefix` | non-empty matches those literals in memory; `[]` delegates to the watchlist DB and takes severity from the matched row |
+
+⚠️ **`watchlist_mac_range` is the trap.** It is the inverse of what you would
+guess, it has no per-type section below, and this table is its only
+documentation. `config/rules.yaml` says the same thing above the rule:
+*"Patterns MUST be empty"*.
+
+⚠️ This table replaces a single sentence that read *"Required and non-empty for
+all `watchlist_*` and `ble_uuid` rules"*. That was correct for one of the eleven
+types, and it instructed exactly the shape that hard-fails for
+`watchlist_mac_range`.
 
 ## The rule types
 
@@ -208,9 +231,32 @@ nothing and teaches you nothing.
 
 ## Allowlist semantics
 
-The allowlist is checked **before** rule evaluation. If a device matches any allowlist entry, **all** alerts are suppressed for that sighting, including `new_non_randomized_device`.
+The allowlist is checked **before** rule evaluation, but what it suppresses depends on **which attribute matched**.
 
-This is a deliberate design choice: the allowlist is meant to mean "I know this device, do not bother me about it ever" with no per-rule carve-outs. If you find yourself wanting to allowlist a device for one rule but still alert on another, the right answer is usually to disable or scope down the noisy rule rather than to add a more granular allowlist.
+| entry `pattern_type` | kind | what it suppresses |
+| --- | --- | --- |
+| `mac`, `mac_range`, `oui` | **hard** (set by the radio) | everything for that sighting, including `new_non_randomized_device` |
+| `ssid`, `ble_uuid`, `ble_manufacturer_id`, `ble_local_name`, `drone_id_prefix`, … | **soft** (chosen by the device) | ambient noise only. An explicit **watchlist hit still alerts**, and the daemon logs a WARNING saying so. |
+
+⛔ **The soft case is a security boundary, not an inconsistency.** A soft value
+is attacker-controlled: anything in range can broadcast a name or a service
+UUID you have allowlisted. If a soft match could suppress watchlist hits, an
+adversary could silence your own HIGH-severity MAC entry just by advertising
+the right string. So `is_soft_attribute` (`allowlist.py:295`) splits them, and
+`poller.py:798` refuses to suppress. Fixed in #82.
+
+⚠️ **This section claimed "**all** alerts are suppressed ... no per-rule
+carve-outs" until 2026-09-01.** That was true before #82 and was corrected in
+`poller.py`'s own docstring at the time; this file was missed. It matters
+because soft entries only reach the allowlist through a **hand-edited
+`allowlist.yaml`**, which is exactly the file this section documents.
+Suppressions created from the web UI always write `pattern_type: mac`, so they
+are hard and unaffected.
+
+For hard entries the original intent still holds: the allowlist means "I know
+this device, do not bother me about it ever". If you want to allowlist a device
+for one rule but still alert on another, the right answer is usually to disable
+or scope down the noisy rule rather than to add a more granular allowlist.
 
 `allowlist.yaml` shape (from [src/lynceus/allowlist.py](../src/lynceus/allowlist.py)):
 
@@ -260,7 +306,17 @@ A rough triage flow when an alert fires:
    - **Allowlist** when the device is yours or otherwise expected. Add an entry to `allowlist.yaml` keyed by MAC for one device or by OUI for a vendor block. This is the right answer for the bulk of first-week noise.
    - **Disable a rule** (`enabled: false`) when the rule itself doesn't fit your environment, for example, `new_non_randomized_device` set to `med` in a coffee shop is going to be useless. Drop its severity or turn it off.
    - **Raise the dedup window** when a single device legitimately matches but you don't need to be told every hour. Bump `alert_dedup_window_seconds` from `3600` to `86400` (one day) for a noisy persistent match.
-3. **Restart lynceus** so the changes take effect (no live reload yet, see [CONFIGURATION.md](CONFIGURATION.md) and [BACKLOG.md](../BACKLOG.md)).
+3. **Make the change take effect.** ⭐ **An `allowlist.yaml` edit is live: no
+   restart.** The poller stats both allowlist files before every tick and
+   reloads on an mtime change, which is also why the web UI's snooze and
+   allowlist buttons take effect immediately. Editing `rules.yaml` or
+   `lynceus.yaml` **does** need `sudo systemctl restart lynceus`. See
+   [CONFIGURATION.md](CONFIGURATION.md) for the per-file table.
+
+   ⚠️ This step said "no live reload yet" until 2026-09-01. That was true for
+   thirteen days in May 2026 and false ever since, and it was false about the
+   one bullet above that this section calls the right answer for most
+   first-week noise.
 4. **Keep notes.** A short comment on each allowlist entry (`note:`) is worth its weight three months later when you can't remember why a MAC is on the list.
 
 By the end of week one, you should be down to a handful of alerts per day, almost all of which are interesting. If you're still drowning, the next move is usually to drop `new_non_randomized_device` to `low` (or off) and rely on the `watchlist_*` rules for signal.

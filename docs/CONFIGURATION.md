@@ -109,16 +109,18 @@ One file, two consumers, two different answers to "when does my edit take effect
 | `confidence_downgrade_threshold` | confidence floor applied on import |
 | `argus_schema_version_accept_list` | which Argus CSV schema versions are accepted |
 
-**Runtime layer.** Read by the daemon, the BLE bridge and the web UI's liveness view. These do **not** change the stored watchlist; they change what the engine does with it at evaluation time.
+**Runtime layer.** Read by the daemon, the BLE bridge and the web UI's liveness view. With one exception these do **not** change the stored watchlist; they change what the engine does with it at evaluation time.
 
 | key | what it does |
 | --- | --- |
-| `device_category_severity` | remap severity by device category |
+| `device_category_severity` | remap severity by device category. ⚠️ **BOTH layers**, see the note below |
 | `suppress_categories` | drop hits by device category |
 | `suppress_vendors` | drop hits by vendor |
 | `vendor_severity` | remap severity by vendor |
 | `pattern_overrides` | assign severity per pattern (does **not** suppress) |
 | `suppress_pattern_categories` | drop hits on `(pattern_type AND device_category)` together |
+
+⚠️ **`device_category_severity` is the exception: it is read by BOTH layers.** The importer bakes it into `watchlist.severity` at write time (`import_argus.py:388`, on INSERT and on UPDATE of already-imported rows), and the runtime layer re-applies it at alert time on top of whatever was baked. So editing it and restarting changes what already-imported rows fire at, without re-importing the corpus. `rules.py:287` states this outright. This table filed it as runtime-only from #257 until 2026-09-01.
 
 ⛔ **A runtime edit needs a daemon restart, NOT an import.** `load_runtime_severity_overrides` runs once in `Poller.__init__`, and the poller's mtime file-watch covers the allowlist files only. Re-running an import will not pick up a runtime change, and neither will waiting.
 
