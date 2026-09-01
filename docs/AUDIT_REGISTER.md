@@ -17,6 +17,82 @@ CORE-BROKEN findings did not survive that check** — see *Refuted* and *Rejecte
 both before re-reporting any of them. The failure is always the same shape: a promise read more
 broadly than it was written.
 
+## Red team — v1.2.0 web UI authentication, 2026-09-01 at `935497d`
+
+**Method.** 4 lanes, 2 independent passes each (`gpt-5.6-sol` and `gpt-5.6-terra`,
+high effort), bounded context piped in with no repo exploration, 10 runs, all
+exit 0. Every lead was traced to live code before being given a verdict; two of
+the reported findings did not survive that check.
+
+⭐ **The money path held.** No pass on any lane found a way to reach the
+dashboard or change detection state without the password. Credential storage,
+session validation, middleware coverage over all 45 routes, and the startup
+refusal all survived.
+
+### 🟠 AUTH-1 — the five-attempt lockout does not bound a rotating attacker · FIXED
+
+`webui/app.py:2715-2732` consults the limiter only via `client_key(request.scope)`
+(`webui/auth.py:479`), the raw peer address, and no global or credential-keyed
+counter existed anywhere.
+
+**Reproduced before fixing.** Against the unmodified limiter: **30,000 login
+attempts, not one refused**, while a single address locks at 5 as advertised.
+`MAX_TRACKED_CLIENTS = 4096` does not bound it — `_evict` protects only ACTIVE
+lockouts, so the attacker's own never-locked buckets are recycled indefinitely.
+
+⛔ The sharper consequence is work, not guessing: every attempt runs a full
+scrypt, ~16 MB and ~29 ms measured on a 12-core x86, on a product deployed to a
+Raspberry Pi. `MAX_PASSWORD_BYTES` (`auth.py:56`) already capped the body size
+against this exact shape of denial of service; the request count was not capped.
+
+🪤 **The obvious fix was wrong and was not taken.** A global FAILURE counter
+bounds the attacker and hands them a lever to lock the operator out with five
+wrong guesses — precisely what keying on the peer address was chosen to prevent
+(`LoginRateLimiter`'s own docstring). The fix is a **token bucket with no
+penalty window**: it bounds work, refills continuously, and an operator refused
+during an attack is served again seconds after it stops.
+
+⚠️ Requires LAN adjacency, outside the documented deployment (loopback plus an
+SSH tunnel). Guarded by `tests/test_login_global_throttle.py`, proven by three
+plants including one that runs the throttle after the hash instead of before.
+
+### 🟡 AUTH-2 — `::1` is missing from `LOOPBACK_HOSTS`, and there are two definitions · OPEN
+
+    config.py:28            LOOPBACK_HOSTS  = ("127.0.0.1", "localhost")
+    setup/web/server.py:63  _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+The security-critical one is the first, used by the bind refusal
+(`server.py:49`), the config validator (`config.py:500`) and `ui_passwd.py:163`.
+
+⭐ **Fails CLOSED in all three.** Binding to IPv6 loopback is classified
+non-loopback, so the validator raises and `lynceus-ui` refuses to start. An
+operator is blocked, never exposed. Low severity; the divergent definitions are
+the durable half.
+
+### Refuted — do not re-report without new evidence
+
+**Cleartext session hijacking on the LAN.** Rated HIGH by two independent
+passes. Real behaviour, deliberate, and disclosed twice: `README.md:695` states
+lynceus serves no TLS, and `server.py:113-118` prints, at startup on any
+non-loopback bind, that "your password and the session cookie it issues cross
+the network in the clear, so anything on the path can read them and reuse them",
+naming this exact attack, followed by the `ssh -L` command as the supported
+path. One reporter's own refutation line conceded it: adding `Secure` over plain
+HTTP "would merely make authentication unusable" — and `auth.py:288-297` records
+that this repo already shipped that confusion once on the CSRF cookie.
+
+**The two-read credentials race** (fixed 2026-08-25) is confirmed closed by four
+independent passes: `server.main` loads once, refuses on that snapshot, and
+passes the same value — including an explicit `None` — into `create_app`.
+
+### Not covered — this is not a clean bill
+
+No runtime exploitation: every verdict is source analysis plus one local scrypt
+timing. No session was actually replayed and the rotation attack was not driven
+against a running server. The Pi was never measured, so the DoS severity on the
+real target is unquantified. Not audited: the setup wizard's own web server
+(`setup/web/`), the CSP layer, and `/healthz.json` content.
+
 ## Label policy — `CORE-BROKEN` is retired (wave 5+)
 
 Auditors reported gaps as **CORE-BROKEN** / **CONFIRMED-BROKEN**, labels that read as verdicts. Six
