@@ -341,6 +341,32 @@ LOGIN_LOCKOUT_SECONDS = 300
 #: limiting — see ``_evict``.
 MAX_TRACKED_CLIENTS = 4096
 
+#: Global ceiling on how much scrypt work unauthenticated callers can spend,
+#: as a token bucket shared by every client.
+#:
+#: ⛔ **This is deliberately NOT a second lockout, and the difference is the
+#: whole design.** The per-client limiter above is keyed on the peer address
+#: precisely so that one attacker cannot lock the operator out. A global
+#: FAILURE COUNTER would hand that lever straight back: five wrong guesses from
+#: anywhere and the operator is refused for ``LOGIN_LOCKOUT_SECONDS``. A token
+#: bucket has no lockout period at all — it refills continuously, so the moment
+#: an attacker stops, the operator is served again within seconds.
+#:
+#: ⚠️ **What it is for.** Measured 2026-09-01: an attacker rotating source
+#: address (trivial on an IPv6 /64) took **30,000 login attempts without ever
+#: being refused**, because each address gets its own bucket and ``_evict``
+#: only protects ACTIVE lockouts — the attacker's own never-locked buckets are
+#: recycled forever. Every one of those attempts ran a full scrypt:
+#: ~16 MB and ~29 ms on a 12-core x86, and this is deployed on a Pi. The body
+#: size was already capped (``MAX_PASSWORD_BYTES``) for exactly this reason;
+#: the request COUNT was not.
+#:
+#: Sizing: an operator types a handful of passwords in a burst and never
+#: notices 30 tokens. A sustained attacker is throttled to one verification a
+#: second, which is a trickle rather than a saturated core.
+GLOBAL_VERIFY_BURST = 30
+GLOBAL_VERIFY_REFILL_PER_SECOND = 1.0
+
 
 @dataclass
 class _Bucket:
@@ -374,6 +400,8 @@ class LoginRateLimiter:
         max_failures: int = LOGIN_MAX_FAILURES,
         window_seconds: int = LOGIN_WINDOW_SECONDS,
         lockout_seconds: int = LOGIN_LOCKOUT_SECONDS,
+        global_burst: int = GLOBAL_VERIFY_BURST,
+        global_refill_per_second: float = GLOBAL_VERIFY_REFILL_PER_SECOND,
         now: object = None,
     ) -> None:
         self.max_failures = max_failures
@@ -381,6 +409,12 @@ class LoginRateLimiter:
         self.lockout_seconds = lockout_seconds
         self._now = now or time.time
         self._buckets: dict[str, _Bucket] = {}
+        # Global scrypt-work budget, shared by every client. Starts full so a
+        # freshly started server does not refuse the operator's first login.
+        self.global_burst = global_burst
+        self.global_refill_per_second = global_refill_per_second
+        self._global_tokens = float(global_burst)
+        self._global_refilled_at = self._now()
 
     def _bucket(self, client: str) -> _Bucket:
         bucket = self._buckets.get(client)
@@ -448,6 +482,43 @@ class LoginRateLimiter:
         if bucket is None:
             return False
         return self._now() < bucket.locked_until
+
+    def try_spend_verification(self) -> bool:
+        """Take one token from the global scrypt budget. False when empty.
+
+        ⛔ **Call this BEFORE running scrypt, and skip the hash when it returns
+        False.** Spending the CPU and then refusing would defeat the entire
+        point: the cost being bounded here IS the hash.
+
+        ⚠️ **Not a lockout.** There is no penalty window. Tokens refill at
+        ``global_refill_per_second`` continuously, so an operator refused
+        during an attack is served again seconds after it stops, rather than
+        waiting out a ``LOGIN_LOCKOUT_SECONDS`` timer an attacker set for them.
+        That distinction is why this is safe to make global while the failure
+        counter above must stay per-client.
+
+        ⚠️ **Counts ATTEMPTS, not failures.** A correct password costs the
+        server the same scrypt as a wrong one, so budgeting only failures would
+        leave the work unbounded. The operator's own successful logins are far
+        too few to matter against a 30-token burst.
+        """
+        now = self._now()
+        elapsed = max(0.0, now - self._global_refilled_at)
+        self._global_refilled_at = now
+        self._global_tokens = min(
+            float(self.global_burst),
+            self._global_tokens + elapsed * self.global_refill_per_second,
+        )
+        if self._global_tokens < 1.0:
+            return False
+        self._global_tokens -= 1.0
+        return True
+
+    def global_seconds_remaining(self) -> int:
+        """Whole seconds until one more verification is affordable."""
+        if self._global_tokens >= 1.0 or self.global_refill_per_second <= 0:
+            return 0
+        return max(1, int((1.0 - self._global_tokens) / self.global_refill_per_second + 0.999))
 
     def seconds_remaining(self, client: str | None) -> int:
         bucket = self._lookup(client)

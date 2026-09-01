@@ -2727,6 +2727,28 @@ def create_app(
                     status_code=429,
                 )
 
+            # ⛔ BEFORE the hash, never after. This bounds scrypt work, so
+            # spending the scrypt and then refusing would bound nothing.
+            #
+            # The per-client lockout above cannot do this job: it is keyed on
+            # the peer address on purpose, and an attacker rotating source
+            # address gets a fresh bucket every time. Measured 2026-09-01:
+            # 30,000 attempts, never once refused, each running a full ~16 MB
+            # scrypt on a Raspberry Pi. See LoginRateLimiter.try_spend_verification.
+            if not limiter.try_spend_verification():
+                wait = limiter.global_seconds_remaining()
+                logger.warning(
+                    "web UI login throttled globally (scrypt budget exhausted); "
+                    "client=%s",
+                    client,
+                )
+                return _render_login(
+                    request,
+                    next_path=target,
+                    error=f"Too many attempts. Try again in {wait} seconds.",
+                    status_code=429,
+                )
+
             stored = app.state.credentials.password_hash if app.state.credentials else None
             if not verify_against_configured(password, stored):
                 limiter.record_failure(client)
