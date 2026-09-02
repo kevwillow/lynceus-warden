@@ -959,6 +959,50 @@ than on a ratio, because `ble_uuid` is 92.9% categorised and still storms. It is
 a take-effect pair, not a blocklist: the same rule against a corpus where Argus
 has categorised `004c` passes, so curating the data is what unblocks the gate.
 
+🪤 **MEASURED 2026-09-02 at `d86c2b1`: the guard is keyed on PRESENCE, not on
+enablement, and its own name says otherwise.** The filter is
+`enabled_delegation_rules`, the file's title sentence is *"A delegation rule
+must not ship **enabled** while its corpus matches bystanders"*, and the
+function checks neither `enabled` nor `shadow`:
+
+```python
+return [r for r in rules
+        if not r.patterns and r.rule_type not in NON_DELEGATING_RULE_TYPES]
+```
+
+`load_ruleset` returns disabled rules too — `temporarily_disabled` comes back
+with `enabled=False` — so every rendering of "present but cannot alert" trips
+the guard identically to shipping it live. Measured by loading the shipped
+config with the rule appended three ways:
+
+    rule commented out       guard sees [argus_mac, argus_ssid]      0 exposures  PASS
+    present, shadow: true    guard sees [..., argus_ble_manufacturer_id]  4 exposures  FAIL
+    present, enabled: false  guard sees [..., argus_ble_manufacturer_id]  4 exposures  FAIL
+
+⇒ **This is why the rule can only ship commented out**, and it means the file's
+own complaint — *"a commented YAML line is not a safety boundary"* — is
+currently the only available boundary for this rule. The guard that replaced
+the comment reproduced the comment's granularity.
+
+⛔ **`shadow: true` is the case that matters, and exempting it would be sound.**
+A shadow rule cannot alert structurally rather than by convention: `evaluate()`
+routes shadow hits to a separate `_shadow` list and returns only `_real`
+(`rules.py:1060`), and the code says the alternative was rejected because *"the
+default path LEAKS"*. So the shipped rule set cannot express the one state
+BLE-G1's own remedy asks for — *uncomment it with `shadow: true` and measure
+your own site* — without the safety guard going red.
+
+⚠️ **Not fixed here, deliberately.** Widening a safety guard is not patch-release
+work, and the widening has a direction to get wrong: exempting `enabled: false`
+is defensible (flipping it back to `true` re-trips the guard), exempting
+`shadow` rests entirely on that structural claim above, and exempting both by
+reading a rule's flags means the guard now trusts the same file it is policing.
+⇒ Decide the predicate before writing it. [[widening-a-guard-removes-a-guarantee]]
+
+- **Trigger**: before any attempt to ship `argus_ble_manufacturer_id` in the
+  config file at all, in any state. It is the blocker for "make it a
+  configurable setting".
+
 **What to build**, red-teamed with `gpt-5.6-sol` before writing any of it:
 
 1. A **positive eligibility test on the matched row**, enforced in the rule, not
