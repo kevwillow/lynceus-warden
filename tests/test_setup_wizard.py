@@ -107,6 +107,11 @@ def _full_input_sequence(*, interface=None, ntfy_topic="lynceus-deadbeef"):
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # ntfy URL (non-empty so we don't skip ntfy)
         ntfy_topic,  # ntfy topic
+        # heartbeat: default (N -> False). Asked here because it rides the
+        # ntfy delivery path, and asked at all only because ntfy is
+        # configured two lines above -- a run that skips ntfy never sees
+        # this prompt and must NOT have an answer threaded for it.
+        "",
         "",  # RSSI: accept default
         "",  # severity overrides path: accept default
         "",  # enable-alerting gate: default (N -> skip rules.yaml flow)
