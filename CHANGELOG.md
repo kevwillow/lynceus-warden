@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-02
+
 ### Added
 
 - **Shadow rules: measure what a rule would do before you switch it on.** A
@@ -65,7 +67,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   labelling it inert would send an operator hunting a capture problem that does
   not exist.
 
+- **`lynceus-reset-config`, the recovery path for a config you cannot load.**
+  The backstop for a hand-edited `lynceus.yaml` or `severity_overrides.yaml`
+  the daemon will no longer parse. It imports only `lynceus.paths` — no config
+  parsing, no DB, no rules engine — precisely so it still works when the daemon
+  will not start.
+
+  Prints what would change and exits 0 by default; `--yes` moves each target
+  aside to `<name>.bak-<UTC>` rather than deleting it. `--what tuning` (the
+  default) touches only `severity_overrides`; `--what all` also resets
+  `lynceus.yaml`; `--config PATH` targets one file. Refuses on a non-tty stdin
+  without `--yes` rather than prompting into the void.
+
+  ⭐ A guard found during its own review **could never fail**:
+  `test_no_app_modules_loaded` diffed `sys.modules` around a re-import, but the
+  test file imports that module at collection time, so anything forbidden was
+  already present and the diff was empty regardless. Proven by planting
+  `import lynceus.db` into the CLI — the old test passed both on a clean
+  interpreter and after another test preloaded the app. It now runs the import
+  in a subprocess, where the assertion is real.
+
 ### Fixed
+
+- **A rotating source address beat the login lockout, and the cost was work
+  rather than guesses.** The rate limiter was consulted only through
+  `client_key(scope)` — the raw peer address — with no global or
+  credential-keyed counter anywhere. Measured against the unmodified limiter
+  before anything changed:
+
+      single address, 5 failures   -> locked, as advertised
+      rotating address, 30,000     -> allowed=30000, refused=0
+
+  `MAX_TRACKED_CLIENTS = 4096` does not bound it: `_evict` protects only active
+  lockouts, and an attacker's buckets never reach one, so their own cold buckets
+  recycle forever.
+
+  ⛔ Every attempt ran a full scrypt — **~16 MB and ~29 ms measured on a 12-core
+  x86**, on a product deployed to a Raspberry Pi. `MAX_PASSWORD_BYTES` already
+  capped the login *body* against this exact shape; the request *count* was not
+  capped.
+
+  🪤 **The obvious fix was refused.** A global failure counter bounds the
+  attacker and hands them a lever to lock the operator out with five wrong
+  guesses — the very thing keying on the peer address exists to prevent. Fixed
+  with a token bucket carrying **no penalty window**, so it bounds work and
+  refills continuously: an operator refused during an attack is served again
+  seconds later.
+
+- **The BLE bridge dropped the local name, so a whole rule type could not
+  fire.** `_detection_callback` read `rssi`, `manufacturer_data`,
+  `service_uuids` and `service_data` off bleak's `AdvertisementData` and ignored
+  `local_name` — that object's *first* field. `ble_local_name` was therefore
+  `None` on every observation the bridge ever produced, and
+  `watchlist_ble_local_name` could not fire on a bridge-only deployment.
+
+  Measured on hardware, same adapter, same rules, ~375s per arm:
+
+      pre-fix   shadow_seen:ble_local_name = 0   (10 BLE devices captured)
+      post-fix  shadow_seen:ble_local_name = 9   (3 named devices stored)
+
+  ⭐ That rule's corpus is Flock Safety device names: **12 rows, 100%
+  actionable — the best signal-to-noise of any watchlist type in the shipped
+  data.** It was switched off at the capture layer by omission, not by decision.
+
+  ⛔ Why nothing caught it: `rules.py`'s matcher comment said `ble_local_name`
+  is `None` "when `capture.ble_friendly_names` is disabled or when the Kismet
+  record carries no name field". True when Kismet was the only source, never
+  revisited when the bridge landed. Prose that was correct and quietly stopped
+  being.
 
 - **`lynceus-validate` called working configuration keys unknown.** Its
   known-key list was a hand-written literal and it had drifted twice.
@@ -141,6 +210,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   spotted the drift was told by a passing test to leave it alone. It is now
   graded against `_apply_runtime_overrides` itself rather than against a
   restatement of its rules.
+
+- **The wheel-install gate ran only in CI, never on the target platform.**
+  `test_wheel_install_finds_migrations` — the regression test proving migrations
+  reach an installed wheel — opened with
+  `if shutil.which("python") is None: pytest.skip(...)`. The test never uses a
+  bare `python`: it builds with `sys.executable` and drives the wheel through
+  the venv's own `bin/python`, a path inside the venv it just created. The
+  guard checked PATH for a binary the body does not consult.
+
+  ⚠️ **Scope stated precisely, because the first draft of this entry
+  overstated it.** CI *did* run the test — `.github/workflows/ci.yml` carries a
+  step asserting `command -v python` for exactly this reason, and its comment
+  says so. But Debian, Ubuntu and Raspberry Pi OS ship `python3` and no bare
+  `python`, so **every developer machine and the Raspberry Pi the README names
+  as the target skipped it silently** — which is where a packaging regression
+  would actually be met. The CI step was working around a defect rather than
+  guarding a requirement, so its `command -v python` half is removed with the
+  skip; the `import build` half stays, because that skip is real.
+
+  Removed; the test runs and passes in 16s.
+
+  ⭐ **The guard is real, and two plants said otherwise first.** Dropping
+  `migrations/*.sql` from `package-data` left it green, and so did adding
+  `exclude-package-data` — both **inert**, because that setting is not what
+  puts the files in this wheel (56 `.sql` present either way). Planting at the
+  layer that does control it produced a wheel with **0** and the test failed.
+  A surviving plant is a claim about the plant before it is a claim about the
+  guard.
+
+### Changed
+
+- **`cli/bootstrap_kismet.py` coverage 59% → 87%**, 263 uncovered statements
+  down to 83. The remainder had been left because it needs subprocess mocking
+  and an `input_fn` harness rather than pure input/output — "a different kind
+  of test, not more of the same". 62 tests, 146 assertions and 7
+  `pytest.raises`, and every one of them asserts: a vacuity scan found zero
+  tests reaching a line without a claim.
+
+  Proven rather than assumed, by planting three defects: `_run`'s `dry_run`
+  short-circuit removed, `install_kismet_apt_repo`'s idempotence skip removed,
+  and `install_kismet_package`'s `DEBIAN_FRONTEND=noninteractive` dropped. Each
+  killed exactly one test; the control returned to green.
+
+  🪤 One assertion in that set had to be rewritten twice. CodeQL flagged
+  `assert "kismetwireless.net" in out` as `py/incomplete-url-substring-
+  sanitization` at high severity — a false positive on captured stdout, but the
+  obvious repair (`assert bk.UNSUPPORTED_POINTER_URL in out`) made the test
+  **self-referential**: the helper prints the same constant the test reads, and
+  repointing it at `https://example.invalid/` left all 61 tests passing. Split
+  into a take-effect pair, with one `==` test pinning the constant.
+
+- **Three published numbers that had stopped being true**, in three files.
+  The CHANGELOG told operators a shipped fix was still missing; the audit
+  register's "Still open" list had drifted for thirteen days with **11 of its 18
+  bullets already closed**; and `BACKLOG.md`'s "34 of 23,556 rows can fire" is
+  re-measured to **29 of 23,430**.
+
+  ⛔ The register was re-derived against the **source tree** rather than against
+  commit subjects, which is what the previous pass used and is exactly how three
+  findings it calls "registered, NOT patched" came to be patched invisibly.
+  Findings 50 and 44 were both closed by the precise migrations the register
+  said an honest fix would need — 027 and 026.
 
 
 ## [1.2.0] - 2026-08-26
