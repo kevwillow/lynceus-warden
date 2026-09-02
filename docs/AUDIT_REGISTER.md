@@ -4475,6 +4475,112 @@ findings this round were all expressible as a CAS, which is evidence about the s
 
 ## Still open
 
+⭐ **RE-DERIVED 2026-09-02 at `d86c2b1`. 11 of the 18 bullets below are CLOSED and are struck
+through in place.** The list had drifted for thirteen days, in the direction that wastes a session's
+work rather than the one that loses it.
+
+**Method, and it is different from the 2026-08-20 pass in one way that mattered.** The 2026-08-20
+re-derivation cross-referenced this file against `git log` commit *subjects*. That catches a finding
+whose fix announced itself in a commit message and misses every one that did not. This pass graded
+each bullet against the **source tree**: a verdict of CLOSED required a `file:symbol` that exists and
+does what the bullet says is missing, or a named test that exists **and passes when run**. Every
+citation below was checked — 11 source symbols resolved, 10 cited tests executed, 10 passed.
+
+⛔ **What this pass did NOT do.** It did not re-derive the universe of findings from the rounds
+above; it graded the bullets already on this list. A finding that is open and absent from this list
+is still absent from it. That is the failure mode the 2026-08-16 note describes and this pass does
+not close it.
+
+⚠️ **Two tiers of confidence, and they are not the same.** Four verdicts were reached by reading the
+implementing code directly — F50, F44, F51's route half and C-2, the four most likely to be wrong
+because this file argues at length that three of them were deliberately left unfixed. The remaining
+seven rest on a cited test existing and passing, which is weaker: **a passing test proves the test
+passes.** Where the bullet is broad ("Round 12 named three things it could not see"), read the
+verdict as *narrowed*, not *closed*.
+
+**The four graded by reading the code:**
+
+- ~~🟡 **Finding 50** — an operator reset leaves a permanent, unclearable line in the heartbeat's
+  "written but never delivered" count.~~ ✅ **CLOSED, and by the SAFE direction.** This bullet warned
+  that the obvious fix — windowing the counter — would hide a genuinely broken ntfy topic. It was
+  not taken. Migration 027 added `alerts.notify_abandoned_at`, and
+  `count_undelivered_alerts` narrows on `notify_abandoned_at IS NULL` only. Its docstring names
+  Finding 50 and states the scope in the code's own words: *"exactly one path writes that column
+  … on exactly the escalation the operator was looking at when they clicked. Everything else keeps
+  counting forever."* ⭐ The `since_ts` parameter exists and **both callers deliberately pass
+  nothing**; the docstring says so explicitly. Do not read its presence as the windowing this
+  bullet feared.
+- ~~🟡 **Finding 44** — one duplicate escalation is reachable between the row write and the stamp;
+  closing it honestly needs a generation-keyed escalation record, i.e. a migration.~~
+  ✅ **CLOSED, by exactly the migration this bullet specified.** Migration 026 created
+  `watchful_escalations`, keyed `(entry_id, generation)`, and its UNIQUE constraint is the dedup
+  guard — not a SELECT. `watchful_generation_escalated_at` is explicit that it is *not* the guard:
+  *"A separate SELECT could always be overtaken between the read and the write by the web UI, which
+  is a different PROCESS and so not covered by `self._lock`."*
+- ~~🟡 **Finding 51's ROUTE half** — `watchful_reset_post` is the one duration-adjacent web write
+  with no `refuse_if_clock_behind` gate.~~ ✅ **CLOSED.** `webui/app.py:watchful_reset_post` calls
+  `refuse_if_clock_behind` and raises 400 on refusal. It is the sixth clock-stamped write and the
+  code says so in a comment naming Finding 51.
+- ~~🔴 **C-2, the allowlist YAML lost update** (`add_ui_entry` read-modify-write).~~ ✅ **CLOSED.**
+  `allowlist.add_ui_entry` runs its whole read-modify-write inside `_ui_write_lock`, an `fcntl.flock`
+  held on a **separate `.lock` file** rather than on the YAML — which is the only shape that works,
+  because every mutator finishes with `os.replace` and a lock on a replaced file is not a lock.
+  ⭐ Cross-process by construction: the bullet's own scenario is the poller racing a web click, and
+  those are different processes, so a `threading.Lock` could never have covered it.
+
+**The seven graded by a passing cited test** — narrowed, not proven:
+
+- ~~`_check_poller`'s staleness test is still unmeasured~~ → three tests exist and pass
+  (`test_healthz_json.py`: `..._recent_is_not_stale`, `..._stale_when_older_than_2x_interval`,
+  `..._stale_uses_configured_interval`).
+- ~~the retention prunes may double the window~~ → already refuted 2026-08-17; the clock-hold gate is
+  pinned by `test_clock_jump_anchor.py::test_poll_once_gates_both_prunes_on_the_flag`.
+- ~~`/watchful/{entry_id}/reset` was never exercised~~ → `test_ui_watchful.py::test_reset_walks_back_from_escalated`.
+- ~~a daemon-side duplicate-key warning for `config.py` and `rules.py`~~ → already struck; confirmed
+  at `yaml_duplicates.warn_duplicate_keys`.
+- ~~Findings 59, 60 and the `apple_find_my` default~~ → already struck; confirmed at
+  `ble_bridge_checks.check_bridge_readiness` and `config/rules.yaml`.
+- ~~the bridge-only reconfigure overwriting a hand-authored `rules.yaml`~~ → already struck;
+  confirmed at `setup/core.apply_config`, pinned by
+  `test_setup_find_my_rule.py::test_bridge_only_reconfigure_never_clobbers_a_handwritten_ruleset`.
+- ~~Round 12's three unseen areas — the retention prunes, the clock-trust holds, and concurrency~~
+  → ⚠️ **NARROWED, not closed.** Concurrency now has a real take-effect pair
+  (`test_db_unit_of_work.py::test_transaction_loses_a_concurrent_write_and_unit_does_not`). One test
+  does not retire an entire unswept area, and this bullet should be re-scoped rather than struck.
+
+**Genuinely still open after this pass — six, and one of them is not a defect:**
+
+1. 🔴 **Finding 52's residual** — read→decide→write is unprotected application-wide. ⚠️ **The
+   PREMISE has moved and the bullet below is now wrong about why.** `db.Database.unit` exists and
+   supplies an explicit `BEGIN IMMEDIATE` unit of work, so the missing thing is no longer the
+   primitive — it is **adoption across the ~42 route handlers and the poll loop**. That is a
+   materially different and smaller piece of work than the bullet describes, and it is still Kev's
+   call. ⇒ §Reserved for Kev, item 0.
+2. 🟡 **Finding 41's residual** — the install whose clock was wrong from its very first migration.
+   The floor is stamped by that same clock, so the discriminator is silent. Pinned as a known blind
+   spot by `test_webui_clock_refusal.py::test_an_install_with_no_ahead_rows_is_a_known_blind_spot`,
+   which is the honest shape: a test that records what cannot be detected.
+3. ⛔ **The tracker record does not work for rotating addresses** — MAC-keyed, so one physical
+   tracker at three locations is three unrelated rows and zero co-observation candidates.
+   ⚠️ **Its framing is wrong in one respect**: the three-row result was driven through ingest and the
+   DB, not captured over the air, and the later real-tracker run observed no rotation at all. The
+   limitation is real; the evidence for it is a simulation, and this entry has been read as a field
+   measurement.
+4. 🟡 **The ntfy DEBUG topic leak** — a maintainer decision, not a defect. Unchanged.
+5. 🟡 **`py/clear-text-storage-sensitive-data` on the Windows branch** — needs DPAPI or an explicit
+   DACL. A Windows-only design item, not a patch.
+6. ⬜ **The watchlist report's provenance-cross-link claim** — **CANNOT-TELL, and that is the
+   correct verdict rather than a failure to reach one.** No measurement of it exists; nobody has
+   ever run one. It stays here until someone does.
+
+⭐ **The instrument was checked before its output was believed.** Two bullets whose status had
+already been established independently — F51's route half and C-2 — were left in the input as a
+control. The pass returned both as CLOSED with correct citations, which is why the nine verdicts
+that were *not* known in advance were worth reading. A grading pass that cannot get the known
+answers right cannot be trusted on the unknown ones. ⇒ [[verify-the-control-not-just-the-treatment]]
+
+---
+
 ⭐ **RE-DERIVED 2026-08-20 at `416bad5`, mechanically and in BOTH directions.** This is the
 re-derivation the 2026-08-16 note below says is outstanding. **Method, so it can be repeated rather
 than trusted:** the universe was enumerated from this file (`Finding N` across all 4800+ lines — 64

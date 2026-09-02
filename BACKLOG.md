@@ -861,9 +861,51 @@ inert, because the only live delegation rules are `argus_mac`, `argus_ssid` and
 > it was matched by strict SQL equality, so all 21 rows were dead including
 > the 8 that were already literal. Both columns are re-cut and
 > `ble_local_name` is now a substring match.
-> ⇒ **The "34 that can fire" figure needs re-measuring against the new data
+> ⇒ ~~**The "34 that can fire" figure needs re-measuring against the new data
 > and the current rule set before it is quoted again.** It is left here rather
-> than guessed at. That is the context this gate sits in: the argument for keeping
+> than guessed at.~~ ✅ **RE-MEASURED 2026-09-02 at `d86c2b1`. The answer is 29,
+> not 34, and the table above is superseded by the one below.**
+
+⭐ **MEASURED, not estimated: the shipped `default_watchlist.csv` imported into a
+fresh database and queried.** 45,713 CSV lines → **23,430 admitted rows**
+(18,088 dropped: 17,952 `unknown_type` with no Lynceus matcher, 113
+in-import-dup, 19 peer-collision, 4 normalization-failed). Actionable means the
+row carries a `device_category` that is present and is not `unknown`.
+
+    pattern_type          rows  actionable          rule state
+    mac_range            17796    21 ( 0.1%)         commented
+    ble_manufacturer_id   4674     4 ( 0.1%)         commented  <- this gate
+    drone_id_prefix        427   427 (100.0%)        commented, capture-path caveat
+    oui                    417   117 ( 28.1%)        commented
+    ble_uuid                75    66 ( 88.0%)        commented, NO STATED REASON
+    ssid_pattern            21    16 ( 76.2%)        LIVE
+    ble_local_name          12    12 (100.0%)        commented
+    mac                      4     4 (100.0%)        LIVE
+    ssid                     4     4 (100.0%)        LIVE
+    TOTAL                23430   671 (  2.9%)
+
+⭐ **29 of the 23,430 admitted rows can fire an alert today** — `mac` 4 + `ssid` 4
++ `ssid_pattern` 21. The live delegation rules are `argus_mac` and `argus_ssid`,
+and `watchlist_ssid` dispatches **both** `ssid` and `ssid_pattern`, so all 21
+substring rows count. ⚠️ `apple_find_my` is also LIVE and contributes **zero**
+corpus rows: it matches `ble_device_class`, which is decoded from an advert
+rather than read from the watchlist, and nothing but the passive BLE bridge
+populates it.
+
+🪤 **The old figure was 34 and the difference is not corpus churn.** It counted
+`ssid_pattern` at 24 rows. Three of those are gone because the S1 re-cut and the
+importer's `regex_shaped_needle` gate removed the regex-shaped ones — the rows
+that were being counted as live while being structurally unable to match.
+⇒ **A row is not a detection.** Quote the universe beside the number:
+*29 reachable, of 23,430 admitted, of 45,713 shipped.*
+
+⚠️ **Re-measure this before quoting it again.** It has now been wrong twice, in
+the same direction both times: rows counted as firable that could not fire.
+The command is `lynceus-import-argus --db <tmp> --input
+src/lynceus/data/default_watchlist.csv`, then group `watchlist` by
+`pattern_type` LEFT JOIN `watchlist_metadata`.
+
+> That is the context this gate sits in: the argument for keeping
 a rule off has to be better than "its corpus is mostly noise", because by that
 measure `oui`, `drone_id_prefix`, `ble_uuid` and `ble_local_name` are all being
 held back by a gate written about company ids.

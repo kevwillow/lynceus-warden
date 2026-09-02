@@ -95,9 +95,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `confidence_downgrade_threshold`, `argus_schema_version_accept_list`) is
   modelled nowhere, so it stays an explicit literal pinned by its own test.
 
-  ⚠️ Still not fixed: the summary line reports "0 suppressed category(ies)"
-  for a file whose only content is `suppress_pattern_categories`. The key
-  validates; it is not counted.
+  ⚠️ This entry said *"Still not fixed: the summary line reports 0 suppressed
+  category(ies) for a file whose only content is `suppress_pattern_categories`"*
+  until 2026-09-02. **That was true when written and stopped being true the
+  next day**, and nothing updated it: #263 closed exactly that gap and did not
+  touch this file. Measured at `d86c2b1` against a file whose only content is
+  that key, the summary now reads
+
+      0 remap(s), 0 suppressed category(ies), 0 suppressed vendor(s),
+      0 pattern override(s), 0 vendor remap(s),
+      1 suppressed pattern_category(ies)
+
+  ⛔ Recorded rather than deleted, because the shape is the one this release
+  keeps finding: a **fix landed and its prose did not move**, so a changelog
+  shipped telling operators a working feature was broken. Same class as the
+  nine claims #265 corrected — and it survived that audit, because #265 swept
+  the README and this line is in the CHANGELOG.
+
+  The summary is now derived from `RuntimeSeverityOverride.model_fields` in
+  both halves, so neither the known-key list nor the count line can fall behind
+  the model again.
 
 - **The `/settings` page reported a suppressed row as LIVE.** The
   `suppress_pattern_categories` mechanism reached the engine but not the
