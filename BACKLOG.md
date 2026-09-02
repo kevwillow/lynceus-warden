@@ -861,9 +861,51 @@ inert, because the only live delegation rules are `argus_mac`, `argus_ssid` and
 > it was matched by strict SQL equality, so all 21 rows were dead including
 > the 8 that were already literal. Both columns are re-cut and
 > `ble_local_name` is now a substring match.
-> ⇒ **The "34 that can fire" figure needs re-measuring against the new data
+> ⇒ ~~**The "34 that can fire" figure needs re-measuring against the new data
 > and the current rule set before it is quoted again.** It is left here rather
-> than guessed at. That is the context this gate sits in: the argument for keeping
+> than guessed at.~~ ✅ **RE-MEASURED 2026-09-02 at `d86c2b1`. The answer is 29,
+> not 34, and the table above is superseded by the one below.**
+
+⭐ **MEASURED, not estimated: the shipped `default_watchlist.csv` imported into a
+fresh database and queried.** 45,713 CSV lines → **23,430 admitted rows**
+(18,088 dropped: 17,952 `unknown_type` with no Lynceus matcher, 113
+in-import-dup, 19 peer-collision, 4 normalization-failed). Actionable means the
+row carries a `device_category` that is present and is not `unknown`.
+
+    pattern_type          rows  actionable          rule state
+    mac_range            17796    21 ( 0.1%)         commented
+    ble_manufacturer_id   4674     4 ( 0.1%)         commented  <- this gate
+    drone_id_prefix        427   427 (100.0%)        commented, capture-path caveat
+    oui                    417   117 ( 28.1%)        commented
+    ble_uuid                75    66 ( 88.0%)        commented, NO STATED REASON
+    ssid_pattern            21    16 ( 76.2%)        LIVE
+    ble_local_name          12    12 (100.0%)        commented
+    mac                      4     4 (100.0%)        LIVE
+    ssid                     4     4 (100.0%)        LIVE
+    TOTAL                23430   671 (  2.9%)
+
+⭐ **29 of the 23,430 admitted rows can fire an alert today** — `mac` 4 + `ssid` 4
++ `ssid_pattern` 21. The live delegation rules are `argus_mac` and `argus_ssid`,
+and `watchlist_ssid` dispatches **both** `ssid` and `ssid_pattern`, so all 21
+substring rows count. ⚠️ `apple_find_my` is also LIVE and contributes **zero**
+corpus rows: it matches `ble_device_class`, which is decoded from an advert
+rather than read from the watchlist, and nothing but the passive BLE bridge
+populates it.
+
+🪤 **The old figure was 34 and the difference is not corpus churn.** It counted
+`ssid_pattern` at 24 rows. Three of those are gone because the S1 re-cut and the
+importer's `regex_shaped_needle` gate removed the regex-shaped ones — the rows
+that were being counted as live while being structurally unable to match.
+⇒ **A row is not a detection.** Quote the universe beside the number:
+*29 reachable, of 23,430 admitted, of 45,713 shipped.*
+
+⚠️ **Re-measure this before quoting it again.** It has now been wrong twice, in
+the same direction both times: rows counted as firable that could not fire.
+The command is `lynceus-import-argus --db <tmp> --input
+src/lynceus/data/default_watchlist.csv`, then group `watchlist` by
+`pattern_type` LEFT JOIN `watchlist_metadata`.
+
+> That is the context this gate sits in: the argument for keeping
 a rule off has to be better than "its corpus is mostly noise", because by that
 measure `oui`, `drone_id_prefix`, `ble_uuid` and `ble_local_name` are all being
 held back by a gate written about company ids.
@@ -916,6 +958,50 @@ uncategorised consumer-platform identifier. It is keyed on the identifiers rathe
 than on a ratio, because `ble_uuid` is 92.9% categorised and still storms. It is
 a take-effect pair, not a blocklist: the same rule against a corpus where Argus
 has categorised `004c` passes, so curating the data is what unblocks the gate.
+
+🪤 **MEASURED 2026-09-02 at `d86c2b1`: the guard is keyed on PRESENCE, not on
+enablement, and its own name says otherwise.** The filter is
+`enabled_delegation_rules`, the file's title sentence is *"A delegation rule
+must not ship **enabled** while its corpus matches bystanders"*, and the
+function checks neither `enabled` nor `shadow`:
+
+```python
+return [r for r in rules
+        if not r.patterns and r.rule_type not in NON_DELEGATING_RULE_TYPES]
+```
+
+`load_ruleset` returns disabled rules too — `temporarily_disabled` comes back
+with `enabled=False` — so every rendering of "present but cannot alert" trips
+the guard identically to shipping it live. Measured by loading the shipped
+config with the rule appended three ways:
+
+    rule commented out       guard sees [argus_mac, argus_ssid]      0 exposures  PASS
+    present, shadow: true    guard sees [..., argus_ble_manufacturer_id]  4 exposures  FAIL
+    present, enabled: false  guard sees [..., argus_ble_manufacturer_id]  4 exposures  FAIL
+
+⇒ **This is why the rule can only ship commented out**, and it means the file's
+own complaint — *"a commented YAML line is not a safety boundary"* — is
+currently the only available boundary for this rule. The guard that replaced
+the comment reproduced the comment's granularity.
+
+⛔ **`shadow: true` is the case that matters, and exempting it would be sound.**
+A shadow rule cannot alert structurally rather than by convention: `evaluate()`
+routes shadow hits to a separate `_shadow` list and returns only `_real`
+(`rules.py:1060`), and the code says the alternative was rejected because *"the
+default path LEAKS"*. So the shipped rule set cannot express the one state
+BLE-G1's own remedy asks for — *uncomment it with `shadow: true` and measure
+your own site* — without the safety guard going red.
+
+⚠️ **Not fixed here, deliberately.** Widening a safety guard is not patch-release
+work, and the widening has a direction to get wrong: exempting `enabled: false`
+is defensible (flipping it back to `true` re-trips the guard), exempting
+`shadow` rests entirely on that structural claim above, and exempting both by
+reading a rule's flags means the guard now trusts the same file it is policing.
+⇒ Decide the predicate before writing it. [[widening-a-guard-removes-a-guarantee]]
+
+- **Trigger**: before any attempt to ship `argus_ble_manufacturer_id` in the
+  config file at all, in any state. It is the blocker for "make it a
+  configurable setting".
 
 **What to build**, red-teamed with `gpt-5.6-sol` before writing any of it:
 
