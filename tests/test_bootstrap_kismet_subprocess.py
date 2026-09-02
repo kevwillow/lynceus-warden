@@ -1031,7 +1031,30 @@ def test_print_unsupported_pointer_with_none_does_not_crash_or_claim_a_distro(ca
     # other specific ID we might be tempted to fall back to.
     assert "unknown" in out, out
     # And the upstream pointer URL is there so the operator can act.
-    assert "kismetwireless.net" in out, out
+    assert bk.UNSUPPORTED_POINTER_URL in out, out
+
+
+def test_the_upstream_pointer_url_is_the_one_we_think_it_is():
+    """Pin the CONSTANT, so the assertions that derive from it are not a tautology.
+
+    ⛔ The sibling tests assert ``bk.UNSUPPORTED_POINTER_URL in out``. That is
+    derived rather than transcribed, which is the house preference -- but on its
+    own it is SELF-REFERENTIAL: the helper prints the same constant the test
+    reads, so repointing the constant at a wrong URL moves both sides together
+    and every one of those tests still passes. Measured: with the constant set
+    to ``https://example.invalid/nope/``, all 61 tests in this file passed.
+
+    This test is the other half of the pair. It is the only place the literal
+    appears, and it fails the moment the constant stops naming Kismet's real
+    download page -- which is what the operator on an unsupported distro is
+    being sent to.
+
+    ⚠️ Deliberately ``==`` and not ``in``. A substring check against a host-like
+    literal is the shape CodeQL's py/incomplete-url-substring-sanitization
+    flags, and it flagged exactly that here at high severity. Equality is both
+    the tighter assertion and the one that does not look like a URL allowlist.
+    """
+    assert bk.UNSUPPORTED_POINTER_URL == "https://www.kismetwireless.net/packages/"
 
 
 def test_print_unsupported_pointer_renders_a_distro_id(capsys):
@@ -1120,7 +1143,7 @@ def test_run_unsupported_distro_with_install_prints_pointer_and_returns_zero(
 
     assert code == 0
     out = capsys.readouterr().out
-    assert "kismetwireless.net" in out, out
+    assert bk.UNSUPPORTED_POINTER_URL in out, out
 
 
 def test_run_unsupported_distro_without_install_does_not_print_pointer(capsys, monkeypatch):
