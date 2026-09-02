@@ -1,6 +1,5 @@
 """Wheel-install regression: ensure migrations ship as package data."""
 
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -15,8 +14,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 @pytest.mark.slow
 def test_wheel_install_finds_migrations(tmp_path):
     """Build a wheel, install it into a fresh venv, run a Database() init, assert tables exist."""
-    if shutil.which("python") is None:
-        pytest.skip("python not on PATH")
     try:
         import build  # noqa: F401
     except ImportError:
