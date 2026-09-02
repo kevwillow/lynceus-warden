@@ -1,19 +1,22 @@
 """Capture + ntfy section route handlers (F6 Phase 2a, Touch 5).
 
-Implements steps 5-10 of the wizard:
+Implements steps 5-11 of the wizard:
 
     5. probe_ssids              (privacy boolean)
     6. ble_friendly_names       (BLE name capture boolean)
     7. ntfy URL                 (empty = skip ntfy entirely)
     8. ntfy topic               (validated via _looks_like_ntfy_topic)
     9. ntfy probe               (probe_ntfy synchronous)
-   10. RSSI threshold           (integer, signed)
+   10. Heartbeat                (dead-man's switch; OFF unless asked)
+   11. RSSI threshold           (integer, signed)
 
 Mirrors the CLI flow in ``cli/setup.py:run_wizard`` lines ~900-1000.
-The notable branch is ntfy: an empty URL skips topic + probe (steps
-8 and 9 redirect forward to /step/10). Defensive redirects send the
-operator back to /step/7 if they deep-link into 8 or 9 with no URL
-in session.
+The notable branch is ntfy: an empty URL skips topic + probe AND the
+heartbeat step (steps 8, 9, 10 redirect forward to /step/11). A
+heartbeat with no delivery path is a setting that cannot do anything,
+and asking about it would be offering a feature that silently does
+nothing. Defensive redirects send the operator back to /step/7 if they
+deep-link into 8, 9 or 10 with no URL in session.
 """
 
 from __future__ import annotations
@@ -142,10 +145,13 @@ async def ntfy_url_post(request: Request) -> HTMLResponse:
     ntfy_url = (form.get("ntfy_url") or "").strip()
     if not ntfy_url:
         # Skip ntfy entirely. Clear topic too so a stale value from a
-        # prior visit doesn't sneak into the final Config.
+        # prior visit doesn't sneak into the final Config. Bypass the
+        # heartbeat step too — a heartbeat with no delivery path is a
+        # setting that cannot do anything, so we do not ask about it.
         session.answers["ntfy_url"] = ""
         session.answers["ntfy_topic"] = ""
-        return _redirect(request, "/step/10")
+        session.answers["heartbeat_enabled"] = False
+        return _redirect(request, "/step/11")
     if not _is_valid_url(ntfy_url):
         return _render(
             request,
@@ -262,7 +268,35 @@ async def ntfy_probe_post(request: Request) -> HTMLResponse:
     return _redirect(request, "/step/10")
 
 
-# ---- Step 10: RSSI threshold ----------------------------------------------
+# ---- Step 10: Heartbeat / dead-man's switch -------------------------------
+
+
+async def heartbeat_get(request: Request) -> HTMLResponse:
+    session = _session(request)
+    # Same documented skip branch as topic + probe: no ntfy URL means no
+    # delivery path, and a heartbeat question is meaningless without one.
+    # Forward to RSSI, mirroring /step/7's empty-URL redirect to /step/10.
+    if not session.answers.get("ntfy_url") or not session.answers.get("ntfy_topic"):
+        return _redirect(request, "/step/11")
+    return _render(
+        request,
+        "heartbeat.html",
+        step_index=10,
+        heartbeat_enabled=bool(session.answers.get("heartbeat_enabled", False)),
+    )
+
+
+async def heartbeat_post(request: Request) -> HTMLResponse:
+    session = _session(request)
+    # Defensive: deep-link here without an ntfy URL/topic.
+    if not session.answers.get("ntfy_url") or not session.answers.get("ntfy_topic"):
+        return _redirect(request, "/step/11")
+    form = await request.form()
+    session.answers["heartbeat_enabled"] = form.get("heartbeat_enabled") == "yes"
+    return _redirect(request, "/step/11")
+
+
+# ---- Step 11: RSSI threshold ----------------------------------------------
 
 
 async def rssi_get(request: Request) -> HTMLResponse:
@@ -270,7 +304,7 @@ async def rssi_get(request: Request) -> HTMLResponse:
     return _render(
         request,
         "rssi.html",
-        step_index=10,
+        step_index=11,
         min_rssi=session.answers.get("min_rssi", DEFAULT_RSSI_THRESHOLD),
         default_rssi=DEFAULT_RSSI_THRESHOLD,
         error=None,
@@ -287,7 +321,7 @@ async def rssi_post(request: Request) -> HTMLResponse:
         return _render(
             request,
             "rssi.html",
-            step_index=10,
+            step_index=11,
             min_rssi=raw,
             default_rssi=DEFAULT_RSSI_THRESHOLD,
             error=f"RSSI must be an integer (got {raw!r}).",
@@ -298,20 +332,20 @@ async def rssi_post(request: Request) -> HTMLResponse:
         return _render(
             request,
             "rssi.html",
-            step_index=10,
+            step_index=11,
             min_rssi=raw,
             default_rssi=DEFAULT_RSSI_THRESHOLD,
             error="RSSI must be between -120 and 0 dBm.",
         )
     session.answers["min_rssi"] = min_rssi
-    return _redirect(request, "/step/11")
+    return _redirect(request, "/step/12")
 
 
 # ---- registration ----------------------------------------------------------
 
 
 def register_capture_steps(app: FastAPI) -> None:
-    """Mount the six capture/ntfy/RSSI steps onto the wizard app."""
+    """Mount the capture/ntfy/heartbeat/RSSI steps onto the wizard app."""
     app.add_api_route("/step/5", probe_ssids_get, methods=["GET"], response_class=HTMLResponse)
     app.add_api_route("/step/5", probe_ssids_post, methods=["POST"], response_class=HTMLResponse)
     app.add_api_route("/step/6", ble_names_get, methods=["GET"], response_class=HTMLResponse)
@@ -322,5 +356,7 @@ def register_capture_steps(app: FastAPI) -> None:
     app.add_api_route("/step/8", ntfy_topic_post, methods=["POST"], response_class=HTMLResponse)
     app.add_api_route("/step/9", ntfy_probe_get, methods=["GET"], response_class=HTMLResponse)
     app.add_api_route("/step/9", ntfy_probe_post, methods=["POST"], response_class=HTMLResponse)
-    app.add_api_route("/step/10", rssi_get, methods=["GET"], response_class=HTMLResponse)
-    app.add_api_route("/step/10", rssi_post, methods=["POST"], response_class=HTMLResponse)
+    app.add_api_route("/step/10", heartbeat_get, methods=["GET"], response_class=HTMLResponse)
+    app.add_api_route("/step/10", heartbeat_post, methods=["POST"], response_class=HTMLResponse)
+    app.add_api_route("/step/11", rssi_get, methods=["GET"], response_class=HTMLResponse)
+    app.add_api_route("/step/11", rssi_post, methods=["POST"], response_class=HTMLResponse)

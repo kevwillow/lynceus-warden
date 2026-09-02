@@ -548,6 +548,15 @@ def render_config_yaml(answers: dict) -> str:
         f"ntfy_url: {_yaml_str(answers['ntfy_url'])}",
         f"ntfy_topic: {_yaml_str(answers['ntfy_topic'])}",
         "",
+        "# --- Heartbeat / dead-man's switch ---",
+        "# The only feature that pushes when nothing has happened. Off unless you",
+        "# asked for it. It names a wedged poll loop, failing persists and",
+        "# undelivered alerts rather than claiming health it has not verified --",
+        "# a cheerful 'still watching' sent while ingest is dead is worse than",
+        "# no heartbeat at all. A quiet RF environment is deliberately NOT",
+        "# unhealthy.",
+        f"heartbeat_enabled: {_yaml_bool(answers.get('heartbeat_enabled', False))}",
+        "",
         "# --- RSSI floor ---",
         "# Drop observations weaker than this RSSI in dBm. -70 is reasonable",
         "# indoors; -85 is more permissive.",
@@ -1402,6 +1411,10 @@ def _answers_from_config(config: Config) -> dict:
         "ntfy_url": config.ntfy_url or "",
         "ntfy_topic": config.ntfy_topic or "",
         "min_rssi": config.min_rssi if config.min_rssi is not None else 0,
+        # The renderer owns this key now (packet P2). Without carrying it
+        # through, --reconfigure would silently revert an operator who
+        # hand-edited heartbeat_enabled: true back to the renderer default.
+        "heartbeat_enabled": config.heartbeat_enabled,
     }
 
 

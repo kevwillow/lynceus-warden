@@ -1316,7 +1316,38 @@ and enter the topic exactly as written.
                     print("Aborted.", file=sys.stderr)
                     return 1
 
-    # (j) RSSI threshold
+    # (j) heartbeat — the dead-man's switch. Asked ONLY when ntfy is
+    # configured: a heartbeat with no delivery path is a setting that
+    # cannot do anything, and asking about it there would be offering a
+    # feature that silently does nothing. The packet's §4.3 contract:
+    # empty ntfy_url → answers["heartbeat_enabled"] = False, no prompt.
+    if answers.get("ntfy_url"):
+        _print_section("Heartbeat / dead-man's switch")
+        _print_context(
+            """
+Silence is the failure mode a heartbeat exists to detect. If the
+daemon dies, the host loses power, the SD card wears out, or ntfy
+delivery breaks, the operator's phone simply goes quiet — and quiet
+is indistinguishable from "you are safe". A periodic "still
+watching" push turns silence into an alert.
+
+It costs one low-priority ntfy notification every 24 hours. Off
+unless you asked for it: a cheerful "still watching" sent while
+ingest is dead is worse than no heartbeat at all.
+"""
+        )
+        answers["heartbeat_enabled"] = prompt_yes_no(
+            "Send a periodic \"still watching\" push, so silence means "
+            "something is wrong rather than nothing is happening? Sends "
+            "one low-priority notification every 24h. Lynceus default is "
+            "OFF.",
+            default=False,
+            input_fn=in_fn,
+        )
+    else:
+        answers["heartbeat_enabled"] = False
+
+    # (k) RSSI threshold
     rssi_str = prompt_default(
         "RSSI threshold (dBm). Devices weaker than this are ignored. "
         "-70 is a reasonable default for indoor sweeps; -85 is more permissive.",

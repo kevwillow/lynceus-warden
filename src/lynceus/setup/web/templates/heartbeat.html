@@ -1,0 +1,37 @@
+{% extends "_base.html" %}
+{% block title %}lynceus-setup &mdash; heartbeat{% endblock %}
+{% block step_indicator %}{% include "_progress.html" %}{% endblock %}
+{% block content %}
+  <h1>Step 10: Heartbeat / dead-man's switch</h1>
+  <p>
+    Silence is the failure mode a heartbeat exists to detect. If the
+    daemon dies, the host loses power, the SD card wears out, or ntfy
+    delivery breaks, the operator's phone simply goes quiet &mdash;
+    and quiet is indistinguishable from "you are safe".
+  </p>
+  <p>
+    A periodic "still watching" push turns silence into an alert. It
+    costs one low-priority ntfy notification every 24 hours.
+  </p>
+  <p>
+    Off unless you asked for it: a cheerful "still watching" sent
+    while ingest is dead is worse than no heartbeat at all.
+  </p>
+  <form method="post" action="{{ url_with_token('/step/10') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token(request) }}">
+    <fieldset>
+      <label>
+        <input type="radio" name="heartbeat_enabled" value="yes" {% if heartbeat_enabled %}checked{% endif %}>
+        Yes &mdash; send one low-priority "still watching" push every 24h
+      </label>
+      <label>
+        <input type="radio" name="heartbeat_enabled" value="no" {% if not heartbeat_enabled %}checked{% endif %}>
+        No (default)
+      </label>
+    </fieldset>
+    <div class="wizard-footer">
+      <a href="{{ url_with_token('/step/9') }}" role="button" class="secondary">&larr; Previous</a>
+      <button type="submit">Next &rarr;</button>
+    </div>
+  </form>
+{% endblock %}
