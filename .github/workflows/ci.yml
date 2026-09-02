@@ -85,15 +85,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      # ⚠️ tests/test_packaging.py skips itself with "python not on PATH" when
-      # the interpreter is not reachable as bare `python`. setup-python does
-      # provide it, but assert rather than assume: locally this skip reads as
-      # a skip count of 2, which looks identical to the lost-Argus-gate
-      # failure below while being an entirely different cause.
+      # ⚠️ tests/test_packaging.py still skips itself when `build` is missing,
+      # so assert rather than assume: that skip looks identical to the
+      # lost-Argus-gate failure below while being an entirely different cause.
+      #
+      # ⛔ The `command -v python` half of this step is GONE, along with the
+      # skip it defended. That skip was never a real prerequisite -- the test
+      # builds with sys.executable and drives the wheel through the venv's own
+      # bin/python -- so this step was working around a defect rather than
+      # guarding a requirement. CI was the ONLY place it ran; Debian, Ubuntu
+      # and Raspberry Pi OS ship python3 and no python, so every developer
+      # machine and the deployment target itself skipped it silently.
       - name: Assert the packaging test can run
         run: |
-          command -v python || { echo "::error::python not on PATH; test_packaging will skip"; exit 1; }
-          python -c "import build" || { echo "::error::build module missing; test_packaging will skip"; exit 1; }
+          python3 -c "import build" || { echo "::error::build module missing; test_packaging will skip"; exit 1; }
 
       - name: Lint
         run: ruff check .
