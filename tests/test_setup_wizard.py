@@ -107,6 +107,11 @@ def _full_input_sequence(*, interface=None, ntfy_topic="lynceus-deadbeef"):
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # ntfy URL (non-empty so we don't skip ntfy)
         ntfy_topic,  # ntfy topic
+        # heartbeat: default (N -> False). Asked here because it rides the
+        # ntfy delivery path, and asked at all only because ntfy is
+        # configured two lines above -- a run that skips ntfy never sees
+        # this prompt and must NOT have an answer threaded for it.
+        "",
         "",  # RSSI: accept default
         "",  # severity overrides path: accept default
         "",  # enable-alerting gate: default (N -> skip rules.yaml flow)
@@ -597,6 +602,7 @@ def test_wizard_probe_failure_redacts_ntfy_topic(monkeypatch, tmp_path, capsys):
         "https://ntfy.sh",  # ntfy URL
         _LEAK_TOPIC_WIZ,
         "y",  # continue after ntfy fail
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -668,6 +674,7 @@ def test_wizard_ntfy_probe_prints_redacted_resolved_target(monkeypatch, tmp_path
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # ntfy URL
         topic,  # ntfy topic
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate default (N)
@@ -755,6 +762,7 @@ def test_run_wizard_kismet_probe_fail_continue_yes(monkeypatch, tmp_path, capsys
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # ntfy URL (non-empty, so we don't skip ntfy)
         "lynceus-deadbeef",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -831,6 +839,7 @@ def test_run_wizard_ntfy_probe_fail_continue_yes(monkeypatch, tmp_path, capsys):
         "https://ntfy.sh",  # ntfy URL (non-empty)
         "lynceus-cafe",
         "y",  # continue after ntfy fail
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -883,6 +892,7 @@ def test_run_wizard_capture_interface_numbered_selection(monkeypatch, tmp_path):
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # ntfy URL (non-empty)
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -909,6 +919,7 @@ def test_run_wizard_capture_interface_freeform_when_enumeration_unavailable(monk
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # ntfy URL (non-empty)
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -1105,6 +1116,7 @@ def test_run_wizard_end_to_end_smoke(monkeypatch, tmp_path, capsys):
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # explicit ntfy URL
         "lynceus-feedface",
+        "",  # heartbeat: default (N -> False)
         "-80",  # custom rssi
         "",  # severity overrides default path
         "",  # enable-alerting gate: default (N)
@@ -1195,6 +1207,7 @@ def test_run_wizard_system_scope_prints_quickstart_scope_note(monkeypatch, tmp_p
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # ntfy URL
         "lynceus-feedface",  # ntfy topic
+        "",  # heartbeat: default (N -> False)
         "",  # default rssi
         "",  # severity overrides default path
     ]
@@ -1225,6 +1238,7 @@ def test_run_wizard_user_scope_omits_quickstart_scope_note(monkeypatch, tmp_path
         "",
         "https://ntfy.sh",
         "lynceus-feedface",
+        "",  # heartbeat: default (N -> False)
         "",
         "",
         "",
@@ -2296,6 +2310,7 @@ def test_run_wizard_bluetooth_adapter_chosen_appends_to_kismet_sources(monkeypat
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -2324,6 +2339,7 @@ def test_run_wizard_bluetooth_declined_keeps_wifi_only(monkeypatch, tmp_path):
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -2367,6 +2383,7 @@ def test_run_wizard_severity_overrides_rejects_garbage_then_accepts_path(
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "na",  # rejected
         "skip",  # rejected
@@ -2433,6 +2450,7 @@ def test_run_wizard_ntfy_url_empty_skips_ntfy_and_probe(monkeypatch, tmp_path, c
         "",  # ble names default
         "",  # ble_bridge_enabled: default (N -> False)
         "",  # ntfy URL: empty → skip; no topic prompt should follow
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -2469,6 +2487,7 @@ def test_run_wizard_ntfy_url_set_topic_empty_uses_suggested(monkeypatch, tmp_pat
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # URL set
         "",  # topic empty → accepts suggested
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -2724,6 +2743,7 @@ def test_run_wizard_uses_kismet_source_name_when_probe_succeeds(monkeypatch, tmp
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -2775,6 +2795,7 @@ def test_run_wizard_presents_kismet_source_names_not_iw_interfaces(monkeypatch, 
             "",  # ble_bridge_enabled: default (N -> False)
             "https://ntfy.sh",
             "lynceus-cafe",
+            "",  # heartbeat: default (N -> False)
             "",  # rssi default
             "",  # severity overrides default
             "",  # enable-alerting gate: default (N)
@@ -2852,6 +2873,7 @@ def test_run_wizard_falls_back_to_iw_with_warning_when_list_sources_fails(
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -2899,6 +2921,7 @@ def test_run_wizard_kismet_probe_fail_continue_y_shows_warning(monkeypatch, tmp_
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -2992,6 +3015,7 @@ def test_run_wizard_with_bt_source_offers_kismet_bt_prompt(monkeypatch, tmp_path
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -3030,6 +3054,7 @@ def test_run_wizard_no_bt_source_in_kismet_skips_with_note(monkeypatch, tmp_path
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -3073,6 +3098,7 @@ def test_run_wizard_multiple_bt_sources_picks_by_number(monkeypatch, tmp_path):
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -3108,6 +3134,7 @@ def test_run_wizard_kismet_bt_decline_keeps_wifi_only(monkeypatch, tmp_path):
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -3223,6 +3250,7 @@ def test_run_wizard_re_prompts_on_scheme_less_kismet_url(monkeypatch, tmp_path, 
         "",  # ble names
         "",  # ble_bridge_enabled: default (N -> False)
         "",  # ntfy URL — skip
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -3253,6 +3281,7 @@ def test_run_wizard_re_prompts_on_scheme_less_ntfy_url(monkeypatch, tmp_path, ca
         "ntfy.sh",  # rejected — no scheme
         "https://ntfy.sh",  # accepted
         "lynceus-test",  # ntfy topic
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -3300,6 +3329,7 @@ def test_run_wizard_kismet_probe_never_sees_scheme_less_url(monkeypatch, tmp_pat
         "",
         "",  # ble_bridge_enabled
         "",  # skip ntfy
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -3569,6 +3599,7 @@ def _system_scope_inputs():
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-cafe",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate default (N)
@@ -3936,6 +3967,7 @@ def test_run_wizard_re_prompts_on_invalid_ntfy_topic_with_clear_error(
         "https://ntfy.sh",  # ntfy URL
         "na",  # invalid topic — deny-listed
         "lynceus-real01",  # valid topic accepted on retry
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -3974,6 +4006,7 @@ def test_run_wizard_accepts_ntfy_topic_on_4th_attempt_after_3_invalid(monkeypatc
         "skip",  # invalid #2
         "ab",  # invalid #3 — too short
         "lynceus-finalshot",  # valid on 4th try
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -4036,6 +4069,7 @@ def test_run_wizard_ntfy_blank_topic_accepts_suggested_default(monkeypatch, tmp_
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # URL set
         "",  # topic blank → accept suggested
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -4068,6 +4102,7 @@ def test_run_wizard_ntfy_blank_topic_does_not_disable_ntfy(monkeypatch, tmp_path
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",  # URL set
         "",  # topic blank
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate: default (N)
@@ -5057,6 +5092,7 @@ def test_run_wizard_autolocate_hit_yes_skips_manual_prompt(monkeypatch, tmp_path
         "",  # ble_bridge_enabled: default (N -> False)
         "https://ntfy.sh",
         "lynceus-feedface",
+        "",  # heartbeat: default (N -> False)
         "",  # rssi default
         "",  # severity overrides default
         "",  # enable-alerting gate default
@@ -5108,6 +5144,7 @@ def test_run_wizard_autolocate_hit_no_falls_through_to_manual(monkeypatch, tmp_p
         "",  # ble_bridge_enabled
         "https://ntfy.sh",
         "lynceus-feedface",
+        "",  # heartbeat: default (N -> False)
         "",
         "",
         "",
@@ -5217,6 +5254,7 @@ def test_run_wizard_autolocate_redacted_preview_never_leaks_full_key(monkeypatch
         "",  # ble_bridge_enabled
         "https://ntfy.sh",
         "lynceus-feedface",
+        "",  # heartbeat: default (N -> False)
         "",
         "",
         "",
@@ -5256,6 +5294,7 @@ def test_run_wizard_autolocate_walks_multiple_candidates_until_hit(monkeypatch, 
         "",  # ble_bridge_enabled
         "https://ntfy.sh",
         "lynceus-feedface",
+        "",  # heartbeat: default (N -> False)
         "",
         "",
         "",

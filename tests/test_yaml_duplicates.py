@@ -289,6 +289,27 @@ _EXEMPT: dict[str, str] = {
     # duplicate key is not merely irrelevant there but WANTED: the verifier must
     # see the same collapsed value the daemon would, or it would vouch for a
     # secret the loader will actually use.
+    # ✅ DRIVEN 2026-09-02, not merely reasoned about. On a config carrying
+    # `heartbeat_enabled` twice (true on line 2, false on line 3):
+    #   seed says                : False
+    #   the daemon's loader says : False   -> they AGREE
+    #   duplicate warned in the same run: True, twice -- once from
+    #   lynceus.config and once from lynceus.setup.core
+    #
+    # ⭐ Agreeing with `safe_load` is the REQUIREMENT here, not a tolerated
+    # limitation. This seeds the default for a prompt about a setting already
+    # in force; a seed that disagreed with the value the daemon is actually
+    # running would offer to "keep" something that was never true.
+    #
+    # ⛔ And it is not the only reader of this file in the run: the same
+    # `--reconfigure` passes it through `carry_forward_settings`, whose helper
+    # calls `warn_duplicate_keys` on the identical path. Wiring a second
+    # warning here would double-report one duplicate to the operator.
+    "lynceus/setup/core.py::_previous_heartbeat_enabled": (
+        "seeds a prompt default from a setting already in force, so it MUST "
+        "resolve duplicates the way the daemon's loader does; the same file is "
+        "warned about by carry_forward_settings in the same run"
+    ),
     "lynceus/redact.py::_secret_values_surviving": (
         "verifies an already-redacted string; must see the same collapsed "
         "value the daemon's loader would, not the pre-collapse text"

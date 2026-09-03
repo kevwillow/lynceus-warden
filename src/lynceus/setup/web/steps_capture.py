@@ -227,6 +227,9 @@ async def ntfy_probe_get(request: Request) -> HTMLResponse:
             request,
             "ntfy_probe.html",
             step_index=9,
+            heartbeat_enabled=bool(
+                session.answers.get("heartbeat_enabled", False)
+            ),
             skipped=True,
             probe_ok=None,
             probe_error=None,
@@ -247,6 +250,9 @@ async def ntfy_probe_get(request: Request) -> HTMLResponse:
         request,
         "ntfy_probe.html",
         step_index=9,
+        heartbeat_enabled=bool(
+            session.answers.get("heartbeat_enabled", False)
+        ),
         skipped=False,
         probe_ok=ok,
         probe_error=error,
@@ -259,6 +265,17 @@ async def ntfy_probe_post(request: Request) -> HTMLResponse:
     action = form.get("action") or "continue"
     if action == "cancel":
         return _redirect(request, "/cancel")
+    session = _session(request)
+    # The heartbeat rides here rather than on a step of its own -- see
+    # templates/_heartbeat_field.html for why. An unchecked box sends no field
+    # at all, the same shape every other checkbox in this wizard has.
+    #
+    # ⛔ Reaching this handler at all means ntfy IS configured: step 7 redirects
+    # an empty ntfy URL straight to /step/10, and this step's own GET bounces
+    # back to /step/7 without both a url and a topic. An operator who skipped
+    # ntfy therefore never sets this key, and the config renderer's
+    # answers.get("heartbeat_enabled", False) writes the off default for them.
+    session.answers["heartbeat_enabled"] = form.get("heartbeat_enabled") == "on"
     return _redirect(request, "/step/10")
 
 
