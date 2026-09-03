@@ -1,15 +1,30 @@
 """Heartbeat / dead-man's switch prompt for both setup wizards.
 
-tests/ is gitignored - these are NEVER committed (see project memory).
+⛔ This file IS committed. An earlier draft of this docstring said "tests/ is
+gitignored - these are NEVER committed", which is false and dangerous: only the
+ten files named in `.gitignore` are withheld, and this is not one of them.
+`git check-ignore` returns nothing for it. Keep every identifier here synthetic.
 
 The contract under test:
-  * Both frontends ask `answers["heartbeat_enabled"]` as a bool.
-  * The prompt is asked only when ntfy is configured. Empty ntfy URL
-    means the operator skipped ntfy, and a heartbeat question there
-    would offer a feature that silently does nothing.
-  * Default is False. Existing installs must not change behaviour.
-  * A generated config must still load through the real Config
-    constructor.
+  * Both frontends set ``answers["heartbeat_enabled"]`` as a bool.
+  * It is asked only when ntfy is configured. An empty ntfy URL means the
+    operator skipped ntfy, and a heartbeat question there would offer a feature
+    that silently does nothing.
+  * The default is the operator's CURRENT value, not False.
+  * A generated config must still load through the real ``Config`` constructor.
+
+⭐ The heartbeat is NOT a wizard step of its own. It is a field on the ntfy
+step, in both frontends. That is load-bearing rather than cosmetic: inserting a
+step into the web wizard's numbered ``/step/N`` sequence forces severity 11→12,
+rules 12→13 and the legacy Argus redirect 13→14, or two handlers register the
+same path and FastAPI raises at app construction. ``test_the_web_wizard_step_
+numbering_is_unchanged`` is the guard against that being reintroduced.
+
+⛔ And because the renderer now emits ``heartbeat_enabled``, it left the set
+``carry_forward_settings`` protects -- so seeding the prompt from the existing
+file is what keeps a hand-edited ``heartbeat_enabled: true`` alive across a
+``--reconfigure``. That function's own docstring names this exact setting as its
+flagship example. The seeding tests below are the guard.
 """
 
 from __future__ import annotations
@@ -29,7 +44,11 @@ from lynceus.setup.web import steps_capture as steps
 from lynceus.setup.web.app import create_wizard_app
 
 TOKEN = "test-setup-token-fixed-for-heartbeat-prompt-1234567890"
-TARGET = Path("/tmp/wizard-test-heartbeat-lynceus.yaml")
+#: ⚠️ Deliberately a path that does NOT exist. `_previous_heartbeat_enabled`
+#: reads the target file to seed the prompt, so a fixed real path left behind by
+#: an earlier run would silently become this suite's input. Tests that need a
+#: real existing config pass their own `tmp_path` to `_make_app`.
+TARGET = Path("/nonexistent-lynceus-wizard-target/lynceus.yaml")
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -276,7 +295,7 @@ def test_reconfigure_round_trip_preserves_heartbeat_disabled():
     assert rendered["heartbeat_enabled"] is False
 
 
-# ---- Web wizard: step exists, asks, skips ---------------------------------
+# ---- Web wizard: a FIELD on the ntfy step, not a step of its own ----------
 
 
 @pytest.fixture(autouse=True)
@@ -284,170 +303,145 @@ def _no_real_ntfy_probe(monkeypatch):
     monkeypatch.setattr(steps, "probe_ntfy", lambda url, topic: (False, "test default"))
 
 
-def test_web_heartbeat_get_requires_ntfy_url_in_session():
-    """Defensive: deep-link to /step/10 without ntfy configured must
-    bounce forward (and not render a question about a delivery path
-    the operator does not have)."""
-    app = _make_app()
-    with _client(app) as c:
-        resp = c.get(f"/step/10?token={TOKEN}")
-    assert resp.status_code in (303, 307)
-    assert resp.headers["location"].startswith("/step/11"), (
-        "the heartbeat step must redirect to /step/11 (RSSI), not "
-        f"render the question: {resp.headers['location']}"
-    )
+def _ntfy_session(app, url="https://ntfy.sh", topic="lynceus-feedface"):
+    """Put a configured ntfy in the session, as steps 7 and 8 would."""
+    store = app.state.session_store
+    session = store.get_or_create(app.state.setup_token)
+    session.answers.update({"ntfy_url": url, "ntfy_topic": topic})
+    return session
 
 
-def test_web_heartbeat_get_requires_ntfy_topic_in_session():
-    """Same defensive bounce when the topic is missing - the heartbeat
-    pushes through ntfy, so a missing topic is the same kind of empty
-    delivery path as a missing URL."""
-    app = _make_app()
-    session = app.state.session_store.get_or_create(TOKEN)
-    session.answers["ntfy_url"] = "https://ntfy.sh"
-    # ntfy_topic deliberately NOT set.
-    with _client(app) as c:
-        resp = c.get(f"/step/10?token={TOKEN}")
-    assert resp.status_code in (303, 307)
-    assert resp.headers["location"].startswith("/step/11")
+@pytest.mark.webui
+def test_the_web_wizard_step_numbering_is_unchanged():
+    """⛔ The regression guard for the whole design choice.
 
-
-def test_web_heartbeat_get_renders_when_ntfy_is_configured():
-    app = _make_app()
-    session = app.state.session_store.get_or_create(TOKEN)
-    session.answers.update(ntfy_url="https://ntfy.sh", ntfy_topic="abc12345")
-    with _client(app) as c:
-        resp = c.get(f"/step/10?token={TOKEN}")
-    assert resp.status_code == 200
-    assert "Heartbeat" in resp.text or "dead-man" in resp.text
-
-
-def test_web_heartbeat_post_yes_stores_true():
-    app = _make_app()
-    session = app.state.session_store.get_or_create(TOKEN)
-    session.answers.update(ntfy_url="https://ntfy.sh", ntfy_topic="abc12345")
-    with _client(app) as c:
-        csrf = _csrf_get(c, "/step/10")
-        resp = c.post(
-            f"/step/10?token={TOKEN}",
-            data={"heartbeat_enabled": "yes", "_csrf": csrf},
-        )
-    assert resp.status_code == 303
-    assert resp.headers["location"].startswith("/step/11")
-    assert session.answers["heartbeat_enabled"] is True
-
-
-def test_web_heartbeat_post_no_stores_false():
-    app = _make_app()
-    session = app.state.session_store.get_or_create(TOKEN)
-    session.answers.update(ntfy_url="https://ntfy.sh", ntfy_topic="abc12345")
-    with _client(app) as c:
-        csrf = _csrf_get(c, "/step/10")
-        resp = c.post(
-            f"/step/10?token={TOKEN}",
-            data={"heartbeat_enabled": "no", "_csrf": csrf},
-        )
-    assert resp.status_code == 303
-    assert session.answers["heartbeat_enabled"] is False
-
-
-def test_web_heartbeat_default_off_is_persisted():
-    """A re-render of an empty form must keep the documented OFF default."""
-    app = _make_app()
-    session = app.state.session_store.get_or_create(TOKEN)
-    session.answers.update(ntfy_url="https://ntfy.sh", ntfy_topic="abc12345")
-    with _client(app) as c:
-        csrf = _csrf_get(c, "/step/10")
-        resp = c.post(
-            f"/step/10?token={TOKEN}",
-            data={"_csrf": csrf},  # no heartbeat_enabled field
-        )
-    assert resp.status_code == 303
-    assert session.answers["heartbeat_enabled"] is False
-
-
-def test_web_ntfy_url_empty_skips_heartbeat_step():
-    """§4.3 + §6: an empty ntfy URL must skip topic + probe + heartbeat.
-    The web equivalent of the CLI's silent False."""
-    app = _make_app()
-    with _client(app) as c:
-        csrf = _csrf_get(c, "/step/7")
-        resp = c.post(
-            f"/step/7?token={TOKEN}",
-            data={"ntfy_url": "", "_csrf": csrf},
-        )
-    assert resp.status_code == 303
-    # Skips to /step/11 (RSSI), not /step/10 (heartbeat).
-    assert resp.headers["location"].startswith("/step/11"), (
-        f"empty ntfy URL must bypass heartbeat: {resp.headers['location']}"
-    )
-    session = app.state.session_store.get(TOKEN)
-    assert session.answers["heartbeat_enabled"] is False
-    assert session.answers["ntfy_url"] == ""
-    assert session.answers["ntfy_topic"] == ""
-
-
-def test_web_heartbeat_post_without_ntfy_in_session_bounces():
-    app = _make_app()
-    with _client(app) as c:
-        csrf = _csrf_get(c, "/step/10")  # no ntfy URL set
-        resp = c.post(
-            f"/step/10?token={TOKEN}",
-            data={"heartbeat_enabled": "yes", "_csrf": csrf},
-        )
-    assert resp.status_code in (303, 307)
-    assert resp.headers["location"].startswith("/step/11")
-
-
-# ---- End-to-end through the renderer --------------------------------------
-
-
-def test_web_step_routes_registered():
-    """The new step must actually be mounted on the FastAPI app, not
-    just defined. The route table is what makes /step/10 reachable."""
+    A heartbeat step of its own would take /step/10, pushing RSSI to 11,
+    severity to 12, rules to 13 and the legacy Argus redirect to 14. Two
+    handlers on one path make FastAPI raise at app construction, so every web
+    test would error before asserting anything. Pinning the numbering here means
+    that reappears as ONE failing test with a name that says why.
+    """
     app = _make_app()
     paths = {r.path for r in app.routes if hasattr(r, "path")}
-    assert "/step/10" in paths, (
-        "the heartbeat route was not registered - the wizard would "
-        f"404 on /step/10. Registered paths: {sorted(p for p in paths if p.startswith('/step'))}"
-    )
-
-
-def test_step_titles_includes_heartbeat():
-    """The wizard's progress indicator reads STEP_TITLES. The heartbeat
-    must be listed at the correct ordinal (between ntfy probe and RSSI)."""
+    for expected in ("/step/7", "/step/8", "/step/9", "/step/10", "/step/11"):
+        assert expected in paths, f"{expected} vanished: {sorted(paths)}"
     from lynceus.setup.web.app import STEP_TITLES
 
     titles = list(STEP_TITLES)
-    assert "Heartbeat" in titles
-    ntfy_probe_idx = titles.index("ntfy probe")
-    heartbeat_idx = titles.index("Heartbeat")
-    rssi_idx = titles.index("RSSI threshold")
-    assert ntfy_probe_idx < heartbeat_idx < rssi_idx, (
-        f"Heartbeat must sit between ntfy probe and RSSI: {titles}"
+    assert "Heartbeat" not in titles, (
+        "the heartbeat must NOT be its own step -- it is a field on the ntfy "
+        f"step. STEP_TITLES: {titles}"
     )
 
 
-def test_cli_prompt_wording_matches_the_packet():
-    """The packet §4.5 mandates the exact wording. Pinning it here so a
-    later 'improve the copy' edit cannot quietly change what the
-    operator consents to."""
-    # The CLI prompt is inside run_wizard, not exported. Assert the
-    # literal that _print_section/_print_context emit by exercising
-    # the helper shape directly: the question string must contain every
-    # load-bearing phrase from the packet.
-    question = (
-        "Send a periodic \"still watching\" push, so silence means "
-        "something is wrong rather than nothing is happening? Sends "
-        "one low-priority notification every 24h. Lynceus default is "
-        "OFF."
+@pytest.mark.webui
+def test_the_ntfy_step_renders_the_heartbeat_field():
+    app = _make_app()
+    _ntfy_session(app)
+    with _client(app) as c:
+        resp = c.get(f"/step/9?token={TOKEN}")
+    assert resp.status_code == 200
+    assert 'name="heartbeat_enabled"' in resp.text, (
+        "the heartbeat checkbox is missing from the ntfy step"
     )
-    for fragment in (
-        "still watching",
-        "silence",
-        "24h",
-        "Lynceus default is OFF",
-    ):
-        assert fragment in question, (
-            f"the prompt wording drifted; packet §4.5 requires {fragment!r}"
+
+
+@pytest.mark.webui
+def test_posting_the_checkbox_stores_true():
+    app = _make_app()
+    _ntfy_session(app)
+    with _client(app) as c:
+        token = _csrf_get(c, "/step/9")
+        resp = c.post(
+            f"/step/9?token={TOKEN}",
+            data={"_csrf": token, "action": "continue", "heartbeat_enabled": "on"},
         )
+    assert resp.status_code in (303, 307)
+    assert app.state.session_store.get_or_create(TOKEN).answers["heartbeat_enabled"] is True
+
+
+@pytest.mark.webui
+def test_an_unchecked_box_stores_false():
+    """⚠️ An unchecked checkbox sends no field at all -- the absence IS the
+    answer, and it must be recorded as False rather than left unset."""
+    app = _make_app()
+    _ntfy_session(app)
+    with _client(app) as c:
+        token = _csrf_get(c, "/step/9")
+        resp = c.post(
+            f"/step/9?token={TOKEN}",
+            data={"_csrf": token, "action": "continue"},
+        )
+    assert resp.status_code in (303, 307)
+    assert app.state.session_store.get_or_create(TOKEN).answers["heartbeat_enabled"] is False
+
+
+@pytest.mark.webui
+def test_declining_ntfy_never_asks_and_never_sets_the_key():
+    """Step 7 with an empty URL jumps to /step/10, so steps 8 and 9 -- and the
+    heartbeat field on 9 -- are skipped for free. The key must stay UNSET, so
+    the Config builder falls back to the operator's existing value rather than
+    to a hard False."""
+    app = _make_app()
+    with _client(app) as c:
+        token = _csrf_get(c, "/step/7")
+        resp = c.post(f"/step/7?token={TOKEN}", data={"_csrf": token, "ntfy_url": ""})
+    assert resp.status_code in (303, 307)
+    assert resp.headers["location"].startswith("/step/10"), resp.headers["location"]
+    assert "heartbeat_enabled" not in app.state.session_store.get_or_create(TOKEN).answers
+
+
+@pytest.mark.webui
+def test_the_web_config_builder_seeds_from_the_existing_file(tmp_path):
+    """⛔ The load-bearing one. An operator who hand-edited heartbeat_enabled:
+    true and then re-runs the web wizard declining ntfy must not have it
+    switched off."""
+    target = tmp_path / "lynceus.yaml"
+    target.write_text("kismet_url: http://127.0.0.1:2501\nheartbeat_enabled: true\n")
+    from lynceus.setup.web import review
+
+    answers = _answers(ntfy_url="", ntfy_topic="")
+    seeded = review._build_config_from_session(
+        answers, previous_heartbeat=core._previous_heartbeat_enabled(target)
+    )
+    assert seeded.heartbeat_enabled is True, (
+        "the wizard discarded a hand-edited heartbeat_enabled: true"
+    )
+    # ...and an explicit answer still wins over the seed.
+    answered_off = _answers(heartbeat_enabled=False)
+    assert (
+        review._build_config_from_session(
+            answered_off, previous_heartbeat=True
+        ).heartbeat_enabled
+        is False
+    ), "an explicit 'no' must beat the seeded previous value"
+
+
+def test_cli_prompt_wording_is_read_from_the_SOURCE_not_restated():
+    """⛔ This test used to be VACUOUS and passed for the wrong reason.
+
+    It defined the expected question as a local literal and then asserted
+    fragments were in that literal -- `X in X`, true no matter what the wizard
+    actually says. Deleting the whole prompt from cli/setup.py left it green.
+
+    It now reads the module's own source, so a "let's improve the copy" edit
+    that drops what the operator is consenting to fails here.
+    """
+    import inspect
+
+    src = inspect.getsource(wiz)
+    block = src[src.index("# (j) heartbeat") : src.index("# (k) RSSI threshold")]
+    # ⚠️ Fragments only, and short ones. The source wraps this prompt across
+    # several adjacent string literals, so any fragment spanning a line break
+    # would fail for formatting rather than for meaning.
+    for fragment in ("still watching", "silence", "24h", "Lynceus default is", "OFF."):
+        assert fragment in block, (
+            f"the heartbeat prompt no longer says {fragment!r}; the operator is "
+            "consenting to something this test can no longer describe"
+        )
+    # ...and the two facts that make the consent informed.
+    assert "prompt_yes_no" in block, "the heartbeat is no longer a yes/no prompt"
+    assert "default=previous" in block, (
+        "the prompt stopped defaulting to the operator's current value -- a "
+        "reconfigure would now switch off a heartbeat somebody turned on"
+    )

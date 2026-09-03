@@ -58,7 +58,7 @@ from lynceus import paths
 from lynceus.cli.setup import _redact_kismet_api_key
 from lynceus.config import BleBridgeConfig, CaptureConfig, Config
 from lynceus.redact import redact_ntfy_topic
-from lynceus.setup.core import apply_config
+from lynceus.setup.core import _previous_heartbeat_enabled, apply_config
 from lynceus.setup.models import ApplyReport, ApplyStep, ArgusChoice
 from lynceus.setup.web.session import WizardSession
 from lynceus.setup.web.sse_sink import SSEProgressSink, serialize_step
@@ -94,6 +94,10 @@ FIELD_STEP_INDEX: dict[str, int] = {
     "capture.ble_friendly_names": 6,
     "ntfy_url": 7,
     "ntfy_topic": 8,
+    # Asked on step 9 alongside the ntfy probe, not on a step of its own:
+    # it is delivered over ntfy and step 7 already skips 8 and 9 when the
+    # operator declines ntfy.
+    "heartbeat_enabled": 9,
     "min_rssi": 10,
     "severity_overrides_path": 11,
 }
@@ -134,7 +138,9 @@ def _render(
     )
 
 
-def _build_config_from_session(answers: dict[str, Any]) -> Config:
+def _build_config_from_session(
+    answers: dict[str, Any], *, previous_heartbeat: bool = False
+) -> Config:
     """Construct a ``Config`` from the wizard's per-step answers.
 
     Empty strings for optional secrets (ntfy_url, ntfy_topic) map
@@ -163,6 +169,16 @@ def _build_config_from_session(answers: dict[str, Any]) -> Config:
         ntfy_url=answers.get("ntfy_url") or None,
         ntfy_topic=answers.get("ntfy_topic") or None,
         min_rssi=answers.get("min_rssi"),
+        # ⛔ Seeded from the operator's EXISTING file when the wizard never
+        # asked. The heartbeat question lives on step 9, and step 7 skips
+        # straight to step 10 when ntfy is declined -- so an operator who
+        # declined ntfy answers nothing here. The renderer emits this key
+        # unconditionally, which takes it out of `carry_forward_settings`'
+        # protection, so defaulting to False would switch off a hand-edited
+        # `heartbeat_enabled: true` on every such --reconfigure.
+        heartbeat_enabled=bool(
+            answers.get("heartbeat_enabled", previous_heartbeat)
+        ),
     )
 
 
@@ -286,6 +302,7 @@ def _summarize(answers: dict[str, Any], config: Config | None) -> dict[str, Any]
             redact_ntfy_topic(answers.get("ntfy_topic", ""))
             if answers.get("ntfy_topic") else "(ntfy skipped)"
         ),
+        "heartbeat_enabled": bool(answers.get("heartbeat_enabled", False)),
         "min_rssi": answers.get("min_rssi", "(default)"),
         "severity_overrides_path": (
             answers.get("severity_overrides_path") or "(default)"
@@ -314,7 +331,10 @@ async def review_get(request: Request) -> HTMLResponse:
     config: Config | None = None
     errors: list[dict[str, Any]] = []
     try:
-        config = _build_config_from_session(session.answers)
+        config = _build_config_from_session(
+            session.answers,
+            previous_heartbeat=_previous_heartbeat_enabled(state.target_path),
+        )
     except ValidationError as exc:
         errors = _format_validation_errors(exc)
     return _render(
@@ -337,7 +357,10 @@ async def apply_preview_json(request: Request) -> JSONResponse:
     state = request.app.state
     session = _session(request)
     try:
-        config = _build_config_from_session(session.answers)
+        config = _build_config_from_session(
+            session.answers,
+            previous_heartbeat=_previous_heartbeat_enabled(state.target_path),
+        )
     except ValidationError as exc:
         return JSONResponse(
             {"valid": False, "errors": _format_validation_errors(exc)},

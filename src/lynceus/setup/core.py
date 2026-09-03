@@ -489,6 +489,34 @@ _DEFAULT_BLE_ADAPTER = BleBridgeConfig().adapter
 # --- Config write -----------------------------------------------------------
 
 
+def _previous_heartbeat_enabled(target: Path) -> bool:
+    """The operator's current ``heartbeat_enabled``, or ``False`` if unknowable.
+
+    Seeds the wizard's heartbeat prompt on a ``--reconfigure`` run so pressing
+    Enter keeps what is already there. Without it, the prompt would default to
+    ``False`` and the wizard would offer switching off a safety feature as the
+    path of least resistance.
+
+    ⛔ Deliberately does NOT go through ``Config``. This runs before the wizard
+    has collected anything, on a file the operator may have broken -- and the
+    whole reason they are re-running setup may be that the config no longer
+    loads. Raising here, or refusing to prompt, would make a bad config
+    unfixable by the tool whose job is to fix it. Every failure returns the
+    ``False`` default and the operator is asked normally.
+
+    ⚠️ ``False`` on an unreadable file is not a silent clobber: the prompt is
+    still shown and answered, and the value the operator gives is what gets
+    written.
+    """
+    try:
+        raw = yaml.safe_load(target.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    return raw.get("heartbeat_enabled") is True
+
+
 def render_config_yaml(answers: dict) -> str:
     """Build the lynceus.yaml content with section comments. Hand-rolled so
     the operator gets explanatory comments, not a bare yaml.safe_dump."""
@@ -555,6 +583,19 @@ def render_config_yaml(answers: dict) -> str:
         "# a cheerful 'still watching' sent while ingest is dead is worse than",
         "# no heartbeat at all. A quiet RF environment is deliberately NOT",
         "# unhealthy.",
+        # ⛔ The wizard ASKS about this now, so the renderer owns it and emits
+        # it unconditionally. That makes seeding the prompt from the operator's
+        # CURRENT value load-bearing rather than a nicety: `carry_forward_
+        # settings` derives its preserved set by parsing this text, so an
+        # emitted key is no longer protected by it, and a prompt defaulting to
+        # False would let Enter switch off a heartbeat somebody turned on by
+        # hand. Both frontends seed it -- cli/setup.py::_previous_heartbeat_
+        # enabled and web/steps_capture.py's session seeding.
+        #
+        # ⚠️ That function's docstring names `heartbeat_enabled` as its flagship
+        # example of a hand-edited setting a re-run destroyed. It is no longer
+        # an example of that, because it is no longer unasked. Changing this
+        # without moving the seeding is how it becomes one again.
         f"heartbeat_enabled: {_yaml_bool(answers.get('heartbeat_enabled', False))}",
         "",
         "# --- RSSI floor ---",

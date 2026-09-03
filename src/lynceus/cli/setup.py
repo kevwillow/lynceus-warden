@@ -48,6 +48,7 @@ from ..setup.core import (  # noqa: F401  (test-namespace re-exports)
     _atomic_write,
     _is_macos,
     _is_windows,
+    _previous_heartbeat_enabled,
     _yaml_bool,
     _yaml_str,
     append_rules_path_to_config,
@@ -1316,36 +1317,52 @@ and enter the topic exactly as written.
                     print("Aborted.", file=sys.stderr)
                     return 1
 
-    # (j) heartbeat — the dead-man's switch. Asked ONLY when ntfy is
-    # configured: a heartbeat with no delivery path is a setting that
-    # cannot do anything, and asking about it there would be offering a
-    # feature that silently does nothing. The packet's §4.3 contract:
-    # empty ntfy_url → answers["heartbeat_enabled"] = False, no prompt.
+    # (j) heartbeat -- the dead-man's switch.
+    #
+    # ⛔ Asked ONLY when ntfy is configured. A heartbeat with no delivery path
+    # is a setting that cannot do anything, and offering it there would be
+    # offering a feature that silently does nothing.
+    #
+    # ⛔ And when it is NOT asked, the key is left OUT of `answers` entirely
+    # rather than set to False. `carry_forward_settings` derives the wizard-owned
+    # set by parsing the rendered config, so a key the renderer omits is
+    # PRESERVED from the operator's existing file. Writing False here would
+    # instead destroy a hand-edited `heartbeat_enabled: true` on every
+    # --reconfigure run that declined ntfy -- and that function's own docstring
+    # names this exact setting as the flagship example of what it exists to
+    # protect. ⇒ see setup/core.py::carry_forward_settings.
     if answers.get("ntfy_url"):
+        # ⚠️ The default is the operator's CURRENT value, not False. Rendering
+        # this key makes the wizard its owner, so a reconfigure that defaulted
+        # to False would silently switch off a heartbeat somebody had turned on
+        # by hand -- pressing Enter through the wizard must never be a way to
+        # lose a safety feature.
+        previous = _previous_heartbeat_enabled(target)
         _print_section("Heartbeat / dead-man's switch")
         _print_context(
             """
 Silence is the failure mode a heartbeat exists to detect. If the
 daemon dies, the host loses power, the SD card wears out, or ntfy
-delivery breaks, the operator's phone simply goes quiet — and quiet
-is indistinguishable from "you are safe". A periodic "still
-watching" push turns silence into an alert.
+delivery breaks, your phone simply goes quiet -- and quiet is
+indistinguishable from "you are safe". A periodic "still watching"
+push turns silence into something you can notice.
 
 It costs one low-priority ntfy notification every 24 hours. Off
-unless you asked for it: a cheerful "still watching" sent while
-ingest is dead is worse than no heartbeat at all.
+unless you ask for it: a cheerful "still watching" sent while ingest
+is dead is worse than no heartbeat at all, so it reports a wedged
+poll loop, failing writes and undelivered alerts rather than
+claiming health it has not verified. A quiet RF environment is
+deliberately NOT unhealthy.
 """
         )
         answers["heartbeat_enabled"] = prompt_yes_no(
-            "Send a periodic \"still watching\" push, so silence means "
+            'Send a periodic "still watching" push, so silence means '
             "something is wrong rather than nothing is happening? Sends "
             "one low-priority notification every 24h. Lynceus default is "
             "OFF.",
-            default=False,
+            default=previous,
             input_fn=in_fn,
         )
-    else:
-        answers["heartbeat_enabled"] = False
 
     # (k) RSSI threshold
     rssi_str = prompt_default(

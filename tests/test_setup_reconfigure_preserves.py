@@ -149,6 +149,18 @@ def _wizard_shaped(before: Config, tmp_path: Path, **overrides) -> Config:
         "min_rssi": before.min_rssi,
         "capture": before.capture,
         "ble_bridge": before.ble_bridge.model_copy(update={"flush_interval": None}),
+        # ⚠️ MOVED from carried-forward to asked. The wizard now puts a
+        # heartbeat question on the ntfy step, so the renderer emits the key
+        # and `carry_forward_settings` no longer protects it. Both frontends
+        # seed the answer from the operator's existing file, which is what
+        # keeps a hand-edited `heartbeat_enabled: true` alive -- so the real
+        # wizard supplies it here, and this helper must too.
+        #
+        # ⛔ That makes the seeding load-bearing rather than a nicety.
+        # `test_reconfigure_seeds_the_heartbeat_prompt_from_the_existing_file`
+        # is the guard; delete this line and that test still passes, which is
+        # why the guard lives there and not here.
+        "heartbeat_enabled": before.heartbeat_enabled,
     }
     cfg = Config(db_path=str(tmp_path / "custom.db"), **{**answered, **overrides})
     # ⛔ Drift guard, stated as the CONTRACT rather than as a count. A ">= 25
@@ -171,6 +183,7 @@ def _wizard_shaped(before: Config, tmp_path: Path, **overrides) -> Config:
         "capture.ble_friendly_names",
         "ble_bridge.enabled",
         "ble_bridge.adapter",
+        "heartbeat_enabled",
     }
     defaults = _leaf_fields(Config())
     carried_by_input = {k for k, v in _leaf_fields(cfg).items() if v != defaults[k]}
@@ -303,7 +316,11 @@ def test_a_readable_previous_config_is_reported_ok(hand_edited, tmp_path):
     # ⛔ Naming the keys, not just counting them: "reported a non-empty list"
     # is satisfied by preserving the wrong things.
     carried = set(step.detail["carried_forward"])
-    for expected in ("heartbeat_enabled", "ntfy_auth_token", "log_level"):
+    # ⚠️ `heartbeat_enabled` used to head this list and was REMOVED from it:
+    # the wizard now asks about it, so the renderer owns it and it is
+    # correctly absent from the carried set. Its preservation is proven by
+    # the seeding tests instead.
+    for expected in ("ntfy_auth_token", "log_level"):
         assert expected in carried, f"{expected} was not carried: {sorted(carried)}"
 
 
@@ -459,7 +476,7 @@ def test_an_unrecognised_key_is_dropped_and_named_not_carried_forward(tmp_path):
     target = tmp_path / "lynceus.yaml"
     target.write_text(
         "kismet_url: http://127.0.0.1:2501\n"
-        "heartbeat_enabled: true\n"
+        "log_level: DEBUG\n"
         "heartbeat_interal_hours: 12\n",
         encoding="utf-8",
     )
@@ -476,7 +493,7 @@ def test_an_unrecognised_key_is_dropped_and_named_not_carried_forward(tmp_path):
 
     # The whole point: the daemon can still load what the wizard wrote.
     reloaded = load_config(str(target))
-    assert reloaded.heartbeat_enabled is True, "the real setting was not preserved"
+    assert reloaded.log_level == "DEBUG", "the real setting was not preserved"
 
     step = next(s for s in report.steps if s.name == "write_config")
     assert list(step.detail["dropped"]) == ["heartbeat_interal_hours"]
@@ -583,7 +600,7 @@ def test_a_known_key_with_an_unloadable_value_is_dropped_too(tmp_path):
     target = tmp_path / "lynceus.yaml"
     target.write_text(
         "kismet_url: http://127.0.0.1:2501\n"
-        "heartbeat_enabled: true\n"
+        "log_level: DEBUG\n"
         "heartbeat_interval_hours: nope\n",
         encoding="utf-8",
     )
@@ -599,7 +616,7 @@ def test_a_known_key_with_an_unloadable_value_is_dropped_too(tmp_path):
     )
 
     reloaded = load_config(str(target))
-    assert reloaded.heartbeat_enabled is True, "the valid setting was thrown out too"
+    assert reloaded.log_level == "DEBUG", "the valid setting was thrown out too"
 
     step = next(s for s in report.steps if s.name == "write_config")
     assert "heartbeat_interval_hours" in step.detail["dropped"]

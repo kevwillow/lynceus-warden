@@ -51,11 +51,6 @@ STEP_TITLES: tuple[str, ...] = (
     "ntfy URL",
     "ntfy topic",
     "ntfy probe",
-    # Heartbeat / dead-man's switch. Asked here because it is the only
-    # feature that PUSHES through ntfy — silence is the failure mode it
-    # exists to detect, and it is meaningless if ntfy isn't configured.
-    # The web step obeys the same skip branch as topic + probe.
-    "Heartbeat",
     "RSSI threshold",
     "Severity overrides",
     # v0.7.7 Touch 5: merged the prior "Rules engine" (step 12) and

@@ -1,0 +1,34 @@
+{# The dead-man's switch, asked on the ntfy step rather than on one of its
+   own.
+
+   ⛔ It is NOT a separate wizard step, and that is deliberate. The heartbeat is
+   delivered over ntfy, so it belongs beside the delivery path it depends on --
+   and step 7 already redirects straight to step 10 when the ntfy URL is empty,
+   so an operator who skipped ntfy is never shown a question about a channel
+   they do not have. A step of its own would have to re-derive that condition,
+   and would renumber every step after it.
+
+   Included by all three branches of ntfy_probe.html (skipped / ok / failed),
+   because the question is worth asking whatever the probe returned: a failed
+   probe is exactly when an operator most wants to know the delivery path is
+   being exercised daily. #}
+<fieldset class="wizard-heartbeat">
+  <label for="heartbeat_enabled">
+    <input
+      type="checkbox"
+      id="heartbeat_enabled"
+      name="heartbeat_enabled"
+      {% if heartbeat_enabled %}checked{% endif %}
+    >
+    Send a periodic &ldquo;still watching&rdquo; push, so silence means
+    something is wrong rather than nothing is happening.
+  </label>
+  <small>
+    One low-priority notification every 24 hours. Lynceus default is
+    <strong>OFF</strong>. It names a wedged poll loop, failing writes and
+    undelivered alerts rather than claiming health it has not verified &mdash;
+    a cheerful &ldquo;still watching&rdquo; sent while ingest is dead is worse
+    than no heartbeat at all. A quiet RF environment is deliberately not
+    unhealthy.
+  </small>
+</fieldset>

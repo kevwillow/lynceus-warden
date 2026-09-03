@@ -1,15 +1,12 @@
 """Severity overrides + unified Argus configuration step (v0.7.7 Touch 5).
 
-Implements steps 12-13 of the wizard:
+Implements steps 11-12 of the wizard:
 
-    12. Severity overrides    (path input, validated via _looks_like_path)
-    13. Argus configuration   (alerting gate + per-rule-type enables +
+    11. Severity overrides    (path input, validated via _looks_like_path)
+    12. Argus configuration   (alerting gate + per-rule-type enables +
                                 argus load-mode choice — unified at v0.7.7
                                 from the prior split "Rules engine" /
                                 "Argus watchlist" pair)
-
-Step numbers shifted from 11/12 by the heartbeat step inserted
-between the ntfy probe and the RSSI threshold (packet P2).
 
 v0.7.7 Touch 5: steps 12 (rules engine) and 13 (argus loading) merged
 into a single step. Operators conceptually treat Argus setup as one
@@ -92,7 +89,7 @@ async def severity_get(request: Request) -> HTMLResponse:
     return _render(
         request,
         "severity.html",
-        step_index=12,
+        step_index=11,
         severity_path=path,
         error=None,
     )
@@ -108,7 +105,7 @@ async def severity_post(request: Request) -> HTMLResponse:
         return _render(
             request,
             "severity.html",
-            step_index=12,
+            step_index=11,
             severity_path=raw,
             error=(
                 "That doesn't look like a file path. Use a full path or "
@@ -116,10 +113,10 @@ async def severity_post(request: Request) -> HTMLResponse:
             ),
         )
     session.answers["severity_overrides_path"] = raw
-    return _redirect(request, "/step/13")
+    return _redirect(request, "/step/12")
 
 
-# ---- Step 13: Rules engine -----------------------------------------------
+# ---- Step 12: Rules engine -----------------------------------------------
 
 
 def _rule_type_choices(scope: str) -> list[dict]:
@@ -170,7 +167,7 @@ async def rules_get(request: Request) -> HTMLResponse:
     return _render(
         request,
         "rules.html",
-        step_index=13,
+        step_index=12,
         rule_rows=rows,
         enable_alerting=bool(session.answers.get("enable_alerting", False)),
         enabled_rule_types=set(session.answers.get("enabled_rule_types", [])),
@@ -207,7 +204,7 @@ async def rules_post(request: Request) -> HTMLResponse:
         return _render(
             request,
             "rules.html",
-            step_index=13,
+            step_index=12,
             rule_rows=rows,
             enable_alerting=enable_alerting,
             enabled_rule_types=set(enabled),
@@ -227,7 +224,7 @@ async def rules_post(request: Request) -> HTMLResponse:
         return _render(
             request,
             "rules.html",
-            step_index=13,
+            step_index=12,
             rule_rows=rows,
             enable_alerting=enable_alerting,
             enabled_rule_types=set(enabled),
@@ -261,7 +258,7 @@ async def rules_post(request: Request) -> HTMLResponse:
 
 def register_severity_rules_steps(app: FastAPI) -> None:
     """Mount the two severity/rules steps onto the wizard app."""
-    app.add_api_route("/step/12", severity_get, methods=["GET"], response_class=HTMLResponse)
-    app.add_api_route("/step/12", severity_post, methods=["POST"], response_class=HTMLResponse)
-    app.add_api_route("/step/13", rules_get, methods=["GET"], response_class=HTMLResponse)
-    app.add_api_route("/step/13", rules_post, methods=["POST"], response_class=HTMLResponse)
+    app.add_api_route("/step/11", severity_get, methods=["GET"], response_class=HTMLResponse)
+    app.add_api_route("/step/11", severity_post, methods=["POST"], response_class=HTMLResponse)
+    app.add_api_route("/step/12", rules_get, methods=["GET"], response_class=HTMLResponse)
+    app.add_api_route("/step/12", rules_post, methods=["POST"], response_class=HTMLResponse)
