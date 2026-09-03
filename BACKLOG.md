@@ -1220,7 +1220,48 @@ interface was absent while `Experimental` was commented out in
   both adapters publish the interface, so this box can finally test whether
   the bridge captures anything.
 
-### Migration 014 replay drops every devices column added after it
+### ✅ RESOLVED — Migration 014 replay drops every devices column added after it
+
+⭐ **CLOSED, and it was closed before this entry was re-read. Verified
+2026-09-03 at `1c16e2c`.** The runner refuses to stamp a forward migration that
+dropped a column: `db._apply_migrations` snapshots `_table_column_sets()` before
+each migration and calls `_assert_no_columns_lost` after it. Driven through the
+real replay path — delete 014's stamp, reopen the database so the runner
+replays it:
+
+    RuntimeError: migration 14 (014_devices_remote_id.sql) removed columns that
+    existed before it ran: {'devices': ['ble_device_class']}. A forward
+    migration must never drop a column from a surviving table.
+
+⇒ Silent data loss became a loud refusal. Landed as audit item **B4**, covered
+by `tests/test_migration_column_loss_guard.py` (5 tests, including
+`test_every_rebuild_migration_is_covered_by_the_guard` and
+`test_the_data_is_still_there_after_the_refusal`).
+
+⛔ **B4 also settled the "make the rebuild list dynamic" option this entry
+proposes, by measuring it: it is IMPOSSIBLE.** Adding `ble_device_class` to
+014's list breaks a fresh migrate-to-head with `OperationalError: no such
+column: ble_device_class`, because 023 has not run when 014 executes. A
+historical migration cannot reference a later migration's schema. The SQL must
+stay frozen and the check has to live in the runner, which is where it is.
+
+🪤 **Two hours were spent rebuilding this guard before finding it.** The entry
+read as open, its trigger ("the next time a `devices` column is added") read as
+unfired, and `tests/` was never grepped for an existing guard. The file was
+named `test_migration_column_loss_guard.py` — one `grep -rl` away.
+⇒ [[handoff-job-lists-go-stale]]
+
+⚠️ **Reachability, measured while re-deriving this, and worth keeping:** the
+lossy state is not reachable through any supported path anyway.
+`rollback_to(13)` leaves 014 unstamped AND the column already gone (consistent);
+an aborted rollback leaves 014 stamped and the column already dropped by 023's
+down (consistent); a crash cannot do it because `commit()` is inside the
+per-migration loop. It exists only if `schema_migrations` is edited by hand —
+and the runner now refuses that too.
+
+The original entry follows, for provenance.
+
+### ~~Migration 014 replay drops every devices column added after it~~
 `014_devices_remote_id.sql` is a full table rebuild with a hardcoded column
 list, so replaying it (the "narrow recovery path" its own test docstring
 describes, for a DB whose 014 row is missing but whose table was already
