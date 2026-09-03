@@ -6,6 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-03
+
+### Added
+
+- **Both setup wizards now offer the heartbeat.** `heartbeat_enabled` defaults
+  to `false` and neither wizard had ever mentioned it, so the one feature that
+  makes silence falsifiable shipped unused. It is now a question in the CLI's
+  ntfy section and a checkbox on the web wizard's ntfy step, **default OFF**,
+  and asked only when ntfy is configured — a heartbeat with no delivery path is
+  a setting that cannot do anything.
+
+  ⭐ **It is a field on the ntfy step, not a step of its own, and that is
+  load-bearing.** Inserting a step into the web wizard's numbered `/step/N`
+  sequence forces severity 11→12, rules 12→13 and the legacy Argus redirect
+  13→14, or two handlers register one path and FastAPI raises at app
+  construction. As a field there is no renumbering at all.
+
+  ⛔ **The defect this nearly shipped, and it is the interesting part.** Making
+  the wizard *ask* about a setting makes the renderer *own* it — and
+  `carry_forward_settings` derives its protected set by parsing the rendered
+  file. So the moment the wizard asks, the setting leaves the protection of the
+  function whose own docstring names it as the flagship example of what that
+  protection exists for. **Adding a prompt for a safety feature would have made
+  every `--reconfigure` a way to switch that feature off.** Measured as
+  `{'heartbeat_enabled': (True, False)}`.
+
+  Fixed by seeding the answer from the operator's existing file in both
+  frontends, so pressing Enter keeps what is already there.
+  `_previous_heartbeat_enabled` reads the file with `yaml.safe_load` rather than
+  through `Config`, because the reason someone re-runs setup may be that the
+  config no longer loads; every failure returns the default and asks normally.
+
+### Fixed
+
+- **The bystander safety guard graded presence in the file, not enablement.**
+  `test_watchlist_rule_safety.py` opens with *"A delegation rule must not ship
+  **enabled** while its corpus matches bystanders"* and filters through
+  `enabled_delegation_rules`, which checked neither `enabled` nor `shadow`.
+  `load_ruleset` returns disabled rules too, so presence was what it measured:
+
+      commented out       0 exposures  PASS
+      shadow: true        4 exposures  FAIL
+      enabled: false      4 exposures  FAIL
+
+  ⇒ The guard written to replace *"a commented YAML line is not a safety
+  boundary"* had reproduced the comment's granularity, and the ruleset could not
+  express BLE-G1's own remedy — uncomment with `shadow: true` and measure your
+  own site — without CI going red.
+
+  ⚠️ Widening a guard removes a guarantee, so what remains is stated: flipping
+  such a rule to `enabled: true` re-trips it, and that is the only state that
+  can alert. `shadow: true` is exempt because a shadow rule cannot alert
+  **structurally** — `evaluate()` routes shadow hits to a separate list and
+  returns only the real ones — and `test_a_shadow_rule_cannot_reach_the_alert_path`
+  now pins that against the real engine rather than a docstring.
+
+### Changed
+
+- **Two backlog entries corrected against measurement rather than re-read.**
+
+  ⛔ **The rule-eligibility mechanism BLE-G1 specifies must not be built as
+  specified**, established by red-teaming the design before writing it, as that
+  entry requires. Two findings verified against the code: every storm-prone rule
+  type has an `if rule.patterns:` in-memory branch that builds a `RuleHit`
+  *without resolving a watchlist row*, so a row-level eligibility test cannot
+  run there and `patterns: ["004c"]` re-creates the storm unchecked; and a row's
+  category is not the observed device's category, so "0x004C /
+  persistent_surveillance" would authorise alerts on every Apple device in
+  range. Applying eligibility globally was also measured to silence **5 of the
+  29 rows the live rules match today** — Sierra Wireless and Cradlepoint
+  cellular routers, uncategorised but deliberately curated.
+
+  ✅ **Migration 014's column loss was already fixed** and the entry outlived
+  it. The runner refuses to stamp a forward migration that dropped a column;
+  driven through the real replay path, it raises rather than losing
+  `ble_device_class`. The entry's own proposed fix — a dynamic rebuild list —
+  was separately measured to be impossible, because a historical migration
+  cannot reference a later migration's schema.
+
 ## [1.3.0] - 2026-09-02
 
 ### Added
