@@ -12,7 +12,20 @@
    because the question is worth asking whatever the probe returned: a failed
    probe is exactly when an operator most wants to know the delivery path is
    being exercised daily. #}
-<fieldset class="wizard-heartbeat">
+{# ⛔ No class. `main.container > form fieldset` in _base.html already gives
+   this the card treatment every other wizard fieldset gets, and the bundled
+   Pico is the CLASSLESS build -- a modifier class nothing defines renders with
+   no styling at all. test_wizard_classes_are_defined caught exactly that on
+   an earlier draft of this file, which carried a decorative wizard-heartbeat
+   modifier that no rule matched.
+
+   🪤 And do NOT spell a class attribute out here, even inside a comment. The
+   guard scans templates with a plain regex for that attribute and cannot tell
+   a comment from markup, so writing one in prose fails the check for a reason
+   that has nothing to do with the page. This comment tripped it twice while
+   being written -- first naming the modifier, then quoting the attribute
+   syntax while explaining the first mistake. #}
+<fieldset>
   <label for="heartbeat_enabled">
     <input
       type="checkbox"
