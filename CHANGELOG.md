@@ -23,67 +23,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   13→14, or two handlers register one path and FastAPI raises at app
   construction. As a field there is no renumbering at all.
 
-  ⛔ **The defect this nearly shipped, and it is the interesting part.** Making
-  the wizard *ask* about a setting makes the renderer *own* it — and
-  `carry_forward_settings` derives its protected set by parsing the rendered
-  file. So the moment the wizard asks, the setting leaves the protection of the
-  function whose own docstring names it as the flagship example of what that
-  protection exists for. **Adding a prompt for a safety feature would have made
-  every `--reconfigure` a way to switch that feature off.** Measured as
-  `{'heartbeat_enabled': (True, False)}`.
-
-  Fixed by seeding the answer from the operator's existing file in both
-  frontends, so pressing Enter keeps what is already there.
-  `_previous_heartbeat_enabled` reads the file with `yaml.safe_load` rather than
-  through `Config`, because the reason someone re-runs setup may be that the
-  config no longer loads; every failure returns the default and asks normally.
+  ⭐ **`--reconfigure` will not turn it off.** The prompt is pre-answered with
+  whatever your existing `lynceus.yaml` already says, in both frontends, so
+  pressing Enter through the wizard keeps a heartbeat you turned on by hand. It
+  reads that file directly rather than through the config loader, because a
+  config the daemon can no longer parse is one of the reasons to re-run setup;
+  if it cannot be read the prompt simply defaults to off and asks you normally.
 
 ### Fixed
 
-- **The bystander safety guard graded presence in the file, not enablement.**
-  `test_watchlist_rule_safety.py` opens with *"A delegation rule must not ship
-  **enabled** while its corpus matches bystanders"* and filters through
-  `enabled_delegation_rules`, which checked neither `enabled` nor `shadow`.
-  `load_ruleset` returns disabled rules too, so presence was what it measured:
+- **A delegation rule can now ship in `rules.yaml` switched off.** The
+  bystander safety check refused any delegation rule whose corpus holds an
+  uncategorised consumer identifier, and it made that judgement on the rule
+  being *present in the file* rather than on whether it could alert. A rule
+  carrying `enabled: false` or `shadow: true` was refused exactly like one
+  shipping live:
 
       commented out       0 exposures  PASS
       shadow: true        4 exposures  FAIL
       enabled: false      4 exposures  FAIL
 
-  ⇒ The guard written to replace *"a commented YAML line is not a safety
-  boundary"* had reproduced the comment's granularity, and the ruleset could not
-  express BLE-G1's own remedy — uncomment with `shadow: true` and measure your
-  own site — without CI going red.
+  That made BLE-G1's own advice impossible to follow — uncomment the Bluetooth
+  rule with `shadow: true` and measure your own airspace — because doing so
+  turned CI red. Both states are now accepted.
 
-  ⚠️ Widening a guard removes a guarantee, so what remains is stated: flipping
-  such a rule to `enabled: true` re-trips it, and that is the only state that
-  can alert. `shadow: true` is exempt because a shadow rule cannot alert
-  **structurally** — `evaluate()` routes shadow hits to a separate list and
-  returns only the real ones — and `test_a_shadow_rule_cannot_reach_the_alert_path`
-  now pins that against the real engine rather than a docstring.
-
-### Changed
-
-- **Two backlog entries corrected against measurement rather than re-read.**
-
-  ⛔ **The rule-eligibility mechanism BLE-G1 specifies must not be built as
-  specified**, established by red-teaming the design before writing it, as that
-  entry requires. Two findings verified against the code: every storm-prone rule
-  type has an `if rule.patterns:` in-memory branch that builds a `RuleHit`
-  *without resolving a watchlist row*, so a row-level eligibility test cannot
-  run there and `patterns: ["004c"]` re-creates the storm unchecked; and a row's
-  category is not the observed device's category, so "0x004C /
-  persistent_surveillance" would authorise alerts on every Apple device in
-  range. Applying eligibility globally was also measured to silence **5 of the
-  29 rows the live rules match today** — Sierra Wireless and Cradlepoint
-  cellular routers, uncategorised but deliberately curated.
-
-  ✅ **Migration 014's column loss was already fixed** and the entry outlived
-  it. The runner refuses to stamp a forward migration that dropped a column;
-  driven through the real replay path, it raises rather than losing
-  `ble_device_class`. The entry's own proposed fix — a dynamic rebuild list —
-  was separately measured to be impossible, because a historical migration
-  cannot reference a later migration's schema.
+  ⛔ **What still refuses, and it is the part that matters:** flipping such a
+  rule to `enabled: true` trips the check immediately, because that is the only
+  state that can alert. `shadow: true` is safe to accept because a shadow rule
+  cannot alert structurally rather than by convention — `evaluate()` routes
+  shadow hits to a separate list and returns only the real ones — and a test now
+  drives the engine to prove it rather than trusting the docstring.
 
 ## [1.3.0] - 2026-09-02
 
@@ -158,13 +127,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `lynceus.yaml`; `--config PATH` targets one file. Refuses on a non-tty stdin
   without `--yes` rather than prompting into the void.
 
-  ⭐ A guard found during its own review **could never fail**:
-  `test_no_app_modules_loaded` diffed `sys.modules` around a re-import, but the
-  test file imports that module at collection time, so anything forbidden was
-  already present and the diff was empty regardless. Proven by planting
-  `import lynceus.db` into the CLI — the old test passed both on a clean
-  interpreter and after another test preloaded the app. It now runs the import
-  in a subprocess, where the assertion is real.
 
 ### Fixed
 
@@ -222,16 +184,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `severity_overrides.yaml` that was suppressing a real and continuous alert
   storm was reported as containing an unknown key.
 
-  ⚠️ **An earlier draft of this entry said "roughly 8,000 would-be alerts a
-  day" and that figure was not measured.** It was `shadow_seen` (the
-  denominator, i.e. how often the field was OBSERVED) read as a hit count, over
-  a 65-second window, from a run whose database records no shadow hit at all.
-  Re-measured properly 2026-08-31 on one adapter, `suppress_pattern_categories`
-  removed for the control arm: **22 hits over 22 observations in 350s, a 100%
-  match rate, about 4,200/day in that airspace.** With the suppression back on
-  and the same rule and corpus: **0 hits over 19 observations.** The storm is
-  real and the suppression removes it entirely; only the published number was
-  wrong. Rates are per-site and per-window, so quote the window.
+  ⭐ **The storm that setting suppresses is measured, on one adapter, as an A/B
+  with the suppression as the only variable:** with it removed, **22 hits over
+  22 observations in 350s** — a 100% match rate, about 4,200/day in that
+  airspace. With it back on, and the same rule and corpus: **0 hits over 19
+  observations.** Rates are per-site and per-window, so re-measure rather than
+  inheriting this number.
 
   ⛔ That is worse than no validation. The tool whose job is to check your
   config told you a setting does not exist, which invites deleting the line
@@ -243,26 +201,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `confidence_downgrade_threshold`, `argus_schema_version_accept_list`) is
   modelled nowhere, so it stays an explicit literal pinned by its own test.
 
-  ⚠️ This entry said *"Still not fixed: the summary line reports 0 suppressed
-  category(ies) for a file whose only content is `suppress_pattern_categories`"*
-  until 2026-09-02. **That was true when written and stopped being true the
-  next day**, and nothing updated it: #263 closed exactly that gap and did not
-  touch this file. Measured at `d86c2b1` against a file whose only content is
-  that key, the summary now reads
+  The per-file summary counts every field too, so a file whose only content is
+  `suppress_pattern_categories` now reads
 
       0 remap(s), 0 suppressed category(ies), 0 suppressed vendor(s),
       0 pattern override(s), 0 vendor remap(s),
       1 suppressed pattern_category(ies)
 
-  ⛔ Recorded rather than deleted, because the shape is the one this release
-  keeps finding: a **fix landed and its prose did not move**, so a changelog
-  shipped telling operators a working feature was broken. Same class as the
-  nine claims #265 corrected — and it survived that audit, because #265 swept
-  the README and this line is in the CHANGELOG.
-
-  The summary is now derived from `RuntimeSeverityOverride.model_fields` in
-  both halves, so neither the known-key list nor the count line can fall behind
-  the model again.
+  Both halves are derived from `RuntimeSeverityOverride.model_fields`, so
+  neither the known-key list nor the count line can fall behind the model.
 
 - **The `/settings` page reported a suppressed row as LIVE.** The
   `suppress_pattern_categories` mechanism reached the engine but not the
@@ -298,15 +245,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the venv's own `bin/python`, a path inside the venv it just created. The
   guard checked PATH for a binary the body does not consult.
 
-  ⚠️ **Scope stated precisely, because the first draft of this entry
-  overstated it.** CI *did* run the test — `.github/workflows/ci.yml` carries a
-  step asserting `command -v python` for exactly this reason, and its comment
-  says so. But Debian, Ubuntu and Raspberry Pi OS ship `python3` and no bare
-  `python`, so **every developer machine and the Raspberry Pi the README names
-  as the target skipped it silently** — which is where a packaging regression
-  would actually be met. The CI step was working around a defect rather than
-  guarding a requirement, so its `command -v python` half is removed with the
-  skip; the `import build` half stays, because that skip is real.
+  ⚠️ **CI did run it**, via a workflow step that asserts `command -v python`
+  for exactly this reason. But Debian, Ubuntu and Raspberry Pi OS ship `python3`
+  and no bare `python`, so **every developer machine and the Raspberry Pi the
+  README names as the target skipped it silently** — which is where a packaging
+  regression would actually be met. That workflow step was working around the
+  defect rather than guarding a requirement, so its `command -v python` half is
+  removed along with the skip; the `import build` half stays, because that skip
+  is real.
 
   Removed; the test runs and passes in 16s.
 
@@ -321,36 +267,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **`cli/bootstrap_kismet.py` coverage 59% → 87%**, 263 uncovered statements
-  down to 83. The remainder had been left because it needs subprocess mocking
-  and an `input_fn` harness rather than pure input/output — "a different kind
-  of test, not more of the same". 62 tests, 146 assertions and 7
-  `pytest.raises`, and every one of them asserts: a vacuity scan found zero
-  tests reaching a line without a claim.
+  down to 83, across the eight functions that shell out. The remainder had been
+  left because it needs subprocess mocking and an `input_fn` harness rather than
+  pure input/output. 62 tests, and each was checked against a planted defect
+  rather than counted.
 
-  Proven rather than assumed, by planting three defects: `_run`'s `dry_run`
-  short-circuit removed, `install_kismet_apt_repo`'s idempotence skip removed,
-  and `install_kismet_package`'s `DEBIAN_FRONTEND=noninteractive` dropped. Each
-  killed exactly one test; the control returned to green.
-
-  🪤 One assertion in that set had to be rewritten twice. CodeQL flagged
-  `assert "kismetwireless.net" in out` as `py/incomplete-url-substring-
-  sanitization` at high severity — a false positive on captured stdout, but the
-  obvious repair (`assert bk.UNSUPPORTED_POINTER_URL in out`) made the test
-  **self-referential**: the helper prints the same constant the test reads, and
-  repointing it at `https://example.invalid/` left all 61 tests passing. Split
-  into a take-effect pair, with one `==` test pinning the constant.
-
-- **Three published numbers that had stopped being true**, in three files.
-  The CHANGELOG told operators a shipped fix was still missing; the audit
-  register's "Still open" list had drifted for thirteen days with **11 of its 18
-  bullets already closed**; and `BACKLOG.md`'s "34 of 23,556 rows can fire" is
-  re-measured to **29 of 23,430**.
-
-  ⛔ The register was re-derived against the **source tree** rather than against
-  commit subjects, which is what the previous pass used and is exactly how three
-  findings it calls "registered, NOT patched" came to be patched invisibly.
-  Findings 50 and 44 were both closed by the precise migrations the register
-  said an honest fix would need — 027 and 026.
+- **The corpus figure in `README.md` is re-measured: 29 of 23,430 imported rows
+  can fire an alert on a stock install**, not the 34 previously published. The
+  difference is three `ssid_pattern` rows that were regex-shaped and could never
+  have matched. The table is generated from a real import; the query is in
+  `docs/TESTING.md`.
 
 
 ## [1.2.0] - 2026-08-26
@@ -860,17 +786,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `apple_find_my` rule, and produced an alert row with a notification
   dispatched, all through `config/rules.yaml` as shipped, on a real adapter.
 
-  ⚠️ **Correction to this entry as first written.** It claimed the adapter was
-  "asserted powered before and after the window". A cold read found that the
-  harness took `--address` for the power guard and `--index` for the scanner as
-  *independent* arguments, and the published run passed an address belonging to
-  a different controller than the one that scanned, so the guard vouched for the
-  wrong adapter and added nothing. Both harnesses now refuse to start
-  unless the two agree. **The result itself is unaffected:** an advert arriving
-  and raising an alert proves the scanner was live at that moment, which is
-  stronger than any before/after check. Recorded rather than quietly amended,
-  because the same defect had already been fixed in the other harness and was
-  reintroduced here. A lesson does not generalise itself.
+  ⚠️ **The power guard in the capture harness vouched for the wrong adapter.**
+  It took `--address` while the scanner took `--index`, as independent
+  arguments, so a run could assert one controller was powered while a different
+  one did the scanning. Both harnesses now refuse to start unless the two agree.
+  **The result above is unaffected:** an advert arriving and raising an alert
+  proves the scanner was live at that moment, which is stronger than any
+  before/after check.
 
   This was the last unproven hop, and it could not have been proven earlier:
   the rule shipped commented out until this release enabled it. The pieces were

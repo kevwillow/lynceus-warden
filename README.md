@@ -163,11 +163,8 @@ in the corpus sits behind `argus_oui`, `argus_mac_range`, `argus_ble_uuid`,
 `argus_drone_id_prefix`, all of which **ship commented out** in
 `config/rules.yaml`, each with its reason written above it.
 
-⚠️ **The previous version of this table was wrong in ten of its eleven rows.**
-It counted CSV records rather than database rows, was never recomputed after
-the corpus was re-cut, listed a `gps_tracker` category that lands **zero** rows,
-and omitted `automotive_telematics`. It is regenerated here from a real import
-by the query in `docs/TESTING.md`. If you are checking this page, that is the
+These counts come from a real import of the shipped corpus, not from the CSV:
+the query is in `docs/TESTING.md`. If you are checking this page, that is the
 number to reproduce.
 
 Every one of those rows traces back to a verifiable public source through
