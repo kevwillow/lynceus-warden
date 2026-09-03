@@ -1003,6 +1003,78 @@ reading a rule's flags means the guard now trusts the same file it is policing.
   config file at all, in any state. It is the blocker for "make it a
   configurable setting".
 
+⛔ **RED-TEAMED AGAIN 2026-09-03, in detail, and the mechanism below DOES NOT
+HOLD as a safety boundary. Do not build it as specified.** The three numbered
+items are a noise control for delegated matches against an uncurated corpus,
+which is worth having and is honest — but they do not deliver the guarantee this
+gate asks for, and shipping them under that name would be worse than shipping
+nothing, because the next person would stop looking.
+
+Four findings, the first two verified against the code rather than argued:
+
+**1. ⭐ `rules.py` already contains the bypass, and it is in every storm-prone
+type.** Each `watchlist_*` branch has an `if rule.patterns:` in-memory path that
+builds a `RuleHit` *without ever resolving a watchlist row*, so an eligibility
+test on the matched row cannot run there. Verified by line:
+
+    watchlist_mac 1063 · watchlist_oui 1123 · watchlist_ssid 1201
+    ble_uuid 1344 · watchlist_ble_manufacturer_id 1417
+    watchlist_drone_id_prefix 1484 · watchlist_ble_local_name 1560
+
+⇒ `patterns: ["004c"]` re-creates the storm with no eligibility check at all.
+`test_watchlist_rule_safety.py` deliberately exempts explicit-pattern rules too
+("a rule with explicit patterns can only match what an author wrote down"),
+which is defensible for corpus drift and is *not* an alert-safety boundary.
+**Say which one it is.**
+
+**2. ⭐ A row's category is not the observed device's category, and for the
+broad types that is the whole problem.** A `ble_manufacturer_id` row is a 16-bit
+*company namespace*; an `oui` row is a vendor. A row reading
+"0x004C / persistent_surveillance" does not make an observed iPhone
+surveillance equipment — it authorises alerts on every Apple device in range.
+⇒ This is **the same argument this gate already closes with**: "a company id
+names a payload namespace, not a device that is following someone… A filter
+built to stop a storm is one edit away from hiding the tracker it was looking
+for." The eligibility filter *is* that filter.
+
+**3. Per-rule opt-in has an unsafe default.** Omission, a copied older example,
+a typo'd field name, or a loader that ignores unknown keys all mean "unfiltered",
+which is the ~4,200/day state. A boundary whose default is off is a feature.
+⇒ If it is built, the schema must REFUSE an empty-pattern delegation rule that
+states no eligibility policy, and the storm-prone types must not be allowed to
+select "unfiltered" at all.
+
+**4. Upstream category churn fails in both directions, and they are different
+conditions.** `body_cam` renamed to `body_camera` silently suppresses every
+affected detection; an empty category from a parse regression turns malformed
+rows into authorised ones. A *missing* category is invalid row data; a *new*
+one is an ontology-version mismatch, and silently suppressing it looks exactly
+like a valid negative. Neither per-row default is harmless.
+
+⚠️ **And the measurement that killed the first version, kept because it is the
+counter-example to the whole approach.** Applying eligibility globally would
+silence **5 of the 29 rows the live rules can match** — `airlink`,
+`cradlepoint`, `es450`, `mp70`, `rv50`: Sierra Wireless and Cradlepoint
+cellular routers, matched by specific product SSID, firing today, and
+`unknown` only because Argus has not categorised them. Keying on category
+conflates "not yet categorised" with "not worth alerting", and those five rows
+are the proof.
+
+⇒ **What the shape probably is, if someone picks this up:** the discriminating
+axis is the match's own specificity — `pattern_type`, operator, identifier
+width, observed fan-out — not an upstream label. A vendor-level identifier is
+insufficient evidence *on its own* and needs conjunction with an independent
+feature (service UUID, local name, persistence, co-movement). That is the
+"decoded role plus persistence plus co-movement" this gate already names.
+
+⚠️ **Shadow accounting, if it is built:** a suppressed match must be counted in
+the RAW-match denominator and a suppression counter, never folded into the hit
+numerator. Otherwise a shadow rule reads `0/22` and looks harmless while
+carrying 22 latent matches that one upstream re-categorisation turns live.
+
+The original specification follows unchanged, because it is still the best
+description of what was intended:
+
 **What to build**, red-teamed with `gpt-5.6-sol` before writing any of it:
 
 1. A **positive eligibility test on the matched row**, enforced in the rule, not
