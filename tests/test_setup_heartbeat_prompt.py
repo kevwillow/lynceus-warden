@@ -335,14 +335,35 @@ def test_the_web_wizard_step_numbering_is_unchanged():
 
 
 @pytest.mark.webui
-def test_the_ntfy_step_renders_the_heartbeat_field():
-    app = _make_app()
+@pytest.mark.parametrize("branch", ["probe_skipped", "probe_ok", "probe_failed"])
+def test_the_ntfy_step_renders_the_heartbeat_field_in_every_branch(branch, monkeypatch):
+    """⛔ All THREE branches, because ntfy_probe.html has three separate
+    <form> blocks and the field is included in each.
+
+    A plant that removed the include from only the first one left the whole
+    suite green -- the single-branch version of this test happened to exercise
+    the third. One `{% include %}` deleted from a branch nobody drives is
+    exactly the shape that ships.
+
+    ⚠️ The probe-FAILED branch matters most: a broken ntfy is precisely when an
+    operator most wants a daily proof the delivery path works, so that is the
+    branch where dropping the question would hurt.
+    """
+    if branch == "probe_skipped":
+        app = _make_app(skip_probes=True)
+    else:
+        app = _make_app()
+        ok = branch == "probe_ok"
+        monkeypatch.setattr(
+            steps, "probe_ntfy", lambda url, topic: (ok, None if ok else "boom")
+        )
     _ntfy_session(app)
     with _client(app) as c:
         resp = c.get(f"/step/9?token={TOKEN}")
     assert resp.status_code == 200
     assert 'name="heartbeat_enabled"' in resp.text, (
-        "the heartbeat checkbox is missing from the ntfy step"
+        f"the heartbeat checkbox is missing from the {branch} branch of the "
+        "ntfy step"
     )
 
 
