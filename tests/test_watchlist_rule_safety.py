@@ -134,16 +134,49 @@ def load_corpus(path: Path) -> list[dict[str, str]]:
 
 
 def enabled_delegation_rules(rules) -> list:
-    """Rules that ship enabled AND take their patterns from the watchlist.
+    """Rules that can ALERT and take their patterns from the watchlist.
 
     Empty ``patterns`` is the delegation idiom: the rule matches whatever the
     watchlist holds for its pattern type. A rule with explicit patterns can only
     match what an author wrote down, so it is not exposed to corpus drift.
+
+    ⛔ **This used to grade PRESENCE IN THE FILE, and its own name said
+    otherwise.** It checked neither ``enabled`` nor ``shadow``, while
+    ``load_ruleset`` returns disabled rules too, so every rendering of "present
+    but cannot alert" tripped the guard identically to shipping live. Measured
+    2026-09-02 against the shipped config with the company-id rule appended:
+
+        commented out       0 exposures  PASS
+        shadow: true        4 exposures  FAIL
+        enabled: false      4 exposures  FAIL
+
+    ⇒ The guard written to replace "a commented YAML line is not a safety
+    boundary" had reproduced the comment's granularity: the ruleset could not
+    express BLE-G1's own remedy -- *uncomment it with shadow: true and measure
+    your own site* -- without this file going red.
+
+    ⚠️ **Widening a guard removes a guarantee, so name what is left.** What goes
+    is "no delegation rule may appear in the file at all". What REMAINS is the
+    thing that matters: flipping such a rule to ``enabled: true`` re-trips this
+    guard immediately, and that is the only state that can alert. The two
+    exemptions are not equivalent and are argued separately:
+
+      * ``enabled: false`` -- the rule is skipped entirely by ``evaluate``. One
+        word from dangerous, and that word re-trips the guard.
+      * ``shadow: true`` -- CANNOT alert structurally rather than by convention.
+        ``evaluate()`` routes shadow hits into a separate ``_shadow`` list and
+        returns only ``_real`` (``rules.py``), a shape chosen over a flag on
+        ``RuleHit`` because "the default path LEAKS".
+        ``test_a_shadow_rule_cannot_reach_the_alert_path`` pins that claim, so
+        this exemption fails loudly if the structure ever changes.
     """
     return [
         r
         for r in rules
-        if not r.patterns and r.rule_type not in NON_DELEGATING_RULE_TYPES
+        if not r.patterns
+        and r.rule_type not in NON_DELEGATING_RULE_TYPES
+        and getattr(r, "enabled", True)
+        and not getattr(r, "shadow", False)
     ]
 
 
@@ -262,6 +295,11 @@ class _FakeRule:
     name: str
     rule_type: str
     patterns: tuple[str, ...] = ()
+    #: Mirrors `rules.Rule`. The guard reads both: a rule that cannot alert is
+    #: not an exposure. Defaults match a rule that CAN alert, so a test that
+    #: forgets them is graded the strict way.
+    enabled: bool = True
+    shadow: bool = False
 
 
 def _corpus_row(identifier_type: str, identifier: str, category: str) -> dict[str, str]:
@@ -282,6 +320,88 @@ def test_enabling_the_company_id_rule_is_refused():
     exposures = bystander_exposure(rules, corpus)
     assert [e.identifier for e in exposures] == ["004c"]
     assert "Apple" in str(exposures[0])
+
+
+def test_the_same_rule_is_permitted_when_it_cannot_alert():
+    """⛔ The other half of the take-effect pair for the predicate widening.
+
+    `test_enabling_the_company_id_rule_is_refused` proves the guard still
+    refuses the dangerous state. This proves it no longer refuses the two states
+    that CANNOT alert -- which is the whole point of BLE-G1's own remedy:
+    uncomment the rule with `shadow: true` and measure your own site.
+
+    Without this test the widening would be invisible: the guard would keep
+    passing on the shipped config for the old reason (the rule is commented out
+    entirely) and nobody would notice it had stopped grading presence.
+    """
+    corpus = [
+        _corpus_row("ble_manufacturer_id", "0x004C", "unknown"),
+        _corpus_row("ble_manufacturer_id", "0x1234", "cctv_camera"),
+    ]
+    live = _FakeRule("argus_ble_manufacturer_id", "watchlist_ble_manufacturer_id")
+    assert bystander_exposure([live], corpus), "the control is broken: live must expose"
+
+    for label, rule in (
+        ("shadow", _FakeRule("r", "watchlist_ble_manufacturer_id", shadow=True)),
+        ("disabled", _FakeRule("r", "watchlist_ble_manufacturer_id", enabled=False)),
+    ):
+        assert not bystander_exposure([rule], corpus), (
+            f"a {label} rule cannot alert, so it is not a bystander exposure"
+        )
+
+
+def test_a_shadow_rule_cannot_reach_the_alert_path():
+    """⛔ The claim the `shadow` exemption above RESTS on, pinned.
+
+    Exempting shadow rules is only safe because a shadow hit cannot become an
+    alert structurally rather than by convention. If that ever stops being true,
+    the exemption silently becomes a hole -- so it is asserted against the real
+    engine rather than trusted from a docstring.
+
+    ⚠️ Deliberately drives `evaluate` rather than reading `rules.py`: the thing
+    that matters is what the function RETURNS, not what its source says.
+    """
+    from lynceus.kismet import DeviceObservation
+    from lynceus.rules import Rule, Ruleset, evaluate
+
+    # Field list copied from tests/test_rules.py::_obs rather than guessed --
+    # DeviceObservation is a pydantic model and invents nothing for you.
+    obs = DeviceObservation(
+        mac="a4:83:e7:11:22:33",
+        device_type="wifi",
+        first_seen=1700000000,
+        last_seen=1700000100,
+        rssi=-50,
+        ssid="totally-not-a-real-network",
+        oui_vendor=None,
+        is_randomized=False,
+    )
+    # ⚠️ `patterns` non-empty on purpose: that is the in-memory match path, so
+    # this pin needs no database and cannot be weakened by a resolver change.
+    matching = dict(
+        rule_type="watchlist_ssid",
+        severity="high",
+        patterns=["totally-not-a-real-network"],
+        description="pin",
+    )
+    real = evaluate(
+        Ruleset(rules=[Rule(name="real", **matching)]), obs, False, db=None
+    )
+    assert real, "the control is broken: this rule must match when not shadowed"
+
+    shadow_sink: list = []
+    shadowed = evaluate(
+        Ruleset(rules=[Rule(name="shadowed", shadow=True, **matching)]),
+        obs,
+        False,
+        db=None,
+        shadow_sink=shadow_sink,
+    )
+    assert shadowed == [], (
+        "a shadow rule reached the alertable return value; the `shadow` "
+        "exemption in enabled_delegation_rules is now a hole"
+    )
+    assert shadow_sink, "the shadow hit went nowhere at all; counts would be lost"
 
 
 def test_a_curated_corpus_permits_the_same_rule():
