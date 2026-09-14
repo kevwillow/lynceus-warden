@@ -98,6 +98,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   spec, but no real drone has been captured, so `drone_id_prefix` stays
   unproven end to end whichever source feeds it.
 
+  ⭐ **Narrowed 2026-09-13.** The bridge half is now proven on air: a
+  spec-conformant ASTM F3411 advert transmitted by one adapter was received by
+  another through the shipped passive-monitor pattern set and decoded to its
+  serial, witnessed independently on a phone before the receive was trusted.
+  What remains unproven is the Kismet half — `kismet._DRONE_ID_PATHS` against a
+  live capture — and a real drone for the wire-level confirmation.
+
   `enabled: false` still skips a rule entirely and is not a synonym. Counts
   live in the existing `poller_state` table, so there is no migration.
 
