@@ -1404,6 +1404,78 @@ identically-shaped `0x12` adverts, so they cannot be told apart.
   in. The length-based rule does not depend on it; this would only raise
   confidence.
 
+### ⭐ ble_odid is PROVEN ON AIR — measured 2026-09-13, no drone required
+
+The bridge's ODID path was decoded end to end from a real over-the-air advert
+on this hardware. Not a fixture, not a unit test: a spec-conformant ASTM F3411
+legacy advert transmitted by one adapter and received by another.
+
+    21:35:46  3C:78:95:9B:8A:EA  rssi=-26  len=27  serial='LYNCEUSLOOPBACK01'
+    service data 0000fffa-... = 0d0002124c594e434555534c...
+
+⇒ Independently witnessed before the receive was trusted: nRF Connect on a
+phone across the room showed `Service Data UUID: 0xFFFA`, `Adv. Interval
+104 ms`, `Advertising type: Legacy`, payload `0x0D0002124C594E434555534C4F4F50
+4241434B3031…` — the ASCII being `LYNCEUSLOOPBACK01`.
+
+**What this closes.** The whole chain below Kismet: transmitter → BlueZ passive
+AdvertisementMonitor with the SHIPPED 7-pattern set → `ble_odid.decode_serial`.
+The CHANGELOG's *"`ble_odid` is tested against the ASTM spec, but no real drone
+has been captured"* is now narrower — the decoder and the monitor pattern are
+proven; only the drone itself is synthetic.
+
+⛔ **What this does NOT close: D2.** D2 is about `kismet._DRONE_ID_PATHS`, and
+Kismet is not installed on this box. This proves the BRIDGE path only.
+
+⚠️ **It is a valid stand-in, and that is worth stating precisely**, because the
+equivalent trick does NOT work for Find My. ODID is an open published standard,
+so the question is "does our decoder parse a spec-conformant advert" — a
+question about our code, which a conformant synthetic transmitter answers. The
+Find My rotation question is about *Apple's proprietary rotation behaviour*, and
+an emulator there only measures the emulator's firmware. ⇒ Do not generalise
+this result into "we can emulate the AirTag too".
+
+## 🪤 The capture characteristic this exposed — ONE callback per discovery
+
+Measured, reproducibly:
+
+    scan  40s, device uncached  -> 1 ODID advert decoded
+    scan 130s, device cached    -> 0, while 73 other adverts arrived
+    evict from BlueZ cache, scan 45s -> 1 again, immediately
+
+The phone saw ~55 adverts in 8 seconds at 104 ms. The bridge saw one per
+*discovery event*, not one per advert. Once BlueZ has the device cached it
+emits `PropertiesChanged` only when something actually changes, and a fixed
+transmitter at rock-steady RSSI changes nothing.
+
+⇒ Other devices in the same scans produced 73 adverts from 3 devices, because
+real phones move and their RSSI varies. **A perfectly static emitter is reported
+once.** For a drone flying past — moving, varying RSSI, uncached — this is
+likely fine, and that is a prediction rather than a measurement.
+
+⛔ **Do not read advert COUNTS off this path as a rate.** Anything that counts
+`ble_*` field sightings as a per-advert denominator is counting discovery
+events. That includes shadow-mode denominators if they are ever fed from the
+bridge.
+
+## The rig defect this found, and it had corrupted three prior runs
+
+`internal/tools/tx_odid_raw.py` powered adapters with `btmgmt --index N`,
+deriving N from the `hciN` name. Measured: `--index 1` took down **hci0** while
+transmitting from hci1 — reproducibly, three runs, with the index resolved
+correctly from btmgmt's own output (`mgmt index : 1 (matches the name)`). The
+receiving adapter was switched off for the whole measurement window and the
+result read as "the advert is not radiating".
+
+Fixed: power control now goes through `bluetoothctl select <BD address>`, which
+has no index to be wrong about. Verified on hardware — only the target changes
+state. The script also snapshots every adapter around each step and ABORTS
+rather than transmitting blind if a controller it is not driving goes down.
+
+⇒ [[a-never-successful-measurement-indicts-the-instrument]] three times in one
+session. The control that finally separated "radio broken" from "filter wrong"
+was an ACTIVE scan: 678 adverts where passive saw 0, on the same adapter.
+
 ### D2 drone Remote-ID live field-path confirmation
 The `drone_id_prefix` leading-substring matcher (v0.9.2) is correct but inert:
 the live Kismet Remote-ID JSON field path (`kismet._DRONE_ID_PATHS`) is still an
