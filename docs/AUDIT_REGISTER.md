@@ -4350,10 +4350,43 @@ plus a dedup guard on the wrong arm that turned a legitimate re-send into a sile
 Finding 12). **Every fix in this class must be tested in the opposite direction**, which is why
 Finding 61's fix ships with a test that races two writers with the notifier *down*.
 
-⭐ **Session 2's recommendation: do NOT do this now.** Take the cheap half first — a single documented
-primitive for "claim before you act" and a test that fails when a new write path skips it — and
-defer request-scoped connections until something needs it that a CAS cannot express. The three
-findings this round were all expressible as a CAS, which is evidence about the shape of the problem.
+⛔ **DECIDED AND SUPERSEDED — do not act on the recommendation below.** Kev decided **2026-08-22
+that the full fix ships in V1**, and re-confirmed 2026-09-14. The design is
+`internal/specs/SPEC_unit_of_work.md`; go there, not here.
+
+⚠️ **The cheap half was not merely declined, it was REFUTED.**
+`internal/specs/REDTEAM_claim_before_you_act_sol.md` returned 16 findings, 6 critical, three of
+them structural rather than stylistic:
+
+- **A row CAS cannot express `add_alert_if_none_since`** — that guard is a cross-row ABSENCE
+  predicate (`INSERT … WHERE NOT EXISTS`), not an equality check on one row. ⇒ the paragraph below
+  says "the three findings this round were all expressible as a CAS, which is evidence about the
+  shape of the problem". That premise is **false**, and it is the load-bearing sentence.
+- **The AST guard was self-defeating** — `claim()` must build `UPDATE {table}` dynamically, so its
+  own source contains no literal `UPDATE <table>` and the rule could not prove the thing it existed
+  to prove.
+- **It made exemptions implicit rather than removing them**, burying the assumptions it rejected a
+  registry for in `expect` dicts and a lexical scan, where nothing lists them.
+
+⇒ The cheap half is not a smaller version of the fix. It is a different, unsound thing.
+
+🪤 **This entry misled a session on 2026-09-14**, which read it, recommended the cheap half to Kev,
+and only found the spec afterwards. An entry that is three days older than the red-team that killed
+it reads exactly like current advice. ⇒ [[handoff-job-lists-go-stale]]
+
+⭐ **Status 2026-09-14 at `10b7d15`: steps 1 and 2 of the spec's ordering are DONE** — the retry
+policy (`Database.run`, #210) and `db.unit()` (#213, 9 contract tests). Steps 3–6 are untouched:
+`db.unit()` has **zero** real call sites. See
+`internal/specs/HANDOFF_unit_of_work_steps_3_to_6.md`, which is gitignored and lives only on
+Pioneer.
+
+The superseded recommendation, kept because the register's rule is to argue a thing once:
+
+> ~~**Session 2's recommendation: do NOT do this now.** Take the cheap half first — a single
+> documented primitive for "claim before you act" and a test that fails when a new write path skips
+> it — and defer request-scoped connections until something needs it that a CAS cannot express. The
+> three findings this round were all expressible as a CAS, which is evidence about the shape of the
+> problem.~~
 
 1. ⭐ **Should the six commented-out delegating rules ship ENABLED?** (Finding 32.) ⚠️ **Price this
    with Finding 40 in hand:** enabling `watchlist_oui` reads as one switch that turns the type on,
