@@ -4226,6 +4226,89 @@ changes nothing observable. Those are **exempt with written reasons, each read b
 and `test_no_exemption_is_stale` fails if one stops reading twice. The guard is derived from the AST
 so the next handler is graded automatically.
 
+
+### 🔴 Finding 68 — a unit of work cannot call the database methods it exists to wrap — ⛔ BLOCKS STEP 3
+
+`Database.unit()` sets `isolation_level = None` to own its own `BEGIN IMMEDIATE`. Dozens of `db.py`
+methods are shaped `with self._lock, self._conn:`. The moment one of those nested blocks commits,
+**the connection is in autocommit for the rest of the unit**, every later statement self-commits,
+and the rollback has nothing left to undo. Measured, `fn` writes `a`, calls a `Database` method
+writing `b`, writes `c`, then raises:
+
+```
+transaction()-backed   rows surviving the FAILED unit: ['a','b']    <- c rolled back
+unit()-backed          rows surviving the FAILED unit: ['a','b','c'] <- c SURVIVED a failed unit
+```
+
+⇒ **A `unit()` body must not call `Database` methods** — and `db.run(lambda c: db.add_alert(...))`
+is the most natural way anyone will write the first step-3 migration.
+
+⛔ **The static guard cannot catch it.** `test_nothing_calls_a_database_method_from_inside_a_transaction_block`
+builds its universe from `ast.With` nodes, and `run()`'s callable is not lexically inside one.
+Planted `db.run(lambda conn: db.add_alert(...))` into a copied `src/`: **not reported**, by either
+the old or the widened predicate.
+
+⚠️ Found while fixing two other defects in the same primitive, not by a test. Steps 1 and 2 were
+recorded as DONE for three weeks with this in them. ⇒ [[a-fix-can-close-the-surface-not-the-mechanism]]
+
+### 🔴 Finding 69 — an optional add-on's failure handler crash-looped the whole daemon — ✅ FIXED
+
+`run_forever` started the BLE bridge, then recorded its status. When that write raised, the handler
+recorded the failure with **another write to the same database** — the resource whose unavailability
+was usually the cause. So the compensating write failed identically and **escaped `run_forever`
+before the poll loop's protective `try`**. `main()` caught it and returned 1; `systemd/lynceus.service`
+sets `Restart=on-failure` with `RestartSec=5s`.
+
+⇒ **An OPTIONAL add-on took Kismet polling — the primary function — down every five seconds**, for as
+long as the condition persisted, and permanently on a full disk. `SPEC_unit_of_work.md` §4a calls
+`database is locked` *"not a rare cross-process event, it is the normal steady state of the default
+deployment"*, and the bridge is itself the second writer that makes it so.
+
+Three instances of one class in eight lines:
+
+1. the compensating write shared the failure domain of the failure it recorded — now best-effort,
+   and it cannot escape;
+2. `bridge, bridge_thread = None, None` discarded the only handles to a thread that had **already
+   started** when the RUNNING write was what raised, so `_stop_ble_bridge` got `None` and a live
+   scanner was never drained. Reproduced: `is_alive()` was still `True` after shutdown;
+3. inside `_start_ble_bridge`, `logger.info` sat between `thread.start()` and the `return`, so a
+   `BrokenPipeError` from a logging handler orphaned a running scanner before the caller ever held it.
+
+⛔ **The log named a cause that is not the cause.** `"BLE bridge failed to start; continuing without
+it"` was printed when nothing had started (the first write raised) and when the bridge *was*
+running. It now distinguishes the two. ⇒ [[two-causes-must-not-share-one-sentence]]
+
+⚠️ The comment this handler carries exists to celebrate fixing the **mirror** bug — the heartbeat
+reporting "still watching" while BLE-only devices went unseen. The handler shipped the inverse.
+
+Three tests, each proven by planting its own half of the fix back; each plant reddens exactly one.
+
+⭐ **The class:** *a compensating action inside `except` that shares a failure domain with the
+failure it is handling* — a database write recording a database failure, an HTTP call reporting
+that service being down. Found by `glm-5.3`; `gpt-5.6-sol` independently ranked the same site #1.
+
+✅ **SWEPT, and the answer bounds it: ONE instance, this one.** An AST pass over all 70 files in
+`src/lynceus` pairs the call receivers in each `try` body against those in each handler body —
+**388 try blocks**, 21 raw hits, and the derivation is calibrated: it reports this site
+`UNGUARDED` on the pre-fix tree and `guarded` on the fixed one, so it can report a fix.
+
+Everything else triaged by reading, nothing withheld:
+
+- **8 `guarded`** — `os.unlink` after a failed `os.replace`, `proc.kill` after a failed
+  `communicate()`. That is the correct idiom: the compensating call is already inside its own
+  `try`.
+- **`db.py` `run()`'s handler** — calls `self._is_lock_contention()`, a pure string check with no
+  I/O. Shares a receiver, not a failure domain. Refuted.
+- **`config.py` scope back-fill** — `except NotImplementedError` is narrow, and the fallback passes
+  a *different* argument (`"user"`) that cannot raise it. Refuted, and the comment above it already
+  says why.
+
+⛔ **What the sweep cannot see, stated so the number is not read as more than it is:** a receiver
+reached through a local alias; a helper that touches the subsystem without naming it; module-level
+functions. And **12 hits whose receiver is `logger` were filtered out and NOT triaged** — normally
+benign (`logger.info` in the try, `logger.error` in the handler), but a handler catching a
+*logging* failure and then logging would be this exact class.
+
 ### 🪤 What this round got wrong, recorded because the corrections are the transferable part
 
 - ⛔ **19 planted defects all passed and did not find the unsound premise; a fixture written long

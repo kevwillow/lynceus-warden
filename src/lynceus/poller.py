@@ -3495,14 +3495,53 @@ class Poller:
                 bridge, bridge_thread = self._start_ble_bridge()
                 self.db.set_state(STATE_KEY_BLE_BRIDGE_STATUS, BLE_BRIDGE_RUNNING)
             except Exception:
-                logger.error("BLE bridge failed to start; continuing without it", exc_info=True)
-                bridge, bridge_thread = None, None
-                # ⛔ Record it. Continuing without the bridge is the right call
-                # for Kismet polling, but until now it was also INVISIBLE: the
-                # heartbeat reported "still watching" while BLE-only devices —
-                # the trackers this tool exists to find — were not being seen
-                # at all, and stayed unseen until someone restarted the daemon.
-                self.db.set_state(STATE_KEY_BLE_BRIDGE_STATUS, BLE_BRIDGE_FAILED)
+                # ⛔ DO NOT discard `bridge`/`bridge_thread`. If
+                # `_start_ble_bridge` returned and the RUNNING write is what
+                # raised, the thread is ALREADY SCANNING, and nulling the
+                # handles was the only thing that could stop it: the outer
+                # `finally` hands `_stop_ble_bridge` whatever these hold, so
+                # `None` meant a live scanner the daemon had lost track of,
+                # never drained, never joined.
+                if bridge_thread is not None:
+                    # Started, but unrecordable. Say THAT, not "failed to
+                    # start" — a message naming the wrong cause gets followed,
+                    # and the bridge is running.
+                    logger.error(
+                        "BLE bridge started but its status could not be "
+                        "recorded; it is RUNNING and will be stopped at "
+                        "shutdown",
+                        exc_info=True,
+                    )
+                else:
+                    logger.error(
+                        "BLE bridge failed to start; continuing without it",
+                        exc_info=True,
+                    )
+                    # ⛔ Record it, BEST EFFORT. Continuing without the bridge
+                    # is the right call for Kismet polling, but until this
+                    # existed it was also INVISIBLE: the heartbeat reported
+                    # "still watching" while BLE-only devices — the trackers
+                    # this tool exists to find — were not being seen at all.
+                    #
+                    # ⛔ And this write shares the failure domain of the failure
+                    # it is recording: the usual reason the start failed is that
+                    # this database was unavailable, so the compensating write
+                    # fails the SAME way. Unguarded, it escaped `run_forever`
+                    # BEFORE the poll loop's `try` below, `main()` returned 1,
+                    # and `Restart=on-failure`/`RestartSec=5s` turned an
+                    # OPTIONAL add-on into a five-second crash loop that took
+                    # Kismet polling down with it. Never let a compensating
+                    # action escape.
+                    try:
+                        self.db.set_state(
+                            STATE_KEY_BLE_BRIDGE_STATUS, BLE_BRIDGE_FAILED
+                        )
+                    except Exception:
+                        logger.error(
+                            "could not record the BLE bridge failure either; "
+                            "the recorded status is now stale",
+                            exc_info=True,
+                        )
         try:
             while not self._stop_flag:
                 # Per-iteration exception boundary. A single transient failure
@@ -3680,10 +3719,15 @@ class Poller:
                 logger.error("BLE bridge thread crashed", exc_info=True)
 
         thread = threading.Thread(target=_thread_main, name="ble-bridge", daemon=True)
-        thread.start()
+        # ⛔ Log BEFORE starting. Nothing raisable may sit between `start()` and
+        # the `return`: the caller's handle to a live thread only exists once
+        # this returns, so a raise in between (a `BrokenPipeError` from a
+        # logging handler is enough) leaves a scanner running that nobody can
+        # stop. Same class as the caller's `except` above.
         logger.info(
-            "BLE bridge started (adapter=%s, flush_interval=%ss)", cfg.adapter, flush_interval
+            "BLE bridge starting (adapter=%s, flush_interval=%ss)", cfg.adapter, flush_interval
         )
+        thread.start()
         return bridge, thread
 
     def _stop_ble_bridge(self, bridge, thread) -> None:
