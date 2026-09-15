@@ -150,6 +150,30 @@ STATE_KEY_LAST_TICK_DROPPED_UNPARSEABLE = "last_tick_dropped_unparseable"
 # shorten this to verify the flush behavior without sleeping.
 SUPPRESSION_LOG_INTERVAL_SECONDS = 3600
 
+# ⭐ Stable grep token for "a read-decide-write race was INTERCEPTED".
+#
+# Findings 61, 62 and 63 each shipped a guard that stops a real, reproduced
+# race: a duplicate "this device appears to be following you", and an
+# escalation the operator had just cleared. The guards work. But two of the
+# three logged at DEBUG and the third logged nothing, while `Config.log_level`
+# defaults to INFO -- so in a default deployment they could be firing
+# constantly and nobody would know. ⇒ An instrument below the default
+# threshold is not an instrument.
+#
+# ⛔ THE COUNT IS THE DELIVERABLE, and a sustained ZERO is a real answer.
+# `internal/specs/SPEC_unit_of_work.md` proposes migrating ~37 write paths to
+# close this class structurally; nothing has ever measured how often it fires.
+# `journalctl -u lynceus | grep -c race-intercepted` is that measurement.
+#
+# ⛔ Deliberately a log line and NOT a database write. These sit on the hot
+# per-observation path, and a bookkeeping write that fails there is exactly
+# Finding 69 -- where recording a failure into the same database took the
+# daemon down. A log line cannot do that.
+#
+# INFO, not WARNING: an intercepted race is the guard working CORRECTLY. It is
+# noteworthy, not an alarm.
+RACE_INTERCEPT_LOG_PREFIX = "race-intercepted"
+
 # Backoff schedule for the startup Kismet health check, in seconds.
 # Three attempts with 2s/4s waits between them — covers the window where
 # Kismet is still coming up under systemd's After=network.target without
@@ -474,9 +498,10 @@ def _deliver_watchful_escalation(
         # escalation, or it already arrived. Returning False is honest -- THIS
         # call did not deliver it -- and no caller treats that as a reason to
         # re-emit a row.
-        logger.debug(
-            "watchful escalation %s for %s: a concurrent writer claimed this "
-            "delivery",
+        logger.info(
+            "%s site=escalation-claim alert=%s mac=%s -- a concurrent writer "
+            "claimed this delivery, so the operator is not told twice",
+            RACE_INTERCEPT_LOG_PREFIX,
             alert_id,
             mac,
         )
@@ -557,6 +582,13 @@ def _retry_watchful_escalation(
         # pre-reset copy of the entry can drive one send the reset was meant
         # to prevent. Checking the mark closes that regardless of who is
         # holding a stale entry, which the caller-side fix alone does not.
+        logger.info(
+            "%s site=escalation-abandoned alert=%s mac=%s -- the operator's "
+            "reset beat a stale read, so the cleared escalation is not re-sent",
+            RACE_INTERCEPT_LOG_PREFIX,
+            row.get("id"),
+            entry.mac,
+        )
         return
     attempts = int(row.get("notify_attempts") or 0)
     if attempts >= NOTIFY_MAX_ATTEMPTS:
@@ -1398,9 +1430,10 @@ def process_observation(
         if claim_lost:
             # ⚠️ A LOST CLAIM, never an error -- the two are deliberately
             # distinguishable, because a raise must still send.
-            logger.debug(
-                "send-skip %s/%s (alert %s: a concurrent writer claimed this "
-                "delivery)",
+            logger.info(
+                "%s site=alert-claim rule=%s mac=%s alert=%s -- a concurrent "
+                "writer claimed this delivery, so the operator is not told twice",
+                RACE_INTERCEPT_LOG_PREFIX,
                 hit.rule_name,
                 hit.mac,
                 new_alert_id,
