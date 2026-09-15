@@ -4283,10 +4283,31 @@ reporting "still watching" while BLE-only devices went unseen. The handler shipp
 
 Three tests, each proven by planting its own half of the fix back; each plant reddens exactly one.
 
-⭐ **The class, worth its own sweep:** *a compensating action inside `except` that shares a failure
-domain with the failure it is handling* — a database write recording a database failure, an HTTP
-call reporting that service being down. Found by `glm-5.3`; `gpt-5.6-sol` independently ranked the
-same site #1. Nobody has swept the repo for the class.
+⭐ **The class:** *a compensating action inside `except` that shares a failure domain with the
+failure it is handling* — a database write recording a database failure, an HTTP call reporting
+that service being down. Found by `glm-5.3`; `gpt-5.6-sol` independently ranked the same site #1.
+
+✅ **SWEPT, and the answer bounds it: ONE instance, this one.** An AST pass over all 70 files in
+`src/lynceus` pairs the call receivers in each `try` body against those in each handler body —
+**388 try blocks**, 21 raw hits, and the derivation is calibrated: it reports this site
+`UNGUARDED` on the pre-fix tree and `guarded` on the fixed one, so it can report a fix.
+
+Everything else triaged by reading, nothing withheld:
+
+- **8 `guarded`** — `os.unlink` after a failed `os.replace`, `proc.kill` after a failed
+  `communicate()`. That is the correct idiom: the compensating call is already inside its own
+  `try`.
+- **`db.py` `run()`'s handler** — calls `self._is_lock_contention()`, a pure string check with no
+  I/O. Shares a receiver, not a failure domain. Refuted.
+- **`config.py` scope back-fill** — `except NotImplementedError` is narrow, and the fallback passes
+  a *different* argument (`"user"`) that cannot raise it. Refuted, and the comment above it already
+  says why.
+
+⛔ **What the sweep cannot see, stated so the number is not read as more than it is:** a receiver
+reached through a local alias; a helper that touches the subsystem without naming it; module-level
+functions. And **12 hits whose receiver is `logger` were filtered out and NOT triaged** — normally
+benign (`logger.info` in the try, `logger.error` in the handler), but a handler catching a
+*logging* failure and then logging would be this exact class.
 
 ### 🪤 What this round got wrong, recorded because the corrections are the transferable part
 
