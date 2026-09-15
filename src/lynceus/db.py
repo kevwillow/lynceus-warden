@@ -756,30 +756,46 @@ class Database:
                     "code, or split the work into separate units."
                 )
             self._txn_depth += 1
-            # ⛔ Manual transaction control, restored in the `finally`. With the
-            # default `isolation_level=''` sqlite3 inserts its own BEGIN before
-            # the next write, so an explicit `BEGIN IMMEDIATE` here would raise
-            # "cannot start a transaction within a transaction". Setting it to
-            # None hands the BEGIN/COMMIT to us. Safe on the shared connection
-            # because we hold the RLock for the whole block, so no other thread
-            # in this process can reach it meanwhile.
-            previous_isolation = self._conn.isolation_level
-            self._conn.isolation_level = None
+            # ⛔ The `try` opens IMMEDIATELY after the increment, exactly as
+            # `transaction()` does, and NOTHING may be placed between them.
+            # Everything below can raise -- a closed connection raises
+            # `ProgrammingError` on either isolation_level access -- and a raise
+            # in that gap used to skip the decrement and leave the depth at 1
+            # FOREVER. The Database was then wedged: every later `transaction()`
+            # was refused with "already open on this thread" and every later
+            # `unit()` with "cannot nest", neither of which was the cause.
             try:
-                self._conn.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
+                # ⛔ Manual transaction control, restored in the inner
+                # `finally`. With the default `isolation_level=''` sqlite3
+                # inserts its own BEGIN before the next write, so an explicit
+                # `BEGIN IMMEDIATE` here would raise "cannot start a transaction
+                # within a transaction". Setting it to None hands the
+                # BEGIN/COMMIT to us. Safe on the shared connection because we
+                # hold the RLock for the whole block, so no other thread in this
+                # process can reach it meanwhile.
+                previous_isolation = self._conn.isolation_level
+                self._conn.isolation_level = None
+                # ⚠️ The restore is its OWN `finally`, nested INSIDE the
+                # depth's. Both used to share one `finally` with the restore
+                # first, so a raise in the restore skipped the decrement and
+                # wedged the Database the same way from the exit path.
                 try:
-                    yield self._conn
-                except BaseException:
-                    # ⚠️ BaseException, not Exception. A KeyboardInterrupt or a
-                    # GeneratorExit mid-unit must still roll back; leaving the
-                    # transaction open would hold the write lock until the
-                    # connection died and block every other process.
-                    self._conn.rollback()
-                    raise
-                else:
-                    self._conn.commit()
+                    self._conn.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
+                    try:
+                        yield self._conn
+                    except BaseException:
+                        # ⚠️ BaseException, not Exception. A KeyboardInterrupt
+                        # or a GeneratorExit mid-unit must still roll back;
+                        # leaving the transaction open would hold the write lock
+                        # until the connection died and block every other
+                        # process.
+                        self._conn.rollback()
+                        raise
+                    else:
+                        self._conn.commit()
+                finally:
+                    self._conn.isolation_level = previous_isolation
             finally:
-                self._conn.isolation_level = previous_isolation
                 self._txn_depth -= 1
 
     # How many rows one prune batch deletes before releasing the write lock.
