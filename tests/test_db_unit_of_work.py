@@ -246,3 +246,159 @@ def test_a_lock_timeout_raises_rather_than_returning(tmp_path):
             )
         finally:
             holder.rollback()
+
+
+# ---------------------------------------------------------------------------
+# A failed ENTRY must not wedge the Database.
+#
+# ⛔ The defect these cover: the depth counter was incremented BEFORE the
+# `try`, and two statements sat in the gap -- reading and then clearing
+# `isolation_level` on the shared connection. Either can raise (a closed
+# `sqlite3.Connection` raises `ProgrammingError` on both; a stand-in without
+# the attribute raises `AttributeError` on the read). The `finally` that
+# decrements never ran, so the depth stayed at 1 FOREVER and every later
+# `transaction()` and `unit()` on that Database was refused -- each with a
+# message naming a cause that was not the cause.
+#
+# A third leak lived INSIDE the `finally`: the isolation restore ran BEFORE the
+# decrement, so a raise in the restore leaked the depth too.
+#
+# ⚠️ These tests assert the RECOVERY, not the counter. `_txn_depth == 0` is a
+# private detail; "the next caller can still write" is the property.
+
+
+class _ConnProxy:
+    """Delegates everything to a real `sqlite3.Connection`, both ways.
+
+    ⚠️ `__setattr__` forwards on purpose. Six existing `_conn` stand-ins in
+    `tests/` define only `__getattr__`, so `self._conn.isolation_level = None`
+    inside `unit()` lands on the PROXY and shadows the delegated read -- the
+    real connection never leaves `isolation_level = ''` and the unit's core
+    mechanism silently becomes a no-op. A proxy used to test `unit()` must not
+    have that hole, or the test is vacuous.
+    """
+
+    def __init__(self, inner):
+        object.__setattr__(self, "_inner", inner)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_inner"), name)
+
+    def __setattr__(self, name, value):
+        setattr(object.__getattribute__(self, "_inner"), name, value)
+
+
+class _ReadOfIsolationRaises(_ConnProxy):
+    """Fails where the entry sequence READS `isolation_level`."""
+
+    def __getattr__(self, name):
+        if name == "isolation_level":
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+        return super().__getattr__(name)
+
+
+class _WriteOfIsolationRaises(_ConnProxy):
+    """Fails where the entry sequence CLEARS `isolation_level`."""
+
+    def __setattr__(self, name, value):
+        if name == "isolation_level":
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+        super().__setattr__(name, value)
+
+
+class _RestoreOfIsolationRaises(_ConnProxy):
+    """Lets the unit run, then fails in the `finally` that restores isolation."""
+
+    def __setattr__(self, name, value):
+        if name == "isolation_level" and value is not None:
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+        super().__setattr__(name, value)
+
+
+def _assert_the_database_still_works(db, marker):
+    """The load-bearing half: a later caller can still open and commit.
+
+    Checks BOTH primitives, because the leaked depth is shared: it refused
+    `transaction()` with "already open on this thread" and `unit()` with
+    "cannot nest", and neither message was true.
+    """
+    assert db._txn_depth == 0, f"the depth counter leaked: {db._txn_depth}"
+    with db.transaction() as conn:
+        conn.execute("UPDATE devices SET last_seen = ? WHERE mac = ?", (marker, MAC))
+    assert _read_last_seen(db) == marker
+    with db.unit() as conn:
+        conn.execute("UPDATE devices SET last_seen = ? WHERE mac = ?", (marker + 1, MAC))
+    assert _read_last_seen(db) == marker + 1
+    # ⛔ OPPOSITE DIRECTION. The fail-CLOSED mirror of this fix is a counter
+    # that no longer counts, which would silently re-open the nesting bug the
+    # counter exists to prevent. Nesting must STILL be refused.
+    with pytest.raises(RuntimeError, match="cannot nest"):
+        with db.unit():
+            with db.unit():
+                pass  # pragma: no cover - the nested body must never run
+    assert db._txn_depth == 0, "the refused nesting leaked the depth"
+
+
+@pytest.mark.parametrize(
+    "trap",
+    [_ReadOfIsolationRaises, _WriteOfIsolationRaises],
+    ids=["reading_isolation_level", "clearing_isolation_level"],
+)
+def test_a_unit_whose_ENTRY_raises_does_not_wedge_the_database(tmp_path, trap):
+    """🪤 The entry failure must cost that ONE call, not the Database."""
+    with _db(tmp_path) as db:
+        real = db._conn
+        db._conn = trap(real)
+        try:
+            # (i) the ORIGINAL failure reaches the caller, not a RuntimeError
+            #     about nesting that names a cause which is not the cause.
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                with db.unit():
+                    pass  # pragma: no cover - entry never completes
+        finally:
+            db._conn = real
+        # (ii) and the Database is still usable afterwards.
+        _assert_the_database_still_works(db, 4001)
+
+
+def test_a_unit_whose_isolation_RESTORE_raises_does_not_wedge_the_database(tmp_path):
+    """🪤 The third leak, inside the `finally` itself.
+
+    The restore ran before the decrement in the same `finally`, so a raise in
+    the restore skipped the decrement. Same permanent wedge, reached from the
+    exit path instead of the entry path.
+    """
+    with _db(tmp_path) as db:
+        real = db._conn
+        db._conn = _RestoreOfIsolationRaises(real)
+        try:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                with db.unit() as conn:
+                    conn.execute(
+                        "UPDATE devices SET last_seen = 5000 WHERE mac = ?", (MAC,)
+                    )
+        finally:
+            db._conn = real
+            real.isolation_level = ""
+        _assert_the_database_still_works(db, 5001)
+
+
+def test_the_entry_fix_did_not_stop_the_counter_counting(tmp_path):
+    """⛔ Control for the fail-CLOSED direction, on the clean path.
+
+    Moving the increment or the `try` is one edit away from a counter that is
+    decremented while it should still be held. If that happened, nesting would
+    stop being refused and `unit()` inside `unit()` would silently commit the
+    outer block's partial work -- the exact bug the counter exists to prevent.
+    """
+    with _db(tmp_path) as db:
+        assert db._txn_depth == 0
+        with db.unit():
+            assert db._txn_depth == 1, "the depth is not held for the unit's body"
+            with pytest.raises(RuntimeError, match="cannot nest"):
+                with db.unit():
+                    pass  # pragma: no cover - the nested body must never run
+            with pytest.raises(RuntimeError, match="already open on this thread"):
+                with db.transaction():
+                    pass  # pragma: no cover - the nested body must never run
+        assert db._txn_depth == 0
