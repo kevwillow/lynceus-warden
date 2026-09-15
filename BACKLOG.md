@@ -1476,6 +1476,70 @@ rather than transmitting blind if a controller it is not driving goes down.
 session. The control that finally separated "radio broken" from "filter wrong"
 was an ACTIVE scan: 678 adverts where passive saw 0, on the same adapter.
 
+### D2 — how to actually close it, written 2026-09-14 while the method was fresh
+
+⭐ **No drone needed.** The bridge half was proven on air 2026-09-13 with a
+synthetic transmitter; the same rig closes D2, which is the Kismet half. This is
+the procedure, recorded because reconstructing it cost ~6 runs and a tool fix.
+
+**Where:** the Parrot rig, NOT Pioneer. Pioneer has never had Kismet
+(measured 2026-08-02 and again 2026-09-13: no binary, no `/etc/kismet`, zero
+apt history). The rig is a Dell with an internal Intel controller; the TP-Link
+UB500 is USB and moves between machines.
+
+🪤 **FIRST, and this one will bite: `internal/` is gitignored.** The fixed
+`internal/tools/tx_odid_raw.py` exists ONLY on Pioneer and will NOT arrive via
+`git pull`. Copy it across by hand. Without the fix the transmitter powers off
+the wrong controller and the capture window is silently wasted — that is exactly
+what happened three times on 2026-09-13.
+
+**Adapters:** two are needed. Kismet captures on one, the transmitter drives the
+other. Internal Intel + TP-Link is exactly enough.
+
+⛔ **Map by ADDRESS, never by `hciN`.** The numbering reshuffles on any USB
+re-plug, and the index namespace does not agree with the name — `btmgmt
+--index 1` was measured driving `hci0`. The tool now powers via
+`bluetoothctl select <BD address>`, which has no index to be wrong about.
+
+**The sequence:**
+
+1. Transmit, and confirm it RADIATES before trusting any receiver:
+
+       sudo python3 internal/tools/tx_odid_raw.py --tx <hci of the TP-Link> --hold 600
+
+   The advert is `0x0D0002124C594E434555534C4F4F504241434B3031…`, serial
+   `LYNCEUSLOOPBACK01`, service data UUID `0xFFFA`, ~104 ms, non-connectable.
+
+2. ⛔ **Witness on a phone across the room** (nRF Connect / LightBlue) before
+   believing a negative. Two co-located adapters saturate each other, and a
+   dead receiver is indistinguishable from an advert that never went out. On
+   2026-09-13 the phone is what made the result interpretable.
+
+3. With Kismet running and a Bluetooth datasource configured, check what its
+   record actually contains:
+
+       KISMET_TOKEN=xxxx /path/to/venv/bin/python internal/tools/validate_kismet_ingest.py
+
+4. The question D2 asks: does `uav.serialnumber` resolve on that record?
+   `_DRONE_ID_PATHS` reads `("uav.device", "uav.serialnumber")` with a
+   flattened fallback, verified against `phy_uav_drone.cc:128` /
+   `phy_uav_drone.h:323` — but against Kismet's SOURCE, never against the wire.
+   This step is the wire.
+
+⚠️ **Kismet's UAV phy is a DECORATOR, not a device type** — it attaches
+`uav.device` to a device already tracked by the Wi-Fi *or BTLE* phy. So BLE
+Remote ID should surface, and that is the premise this test checks rather than
+assumes.
+
+⭐ **A side benefit worth having:** Kismet reads the HCI socket directly, below
+BlueZ's D-Bus device layer. The bridge's one-callback-per-discovery behaviour
+(measured 2026-09-13: 1 advert captured while a phone saw ~55 in 8s) does not
+apply there. If Kismet reports every advert, that is a real difference between
+the two capture paths and worth recording.
+
+⚠️ **Wi-Fi Remote ID is a separate question.** Drones broadcast over both radios.
+This procedure covers BLE only; the Wi-Fi half needs the Alfa adapter back in.
+
 ### D2 drone Remote-ID live field-path confirmation
 The `drone_id_prefix` leading-substring matcher (v0.9.2) is correct but inert:
 the live Kismet Remote-ID JSON field path (`kismet._DRONE_ID_PATHS`) is still an
