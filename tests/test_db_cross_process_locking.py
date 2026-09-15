@@ -421,3 +421,173 @@ def test_run_refuses_a_deadline_that_cannot_permit_an_attempt(locked_db):
     for bad in (0, -1, -0.5):
         with pytest.raises(ValueError, match="deadline_seconds"):
             locked_db.run(lambda conn: None, deadline_seconds=bad)
+
+
+# --- Database.run(): retry is only half of it ------------------------------
+#
+# ⛔ SPEC_unit_of_work.md §2: `run()` and `unit()` are two forms of the SAME
+# primitive, "and the choice is about who owns the retry". `run()` used to open
+# `transaction()`, which sets no `isolation_level`, so sqlite3 began a DEFERRED
+# transaction lazily and every SELECT before the first write ran in AUTOCOMMIT.
+# That is precisely the lost-update window `unit()` was built to close and
+# measures in its own docstring -- so `run()` was a retry loop around the bug,
+# handing a caller a write that was retried but never atomic.
+#
+# A per-attempt `busy_timeout` below the shipped 5000 ms is set on THIS
+# process's connection in two tests, so contention resolves in about a second
+# instead of thirty. ⚠️ It is a test-local pragma on one connection; the value
+# the product chooses is still chosen in exactly one place in `src/`, which
+# `test_exactly_one_place_chooses_the_busy_timeout_and_it_chooses_5000` above
+# pins, and nothing here touches it.
+
+
+def _seed_counter(db, value="0"):
+    """A row whose value is READ and then written back incremented."""
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO alerts (ts, rule_name, message, severity) VALUES (?,?,?,?)",
+            (7, "counter", value, "low"),
+        )
+
+
+def _counter(conn):
+    return conn.execute(
+        "SELECT message FROM alerts WHERE rule_name = 'counter'"
+    ).fetchone()[0]
+
+
+def test_run_is_a_UNIT_not_merely_a_retried_transaction(tmp_path, locked_db):
+    """⭐ The read inside `run()`'s callable must be inside the transaction.
+
+    Modelled on the measurement in `Database.unit()`'s own docstring: read a
+    value, let a second connection commit over it, write back the value derived
+    from the read. Under a DEFERRED transaction the competing writer sails
+    through and its commit is silently overwritten. Under BEGIN IMMEDIATE the
+    write lock is already held, so the competing writer is refused and there is
+    no window to lose.
+    """
+    _seed_counter(locked_db)
+    other = sqlite3.connect(str(tmp_path / "lock.db"), timeout=0.3)
+    inside_the_transaction = []
+    competitor_blocked = []
+
+    def read_decide_write(conn):
+        before = int(_counter(conn))
+        inside_the_transaction.append(conn.in_transaction)
+        try:
+            other.execute("UPDATE alerts SET message = '9999' WHERE rule_name = 'counter'")
+            other.commit()
+            competitor_blocked.append(False)
+        except sqlite3.OperationalError:
+            other.rollback()
+            competitor_blocked.append(True)
+        conn.execute(
+            "UPDATE alerts SET message = ? WHERE rule_name = 'counter'", (str(before + 1),)
+        )
+
+    try:
+        locked_db.run(read_decide_write, deadline_seconds=30)
+    finally:
+        other.close()
+
+    assert inside_the_transaction == [True], (
+        "the SELECT in run()'s callable ran in autocommit, so run() is a retry "
+        "loop around the lost-update window rather than a unit of work"
+    )
+    assert competitor_blocked == [True], (
+        "a second connection committed BETWEEN the callable's read and its "
+        "write, which is the lost update SPEC §2 says a unit removes"
+    )
+    assert _counter(locked_db._conn) == "1"
+    assert locked_db._txn_depth == 0
+
+
+def test_run_RETRIES_a_failed_attempt_and_the_retry_is_itself_a_unit(tmp_path, locked_db):
+    """⛔ Defect A and Defect B interact, and this is where it would show.
+
+    A failed attempt used to leave `_txn_depth` at 1, and the NEXT attempt then
+    hit the nesting refusal -- so `run()` would raise `RuntimeError: cannot
+    nest` at the caller, destroying the lock-contention error and naming a
+    cause that is not the cause. If that regressed, this test does not fail on
+    an assertion, it fails with that RuntimeError escaping `run()`.
+
+    ⚠️ The barrier is derived, not chosen: one attempt can wait at most
+    `slice_ms`, so an elapsed time far above it is proof that more than one
+    attempt happened. The real-process, real-5000ms version of retry-then-
+    succeed is `test_run_RECOVERS_the_write_the_old_path_loses` above; this one
+    is the fast, deterministic sibling that also asserts what each attempt IS.
+    """
+    slice_ms = 150
+    hold_seconds = 1.0
+    locked_db._conn.execute(f"PRAGMA busy_timeout = {slice_ms}")
+    _seed_counter(locked_db)
+    inside_the_transaction = []
+
+    proc = _start_holder(tmp_path, release_name="go_retry", max_hold=20)
+    releaser = threading.Timer(hold_seconds, (tmp_path / "go_retry").touch)
+    releaser.start()
+    try:
+        started = time.monotonic()
+        locked_db.run(
+            lambda conn: (
+                inside_the_transaction.append(conn.in_transaction),
+                conn.execute(
+                    "UPDATE alerts SET message = ? WHERE rule_name = 'counter'",
+                    (str(int(_counter(conn)) + 1),),
+                ),
+            ),
+            deadline_seconds=30,
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        releaser.cancel()
+        (tmp_path / "go_retry").touch()
+        proc.wait(timeout=30)
+
+    assert elapsed >= hold_seconds / 2, (
+        f"finished in {elapsed:.2f}s, but one attempt can only wait "
+        f"{slice_ms}ms -- it never contended, so it never retried"
+    )
+    assert inside_the_transaction and all(inside_the_transaction), (
+        f"an attempt ran its callable outside the transaction: {inside_the_transaction}"
+    )
+    assert _counter(locked_db._conn) == "1", "the retried write did not land exactly once"
+    assert locked_db._txn_depth == 0, (
+        f"run() leaked the depth counter across its attempts: {locked_db._txn_depth}"
+    )
+
+
+def test_an_exhausted_run_still_RAISES_and_leaves_the_database_usable(tmp_path, locked_db):
+    """⛔ OPPOSITE DIRECTION, both halves.
+
+    Fail-open: exhaustion must never become a return value -- a caller that
+    could not write has to find out. Fail-closed: exhaustion must not wedge the
+    Database either, which is what a leaked depth counter did. The next caller
+    writes successfully once the contention clears.
+    """
+    locked_db._conn.execute("PRAGMA busy_timeout = 150")
+    _seed_counter(locked_db)
+    proc = _start_holder(tmp_path, release_name="go_exhaust", max_hold=20)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            locked_db.run(
+                lambda conn: conn.execute(
+                    "UPDATE alerts SET message = 'doomed' WHERE rule_name = 'counter'"
+                ),
+                deadline_seconds=0.6,
+            )
+        assert locked_db._txn_depth == 0, (
+            f"an exhausted run() wedged the Database: {locked_db._txn_depth}"
+        )
+        assert not locked_db._conn.in_transaction
+    finally:
+        (tmp_path / "go_exhaust").touch()
+        proc.wait(timeout=30)
+
+    locked_db.run(
+        lambda conn: conn.execute(
+            "UPDATE alerts SET message = 'after' WHERE rule_name = 'counter'"
+        ),
+        deadline_seconds=30,
+    )
+    assert _counter(locked_db._conn) == "after"

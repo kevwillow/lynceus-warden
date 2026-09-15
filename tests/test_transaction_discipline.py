@@ -237,6 +237,15 @@ def test_no_module_outside_db_writes_through_the_raw_connection():
     )
 
 
+# ⛔ BOTH block openers, not just `transaction()`. `unit()` opens a block with
+# exactly the same hazard -- an inner block's exit COMMITS the connection -- and
+# a guard keyed on the name "transaction" alone silently loses every caller the
+# moment it migrates onto `unit()`, with nothing turning red to say so.
+# `Database.run` was the first such migration (`db.py`, the `with self.unit()`
+# inside the retry loop) and would have left this universe unnoticed.
+_BLOCK_OPENERS = frozenset({"transaction", "unit"})
+
+
 def test_nothing_calls_a_database_method_from_inside_a_transaction_block():
     """⛔ ``transaction()`` refuses to nest ITSELF. It cannot refuse this.
 
@@ -257,6 +266,7 @@ def test_nothing_calls_a_database_method_from_inside_a_transaction_block():
     it, the fix is to pass ``conn`` down — not to relax this.
     """
     offenders: list[str] = []
+    scanned = 0
     for path in sorted(SRC.rglob("*.py")):
         rel = path.relative_to(SRC).as_posix()
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -267,23 +277,29 @@ def test_nothing_calls_a_database_method_from_inside_a_transaction_block():
                 for item in node.items
                 if isinstance(item.context_expr, ast.Call)
                 and isinstance(item.context_expr.func, ast.Attribute)
-                and item.context_expr.func.attr == "transaction"
+                and item.context_expr.func.attr in _BLOCK_OPENERS
                 and isinstance(item.context_expr.func.value, ast.Name)
             }
             if not receivers:
                 continue
+            scanned += 1
             for inner in ast.walk(node):
                 if (
                     isinstance(inner, ast.Call)
                     and isinstance(inner.func, ast.Attribute)
                     and isinstance(inner.func.value, ast.Name)
                     and inner.func.value.id in receivers
-                    and inner.func.attr != "transaction"
+                    and inner.func.attr not in _BLOCK_OPENERS
                 ):
                     offenders.append(
                         f"{rel}:{inner.lineno} calls "
                         f"{inner.func.value.id}.{inner.func.attr}()"
                     )
+    assert scanned, (
+        "the scan found NO transaction-or-unit block in src/, so this guard is "
+        "asserting nothing. Its universe is derived from the method names in "
+        f"{sorted(_BLOCK_OPENERS)}; if a block opener was renamed, rename it here too."
+    )
     assert not offenders, (
         f"a Database method is called from inside a transaction block, which "
         f"COMMITS that block's partial work when the inner one exits: {offenders}. "

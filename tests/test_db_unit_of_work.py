@@ -402,3 +402,21 @@ def test_the_entry_fix_did_not_stop_the_counter_counting(tmp_path):
                 with db.transaction():
                     pass  # pragma: no cover - the nested body must never run
         assert db._txn_depth == 0
+
+
+def test_run_inside_an_open_unit_is_refused_and_does_not_deadlock(tmp_path):
+    """⚠️ CONTROL, and it passes both before and after `run()` became a unit.
+
+    `unit()` holds an RLock for its whole body, and `run()` now opens a unit per
+    attempt, so a `run()` reached from inside an open unit on the same thread
+    re-enters the lock rather than blocking on it. The depth counter is what
+    refuses it, immediately -- measured at 0.000s -- and the refusal is a
+    `RuntimeError`, which `run()` does not classify as contention and therefore
+    does not retry. If the counter ever stopped counting, this would deadlock or
+    silently commit the outer unit's partial work instead.
+    """
+    with _db(tmp_path) as db:
+        with db.unit():
+            with pytest.raises(RuntimeError, match="nest|already open"):
+                db.run(lambda conn: conn.execute("SELECT 1"), deadline_seconds=5)
+        assert db._txn_depth == 0

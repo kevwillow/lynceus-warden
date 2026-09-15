@@ -559,7 +559,23 @@ class Database:
         return "locked" in text or "database is busy" in text
 
     def run(self, fn: Callable[[sqlite3.Connection], _T], *, deadline_seconds: float) -> _T:
-        """Run ``fn(conn)`` in a write transaction, retrying if the lock is lost.
+        """Run ``fn(conn)`` in a UNIT OF WORK, retrying if the lock is lost.
+
+        ⭐ **Each attempt is a whole ``unit()``**, so the read, the decision and
+        the write inside ``fn`` are one transaction on one connection with the
+        write lock taken up front. ``run()`` is the retryable form of that one
+        primitive and ``unit()`` is the form whose caller owns the retry
+        (``internal/specs/SPEC_unit_of_work.md`` §2); the retry loop wraps the
+        ``with``, because ``__exit__`` can never re-run the body.
+
+        ⚠️ **A failed attempt therefore contends at ``BEGIN IMMEDIATE``**, before
+        ``fn`` is called at all, where it used to contend at ``fn``'s first
+        write. An attempt that fails no longer runs a partial ``fn``.
+
+        ⚠️ **Every ``run()`` takes the WRITE lock, including one whose ``fn``
+        only reads.** There is no ``readonly`` form of ``run()``; a read-only
+        caller should use ``unit(readonly=True)`` and own its own retry, which
+        is cheaper and cannot block a writer.
 
         ⛔ **``fn`` MAY RUN MORE THAN ONCE.** It must touch nothing but this
         database. No notification, no file write, no counter in memory that a
@@ -605,7 +621,13 @@ class Database:
         while True:
             attempts += 1
             try:
-                with self.transaction() as conn:
+                # ⛔ `unit()`, NOT `transaction()`. SPEC_unit_of_work.md §2: these
+                # are two forms of ONE primitive and the only difference is who
+                # owns the retry. `transaction()` sets no isolation_level, so a
+                # SELECT before the first write runs in AUTOCOMMIT -- retrying
+                # around that gives a caller a write that is durable but not
+                # atomic, which is the lost update `unit()` exists to close.
+                with self.unit() as conn:
                     return fn(conn)
             except sqlite3.OperationalError as exc:
                 if not self._is_lock_contention(exc):
